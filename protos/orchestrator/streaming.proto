@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package shannon.orchestrator;
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator";
+
+import "google/protobuf/timestamp.proto";
+
+service StreamingService {
+  rpc StreamTaskExecution(StreamRequest) returns (stream TaskUpdate);
+}
+
+message StreamRequest {
+  string workflow_id = 1;
+  repeated string types = 2; // optional filter by event types
+  uint64 last_event_id = 3; // resume from this event id (exclusive)
+}
+
+message TaskUpdate {
+  string workflow_id = 1;
+  string type = 2;
+  string agent_id = 3;
+  string message = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  uint64 seq = 6;
+}
+

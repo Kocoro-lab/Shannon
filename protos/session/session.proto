@@ -1,0 +1,176 @@
+syntax = "proto3";
+
+package shannon.session;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+import "common/common.proto";
+
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/session";
+
+// Session management service for multi-turn conversations
+service SessionService {
+    // Create a new session
+    rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+    
+    // Get session details
+    rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
+    
+    // Update session context
+    rpc UpdateSession(UpdateSessionRequest) returns (UpdateSessionResponse);
+    
+    // Delete a session
+    rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+    
+    // List user sessions
+    rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+    
+    // Add message to session history
+    rpc AddMessage(AddMessageRequest) returns (AddMessageResponse);
+    
+    // Clear session history
+    rpc ClearHistory(ClearHistoryRequest) returns (ClearHistoryResponse);
+}
+
+// Request to create a new session
+message CreateSessionRequest {
+    string user_id = 1;
+    google.protobuf.Struct initial_context = 2;
+    int32 max_history = 3;  // Max messages to keep in history
+    int32 ttl_seconds = 4;  // Session TTL in seconds
+}
+
+// Response with created session
+message CreateSessionResponse {
+    string session_id = 1;
+    google.protobuf.Timestamp created_at = 2;
+    google.protobuf.Timestamp expires_at = 3;
+    shannon.common.StatusCode status = 4;
+    string message = 5;
+}
+
+// Request to get session details
+message GetSessionRequest {
+    string session_id = 1;
+    bool include_history = 2;  // Whether to include message history
+}
+
+// Session details response
+message GetSessionResponse {
+    Session session = 1;
+    shannon.common.StatusCode status = 2;
+    string message = 3;
+}
+
+// Request to update session
+message UpdateSessionRequest {
+    string session_id = 1;
+    google.protobuf.Struct context_updates = 2;  // Context fields to update
+    int32 extend_ttl_seconds = 3;  // Extend session TTL
+}
+
+// Update response
+message UpdateSessionResponse {
+    bool success = 1;
+    google.protobuf.Timestamp new_expires_at = 2;
+    shannon.common.StatusCode status = 3;
+    string message = 4;
+}
+
+// Request to delete session
+message DeleteSessionRequest {
+    string session_id = 1;
+}
+
+// Delete response
+message DeleteSessionResponse {
+    bool success = 1;
+    shannon.common.StatusCode status = 2;
+    string message = 3;
+}
+
+// Request to list user sessions
+message ListSessionsRequest {
+    string user_id = 1;
+    bool active_only = 2;  // Only return active (non-expired) sessions
+    int32 limit = 3;
+    int32 offset = 4;
+}
+
+// List response
+message ListSessionsResponse {
+    repeated SessionSummary sessions = 1;
+    int32 total_count = 2;
+    shannon.common.StatusCode status = 3;
+    string message = 4;
+}
+
+// Request to add message to session
+message AddMessageRequest {
+    string session_id = 1;
+    Message message = 2;
+}
+
+// Add message response
+message AddMessageResponse {
+    bool success = 1;
+    int32 history_size = 2;  // Current history size after adding
+    shannon.common.StatusCode status = 3;
+    string message = 4;
+}
+
+// Request to clear history
+message ClearHistoryRequest {
+    string session_id = 1;
+    bool keep_context = 2;  // Keep persistent context, only clear messages
+}
+
+// Clear history response
+message ClearHistoryResponse {
+    bool success = 1;
+    shannon.common.StatusCode status = 2;
+    string message = 3;
+}
+
+// Session data structure
+message Session {
+    string id = 1;
+    string user_id = 2;
+    google.protobuf.Struct context = 3;
+    repeated Message history = 4;
+    google.protobuf.Timestamp created_at = 5;
+    google.protobuf.Timestamp last_active = 6;
+    google.protobuf.Timestamp expires_at = 7;
+    SessionMetrics metrics = 8;
+}
+
+// Session summary for listing
+message SessionSummary {
+    string id = 1;
+    string user_id = 2;
+    google.protobuf.Timestamp created_at = 3;
+    google.protobuf.Timestamp last_active = 4;
+    int32 message_count = 5;
+    int32 total_tokens = 6;
+    bool is_active = 7;
+}
+
+// Message in conversation
+message Message {
+    string id = 1;
+    string role = 2;  // "user", "assistant", "system"
+    string content = 3;
+    google.protobuf.Timestamp timestamp = 4;
+    int32 tokens_used = 5;
+    google.protobuf.Struct metadata = 6;
+}
+
+// Session metrics
+message SessionMetrics {
+    int32 total_messages = 1;
+    int32 total_tokens = 2;
+    double total_cost_usd = 3;
+    int32 tools_invoked = 4;
+    int32 errors_encountered = 5;
+    double avg_response_time_ms = 6;
+}

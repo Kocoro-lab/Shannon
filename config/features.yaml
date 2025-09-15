@@ -1,0 +1,213 @@
+# Shannon Platform - Feature Configuration
+# GitHub: https://github.com/Kocoro-lab/Shannon
+
+# Execution modes configuration
+execution_modes:
+  simple:
+    enabled: true
+    max_latency_ms: 100
+    bypass_orchestration: true
+    cache_first: true
+    tool_only: true
+    
+  standard:
+    enabled: true
+    max_latency_ms: 2000
+    single_agent: true
+    llm_required: true
+    
+  complex:
+    enabled: true
+    max_latency_ms: 10000
+    max_agents: 5
+    parallel_execution: true
+    dag_orchestration: true
+
+# Agent configuration
+agent:
+  max_concurrent: 10
+  memory_limit_mb: 512
+  timeout_seconds: 30
+  sandbox_enabled: true
+  wasm_runtime: wasmtime
+  
+  fsm:
+    max_iterations: 10
+    state_persistence: true
+    retry_on_failure: true
+    
+  tools:
+    max_per_agent: 10
+    execution_timeout: 10
+    sandbox_required: true
+
+# Orchestration settings
+orchestration:
+  engine: temporal
+  task_queue: shannon-tasks
+  namespace: default
+
+  worker:
+    max_concurrent_workflows: 100
+    max_concurrent_activities: 50
+
+  routing:
+    complexity_analysis: true
+    auto_decomposition: true
+    dag_optimization: true
+
+  session:
+    enabled: true
+    ttl_minutes: 60
+    context_size_kb: 100
+
+# Workflow enhancements
+workflows:
+  reflection:
+    enabled: false  # Default OFF - opt-in feature for self-evaluation
+    max_retries: 2  # Maximum retry attempts after reflection
+    confidence_threshold: 0.7  # Minimum acceptable confidence score
+    criteria:  # Evaluation criteria for reflection
+      - completeness  # Is the answer complete?
+      - accuracy      # Is the answer accurate?
+      - relevance     # Is the answer relevant to the query?
+    timeout_ms: 5000  # Timeout for reflection evaluation
+
+# Learning system
+continuous_learning:
+  enabled: true
+  
+  case_memory:
+    max_cases: 100000
+    similarity_threshold: 0.85
+    update_frequency: realtime
+    
+  q_learning:
+    enabled: true
+    learning_rate: 0.1
+    discount_factor: 0.95
+    exploration_rate: 0.1
+    
+  privacy:
+    pii_filtering: true
+    anonymization: true
+    user_consent_required: false
+
+# Security features
+security:
+  authentication:
+    enabled: false  # Set to true in production
+    method: jwt
+    
+  authorization:
+    enabled: false  # Set to true in production
+    rbac: true
+    
+  policy_engine:
+    enabled: true
+    provider: opa
+    
+  input_validation:
+    enabled: true
+    max_input_length: 10000
+    sanitize_html: true
+    
+  output_filtering:
+    enabled: true
+    pii_detection: true
+    redact_secrets: true
+    
+  rate_limiting:
+    enabled: true
+    requests_per_minute: 100
+    burst_size: 20
+
+# Storage configuration
+storage:
+  postgres:
+    enabled: true
+    connection_pool_size: 20
+    
+  redis:
+    enabled: true
+    persistence: true
+    
+  vector_db:
+    provider: qdrant  # qdrant, pgvector, weaviate, pinecone
+    collection_size: 1000000
+    dimension: 1536
+
+# Vector intelligence configuration
+vector:
+  enabled: true
+  host: "qdrant"
+  port: 6333
+  task_embeddings: "task_embeddings"
+  tool_results: "tool_results"
+  cases: "cases" 
+  document_chunks: "document_chunks"
+  top_k: 5
+  threshold: 0.5
+  timeout: "5s"
+    
+  filesystem:
+    artifacts_path: /data/artifacts
+    max_file_size_mb: 100
+
+# Observability
+observability:
+  tracing:
+    enabled: true
+    provider: opentelemetry
+    sampling_rate: 0.1
+    
+  metrics:
+    enabled: true
+    provider: prometheus
+    port: 9090
+    
+  logging:
+    level: info
+    format: json
+    correlation_id: true
+    
+  health_checks:
+    enabled: true
+    liveness_path: /health/live
+    readiness_path: /health/ready
+
+# Experimental features (disabled by default)
+experimental:
+  web3_integration:
+    enabled: false
+    blockchain: solana
+    
+  attestation:
+    enabled: false
+    mode: transparency_log
+    
+  federated_learning:
+    enabled: false
+    
+  multi_modal:
+    enabled: false
+    vision: false
+    audio: false
+
+# Environment-specific overrides
+environments:
+  development:
+    debug: true
+    security.authentication.enabled: false
+    observability.tracing.sampling_rate: 1.0
+    
+  staging:
+    debug: false
+    security.authentication.enabled: true
+    continuous_learning.enabled: true
+    
+  production:
+    debug: false
+    security.authentication.enabled: true
+    security.authorization.enabled: true
+    experimental.web3_integration.enabled: false

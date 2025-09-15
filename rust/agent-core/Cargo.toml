@@ -1,0 +1,83 @@
+[package]
+name = "shannon-agent-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "shannon_agent_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.41", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# gRPC
+tonic = { version = "0.12", features = ["tls"] }
+tonic-reflection = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+
+# WASM runtime
+wasmtime = "28.0"
+wasmtime-wasi = "28.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+regex = "1"
+base64 = "0.22"
+
+# Math evaluation
+meval = "0.2"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+http = "1.1"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging and Tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+opentelemetry = { version = "0.27", features = ["trace"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
+opentelemetry-semantic-conventions = "0.27"
+tracing-opentelemetry = "0.28"
+
+# Metrics
+prometheus = "0.13"
+hyper = { version = "1.5", features = ["server", "http1"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+http-body-util = "0.1"
+
+# Redis (optional distributed rate limiting)
+redis = { version = "0.24", features = ["aio", "tokio-comp", "connection-manager"] }
+
+
+# Memory management
+bytes = "1.8"
+
+# Policy engine (OPA)
+opa-wasm = "0.1"
+
+# Utilities
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+tempfile = "3.14"
+
+# System integration (for resource limits)
+libc = "0.2"
+
+[build-dependencies]
+tonic-build = "0.12"
+protoc-bin-vendored = "3"
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1.6"

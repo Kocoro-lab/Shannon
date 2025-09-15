@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package shannon.common;
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// Common status codes for Shannon platform
+enum StatusCode {
+  STATUS_CODE_UNSPECIFIED = 0;
+  STATUS_CODE_OK = 1;
+  STATUS_CODE_ERROR = 2;
+  STATUS_CODE_TIMEOUT = 3;
+  STATUS_CODE_RATE_LIMITED = 4;
+  STATUS_CODE_BUDGET_EXCEEDED = 5;
+}
+
+// Execution mode for agent tasks
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_SIMPLE = 1;      // Direct tool/cache response
+  EXECUTION_MODE_STANDARD = 2;    // Single agent with LLM
+  EXECUTION_MODE_COMPLEX = 3;     // Multi-agent DAG execution
+}
+
+// Model tier for LLM selection
+enum ModelTier {
+  MODEL_TIER_UNSPECIFIED = 0;
+  MODEL_TIER_SMALL = 1;    // GPT-3.5, Haiku, etc. (50% allocation)
+  MODEL_TIER_MEDIUM = 2;   // GPT-4, Sonnet, etc. (40% allocation)
+  MODEL_TIER_LARGE = 3;    // GPT-4-turbo, Opus, etc. (10% allocation)
+}
+
+// Cognitive strategy for intelligent task routing
+enum CognitiveStrategy {
+  COGNITIVE_UNSPECIFIED = 0;
+  COGNITIVE_DIRECT = 1;       // Simple direct execution
+  COGNITIVE_DECOMPOSE = 2;    // Current DAG decomposition
+  COGNITIVE_EXPLORATORY = 3;  // Iterative discovery with hypothesis testing
+  COGNITIVE_REACT = 4;        // Reason-Act-Observe loops for debugging
+  COGNITIVE_RESEARCH = 5;     // Deep investigation with citations
+  COGNITIVE_SCIENTIFIC = 6;   // Formal hypothesis testing with belief tracking
+}
+
+// Task metadata
+message TaskMetadata {
+  string task_id = 1;
+  string user_id = 2;
+  string session_id = 3;
+  string tenant_id = 4;
+  google.protobuf.Timestamp created_at = 5;
+  map<string, string> labels = 6;
+  int32 max_agents = 7;  // Max concurrent agents (default: 5)
+  double token_budget = 8;  // Token budget for this task
+}
+
+// Token usage tracking
+message TokenUsage {
+  int32 prompt_tokens = 1;
+  int32 completion_tokens = 2;
+  int32 total_tokens = 3;
+  double cost_usd = 4;
+  string model = 5;
+  ModelTier tier = 6;
+}
+
+// Execution metrics
+message ExecutionMetrics {
+  int64 latency_ms = 1;
+  TokenUsage token_usage = 2;
+  bool cache_hit = 3;
+  double cache_score = 4;
+  int32 agents_used = 5;
+  ExecutionMode mode = 6;
+}
+
+// Tool call representation
+message ToolCall {
+  string name = 1;
+  google.protobuf.Struct parameters = 2;
+  string tool_id = 3;
+}
+
+// Tool result
+message ToolResult {
+  string tool_id = 1;
+  google.protobuf.Value output = 2;
+  StatusCode status = 3;
+  string error_message = 4;
+  int64 execution_time_ms = 5;
+}
+

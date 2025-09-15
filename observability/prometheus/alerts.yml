@@ -1,0 +1,143 @@
+groups:
+  - name: shannon_policy_alerts
+    interval: 30s
+    rules:
+      # Critical Alerts (PagerDuty)
+      - alert: PolicyErrorRateHigh
+        expr: rate(shannon_policy_slo_errors_total[5m]) / rate(shannon_policy_evaluations_total[5m]) * 100 > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: shannon
+          component: policy
+        annotations:
+          summary: "Policy engine error rate exceeds SLO ({{ $value }}%)"
+          description: "Policy evaluation error rate is {{ $value }}% which exceeds the 5% SLO threshold"
+
+      - alert: PolicyLatencyHigh
+        expr: histogram_quantile(0.95, rate(shannon_policy_latency_slo_seconds_bucket[5m])) > 0.005
+        for: 2m
+        labels:
+          severity: critical
+          service: shannon
+          component: policy
+        annotations:
+          summary: "Policy engine P95 latency exceeds 5ms SLO ({{ $value }}s)"
+          description: "Policy evaluation P95 latency is {{ $value }}s which exceeds the 5ms SLO threshold"
+
+      - alert: PolicyEmergencyKillSwitch
+        expr: sum(rate(shannon_policy_canary_decisions_total{routing_reason="emergency_kill_switch"}[5m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: shannon
+          component: policy
+        annotations:
+          summary: "Policy engine emergency kill switch is active"
+          description: "Policy engine emergency kill switch is active - all requests are in dry-run mode"
+
+      # Warning Alerts (Slack)
+      - alert: PolicyCacheHitRateLow
+        expr: rate(shannon_policy_cache_hits_total[5m]) / (rate(shannon_policy_cache_hits_total[5m]) + rate(shannon_policy_cache_misses_total[5m])) * 100 < 80
+        for: 5m
+        labels:
+          severity: warning
+          service: shannon
+          component: policy
+        annotations:
+          summary: "Policy cache hit rate below 80% ({{ $value }}%)"
+          description: "Policy cache hit rate is {{ $value }}% which is below the 80% threshold"
+
+      - alert: PolicyDenialRateHigh
+        expr: rate(shannon_policy_evaluations_total{decision="deny"}[5m]) / rate(shannon_policy_evaluations_total[5m]) * 100 > 20
+        for: 5m
+        labels:
+          severity: warning
+          service: shannon
+          component: policy
+        annotations:
+          summary: "Policy denial rate exceeds 20% ({{ $value }}%)"
+          description: "Policy denial rate is {{ $value }}% - possible attack or misconfiguration"
+
+  - name: shannon_service_alerts
+    interval: 30s
+    rules:
+      # Service Health Alerts
+      - alert: OrchestratorDown
+        expr: up{job="orchestrator"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: shannon
+          component: orchestrator
+        annotations:
+          summary: "Orchestrator service is down"
+          description: "Shannon orchestrator service has been down for more than 1 minute"
+
+      - alert: AgentCoreDown
+        expr: up{job="agent-core"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: shannon
+          component: agent-core
+        annotations:
+          summary: "Agent Core service is down"
+          description: "Shannon agent core service has been down for more than 1 minute"
+
+      - alert: LLMServiceDown
+        expr: up{job="llm-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: shannon
+          component: llm-service
+        annotations:
+          summary: "LLM service is down"
+          description: "Shannon LLM service has been down for more than 1 minute"
+
+      # Workflow Alerts
+      - alert: WorkflowErrorRateHigh
+        expr: rate(temporal_workflow_failed_total[5m]) / rate(temporal_workflow_completed_total[5m]) * 100 > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: shannon
+          component: temporal
+        annotations:
+          summary: "Workflow error rate exceeds 10% ({{ $value }}%)"
+          description: "Temporal workflow error rate is {{ $value }}% which exceeds the 10% threshold"
+
+      - alert: WorkflowLatencyHigh
+        expr: histogram_quantile(0.95, rate(temporal_workflow_task_schedule_to_start_latency_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: shannon
+          component: temporal
+        annotations:
+          summary: "Workflow scheduling latency high ({{ $value }}s)"
+          description: "Temporal workflow scheduling P95 latency is {{ $value }}s which exceeds 1 second"
+
+      # Token Usage Alerts
+      - alert: TokenBudgetExceededRate
+        expr: rate(shannon_budget_exceeded_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: shannon
+          component: budget
+        annotations:
+          summary: "Token budget exceeded rate too high"
+          description: "Token budget is being exceeded at {{ $value }} requests/sec"
+
+      - alert: TokenUsageSpike
+        expr: rate(shannon_tokens_used_total[5m]) > 10000
+        for: 2m
+        labels:
+          severity: warning
+          service: shannon
+          component: llm
+        annotations:
+          summary: "Token usage spike detected ({{ $value }} tokens/sec)"
+          description: "Token usage rate is {{ $value }} tokens/sec which may indicate runaway requests"

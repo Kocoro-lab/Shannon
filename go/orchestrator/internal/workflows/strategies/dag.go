@@ -1,0 +1,510 @@
+package strategies
+
+import (
+	"fmt"
+	"time"
+
+	"go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
+
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
+)
+
+// DAGWorkflow uses extracted patterns for cleaner multi-agent orchestration.
+// It composes parallel/sequential/hybrid execution patterns with optional reflection.
+func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
+	logger := workflow.GetLogger(ctx)
+	logger.Info("Starting DAGWorkflow with composed patterns",
+		"query", input.Query,
+		"session_id", input.SessionID,
+		"version", "v2",
+	)
+
+	// Configure activity options
+	activityOptions := workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	}
+	ctx = workflow.WithActivityOptions(ctx, activityOptions)
+
+	// Load workflow configuration
+	var config activities.WorkflowConfig
+	configActivity := workflow.ExecuteActivity(ctx, activities.GetWorkflowConfig)
+	if err := configActivity.Get(ctx, &config); err != nil {
+		logger.Warn("Failed to load config, using defaults", "error", err)
+		// Use defaults if config load fails
+		config = activities.WorkflowConfig{
+			SimpleThreshold:          0.3,
+			MaxParallelAgents:        5,
+			ReflectionEnabled:        true,
+			ReflectionMaxRetries:     2,
+			ReflectionConfidenceThreshold: 0.8,
+			ParallelMaxConcurrency:   5,
+			HybridDependencyTimeout:  360,
+			SequentialPassResults:    true,
+			SequentialExtractNumeric: true,
+		}
+	}
+
+	// Prepare base context
+	baseContext := make(map[string]interface{})
+	for k, v := range input.Context {
+		baseContext[k] = v
+	}
+	for k, v := range input.SessionCtx {
+		baseContext[k] = v
+	}
+
+	// Step 1: Decompose the task
+	var decomp activities.DecompositionResult
+	err := workflow.ExecuteActivity(ctx,
+		constants.DecomposeTaskActivity,
+		activities.DecompositionInput{
+			Query:          input.Query,
+			Context:        baseContext,
+			AvailableTools: []string{},
+		}).Get(ctx, &decomp)
+
+	if err != nil {
+		logger.Error("Task decomposition failed", "error", err)
+		return TaskResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
+		}, err
+	}
+
+	// Check for budget configuration
+	agentMaxTokens := 0
+	if v, ok := baseContext["budget_agent_max"].(int); ok {
+		agentMaxTokens = v
+	}
+	if v, ok := baseContext["budget_agent_max"].(float64); ok && v > 0 {
+		agentMaxTokens = int(v)
+	}
+
+	modelTier := determineModelTier(baseContext, "medium")
+	var totalTokens int
+	var agentResults []activities.AgentExecutionResult
+
+	// Step 2: Handle simple tasks directly
+	if decomp.ComplexityScore < config.SimpleThreshold || len(decomp.Subtasks) <= 1 {
+		logger.Info("Executing simple task",
+			"complexity", decomp.ComplexityScore,
+		)
+
+		// Execute single agent
+		var simpleResult activities.ExecuteSimpleTaskResult
+		err = workflow.ExecuteActivity(ctx,
+			activities.ExecuteSimpleTask,
+			activities.ExecuteSimpleTaskInput{
+				Query:      input.Query,
+				SessionID:  input.SessionID,
+				UserID:     input.UserID,
+				Context:    baseContext,
+				SessionCtx: input.SessionCtx,
+			}).Get(ctx, &simpleResult)
+
+		if err != nil {
+			return TaskResult{
+				Success:      false,
+				ErrorMessage: fmt.Sprintf("Simple execution failed: %v", err),
+			}, err
+		}
+
+		agentResults = append(agentResults, activities.AgentExecutionResult{
+			AgentID:    "simple-agent",
+			Response:   simpleResult.Response,
+			TokensUsed: simpleResult.TokensUsed,
+			Success:    simpleResult.Success,
+		})
+		totalTokens = simpleResult.TokensUsed
+
+		// Update session
+		if input.SessionID != "" {
+			_ = updateSession(ctx, input.SessionID, simpleResult.Response, totalTokens, 1)
+			_ = recordToVectorStore(ctx, input, simpleResult.Response, "simple", decomp.ComplexityScore)
+		}
+
+		return TaskResult{
+			Result:     simpleResult.Response,
+			Success:    true,
+			TokensUsed: totalTokens,
+			Metadata: map[string]interface{}{
+				"complexity_score": decomp.ComplexityScore,
+				"mode":            "simple",
+				"num_agents":      1,
+			},
+		}, nil
+	}
+
+	// Step 3: Complex multi-agent execution
+	logger.Info("Executing complex task with patterns",
+		"complexity", decomp.ComplexityScore,
+		"subtasks", len(decomp.Subtasks),
+		"strategy", decomp.ExecutionStrategy,
+	)
+
+	// Emit workflow started event
+	emitTaskUpdate(ctx, activities.StreamEventWorkflowStarted, "", "")
+
+	// Determine execution strategy
+	hasDependencies := false
+	for _, subtask := range decomp.Subtasks {
+		if len(subtask.Dependencies) > 0 {
+			hasDependencies = true
+			break
+		}
+	}
+
+	// Choose execution pattern based on strategy and dependencies
+	execStrategy := decomp.ExecutionStrategy
+	if execStrategy == "" {
+		execStrategy = "parallel"
+	}
+
+	if hasDependencies {
+		// Use hybrid execution for dependency management
+		logger.Info("Using hybrid execution pattern for dependencies")
+		agentResults, totalTokens = executeHybridPattern(
+			ctx, decomp, input, baseContext, agentMaxTokens, modelTier, config,
+		)
+	} else if execStrategy == "sequential" {
+		// Use sequential execution
+		logger.Info("Using sequential execution pattern")
+		agentResults, totalTokens = executeSequentialPattern(
+			ctx, decomp, input, baseContext, agentMaxTokens, modelTier, config,
+		)
+	} else {
+		// Default to parallel execution
+		logger.Info("Using parallel execution pattern")
+		agentResults, totalTokens = executeParallelPattern(
+			ctx, decomp, input, baseContext, agentMaxTokens, modelTier, config,
+		)
+	}
+
+	// Step 4: Synthesize results
+	logger.Info("Synthesizing agent results",
+		"agent_count", len(agentResults),
+	)
+
+	var synthesis activities.SynthesisResult
+	err = workflow.ExecuteActivity(ctx,
+		activities.SynthesizeResultsLLM,
+		activities.SynthesisInput{
+			Query:        input.Query,
+			AgentResults: agentResults,
+			Context:      baseContext,
+		}).Get(ctx, &synthesis)
+
+	if err != nil {
+		logger.Error("Synthesis failed", "error", err)
+		return TaskResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
+		}, err
+	}
+
+	totalTokens += synthesis.TokensUsed
+
+	// Step 5: Optional reflection for quality improvement
+	finalResult := synthesis.FinalResult
+	qualityScore := 0.5
+	reflectionTokens := 0
+
+	if config.ReflectionEnabled && shouldReflect(decomp.ComplexityScore) {
+		reflectionConfig := patterns.ReflectionConfig{
+			Enabled:             true,
+			MaxRetries:          config.ReflectionMaxRetries,
+			ConfidenceThreshold: config.ReflectionConfidenceThreshold,
+			Criteria:            config.ReflectionCriteria,
+			TimeoutMs:           config.ReflectionTimeoutMs,
+		}
+
+		reflectionOpts := patterns.Options{
+			BudgetAgentMax: agentMaxTokens,
+			SessionID:      input.SessionID,
+			UserID:         input.UserID,
+			ModelTier:      modelTier,
+		}
+
+		improvedResult, score, reflectionTokens, err := patterns.ReflectOnResult(
+			ctx,
+			input.Query,
+			synthesis.FinalResult,
+			agentResults,
+			baseContext,
+			reflectionConfig,
+			reflectionOpts,
+		)
+
+		if err == nil {
+			finalResult = improvedResult
+			qualityScore = score
+			totalTokens += reflectionTokens
+			logger.Info("Reflection improved quality",
+				"score", qualityScore,
+				"tokens", reflectionTokens,
+			)
+		}
+	}
+
+	// Step 6: Update session and persist
+	if input.SessionID != "" {
+		_ = updateSession(ctx, input.SessionID, finalResult, totalTokens, len(agentResults))
+		_ = recordToVectorStore(ctx, input, finalResult, decomp.Mode, decomp.ComplexityScore)
+	}
+
+	// Note: Workflow completion is handled by the orchestrator
+
+	logger.Info("DAGWorkflow completed successfully",
+		"total_tokens", totalTokens,
+		"quality_score", qualityScore,
+		"agent_count", len(agentResults),
+	)
+
+	// Record pattern metrics (fire-and-forget)
+	metricsCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+	})
+	_ = workflow.ExecuteActivity(metricsCtx, "RecordPatternMetrics", activities.PatternMetricsInput{
+		Pattern:      execStrategy,
+		Version:      "v2",
+		AgentCount:   len(agentResults),
+		TokensUsed:   totalTokens,
+		WorkflowType: "dag",
+	}).Get(ctx, nil)
+
+	if shouldReflect(decomp.ComplexityScore) && qualityScore > 0.5 {
+		_ = workflow.ExecuteActivity(metricsCtx, "RecordPatternMetrics", activities.PatternMetricsInput{
+			Pattern:    "reflection",
+			Version:    "v2",
+			Improved:   qualityScore > 0.7,
+			TokensUsed: reflectionTokens,
+		}).Get(ctx, nil)
+	}
+
+	return TaskResult{
+		Result:     finalResult,
+		Success:    true,
+		TokensUsed: totalTokens,
+		Metadata: map[string]interface{}{
+			"version":         "v2",
+			"complexity":      decomp.ComplexityScore,
+			"quality_score":   qualityScore,
+			"agent_count":     len(agentResults),
+			"execution_mode":  execStrategy,
+			"had_reflection":  shouldReflect(decomp.ComplexityScore),
+		},
+	}, nil
+}
+
+// executeParallelPattern uses the parallel execution pattern
+func executeParallelPattern(
+	ctx workflow.Context,
+	decomp activities.DecompositionResult,
+	input TaskInput,
+	baseContext map[string]interface{},
+	agentMaxTokens int,
+	modelTier string,
+	config activities.WorkflowConfig,
+) ([]activities.AgentExecutionResult, int) {
+
+	parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
+	for i, subtask := range decomp.Subtasks {
+		role := "agent"
+		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+			role = decomp.AgentTypes[i]
+		}
+
+		parallelTasks[i] = execution.ParallelTask{
+			ID:             subtask.ID,
+			Description:    subtask.Description,
+			SuggestedTools: subtask.SuggestedTools,
+			ToolParameters: subtask.ToolParameters,
+			PersonaID:      subtask.SuggestedPersona,
+			Role:           role,
+		}
+	}
+
+	parallelConfig := execution.ParallelConfig{
+		MaxConcurrency: config.ParallelMaxConcurrency,
+		EmitEvents:     true,
+		Context:        baseContext,
+	}
+
+	result, err := execution.ExecuteParallel(
+		ctx,
+		parallelTasks,
+		input.SessionID,
+		convertHistoryForAgent(input.History),
+		parallelConfig,
+		agentMaxTokens,
+		input.UserID,
+		modelTier,
+	)
+
+	if err != nil {
+		workflow.GetLogger(ctx).Error("Parallel execution failed", "error", err)
+		return nil, 0
+	}
+
+	return result.Results, result.TotalTokens
+}
+
+// executeSequentialPattern uses the sequential execution pattern
+func executeSequentialPattern(
+	ctx workflow.Context,
+	decomp activities.DecompositionResult,
+	input TaskInput,
+	baseContext map[string]interface{},
+	agentMaxTokens int,
+	modelTier string,
+	config activities.WorkflowConfig,
+) ([]activities.AgentExecutionResult, int) {
+
+	sequentialTasks := make([]execution.SequentialTask, len(decomp.Subtasks))
+	for i, subtask := range decomp.Subtasks {
+		role := "agent"
+		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+			role = decomp.AgentTypes[i]
+		}
+
+		sequentialTasks[i] = execution.SequentialTask{
+			ID:             subtask.ID,
+			Description:    subtask.Description,
+			SuggestedTools: subtask.SuggestedTools,
+			ToolParameters: subtask.ToolParameters,
+			PersonaID:      subtask.SuggestedPersona,
+			Role:           role,
+			Dependencies:   subtask.Dependencies,
+		}
+	}
+
+	sequentialConfig := execution.SequentialConfig{
+		EmitEvents:               true,
+		Context:                  baseContext,
+		PassPreviousResults:      config.SequentialPassResults,
+		ExtractNumericValues:     config.SequentialExtractNumeric,
+		ClearDependentToolParams: true,
+	}
+
+	result, err := execution.ExecuteSequential(
+		ctx,
+		sequentialTasks,
+		input.SessionID,
+		convertHistoryForAgent(input.History),
+		sequentialConfig,
+		agentMaxTokens,
+		input.UserID,
+		modelTier,
+	)
+
+	if err != nil {
+		workflow.GetLogger(ctx).Error("Sequential execution failed", "error", err)
+		return nil, 0
+	}
+
+	return result.Results, result.TotalTokens
+}
+
+// executeHybridPattern uses the hybrid execution pattern for dependencies
+func executeHybridPattern(
+	ctx workflow.Context,
+	decomp activities.DecompositionResult,
+	input TaskInput,
+	baseContext map[string]interface{},
+	agentMaxTokens int,
+	modelTier string,
+	config activities.WorkflowConfig,
+) ([]activities.AgentExecutionResult, int) {
+
+	hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
+	for i, subtask := range decomp.Subtasks {
+		role := "agent"
+		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+			role = decomp.AgentTypes[i]
+		}
+
+		hybridTasks[i] = execution.HybridTask{
+			ID:             subtask.ID,
+			Description:    subtask.Description,
+			SuggestedTools: subtask.SuggestedTools,
+			ToolParameters: subtask.ToolParameters,
+			PersonaID:      subtask.SuggestedPersona,
+			Role:           role,
+			Dependencies:   subtask.Dependencies,
+		}
+	}
+
+	hybridConfig := execution.HybridConfig{
+		MaxConcurrency:           config.ParallelMaxConcurrency,
+		EmitEvents:               true,
+		Context:                  baseContext,
+		DependencyWaitTimeout:    time.Duration(config.HybridDependencyTimeout) * time.Second,
+		PassDependencyResults:    config.SequentialPassResults,
+		ClearDependentToolParams: true,
+	}
+
+	result, err := execution.ExecuteHybrid(
+		ctx,
+		hybridTasks,
+		input.SessionID,
+		convertHistoryForAgent(input.History),
+		hybridConfig,
+		agentMaxTokens,
+		input.UserID,
+		modelTier,
+	)
+
+	if err != nil {
+		workflow.GetLogger(ctx).Error("Hybrid execution failed", "error", err)
+		return nil, 0
+	}
+
+	// Convert map results to slice
+	var agentResults []activities.AgentExecutionResult
+	for _, result := range result.Results {
+		agentResults = append(agentResults, result)
+	}
+
+	return agentResults, result.TotalTokens
+}
+
+// Helper functions
+
+func updateSession(ctx workflow.Context, sessionID, result string, tokens, agents int) error {
+	var updRes activities.SessionUpdateResult
+	return workflow.ExecuteActivity(ctx,
+		constants.UpdateSessionResultActivity,
+		activities.SessionUpdateInput{
+			SessionID:  sessionID,
+			Result:     result,
+			TokensUsed: tokens,
+			AgentsUsed: agents,
+		}).Get(ctx, &updRes)
+}
+
+func recordToVectorStore(ctx workflow.Context, input TaskInput, answer, mode string, complexity float64) error {
+	detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
+	workflow.ExecuteActivity(detachedCtx,
+		activities.RecordQuery,
+		activities.RecordQueryInput{
+			SessionID: input.SessionID,
+			UserID:    input.UserID,
+			Query:     input.Query,
+			Answer:    answer,
+			Model:     mode,
+			Metadata: map[string]interface{}{
+				"workflow":   "dag_v2",
+				"complexity": complexity,
+				"tenant_id":  input.TenantID,
+			},
+			RedactPII: true,
+		})
+	return nil
+}

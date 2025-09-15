@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package shannon.orchestrator;
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "common/common.proto";
+
+service OrchestratorService {
+  rpc SubmitTask(SubmitTaskRequest) returns (SubmitTaskResponse);
+  rpc GetTaskStatus(GetTaskStatusRequest) returns (GetTaskStatusResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
+  rpc GetSessionContext(GetSessionContextRequest) returns (GetSessionContextResponse);
+  
+  // Human intervention endpoints
+  rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
+  rpc GetPendingApprovals(GetPendingApprovalsRequest) returns (GetPendingApprovalsResponse);
+}
+
+message TaskDecomposition {
+  shannon.common.ExecutionMode mode = 1;
+  double complexity_score = 2;
+  repeated AgentTask agent_tasks = 3;
+  DAGStructure dag = 4;
+}
+
+message AgentTask {
+  string agent_id = 1;
+  string task_id = 2;
+  string description = 3;
+  repeated string dependencies = 4;
+  google.protobuf.Struct input = 5;
+  repeated string required_tools = 6;
+  shannon.common.ModelTier model_tier = 7;
+}
+
+message DAGStructure {
+  repeated DAGNode nodes = 1;
+  repeated DAGEdge edges = 2;
+}
+
+message DAGNode { string id = 1; string agent_task_id = 2; int32 level = 3; }
+message DAGEdge { string from = 1; string to = 2; }
+
+message SubmitTaskRequest {
+  shannon.common.TaskMetadata metadata = 1;
+  string query = 2;
+  google.protobuf.Struct context = 3;
+  bool auto_decompose = 4;
+  TaskDecomposition manual_decomposition = 5;
+  SessionContext session_context = 6;  // Session continuity support
+}
+
+// Session context for multi-turn conversations
+message SessionContext {
+  repeated ConversationMessage history = 1;  // Recent conversation history
+  google.protobuf.Struct persistent_context = 2;  // Persistent session data
+  repeated string files_created = 3;  // Files created in this session
+  repeated string tools_used = 4;  // Tools used in this session
+  int32 total_tokens_used = 5;  // Accumulated token usage
+  double total_cost_usd = 6;  // Accumulated cost
+}
+
+message ConversationMessage {
+  string role = 1;  // "user", "assistant", "system"
+  string content = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  int32 tokens_used = 4;
+}
+
+message SubmitTaskResponse {
+  string workflow_id = 1;
+  string task_id = 2;
+  shannon.common.StatusCode status = 3;
+  TaskDecomposition decomposition = 4;
+  string message = 5;
+}
+
+enum TaskStatus { TASK_STATUS_UNSPECIFIED = 0; TASK_STATUS_QUEUED = 1; TASK_STATUS_RUNNING = 2; TASK_STATUS_COMPLETED = 3; TASK_STATUS_FAILED = 4; TASK_STATUS_CANCELLED = 5; TASK_STATUS_TIMEOUT = 6; }
+
+message GetTaskStatusRequest { string task_id = 1; bool include_details = 2; }
+
+message GetTaskStatusResponse {
+  string task_id = 1;
+  TaskStatus status = 2;
+  double progress = 3;
+  string result = 4;
+  shannon.common.ExecutionMetrics metrics = 5;
+  repeated AgentTaskStatus agent_statuses = 6;
+  string error_message = 7;
+}
+
+message AgentTaskStatus {
+  string agent_id = 1;
+  string task_id = 2;
+  TaskStatus status = 3;
+  string result = 4;
+  shannon.common.TokenUsage token_usage = 5;
+}
+
+message CancelTaskRequest { string task_id = 1; string reason = 2; }
+message CancelTaskResponse { bool success = 1; string message = 2; }
+
+message ListTasksRequest { string user_id = 1; string session_id = 2; int32 limit = 3; int32 offset = 4; TaskStatus filter_status = 5; }
+
+message ListTasksResponse { repeated TaskSummary tasks = 1; int32 total_count = 2; }
+
+message TaskSummary {
+  string task_id = 1;
+  string query = 2;
+  TaskStatus status = 3;
+  shannon.common.ExecutionMode mode = 4;
+  google.protobuf.Timestamp created_at = 5;
+  google.protobuf.Timestamp completed_at = 6;
+  shannon.common.TokenUsage total_token_usage = 7;
+}
+
+message GetSessionContextRequest { string session_id = 1; }
+
+message GetSessionContextResponse {
+  string session_id = 1;
+  google.protobuf.Struct context = 2;
+  repeated TaskSummary recent_tasks = 3;
+  shannon.common.TokenUsage session_token_usage = 4;
+}
+
+// Human intervention messages
+message ApproveTaskRequest {
+  string approval_id = 1;
+  string workflow_id = 2;
+  string run_id = 3;
+  bool approved = 4;
+  string feedback = 5;
+  string modified_action = 6;
+  string approved_by = 7;
+}
+
+message ApproveTaskResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetPendingApprovalsRequest {
+  string user_id = 1;
+  string session_id = 2;
+}
+
+message GetPendingApprovalsResponse {
+  repeated PendingApproval approvals = 1;
+}
+
+message PendingApproval {
+  string approval_id = 1;
+  string workflow_id = 2;
+  string query = 3;
+  string proposed_action = 4;
+  string reason = 5;
+  google.protobuf.Timestamp requested_at = 6;
+  google.protobuf.Struct metadata = 7;
+}
+

@@ -1,0 +1,113 @@
+# Shannon Orchestrator Configuration - Test Configuration for Hot-Reload Demo
+# This demonstrates dynamic configuration changes without service restart
+
+service:
+  port: 50052
+  health_port: 8082  # Changed from 8081 to test hot-reload
+  graceful_timeout: "45s"  # Increased from 30s
+  read_timeout: "15s"     # Increased from 10s
+  write_timeout: "15s"    # Increased from 10s
+
+circuit_breakers:
+  redis:
+    max_requests: 8      # Increased from 5
+    interval: "45s"      # Increased from 30s
+    timeout: "90s"       # Increased from 60s
+    max_failures: 8      # Increased from 5
+    enabled: true
+  database:
+    max_requests: 5      # Increased from 3
+    interval: "45s"      # Increased from 30s
+    timeout: "90s"       # Increased from 60s
+    max_failures: 5      # Increased from 3
+    enabled: true
+
+degradation:
+  enabled: true
+  check_interval: "45s"  # Increased from 30s
+  thresholds:
+    minor:
+      circuit_breakers_open: 2      # Increased from 1
+      error_rate_percentage: 8.0    # Increased from 5.0
+    moderate:
+      circuit_breakers_open: 3      # Increased from 2
+      error_rate_percentage: 20.0   # Increased from 15.0
+  mode_downgrade:
+    minor_degradation_rules:
+      complex_to_standard: true
+      standard_to_simple: false
+    moderate_degradation_rules:
+      complex_to_standard: true
+      standard_to_simple: true
+      force_simple: false
+  fallback_behaviors:
+    llm_generation: "cache"
+    vector_search: "proceed"
+    agent_execution: "degrade"
+    result_synthesis: "proceed"
+    session_update: "proceed"
+
+health:
+  enabled: true
+  check_interval: "45s"  # Increased from 30s
+  timeout: "8s"          # Increased from 5s
+  port: 8082             # Changed from 8081
+  checks:
+    redis:
+      enabled: true
+      critical: true
+      timeout: "8s"      # Increased from 5s
+      interval: "45s"    # Increased from 30s
+    database:
+      enabled: true
+      critical: true
+      timeout: "8s"      # Increased from 5s
+      interval: "45s"    # Increased from 30s
+    agent_core:
+      enabled: false     # DISABLED to test per-check enable/disable
+      critical: true
+      timeout: "8s"
+      interval: "45s"
+    llm_service:
+      enabled: true
+      critical: false
+      timeout: "10s"     # Increased from 5s
+      interval: "90s"    # Increased from 60s
+
+agents:
+  max_concurrent: 8         # Increased from 5
+  default_timeout: "45s"    # Increased from 30s
+  retry_count: 5            # Increased from 3
+  retry_backoff: "3s"       # Increased from 2s
+  agent_core_endpoint: "localhost:50051"        # Different from "agent-core:50051"
+  llm_service_endpoint: "http://localhost:8000" # Different from "http://llm-service:8000"
+
+temporal:
+  host_port: "localhost:7233"
+  namespace: "default"
+  task_queue: "shannon-task-queue"
+  timeout: "45s"  # Increased from 30s
+
+logging:
+  level: "debug"  # Changed from "info" to test logging config changes
+  development: true  # Changed from false
+  encoding: "console"  # Changed from "json" for easier debugging
+
+# Vector DB Configuration - ENABLED for testing
+vector:
+  enabled: true
+  host: "qdrant"
+  port: 6333
+  task_embeddings: "task_embeddings"
+  tool_results: "tool_results"
+  cases: "cases"
+  document_chunks: "document_chunks"
+  top_k: 5
+  threshold: 0.5
+  timeout: "5s"
+
+# Tracing Configuration - ENABLED for testing
+tracing:
+  enabled: true  # Enabled for development/testing
+  service_name: "shannon-orchestrator-test"
+  otlp_endpoint: "localhost:4317"

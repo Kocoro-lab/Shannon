@@ -1,0 +1,54 @@
+{
+  "title": "Shannon – Enforcement Gateway",
+  "uid": "shannon-enforcement",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "timezone": "browser",
+  "tags": ["shannon", "agent-core", "enforcement"],
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Request Enforcement (drops vs allowed)",
+      "gridPos": {"h": 9, "w": 24, "x": 0, "y": 0},
+      "options": {"legend": {"displayMode": "table", "placement": "right"}},
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(agent_core_enforcement_drops_total[5m]))",
+          "refId": "A",
+          "legendFormat": "drop: {{reason}}"
+        },
+        {
+          "expr": "sum(rate(agent_core_enforcement_allowed_total[5m]))",
+          "refId": "B",
+          "legendFormat": "allowed"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Circuit Breaker – Open (5m)",
+      "gridPos": {"h": 6, "w": 8, "x": 0, "y": 9},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["sum"], "values": false}},
+      "targets": [
+        {
+          "expr": "sum(agent_core_enforcement_drops_total{reason=\"circuit_open\"})",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Circuit Breaker Drops (rate)",
+      "gridPos": {"h": 6, "w": 16, "x": 8, "y": 9},
+      "targets": [
+        {
+          "expr": "rate(agent_core_enforcement_drops_total{reason=\"circuit_open\"}[5m])",
+          "refId": "A",
+          "legendFormat": "circuit_open"
+        }
+      ]
+    }
+  ]
+}
+

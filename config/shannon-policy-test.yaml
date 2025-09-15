@@ -1,0 +1,79 @@
+# Shannon Configuration with Policy Engine Enabled for Testing
+# This demonstrates the OPA Policy Engine Phase 0.5 implementation
+
+service:
+  port: 50052
+  health_port: 8081
+  graceful_timeout: "30s"
+
+agents:
+  max_concurrent: 5
+  default_timeout: "30s"
+  agent_core_endpoint: "agent-core:50051"
+  llm_service_endpoint: "http://llm-service:8000"
+
+# Policy Engine Configuration - ENABLED for testing
+policy:
+  enabled: true
+  mode: "dry-run"  # Start with dry-run mode for testing
+  path: "/app/config/opa/policies"
+  fail_closed: false  # Allow requests if policy evaluation fails
+  environment: "test"
+  audit:
+    enabled: true
+    log_level: "info"
+    include_input: true
+    include_decision: true
+
+health:
+  enabled: true
+  check_interval: "30s"
+  timeout: "5s"
+  port: 8081
+  checks:
+    redis:
+      enabled: true
+      critical: true
+      timeout: "5s"
+      interval: "30s"
+    database:
+      enabled: true
+      critical: true
+      timeout: "5s"
+      interval: "30s"
+
+temporal:
+  host_port: "localhost:7233"
+  namespace: "default"
+  task_queue: "shannon-task-queue"
+  timeout: "30s"
+
+logging:
+  level: "info"
+  development: false
+  encoding: "json"
+
+degradation:
+  enabled: true
+  mode_downgrade:
+    minor_degradation_rules:
+      complex_to_standard: true
+  fallback_behaviors:
+    llm_generation: "cache"
+    vector_search: "proceed"
+    agent_execution: "degrade"
+    result_synthesis: "proceed"
+    session_update: "proceed"
+
+# Vector DB Configuration - ENABLED for contextual retrieval testing
+vector:
+  enabled: true
+  host: "qdrant"
+  port: 6333
+  task_embeddings: "task_embeddings"
+  tool_results: "tool_results"
+  cases: "cases"
+  document_chunks: "document_chunks"
+  top_k: 5
+  threshold: 0.5
+  timeout: "5s"

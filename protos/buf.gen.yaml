@@ -1,0 +1,15 @@
+version: v1
+
+plugins:
+  - plugin: buf.build/protocolbuffers/go
+    out: ../go/orchestrator/internal/pb
+    opt:
+      - paths=source_relative
+  - plugin: buf.build/grpc/go
+    out: ../go/orchestrator/internal/pb
+    opt:
+      - paths=source_relative
+  - plugin: buf.build/protocolbuffers/python
+    out: gen/python
+  - plugin: buf.build/grpc/python
+    out: gen/python

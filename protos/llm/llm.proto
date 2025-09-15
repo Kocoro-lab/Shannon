@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package shannon.llm;
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/llm";
+
+import "google/protobuf/struct.proto";
+import "common/common.proto";
+
+service LLMService {
+  rpc GenerateCompletion(GenerateCompletionRequest) returns (GenerateCompletionResponse);
+  rpc StreamCompletion(GenerateCompletionRequest) returns (stream CompletionChunk);
+  rpc EmbedText(EmbedTextRequest) returns (EmbedTextResponse);
+  rpc AnalyzeComplexity(AnalyzeComplexityRequest) returns (AnalyzeComplexityResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+}
+
+enum Provider { PROVIDER_UNSPECIFIED = 0; PROVIDER_OPENAI = 1; PROVIDER_ANTHROPIC = 2; PROVIDER_GOOGLE = 3; PROVIDER_DEEPSEEK = 4; PROVIDER_QWEN = 5; PROVIDER_BEDROCK = 6; PROVIDER_OLLAMA = 7; PROVIDER_VLLM = 8; }
+
+message Message { string role = 1; string content = 2; repeated shannon.common.ToolCall tool_calls = 3; string name = 4; }
+
+message GenerateCompletionRequest {
+  repeated Message messages = 1;
+  shannon.common.ModelTier tier = 2;
+  string specific_model = 3;
+  GenerationConfig config = 4;
+  shannon.common.TaskMetadata metadata = 5;
+  repeated ToolDefinition available_tools = 6;
+}
+
+message GenerationConfig { double temperature = 1; double top_p = 2; int32 max_tokens = 3; repeated string stop_sequences = 4; double presence_penalty = 5; double frequency_penalty = 6; bool enable_caching = 7; string cache_key = 8; }
+
+message ToolDefinition { string name = 1; string description = 2; google.protobuf.Struct parameters_schema = 3; bool requires_confirmation = 4; }
+
+message GenerateCompletionResponse { string completion = 1; repeated shannon.common.ToolCall tool_calls = 2; shannon.common.TokenUsage usage = 3; string model_used = 4; Provider provider = 5; bool cache_hit = 6; string finish_reason = 7; }
+
+message CompletionChunk { string delta = 1; shannon.common.ToolCall tool_call_delta = 2; string finish_reason = 3; shannon.common.TokenUsage usage = 4; }
+
+message EmbedTextRequest { repeated string texts = 1; string model = 2; }
+message EmbedTextResponse { repeated Embedding embeddings = 1; int32 dimensions = 2; string model_used = 3; }
+message Embedding { repeated float vector = 1; string text = 2; }
+
+message AnalyzeComplexityRequest { string query = 1; google.protobuf.Struct context = 2; repeated string available_tools = 3; }
+message AnalyzeComplexityResponse { shannon.common.ExecutionMode recommended_mode = 1; double complexity_score = 2; repeated string required_capabilities = 3; int32 estimated_agents = 4; int32 estimated_tokens = 5; double estimated_cost_usd = 6; string reasoning = 7; }
+
+message ListModelsRequest { shannon.common.ModelTier tier = 1; Provider provider = 2; }
+message ListModelsResponse { repeated ModelInfo models = 1; }
+message ModelInfo { string id = 1; string name = 2; Provider provider = 3; shannon.common.ModelTier tier = 4; int32 context_window = 5; double cost_per_1k_prompt_tokens = 6; double cost_per_1k_completion_tokens = 7; bool supports_tools = 8; bool supports_streaming = 9; bool available = 10; }
+

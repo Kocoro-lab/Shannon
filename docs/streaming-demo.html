@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Shannon Streaming Demo (SSE)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+    #log { white-space: pre-wrap; background: #111; color: #eee; padding: 1rem; border-radius: 8px; height: 320px; overflow: auto; }
+    .controls { margin-bottom: 1rem; display: flex; gap: .5rem; flex-wrap: wrap; }
+    input, select, button { padding: .4rem .6rem; }
+    label { font-size: .9rem; opacity: .8; }
+  </style>
+  <script>
+    let es;
+    function setStatus(text, ok=true){
+      const s = document.getElementById('status');
+      s.textContent = text; s.style.color = ok? '#0c0' : '#f55';
+    }
+    function log(line) {
+      const el = document.getElementById('log');
+      el.textContent += line + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+    function connect() {
+      const wf = document.getElementById('wf').value.trim();
+      const host = document.getElementById('host').value.trim() || 'http://localhost:8081';
+      const types = document.getElementById('types').value.trim();
+      const last = document.getElementById('last').value.trim();
+      if (!wf) { alert('Enter workflow_id'); return; }
+      const params = new URLSearchParams({ workflow_id: wf });
+      if (types) params.set('types', types);
+      if (last) params.set('last_event_id', last);
+      const url = `${host}/stream/sse?${params.toString()}`;
+      if (es) { es.close(); }
+      es = new EventSource(url);
+      log(`Connecting to ${url}`);
+      
+      // Handle events WITHOUT explicit event type (default 'message' events)
+      es.onmessage = (e) => {
+        log(`message: ${e.data}`);
+        try { const obj = JSON.parse(e.data); if (obj.seq) document.getElementById('last').value = obj.seq; } catch {}
+      };
+      
+      // Handle events WITH explicit event types
+      const eventTypes = ['WORKFLOW_STARTED', 'AGENT_STARTED', 'AGENT_COMPLETED', 'ROLE_ASSIGNED', 
+                          'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'WORKSPACE_UPDATED', 'DEPENDENCY_SATISFIED',
+                          'TEAM_RECRUITED', 'TEAM_RETIRED', 'ERROR_OCCURRED'];
+      
+      eventTypes.forEach(eventType => {
+        es.addEventListener(eventType, (e) => {
+          log(`${eventType}: ${e.data}`);
+          try { const obj = JSON.parse(e.data); if (obj.seq) document.getElementById('last').value = obj.seq; } catch {}
+        });
+      });
+      
+      es.onopen = () => { setStatus('connected'); log('SSE open'); };
+      es.onerror = (e) => { setStatus('disconnected', false); log('SSE error (see console)'); console.error(e); };
+    }
+    function disconnect() { if (es) { es.close(); log('SSE closed'); } }
+  </script>
+  </head>
+  <body>
+    <h1>Shannon Streaming Demo (SSE)</h1>
+    <div>Connection: <strong id="status" style="color:#f55">disconnected</strong></div>
+    <div class="controls">
+      <label>Admin Host <input id="host" size="28" placeholder="http://localhost:8081"></label>
+      <label>Workflow ID <input id="wf" size="36" placeholder="<workflow_id>"></label>
+      <label>Types (csv) <input id="types" size="28" placeholder="AGENT_STARTED,AGENT_COMPLETED"></label>
+      <label>Last-Event-ID <input id="last" size="10" placeholder="0"></label>
+      <button onclick="connect()">Connect</button>
+      <button onclick="disconnect()">Disconnect</button>
+      <button onclick="document.getElementById('types').value='WORKFLOW_STARTED,AGENT_STARTED,AGENT_COMPLETED'">Common types</button>
+      <button onclick="document.getElementById('types').value='ERROR_OCCURRED'">Errors only</button>
+    </div>
+    <div id="log" aria-live="polite"></div>
+    <p>Tip: The server sets <code>id: seq</code> per event; browsers will auto‑resume using <code>Last-Event-ID</code> on reconnect.</p>
+  </body>
+</html>

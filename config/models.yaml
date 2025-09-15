@@ -1,0 +1,152 @@
+# Shannon Platform - Model Configuration
+# GitHub: https://github.com/Kocoro-lab/Shannon
+# Updated: September 2025 with latest AI models
+
+model_tiers:
+  small:
+    allocation: 50  # 50% of requests use small models
+    providers:
+      - provider: openai
+        model: gpt-4o-mini  # Latest efficient model
+        priority: 1
+      - provider: anthropic
+        model: claude-3-5-haiku-20241022
+        priority: 2
+      - provider: google
+        model: gemini-1.5-flash-002
+        priority: 3
+      - provider: google
+        model: gemma-3-7b  # New open-source model
+        priority: 4
+      - provider: deepseek
+        model: deepseek-chat
+        priority: 5
+      - provider: qwen
+        model: qwen2.5-7b
+        priority: 6
+    
+  medium:
+    allocation: 40  # 40% of requests use medium models
+    providers:
+      - provider: openai
+        model: gpt-4o  # Latest GPT-4 optimized model
+        priority: 1
+      - provider: anthropic
+        model: claude-3-5-sonnet-20241022  # Latest Sonnet
+        priority: 2
+      - provider: google
+        model: gemini-1.5-pro-002
+        priority: 3
+      - provider: meta
+        model: llama-4-scout  # New multimodal model
+        priority: 4
+      - provider: deepseek
+        model: deepseek-v3
+        priority: 5
+      - provider: qwen
+        model: qwen2.5-32b
+        priority: 6
+      - provider: xai
+        model: grok-3  # New reasoning model
+        priority: 7
+    
+  large:
+    allocation: 10  # 10% of requests use large models
+    providers:
+      - provider: openai
+        model: gpt-5  # Latest flagship model
+        priority: 1
+      - provider: anthropic
+        model: claude-4-opus  # Latest Opus model
+        priority: 2
+      - provider: google
+        model: gemini-2.5-pro  # Enhanced reasoning model
+        priority: 3
+      - provider: meta
+        model: llama-4-maverick  # Large multimodal model
+        priority: 4
+      - provider: deepseek
+        model: deepseek-r1  # Latest reasoning model
+        priority: 5
+      - provider: qwen
+        model: qwen2.5-vl-32b  # Multimodal reasoning
+        priority: 6
+      - provider: qwen
+        model: qwq-32b  # Specialized reasoning tasks
+        priority: 7
+      - provider: minimax
+        model: minimax-m1  # Hybrid attention model
+        priority: 8
+
+# Model selection strategy
+selection_strategy:
+  mode: priority  # priority, round-robin, least-cost, random
+  fallback_enabled: true
+  max_retries: 3
+  timeout_seconds: 30
+
+# Cost controls
+cost_controls:
+  max_cost_per_request: 0.10
+  max_tokens_per_request: 4000
+  daily_budget_usd: 100.0
+  alert_threshold_percent: 80
+
+# Prompt caching configuration
+prompt_cache:
+  enabled: true
+  similarity_threshold: 0.95
+  ttl_seconds: 3600
+  max_cache_size_mb: 1024
+
+# Provider-specific settings
+provider_settings:
+  openai:
+    base_url: https://api.openai.com/v1
+    timeout: 60
+    max_retries: 3
+    
+  anthropic:
+    base_url: https://api.anthropic.com
+    timeout: 60
+    max_retries: 3
+    
+  google:
+    base_url: https://generativelanguage.googleapis.com
+    timeout: 60
+    max_retries: 3
+    
+  deepseek:
+    base_url: https://api.deepseek.com/v1
+    timeout: 60
+    max_retries: 3
+    
+  qwen:
+    base_url: https://dashscope.aliyuncs.com/api/v1
+    timeout: 60
+    max_retries: 3
+    
+  bedrock:
+    region: us-east-1
+    timeout: 60
+    max_retries: 3
+    
+  ollama:
+    base_url: http://localhost:11434
+    timeout: 120
+    max_retries: 2
+    
+  xai:
+    base_url: https://api.x.ai/v1
+    timeout: 60
+    max_retries: 3
+    
+  meta:
+    base_url: https://api.llama-api.com/v1  # Meta's API endpoint
+    timeout: 90
+    max_retries: 3
+    
+  minimax:
+    base_url: https://api.minimax.chat/v1
+    timeout: 60
+    max_retries: 3

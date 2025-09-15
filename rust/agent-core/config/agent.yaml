@@ -1,0 +1,65 @@
+# Shannon Agent Core Configuration
+# This file configures resource limits, timeouts, and service settings
+
+# WASI Sandbox Configuration
+wasi:
+  memory_limit_bytes: 268435456  # 256MB
+  execution_timeout_secs: 30
+  max_fuel: 1000000000  # 1 billion
+  enable_filesystem: true
+  allowed_paths:
+    - "/tmp"
+    - "/data/cache"
+
+# Memory Pool Configuration
+memory:
+  pool_size_bytes: 1073741824  # 1GB
+  max_allocation_bytes: 104857600  # 100MB
+  cache_ttl_secs: 3600  # 1 hour
+  enable_pressure_monitoring: true
+  pressure_threshold: 0.9  # 90%
+
+# Tool Execution Configuration
+tools:
+  default_timeout_secs: 60
+  max_concurrent_executions: 5
+  enable_caching: true
+  cache_ttl_secs: 300  # 5 minutes
+
+# LLM Service Configuration
+llm:
+  base_url: "http://llm-service:8000"
+  request_timeout_secs: 30
+  max_retries: 3
+  retry_delay_ms: 1000
+
+# FSM Configuration
+fsm:
+  max_iterations: 10
+  time_budget_ms: 30000  # 30 seconds
+  persist_belief_state: false
+  transition_timeout_secs: 5
+
+# Metrics Configuration
+metrics:
+  port: 2113
+  enable_detailed: true
+  collection_interval_secs: 10
+
+# Request enforcement configuration
+enforcement:
+  per_request_timeout_secs: 30
+  per_request_max_tokens: 4096
+  rate_limit_per_key_rps: 10
+  circuit_breaker_error_threshold: 0.5
+  circuit_breaker_rolling_window_secs: 30
+  circuit_breaker_min_requests: 20
+
+# Environment Variable Overrides:
+# - WASI_MEMORY_LIMIT_MB: Override WASI memory limit in MB
+# - WASI_TIMEOUT_SECONDS: Override WASI execution timeout
+# - MEMORY_POOL_SIZE_MB: Override memory pool size in MB
+# - LLM_SERVICE_URL: Override LLM service URL
+# - LLM_TIMEOUT_SECONDS: Override LLM request timeout
+# - METRICS_PORT: Override metrics server port
+# - AGENT_CONFIG_PATH: Path to this configuration file

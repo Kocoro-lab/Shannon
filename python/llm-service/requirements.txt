@@ -1,0 +1,54 @@
+# FastAPI and async
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# gRPC
+grpcio==1.68.1
+grpcio-tools==1.68.1
+
+# LLM providers
+openai==1.58.1
+anthropic==0.40.0
+google-generativeai==0.8.3
+boto3==1.35.77  # For Bedrock
+
+# Vector database
+qdrant-client==1.12.2
+
+# Redis caching
+redis==5.2.1
+hiredis==3.0.0
+
+# Database
+asyncpg==0.30.0
+sqlalchemy==2.0.36
+alembic==1.14.0
+
+# Utilities
+httpx==0.28.1
+tenacity==9.0.0
+python-dotenv==1.1.0
+pyyaml==6.0.2
+requests==2.32.3
+aiohttp==3.11.11
+aiofiles==24.1.0
+watchdog==6.0.0
+
+# Observability
+opentelemetry-api==1.29.0
+opentelemetry-sdk==1.29.0
+opentelemetry-instrumentation-fastapi==0.50b0
+opentelemetry-exporter-otlp==1.29.0
+opentelemetry-instrumentation-httpx==0.50b0
+prometheus-client==0.21.1
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.2
+pytest-cov==6.0.0

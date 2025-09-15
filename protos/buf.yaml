@@ -1,0 +1,11 @@
+version: v1
+name: buf.build/shannon/protos
+
+lint:
+  use:
+    - DEFAULT
+
+breaking:
+  use:
+    - FILE
+

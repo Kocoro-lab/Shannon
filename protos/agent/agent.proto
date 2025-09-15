@@ -1,0 +1,154 @@
+syntax = "proto3";
+
+package shannon.agent;
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent";
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+import "common/common.proto";
+
+service AgentService {
+  rpc ExecuteTask(ExecuteTaskRequest) returns (ExecuteTaskResponse);
+  rpc StreamExecuteTask(ExecuteTaskRequest) returns (stream TaskUpdate);
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc DiscoverTools(DiscoverToolsRequest) returns (DiscoverToolsResponse);
+  rpc GetToolCapability(GetToolCapabilityRequest) returns (GetToolCapabilityResponse);
+}
+
+enum AgentState {
+  AGENT_STATE_UNSPECIFIED = 0;
+  AGENT_STATE_IDLE = 1;
+  AGENT_STATE_PLANNING = 2;
+  AGENT_STATE_EXECUTING = 3;
+  AGENT_STATE_WAITING = 4;
+  AGENT_STATE_COMPLETED = 5;
+  AGENT_STATE_FAILED = 6;
+}
+
+message ExecuteTaskRequest {
+  shannon.common.TaskMetadata metadata = 1;
+  string query = 2;
+  google.protobuf.Struct context = 3;
+  shannon.common.ExecutionMode mode = 4;
+  repeated string available_tools = 5;
+  AgentConfig config = 6;
+  SessionContext session_context = 7;  // Session for multi-turn support
+}
+
+// Session context for multi-turn conversations
+message SessionContext {
+  string session_id = 1;
+  repeated string history = 2;  // Simple string history for now
+  google.protobuf.Struct persistent_context = 3;
+  repeated string files_created = 4;
+  repeated string tools_used = 5;
+  int32 total_tokens_used = 6;
+  double total_cost_usd = 7;
+}
+
+message ConversationMessage {
+  string role = 1;
+  string content = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  int32 tokens_used = 4;
+}
+
+message AgentConfig {
+  int32 max_iterations = 1;
+  int32 timeout_seconds = 2;
+  bool enable_sandbox = 3;
+  int64 memory_limit_mb = 4;
+  bool enable_learning = 5;
+}
+
+message ExecuteTaskResponse {
+  string task_id = 1;
+  shannon.common.StatusCode status = 2;
+  string result = 3;
+  repeated shannon.common.ToolCall tool_calls = 4;
+  repeated shannon.common.ToolResult tool_results = 5;
+  shannon.common.ExecutionMetrics metrics = 6;
+  string error_message = 7;
+  AgentState final_state = 8;
+}
+
+message TaskUpdate {
+  string task_id = 1;
+  AgentState state = 2;
+  string message = 3;
+  shannon.common.ToolCall tool_call = 4;
+  shannon.common.ToolResult tool_result = 5;
+  double progress = 6;
+}
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesResponse {
+  repeated string supported_tools = 1;
+  repeated shannon.common.ExecutionMode supported_modes = 2;
+  int64 max_memory_mb = 3;
+  int32 max_concurrent_tasks = 4;
+  string version = 5;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  bool healthy = 1;
+  string message = 2;
+  int64 uptime_seconds = 3;
+  int32 active_tasks = 4;
+  double memory_usage_percent = 5;
+}
+
+// Tool discovery messages
+message DiscoverToolsRequest {
+  string query = 1;
+  repeated string categories = 2;
+  repeated string tags = 3;
+  bool exclude_dangerous = 4;
+  int32 max_results = 5;
+}
+
+message DiscoverToolsResponse {
+  repeated ToolCapability tools = 1;
+}
+
+message GetToolCapabilityRequest {
+  string tool_id = 1;
+}
+
+message GetToolCapabilityResponse {
+  ToolCapability tool = 1;
+}
+
+message ToolCapability {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string category = 4;
+  google.protobuf.Struct input_schema = 5;
+  google.protobuf.Struct output_schema = 6;
+  repeated string required_permissions = 7;
+  int64 estimated_duration_ms = 8;
+  bool is_dangerous = 9;
+  string version = 10;
+  string author = 11;
+  repeated string tags = 12;
+  repeated ToolExample examples = 13;
+  RateLimit rate_limit = 14;
+  int64 cache_ttl_ms = 15;
+}
+
+message ToolExample {
+  string description = 1;
+  google.protobuf.Struct input = 2;
+  google.protobuf.Struct output = 3;
+}
+
+message RateLimit {
+  int32 requests_per_minute = 1;
+  int32 requests_per_hour = 2;
+}
+

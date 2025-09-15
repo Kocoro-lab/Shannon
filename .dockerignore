@@ -1,0 +1,36 @@
+# VCS & meta
+.git
+.github
+.DS_Store
+
+# Build artifacts
+**/target
+**/dist
+**/build
+**/.eggs
+**/*.egg-info
+
+# Node & Python caches
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.venv
+
+# Test fixtures and generated assets
+tests/fixtures/mock_responses/
+protos/gen/
+
+# Local env & secrets (use .env.example)
+.env
+.env.*
+!*.env.example
+
+# Docs (exclude from image contexts unless explicitly copied)
+docs/
+
+# Logs
+**/*.log
+**/logs/
+

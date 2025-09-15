@@ -1,0 +1,78 @@
+# Shannon Prometheus Configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'shannon-monitor'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - "alerts.yml"
+
+# Scrape configurations
+scrape_configs:
+  # Orchestrator metrics
+  - job_name: 'orchestrator'
+    static_configs:
+      - targets: ['orchestrator:2112']
+        labels:
+          service: 'shannon'
+          component: 'orchestrator'
+
+  # Agent Core metrics
+  - job_name: 'agent-core'
+    static_configs:
+      - targets: ['agent-core:2113']
+        labels:
+          service: 'shannon'
+          component: 'agent-core'
+
+  # LLM Service metrics
+  - job_name: 'llm-service'
+    static_configs:
+      - targets: ['llm-service:8000']
+        labels:
+          service: 'shannon'
+          component: 'llm-service'
+    metrics_path: '/metrics'
+
+  # Temporal metrics
+  - job_name: 'temporal'
+    static_configs:
+      - targets: ['temporal:8000']
+        labels:
+          service: 'shannon'
+          component: 'temporal'
+    metrics_path: '/metrics'
+
+  # PostgreSQL exporter (if deployed)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'shannon'
+          component: 'postgres'
+
+  # Redis exporter (if deployed)
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'shannon'
+          component: 'redis'
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'shannon'
+          component: 'prometheus'
