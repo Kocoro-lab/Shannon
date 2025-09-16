@@ -5,10 +5,60 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
+import html
+from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def calculate_relevance_score(query: str, result: Dict[str, Any]) -> float:
+    """Calculate relevance score for a search result based on query match."""
+    query_lower = query.lower()
+
+    # Extract text fields
+    title = result.get("title", "").lower()
+    content = result.get("content", "").lower()
+    snippet = result.get("snippet", "").lower()
+
+    # Calculate similarity scores
+    title_score = SequenceMatcher(None, query_lower, title).ratio()
+
+    # Check for exact query terms in content
+    query_terms = query_lower.split()
+    content_text = content or snippet
+    term_matches = sum(1 for term in query_terms if term in content_text) / len(query_terms) if query_terms else 0
+
+    # Weight the scores
+    relevance = (title_score * 0.4) + (term_matches * 0.6)
+
+    # Boost if source is official or highly relevant
+    url = result.get("url", "").lower()
+    if any(term in url for term in query_terms):
+        relevance += 0.2
+
+    return min(relevance, 1.0)
+
+
+def filter_relevant_results(query: str, results: List[Dict[str, Any]], threshold: float = 0.3) -> List[Dict[str, Any]]:
+    """Filter and rank search results by relevance to the query."""
+    if not results:
+        return results
+
+    # Calculate relevance scores
+    scored_results = []
+    for result in results:
+        score = calculate_relevance_score(query, result)
+        if score >= threshold:
+            result_copy = result.copy()
+            result_copy["relevance_score"] = score
+            scored_results.append(result_copy)
+
+    # Sort by relevance score
+    scored_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+
+    return scored_results[:5]  # Return top 5 most relevant
 
 
 class AgentQuery(BaseModel):
@@ -202,7 +252,9 @@ async def agent_query(request: Request, query: AgentQuery):
             if result_data.get("tool_calls") and query.tools:
                 tool_results = await _execute_and_format_tools(
                     result_data.get("tool_calls", []),
-                    query.tools
+                    query.tools,
+                    query.query,
+                    request
                 )
                 if tool_results:
                     # Append formatted tool results to response
@@ -241,7 +293,7 @@ async def agent_query(request: Request, query: AgentQuery):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_tools: List[str]) -> str:
+async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_tools: List[str], query: str = "", request=None) -> str:
     """Execute tool calls and format results into natural language."""
     if not tool_calls:
         return ""
@@ -293,16 +345,46 @@ async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_to
             if result.success:
                 # Format based on tool type
                 if tool_name == "web_search":
-                    # Format web search results nicely
+                    # Format web search results with full content for AI consumption
                     if isinstance(result.output, list) and result.output:
-                        formatted = "Here are the search results:\n"
-                        for i, item in enumerate(result.output[:5], 1):
+                        # Filter results by relevance to the query
+                        query = args.get("query", "")
+                        filtered_results = filter_relevant_results(query, result.output) if query else result.output[:5]
+
+                        # Include full content for AI to synthesize
+                        search_results = []
+                        for i, item in enumerate(filtered_results, 1):
                             title = item.get("title", "")
+                            content = item.get("content", "")
                             snippet = item.get("snippet", "")
                             url = item.get("url", "")
+                            date = item.get("published_date", "")
+
+                            # Clean HTML entities
+                            title = html.unescape(title)
+                            content = html.unescape(content) if content else html.unescape(snippet)
+
                             if title and url:
-                                formatted += f"\n{i}. {title}\n   {snippet[:150]}...\n   URL: {url}\n"
-                        formatted_results.append(formatted)
+                                # Use full content if available, otherwise use snippet
+                                text_content = content[:1500] if content else snippet[:500]
+
+                                result_text = f"**{title}**"
+                                if date:
+                                    result_text += f" ({date[:10]})"
+                                result_text += f"\n{text_content}"
+                                if len(content) > 1500 or len(snippet) > 500:
+                                    result_text += "..."
+                                result_text += f"\nSource: {url}\n"
+
+                                search_results.append(result_text)
+
+                        if search_results:
+                            # Return formatted results with content for the orchestrator to synthesize
+                            # The orchestrator's synthesis activity will handle creating the final answer
+                            formatted = "Web Search Results:\n\n" + "\n---\n\n".join(search_results)
+                            formatted_results.append(formatted)
+                        else:
+                            formatted_results.append("No relevant search results found.")
                     elif result.output:
                         formatted_results.append(f"Search results: {result.output}")
                 elif tool_name == "calculator":

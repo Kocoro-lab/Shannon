@@ -1,5 +1,5 @@
 """
-Web Search Tool with Exa and Firecrawl support
+Web Search Tool supporting multiple providers: Exa, Firecrawl, Google, Serper, and Bing
 """
 
 import aiohttp
@@ -18,6 +18,9 @@ logger = logging.getLogger(__name__)
 class SearchProvider(Enum):
     EXA = "exa"
     FIRECRAWL = "firecrawl"
+    GOOGLE = "google"
+    SERPER = "serper"
+    BING = "bing"
 
 
 class WebSearchProvider:
@@ -28,7 +31,7 @@ class WebSearchProvider:
 
 
 class ExaSearchProvider(WebSearchProvider):
-    """Exa AI search provider - Latest API implementation"""
+    """Exa AI search provider - Semantic search optimized for AI applications"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -40,13 +43,22 @@ class ExaSearchProvider(WebSearchProvider):
             "Content-Type": "application/json"
         }
         
-        # Use Exa's latest API parameters
+        # Use Exa's latest API parameters with proper text content extraction
         payload = {
             "query": query,
             "numResults": max_results,
             "type": "auto",  # Let Exa choose between neural and keyword search
             "useAutoprompt": True,  # Enhance query for better results
-            "text": True,  # Include text content in results
+            "contents": {
+                "text": {
+                    "maxCharacters": 2000,  # Get substantial text content for each result
+                    "includeHtmlTags": False,  # Clean text without HTML
+                },
+                "highlights": {
+                    "numSentences": 3,  # Extract key highlights
+                    "highlightsPerUrl": 2,
+                }
+            },
             "liveCrawl": "fallback",  # Use live crawl if cached results are stale
         }
         
@@ -58,16 +70,33 @@ class ExaSearchProvider(WebSearchProvider):
                 
                 data = await response.json()
                 results = []
-                
+
+                # Log the first result to see what fields are available
+                if data.get("results"):
+                    logger.debug(f"Exa response sample - First result keys: {list(data['results'][0].keys())}")
+
                 for result in data.get("results", []):
+                    # Extract text content and highlights
+                    text_content = result.get("text", "")
+                    highlights = result.get("highlights", [])
+
+                    # Use highlights if available, otherwise use text content
+                    snippet = ""
+                    if highlights:
+                        snippet = " ... ".join(highlights[:2])  # Join first 2 highlights
+                    elif text_content:
+                        snippet = text_content[:500]  # Use first 500 chars of text
+
                     results.append({
                         "title": result.get("title", ""),
-                        "snippet": result.get("text", "")[:300] if result.get("text") else "",
+                        "snippet": snippet,
+                        "content": text_content[:2000] if text_content else "",  # Include fuller content
                         "url": result.get("url", ""),
                         "source": "exa",
                         "score": result.get("score", 0),
                         "published_date": result.get("publishedDate"),
                         "author": result.get("author"),
+                        "highlights": highlights,
                     })
                 
                 return results
@@ -126,10 +155,162 @@ class FirecrawlSearchProvider(WebSearchProvider):
                 return results
 
 
+class GoogleSearchProvider(WebSearchProvider):
+    """Google Custom Search JSON API provider"""
+
+    def __init__(self, api_key: str, search_engine_id: str = None):
+        self.api_key = api_key
+        self.search_engine_id = search_engine_id or os.getenv("GOOGLE_SEARCH_ENGINE_ID", "")
+        self.base_url = "https://customsearch.googleapis.com/customsearch/v1"
+
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        params = {
+            "key": self.api_key,
+            "cx": self.search_engine_id,
+            "q": query,
+            "num": min(max_results, 10),  # Google limits to 10 per request
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.base_url, params=params, timeout=15) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Google Search API error (status {response.status}): {error_text}")
+
+                data = await response.json()
+                results = []
+
+                for item in data.get("items", []):
+                    # Extract content from various fields
+                    snippet = item.get("snippet", "")
+                    page_map = item.get("pagemap", {})
+                    metatags = page_map.get("metatags", [{}])[0]
+
+                    # Try to get more detailed content from metatags
+                    content = snippet
+                    if metatags.get("og:description"):
+                        content = metatags.get("og:description", "")[:500]
+                    elif metatags.get("description"):
+                        content = metatags.get("description", "")[:500]
+
+                    results.append({
+                        "title": item.get("title", ""),
+                        "snippet": snippet,
+                        "content": content,
+                        "url": item.get("link", ""),
+                        "source": "google",
+                        "display_link": item.get("displayLink", ""),
+                    })
+
+                return results
+
+
+class SerperSearchProvider(WebSearchProvider):
+    """Serper API provider - Fast and affordable Google search results"""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://google.serper.dev/search"
+
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        headers = {
+            "X-API-KEY": self.api_key,
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "q": query,
+            "num": max_results,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self.base_url, json=payload, headers=headers, timeout=15) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Serper API error (status {response.status}): {error_text}")
+
+                data = await response.json()
+                results = []
+
+                # Process organic search results
+                for result in data.get("organic", []):
+                    results.append({
+                        "title": result.get("title", ""),
+                        "snippet": result.get("snippet", ""),
+                        "content": result.get("snippet", ""),  # Serper doesn't provide full content
+                        "url": result.get("link", ""),
+                        "source": "serper",
+                        "position": result.get("position", 0),
+                        "date": result.get("date"),
+                    })
+
+                # Include knowledge graph if available
+                if data.get("knowledgeGraph"):
+                    kg = data["knowledgeGraph"]
+                    results.insert(0, {
+                        "title": kg.get("title", ""),
+                        "snippet": kg.get("description", ""),
+                        "content": kg.get("description", ""),
+                        "url": kg.get("website", ""),
+                        "source": "serper_knowledge_graph",
+                        "type": kg.get("type", ""),
+                    })
+
+                return results
+
+
+class BingSearchProvider(WebSearchProvider):
+    """Bing Search API v7 provider (Azure Cognitive Services)"""
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.cognitive.microsoft.com/bing/v7.0/search"
+
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        headers = {
+            "Ocp-Apim-Subscription-Key": self.api_key,
+        }
+
+        params = {
+            "q": query,
+            "count": max_results,
+            "textDecorations": True,
+            "textFormat": "HTML",
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(self.base_url, params=params, headers=headers, timeout=15) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise Exception(f"Bing Search API error (status {response.status}): {error_text}")
+
+                data = await response.json()
+                results = []
+
+                # Process web pages results
+                web_pages = data.get("webPages", {})
+                for result in web_pages.get("value", []):
+                    results.append({
+                        "title": result.get("name", ""),
+                        "snippet": result.get("snippet", ""),
+                        "content": result.get("snippet", ""),  # Bing doesn't provide full content in search
+                        "url": result.get("url", ""),
+                        "source": "bing",
+                        "display_url": result.get("displayUrl", ""),
+                        "date_published": result.get("dateLastCrawled"),
+                    })
+
+                return results
+
+
 class WebSearchTool(Tool):
     """
-    Web search tool with Exa and Firecrawl support
-    Default provider: Exa (if API key available), fallback to Firecrawl
+    Web search tool supporting multiple providers:
+    - Google Custom Search (default)
+    - Serper API
+    - Bing Search API
+    - Exa AI (semantic search)
+    - Firecrawl (with content extraction)
     """
     
     def __init__(self):
@@ -139,14 +320,27 @@ class WebSearchTool(Tool):
     def _initialize_provider(self) -> Optional[WebSearchProvider]:
         """Initialize the search provider based on environment configuration"""
         
-        # Default to Exa if available
-        default_provider = SearchProvider.EXA.value
+        # Default to Google, then Serper, then others
+        default_provider = SearchProvider.GOOGLE.value
         
         # Check which provider is configured via environment
         provider_name = os.getenv("WEB_SEARCH_PROVIDER", default_provider).lower()
         
         # Provider configuration
         providers_config = {
+            SearchProvider.GOOGLE.value: {
+                "class": GoogleSearchProvider,
+                "api_key_env": "GOOGLE_API_KEY",
+                "requires_extra": "GOOGLE_SEARCH_ENGINE_ID"
+            },
+            SearchProvider.SERPER.value: {
+                "class": SerperSearchProvider,
+                "api_key_env": "SERPER_API_KEY"
+            },
+            SearchProvider.BING.value: {
+                "class": BingSearchProvider,
+                "api_key_env": "BING_API_KEY"
+            },
             SearchProvider.EXA.value: {
                 "class": ExaSearchProvider,
                 "api_key_env": "EXA_API_KEY"
@@ -162,24 +356,52 @@ class WebSearchTool(Tool):
             config = providers_config[provider_name]
             api_key = os.getenv(config["api_key_env"])
             if api_key:
-                logger.info(f"Initializing {provider_name} search provider")
-                return config["class"](api_key)
+                # Special handling for Google which needs search engine ID
+                if provider_name == SearchProvider.GOOGLE.value:
+                    search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+                    if not search_engine_id:
+                        logger.warning("Google Search Engine ID not found. Please set GOOGLE_SEARCH_ENGINE_ID")
+                    else:
+                        logger.info(f"Initializing {provider_name} search provider")
+                        return config["class"](api_key, search_engine_id)
+                else:
+                    logger.info(f"Initializing {provider_name} search provider")
+                    return config["class"](api_key)
             else:
                 logger.warning(f"{provider_name} API key not found in environment variable {config['api_key_env']}")
         
-        # Fallback: try other providers
-        for name, config in providers_config.items():
-            if name != provider_name:  # Skip already tried provider
+        # Fallback: try other providers in priority order
+        priority_order = [
+            SearchProvider.GOOGLE.value,
+            SearchProvider.SERPER.value,
+            SearchProvider.BING.value,
+            SearchProvider.EXA.value,
+            SearchProvider.FIRECRAWL.value
+        ]
+
+        for name in priority_order:
+            if name != provider_name and name in providers_config:  # Skip already tried provider
+                config = providers_config[name]
                 api_key = os.getenv(config["api_key_env"])
                 if api_key:
-                    logger.info(f"Falling back to {name} search provider")
-                    return config["class"](api_key)
+                    # Special handling for Google
+                    if name == SearchProvider.GOOGLE.value:
+                        search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+                        if search_engine_id:
+                            logger.info(f"Falling back to {name} search provider")
+                            return config["class"](api_key, search_engine_id)
+                    else:
+                        logger.info(f"Falling back to {name} search provider")
+                        return config["class"](api_key)
         
         logger.error(
-            "No web search provider configured. Please set either:\n"
+            "No web search provider configured. Please set one of:\n"
+            "- GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
+            "- SERPER_API_KEY for Serper search\n"
+            "- BING_API_KEY for Bing search\n"
             "- EXA_API_KEY for Exa search\n"
             "- FIRECRAWL_API_KEY for Firecrawl search\n"
-            "And optionally set WEB_SEARCH_PROVIDER=exa or WEB_SEARCH_PROVIDER=firecrawl"
+            "And optionally set WEB_SEARCH_PROVIDER=google|serper|bing|exa|firecrawl"
         )
         return None
     
@@ -232,8 +454,11 @@ class WebSearchTool(Tool):
                 output=None,
                 error=(
                     "No web search provider configured. Please set one of:\n"
-                    "- EXA_API_KEY environment variable for Exa search\n"
-                    "- FIRECRAWL_API_KEY environment variable for Firecrawl search"
+                    "- GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
+                    "- SERPER_API_KEY for Serper search\n"
+                    "- BING_API_KEY for Bing search\n"
+                    "- EXA_API_KEY for Exa search\n"
+                    "- FIRECRAWL_API_KEY for Firecrawl search"
                 )
             )
         

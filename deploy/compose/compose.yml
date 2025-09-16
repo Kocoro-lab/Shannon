@@ -191,7 +191,11 @@ services:
       - DEBUG=false
       - LLM_CONFIG_PATH=/app/config
       # Web Search Configuration
-      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-exa}
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-google}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID}
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      - BING_API_KEY=${BING_API_KEY}
       - EXA_API_KEY=${EXA_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
       # MCP hardening (developer preview)
