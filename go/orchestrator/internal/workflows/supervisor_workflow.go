@@ -253,7 +253,9 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
         }
 
         // Dependency sync v1: wait on declared Consumes topics before starting this subtask
-        if workflow.GetVersion(ctx, "p2p_sync_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion &&
+        // DISABLED: May cause infinite waiting if Produces/Consumes not properly configured
+        // TODO: Verify decomposition properly sets Produces/Consumes before enabling
+        if false && workflow.GetVersion(ctx, "p2p_sync_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion &&
            workflow.GetVersion(ctx, "team_workspace_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
             if i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Consumes) > 0 {
                 for _, topic := range decomp.Subtasks[i].Consumes {
@@ -277,6 +279,12 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
                             break
                         }
                         if len(entries) > 0 { break }
+
+                        // Check if we've exceeded the time limit before waiting
+                        if workflow.Now(ctx).Sub(startTime) >= maxWaitTime {
+                            break
+                        }
+
                         // Setup selector wait using a topic channel + exponential backoff timer
                         ch, ok := topicChans[topic]
                         if !ok { ch = workflow.NewChannel(ctx); topicChans[topic] = ch }
@@ -287,7 +295,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
                         sel.AddFuture(timer, func(f workflow.Future) {})
                         sel.Select(ctx)
                         attempts++
-                        
+
                         // Increase backoff up to max
                         backoff = backoff * 2
                         if backoff > maxBackoff {
@@ -315,10 +323,9 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
             }
         }
 
-        // P2P demo: for the second subtask (i==1), send a TaskRequest message and wait for a workspace topic to have entries
-        if workflow.GetVersion(ctx, "mailbox_v2", workflow.DefaultVersion, 1) != workflow.DefaultVersion &&
-           workflow.GetVersion(ctx, "team_workspace_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion &&
-           workflow.GetVersion(ctx, "p2p_sync_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+        // P2P demo: DISABLED - This hardcoded demo causes task-2 to wait for "team:findings" that never arrives
+        // TODO: Implement proper workspace coordination based on actual Produces/Consumes configuration
+        if false {
             if i == 1 {
                 // Send TaskRequest from supervisor to the agent
                 if err := workflow.ExecuteActivity(ctx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
@@ -331,9 +338,12 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
                     logger.Warn("Failed to send agent message", "error", err)
                 }
                 // Wait until workspace has at least one entry on the topic (with timeout)
-                maxWaitAttempts := 300 // 5 minutes max wait
-                waitAttempts := 0
-                for waitAttempts < maxWaitAttempts {
+                maxWaitTime := 5 * time.Minute
+                startTime := workflow.Now(ctx)
+                backoff := 1 * time.Second
+                maxBackoff := 30 * time.Second
+
+                for workflow.Now(ctx).Sub(startTime) < maxWaitTime {
                     var entries []activities.WorkspaceEntry
                     if err := workflow.ExecuteActivity(ctx, constants.WorkspaceListActivity, activities.WorkspaceListInput{
                         WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
@@ -345,15 +355,33 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
                         break
                     }
                     if len(entries) > 0 { break }
-                    // Sleep deterministically
-                    if err := workflow.Sleep(ctx, time.Second); err != nil {
+
+                    // Check if we've exceeded the time limit before sleeping
+                    remainingTime := maxWaitTime - workflow.Now(ctx).Sub(startTime)
+                    if remainingTime <= 0 {
+                        break
+                    }
+
+                    // Use minimum of backoff and remaining time
+                    sleepDuration := backoff
+                    if sleepDuration > remainingTime {
+                        sleepDuration = remainingTime
+                    }
+
+                    // Sleep deterministically with backoff
+                    if err := workflow.Sleep(ctx, sleepDuration); err != nil {
                         logger.Warn("Sleep interrupted", "error", err)
                         break
                     }
-                    waitAttempts++
+
+                    // Increase backoff up to max
+                    backoff = backoff * 2
+                    if backoff > maxBackoff {
+                        backoff = maxBackoff
+                    }
                 }
-                if waitAttempts >= maxWaitAttempts {
-                    logger.Warn("Timeout waiting for team findings", "max_attempts", maxWaitAttempts)
+                if workflow.Now(ctx).Sub(startTime) >= maxWaitTime {
+                    logger.Warn("Timeout waiting for team findings", "wait_time", maxWaitTime)
                 }
             }
         }
