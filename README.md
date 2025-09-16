@@ -13,9 +13,19 @@ Built for enterprise reliability with deterministic replay, comprehensive observ
 ### Prerequisites
 - Docker & Docker Compose
 - Make, curl, grpcurl
+- Go 1.24+ (for proto generation)
 - At least one LLM API key (OpenAI or Anthropic)
 
 ### Initial Setup
+
+#### For Remote Ubuntu Server
+If you're installing on a remote Ubuntu server, run the setup script first:
+```bash
+./scripts/setup-remote.sh
+```
+This will install buf, generate proto files, and prepare the environment.
+
+#### Standard Setup
 
 ```bash
 # 1. Setup environment
