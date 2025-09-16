@@ -27,6 +27,9 @@ class SearchProvider(Enum):
 class WebSearchProvider:
     """Base class for web search providers"""
 
+    # Standardized timeout for all providers (in seconds)
+    DEFAULT_TIMEOUT = 20
+
     @staticmethod
     def validate_api_key(api_key: str) -> bool:
         """Validate API key format and presence"""
@@ -57,6 +60,18 @@ class WebSearchProvider:
         if len(sanitized) > 200:
             sanitized = sanitized[:200] + '...'
         return sanitized
+
+    @staticmethod
+    def validate_max_results(max_results: int) -> int:
+        """Validate and sanitize max_results parameter"""
+        if not isinstance(max_results, int):
+            raise ValueError("max_results must be an integer")
+        if max_results < 1:
+            raise ValueError("max_results must be at least 1")
+        if max_results > 100:
+            logger.warning(f"max_results {max_results} exceeds limit of 100, capping to 100")
+            return 100
+        return max_results
 
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         raise NotImplementedError
@@ -95,9 +110,10 @@ class ExaSearchProvider(WebSearchProvider):
             },
             "liveCrawl": "fallback",  # Use live crawl if cached results are stale
         }
-        
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(self.base_url, json=payload, headers=headers, timeout=15) as response:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.post(self.base_url, json=payload, headers=headers, timeout=timeout) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     sanitized_error = self.sanitize_error_message(error_text)
@@ -164,9 +180,10 @@ class FirecrawlSearchProvider(WebSearchProvider):
                 "onlyMainContent": True,  # Skip navigation, ads, etc.
             }
         }
-        
+
         async with aiohttp.ClientSession() as session:
-            async with session.post(self.base_url, json=payload, headers=headers, timeout=20) as response:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.post(self.base_url, json=payload, headers=headers, timeout=timeout) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     sanitized_error = self.sanitize_error_message(error_text)
@@ -218,7 +235,8 @@ class GoogleSearchProvider(WebSearchProvider):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(self.base_url, params=params, timeout=15) as response:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.get(self.base_url, params=params, timeout=timeout) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     sanitized_error = self.sanitize_error_message(error_text)
@@ -280,7 +298,8 @@ class SerperSearchProvider(WebSearchProvider):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(self.base_url, json=payload, headers=headers, timeout=15) as response:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.post(self.base_url, json=payload, headers=headers, timeout=timeout) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     sanitized_error = self.sanitize_error_message(error_text)
@@ -345,7 +364,8 @@ class BingSearchProvider(WebSearchProvider):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(self.base_url, params=params, headers=headers, timeout=15) as response:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.get(self.base_url, params=params, headers=headers, timeout=timeout) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     sanitized_error = self.sanitize_error_message(error_text)
@@ -538,7 +558,17 @@ class WebSearchTool(Tool):
         
         query = kwargs["query"]
         max_results = kwargs.get("max_results", 5)
-        
+
+        # Validate max_results parameter
+        try:
+            max_results = self.provider.validate_max_results(max_results)
+        except ValueError as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Invalid parameter: {str(e)}"
+            )
+
         try:
             logger.info(f"Executing web search with {self.provider.__class__.__name__}: {query}")
             results = await self.provider.search(query, max_results)
