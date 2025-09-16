@@ -105,11 +105,21 @@ clean:
 # Usage: make replay-export WORKFLOW_ID=<id> RUN_ID=<run> OUT=history.json
 replay-export:
 	@[ -n "$(WORKFLOW_ID)" ] || (echo "WORKFLOW_ID is required" && exit 1)
-	@OUT_FILE=$(OUT); if [ -z "$$OUT_FILE" ]; then OUT_FILE=/tmp/temporal_history.json; fi; \
+	@OUT_FILE=$(OUT); \
+	  if [ -z "$$OUT_FILE" ]; then \
+	    TIMESTAMP=$$(date +%Y%m%d_%H%M%S); \
+	    OUT_FILE="tests/histories/$(WORKFLOW_ID)_$$TIMESTAMP.json"; \
+	  fi; \
+	  OUT_DIR=$$(dirname "$$OUT_FILE"); \
+	  if [ ! -d "$$OUT_DIR" ]; then \
+	    echo "Creating directory: $$OUT_DIR"; \
+	    mkdir -p "$$OUT_DIR"; \
+	  fi; \
 	  echo "Exporting history to $$OUT_FILE"; \
 	  docker compose -f $(COMPOSE_BASE)/compose.yml exec -T temporal \
 	  temporal workflow show --workflow-id $(WORKFLOW_ID) $(if $(RUN_ID),--run-id $(RUN_ID),) \
-	  --namespace default --address temporal:7233 --output json > $$OUT_FILE
+	  --namespace default --address temporal:7233 --output json > "$$OUT_FILE" && \
+	  echo "✅ History exported successfully to $$OUT_FILE"
 
 # Replay a previously exported history against current workflow code
 # Usage: make replay HISTORY=history.json

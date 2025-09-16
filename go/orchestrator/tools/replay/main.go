@@ -24,13 +24,17 @@ func main() {
 
     // Create a replayer and register all known workflows.
     replayer := worker.NewWorkflowReplayer()
+    replayer.RegisterWorkflow(workflows.OrchestratorWorkflow)
     replayer.RegisterWorkflow(workflows.SimpleTaskWorkflow)
     replayer.RegisterWorkflow(workflows.SupervisorWorkflow)
+    replayer.RegisterWorkflow(workflows.StreamingWorkflow)
+    replayer.RegisterWorkflow(workflows.ParallelStreamingWorkflow)
+    replayer.RegisterWorkflow(workflows.AgentDAGWorkflow)
     replayer.RegisterWorkflow(strategies.DAGWorkflow)
     replayer.RegisterWorkflow(strategies.ReactWorkflow)
     replayer.RegisterWorkflow(strategies.ResearchWorkflow)
-    replayer.RegisterWorkflow(workflows.StreamingWorkflow)
-    replayer.RegisterWorkflow(workflows.ParallelStreamingWorkflow)
+    replayer.RegisterWorkflow(strategies.ExploratoryWorkflow)
+    replayer.RegisterWorkflow(strategies.ScientificWorkflow)
     // Approval and budget are now middleware; no separate workflows to register
 
     // Replay from file; this will error on any non-determinism between history and code.

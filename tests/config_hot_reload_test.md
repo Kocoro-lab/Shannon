@@ -20,20 +20,21 @@ The system has been enhanced with:
 ## Key Changes Demonstrated
 
 ### Health Check Configuration Changes:
-- **Global health port**: 8081 → 8082
-- **Check intervals**: 30s → 45s  
-- **Timeouts**: 5s → 8s
-- **Agent Core checker**: enabled → **DISABLED** (demonstrates per-check control)
-- **LLM Service interval**: 60s → 90s
+- **Global health port**: 8081 → 8082 (health.port)
+- **Check intervals**: 30s → 45s (health.check_interval)
+- **Timeouts**: 5s → 8s (health.timeout)
+- **Agent Core checker**: enabled → **DISABLED** (health.checks.agent_core.enabled)
+- **LLM Service interval**: 60s → 90s (health.checks.llm_service.interval)
 
 ### Service Configuration Changes:
 - **Health port**: 8081 → 8082
-- **Timeouts**: 30s → 45s (graceful), 10s → 15s (read/write)
+- **Graceful timeout**: 30s → 45s
+- **Read/Write timeouts**: 10s → 15s
 
 ### Agent Endpoint Changes:
 - **Agent Core**: agent-core:50051 → localhost:50051
-- **LLM Service**: llm-service:8000 → localhost:8000
-- **Max concurrent agents**: 5 → 8
+- **LLM Service**: http://llm-service:8000 → http://localhost:8000
+- **Max concurrent**: 5 → 8
 
 ### Circuit Breaker Changes:
 - **Redis max requests**: 5 → 8
@@ -60,12 +61,14 @@ The system has been enhanced with:
    - Agent Core health checker disabled (not included in health responses)
    - Other checkers have updated intervals (45s instead of 30s)
 
-## Expected Log Output
+## Expected Log Output (Example)
+
+**Note:** Actual log messages may vary depending on the implementation. This shows the type of changes that should be logged:
 
 ```
 Shannon configuration changed file=shannon.yaml action=modify
 Agent Core endpoint changed old=agent-core:50051 new=localhost:50051
-LLM Service endpoint changed old=llm-service:8000 new=localhost:8000
+LLM Service endpoint changed old=http://llm-service:8000 new=http://localhost:8000
 Health server port changed old=8081 new=8082
 Health check global settings changed
 Updated health checker configuration checker=agent_core enabled=false
@@ -106,3 +109,5 @@ This demonstrates **zero-downtime configuration updates** for:
 - All other Shannon configuration sections
 
 The system maintains **operational continuity** while applying configuration changes in real-time.
+
+**Note:** Hot-reload functionality requires the configuration file watcher to be enabled in the service.
