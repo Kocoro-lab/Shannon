@@ -5,6 +5,7 @@ Web Search Tool supporting multiple providers: Exa, Firecrawl, Google, Serper, a
 import aiohttp
 import os
 import json
+import re
 from typing import List, Dict, Any, Optional
 from urllib.parse import quote_plus
 import logging
@@ -25,15 +26,48 @@ class SearchProvider(Enum):
 
 class WebSearchProvider:
     """Base class for web search providers"""
-    
+
+    @staticmethod
+    def validate_api_key(api_key: str) -> bool:
+        """Validate API key format and presence"""
+        if not api_key or not isinstance(api_key, str):
+            return False
+        # Basic validation: should be at least 10 chars and not contain obvious test values
+        if len(api_key.strip()) < 10:
+            return False
+        if api_key.lower() in ['test', 'demo', 'example', 'your_api_key_here', 'xxx']:
+            return False
+        # Check for reasonable API key pattern (alphanumeric with some special chars)
+        if not re.match(r'^[A-Za-z0-9\-_\.]+$', api_key.strip()):
+            return False
+        return True
+
+    @staticmethod
+    def sanitize_error_message(error: str) -> str:
+        """Sanitize error messages to prevent information disclosure"""
+        # Remove URLs that might contain API keys or sensitive endpoints
+        sanitized = re.sub(r'https?://[^\s]+', '[URL_REDACTED]', str(error))
+        # Remove potential API keys (common patterns)
+        sanitized = re.sub(r'\b[A-Za-z0-9]{32,}\b', '[KEY_REDACTED]', sanitized)
+        sanitized = re.sub(r'api[_\-]?key[\s=:]+[\w\-]+', 'api_key=[REDACTED]', sanitized, flags=re.IGNORECASE)
+        sanitized = re.sub(r'bearer\s+[\w\-\.]+', 'Bearer [REDACTED]', sanitized, flags=re.IGNORECASE)
+        # Remove potential file paths
+        sanitized = re.sub(r'/[\w/\-\.]+\.(py|json|yml|yaml|env)', '[PATH_REDACTED]', sanitized)
+        # Limit length to prevent excessive logging
+        if len(sanitized) > 200:
+            sanitized = sanitized[:200] + '...'
+        return sanitized
+
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         raise NotImplementedError
 
 
 class ExaSearchProvider(WebSearchProvider):
     """Exa AI search provider - Semantic search optimized for AI applications"""
-    
+
     def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
         self.api_key = api_key
         self.base_url = "https://api.exa.ai/search"
     
@@ -66,7 +100,10 @@ class ExaSearchProvider(WebSearchProvider):
             async with session.post(self.base_url, json=payload, headers=headers, timeout=15) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(f"Exa API error (status {response.status}): {error_text}")
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(f"Exa API error: status={response.status}, details logged")
+                    logger.debug(f"Exa API raw error: {sanitized_error}")
+                    raise Exception(f"Search service temporarily unavailable (Error {response.status})")
                 
                 data = await response.json()
                 results = []
@@ -104,8 +141,10 @@ class ExaSearchProvider(WebSearchProvider):
 
 class FirecrawlSearchProvider(WebSearchProvider):
     """Firecrawl search provider - V2 API with search + scrape capabilities"""
-    
+
     def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
         self.api_key = api_key
         self.base_url = "https://api.firecrawl.dev/v2/search"
     
@@ -130,7 +169,10 @@ class FirecrawlSearchProvider(WebSearchProvider):
             async with session.post(self.base_url, json=payload, headers=headers, timeout=20) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(f"Firecrawl API error (status {response.status}): {error_text}")
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(f"Firecrawl API error: status={response.status}, details logged")
+                    logger.debug(f"Firecrawl API raw error: {sanitized_error}")
+                    raise Exception(f"Search service temporarily unavailable (Error {response.status})")
                 
                 data = await response.json()
                 results = []
@@ -159,8 +201,12 @@ class GoogleSearchProvider(WebSearchProvider):
     """Google Custom Search JSON API provider"""
 
     def __init__(self, api_key: str, search_engine_id: str = None):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
         self.api_key = api_key
         self.search_engine_id = search_engine_id or os.getenv("GOOGLE_SEARCH_ENGINE_ID", "")
+        if not self.search_engine_id:
+            raise ValueError("Google Search Engine ID is required")
         self.base_url = "https://customsearch.googleapis.com/customsearch/v1"
 
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
@@ -175,7 +221,15 @@ class GoogleSearchProvider(WebSearchProvider):
             async with session.get(self.base_url, params=params, timeout=15) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(f"Google Search API error (status {response.status}): {error_text}")
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(f"Google Search API error: status={response.status}, details logged")
+                    logger.debug(f"Google Search API raw error: {sanitized_error}")
+                    if response.status == 403:
+                        raise Exception("Search service access denied. Please check your API credentials.")
+                    elif response.status == 429:
+                        raise Exception("Search rate limit exceeded. Please try again later.")
+                    else:
+                        raise Exception(f"Search service temporarily unavailable (Error {response.status})")
 
                 data = await response.json()
                 results = []
@@ -209,6 +263,8 @@ class SerperSearchProvider(WebSearchProvider):
     """Serper API provider - Fast and affordable Google search results"""
 
     def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
         self.api_key = api_key
         self.base_url = "https://google.serper.dev/search"
 
@@ -227,7 +283,15 @@ class SerperSearchProvider(WebSearchProvider):
             async with session.post(self.base_url, json=payload, headers=headers, timeout=15) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(f"Serper API error (status {response.status}): {error_text}")
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(f"Serper API error: status={response.status}, details logged")
+                    logger.debug(f"Serper API raw error: {sanitized_error}")
+                    if response.status == 401:
+                        raise Exception("Search service authentication failed. Please check your API credentials.")
+                    elif response.status == 429:
+                        raise Exception("Search rate limit exceeded. Please try again later.")
+                    else:
+                        raise Exception(f"Search service temporarily unavailable (Error {response.status})")
 
                 data = await response.json()
                 results = []
@@ -263,6 +327,8 @@ class BingSearchProvider(WebSearchProvider):
     """Bing Search API v7 provider (Azure Cognitive Services)"""
 
     def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
         self.api_key = api_key
         self.base_url = "https://api.cognitive.microsoft.com/bing/v7.0/search"
 
@@ -282,7 +348,15 @@ class BingSearchProvider(WebSearchProvider):
             async with session.get(self.base_url, params=params, headers=headers, timeout=15) as response:
                 if response.status != 200:
                     error_text = await response.text()
-                    raise Exception(f"Bing Search API error (status {response.status}): {error_text}")
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(f"Bing Search API error: status={response.status}, details logged")
+                    logger.debug(f"Bing Search API raw error: {sanitized_error}")
+                    if response.status == 401:
+                        raise Exception("Search service authentication failed. Please check your API credentials.")
+                    elif response.status == 429:
+                        raise Exception("Search rate limit exceeded. Please try again later.")
+                    else:
+                        raise Exception(f"Search service temporarily unavailable (Error {response.status})")
 
                 data = await response.json()
                 results = []
@@ -355,7 +429,7 @@ class WebSearchTool(Tool):
         if provider_name in providers_config:
             config = providers_config[provider_name]
             api_key = os.getenv(config["api_key_env"])
-            if api_key:
+            if api_key and WebSearchProvider.validate_api_key(api_key):
                 # Special handling for Google which needs search engine ID
                 if provider_name == SearchProvider.GOOGLE.value:
                     search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
@@ -383,7 +457,7 @@ class WebSearchTool(Tool):
             if name != provider_name and name in providers_config:  # Skip already tried provider
                 config = providers_config[name]
                 api_key = os.getenv(config["api_key_env"])
-                if api_key:
+                if api_key and WebSearchProvider.validate_api_key(api_key):
                     # Special handling for Google
                     if name == SearchProvider.GOOGLE.value:
                         search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
@@ -491,10 +565,32 @@ class WebSearchTool(Tool):
                 }
             )
             
-        except Exception as e:
-            logger.error(f"Search failed with {self.provider.__class__.__name__}: {e}")
+        except ValueError as e:
+            # Configuration errors - these are safe to show
+            logger.error(f"Search configuration error: {e}")
             return ToolResult(
                 success=False,
                 output=None,
-                error=f"Search failed: {str(e)}"
+                error=f"Search configuration error: {str(e)}"
             )
+        except Exception as e:
+            # Runtime errors - sanitize these
+            sanitized_error = WebSearchProvider.sanitize_error_message(str(e))
+            logger.error(f"Search failed with {self.provider.__class__.__name__}: {sanitized_error}")
+
+            # Return user-friendly error message
+            error_message = str(e)
+            if "temporarily unavailable" in error_message or "rate limit" in error_message or "authentication failed" in error_message:
+                # These are already sanitized messages from our providers
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=error_message
+                )
+            else:
+                # Generic error for unexpected failures
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error="Search service encountered an error. Please try again later."
+                )
