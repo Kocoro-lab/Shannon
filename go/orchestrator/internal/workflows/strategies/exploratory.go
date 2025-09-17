@@ -171,7 +171,12 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 
 	// Update session
 	if input.SessionID != "" {
-		updateSession(ctx, input.SessionID, finalResult, totalTokens, totResult.TotalThoughts)
+		if err := updateSession(ctx, input.SessionID, finalResult, totalTokens, totResult.TotalThoughts); err != nil {
+			logger.Warn("Failed to update session",
+				"error", err,
+				"session_id", input.SessionID,
+			)
+		}
 	}
 
 	logger.Info("ExploratoryWorkflow completed",
@@ -180,6 +185,7 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"total_thoughts_explored", totResult.TotalThoughts,
 		"tree_depth", totResult.TreeDepth,
 	)
+
 
 	return TaskResult{
 		Result:     finalResult,
@@ -196,4 +202,3 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		},
 	}, nil
 }
-

@@ -8,6 +8,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
 )
 
@@ -149,6 +150,26 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		"final_checkpoint", finalCheckpointID,
 	)
 	
+	// Update session with token usage
+	if input.SessionID != "" {
+		var sessionUpdateResult activities.SessionUpdateResult
+		err := workflow.ExecuteActivity(ctx,
+			constants.UpdateSessionResultActivity,
+			activities.SessionUpdateInput{
+				SessionID:  input.SessionID,
+				Result:     streamResult,
+				TokensUsed: agentState.GetTotalTokensUsed(),
+				AgentsUsed: 1,
+			},
+		).Get(ctx, &sessionUpdateResult)
+		if err != nil {
+			logger.Warn("Failed to update session with tokens",
+				"session_id", input.SessionID,
+				"error", err,
+			)
+		}
+	}
+
 	return TaskResult{
 		Result:     streamResult,
 		Success:    true,
@@ -261,6 +282,26 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		"total_tokens", totalTokens,
 	)
 	
+	// Update session with token usage
+	if input.SessionID != "" {
+		var sessionUpdateResult activities.SessionUpdateResult
+		err := workflow.ExecuteActivity(ctx,
+			constants.UpdateSessionResultActivity,
+			activities.SessionUpdateInput{
+				SessionID:  input.SessionID,
+				Result:     synthesis.FinalResult,
+				TokensUsed: totalTokens,
+				AgentsUsed: len(results),
+			},
+		).Get(ctx, &sessionUpdateResult)
+		if err != nil {
+			logger.Warn("Failed to update session with tokens",
+				"session_id", input.SessionID,
+				"error", err,
+			)
+		}
+	}
+
 	return TaskResult{
 		Result:     synthesis.FinalResult,
 		Success:    true,

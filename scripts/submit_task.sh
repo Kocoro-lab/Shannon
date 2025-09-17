@@ -24,5 +24,28 @@ for i in {1..10}; do
   if [[ "$STATUS" =~ COMPLETED|FAILED|CANCELLED|TIMEOUT ]]; then break; fi
   sleep 1
 done
-echo "Done."
 
+# Extract and display the final result
+if [[ "$STATUS" == "TASK_STATUS_COMPLETED" ]]; then
+  RESULT=$(jq -r '.result // "No result available"' /tmp/status_cli.json 2>/dev/null)
+  TOKENS=$(jq -r '.metrics.tokenUsage.totalTokens // 0' /tmp/status_cli.json 2>/dev/null)
+  COST=$(jq -r '.metrics.tokenUsage.costUsd // 0' /tmp/status_cli.json 2>/dev/null)
+  echo ""
+  echo "✅ Task completed successfully!"
+  echo "Result: $RESULT"
+  echo "Tokens used: $TOKENS (cost: \$$COST)"
+elif [[ "$STATUS" == "TASK_STATUS_FAILED" ]]; then
+  ERROR=$(jq -r '.errorMessage // .error // .result // "Unknown error"' /tmp/status_cli.json 2>/dev/null)
+  echo ""
+  echo "❌ Task failed!"
+  echo "Error: $ERROR"
+elif [[ "$STATUS" == "TASK_STATUS_CANCELLED" ]]; then
+  echo ""
+  echo "⚠️ Task was cancelled"
+elif [[ "$STATUS" == "TASK_STATUS_TIMEOUT" ]]; then
+  echo ""
+  echo "⏱️ Task timed out"
+else
+  echo ""
+  echo "Status: $STATUS"
+fi

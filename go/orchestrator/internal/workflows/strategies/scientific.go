@@ -260,7 +260,12 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 
 	// Update session
 	if input.SessionID != "" {
-		updateSession(ctx, input.SessionID, scientificReport, totalTokens, len(hypotheses)*3)
+		if err := updateSession(ctx, input.SessionID, scientificReport, totalTokens, len(hypotheses)*3); err != nil {
+			logger.Warn("Failed to update session",
+				"error", err,
+				"session_id", input.SessionID,
+			)
+		}
 	}
 
 	logger.Info("ScientificWorkflow completed",
@@ -269,6 +274,7 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		"consensus_reached", debateResult.ConsensusReached,
 		"final_confidence", finalConfidence,
 	)
+
 
 	return TaskResult{
 		Result:     scientificReport,

@@ -518,6 +518,26 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
         }
     }
 
+    // Update session with token usage
+    if input.SessionID != "" {
+        var sessionUpdateResult activities.SessionUpdateResult
+        err := workflow.ExecuteActivity(ctx,
+            constants.UpdateSessionResultActivity,
+            activities.SessionUpdateInput{
+                SessionID:  input.SessionID,
+                Result:     synth.FinalResult,
+                TokensUsed: synth.TokensUsed,
+                AgentsUsed: len(childResults),
+            },
+        ).Get(ctx, &sessionUpdateResult)
+        if err != nil {
+            logger.Warn("Failed to update session with tokens",
+                "session_id", input.SessionID,
+                "error", err,
+            )
+        }
+    }
+
     return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: map[string]interface{}{
         "num_children": len(childResults),
     }}, nil

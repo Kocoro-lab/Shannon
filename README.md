@@ -134,11 +134,9 @@ make smoke
 # Submit a simple task
 ./scripts/submit_task.sh "Analyze the sentiment of: 'Shannon makes AI agents simple!'"
 
-# Check session usage (replace s1 with your session ID if different)
+# Check session usage and token tracking (session ID is in SubmitTask response message)
 grpcurl -plaintext \
-  -import-path protos \
-  -proto orchestrator/orchestrator.proto \
-  -d '{"sessionId":"s1"}' \
+  -d '{"sessionId":"YOUR_SESSION_ID"}' \
   localhost:50052 shannon.orchestrator.OrchestratorService/GetSessionContext
 
 # Export and replay a workflow history (use the workflow ID from submit_task output)

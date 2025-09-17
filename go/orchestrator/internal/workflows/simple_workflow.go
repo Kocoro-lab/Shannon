@@ -7,6 +7,7 @@ import (
     "go.temporal.io/sdk/temporal"
 
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 )
 
 // SimpleTaskWorkflow handles simple, single-agent tasks efficiently
@@ -65,10 +66,30 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
         })
     }
     
+    // Update session with token usage
+    if input.SessionID != "" {
+        var sessionUpdateResult activities.SessionUpdateResult
+        err = workflow.ExecuteActivity(ctx,
+            constants.UpdateSessionResultActivity,
+            activities.SessionUpdateInput{
+                SessionID:  input.SessionID,
+                Result:     result.Response,
+                TokensUsed: result.TokensUsed,
+                AgentsUsed: 1,
+            },
+        ).Get(ctx, &sessionUpdateResult)
+        if err != nil {
+            logger.Warn("Failed to update session with tokens",
+                "session_id", input.SessionID,
+                "error", err,
+            )
+        }
+    }
+
     logger.Info("SimpleTaskWorkflow completed successfully",
         "tokens_used", result.TokensUsed,
     )
-    
+
     return TaskResult{
         Result:     result.Response,
         Success:    true,
