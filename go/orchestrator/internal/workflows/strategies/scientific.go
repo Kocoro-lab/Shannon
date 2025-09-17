@@ -270,6 +270,7 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		"final_confidence", finalConfidence,
 	)
 
+
 	return TaskResult{
 		Result:     scientificReport,
 		Success:    true,

@@ -1,27 +1,30 @@
 package server
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "strings"
-    "time"
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"strings"
+	"time"
 
-    "github.com/google/uuid"
-    enumspb "go.temporal.io/api/enums/v1"
-    "go.temporal.io/sdk/client"
-    "go.temporal.io/sdk/converter"
-    "go.uber.org/zap"
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/codes"
-    "google.golang.org/grpc/status"
+	"github.com/google/uuid"
+	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
-    auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
-    ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
-    common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
+	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
@@ -29,16 +32,16 @@ import (
 
 // OrchestratorService implements the Orchestrator gRPC service
 type OrchestratorService struct {
-    pb.UnimplementedOrchestratorServiceServer
-    temporalClient  client.Client
-    sessionManager  *session.Manager
-    humanActivities *activities.HumanInterventionActivities
-    dbClient        *db.Client
-    logger          *zap.Logger
-    degradeMgr      *degradation.Manager
+	pb.UnimplementedOrchestratorServiceServer
+	temporalClient  client.Client
+	sessionManager  *session.Manager
+	humanActivities *activities.HumanInterventionActivities
+	dbClient        *db.Client
+	logger          *zap.Logger
+	degradeMgr      *degradation.Manager
 
-    // Provider for per-request default workflow flags
-    getWorkflowDefaults func() (bypassSingle bool)
+	// Provider for per-request default workflow flags
+	getWorkflowDefaults func() (bypassSingle bool)
 }
 
 // SessionManager returns the session manager for use by other services
@@ -60,45 +63,45 @@ func (s *OrchestratorService) Shutdown() error {
 
 // SetTemporalClient sets or replaces the Temporal client after service construction.
 func (s *OrchestratorService) SetTemporalClient(c client.Client) {
-    s.temporalClient = c
+	s.temporalClient = c
 }
 
 // SetWorkflowDefaultsProvider sets a provider for BypassSingleResult default
 func (s *OrchestratorService) SetWorkflowDefaultsProvider(f func() bool) {
-    s.getWorkflowDefaults = f
+	s.getWorkflowDefaults = f
 }
 
 // NewOrchestratorService creates a new orchestrator service
 func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, logger *zap.Logger) (*OrchestratorService, error) {
-    // Initialize session manager with retry (handles startup races)
-    redisAddr := os.Getenv("REDIS_ADDR")
-    if redisAddr == "" {
-        redisAddr = "redis:6379"
-    }
+	// Initialize session manager with retry (handles startup races)
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "redis:6379"
+	}
 
-    var sessionMgr *session.Manager
-    var err error
-    for attempt := 1; attempt <= 15; attempt++ {
-        sessionMgr, err = session.NewManager(redisAddr, logger)
-        if err == nil {
-            break
-        }
-        // Exponential-ish backoff capped at 5s
-        delay := time.Duration(attempt)
-        if delay > 5 {
-            delay = 5
-        }
-        logger.Warn("Redis not ready for session manager, retrying",
-            zap.Int("attempt", attempt),
-            zap.String("redis_addr", redisAddr),
-            zap.Duration("sleep", delay*time.Second),
-            zap.Error(err),
-        )
-        time.Sleep(delay * time.Second)
-    }
-    if err != nil && sessionMgr == nil {
-        return nil, fmt.Errorf("failed to initialize session manager after retries: %w", err)
-    }
+	var sessionMgr *session.Manager
+	var err error
+	for attempt := 1; attempt <= 15; attempt++ {
+		sessionMgr, err = session.NewManager(redisAddr, logger)
+		if err == nil {
+			break
+		}
+		// Exponential-ish backoff capped at 5s
+		delay := time.Duration(attempt)
+		if delay > 5 {
+			delay = 5
+		}
+		logger.Warn("Redis not ready for session manager, retrying",
+			zap.Int("attempt", attempt),
+			zap.String("redis_addr", redisAddr),
+			zap.Duration("sleep", delay*time.Second),
+			zap.Error(err),
+		)
+		time.Sleep(delay * time.Second)
+	}
+	if err != nil && sessionMgr == nil {
+		return nil, fmt.Errorf("failed to initialize session manager after retries: %w", err)
+	}
 
 	// Create degradation manager (wire redis/db wrappers)
 	var redisWrapper interface{ IsCircuitBreakerOpen() bool }
@@ -134,9 +137,9 @@ func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, l
 
 // SubmitTask submits a new task for orchestration
 func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTaskRequest) (*pb.SubmitTaskResponse, error) {
-    if s.temporalClient == nil {
-        return nil, status.Error(codes.Unavailable, "Temporal not ready")
-    }
+	if s.temporalClient == nil {
+		return nil, status.Error(codes.Unavailable, "Temporal not ready")
+	}
 	// gRPC metrics timing
 	grpcStart := time.Now()
 	defer func() {
@@ -148,17 +151,17 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		zap.String("session_id", req.Metadata.GetSessionId()),
 	)
 
-    // Prefer authenticated context for identity and tenancy
-    var tenantID string
-    var userID string
-    if userCtx, err := auth.GetUserContext(ctx); err == nil {
-        userID = userCtx.UserID.String()
-        tenantID = userCtx.TenantID.String()
-    } else {
-        // Fallback to request metadata for backward compatibility
-        userID = req.Metadata.GetUserId()
-    }
-    sessionID := req.Metadata.GetSessionId()
+	// Prefer authenticated context for identity and tenancy
+	var tenantID string
+	var userID string
+	if userCtx, err := auth.GetUserContext(ctx); err == nil {
+		userID = userCtx.UserID.String()
+		tenantID = userCtx.TenantID.String()
+	} else {
+		// Fallback to request metadata for backward compatibility
+		userID = req.Metadata.GetUserId()
+	}
+	sessionID := req.Metadata.GetSessionId()
 
 	// Get or create session
 	var sess *session.Session
@@ -170,7 +173,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		if err != nil && err != session.ErrSessionNotFound {
 			s.logger.Warn("Failed to retrieve session", zap.Error(err))
 		}
-		
+
 		// SECURITY: Validate session ownership
 		if sess != nil && sess.UserID != userID {
 			s.logger.Warn("User attempted to access another user's session",
@@ -185,11 +188,11 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	}
 
 	// Create new session if needed
-    if sess == nil {
-        var createErr error
-        sess, createErr = s.sessionManager.CreateSession(ctx, userID, tenantID, map[string]interface{}{
-            "created_from": "orchestrator",
-        })
+	if sess == nil {
+		var createErr error
+		sess, createErr = s.sessionManager.CreateSession(ctx, userID, tenantID, map[string]interface{}{
+			"created_from": "orchestrator",
+		})
 		if createErr != nil {
 			return nil, status.Error(codes.Internal, "failed to create session")
 		}
@@ -206,12 +209,12 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		s.logger.Debug("Ensuring session exists in PostgreSQL",
 			zap.String("session_id", sessionID),
 			zap.String("user_id", dbUserID))
-        if err := s.dbClient.CreateSession(ctx, sessionID, dbUserID, tenantID); err != nil {
-            s.logger.Warn("Failed to ensure session in database",
-                zap.String("session_id", sessionID),
-                zap.Error(err))
-            // Continue anyway - Redis session is available
-        }
+		if err := s.dbClient.CreateSession(ctx, sessionID, dbUserID, tenantID); err != nil {
+			s.logger.Warn("Failed to ensure session in database",
+				zap.String("session_id", sessionID),
+				zap.Error(err))
+			// Continue anyway - Redis session is available
+		}
 	} else if s.dbClient == nil {
 		s.logger.Debug("dbClient is nil; skipping session persistence")
 	}
@@ -231,25 +234,25 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	history := sess.GetRecentHistory(10) // Last 10 messages
 
 	// Prepare workflow input with session context
-    input := workflows.TaskInput{
-        Query:           req.Query,
-        UserID:          userID,
-        TenantID:        tenantID,
-        SessionID:       sessionID,
-        Context:         req.Context.AsMap(),
-        Mode:            "",
-        History:         convertHistoryForWorkflow(history),
-        SessionCtx:      sess.Context,
-        RequireApproval: false, // TODO: Add to proto request
-        ApprovalTimeout: 1800,  // Default 30 minutes
-    }
+	input := workflows.TaskInput{
+		Query:           req.Query,
+		UserID:          userID,
+		TenantID:        tenantID,
+		SessionID:       sessionID,
+		Context:         req.Context.AsMap(),
+		Mode:            "",
+		History:         convertHistoryForWorkflow(history),
+		SessionCtx:      sess.Context,
+		RequireApproval: false, // TODO: Add to proto request
+		ApprovalTimeout: 1800,  // Default 30 minutes
+	}
 
-    // Apply deterministic workflow behavior flags from provider/env
-    // Defaults: skip evaluation, bypass single result
-    input.BypassSingleResult = true
-    if s.getWorkflowDefaults != nil {
-        input.BypassSingleResult = s.getWorkflowDefaults()
-    }
+	// Apply deterministic workflow behavior flags from provider/env
+	// Defaults: skip evaluation, bypass single result
+	input.BypassSingleResult = true
+	if s.getWorkflowDefaults != nil {
+		input.BypassSingleResult = s.getWorkflowDefaults()
+	}
 
 	// Always route through OrchestratorWorkflow which will analyze complexity
 	// and handle simple queries efficiently
@@ -264,120 +267,120 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		)
 	}
 
-    // Start appropriate workflow based on mode
-    var workflowExecution client.WorkflowRun
-    workflowType := "OrchestratorWorkflow"
+	// Start appropriate workflow based on mode
+	var workflowExecution client.WorkflowRun
+	workflowType := "OrchestratorWorkflow"
 	modeStr := "standard"
 
 	// Store metadata in workflow memo for retrieval later
-    memo := map[string]interface{}{
-        "user_id":    userID,
-        "session_id": sessionID,
-        "tenant_id": tenantID,
-        "query":      req.Query,
-    }
+	memo := map[string]interface{}{
+		"user_id":    userID,
+		"session_id": sessionID,
+		"tenant_id":  tenantID,
+		"query":      req.Query,
+	}
 
-    // Determine priority from metadata labels (optional)
-    queue := "shannon-tasks"
-    priority := "normal"  // Track priority for logging
-    workflowOverride := "" // Optional workflow override via label
-    if req.Metadata != nil {
-        labels := req.Metadata.GetLabels()
-        if labels != nil {
-            if p, ok := labels["priority"]; ok {
-                priority = p
-                priorityLower := strings.ToLower(p)
-                switch priorityLower {
-                case "critical":
-                    queue = "shannon-tasks-critical"
-                case "high":
-                    queue = "shannon-tasks-high"
-                case "normal":
-                    queue = "shannon-tasks"  // Explicitly handle normal priority
-                case "low":
-                    queue = "shannon-tasks-low"
-                default:
-                    // Warn about invalid priority value and use default queue
-                    s.logger.Warn("Invalid priority value provided, using default queue",
-                        zap.String("priority", p),
-                        zap.String("valid_values", "critical, high, normal, low"),
-                        zap.String("workflow_id", workflowID))
-                    priority = "normal"  // Reset to normal for invalid priorities
-                }
-            }
-            // Optional workflow override: labels["workflow"] = "supervisor" | "dag"
-            if wf, ok := labels["workflow"]; ok {
-                workflowOverride = strings.ToLower(wf)
-            } else if wf2, ok := labels["mode"]; ok {
-                // Back-compat: accept mode=supervisor as override
-                if strings.EqualFold(wf2, "supervisor") {
-                    workflowOverride = "supervisor"
-                }
-            }
-        }
-    }
-    // Log queue selection for debugging
-    if queue != "shannon-tasks" {
-        s.logger.Info("Task routed to priority queue",
-            zap.String("workflow_id", workflowID),
-            zap.String("queue", queue),
-            zap.String("priority", priority))
-    }
-    
-    workflowOptions := client.StartWorkflowOptions{
-        ID:        workflowID,
-        TaskQueue: queue,
-        Memo:      memo,
-    }
+	// Determine priority from metadata labels (optional)
+	queue := "shannon-tasks"
+	priority := "normal"   // Track priority for logging
+	workflowOverride := "" // Optional workflow override via label
+	if req.Metadata != nil {
+		labels := req.Metadata.GetLabels()
+		if labels != nil {
+			if p, ok := labels["priority"]; ok {
+				priority = p
+				priorityLower := strings.ToLower(p)
+				switch priorityLower {
+				case "critical":
+					queue = "shannon-tasks-critical"
+				case "high":
+					queue = "shannon-tasks-high"
+				case "normal":
+					queue = "shannon-tasks" // Explicitly handle normal priority
+				case "low":
+					queue = "shannon-tasks-low"
+				default:
+					// Warn about invalid priority value and use default queue
+					s.logger.Warn("Invalid priority value provided, using default queue",
+						zap.String("priority", p),
+						zap.String("valid_values", "critical, high, normal, low"),
+						zap.String("workflow_id", workflowID))
+					priority = "normal" // Reset to normal for invalid priorities
+				}
+			}
+			// Optional workflow override: labels["workflow"] = "supervisor" | "dag"
+			if wf, ok := labels["workflow"]; ok {
+				workflowOverride = strings.ToLower(wf)
+			} else if wf2, ok := labels["mode"]; ok {
+				// Back-compat: accept mode=supervisor as override
+				if strings.EqualFold(wf2, "supervisor") {
+					workflowOverride = "supervisor"
+				}
+			}
+		}
+	}
+	// Log queue selection for debugging
+	if queue != "shannon-tasks" {
+		s.logger.Info("Task routed to priority queue",
+			zap.String("workflow_id", workflowID),
+			zap.String("queue", queue),
+			zap.String("priority", priority))
+	}
 
-    // Route based on explicit workflow override; otherwise use AgentDAGWorkflow
-    switch workflowOverride {
-    case "supervisor":
-        input.Mode = "supervisor"
-        modeStr = "supervisor"
-        memo["mode"] = "supervisor"
-        workflowType = "SupervisorWorkflow"
-        s.logger.Info("Starting SupervisorWorkflow", zap.String("workflow_id", workflowID))
-        workflowExecution, err = s.temporalClient.ExecuteWorkflow(
-            ctx,
-            workflowOptions,
-            workflows.SupervisorWorkflow,
-            input,
-        )
-    case "", "dag":
-        // Default: route through OrchestratorWorkflow
-        if mode == common.ExecutionMode_EXECUTION_MODE_COMPLEX {
-            input.Mode = "complex"
-            modeStr = "complex"
-            memo["mode"] = "complex"
-        } else {
-            input.Mode = "standard"
-            modeStr = "standard"
-            memo["mode"] = "standard"
-        }
-        s.logger.Info("Starting OrchestratorWorkflow (router)",
-            zap.String("workflow_id", workflowID),
-            zap.String("initial_mode", modeStr))
-        workflowExecution, err = s.temporalClient.ExecuteWorkflow(
-            ctx,
-            workflowOptions,
-            workflows.OrchestratorWorkflow,
-            input,
-        )
-    default:
-        // Unknown override: fall back to DAG
-        s.logger.Warn("Unknown workflow override; falling back to router", zap.String("override", workflowOverride))
-        input.Mode = "standard"
-        modeStr = "standard"
-        memo["mode"] = "standard"
-        workflowType = "OrchestratorWorkflow"
-        workflowExecution, err = s.temporalClient.ExecuteWorkflow(
-            ctx,
-            workflowOptions,
-            workflows.OrchestratorWorkflow,
-            input,
-        )
-    }
+	workflowOptions := client.StartWorkflowOptions{
+		ID:        workflowID,
+		TaskQueue: queue,
+		Memo:      memo,
+	}
+
+	// Route based on explicit workflow override; otherwise use AgentDAGWorkflow
+	switch workflowOverride {
+	case "supervisor":
+		input.Mode = "supervisor"
+		modeStr = "supervisor"
+		memo["mode"] = "supervisor"
+		workflowType = "SupervisorWorkflow"
+		s.logger.Info("Starting SupervisorWorkflow", zap.String("workflow_id", workflowID))
+		workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+			ctx,
+			workflowOptions,
+			workflows.SupervisorWorkflow,
+			input,
+		)
+	case "", "dag":
+		// Default: route through OrchestratorWorkflow
+		if mode == common.ExecutionMode_EXECUTION_MODE_COMPLEX {
+			input.Mode = "complex"
+			modeStr = "complex"
+			memo["mode"] = "complex"
+		} else {
+			input.Mode = "standard"
+			modeStr = "standard"
+			memo["mode"] = "standard"
+		}
+		s.logger.Info("Starting OrchestratorWorkflow (router)",
+			zap.String("workflow_id", workflowID),
+			zap.String("initial_mode", modeStr))
+		workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+			ctx,
+			workflowOptions,
+			workflows.OrchestratorWorkflow,
+			input,
+		)
+	default:
+		// Unknown override: fall back to DAG
+		s.logger.Warn("Unknown workflow override; falling back to router", zap.String("override", workflowOverride))
+		input.Mode = "standard"
+		modeStr = "standard"
+		memo["mode"] = "standard"
+		workflowType = "OrchestratorWorkflow"
+		workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+			ctx,
+			workflowOptions,
+			workflows.OrchestratorWorkflow,
+			input,
+		)
+	}
 
 	if err != nil {
 		s.logger.Error("Failed to start workflow", zap.Error(err))
@@ -390,10 +393,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		TaskId:     workflowExecution.GetID(),
 		Status:     common.StatusCode_STATUS_CODE_OK,
 		Message:    fmt.Sprintf("Task submitted successfully. Session: %s", sessionID),
-		Decomposition: &pb.TaskDecomposition{
-			Mode:            mode,
-			ComplexityScore: 0.5, // Placeholder
-		},
+		// Decomposition: nil - will be available via GetTaskStatus after workflow completes analysis
 		// Session ID is tracked internally, not returned in response for now
 	}
 
@@ -417,28 +417,28 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 	}()
 	s.logger.Info("Received GetTaskStatus request", zap.String("task_id", req.TaskId))
 
-    // Describe workflow for non-blocking status
-    desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
-    if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-        return nil, status.Error(codes.NotFound, fmt.Sprintf("task not found: %v", err))
-    }
+	// Describe workflow for non-blocking status
+	desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
+	if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		return nil, status.Error(codes.NotFound, fmt.Sprintf("task not found: %v", err))
+	}
 
-    // Enforce tenant ownership using memo if available
-    if desc.WorkflowExecutionInfo.Memo != nil {
-        dataConverter := converter.GetDefaultDataConverter()
-        if tenantField, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
-            var memoTenant string
-            _ = dataConverter.FromPayload(tenantField, &memoTenant)
-            if memoTenant != "" {
-                if uc, err := auth.GetUserContext(ctx); err == nil && uc != nil {
-                    if uc.TenantID.String() != memoTenant {
-                        // Don't leak existence
-                        return nil, status.Error(codes.NotFound, "task not found")
-                    }
-                }
-            }
-        }
-    }
+	// Enforce tenant ownership using memo if available
+	if desc.WorkflowExecutionInfo.Memo != nil {
+		dataConverter := converter.GetDefaultDataConverter()
+		if tenantField, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
+			var memoTenant string
+			_ = dataConverter.FromPayload(tenantField, &memoTenant)
+			if memoTenant != "" {
+				if uc, err := auth.GetUserContext(ctx); err == nil && uc != nil {
+					if uc.TenantID.String() != memoTenant {
+						// Don't leak existence
+						return nil, status.Error(codes.NotFound, "task not found")
+					}
+				}
+			}
+		}
+	}
 
 	// Extract workflow metadata
 	workflowStartTime := desc.WorkflowExecutionInfo.StartTime
@@ -563,15 +563,21 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			ErrorMessage: &result.ErrorMessage,
 		}
 
-		// Set completed time if terminal
-		now := time.Now()
-		taskExecution.CompletedAt = &now
+			// Set completed time if terminal (prefer Temporal CloseTime)
+			var completedAt time.Time
+			if desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
+				completedAt = desc.WorkflowExecutionInfo.CloseTime.AsTime()
+			} else {
+				completedAt = time.Now()
+			}
+			taskExecution.CompletedAt = &completedAt
 
-		// Calculate duration
-		if !workflowStartTime.AsTime().IsZero() {
-			durationMs := int(now.Sub(workflowStartTime.AsTime()).Milliseconds())
-			taskExecution.DurationMs = &durationMs
-		}
+			// Calculate duration
+			if !workflowStartTime.AsTime().IsZero() {
+				end := completedAt
+				durationMs := int(end.Sub(workflowStartTime.AsTime()).Milliseconds())
+				taskExecution.DurationMs = &durationMs
+			}
 
 		// Extract metadata from result
 		if result.Metadata != nil {
@@ -659,10 +665,16 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 				modeStr = "standard"
 			}
 		}
-		// Compute duration seconds
+		// Compute duration seconds (prefer Temporal CloseTime)
 		durationSeconds := 0.0
 		if workflowStartTime != nil {
-			durationSeconds = time.Since(workflowStartTime.AsTime()).Seconds()
+			var endTime time.Time
+			if desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
+				endTime = desc.WorkflowExecutionInfo.CloseTime.AsTime()
+			} else {
+				endTime = time.Now()
+			}
+			durationSeconds = endTime.Sub(workflowStartTime.AsTime()).Seconds()
 		}
 		// Cost
 		cost := 0.0
@@ -716,11 +728,180 @@ func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRe
 
 // GetSessionContext gets session context
 func (s *OrchestratorService) GetSessionContext(ctx context.Context, req *pb.GetSessionContextRequest) (*pb.GetSessionContextResponse, error) {
-	// This would retrieve session context from storage
-	// For now, return empty context
-	return &pb.GetSessionContextResponse{
+	s.logger.Info("GetSessionContext called", zap.String("session_id", req.SessionId))
+
+	if req.SessionId == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	// Get session from manager
+	sess, err := s.sessionManager.GetSession(ctx, req.SessionId)
+	if err != nil {
+		if err == session.ErrSessionNotFound {
+			return nil, status.Error(codes.NotFound, "session not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to get session: %v", err))
+	}
+
+	// Build response with session data
+	response := &pb.GetSessionContextResponse{
 		SessionId: req.SessionId,
-	}, nil
+	}
+
+	// Add session token usage
+	if sess.TotalTokensUsed > 0 {
+		response.SessionTokenUsage = &common.TokenUsage{
+			TotalTokens: int32(sess.TotalTokensUsed),
+		}
+	}
+
+	// Add session context as Struct
+	if sess.Context != nil {
+		contextStruct, err := structpb.NewStruct(sess.Context)
+		if err == nil {
+			response.Context = contextStruct
+		}
+	}
+
+	if s.dbClient != nil {
+		tasks, err := s.loadRecentSessionTasks(ctx, req.SessionId, 5)
+		if err != nil {
+			s.logger.Warn("Failed to load recent session tasks",
+				zap.String("session_id", req.SessionId),
+				zap.Error(err))
+		} else if len(tasks) > 0 {
+			response.RecentTasks = tasks
+		}
+	}
+
+	return response, nil
+}
+
+func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessionID string, limit int) ([]*pb.TaskSummary, error) {
+	if sessionID == "" || limit <= 0 || s.dbClient == nil {
+		return nil, nil
+	}
+
+	sessionUUID, err := uuid.Parse(sessionID)
+	if err != nil {
+		return nil, nil
+	}
+
+	query := `
+		SELECT workflow_id, query, status, mode,
+		       started_at, completed_at, created_at,
+		       NULLIF(metrics->>'total_tokens', '')::bigint AS total_tokens,
+		       NULLIF(metrics->>'total_cost_usd', '')::double precision AS total_cost_usd
+		FROM tasks
+		WHERE session_id = $1
+		ORDER BY COALESCE(started_at, created_at) DESC
+		LIMIT $2`
+
+	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, sessionUUID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	summaries := make([]*pb.TaskSummary, 0, limit)
+
+	for rows.Next() {
+		var (
+			workflowID string
+			queryText  sql.NullString
+			statusStr  sql.NullString
+			modeStr    sql.NullString
+			started    sql.NullTime
+			completed  sql.NullTime
+			created    sql.NullTime
+			tokens     sql.NullInt64
+			costUSD    sql.NullFloat64
+		)
+
+		if err := rows.Scan(
+			&workflowID,
+			&queryText,
+			&statusStr,
+			&modeStr,
+			&started,
+			&completed,
+			&created,
+			&tokens,
+			&costUSD,
+		); err != nil {
+			return nil, err
+		}
+
+		summary := &pb.TaskSummary{
+			TaskId: workflowID,
+			Query:  queryText.String,
+			Status: mapDBStatusToProto(statusStr.String),
+			Mode:   mapDBModeToProto(modeStr.String),
+		}
+
+		if started.Valid {
+			summary.CreatedAt = timestamppb.New(started.Time)
+		} else if created.Valid {
+			summary.CreatedAt = timestamppb.New(created.Time)
+		}
+
+		if completed.Valid {
+			summary.CompletedAt = timestamppb.New(completed.Time)
+		}
+
+		if tokens.Valid || costUSD.Valid {
+			tokenUsage := &common.TokenUsage{}
+			if tokens.Valid {
+				tokenUsage.TotalTokens = int32(tokens.Int64)
+			}
+			if costUSD.Valid {
+				tokenUsage.CostUsd = costUSD.Float64
+			}
+			summary.TotalTokenUsage = tokenUsage
+		}
+
+		summaries = append(summaries, summary)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return summaries, nil
+}
+
+func mapDBStatusToProto(status string) pb.TaskStatus {
+	switch strings.ToUpper(status) {
+	case "QUEUED", "PENDING":
+		return pb.TaskStatus_TASK_STATUS_QUEUED
+	case "RUNNING", "IN_PROGRESS":
+		return pb.TaskStatus_TASK_STATUS_RUNNING
+	case "COMPLETED", "SUCCEEDED":
+		return pb.TaskStatus_TASK_STATUS_COMPLETED
+	case "FAILED", "ERROR", "TERMINATED":
+		return pb.TaskStatus_TASK_STATUS_FAILED
+	case "CANCELLED", "CANCELED":
+		return pb.TaskStatus_TASK_STATUS_CANCELLED
+	case "TIMEOUT", "TIMED_OUT":
+		return pb.TaskStatus_TASK_STATUS_TIMEOUT
+	default:
+		return pb.TaskStatus_TASK_STATUS_UNSPECIFIED
+	}
+}
+
+func mapDBModeToProto(mode string) common.ExecutionMode {
+	switch strings.ToLower(mode) {
+	case "simple":
+		return common.ExecutionMode_EXECUTION_MODE_SIMPLE
+	case "complex":
+		return common.ExecutionMode_EXECUTION_MODE_COMPLEX
+	case "standard":
+		fallthrough
+	case "":
+		return common.ExecutionMode_EXECUTION_MODE_STANDARD
+	default:
+		return common.ExecutionMode_EXECUTION_MODE_STANDARD
+	}
 }
 
 // RegisterOrchestratorServiceServer registers the service with the gRPC server

@@ -9,9 +9,54 @@ import (
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	
+
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
 )
+
+func buildTaskMetricsPayload(task *TaskExecution) JSONB {
+	if task == nil {
+		return nil
+	}
+
+	metrics := make(JSONB)
+
+	if task.TotalTokens > 0 {
+		metrics["total_tokens"] = task.TotalTokens
+	}
+	if task.PromptTokens > 0 {
+		metrics["prompt_tokens"] = task.PromptTokens
+	}
+	if task.CompletionTokens > 0 {
+		metrics["completion_tokens"] = task.CompletionTokens
+	}
+	if task.TotalCostUSD > 0 {
+		metrics["total_cost_usd"] = task.TotalCostUSD
+	}
+	if task.DurationMs != nil {
+		metrics["duration_ms"] = *task.DurationMs
+	}
+	if task.AgentsUsed > 0 {
+		metrics["agents_used"] = task.AgentsUsed
+	}
+	if task.ToolsInvoked > 0 {
+		metrics["tools_invoked"] = task.ToolsInvoked
+	}
+	if task.CacheHits > 0 {
+		metrics["cache_hits"] = task.CacheHits
+	}
+	if task.ComplexityScore > 0 {
+		metrics["complexity_score"] = task.ComplexityScore
+	}
+	if task.Metadata != nil && len(task.Metadata) > 0 {
+		metrics["metadata"] = map[string]interface{}(task.Metadata)
+	}
+
+	if len(metrics) == 0 {
+		return JSONB{}
+	}
+
+	return metrics
+}
 
 // SaveTaskExecution saves or updates a task execution record (idempotent by workflow_id)
 func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) error {
@@ -22,19 +67,25 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 		task.CreatedAt = time.Now()
 	}
 
+	metricsPayload := buildTaskMetricsPayload(task)
+
 	query := `
 		INSERT INTO tasks (
 			id, workflow_id, user_id, session_id, query, mode, status,
-			started_at, completed_at, result, error,
+			started_at, completed_at, result, error, metrics,
 			created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)
 		ON CONFLICT (workflow_id) DO UPDATE SET
 			status = EXCLUDED.status,
 			completed_at = EXCLUDED.completed_at,
 			result = EXCLUDED.result,
-			error = EXCLUDED.error
+			error = EXCLUDED.error,
+			metrics = CASE
+				WHEN EXCLUDED.metrics IS NULL OR EXCLUDED.metrics = '{}'::jsonb THEN tasks.metrics
+				ELSE EXCLUDED.metrics
+			END
 		RETURNING id`
 
 	// Handle empty UUID strings as NULL
@@ -55,11 +106,11 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 			sessionID = sid
 		}
 	}
-	
+
 	err := c.db.QueryRowContext(ctx, query,
 		task.ID, task.WorkflowID, userID, sessionID,
 		task.Query, task.Mode, task.Status,
-		task.StartedAt, task.CompletedAt, task.Result, task.ErrorMessage,
+		task.StartedAt, task.CompletedAt, task.Result, task.ErrorMessage, metricsPayload,
 		task.CreatedAt,
 	).Scan(&task.ID)
 
@@ -85,16 +136,20 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO tasks (
 				id, workflow_id, user_id, session_id, query, mode, status,
-				started_at, completed_at, result, error,
+				started_at, completed_at, result, error, metrics,
 				created_at
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 			)
 			ON CONFLICT (workflow_id) DO UPDATE SET
 				status = EXCLUDED.status,
 				completed_at = EXCLUDED.completed_at,
 				result = EXCLUDED.result,
-				error = EXCLUDED.error
+				error = EXCLUDED.error,
+				metrics = CASE
+					WHEN EXCLUDED.metrics IS NULL OR EXCLUDED.metrics = '{}'::jsonb THEN tasks.metrics
+					ELSE EXCLUDED.metrics
+				END
 		`)
 		if err != nil {
 			return err
@@ -127,11 +182,13 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 					sessionID = sid
 				}
 			}
-			
+
+			metricsPayload := buildTaskMetricsPayload(task)
+
 			_, err := stmt.ExecContext(ctx,
 				task.ID, task.WorkflowID, userID, sessionID,
 				task.Query, task.Mode, task.Status,
-				task.StartedAt, task.CompletedAt, task.Result, task.ErrorMessage,
+				task.StartedAt, task.CompletedAt, task.Result, task.ErrorMessage, metricsPayload,
 				task.CreatedAt,
 			)
 			if err != nil {
@@ -324,14 +381,14 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 		if err == nil {
 			// Valid UUID - but still need to ensure user exists
 			uid = &parsed
-			
+
 			// Check if user exists, create if not
 			var exists bool
-			err := c.db.QueryRowContext(ctx, 
-				"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)", 
+			err := c.db.QueryRowContext(ctx,
+				"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
 				parsed,
 			).Scan(&exists)
-			
+
 			if err != nil || !exists {
 				// User doesn't exist, create it with the UUID as both id and external_id
 				_, err = c.db.ExecContext(ctx,
@@ -339,7 +396,7 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 					parsed, parsed.String(), time.Now(), time.Now(),
 				)
 				if err != nil {
-					c.logger.Warn("Failed to create user", 
+					c.logger.Warn("Failed to create user",
 						zap.String("user_id", userID),
 						zap.Error(err))
 					// Continue without user_id
@@ -349,11 +406,11 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 		} else {
 			// User ID is not a UUID, try to find or create user by external_id
 			var userUUID uuid.UUID
-			err := c.db.QueryRowContext(ctx, 
-				"SELECT id FROM users WHERE external_id = $1", 
+			err := c.db.QueryRowContext(ctx,
+				"SELECT id FROM users WHERE external_id = $1",
 				userID,
 			).Scan(&userUUID)
-			
+
 			if err != nil {
 				// User doesn't exist, create it
 				userUUID = uuid.New()
@@ -362,7 +419,7 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 					userUUID, userID, time.Now(), time.Now(),
 				)
 				if err != nil {
-					c.logger.Warn("Failed to create user", 
+					c.logger.Warn("Failed to create user",
 						zap.String("external_id", userID),
 						zap.Error(err))
 					// Continue without user_id
@@ -375,42 +432,42 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 			}
 		}
 	}
-	
-    query := `
+
+	query := `
         INSERT INTO sessions (id, user_id, tenant_id, context, token_budget, tokens_used, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id) DO NOTHING
     `
-	
+
 	sessionUUID, err := uuid.Parse(sessionID)
 	if err != nil {
 		return fmt.Errorf("invalid session ID: %w", err)
 	}
-	
-    // Parse tenant ID
-    var tid *uuid.UUID
-    if tenantID != "" {
-        if parsed, err := uuid.Parse(tenantID); err == nil {
-            tid = &parsed
-        }
-    }
 
-    now := time.Now()
-    _, err = c.db.ExecContext(ctx, query,
-        sessionUUID,
-        uid,
-        tid,
-        JSONB(map[string]interface{}{"created_from": "orchestrator"}),
-        10000, // default token budget
-        0,     // tokens used
-        now,
-        now,
-    )
-	
+	// Parse tenant ID
+	var tid *uuid.UUID
+	if tenantID != "" {
+		if parsed, err := uuid.Parse(tenantID); err == nil {
+			tid = &parsed
+		}
+	}
+
+	now := time.Now()
+	_, err = c.db.ExecContext(ctx, query,
+		sessionUUID,
+		uid,
+		tid,
+		JSONB(map[string]interface{}{"created_from": "orchestrator"}),
+		10000, // default token budget
+		0,     // tokens used
+		now,
+		now,
+	)
+
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -479,7 +536,7 @@ func (c *Client) SaveAuditLog(ctx context.Context, audit *AuditLog) error {
 // GetTaskExecution retrieves a task execution by workflow ID
 func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*TaskExecution, error) {
 	var task TaskExecution
-	
+
 	query := `
 		SELECT id, workflow_id, user_id, session_id, query, mode, status,
 			started_at, completed_at, result, error,
@@ -491,7 +548,7 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 	if err != nil {
 		return &task, err
 	}
-	
+
 	err = row.Scan(
 		&task.ID, &task.WorkflowID, &task.UserID, &task.SessionID,
 		&task.Query, &task.Mode, &task.Status,

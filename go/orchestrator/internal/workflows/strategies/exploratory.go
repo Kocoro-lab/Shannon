@@ -181,6 +181,7 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"tree_depth", totResult.TreeDepth,
 	)
 
+
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
@@ -196,4 +197,3 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		},
 	}, nil
 }
-
