@@ -129,16 +129,19 @@ class ProviderManager:
             **kwargs
         )
         
-        # Track token usage for session
+        # Track token usage for session (Responses usage has input_tokens/output_tokens)
         if session_id and 'usage' in result:
-            usage = result['usage']
-            total_tokens = usage.get('total_tokens', 0)
+            usage = result['usage'] or {}
+            total_tokens = usage.get('total_tokens')
+            if total_tokens is None:
+                it = usage.get('input_tokens', 0)
+                ot = usage.get('output_tokens', 0)
+                total_tokens = it + ot
             self.session_tokens[session_id] = self.session_tokens.get(session_id, 0) + total_tokens
             logger.info(f"Session {session_id} token usage: {self.session_tokens[session_id]}")
         
-        # Add model info to result
-        result["model_used"] = model_id
-        result["provider"] = model_info.provider.value
+        # Ensure provider tag present for observability; model should already be included by provider
+        result["provider"] = result.get("provider", model_info.provider.value)
         
         return result
     

@@ -245,13 +245,24 @@ async def agent_query(request: Request, query: AgentQuery):
                 tools=tools_param
             )
             
-            # Process the response
-            response_text = result_data.get("completion", "")
-            
-            # If there are tool calls, we need to execute them and format the results
-            if result_data.get("tool_calls") and query.tools:
+            # Process the response (Responses API shape)
+            response_text = result_data.get("output_text", "")
+
+            # Extract tool calls from Responses output items if any
+            tool_calls_from_output = []
+            try:
+                for item in (result_data.get("output") or []):
+                    if isinstance(item, dict) and item.get("type") == "tool_call":
+                        name = item.get("name")
+                        args = item.get("arguments") or {}
+                        tool_calls_from_output.append({"name": name, "arguments": args})
+            except Exception:
+                tool_calls_from_output = []
+
+            # Execute tools if requested
+            if tool_calls_from_output and query.tools:
                 tool_results = await _execute_and_format_tools(
-                    result_data.get("tool_calls", []),
+                    tool_calls_from_output,
                     query.tools,
                     query.query,
                     request
@@ -263,7 +274,7 @@ async def agent_query(request: Request, query: AgentQuery):
             result = {
                 "response": response_text,
                 "tokens_used": result_data.get("usage", {}).get("total_tokens", 0),
-                "model_used": result_data.get("model_used", "unknown")
+                "model_used": result_data.get("model", "unknown")
             }
         else:
             # Use mock provider for testing
@@ -555,7 +566,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             )
 
             import json as _json
-            raw = result.get("completion", "")
+            raw = result.get("output_text", "")
             logger.debug(f"LLM raw response: {raw[:500]}")
 
             data = None

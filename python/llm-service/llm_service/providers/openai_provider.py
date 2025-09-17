@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+import json
 import logging
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -70,159 +71,253 @@ class OpenAIProvider(LLMProvider):
         tools: List[dict] = None,
         **kwargs
     ) -> dict:
-        """Generate completion using OpenAI API"""
+        """Generate a completion and return a Responses-style payload."""
         try:
-            # Use Chat Completions API for all models
-            # Note: Responses API doesn't exist in OpenAI SDK, removed to avoid warnings
-            return await self._chat_completions_call(messages, model, temperature, max_tokens, tools, **kwargs)
-            
-        except Exception as e:
-            logger.error(f"OpenAI completion error: {e}")
-            raise
+            response_format = kwargs.pop("response_format", None)
 
-    # Removed: _responses_api_call method - OpenAI SDK doesn't have responses API
-    # This was likely confused with a beta or internal API that doesn't exist
-    # All calls now use the standard Chat Completions API
-    
-    async def _responses_api_call_removed(
-        self,
-        messages: List[dict],
-        model: str,
-        temperature: float,
-        max_tokens: int,
-        tools: Optional[List[dict]] = None,
-        **kwargs,
-    ) -> dict:
-        """Call the OpenAI Responses API and normalize output."""
-        # Convert chat messages to Responses input format
-        inputs = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            inputs.append({
-                "role": role,
-                "content": [{"type": "text", "text": content}],
-            })
+            if not hasattr(self.client, "responses") or not hasattr(self.client.responses, "create"):
+                logger.error(
+                    "OpenAI Responses API is unavailable on this client instance",
+                    extra={"model": model, "tools": bool(tools)},
+                )
+                raise RuntimeError("OpenAI Responses API is not available on the configured client")
 
-        request_params = {
-            "model": model,
-            "input": inputs,
-            "temperature": temperature,
-            "max_output_tokens": max_tokens,
-        }
-        if tools:
-            request_params["tools"] = tools
-            request_params["tool_choice"] = "auto"
-        request_params.update(kwargs)
+            logger.info(
+                "OpenAIProvider using Responses API (forced)",
+                extra={"model": model, "tools": bool(tools)},
+            )
 
-        response = await self.client.responses.create(**request_params)
+            inputs: List[Dict[str, Any]] = []
+            for msg in messages:
+                role = msg.get("role", "user")
+                text = msg.get("content", "")
+                content_block_type = "input_text" if role in ("system", "user") else "output_text"
+                inputs.append(
+                    {
+                        "role": role,
+                        "content": [{"type": content_block_type, "text": text}],
+                    }
+                )
 
-        # Extract text
-        completion_text = getattr(response, "output_text", None)
-        if not completion_text:
-            # Fallback: walk output blocks and concatenate message text
-            completion_text = ""
-            output = getattr(response, "output", []) or []
-            for item in output:
-                if isinstance(item, dict):
-                    if item.get("type") == "message":
-                        for block in item.get("content", []) or []:
-                            if block.get("type") == "text":
-                                completion_text += block.get("text", "")
+            request_params: Dict[str, Any] = {
+                "model": model,
+                "input": inputs,
+                "max_output_tokens": max_tokens,
+                "store": False,
+            }
 
-        # Usage normalization
-        usage = getattr(response, "usage", None)
-        prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
-        completion_tokens = getattr(usage, "output_tokens", 0) if usage else 0
-        total_tokens = prompt_tokens + completion_tokens
-        cost = self.calculate_cost(prompt_tokens, completion_tokens, model)
+            if not str(model).startswith("gpt-5"):
+                request_params["temperature"] = temperature
+            else:
+                request_params["temperature"] = 1
 
-        # Tool calls normalization (Responses may return tool call outputs)
-        tool_calls = self._normalize_tool_calls_from_responses(response)
+            if response_format is not None:
+                logger.info(
+                    "response_format is not yet supported for Responses API; ignoring",
+                    extra={"model": model},
+                )
 
-        return {
-            "completion": completion_text or "",
-            "tool_calls": tool_calls,
-            "finish_reason": getattr(response, "finish_reason", None) or "stop",
-            "usage": TokenUsage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                cost_usd=cost,
-                model=model,
-            ).__dict__,
-            "cache_hit": False,
-        }
+            formatted_tools: List[Dict[str, Any]] = []
+            if tools:
+                for tool in tools:
+                    if not isinstance(tool, dict):
+                        logger.warning(
+                            "Skipping tool with unsupported format",
+                            extra={"tool": tool},
+                        )
+                        continue
 
-    async def _chat_completions_call(
-        self,
-        messages: List[dict],
-        model: str,
-        temperature: float,
-        max_tokens: int,
-        tools: Optional[List[dict]] = None,
-        **kwargs,
-    ) -> dict:
-        """Call the Chat Completions API and normalize output."""
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if tools:
-            request_params["tools"] = tools
-            request_params["tool_choice"] = "auto"
-        request_params.update(kwargs)
+                    if "function" in tool:
+                        func_block = tool.get("function") or {}
+                        name = func_block.get("name")
+                        if not name:
+                            logger.warning(
+                                "Skipping function tool without name",
+                                extra={"tool": tool},
+                            )
+                            continue
+                        formatted_tools.append(
+                            {
+                                "type": "function",
+                                "name": name,
+                                "description": func_block.get("description")
+                                or tool.get("description"),
+                                "parameters": func_block.get("parameters") or {},
+                            }
+                        )
+                        continue
 
-        response = await self.client.chat.completions.create(**request_params)
-        choice = response.choices[0]
-        usage = response.usage
-        prompt_tokens = getattr(usage, "prompt_tokens", 0)
-        completion_tokens = getattr(usage, "completion_tokens", 0)
-        total_tokens = getattr(usage, "total_tokens", prompt_tokens + completion_tokens)
-        cost = self.calculate_cost(prompt_tokens, completion_tokens, model)
+                    name = tool.get("tool") or tool.get("name")
+                    if not name:
+                        logger.warning(
+                            "Skipping tool without name",
+                            extra={"tool": tool},
+                        )
+                        continue
 
-        # Normalize tool calls from ChatCompletions
-        tool_calls = self._normalize_tool_calls_from_chat(choice)
+                    formatted_tools.append(
+                        {
+                            "type": tool.get("type", "function"),
+                            "name": name,
+                            "description": tool.get("description"),
+                            "parameters": tool.get("parameters") or {},
+                        }
+                    )
 
-        return {
-            "completion": getattr(choice.message, "content", ""),
-            "tool_calls": tool_calls,
-            "finish_reason": getattr(choice, "finish_reason", None),
-            "usage": TokenUsage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                cost_usd=cost,
-                model=model,
-            ).__dict__,
-            "cache_hit": False,
-        }
+                if formatted_tools:
+                    request_params["tools"] = formatted_tools
+                    request_params["tool_choice"] = "auto"
+                    logger.debug(
+                        "Translated tools for Responses API",
+                        extra={"tools": formatted_tools},
+                    )
+            if str(model).startswith("gpt-5"):
+                request_params["reasoning"] = {"effort": "medium"}
 
-    def _normalize_tool_calls_from_chat(self, choice: Any) -> Optional[List[Dict[str, Any]]]:
-        """Normalize OpenAI ChatCompletions tool calls to a consistent schema."""
-        calls = getattr(getattr(choice, "message", object()), "tool_calls", None)
-        if not calls:
-            return None
-        normalized = []
-        for c in calls:
-            fn = getattr(c, "function", None)
-            if not fn:
-                continue
-            name = getattr(fn, "name", None)
-            args = getattr(fn, "arguments", "{}")
+            request_params.update(kwargs)
+
             try:
-                import json as _json
-                parsed = _json.loads(args) if isinstance(args, str) else args
+                response = await self.client.responses.create(**request_params)
             except Exception:
-                parsed = {"_raw": args}
-            normalized.append({
-                "type": "function",
-                "name": name,
-                "arguments": parsed,
-            })
-        return normalized or None
+                sanitized_messages = []
+                for item in request_params.get("input", []):
+                    if not isinstance(item, dict):
+                        continue
+                    content_blocks = item.get("content", []) or []
+                    previews: List[str] = []
+                    for block in content_blocks:
+                        text_value = None
+                        if isinstance(block, dict):
+                            text_value = block.get("text")
+                        elif isinstance(block, str):
+                            text_value = block
+                        if text_value is None:
+                            continue
+                        previews.append(str(text_value)[:200])
+                    sanitized_messages.append(
+                        {
+                            "role": item.get("role"),
+                            "content_preview": previews,
+                        }
+                    )
+
+                logger.exception(
+                    "OpenAI Responses API call failed",
+                    extra={
+                        "model": model,
+                        "temperature": request_params.get("temperature"),
+                        "max_output_tokens": request_params.get("max_output_tokens"),
+                        "tools": bool(request_params.get("tools")),
+                        "response_format": response_format,
+                        "input_preview": sanitized_messages,
+                        "additional_params": {
+                            k: v
+                            for k, v in request_params.items()
+                            if k not in {"input", "tools"}
+                        },
+                    },
+                )
+                raise
+
+            try:
+                raw_result: Dict[str, Any] = response.model_dump()
+            except Exception:
+                raw_result = {
+                    "id": getattr(response, "id", None),
+                    "model": getattr(response, "model", model),
+                    "output": getattr(response, "output", None),
+                    "usage": getattr(response, "usage", None),
+                }
+
+            logger.info("OpenAI Responses raw payload (model=%s): %s", model, raw_result)
+
+            # Normalize output blocks and assemble plain-text string
+            output_blocks: List[Dict[str, Any]] = []
+            text_segments: List[str] = []
+
+            def append_text(value: Optional[str]) -> None:
+                if not value:
+                    return
+                text = value.strip()
+                if not text:
+                    return
+                text_segments.append(text)
+                output_blocks.append({"type": "output_text", "text": text})
+
+            for item in raw_result.get("output", []) or []:
+                item_type = item.get("type")
+                if item_type == "output_text":
+                    content = item.get("content")
+                    if isinstance(content, str):
+                        append_text(content)
+                    elif isinstance(content, list):
+                        pieces = []
+                        for block in content:
+                            if isinstance(block, dict) and block.get("text"):
+                                pieces.append(str(block["text"]))
+                            elif isinstance(block, str):
+                                pieces.append(block)
+                        append_text("\n".join(pieces))
+                elif item_type == "message":
+                    for block in item.get("content", []) or []:
+                        if isinstance(block, dict) and block.get("type") in {"output_text", "text"}:
+                            append_text(str(block.get("text", "")))
+                        elif isinstance(block, str):
+                            append_text(block)
+                elif item_type in {"function_call", "tool_call"}:
+                    name = item.get("name") or item.get("function") or item.get("call_id")
+                    arguments = item.get("arguments")
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except Exception:
+                            pass
+                    output_blocks.append(
+                        {
+                            "type": "tool_call",
+                            "name": name,
+                            "arguments": arguments,
+                        }
+                    )
+
+            # Fallback: if no explicit message text captured, try response.output_text property
+            if not text_segments:
+                fallback_text = getattr(response, "output_text", None)
+                append_text(fallback_text)
+
+            usage_dict: Optional[Dict[str, Any]] = None
+            if isinstance(raw_result.get("usage"), dict):
+                usage_dict = raw_result.get("usage")
+                if usage_dict and not usage_dict.get("total_tokens"):
+                    prompt = usage_dict.get("input_tokens", 0)
+                    completion = usage_dict.get("output_tokens", 0)
+                    usage_dict["total_tokens"] = prompt + completion
+
+            normalized_result = {
+                "id": raw_result.get("id"),
+                "model": raw_result.get("model", model),
+                "output": output_blocks if output_blocks else raw_result.get("output"),
+                "output_text": "\n\n".join(text_segments).strip(),
+                "usage": usage_dict or raw_result.get("usage"),
+            }
+
+            logger.info(
+                "OpenAI Responses API call succeeded",
+                extra={
+                    "model": normalized_result.get("model"),
+                    "tools": bool(tools),
+                    "input_tokens": usage_dict.get("input_tokens") if usage_dict else None,
+                    "output_tokens": usage_dict.get("output_tokens") if usage_dict else None,
+                },
+            )
+
+            from . import ProviderType
+            normalized_result["provider"] = ProviderType.OPENAI.value
+            return normalized_result
+
+        except Exception as e:
+            logger.exception("OpenAI completion error")
+            raise
 
     async def _maybe_discover_models(self) -> None:
         """Best-effort dynamic model discovery via OpenAI models.list()."""

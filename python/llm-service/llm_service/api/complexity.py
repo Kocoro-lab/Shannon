@@ -115,7 +115,7 @@ async def analyze_complexity(request: Request, body: ComplexityRequest, debug: O
             response_format={"type": "json_object"},
             specific_model=(settings.complexity_model_id if settings and settings.complexity_model_id else None),
         )
-        raw = result.get("completion", "")
+        raw = result.get("output_text", "")
         data = _extract_json_block(raw)
         if not data:
             # fallback to heuristic if model response isn't parseable
@@ -298,7 +298,7 @@ async def analyze_task(request: Request, body: TaskAnalysisRequest):
             response_format={"type": "json_object"},
         )
         
-        raw = result.get("completion", "")
+        raw = result.get("output_text", "")
         data = _extract_json_block(raw)
         
         if not data:

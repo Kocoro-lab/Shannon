@@ -482,7 +482,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             )
 
             import json as _json
-            raw = result.get("completion", "")
+            raw = result.get("output_text", "")
             data = None
             try:
                 data = _json.loads(raw)

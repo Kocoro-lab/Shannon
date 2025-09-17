@@ -16,15 +16,7 @@ class CompletionRequest(BaseModel):
     tools: Optional[List[dict]] = None
     cache_key: Optional[str] = None
 
-class CompletionResponse(BaseModel):
-    completion: str
-    model_used: str
-    provider: str
-    usage: dict
-    cache_hit: bool
-    finish_reason: str
-
-@router.post("/", response_model=CompletionResponse)
+@router.post("/")
 async def generate_completion(request: Request, body: CompletionRequest):
     """Generate a completion using the LLM service"""
     cache = request.app.state.cache
@@ -40,25 +32,21 @@ async def generate_completion(request: Request, body: CompletionRequest):
     
     if cache_result:
         cache_result["cache_hit"] = True
-        
         # Record cache hit metrics
-        usage = cache_result.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
-        cost = usage.get("cost", 0.0)
-        
+        usage = cache_result.get("usage", {}) or {}
+        prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+        completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
         metrics.record_llm_request(
             provider=cache_result.get("provider", "unknown"),
-            model=cache_result.get("model_used", "unknown"),
+            model=cache_result.get("model", "unknown"),
             tier=body.model_tier or "unknown",
             cache_hit=True,
-            duration=0.0,  # Cache hits are essentially instant
+            duration=0.0,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
-            cost=0.0  # Cache hits don't incur cost
+            cost=0.0,
         )
-        
-        return CompletionResponse(**cache_result)
+        return cache_result
     
     # Convert tier string to enum
     tier = None
@@ -84,14 +72,14 @@ async def generate_completion(request: Request, body: CompletionRequest):
             raise HTTPException(status_code=500, detail=str(e))
 
     # After timing context exits, record metrics with final duration
-    usage = result.get("usage", {})
-    prompt_tokens = usage.get("prompt_tokens", 0)
-    completion_tokens = usage.get("completion_tokens", 0)
-    cost = usage.get("cost", 0.0)
+    usage = result.get("usage", {}) or {}
+    prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
+    completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+    cost = usage.get("cost_usd", usage.get("cost", 0.0))
 
     metrics.record_llm_request(
         provider=result.get("provider", "unknown"),
-        model=result.get("model_used", "unknown"),
+        model=result.get("model", "unknown"),
         tier=body.model_tier or "unknown",
         cache_hit=False,
         duration=timer.duration or 0.0,
@@ -103,10 +91,9 @@ async def generate_completion(request: Request, body: CompletionRequest):
     # Cache the result
     await cache.set(
         messages=body.messages,
-        model=result["model_used"],
+        model=result.get("model", body.specific_model or body.model_tier or "unknown"),
         response=result,
         temperature=body.temperature,
         max_tokens=body.max_tokens
     )
-
-    return CompletionResponse(**result)
+    return result

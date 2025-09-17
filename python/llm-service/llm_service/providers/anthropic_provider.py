@@ -65,7 +65,11 @@ class AnthropicProvider(LLMProvider):
         tools: List[dict] = None,
         **kwargs
     ) -> dict:
-        """Generate completion using Anthropic API"""
+        """Generate completion using Anthropic API.
+
+        Returns a dict shaped like the Responses API output
+        (with keys like model, output_text, output, usage).
+        """
         try:
             # Convert messages to Anthropic format
             system_message = None
@@ -94,53 +98,65 @@ class AnthropicProvider(LLMProvider):
             if tools:
                 request_params["tools"] = self._convert_tools(tools)
             
-            # Add additional parameters
+            # Add additional parameters (drop unsupported response_format)
+            if "response_format" in kwargs:
+                kwargs.pop("response_format", None)
             request_params.update(kwargs)
             
             # Call Anthropic API
             response = await self.client.messages.create(**request_params)
-            
-            # Extract response
-            content = response.content[0].text if response.content else ""
 
-            # Normalize tool calls if present (Claude 3.5 tool_use blocks)
-            tool_calls = None
+            # Extract assistant text
+            content_text = response.content[0].text if response.content else ""
+
+            # Build Responses-like output array
+            output_items: List[Dict[str, Any]] = [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": content_text}],
+                }
+            ]
+
+            # Normalize tool calls if present (Claude 3.5 tool_use blocks) into Responses-style tool_call items
             try:
                 blocks = getattr(response, "content", []) or []
-                calls = []
                 for b in blocks:
-                    # SDK block may expose .type/.name/.input attributes or dict-like
                     b_type = getattr(b, "type", None) or (b.get("type") if isinstance(b, dict) else None)
                     if b_type == "tool_use":
                         name = getattr(b, "name", None) or (b.get("name") if isinstance(b, dict) else None)
                         args = getattr(b, "input", None) or (b.get("input") if isinstance(b, dict) else {})
-                        calls.append({"type": "function", "name": name, "arguments": args})
-                if calls:
-                    tool_calls = calls
+                        output_items.append({
+                            "type": "tool_call",
+                            "name": name,
+                            "arguments": args,
+                        })
             except Exception:
-                tool_calls = None
-            
-            # Calculate cost (Anthropic uses input/output tokens)
-            cost = self.calculate_cost(
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                model
-            )
-            
-            result = {
-                "completion": content,
-                "tool_calls": tool_calls,
-                "finish_reason": response.stop_reason,
-                "usage": TokenUsage(
-                    prompt_tokens=response.usage.input_tokens,
-                    completion_tokens=response.usage.output_tokens,
-                    total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-                    cost_usd=cost,
-                    model=model
-                ).__dict__,
-                "cache_hit": False
+                pass
+
+            # Usage normalization
+            usage_obj = getattr(response, "usage", None)
+            in_tok = getattr(usage_obj, "input_tokens", 0) if usage_obj else 0
+            out_tok = getattr(usage_obj, "output_tokens", 0) if usage_obj else 0
+            total_tok = in_tok + out_tok
+            cost = self.calculate_cost(in_tok, out_tok, model)
+
+            from . import ProviderType
+            result: Dict[str, Any] = {
+                "id": getattr(response, "id", None),
+                "model": model,
+                "output_text": content_text,
+                "output": output_items,
+                "usage": {
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
+                    "total_tokens": total_tok,
+                    "cost_usd": cost,
+                },
+                "stop_reason": getattr(response, "stop_reason", None),
+                "provider": ProviderType.ANTHROPIC.value,
             }
-            
+
             return result
             
         except Exception as e:
