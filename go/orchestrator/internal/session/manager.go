@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -29,10 +30,13 @@ type Manager struct {
 
 // NewManager creates a new session manager
 func NewManager(redisAddr string, logger *zap.Logger) (*Manager, error) {
+	// Get Redis password from environment variable
+	redisPassword := os.Getenv("REDIS_PASSWORD")
+
 	redisClient := redis.NewClient(&redis.Options{
 		Addr:         redisAddr,
-		Password:     "", // No password by default
-		DB:           0,  // Default DB
+		Password:     redisPassword, // Use environment variable
+		DB:           0,             // Default DB
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  3 * time.Second,
 		WriteTimeout: 3 * time.Second,

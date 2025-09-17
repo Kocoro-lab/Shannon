@@ -81,7 +81,16 @@ func ModifiedTime() time.Time {
 }
 
 // Reload forces a re-read of pricing configuration.
-func Reload() { load() }
+// Thread-safe: uses mutex to prevent race conditions.
+func Reload() {
+	// Reset once to allow load to be called again
+	mu.Lock()
+	once = sync.Once{}
+	mu.Unlock()
+
+	// Trigger a new load via get()
+	get()
+}
 
 // DefaultPerToken returns default combined price per token
 func DefaultPerToken() float64 {
@@ -115,6 +124,11 @@ func PricePerTokenForModel(model string) (float64, bool) {
 
 // CostForTokens returns cost in USD for total tokens with optional model
 func CostForTokens(model string, tokens int) float64 {
+	// Validate token count
+	if tokens < 0 {
+		tokens = 0 // Treat negative as zero to avoid negative costs
+	}
+
 	if price, ok := PricePerTokenForModel(model); ok {
 		return float64(tokens) * price
 	}
@@ -129,6 +143,14 @@ func CostForTokens(model string, tokens int) float64 {
 // CostForSplit computes cost using input/output token split when available.
 // Falls back to combined pricing or default if model not found.
 func CostForSplit(model string, inputTokens, outputTokens int) float64 {
+	// Validate token counts
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+
 	cfg := get()
 	// Find model pricing
 	for _, models := range cfg.Pricing.Models {
