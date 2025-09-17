@@ -17,11 +17,11 @@ echo "[replay] Exporting history for workflow_id=${WORKFLOW_ID} run_id=${RUN_ID:
 
 # Use the new temporal CLI which outputs proper JSON
 if [ -n "$RUN_ID" ]; then
-  docker compose -f deploy/compose/compose.yml exec -T temporal \
+  docker compose -f deploy/compose/docker-compose.yml exec -T temporal \
     temporal workflow show --workflow-id "$WORKFLOW_ID" --run-id "$RUN_ID" \
     --namespace default --address temporal:7233 --output json > "$OUT_FILE"
 else
-  docker compose -f deploy/compose/compose.yml exec -T temporal \
+  docker compose -f deploy/compose/docker-compose.yml exec -T temporal \
     temporal workflow show --workflow-id "$WORKFLOW_ID" \
     --namespace default --address temporal:7233 --output json > "$OUT_FILE"
 fi

@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="${SCRIPT_DIR}/../config"
-COMPOSE_FILE="${SCRIPT_DIR}/../../../deploy/compose/compose.yml"
+COMPOSE_FILE="${SCRIPT_DIR}/../../../deploy/compose/docker-compose.yml"
 
 show_usage() {
     cat << EOF

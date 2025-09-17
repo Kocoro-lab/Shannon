@@ -1,0 +1,226 @@
+name: shannon
+
+networks:
+  shannon-net:
+    driver: bridge
+
+volumes:
+  postgres_data: {}
+  qdrant_data: {}
+
+services:
+  temporal:
+    image: temporalio/auto-setup:latest
+    restart: unless-stopped
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=shannon
+      - POSTGRES_PWD=shannon
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      - postgres
+    ports:
+      - "7233:7233"
+    networks: [shannon-net]
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    restart: unless-stopped
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+    depends_on:
+      - temporal
+    ports:
+      - "8088:8080"
+    networks: [shannon-net]
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: shannon
+      POSTGRES_PASSWORD: shannon
+      POSTGRES_DB: shannon
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../../migrations/postgres:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shannon"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [shannon-net]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [shannon-net]
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks: [shannon-net]
+
+  qdrant-init:
+    image: python:3.11-slim
+    depends_on:
+      - qdrant
+    volumes:
+      - ../../migrations:/app/migrations:ro
+      - ../../scripts/init_qdrant.sh:/app/init_qdrant.sh:ro
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+    command: |
+      bash -c "pip install qdrant-client && bash /app/init_qdrant.sh"
+    networks: [shannon-net]
+    restart: "no"
+
+  agent-core:
+    build: 
+      context: ../../
+      dockerfile: rust/agent-core/Dockerfile
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+      - CONFIG_PATH=/app/config/features.yaml
+      - METRICS_PORT=${AGENT_CORE_METRICS_PORT:-2113}
+      # Tool parallelism: number of concurrent tool executions (default 1 for sequential)
+      - TOOL_PARALLELISM=${TOOL_PARALLELISM:-1}
+      # Optional distributed rate limiting (leave empty to use in-memory limiter)
+      - ENFORCE_RATE_REDIS_URL=${ENFORCE_RATE_REDIS_URL:-}
+    depends_on:
+      temporal:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    ports:
+      - "50051:50051"
+      - "2113:2113"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ../../config:/app/config:ro
+    networks: [shannon-net]
+
+  orchestrator:
+    build:
+      context: ../../go/orchestrator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=shannon
+      - POSTGRES_PASSWORD=shannon
+      - POSTGRES_DB=shannon
+      - CONFIG_PATH=/app/config/features.yaml
+      - METRICS_PORT=${ORCHESTRATOR_METRICS_PORT:-2112}
+      - AGENT_TIMEOUT_SECONDS=600  # 10 minutes for complex tasks (10+ LLM calls)
+      # Optional: Account MCP tool costs in tokens (cost*1000); default off
+      - MCP_COST_TO_TOKENS=${MCP_COST_TO_TOKENS:-0}
+      # Priority-based task queues: set to 'on' to enable separate workers per priority
+      - PRIORITY_QUEUES=${PRIORITY_QUEUES:-}
+      # Enable automatic tool selection for parallel execution
+      - ENABLE_TOOL_SELECTION=${ENABLE_TOOL_SELECTION:-1}
+      # Priority worker concurrency (optional; defaults shown)
+      - WORKER_ACT_CRITICAL=${WORKER_ACT_CRITICAL:-12}
+      - WORKER_WF_CRITICAL=${WORKER_WF_CRITICAL:-12}
+      - WORKER_ACT_HIGH=${WORKER_ACT_HIGH:-10}
+      - WORKER_WF_HIGH=${WORKER_WF_HIGH:-10}
+      - WORKER_ACT_NORMAL=${WORKER_ACT_NORMAL:-8}
+      - WORKER_WF_NORMAL=${WORKER_WF_NORMAL:-8}
+      - WORKER_ACT_LOW=${WORKER_ACT_LOW:-4}
+      - WORKER_WF_LOW=${WORKER_WF_LOW:-4}
+      # Single-queue mode concurrency (used when PRIORITY_QUEUES is off)
+      - WORKER_ACT=${WORKER_ACT:-10}
+      - WORKER_WF=${WORKER_WF:-10}
+    depends_on:
+      temporal:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "50052:50052"
+      - "2112:2112"
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50052"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ../../config:/app/config:ro
+    networks: [shannon-net]
+
+  llm-service:
+    build:
+      context: ../../python/llm-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=shannon
+      - POSTGRES_PASSWORD=shannon
+      - POSTGRES_DB=shannon
+      - DEBUG=false
+      - LLM_CONFIG_PATH=/app/config
+      # Web Search Configuration
+      - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-google}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID:-}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      - BING_API_KEY=${BING_API_KEY:-}
+      - EXA_API_KEY=${EXA_API_KEY}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+      # MCP hardening (developer preview)
+      - MCP_ALLOWED_DOMAINS=${MCP_ALLOWED_DOMAINS:-localhost,127.0.0.1}
+      - MCP_MAX_RESPONSE_BYTES=${MCP_MAX_RESPONSE_BYTES:-10485760}
+      - MCP_RETRIES=${MCP_RETRIES:-3}
+      - MCP_TIMEOUT_SECONDS=${MCP_TIMEOUT_SECONDS:-10}
+      - MCP_REGISTER_TOKEN=${MCP_REGISTER_TOKEN:-}
+      - MCP_RATE_LIMIT_DEFAULT=${MCP_RATE_LIMIT_DEFAULT:-60}
+      - MCP_CB_FAILURES=${MCP_CB_FAILURES:-5}
+      - MCP_CB_RECOVERY_SECONDS=${MCP_CB_RECOVERY_SECONDS:-60}
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request,sys; urllib.request.urlopen(''http://localhost:8000/health/live''); print(''ok'')"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ../../config:/app/config:ro
+    networks: [shannon-net]
