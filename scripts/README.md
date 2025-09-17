@@ -18,38 +18,14 @@ This directory contains utility scripts for Shannon platform operations, develop
   Used by `make stream`.
 
 ### Setup & Initialization
-- **`bootstrap_qdrant.sh`** - Initializes Qdrant vector database with required collections.
-  Called by `make dev`.
-
-- **`seed_postgres.sh`** - Seeds PostgreSQL with initial schema and data.
-  Called by `make dev`.
-
-- **`install_buf.sh`** - Installs the `buf` CLI tool for protobuf management.
-  Called automatically by `make proto` if not installed.
+- **`bootstrap_qdrant.sh`** - Creates required Qdrant collections from the host. Used by `make dev`.
+- **`init_qdrant.sh`** - Container entrypoint wrapper that invokes the shared Qdrant migration script.
+- **`seed_postgres.sh`** - Seeds PostgreSQL with initial schema and data. Used by `make dev`.
+- **`install_buf.sh`** - Installs the `buf` CLI tool for protobuf management when missing.
 
 ### Development Tools
-- **`pre-push-check.sh`** - Git pre-push hook that runs CI checks locally before pushing.
-  Validates tests, linting, and build.
-
-- **`replay_workflow.sh`** - Replays a Temporal workflow from exported history.
-  Useful for debugging workflow determinism issues.
-
-- **`upgrade-db.sh`** - Handles database schema migrations and upgrades.
-
-- **`verify_metrics.sh`** - Validates that all services are exposing expected Prometheus metrics.
-
-### Maintenance
-- **`clean_docker_cache.sh`** - Cleans Docker build cache and removes dangling images.
-  Useful when disk space is low.
-
-- **`docker-compose-with-env.sh`** - Wrapper for docker-compose that loads .env file.
-
-### Utilities
-- **`tctl_to_json.py`** - Python script to convert tctl workflow output to JSON format.
-  Fallback for environments without temporal CLI.
-
-- **`signal_team.sh`** - Sends notifications to team channels (Slack/Discord).
-  Environment-specific configuration required.
+- **`replay_workflow.sh`** - Replays a Temporal workflow from exported history for determinism debugging.
+- **`signal_team.sh`** - Sends Temporal signals (recruit/retire) to running workflows during manual testing.
 
 ## Test Scripts
 

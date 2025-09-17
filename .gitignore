@@ -196,6 +196,7 @@ junit.xml
 coverage.out
 coverage.json
 coverage_result.txt
+tests/histories/
 
 # Documentation build
 docs/_build/

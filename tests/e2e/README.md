@@ -36,11 +36,6 @@ This directory contains end-to-end tests for the Shannon platform, providing com
    - Graph of Thoughts
    - Reflexion patterns
 
-6. **verify_metrics.sh** - Validates metrics collection and reporting
-   - Service metrics endpoints
-   - Prometheus format validation
-   - Performance metrics
-
 ### Helper Scripts
 
 - **submit_and_get_response.sh** - Helper for task submission and retrieval
