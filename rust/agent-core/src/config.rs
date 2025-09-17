@@ -577,6 +577,7 @@ mod tests {
                 "Port should be a valid positive number"
             );
         } else {
+            // Should reflect the updated value we just set
             assert_eq!(updated.metrics.port, 9999);
         }
     }

@@ -67,10 +67,10 @@ func NewMetricsCollector() *MetricsCollector {
 func (mc *MetricsCollector) RegisterCircuitBreaker(name, service string, cb *CircuitBreaker) {
 	mc.mutex.Lock()
 	defer mc.mutex.Unlock()
-	
+
 	key := service + ":" + name
 	mc.breakers[key] = cb
-	
+
 	// Set up state change callback
 	originalCallback := cb.config.OnStateChange
 	cb.config.OnStateChange = func(cbName string, from State, to State) {
@@ -78,11 +78,11 @@ func (mc *MetricsCollector) RegisterCircuitBreaker(name, service string, cb *Cir
 		if originalCallback != nil {
 			originalCallback(cbName, from, to)
 		}
-		
+
 		// Record metrics
 		circuitBreakerStateChanges.WithLabelValues(name, service, from.String(), to.String()).Inc()
 		circuitBreakerState.WithLabelValues(name, service).Set(float64(to))
-		
+
 		// Track open time
 		if to == StateOpen {
 			circuitBreakerOpenSince.WithLabelValues(name, service).SetToCurrentTime()
@@ -99,7 +99,7 @@ func (mc *MetricsCollector) RecordRequest(name, service string, state State, suc
 		result = "failure"
 		circuitBreakerFailures.WithLabelValues(name, service).Inc()
 	}
-	
+
 	circuitBreakerRequests.WithLabelValues(name, service, state.String(), result).Inc()
 }
 
@@ -107,17 +107,17 @@ func (mc *MetricsCollector) RecordRequest(name, service string, state State, suc
 func (mc *MetricsCollector) UpdateMetrics() {
 	mc.mutex.RLock()
 	defer mc.mutex.RUnlock()
-	
+
 	for key, cb := range mc.breakers {
 		parts := splitKey(key)
 		if len(parts) != 2 {
 			continue
 		}
 		service, name := parts[0], parts[1]
-		
+
 		state := cb.State()
 		circuitBreakerState.WithLabelValues(name, service).Set(float64(state))
-		
+
 		// Note: Individual request counters are updated in RecordRequest
 		// No need to update them here as they are counters, not gauges
 	}
@@ -140,7 +140,7 @@ func StartMetricsCollection() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		
+
 		for range ticker.C {
 			GlobalMetricsCollector.UpdateMetrics()
 		}

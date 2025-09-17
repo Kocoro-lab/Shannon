@@ -2,11 +2,13 @@
 set -euo pipefail
 
 QUERY=${1:-"Say hello"}
-USER_ID=${USER_ID:-dev}
-# Accept session ID as second parameter, or from env, or default
-SESSION_ID=${2:-${SESSION_ID:-s1}}
+# Accept user ID as second parameter, or from env, or default
+USER_ID=${2:-${USER_ID:-dev}}
+# Accept session ID as third parameter, or from env, or generate unique
+SESSION_ID=${3:-${SESSION_ID:-"session-$(date +%s)"}}
 
 echo "Submitting task: $QUERY"
+echo "Using session: $SESSION_ID (user: $USER_ID)"
 
 grpcurl -plaintext -d '{
   "metadata": {"userId":"'"$USER_ID"'","sessionId":"'"$SESSION_ID"'"},

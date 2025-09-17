@@ -33,7 +33,9 @@ async fn main() -> Result<()> {
 
     // Build reflection service
     let reflection_service = tonic_reflection::server::Builder::configure()
-        .register_encoded_file_descriptor_set(shannon_agent_core::grpc_server::proto::FILE_DESCRIPTOR_SET)
+        .register_encoded_file_descriptor_set(
+            shannon_agent_core::grpc_server::proto::FILE_DESCRIPTOR_SET,
+        )
         .build_v1()
         .unwrap();
 

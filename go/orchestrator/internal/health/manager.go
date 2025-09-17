@@ -50,9 +50,9 @@ type CheckConfig struct {
 // NewManager creates a new health manager
 func NewManager(logger *zap.Logger) *Manager {
 	return &Manager{
-		checkers:      make(map[string]*CheckerState),
-		lastResults:   make(map[string]CheckResult),
-		config:        &HealthConfiguration{
+		checkers:    make(map[string]*CheckerState),
+		lastResults: make(map[string]CheckResult),
+		config: &HealthConfiguration{
 			Enabled:       true,
 			CheckInterval: 30 * time.Second,
 			GlobalTimeout: 5 * time.Second,
@@ -69,7 +69,7 @@ func NewManagerWithConfig(config *HealthConfiguration, logger *zap.Logger) *Mana
 	if config == nil {
 		return NewManager(logger)
 	}
-	
+
 	return &Manager{
 		checkers:      make(map[string]*CheckerState),
 		lastResults:   make(map[string]CheckResult),
@@ -96,7 +96,7 @@ func (m *Manager) RegisterChecker(checker Checker) error {
 
 	// Get configuration for this checker
 	checkConfig, hasConfig := m.config.Checks[name]
-	
+
 	// Create checker state with config or defaults
 	state := &CheckerState{
 		checker:  checker,
@@ -162,7 +162,7 @@ func (m *Manager) GetCheckers() map[string]Checker {
 func (m *Manager) GetOverallHealth(ctx context.Context) OverallHealth {
 	startTime := time.Now()
 	detailed := m.GetDetailedHealth(ctx)
-	
+
 	overall := OverallHealth{
 		Status:    detailed.Overall.Status,
 		Message:   detailed.Overall.Message,
@@ -252,7 +252,7 @@ func (m *Manager) runSingleCheck(ctx context.Context, checker Checker) CheckResu
 
 	startTime := time.Now()
 	result := checker.Check(checkCtx)
-	
+
 	// Ensure result has required fields
 	result.Component = checker.Name()
 	result.Critical = checker.IsCritical()
@@ -269,7 +269,7 @@ func (m *Manager) runSingleCheckWithState(ctx context.Context, state *CheckerSta
 
 	startTime := time.Now()
 	result := state.checker.Check(checkCtx)
-	
+
 	// Ensure result has required fields from state
 	result.Component = state.checker.Name()
 	result.Critical = state.critical
@@ -302,7 +302,7 @@ func (m *Manager) calculateOverallStatus(components map[string]CheckResult, summ
 		if result.Status == StatusDegraded {
 			degradedComponents++
 		}
-		
+
 		if result.Status == StatusUnhealthy {
 			if result.Critical {
 				criticalFailures++
@@ -325,7 +325,7 @@ func (m *Manager) calculateOverallStatus(components map[string]CheckResult, summ
 	} else if degradedComponents > 0 {
 		status = StatusDegraded
 		message = fmt.Sprintf("%d component(s) degraded", degradedComponents)
-		ready = true  // Still ready but degraded
+		ready = true // Still ready but degraded
 		live = true
 	} else if nonCriticalFailures > 0 {
 		status = StatusDegraded
@@ -457,7 +457,7 @@ func (m *Manager) runBackgroundChecks() {
 func (m *Manager) SetCheckInterval(interval time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	m.checkInterval = interval
 	m.logger.Info("Health check interval updated", zap.Duration("interval", interval))
 }

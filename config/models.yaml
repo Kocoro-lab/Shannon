@@ -150,3 +150,42 @@ provider_settings:
     base_url: https://api.minimax.chat/v1
     timeout: 60
     max_retries: 3
+
+# Centralized model pricing (USD per 1K tokens)
+# Used across Go/Rust/Python for consistent cost calculation.
+# Schema:
+# pricing:
+#   defaults:
+#     combined_per_1k: 0.002  # fallback when model unknown
+#   models:
+#     <provider>:
+#       <model_id>:
+#         input_per_1k: 0.0005
+#         output_per_1k: 0.0015
+#         # optional combined_per_1k: 0.0020  # if set, used when only total tokens are known
+pricing:
+  defaults:
+    combined_per_1k: 0.002
+  models:
+    openai:
+      gpt-3.5-turbo:
+        input_per_1k: 0.0005
+        output_per_1k: 0.0015
+      gpt-4-turbo:
+        input_per_1k: 0.0100
+        output_per_1k: 0.0300
+    anthropic:
+      claude-3-sonnet:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0150
+      claude-3-haiku:
+        input_per_1k: 0.00025
+        output_per_1k: 0.00125
+    deepseek:
+      deepseek-chat:
+        input_per_1k: 0.0001
+        output_per_1k: 0.0002
+    qwen:
+      qwen-plus:
+        input_per_1k: 0.0008
+        output_per_1k: 0.0020

@@ -20,4 +20,3 @@ async def mcp_mock(req: MCPInvokeRequest) -> Dict[str, Any]:
     if req.function.lower() == "echo":
         return {"ok": True, "function": req.function, "echo": req.args or {}}
     raise HTTPException(status_code=400, detail="Unknown function")
-

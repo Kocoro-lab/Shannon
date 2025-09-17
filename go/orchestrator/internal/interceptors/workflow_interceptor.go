@@ -32,7 +32,7 @@ func (w *WorkflowHTTPRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 				// Not in activity context, continue without headers
 			}
 		}()
-		
+
 		info := activity.GetInfo(req.Context())
 		if info.WorkflowExecution.ID != "" {
 			// Add workflow ID and run ID headers
@@ -40,7 +40,7 @@ func (w *WorkflowHTTPRoundTripper) RoundTrip(req *http.Request) (*http.Response,
 			req.Header.Set("X-Run-ID", info.WorkflowExecution.RunID)
 		}
 	}()
-	
+
 	return w.base.RoundTrip(req)
 }
 
@@ -53,7 +53,7 @@ func WorkflowUnaryClientInterceptor() grpc.UnaryClientInterceptor {
 			ctx = metadata.AppendToOutgoingContext(ctx, "x-workflow-id", info.WorkflowExecution.ID)
 			ctx = metadata.AppendToOutgoingContext(ctx, "x-run-id", info.WorkflowExecution.RunID)
 		}
-		
+
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
 }
@@ -67,7 +67,7 @@ func WorkflowStreamClientInterceptor() grpc.StreamClientInterceptor {
 			ctx = metadata.AppendToOutgoingContext(ctx, "x-workflow-id", info.WorkflowExecution.ID)
 			ctx = metadata.AppendToOutgoingContext(ctx, "x-run-id", info.WorkflowExecution.RunID)
 		}
-		
+
 		return streamer(ctx, desc, cc, method, opts...)
 	}
 }

@@ -3,43 +3,51 @@
 
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from llm_service.proto import agent_pb2
+
 
 # Mock the missing modules
 class MockRequest:
     def __init__(self):
         self.state = {}
 
+
 import unittest.mock as mock
-with mock.patch('llm_service.api.agent.APIRouter'):
-    with mock.patch('llm_service.api.agent.HTTPException'):
-        with mock.patch('llm_service.api.agent.Request'):
+
+with mock.patch("llm_service.api.agent.APIRouter"):
+    with mock.patch("llm_service.api.agent.HTTPException"):
+        with mock.patch("llm_service.api.agent.Request"):
             from llm_service.api.agent import DecomposeTask
+
 
 def test_decomposition(query: str, expected_type: str):
     """Test decomposition for a given query."""
     req = agent_pb2.DecomposeTaskRequest(
-        query=query,
-        user_id='test-user',
-        session_id='test-session'
+        query=query, user_id="test-user", session_id="test-session"
     )
-    
+
     # Mock context
     context = MockRequest()
-    
+
     try:
         result = DecomposeTask(req, context)
         print(f"\n{expected_type} Query: '{query}'")
         print(f"  Subtasks: {len(result.subtasks)}")
         for i, st in enumerate(result.subtasks, 1):
-            tools = f" [Tools: {', '.join(st.suggested_tools)}]" if st.suggested_tools else ""
+            tools = (
+                f" [Tools: {', '.join(st.suggested_tools)}]"
+                if st.suggested_tools
+                else ""
+            )
             print(f"  {i}. {st.description}{tools}")
         return result
     except Exception as e:
         print(f"Error: {e}")
         return None
+
 
 # Test different query types
 print("=" * 60)
@@ -50,7 +58,9 @@ print("=" * 60)
 test_decomposition("Calculate 100 divided by 4", "Calculation")
 
 # Multi-step calculation
-test_decomposition("Calculate 500 + 300 - 200 and then multiply by 2", "Multi-step Calculation")
+test_decomposition(
+    "Calculate 500 + 300 - 200 and then multiply by 2", "Multi-step Calculation"
+)
 
 # Research task
 test_decomposition("Research the history of artificial intelligence", "Research")

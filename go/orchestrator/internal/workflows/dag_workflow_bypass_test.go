@@ -7,8 +7,8 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/stretchr/testify/assert"
-	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/testsuite"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
@@ -26,7 +26,7 @@ func TestBypassSingleResult(t *testing.T) {
 		func(ctx context.Context, input activities.DecompositionInput) (activities.DecompositionResult, error) {
 			return activities.DecompositionResult{
 				ComplexityScore: 0.2,
-				Mode:           "simple",
+				Mode:            "simple",
 				Subtasks: []activities.Subtask{
 					{ID: "1", Description: "Calculate 2+2"},
 				},
@@ -79,8 +79,8 @@ func TestBypassSingleResult(t *testing.T) {
 	// Test with bypass enabled
 	input := TaskInput{
 		Query:              "What is 2+2?",
-		UserID:            "test-user",
-		SessionID:         "test-session",
+		UserID:             "test-user",
+		SessionID:          "test-session",
 		BypassSingleResult: true, // Enable bypass
 	}
 
@@ -114,7 +114,7 @@ func TestNoBypassMultipleResults(t *testing.T) {
 		func(ctx context.Context, input activities.DecompositionInput) (activities.DecompositionResult, error) {
 			return activities.DecompositionResult{
 				ComplexityScore: 0.7,
-				Mode:           "complex",
+				Mode:            "complex",
 				Subtasks: []activities.Subtask{
 					{ID: "1", Description: "First part"},
 					{ID: "2", Description: "Second part"},
@@ -130,9 +130,9 @@ func TestNoBypassMultipleResults(t *testing.T) {
 		func(ctx context.Context, input activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
 			atomic.AddInt32(&agentCallCount, 1)
 			return activities.AgentExecutionResult{
-				AgentID:   input.AgentID,
-				Response:  "Partial result " + input.AgentID,
-				Success:   true,
+				AgentID:    input.AgentID,
+				Response:   "Partial result " + input.AgentID,
+				Success:    true,
 				TokensUsed: 15,
 			}, nil
 		},
@@ -181,8 +181,8 @@ func TestNoBypassMultipleResults(t *testing.T) {
 
 	input := TaskInput{
 		Query:              "Complex query",
-		UserID:            "test-user",
-		SessionID:         "test-session",
+		UserID:             "test-user",
+		SessionID:          "test-session",
 		BypassSingleResult: true, // Bypass enabled, but should not apply to multiple results
 	}
 

@@ -12,10 +12,10 @@ import (
 type DegradationStrategy interface {
 	// ShouldDegrade returns true if the system should enter degraded mode
 	ShouldDegrade(ctx context.Context) (bool, DegradationLevel, error)
-	
+
 	// GetFallbackBehavior returns the fallback behavior for a specific operation
 	GetFallbackBehavior(operation string) FallbackBehavior
-	
+
 	// RecordDegradation records a degradation event for metrics
 	RecordDegradation(level DegradationLevel, reason string)
 }
@@ -24,10 +24,10 @@ type DegradationStrategy interface {
 type DegradationLevel int
 
 const (
-	LevelNone DegradationLevel = iota
-	LevelMinor                  // Single dependency issue
-	LevelModerate              // Multiple dependency issues
-	LevelSevere                // Critical dependency failure
+	LevelNone     DegradationLevel = iota
+	LevelMinor                     // Single dependency issue
+	LevelModerate                  // Multiple dependency issues
+	LevelSevere                    // Critical dependency failure
 )
 
 func (d DegradationLevel) String() string {
@@ -121,7 +121,7 @@ func NewDefaultStrategy(
 // ShouldDegrade determines if system should degrade based on circuit breaker states
 func (ds *DefaultStrategy) ShouldDegrade(ctx context.Context) (bool, DegradationLevel, error) {
 	health := ds.checkSystemHealth()
-	
+
 	failedCount := 0
 	if !health.Redis.IsHealthy {
 		failedCount++
@@ -171,7 +171,7 @@ func (ds *DefaultStrategy) ShouldDegrade(ctx context.Context) (bool, Degradation
 func (ds *DefaultStrategy) GetFallbackBehavior(operation string) FallbackBehavior {
 	// Check current system health to determine fallback behavior
 	health := ds.checkSystemHealth()
-	
+
 	switch operation {
 	case "session_update":
 		if !health.Redis.IsHealthy {
@@ -222,7 +222,7 @@ func (ds *DefaultStrategy) RecordDegradation(level DegradationLevel, reason stri
 		zap.String("reason", reason),
 		zap.Time("timestamp", time.Now()),
 	)
-	
+
 	// Update metrics
 	degradationEventsTotal.WithLabelValues(level.String(), reason).Inc()
 	currentDegradationLevel.Set(float64(level))
@@ -231,7 +231,7 @@ func (ds *DefaultStrategy) RecordDegradation(level DegradationLevel, reason stri
 // checkSystemHealth checks the health of all dependencies
 func (ds *DefaultStrategy) checkSystemHealth() SystemHealth {
 	now := time.Now()
-	
+
 	health := SystemHealth{
 		Timestamp: now,
 		Redis: DependencyHealth{
@@ -303,7 +303,7 @@ func (ds *DefaultStrategy) UpdateAgentCoreHealth(healthy bool) {
 	ds.agentCoreHealthy = healthy
 }
 
-// UpdateLLMServiceHealth updates the LLM service health status  
+// UpdateLLMServiceHealth updates the LLM service health status
 func (ds *DefaultStrategy) UpdateLLMServiceHealth(healthy bool) {
 	ds.llmServiceHealthy = healthy
 }

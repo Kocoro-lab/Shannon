@@ -34,11 +34,11 @@ func NewJWTManager(signingKey string, accessExpiry, refreshExpiry time.Duration)
 // CustomClaims represents the custom JWT claims
 type CustomClaims struct {
 	jwt.RegisteredClaims
-	TenantID  string   `json:"tenant_id"`
-	Username  string   `json:"username"`
-	Email     string   `json:"email"`
-	Role      string   `json:"role"`
-	Scopes    []string `json:"scopes"`
+	TenantID string   `json:"tenant_id"`
+	Username string   `json:"username"`
+	Email    string   `json:"email"`
+	Role     string   `json:"role"`
+	Scopes   []string `json:"scopes"`
 }
 
 // GenerateTokenPair generates both access and refresh tokens
@@ -66,10 +66,10 @@ func (j *JWTManager) GenerateTokenPair(user *User) (*TokenPair, string, error) {
 // generateAccessToken creates a new JWT access token
 func (j *JWTManager) generateAccessToken(user *User) (string, error) {
 	now := time.Now()
-	
+
 	// Define scopes based on role
 	scopes := j.getScopesForRole(user.Role)
-	
+
 	claims := CustomClaims{
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.ID.String(),
@@ -181,7 +181,7 @@ func generateRefreshToken() (token string, hash string, err error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
-	
+
 	token = base64.URLEncoding.EncodeToString(b)
 	hash = hashToken(token)
 	return token, hash, nil

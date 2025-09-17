@@ -52,19 +52,19 @@ func NewHumanInterventionActivities() *HumanInterventionActivities {
 func (h *HumanInterventionActivities) RequestApproval(ctx context.Context, input HumanApprovalInput) (HumanApprovalResult, error) {
 	// Generate approval ID
 	approvalID := uuid.New().String()
-	
+
 	// Log the approval request
 	fmt.Printf("Human approval requested:\n")
 	fmt.Printf("  Approval ID: %s\n", approvalID)
 	fmt.Printf("  Query: %s\n", input.Query)
 	fmt.Printf("  Reason: %s\n", input.Reason)
 	fmt.Printf("  Proposed Action: %s\n", input.ProposedAction)
-	
+
 	// In production, this would:
 	// 1. Store the request in a database
 	// 2. Send notifications (webhook, email, etc.)
 	// 3. Return the approval ID
-	
+
 	// Return approval ID for the workflow to track
 	return HumanApprovalResult{
 		ApprovalID: approvalID,
@@ -78,12 +78,12 @@ func (h *HumanInterventionActivities) ProcessApprovalResponse(ctx context.Contex
 	h.mu.Lock()
 	h.approvals[response.ApprovalID] = &response
 	h.mu.Unlock()
-	
+
 	fmt.Printf("Approval response processed:\n")
 	fmt.Printf("  Approval ID: %s\n", response.ApprovalID)
 	fmt.Printf("  Approved: %v\n", response.Approved)
 	fmt.Printf("  Feedback: %s\n", response.Feedback)
-	
+
 	return nil
 }
 
@@ -92,11 +92,11 @@ func (h *HumanInterventionActivities) GetApprovalStatus(ctx context.Context, app
 	h.mu.RLock()
 	result, exists := h.approvals[approvalID]
 	h.mu.RUnlock()
-	
+
 	if exists {
 		return *result, nil
 	}
-	
+
 	// Return empty result if not found (still pending)
 	return HumanApprovalResult{
 		ApprovalID: approvalID,
@@ -118,11 +118,11 @@ func EvaluateApprovalPolicy(policy ApprovalPolicy, context map[string]interface{
 			return true, fmt.Sprintf("Complexity score %.2f exceeds threshold %.2f", complexity, policy.ComplexityThreshold)
 		}
 	}
-	
+
 	// Check token budget (handle both int and float64 from JSON)
 	if policy.TokenBudgetExceeded {
 		var tokensUsed, tokenBudget int
-		
+
 		// Handle tokens_used as either int or float64
 		switch v := context["tokens_used"].(type) {
 		case int:
@@ -130,7 +130,7 @@ func EvaluateApprovalPolicy(policy ApprovalPolicy, context map[string]interface{
 		case float64:
 			tokensUsed = int(math.Round(v))
 		}
-		
+
 		// Handle token_budget as either int or float64
 		switch v := context["token_budget"].(type) {
 		case int:
@@ -138,12 +138,12 @@ func EvaluateApprovalPolicy(policy ApprovalPolicy, context map[string]interface{
 		case float64:
 			tokenBudget = int(math.Round(v))
 		}
-		
+
 		if tokensUsed > 0 && tokenBudget > 0 && tokensUsed >= tokenBudget {
 			return true, fmt.Sprintf("Token budget exceeded: %d/%d", tokensUsed, tokenBudget)
 		}
 	}
-	
+
 	// Check tools
 	if len(policy.RequireForTools) > 0 {
 		// Handle tools_to_use as []string or []interface{} (from JSON)
@@ -168,6 +168,6 @@ func EvaluateApprovalPolicy(policy ApprovalPolicy, context map[string]interface{
 			}
 		}
 	}
-	
+
 	return false, ""
 }

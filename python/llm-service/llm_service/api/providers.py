@@ -21,7 +21,9 @@ def _model_info_to_dict(mi) -> Dict[str, Any]:
 
 
 @router.get("/models")
-async def list_provider_models(request: Request, tier: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
+async def list_provider_models(
+    request: Request, tier: Optional[str] = None
+) -> Dict[str, List[Dict[str, Any]]]:
     """Return live model registries per provider.
 
     - Aggregates per configured provider using provider.list_models().
@@ -52,4 +54,3 @@ async def list_provider_models(request: Request, tier: Optional[str] = None) -> 
         except Exception as e:
             out[ptype.value] = [{"error": str(e)}]
     return out
-

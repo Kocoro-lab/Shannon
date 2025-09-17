@@ -38,23 +38,23 @@ var (
 
 // Config holds circuit breaker configuration
 type Config struct {
-	MaxRequests       uint32        // Max requests in half-open state
-	Interval          time.Duration // Interval to clear request counter in closed state
-	Timeout           time.Duration // Time to wait before transitioning from open to half-open
-	FailureThreshold  uint32        // Failure threshold in closed state
-	SuccessThreshold  uint32        // Success threshold in half-open state to transition to closed
-	OnStateChange     func(name string, from State, to State)
+	MaxRequests      uint32        // Max requests in half-open state
+	Interval         time.Duration // Interval to clear request counter in closed state
+	Timeout          time.Duration // Time to wait before transitioning from open to half-open
+	FailureThreshold uint32        // Failure threshold in closed state
+	SuccessThreshold uint32        // Success threshold in half-open state to transition to closed
+	OnStateChange    func(name string, from State, to State)
 }
 
 // DefaultConfig returns sensible defaults for circuit breaker
 func DefaultConfig() Config {
 	return Config{
-		MaxRequests:       3,
-		Interval:          60 * time.Second,
-		Timeout:           10 * time.Second,
-		FailureThreshold:  5,
-		SuccessThreshold:  2,
-		OnStateChange:     nil,
+		MaxRequests:      3,
+		Interval:         60 * time.Second,
+		Timeout:          10 * time.Second,
+		FailureThreshold: 5,
+		SuccessThreshold: 2,
+		OnStateChange:    nil,
 	}
 }
 

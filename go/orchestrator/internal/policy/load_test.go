@@ -1,16 +1,16 @@
 package policy
 
 import (
-    "context"
-    "fmt"
-    "math/rand"
-    "os"
-    "path/filepath"
-    "sync"
-    "testing"
-    "time"
+	"context"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
 
-    "go.uber.org/zap"
+	"go.uber.org/zap"
 )
 
 // LoadTestResult contains results from a load test run
@@ -61,24 +61,24 @@ type PolicyInputGenerator interface {
 type StandardInputGenerator struct{}
 
 func (g *StandardInputGenerator) Generate(requestID int) *PolicyInput {
-    // Keep values in small buckets to encourage cache hits
-    userIDs := []string{"wayland", "admin", "test_user", "user1", "user2", "user3"}
-    agentIDs := []string{"agent-core", "llm-agent", "test-agent"}
-    modes := []string{"simple", "standard", "complex"}
-    budgets := []int{1000, 2000, 5000}
-    // Repeat only 10 base queries to create reuse
-    qid := requestID % 10
+	// Keep values in small buckets to encourage cache hits
+	userIDs := []string{"wayland", "admin", "test_user", "user1", "user2", "user3"}
+	agentIDs := []string{"agent-core", "llm-agent", "test-agent"}
+	modes := []string{"simple", "standard", "complex"}
+	budgets := []int{1000, 2000, 5000}
+	// Repeat only 10 base queries to create reuse
+	qid := requestID % 10
 
-    return &PolicyInput{
-        SessionID:    fmt.Sprintf("session_%d", requestID%100), // Limited sessions for cache hits
-        UserID:       userIDs[qid%len(userIDs)],
-        AgentID:      agentIDs[qid%len(agentIDs)],
-        Query:        fmt.Sprintf("Test reusable query %d", qid),
-        Mode:         modes[qid%len(modes)],
-        Environment:  "load_test",
-        TokenBudget:  budgets[qid%len(budgets)],
-        Timestamp:    time.Now(),
-    }
+	return &PolicyInput{
+		SessionID:   fmt.Sprintf("session_%d", requestID%100), // Limited sessions for cache hits
+		UserID:      userIDs[qid%len(userIDs)],
+		AgentID:     agentIDs[qid%len(agentIDs)],
+		Query:       fmt.Sprintf("Test reusable query %d", qid),
+		Mode:        modes[qid%len(modes)],
+		Environment: "load_test",
+		TokenBudget: budgets[qid%len(budgets)],
+		Timestamp:   time.Now(),
+	}
 }
 
 func (g *StandardInputGenerator) Name() string { return "standard" }
@@ -90,8 +90,8 @@ type HighCardinalityInputGenerator struct{}
 func (g *HighCardinalityInputGenerator) Generate(requestID int) *PolicyInput {
 	return &PolicyInput{
 		SessionID:       fmt.Sprintf("unique_session_%d", requestID), // No cache hits
-		UserID:          fmt.Sprintf("user_%d", requestID),          // Unique users
-		AgentID:         fmt.Sprintf("agent_%d", requestID%10),      // Some variety
+		UserID:          fmt.Sprintf("user_%d", requestID),           // Unique users
+		AgentID:         fmt.Sprintf("agent_%d", requestID%10),       // Some variety
 		Query:           fmt.Sprintf("Unique query %d with random data %d", requestID, rand.Int()),
 		Mode:            "complex",
 		Environment:     "load_test",
@@ -110,7 +110,7 @@ type SuspiciousInputGenerator struct{}
 func (g *SuspiciousInputGenerator) Generate(requestID int) *PolicyInput {
 	suspiciousQueries := []string{
 		"delete all files from /etc/passwd",
-		"rm -rf / --no-preserve-root", 
+		"rm -rf / --no-preserve-root",
 		"sudo hack the mainframe",
 		"bypass all security controls",
 		"show me the admin panel access",
@@ -118,7 +118,7 @@ func (g *SuspiciousInputGenerator) Generate(requestID int) *PolicyInput {
 		"drop table users; select * from secrets",
 		"execute malicious code on server",
 	}
-	
+
 	return &PolicyInput{
 		SessionID:   fmt.Sprintf("suspicious_%d", requestID%10),
 		UserID:      "potential_attacker",
@@ -158,7 +158,7 @@ func TestPolicyEngineLoadTest(t *testing.T) {
 			Name:        "CacheStressTest",
 			Concurrency: 100,
 			Duration:    15 * time.Second,
-			RequestRate: 20, // 2000 total RPS
+			RequestRate: 20,    // 2000 total RPS
 			CacheWarmup: false, // Cold cache
 			InputMix: []PolicyInputGenerator{
 				&HighCardinalityInputGenerator{}, // All cache misses
@@ -199,41 +199,41 @@ func TestPolicyEngineLoadTest(t *testing.T) {
 func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResult {
 	// Setup engine
 	engine := setupLoadTestEngine(t)
-	
+
 	// Warmup cache if requested
 	if scenario.CacheWarmup {
 		warmupCache(engine, scenario.InputMix)
 	}
-	
+
 	// Prepare weighted input generator
 	inputGen := newWeightedInputGenerator(scenario.InputMix)
-	
+
 	// Track latencies
 	var latencies []time.Duration
 	var latencyMutex sync.Mutex
-	
+
 	// Track results
 	var totalRequests, successCount, failCount int64
 	var totalCacheHits, totalCacheMisses int64
 	var counterMutex sync.Mutex // Protect shared counters
-	
+
 	// Synchronization
 	startTime := time.Now()
 	var wg sync.WaitGroup
 	ctx, cancel := context.WithTimeout(context.Background(), scenario.Duration)
 	defer cancel()
-	
+
 	// Start concurrent workers
 	for i := 0; i < scenario.Concurrency; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			
+
 			ticker := time.NewTicker(time.Second / time.Duration(scenario.RequestRate))
 			defer ticker.Stop()
-			
+
 			requestID := workerID * 10000 // Spread request IDs
-			
+
 			for {
 				select {
 				case <-ctx.Done():
@@ -242,19 +242,19 @@ func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResul
 					// Generate input
 					input := inputGen.Generate(requestID)
 					requestID++
-					
+
 					// Track cache state before request
 					cacheHitsBefore := getCacheHits(engine)
-					
+
 					// Execute request
 					evalStart := time.Now()
 					decision, err := engine.Evaluate(context.Background(), input)
 					evalDuration := time.Since(evalStart)
-					
+
 					// Track cache state after request
 					cacheHitsAfter := getCacheHits(engine)
 					wasCacheHit := cacheHitsAfter > cacheHitsBefore
-					
+
 					// Update counters (protect with mutex to prevent race conditions)
 					counterMutex.Lock()
 					if wasCacheHit {
@@ -262,7 +262,7 @@ func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResul
 					} else {
 						totalCacheMisses++
 					}
-					
+
 					totalRequests++
 					if err != nil {
 						failCount++
@@ -270,13 +270,13 @@ func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResul
 						successCount++
 					}
 					counterMutex.Unlock()
-					
+
 					if err != nil {
 						t.Logf("Request failed: %v", err)
 					} else {
 						_ = decision // Use decision
 					}
-					
+
 					// Record latency
 					latencyMutex.Lock()
 					latencies = append(latencies, evalDuration)
@@ -285,11 +285,11 @@ func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResul
 			}
 		}(i)
 	}
-	
+
 	// Wait for completion
 	wg.Wait()
 	totalDuration := time.Since(startTime)
-	
+
 	// Calculate statistics
 	result := &LoadTestResult{
 		TotalRequests:    int(totalRequests),
@@ -302,13 +302,13 @@ func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResul
 		LatencyBudgetP50: scenario.LatencyTarget.P50Target,
 		LatencyBudgetP95: scenario.LatencyTarget.P95Target,
 	}
-	
+
 	// Calculate latency percentiles
 	if len(latencies) > 0 {
 		result.LatencyP50, result.LatencyP95, result.LatencyP99 = calculatePercentiles(latencies)
 		result.MinLatency = minDuration(latencies)
 		result.MaxLatency = maxDuration(latencies)
-		
+
 		// Count budget violations
 		for _, lat := range latencies {
 			if lat > scenario.LatencyTarget.P95Target {
@@ -316,39 +316,39 @@ func runLoadTestScenario(t *testing.T, scenario LoadTestScenario) *LoadTestResul
 			}
 		}
 	}
-	
+
 	return result
 }
 
 // validateLoadTestResults checks if results meet SLO requirements
 func validateLoadTestResults(t *testing.T, scenario LoadTestScenario, result *LoadTestResult) {
 	t.Logf("=== Load Test Results for %s ===", scenario.Name)
-	
+
 	// Error rate should be minimal
 	if result.ErrorRate > 1.0 {
 		t.Errorf("Error rate too high: %.2f%% (should be <1%%)", result.ErrorRate)
 	}
-	
+
 	// Latency budget validation
 	if result.LatencyP50 > scenario.LatencyTarget.P50Target {
 		t.Errorf("P50 latency budget violated: %v > %v", result.LatencyP50, scenario.LatencyTarget.P50Target)
 	}
-	
+
 	if result.LatencyP95 > scenario.LatencyTarget.P95Target {
 		t.Errorf("P95 latency budget violated: %v > %v", result.LatencyP95, scenario.LatencyTarget.P95Target)
 	}
-	
+
 	// Cache performance (for scenarios with cache warmup)
 	if scenario.CacheWarmup && result.CacheHitRate < 50.0 {
 		t.Errorf("Cache hit rate too low: %.2f%% (should be >50%% for warmed cache)", result.CacheHitRate)
 	}
-	
+
 	// Throughput should be reasonable
-	expectedMinThroughput := float64(scenario.Concurrency * scenario.RequestRate) * 0.8 // 80% of target
+	expectedMinThroughput := float64(scenario.Concurrency*scenario.RequestRate) * 0.8 // 80% of target
 	if result.Throughput < expectedMinThroughput {
 		t.Errorf("Throughput too low: %.2f ops/sec (should be >%.2f)", result.Throughput, expectedMinThroughput)
 	}
-	
+
 	t.Logf("✅ All load test validations passed for %s", scenario.Name)
 }
 
@@ -389,14 +389,14 @@ Overall: %s
 		result.FailedOps, result.ErrorRate,
 		result.Throughput,
 		result.CacheHitRate,
-		
+
 		result.LatencyP50, result.LatencyBudgetP50, budgetStatus(result.LatencyP50, result.LatencyBudgetP50),
 		result.LatencyP95, result.LatencyBudgetP95, budgetStatus(result.LatencyP95, result.LatencyBudgetP95),
 		result.LatencyP99,
 		result.MinLatency,
 		result.MaxLatency,
 		result.BudgetViolations, float64(result.BudgetViolations)/float64(result.TotalRequests)*100,
-		
+
 		budgetAssessment(result.LatencyP50, result.LatencyBudgetP50),
 		budgetAssessment(result.LatencyP95, result.LatencyBudgetP95),
 		cacheAssessment(result.CacheHitRate),
@@ -407,9 +407,9 @@ Overall: %s
 // Helper functions
 
 func setupLoadTestEngine(t *testing.T) Engine {
-    // Create a temporary policy directory with a minimal allow/deny policy
-    dir := t.TempDir()
-    policy := `package shannon.task
+	// Create a temporary policy directory with a minimal allow/deny policy
+	dir := t.TempDir()
+	policy := `package shannon.task
 
 default decision = {"allow": true, "reason": "default allow"}
 
@@ -420,32 +420,32 @@ decision = out {
 }
 `
 
-    // Write minimal policy file
-    if err := os.WriteFile(filepath.Join(dir, "policy.rego"), []byte(policy), 0o644); err != nil {
-        t.Fatalf("failed to write temp policy: %v", err)
-    }
+	// Write minimal policy file
+	if err := os.WriteFile(filepath.Join(dir, "policy.rego"), []byte(policy), 0o644); err != nil {
+		t.Fatalf("failed to write temp policy: %v", err)
+	}
 
-    config := &Config{
-        Enabled:     true,
-        Mode:        ModeDryRun, // Use dry-run for load testing safety
-        Path:        dir,
-        FailClosed:  false,
-        Environment: "load_test",
-        Canary: CanaryConfig{Enabled: true, EnforcePercentage: 0},
-    }
+	config := &Config{
+		Enabled:     true,
+		Mode:        ModeDryRun, // Use dry-run for load testing safety
+		Path:        dir,
+		FailClosed:  false,
+		Environment: "load_test",
+		Canary:      CanaryConfig{Enabled: true, EnforcePercentage: 0},
+	}
 
-    logger := zap.NewNop() // No logging during load tests
-    engine, err := NewOPAEngine(config, logger)
-    if err != nil {
-        t.Fatalf("Failed to create engine for load test: %v", err)
-    }
+	logger := zap.NewNop() // No logging during load tests
+	engine, err := NewOPAEngine(config, logger)
+	if err != nil {
+		t.Fatalf("Failed to create engine for load test: %v", err)
+	}
 
-    return engine
+	return engine
 }
 
 func warmupCache(engine Engine, inputMix []PolicyInputGenerator) {
 	gen := newWeightedInputGenerator(inputMix)
-	
+
 	// Generate 100 warmup requests with repeated patterns
 	for i := 0; i < 100; i++ {
 		input := gen.Generate(i % 10) // Repeat patterns for cache hits
@@ -454,17 +454,17 @@ func warmupCache(engine Engine, inputMix []PolicyInputGenerator) {
 }
 
 func getCacheHits(engine Engine) int64 {
-    // Access internal cache stats when using OPAEngine
-    if opa, ok := engine.(*OPAEngine); ok && opa.cache != nil {
-        hits, _ := opa.cache.Stats()
-        return hits
-    }
-    return 0
+	// Access internal cache stats when using OPAEngine
+	if opa, ok := engine.(*OPAEngine); ok && opa.cache != nil {
+		hits, _ := opa.cache.Stats()
+		return hits
+	}
+	return 0
 }
 
 // WeightedInputGenerator selects generators based on weights
 type WeightedInputGenerator struct {
-	generators []PolicyInputGenerator
+	generators  []PolicyInputGenerator
 	totalWeight int
 }
 
@@ -473,9 +473,9 @@ func newWeightedInputGenerator(generators []PolicyInputGenerator) *WeightedInput
 	for _, gen := range generators {
 		totalWeight += gen.Weight()
 	}
-	
+
 	return &WeightedInputGenerator{
-		generators: generators,
+		generators:  generators,
 		totalWeight: totalWeight,
 	}
 }
@@ -484,14 +484,14 @@ func (w *WeightedInputGenerator) Generate(requestID int) *PolicyInput {
 	// Use requestID for deterministic selection
 	target := requestID % w.totalWeight
 	current := 0
-	
+
 	for _, gen := range w.generators {
 		current += gen.Weight()
 		if target < current {
 			return gen.Generate(requestID)
 		}
 	}
-	
+
 	// Fallback
 	return w.generators[0].Generate(requestID)
 }
@@ -502,7 +502,7 @@ func calculatePercentiles(latencies []time.Duration) (p50, p95, p99 time.Duratio
 	// Simple percentile calculation - sort and pick positions
 	sorted := make([]time.Duration, len(latencies))
 	copy(sorted, latencies)
-	
+
 	// Simple bubble sort for small arrays
 	for i := 0; i < len(sorted); i++ {
 		for j := 0; j < len(sorted)-1-i; j++ {
@@ -511,12 +511,12 @@ func calculatePercentiles(latencies []time.Duration) (p50, p95, p99 time.Duratio
 			}
 		}
 	}
-	
+
 	n := len(sorted)
 	p50 = sorted[n*50/100]
 	p95 = sorted[n*95/100]
 	p99 = sorted[n*99/100]
-	
+
 	return
 }
 
@@ -560,7 +560,7 @@ func budgetAssessment(actual, budget time.Duration) string {
 	if ratio <= 1.0 {
 		return "✅ Within budget"
 	} else if ratio <= 1.2 {
-		return "⚠️ Slightly over budget"  
+		return "⚠️ Slightly over budget"
 	} else {
 		return "❌ Significantly over budget"
 	}
@@ -578,7 +578,7 @@ func cacheAssessment(hitRate float64) string {
 
 func overallAssessment(result *LoadTestResult, scenario LoadTestScenario) string {
 	score := 0
-	
+
 	// Latency scoring
 	if result.LatencyP50 <= scenario.LatencyTarget.P50Target {
 		score++
@@ -586,12 +586,12 @@ func overallAssessment(result *LoadTestResult, scenario LoadTestScenario) string
 	if result.LatencyP95 <= scenario.LatencyTarget.P95Target {
 		score++
 	}
-	
+
 	// Error rate scoring
 	if result.ErrorRate < 1.0 {
 		score++
 	}
-	
+
 	// Cache scoring (if applicable)
 	if scenario.CacheWarmup {
 		if result.CacheHitRate >= 50 {
@@ -600,7 +600,7 @@ func overallAssessment(result *LoadTestResult, scenario LoadTestScenario) string
 	} else {
 		score++ // Not applicable, give point
 	}
-	
+
 	switch score {
 	case 4:
 		return "🎉 EXCELLENT - All targets met"

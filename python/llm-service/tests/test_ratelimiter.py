@@ -1,5 +1,4 @@
 import asyncio
-import pytest
 
 from llm_provider.base import RateLimiter
 
@@ -17,6 +16,7 @@ def test_rate_limiter_throttles_and_advances(monkeypatch):
 
     # Patch time and asyncio.sleep used inside RateLimiter
     import llm_provider.base as base
+
     monkeypatch.setattr(base.time, "time", fake_time)
     monkeypatch.setattr(base.asyncio, "sleep", fake_sleep)
 
@@ -39,4 +39,5 @@ def test_rate_limiter_throttles_and_advances(monkeypatch):
         await rl.acquire()
         await rl.acquire()
         assert fake_time() == t_before  # no extra waiting
+
     asyncio.run(_run())

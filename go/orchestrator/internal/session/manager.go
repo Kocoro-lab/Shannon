@@ -1,19 +1,19 @@
 package session
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "sync"
-    "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
 
-    "github.com/go-redis/redis/v8"
-    "github.com/google/uuid"
-    "go.uber.org/zap"
+	"github.com/go-redis/redis/v8"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
-    auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 )
 
 // Manager handles session management with Redis backend
@@ -61,19 +61,19 @@ func NewManager(redisAddr string, logger *zap.Logger) (*Manager, error) {
 
 // CreateSession creates a new session
 func (m *Manager) CreateSession(ctx context.Context, userID string, tenantID string, metadata map[string]interface{}) (*Session, error) {
-    sessionID := uuid.New().String()
+	sessionID := uuid.New().String()
 
-    session := &Session{
-        ID:        sessionID,
-        UserID:    userID,
-        TenantID:  tenantID,
-        CreatedAt: time.Now(),
-        UpdatedAt: time.Now(),
-        ExpiresAt: time.Now().Add(m.ttl),
-        Metadata:  metadata,
-        Context:   make(map[string]interface{}),
-        History:   make([]Message, 0),
-    }
+	session := &Session{
+		ID:        sessionID,
+		UserID:    userID,
+		TenantID:  tenantID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(m.ttl),
+		Metadata:  metadata,
+		Context:   make(map[string]interface{}),
+		History:   make([]Message, 0),
+	}
 
 	// Store in Redis
 	if err := m.saveSession(ctx, session); err != nil {
@@ -93,6 +93,58 @@ func (m *Manager) CreateSession(ctx context.Context, userID string, tenantID str
 	)
 	metrics.SessionsCreated.Inc()
 
+	return session, nil
+}
+
+// CreateSessionWithID creates a new session with a specific ID
+func (m *Manager) CreateSessionWithID(ctx context.Context, sessionID string, userID string, tenantID string, metadata map[string]interface{}) (*Session, error) {
+	// IMPORTANT: Check if session already exists to prevent hijacking
+	existing, _ := m.GetSession(ctx, sessionID)
+	if existing != nil {
+		if existing.UserID != userID {
+			// Session exists but belongs to different user - security violation
+			// Generate a new session ID instead
+			m.logger.Warn("Attempted to reuse session ID from different user, generating new ID",
+				zap.String("requested_session_id", sessionID),
+				zap.String("requesting_user", userID),
+				zap.String("existing_owner", existing.UserID),
+			)
+			// Create new session with generated ID
+			return m.CreateSession(ctx, userID, tenantID, metadata)
+		}
+		// Session exists and belongs to same user - return existing
+		return existing, nil
+	}
+
+	session := &Session{
+		ID:        sessionID,
+		UserID:    userID,
+		TenantID:  tenantID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(m.ttl),
+		Metadata:  metadata,
+		Context:   make(map[string]interface{}),
+		History:   make([]Message, 0),
+	}
+
+	// Store in Redis
+	if err := m.saveSession(ctx, session); err != nil {
+		return nil, fmt.Errorf("failed to save session: %w", err)
+	}
+
+	// Cache locally
+	m.mu.Lock()
+	m.localCache[sessionID] = session
+	m.cleanupLocalCache()
+	metrics.SessionCacheSize.Set(float64(len(m.localCache)))
+	m.mu.Unlock()
+
+	m.logger.Info("Created new session with specific ID",
+		zap.String("session_id", sessionID),
+		zap.String("user_id", userID),
+	)
+	metrics.SessionsCreated.Inc()
 	return session, nil
 }
 
@@ -116,37 +168,37 @@ func (m *Manager) GetSession(ctx context.Context, sessionID string) (*Session, e
 	m.mu.RUnlock()
 	metrics.SessionCacheMisses.Inc()
 
-    // Load from Redis
-    key := m.sessionKey(sessionID)
-    data, err := m.client.Get(ctx, key).Bytes()
+	// Load from Redis
+	key := m.sessionKey(sessionID)
+	data, err := m.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, ErrSessionNotFound
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 
-    var session Session
-    if err := json.Unmarshal(data, &session); err != nil {
-        return nil, fmt.Errorf("failed to unmarshal session: %w", err)
-    }
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal session: %w", err)
+	}
 
-    // Check expiration
-    if session.IsExpired() {
-        m.DeleteSession(ctx, sessionID)
-        return nil, ErrSessionExpired
-    }
+	// Check expiration
+	if session.IsExpired() {
+		m.DeleteSession(ctx, sessionID)
+		return nil, ErrSessionExpired
+	}
 
-    // Enforce tenant isolation if auth context is present
-    if userCtx, err := authFromContext(ctx); err == nil && userCtx.TenantID != "" {
-        if session.TenantID != "" && session.TenantID != userCtx.TenantID {
-            // Do not leak existence
-            return nil, ErrSessionNotFound
-        }
-    }
+	// Enforce tenant isolation if auth context is present
+	if userCtx, err := authFromContext(ctx); err == nil && userCtx.TenantID != "" {
+		if session.TenantID != "" && session.TenantID != userCtx.TenantID {
+			// Do not leak existence
+			return nil, ErrSessionNotFound
+		}
+	}
 
 	// Update local cache and track access time
-    m.mu.Lock()
-    m.localCache[sessionID] = &session
+	m.mu.Lock()
+	m.localCache[sessionID] = &session
 	m.cacheAccess[sessionID] = time.Now()
 	m.cleanupLocalCache()
 	metrics.SessionCacheSize.Set(float64(len(m.localCache)))
@@ -184,12 +236,12 @@ func (m *Manager) DeleteSession(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
 
-    // Remove from local cache
-    m.mu.Lock()
-    delete(m.localCache, sessionID)
-    // Update cache size metric while holding the lock to avoid races
-    metrics.SessionCacheSize.Set(float64(len(m.localCache)))
-    m.mu.Unlock()
+	// Remove from local cache
+	m.mu.Lock()
+	delete(m.localCache, sessionID)
+	// Update cache size metric while holding the lock to avoid races
+	metrics.SessionCacheSize.Set(float64(len(m.localCache)))
+	m.mu.Unlock()
 
 	m.logger.Info("Deleted session", zap.String("session_id", sessionID))
 	return nil
@@ -241,37 +293,37 @@ func (m *Manager) UpdateContext(ctx context.Context, sessionID string, key strin
 
 // GetUserSessions gets all sessions for a user
 func (m *Manager) GetUserSessions(ctx context.Context, userID string) ([]*Session, error) {
-    pattern := fmt.Sprintf("session:*")
-    keys, err := m.client.Keys(ctx, pattern).Result()
-    if err != nil {
-        return nil, fmt.Errorf("failed to list sessions: %w", err)
-    }
+	pattern := fmt.Sprintf("session:*")
+	keys, err := m.client.Keys(ctx, pattern).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list sessions: %w", err)
+	}
 
-    var sessions []*Session
-    for _, key := range keys {
-        data, err := m.client.Get(ctx, key).Bytes()
-        if err != nil {
-            continue // Skip failed sessions
-        }
+	var sessions []*Session
+	for _, key := range keys {
+		data, err := m.client.Get(ctx, key).Bytes()
+		if err != nil {
+			continue // Skip failed sessions
+		}
 
-        var session Session
-        if err := json.Unmarshal(data, &session); err != nil {
-            continue
-        }
+		var session Session
+		if err := json.Unmarshal(data, &session); err != nil {
+			continue
+		}
 
-        // Enforce tenant isolation if available
-        if userCtx, err := authFromContext(ctx); err == nil && userCtx.TenantID != "" {
-            if session.TenantID != "" && session.TenantID != userCtx.TenantID {
-                continue
-            }
-        }
+		// Enforce tenant isolation if available
+		if userCtx, err := authFromContext(ctx); err == nil && userCtx.TenantID != "" {
+			if session.TenantID != "" && session.TenantID != userCtx.TenantID {
+				continue
+			}
+		}
 
-        if session.UserID == userID && !session.IsExpired() {
-            sessions = append(sessions, &session)
-        }
-    }
+		if session.UserID == userID && !session.IsExpired() {
+			sessions = append(sessions, &session)
+		}
+	}
 
-    return sessions, nil
+	return sessions, nil
 }
 
 // CleanupExpired removes expired sessions
@@ -366,23 +418,23 @@ func (m *Manager) cleanupLocalCache() {
 
 // Close closes the session manager
 func (m *Manager) Close() error {
-    return m.client.Close()
+	return m.client.Close()
 }
 
 // RedisWrapper returns the underlying Redis circuit breaker wrapper for health checks and monitoring
 func (m *Manager) RedisWrapper() *circuitbreaker.RedisWrapper {
-    return m.client
+	return m.client
 }
 
 // authFromContext extracts a minimal subset of auth context without hard coupling
 // to the entire auth package surface in this file.
 type minimalUserCtx struct {
-    TenantID string
+	TenantID string
 }
 
 func authFromContext(ctx context.Context) (*minimalUserCtx, error) {
-    if uc, err := auth.GetUserContext(ctx); err == nil && uc != nil {
-        return &minimalUserCtx{TenantID: uc.TenantID.String()}, nil
-    }
-    return nil, fmt.Errorf("no auth context")
+	if uc, err := auth.GetUserContext(ctx); err == nil && uc != nil {
+		return &minimalUserCtx{TenantID: uc.TenantID.String()}, nil
+	}
+	return nil, fmt.Errorf("no auth context")
 }

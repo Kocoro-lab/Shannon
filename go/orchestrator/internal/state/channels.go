@@ -22,17 +22,17 @@ type StateChannel struct {
 
 // ChannelMetadata contains metadata about the state channel
 type ChannelMetadata struct {
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-	UpdateCount  int       `json:"update_count"`
-	LastCheckpoint string  `json:"last_checkpoint"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+	UpdateCount    int       `json:"update_count"`
+	LastCheckpoint string    `json:"last_checkpoint"`
 }
 
 // Checkpoint represents a saved state snapshot
 type Checkpoint struct {
-	ID        string          `json:"id"`
-	Timestamp time.Time       `json:"timestamp"`
-	State     json.RawMessage `json:"state"`
+	ID        string                 `json:"id"`
+	Timestamp time.Time              `json:"timestamp"`
+	State     json.RawMessage        `json:"state"`
 	Metadata  map[string]interface{} `json:"metadata"`
 }
 
@@ -69,26 +69,26 @@ func (sc *StateChannel) AddValidator(v Validator) {
 func (sc *StateChannel) Set(data interface{}) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	
+
 	// Validate if data implements Validatable
 	if v, ok := data.(Validatable); ok {
 		if err := v.Validate(); err != nil {
 			return fmt.Errorf("validation failed: %w", err)
 		}
 	}
-	
+
 	// Run custom validators
 	for _, validator := range sc.validators {
 		if err := validator(data); err != nil {
 			return fmt.Errorf("custom validation failed: %w", err)
 		}
 	}
-	
+
 	// Update state
 	sc.Data = data
 	sc.Metadata.UpdatedAt = time.Now()
 	sc.Metadata.UpdateCount++
-	
+
 	return nil
 }
 
@@ -103,12 +103,12 @@ func (sc *StateChannel) Get() interface{} {
 func (sc *StateChannel) Checkpoint(metadata map[string]interface{}) (string, error) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	
+
 	data, err := json.Marshal(sc.Data)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal state: %w", err)
 	}
-	
+
 	checkpointID := uuid.New().String()
 	checkpoint := Checkpoint{
 		ID:        checkpointID,
@@ -116,10 +116,10 @@ func (sc *StateChannel) Checkpoint(metadata map[string]interface{}) (string, err
 		State:     data,
 		Metadata:  metadata,
 	}
-	
+
 	sc.checkpoints[checkpointID] = checkpoint
 	sc.Metadata.LastCheckpoint = checkpointID
-	
+
 	return checkpointID, nil
 }
 
@@ -127,27 +127,27 @@ func (sc *StateChannel) Checkpoint(metadata map[string]interface{}) (string, err
 func (sc *StateChannel) Restore(checkpointID string, target interface{}) error {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	
+
 	checkpoint, exists := sc.checkpoints[checkpointID]
 	if !exists {
 		return fmt.Errorf("checkpoint not found: %s", checkpointID)
 	}
-	
+
 	if err := json.Unmarshal(checkpoint.State, target); err != nil {
 		return fmt.Errorf("failed to unmarshal checkpoint: %w", err)
 	}
-	
+
 	// Validate restored state
 	if v, ok := target.(Validatable); ok {
 		if err := v.Validate(); err != nil {
 			return fmt.Errorf("restored state validation failed: %w", err)
 		}
 	}
-	
+
 	sc.Data = target
 	sc.Metadata.UpdatedAt = time.Now()
 	sc.Metadata.UpdateCount++
-	
+
 	return nil
 }
 
@@ -155,7 +155,7 @@ func (sc *StateChannel) Restore(checkpointID string, target interface{}) error {
 func (sc *StateChannel) ListCheckpoints() []string {
 	sc.mu.RLock()
 	defer sc.mu.RUnlock()
-	
+
 	ids := make([]string, 0, len(sc.checkpoints))
 	for id := range sc.checkpoints {
 		ids = append(ids, id)
@@ -167,7 +167,7 @@ func (sc *StateChannel) ListCheckpoints() []string {
 func (sc *StateChannel) GetCheckpoint(checkpointID string) (Checkpoint, bool) {
 	sc.mu.RLock()
 	defer sc.mu.RUnlock()
-	
+
 	checkpoint, exists := sc.checkpoints[checkpointID]
 	return checkpoint, exists
 }
@@ -176,22 +176,22 @@ func (sc *StateChannel) GetCheckpoint(checkpointID string) (Checkpoint, bool) {
 func (sc *StateChannel) Clear(keepRecent int) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	
+
 	if len(sc.checkpoints) <= keepRecent {
 		return
 	}
-	
+
 	// Sort checkpoints by timestamp
 	type checkpointPair struct {
 		id        string
 		timestamp time.Time
 	}
-	
+
 	pairs := make([]checkpointPair, 0, len(sc.checkpoints))
 	for id, cp := range sc.checkpoints {
 		pairs = append(pairs, checkpointPair{id: id, timestamp: cp.Timestamp})
 	}
-	
+
 	// Sort by timestamp (newest first)
 	for i := 0; i < len(pairs)-1; i++ {
 		for j := i + 1; j < len(pairs); j++ {
@@ -200,13 +200,13 @@ func (sc *StateChannel) Clear(keepRecent int) {
 			}
 		}
 	}
-	
+
 	// Keep only the most recent N
 	newCheckpoints := make(map[string]Checkpoint)
 	for i := 0; i < keepRecent && i < len(pairs); i++ {
 		id := pairs[i].id
 		newCheckpoints[id] = sc.checkpoints[id]
 	}
-	
+
 	sc.checkpoints = newCheckpoints
 }

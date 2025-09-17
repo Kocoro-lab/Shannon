@@ -1,23 +1,23 @@
 package execution
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"time"
 
-    "go.temporal.io/sdk/workflow"
-    "go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 )
 
 // SequentialConfig controls sequential execution behavior
 type SequentialConfig struct {
-	EmitEvents              bool                   // Whether to emit streaming events
-	Context                 map[string]interface{} // Base context for all agents
-	PassPreviousResults     bool                   // Whether to pass previous results to next agent
-	ExtractNumericValues    bool                   // Whether to extract numeric values from responses
-	ClearDependentToolParams bool                  // Clear tool params for dependent tasks
+	EmitEvents               bool                   // Whether to emit streaming events
+	Context                  map[string]interface{} // Base context for all agents
+	PassPreviousResults      bool                   // Whether to pass previous results to next agent
+	ExtractNumericValues     bool                   // Whether to extract numeric values from responses
+	ClearDependentToolParams bool                   // Clear tool params for dependent tasks
 }
 
 // SequentialTask represents a task to execute sequentially
@@ -41,14 +41,14 @@ type SequentialResult struct {
 // ExecuteSequential runs tasks one after another, optionally passing results between them.
 // Each task can access results from all previous tasks in the sequence.
 func ExecuteSequential(
-    ctx workflow.Context,
-    tasks []SequentialTask,
-    sessionID string,
-    history []string,
-    config SequentialConfig,
-    budgetPerAgent int,
-    userID string,
-    modelTier string,
+	ctx workflow.Context,
+	tasks []SequentialTask,
+	sessionID string,
+	history []string,
+	config SequentialConfig,
+	budgetPerAgent int,
+	userID string,
+	modelTier string,
 ) (*SequentialResult, error) {
 
 	logger := workflow.GetLogger(ctx)
@@ -178,40 +178,40 @@ func ExecuteSequential(
 		if budgetPerAgent > 0 {
 			// Execute with budget
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-            err = workflow.ExecuteActivity(ctx,
-                constants.ExecuteAgentWithBudgetActivity,
-                activities.BudgetedAgentInput{
-                    AgentInput: activities.AgentExecutionInput{
-                        Query:          task.Description,
-                        AgentID:        fmt.Sprintf("agent-%s", task.ID),
-                        Context:        taskContext,
-                        Mode:           "standard",
-                        SessionID:      sessionID,
-                        History:        history,
-                        SuggestedTools: task.SuggestedTools,
-                        ToolParameters: task.ToolParameters,
-                        PersonaID:      task.PersonaID,
-                    },
-                    MaxTokens: budgetPerAgent,
-                    UserID:    userID,
-                    TaskID:    wid,
-                    ModelTier: modelTier,
-                }).Get(ctx, &result)
+			err = workflow.ExecuteActivity(ctx,
+				constants.ExecuteAgentWithBudgetActivity,
+				activities.BudgetedAgentInput{
+					AgentInput: activities.AgentExecutionInput{
+						Query:          task.Description,
+						AgentID:        fmt.Sprintf("agent-%s", task.ID),
+						Context:        taskContext,
+						Mode:           "standard",
+						SessionID:      sessionID,
+						History:        history,
+						SuggestedTools: task.SuggestedTools,
+						ToolParameters: task.ToolParameters,
+						PersonaID:      task.PersonaID,
+					},
+					MaxTokens: budgetPerAgent,
+					UserID:    userID,
+					TaskID:    wid,
+					ModelTier: modelTier,
+				}).Get(ctx, &result)
 		} else {
 			// Execute without budget
-            err = workflow.ExecuteActivity(ctx,
-                activities.ExecuteAgent,
-                activities.AgentExecutionInput{
-                    Query:          task.Description,
-                    AgentID:        fmt.Sprintf("agent-%s", task.ID),
-                    Context:        taskContext,
-                    Mode:           "standard",
-                    SessionID:      sessionID,
-                    History:        history,
-                    SuggestedTools: task.SuggestedTools,
-                    ToolParameters: task.ToolParameters,
-                    PersonaID:      task.PersonaID,
-                }).Get(ctx, &result)
+			err = workflow.ExecuteActivity(ctx,
+				activities.ExecuteAgent,
+				activities.AgentExecutionInput{
+					Query:          task.Description,
+					AgentID:        fmt.Sprintf("agent-%s", task.ID),
+					Context:        taskContext,
+					Mode:           "standard",
+					SessionID:      sessionID,
+					History:        history,
+					SuggestedTools: task.SuggestedTools,
+					ToolParameters: task.ToolParameters,
+					PersonaID:      task.PersonaID,
+				}).Get(ctx, &result)
 		}
 
 		if err != nil {

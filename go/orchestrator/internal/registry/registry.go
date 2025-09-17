@@ -3,22 +3,22 @@ package registry
 import (
 	"database/sql"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 
-	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/worker"
 	"go.uber.org/zap"
 )
 
 // OrchestratorRegistry implements the Registry interface
 type OrchestratorRegistry struct {
-	config        *RegistryConfig
-	logger        *zap.Logger
-	db            *sql.DB
+	config         *RegistryConfig
+	logger         *zap.Logger
+	db             *sql.DB
 	sessionManager *session.Manager
 }
 
@@ -40,16 +40,16 @@ func NewOrchestratorRegistry(
 // RegisterWorkflows registers all workflows based on configuration
 func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 	r.logger.Info("Registering workflows")
-	
-    // Core workflows - always registered
-    w.RegisterWorkflow(workflows.OrchestratorWorkflow)
+
+	// Core workflows - always registered
+	w.RegisterWorkflow(workflows.OrchestratorWorkflow)
 	w.RegisterWorkflow(workflows.SimpleTaskWorkflow)
 	w.RegisterWorkflow(workflows.SupervisorWorkflow)
 
-    // Cognitive workflows that need pattern migration
-    w.RegisterWorkflow(workflows.ExploratoryWorkflow)
-    w.RegisterWorkflow(workflows.ScientificWorkflow)
-    r.logger.Info("Registered core workflows")
+	// Cognitive workflows that need pattern migration
+	w.RegisterWorkflow(workflows.ExploratoryWorkflow)
+	w.RegisterWorkflow(workflows.ScientificWorkflow)
+	r.logger.Info("Registered core workflows")
 
 	// Optional workflows based on configuration
 	if r.config.EnableStreamingWorkflows {
@@ -58,20 +58,20 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 		r.logger.Info("Registered streaming workflows")
 	}
 
-    // Strategy workflows (pattern-based)
-    w.RegisterWorkflow(strategies.DAGWorkflow)
-    w.RegisterWorkflow(strategies.ReactWorkflow)
-    w.RegisterWorkflow(strategies.ResearchWorkflow)
-    r.logger.Info("Registered strategy workflows")
-	
+	// Strategy workflows (pattern-based)
+	w.RegisterWorkflow(strategies.DAGWorkflow)
+	w.RegisterWorkflow(strategies.ReactWorkflow)
+	w.RegisterWorkflow(strategies.ResearchWorkflow)
+	r.logger.Info("Registered strategy workflows")
+
 	r.logger.Info("All workflows registered successfully")
 	return nil
 }
 
-// RegisterActivities registers all activities based on configuration  
+// RegisterActivities registers all activities based on configuration
 func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	r.logger.Info("Registering activities")
-	
+
 	// Construct activity receiver with dependencies
 	acts := activities.NewActivities(r.sessionManager, r.logger)
 
@@ -87,7 +87,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivity(activities.GetWorkflowConfig)
 	// Context compression + store
 	w.RegisterActivity(activities.CompressAndStoreContext)
-	
+
 	// Vector intelligence activities
 	w.RegisterActivity(activities.RecordQuery)
 	w.RegisterActivity(activities.FetchSessionMemory)
@@ -97,24 +97,24 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	// Dynamic team authorization
 	w.RegisterActivity(activities.AuthorizeTeamAction)
 
-    // P2P mailbox + workspace (receiver methods)
-    w.RegisterActivityWithOptions(acts.SendAgentMessage, activity.RegisterOptions{ Name: constants.SendAgentMessageActivity })
-    w.RegisterActivityWithOptions(acts.FetchAgentMessages, activity.RegisterOptions{ Name: constants.FetchAgentMessagesActivity })
-    w.RegisterActivityWithOptions(acts.WorkspaceAppend, activity.RegisterOptions{ Name: constants.WorkspaceAppendActivity })
-    w.RegisterActivityWithOptions(acts.WorkspaceList, activity.RegisterOptions{ Name: constants.WorkspaceListActivity })
-    // Structured protocol wrappers
-    w.RegisterActivityWithOptions(acts.SendTaskRequest, activity.RegisterOptions{ Name: constants.SendTaskRequestActivity })
-    w.RegisterActivityWithOptions(acts.SendTaskOffer, activity.RegisterOptions{ Name: constants.SendTaskOfferActivity })
-    w.RegisterActivityWithOptions(acts.SendTaskAccept, activity.RegisterOptions{ Name: constants.SendTaskAcceptActivity })
-	
+	// P2P mailbox + workspace (receiver methods)
+	w.RegisterActivityWithOptions(acts.SendAgentMessage, activity.RegisterOptions{Name: constants.SendAgentMessageActivity})
+	w.RegisterActivityWithOptions(acts.FetchAgentMessages, activity.RegisterOptions{Name: constants.FetchAgentMessagesActivity})
+	w.RegisterActivityWithOptions(acts.WorkspaceAppend, activity.RegisterOptions{Name: constants.WorkspaceAppendActivity})
+	w.RegisterActivityWithOptions(acts.WorkspaceList, activity.RegisterOptions{Name: constants.WorkspaceListActivity})
+	// Structured protocol wrappers
+	w.RegisterActivityWithOptions(acts.SendTaskRequest, activity.RegisterOptions{Name: constants.SendTaskRequestActivity})
+	w.RegisterActivityWithOptions(acts.SendTaskOffer, activity.RegisterOptions{Name: constants.SendTaskOfferActivity})
+	w.RegisterActivityWithOptions(acts.SendTaskAccept, activity.RegisterOptions{Name: constants.SendTaskAcceptActivity})
+
 	// Session activities - register with consistent naming
-    w.RegisterActivityWithOptions(acts.DecomposeTask, activity.RegisterOptions{ Name: constants.DecomposeTaskActivity })
-    // Legacy activity name for Temporal replay compatibility
-    w.RegisterActivityWithOptions(acts.AnalyzeComplexity, activity.RegisterOptions{ Name: constants.AnalyzeComplexityActivity })
+	w.RegisterActivityWithOptions(acts.DecomposeTask, activity.RegisterOptions{Name: constants.DecomposeTaskActivity})
+	// Legacy activity name for Temporal replay compatibility
+	w.RegisterActivityWithOptions(acts.AnalyzeComplexity, activity.RegisterOptions{Name: constants.AnalyzeComplexityActivity})
 	w.RegisterActivityWithOptions(acts.UpdateSessionResult, activity.RegisterOptions{
 		Name: constants.UpdateSessionResultActivity,
 	})
-	
+
 	// Human intervention activities
 	if r.config.EnableApprovalWorkflows {
 		humanActivities := activities.NewHumanInterventionActivities()
@@ -129,7 +129,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 		})
 		r.logger.Info("Registered human intervention activities")
 	}
-	
+
 	// Streaming activities
 	if r.config.EnableStreamingWorkflows {
 		streamingActivities := activities.NewStreamingActivities()
@@ -182,7 +182,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 		})
 		r.logger.Info("Registered budget activities")
 	}
-	
+
 	r.logger.Info("All activities registered successfully")
 	return nil
 }

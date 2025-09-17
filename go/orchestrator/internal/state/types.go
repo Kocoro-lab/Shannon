@@ -19,10 +19,10 @@ type AgentState struct {
 
 // PlanningState represents the planning phase state
 type PlanningState struct {
-	CurrentStep    int      `json:"current_step" validate:"min=0"`
-	TotalSteps     int      `json:"total_steps" validate:"min=1"`
-	Plan           []string `json:"plan"`
-	Completed      []bool   `json:"completed"`
+	CurrentStep    int         `json:"current_step" validate:"min=0"`
+	TotalSteps     int         `json:"total_steps" validate:"min=1"`
+	Plan           []string    `json:"plan"`
+	Completed      []bool      `json:"completed"`
 	StepStartTimes []time.Time `json:"step_start_times"`
 	StepEndTimes   []time.Time `json:"step_end_times"`
 }
@@ -39,11 +39,11 @@ type ExecutionState struct {
 
 // BeliefState represents the agent's belief and confidence state
 type BeliefState struct {
-	Confidence      float64                `json:"confidence" validate:"min=0,max=1"`
-	Assumptions     []string               `json:"assumptions"`
-	KnowledgeGaps   []string               `json:"knowledge_gaps"`
-	UpdatedBeliefs  map[string]interface{} `json:"updated_beliefs"`
-	Hypotheses      []Hypothesis           `json:"hypotheses"`
+	Confidence     float64                `json:"confidence" validate:"min=0,max=1"`
+	Assumptions    []string               `json:"assumptions"`
+	KnowledgeGaps  []string               `json:"knowledge_gaps"`
+	UpdatedBeliefs map[string]interface{} `json:"updated_beliefs"`
+	Hypotheses     []Hypothesis           `json:"hypotheses"`
 }
 
 // Hypothesis represents a working hypothesis
@@ -83,25 +83,25 @@ func (as *AgentState) Validate() error {
 	if as.Query == "" {
 		return fmt.Errorf("query cannot be empty")
 	}
-	
+
 	if as.PlanningState.TotalSteps < as.PlanningState.CurrentStep {
 		return fmt.Errorf("current step (%d) cannot exceed total steps (%d)",
 			as.PlanningState.CurrentStep, as.PlanningState.TotalSteps)
 	}
-	
+
 	if as.ExecutionState.Status == "completed" && as.PlanningState.CurrentStep < as.PlanningState.TotalSteps {
 		return fmt.Errorf("execution marked complete but steps remaining (%d/%d)",
 			as.PlanningState.CurrentStep, as.PlanningState.TotalSteps)
 	}
-	
+
 	if as.BeliefState.Confidence < 0 || as.BeliefState.Confidence > 1 {
 		return fmt.Errorf("confidence must be between 0 and 1, got %f", as.BeliefState.Confidence)
 	}
-	
+
 	if as.ExecutionState.ErrorCount > 10 {
 		return fmt.Errorf("error count exceeds maximum allowed (10)")
 	}
-	
+
 	return nil
 }
 
@@ -135,12 +135,12 @@ func (as *AgentState) UpdateStep(step int, completed bool) error {
 	if step >= as.PlanningState.TotalSteps {
 		return fmt.Errorf("step %d exceeds total steps %d", step, as.PlanningState.TotalSteps)
 	}
-	
+
 	as.PlanningState.CurrentStep = step
 	if step < len(as.PlanningState.Completed) {
 		as.PlanningState.Completed[step] = completed
 	}
-	
+
 	as.ExecutionState.LastUpdateTime = time.Now()
 	return nil
 }
@@ -159,12 +159,12 @@ func (as *AgentState) GetExecutionDuration() time.Duration {
 	if as.ExecutionState.StartTime.IsZero() {
 		return 0
 	}
-	
+
 	endTime := as.ExecutionState.LastUpdateTime
 	if endTime.IsZero() {
 		endTime = time.Now()
 	}
-	
+
 	return endTime.Sub(as.ExecutionState.StartTime)
 }
 

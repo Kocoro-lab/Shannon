@@ -48,7 +48,7 @@ func TestDatabaseWrapper_NormalOperations(t *testing.T) {
 	if err != nil {
 		t.Errorf("ExecContext failed: %v", err)
 	}
-	
+
 	affected, _ := result.RowsAffected()
 	if affected != 1 {
 		t.Errorf("Expected 1 affected row, got %d", affected)
@@ -88,7 +88,7 @@ func TestDatabaseWrapper_TransactionWrapper(t *testing.T) {
 	if err != nil {
 		t.Errorf("Transaction ExecContext failed: %v", err)
 	}
-	
+
 	affected, _ := result.RowsAffected()
 	if affected != 1 {
 		t.Errorf("Expected 1 affected row, got %d", affected)
@@ -134,7 +134,7 @@ func TestDatabaseWrapper_PreparedStatementWrapper(t *testing.T) {
 	if err != nil {
 		t.Errorf("Statement ExecContext failed: %v", err)
 	}
-	
+
 	affected, _ := result.RowsAffected()
 	if affected != 1 {
 		t.Errorf("Expected 1 affected row, got %d", affected)
@@ -227,14 +227,14 @@ func TestDatabaseWrapper_QueryRowContextCB(t *testing.T) {
 		t.Fatalf("Failed to create sqlmock for circuit breaker test: %v", err)
 	}
 	defer dbForCB.Close()
-	
+
 	wrapperForCB := NewDatabaseWrapper(dbForCB, logger)
-	
+
 	// Set up expected pings (circuit breaker opens after 5 failures)
 	for i := 0; i < 5; i++ {
 		mockForCB.ExpectPing().WillReturnError(sql.ErrConnDone)
 	}
-	
+
 	// First trip the circuit breaker
 	for i := 0; i < 5; i++ {
 		wrapperForCB.PingContext(ctx)

@@ -5,29 +5,29 @@ import (
 	"strings"
 	"time"
 
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ChainOfThoughtConfig configures the chain-of-thought pattern
 type ChainOfThoughtConfig struct {
-	MaxSteps           int      // Maximum reasoning steps
-	RequireExplanation bool     // Require step-by-step explanation
-	ShowIntermediateSteps bool  // Include intermediate reasoning in result
-	PromptTemplate     string   // Custom prompt template
-	StepDelimiter      string   // Delimiter between steps
-	ModelTier          string   // Model tier to use
+	MaxSteps              int    // Maximum reasoning steps
+	RequireExplanation    bool   // Require step-by-step explanation
+	ShowIntermediateSteps bool   // Include intermediate reasoning in result
+	PromptTemplate        string // Custom prompt template
+	StepDelimiter         string // Delimiter between steps
+	ModelTier             string // Model tier to use
 }
 
 // ChainOfThoughtResult contains the result of chain-of-thought reasoning
 type ChainOfThoughtResult struct {
-	FinalAnswer      string
-	ReasoningSteps   []string
-	TotalTokens      int
-	Confidence       float64
-	StepDurations    []time.Duration
+	FinalAnswer    string
+	ReasoningSteps []string
+	TotalTokens    int
+	Confidence     float64
+	StepDurations  []time.Duration
 }
 
 // ChainOfThought implements step-by-step reasoning pattern
@@ -320,7 +320,7 @@ func calculateReasoningConfidence(steps []string, response string) float64 {
 
 	// Check for conclusion
 	if strings.Contains(lowerResponse, "therefore") ||
-	   strings.Contains(lowerResponse, "final answer") {
+		strings.Contains(lowerResponse, "final answer") {
 		confidence += 0.05
 	}
 

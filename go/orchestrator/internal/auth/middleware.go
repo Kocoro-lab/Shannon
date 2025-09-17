@@ -69,7 +69,7 @@ func (m *Middleware) HTTPMiddleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
-			
+
 			http.Error(w, "Missing authorization", http.StatusUnauthorized)
 			return
 		}

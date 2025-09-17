@@ -56,10 +56,10 @@ func TestCircuitBreakerStates(t *testing.T) {
 
 	// Wait for timeout to transition to half-open
 	time.Sleep(150 * time.Millisecond)
-	
+
 	// Trigger state check by attempting a call
 	cb.beforeRequest()
-	
+
 	if cb.State() != StateHalfOpen {
 		t.Errorf("Expected state to be half-open, got %s", cb.State())
 	}

@@ -66,6 +66,7 @@ try:
         ZapierNLARunAction,
         # Add more as needed
     )
+
     LANGCHAIN_AVAILABLE = True
 except ImportError:
     # Graceful degradation when langchain not installed
@@ -76,6 +77,7 @@ except ImportError:
 @dataclass
 class LangChainToolResult:
     """Standard result format for LangChain tool execution"""
+
     success: bool
     result: Any
     error_message: Optional[str] = None
@@ -170,7 +172,9 @@ class LangChainBridge:
         # return GoogleDriveSearchTool(credentials=gdrive_creds)
         return None
 
-    async def execute_tool(self, tool_name: str, params: Dict[str, Any]) -> LangChainToolResult:
+    async def execute_tool(
+        self, tool_name: str, params: Dict[str, Any]
+    ) -> LangChainToolResult:
         """
         Execute a LangChain tool with Shannon's security and monitoring.
 
@@ -197,7 +201,7 @@ class LangChainBridge:
                     success=False,
                     result=None,
                     error_message=f"Tool {tool_name} not available or failed to load",
-                    tool_name=tool_name
+                    tool_name=tool_name,
                 )
 
             # TODO: Pre-execution security checks
@@ -208,27 +212,29 @@ class LangChainBridge:
             # Execute tool with timeout protection
             try:
                 # Convert params to format expected by LangChain tool
-                if hasattr(tool, 'run'):
-                    if len(params) == 1 and 'query' in params:
+                if hasattr(tool, "run"):
+                    if len(params) == 1 and "query" in params:
                         # Simple query-based tool
                         result = await asyncio.wait_for(
-                            asyncio.to_thread(tool.run, params['query']),
-                            timeout=self.max_tool_execution_time
+                            asyncio.to_thread(tool.run, params["query"]),
+                            timeout=self.max_tool_execution_time,
                         )
                     else:
                         # Complex parameter tool
                         result = await asyncio.wait_for(
                             asyncio.to_thread(tool.run, params),
-                            timeout=self.max_tool_execution_time
+                            timeout=self.max_tool_execution_time,
                         )
                 else:
                     # Handle other tool interfaces
                     result = await asyncio.wait_for(
                         asyncio.to_thread(tool, **params),
-                        timeout=self.max_tool_execution_time
+                        timeout=self.max_tool_execution_time,
                     )
 
-                execution_time = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                execution_time = int(
+                    (asyncio.get_event_loop().time() - start_time) * 1000
+                )
 
                 # TODO: Post-execution processing
                 # - Sanitize result data for security
@@ -244,7 +250,7 @@ class LangChainBridge:
                         "langchain_tool_type": type(tool).__name__,
                         "params_count": len(params),
                         # TODO: Add more relevant metadata
-                    }
+                    },
                 )
 
             except asyncio.TimeoutError:
@@ -252,7 +258,7 @@ class LangChainBridge:
                     success=False,
                     result=None,
                     error_message=f"Tool execution timeout after {self.max_tool_execution_time}s",
-                    tool_name=tool_name
+                    tool_name=tool_name,
                 )
 
         except Exception as e:
@@ -264,7 +270,7 @@ class LangChainBridge:
                 result=None,
                 error_message=str(e),
                 tool_name=tool_name,
-                execution_time_ms=execution_time
+                execution_time_ms=execution_time,
             )
 
     def get_available_tools(self) -> List[Dict[str, Any]]:
@@ -287,28 +293,28 @@ class LangChainBridge:
                 "description": "Search and retrieve academic papers from ArXiv",
                 "category": "research",
                 "requires_auth": False,
-                "parameters": ["query"]
+                "parameters": ["query"],
             },
             {
                 "name": "langchain_wikipedia",
                 "description": "Search Wikipedia for information",
                 "category": "research",
                 "requires_auth": False,
-                "parameters": ["query"]
+                "parameters": ["query"],
             },
             {
                 "name": "langchain_notion_db",
                 "description": "Query and update Notion databases",
                 "category": "productivity",
                 "requires_auth": True,
-                "parameters": ["database_id", "query", "action"]
+                "parameters": ["database_id", "query", "action"],
             },
             {
                 "name": "langchain_slack_send",
                 "description": "Send messages to Slack channels",
                 "category": "communication",
                 "requires_auth": True,
-                "parameters": ["channel", "message"]
+                "parameters": ["channel", "message"],
             },
             # TODO: Add more tools as they are implemented
         ]
@@ -341,7 +347,10 @@ langchain_bridge = LangChainBridge()
 # INTEGRATION FUNCTIONS FOR SHANNON'S TOOL SYSTEM
 # These functions provide the interface that Shannon's existing tool executor expects
 
-async def execute_langchain_tool(tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+
+async def execute_langchain_tool(
+    tool_name: str, parameters: Dict[str, Any]
+) -> Dict[str, Any]:
     """
     Main entry point for Shannon's tool executor to call LangChain tools.
 
@@ -370,7 +379,7 @@ async def execute_langchain_tool(tool_name: str, parameters: Dict[str, Any]) -> 
             "tool_name": f"langchain_{tool_name}",
             "execution_time_ms": result.execution_time_ms,
             "langchain_metadata": result.metadata or {},
-        }
+        },
     }
 
 
@@ -386,6 +395,7 @@ def get_langchain_tool_descriptions() -> List[Dict[str, Any]]:
 
 # USAGE EXAMPLE FOR TESTING
 if __name__ == "__main__":
+
     async def test_integration():
         """Test the LangChain bridge integration"""
         bridge = LangChainBridge()

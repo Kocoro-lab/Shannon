@@ -3,9 +3,9 @@ package strategies
 import (
 	"fmt"
 
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ExploratoryWorkflow implements iterative discovery with hypothesis testing using patterns
@@ -186,19 +186,18 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"tree_depth", totResult.TreeDepth,
 	)
 
-
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
 		TokensUsed: totalTokens,
 		Metadata: map[string]interface{}{
-			"workflow_type":        "exploratory",
-			"pattern_used":         "tree_of_thoughts",
-			"total_thoughts":       totResult.TotalThoughts,
-			"tree_depth":           totResult.TreeDepth,
-			"final_confidence":     finalConfidence,
-			"debate_applied":       totResult.Confidence < config.ExploratoryConfidenceThreshold,
-			"reflection_applied":   finalConfidence < 0.9,
+			"workflow_type":      "exploratory",
+			"pattern_used":       "tree_of_thoughts",
+			"total_thoughts":     totResult.TotalThoughts,
+			"tree_depth":         totResult.TreeDepth,
+			"final_confidence":   finalConfidence,
+			"debate_applied":     totResult.Confidence < config.ExploratoryConfidenceThreshold,
+			"reflection_applied": finalConfidence < 0.9,
 		},
 	}, nil
 }

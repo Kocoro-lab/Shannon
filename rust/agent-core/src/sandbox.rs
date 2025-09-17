@@ -335,11 +335,10 @@ impl WasmSandbox {
                                 input
                             )
                             .into_bytes(),
-                            Err(e) => format!(
-                                "[SANDBOXED] WASM execution error: {}\nInput: {}",
-                                e, input
-                            )
-                            .into_bytes(),
+                            Err(e) => {
+                                format!("[SANDBOXED] WASM execution error: {}\nInput: {}", e, input)
+                                    .into_bytes()
+                            }
                         }
                     } else {
                         // No execute function, just indicate the module was loaded

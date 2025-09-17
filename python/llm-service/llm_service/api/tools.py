@@ -2,21 +2,21 @@
 Tools API endpoints for Shannon platform
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Request
 import os
 import yaml
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
 
-from ..tools import ToolRegistry, get_registry
+from ..tools import get_registry
 from ..tools.mcp import create_mcp_tool_class
-from ..mcp_client import HttpStatelessClient
 from ..tools.builtin import (
     WebSearchTool,
     CalculatorTool,
     FileReadTool,
     FileWriteTool,
+    PythonWasiExecutorTool,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,22 +29,22 @@ _SELECT_TTL_SECONDS = 300  # 5 minutes
 
 class ToolExecuteRequest(BaseModel):
     """Request to execute a tool"""
+
     tool_name: str = Field(..., description="Name of the tool to execute")
     parameters: Dict[str, Any] = Field(..., description="Tool parameters")
-    
+
     class Config:
         schema_extra = {
             "example": {
                 "tool_name": "calculator",
-                "parameters": {
-                    "expression": "2 + 2"
-                }
+                "parameters": {"expression": "2 + 2"},
             }
         }
 
 
 class ToolExecuteResponse(BaseModel):
     """Response from tool execution"""
+
     success: bool
     output: Any
     error: Optional[str] = None
@@ -54,6 +54,7 @@ class ToolExecuteResponse(BaseModel):
 
 class ToolSchemaResponse(BaseModel):
     """Tool schema information"""
+
     name: str
     description: str
     parameters: Dict[str, Any]
@@ -61,8 +62,11 @@ class ToolSchemaResponse(BaseModel):
 
 class ToolSelectRequest(BaseModel):
     """Request to select tools for a task"""
+
     task: str = Field(..., description="Natural language task")
-    context: Optional[Dict[str, Any]] = Field(default=None, description="Optional context map")
+    context: Optional[Dict[str, Any]] = Field(
+        default=None, description="Optional context map"
+    )
     exclude_dangerous: bool = Field(default=True)
     max_tools: int = Field(default=2, ge=0, le=8)
 
@@ -106,39 +110,45 @@ def _load_mcp_tools_from_config():
     """Load MCP tool definitions from config file"""
     config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
     if not os.path.exists(config_path):
-        logger.debug(f"Config file not found at {config_path}, skipping MCP config load")
+        logger.debug(
+            f"Config file not found at {config_path}, skipping MCP config load"
+        )
         return
 
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        mcp_tools = config.get('mcp_tools', {})
+        mcp_tools = config.get("mcp_tools", {})
         registry = get_registry()
 
         for tool_name, tool_config in mcp_tools.items():
-            if not tool_config or not tool_config.get('enabled', True):
+            if not tool_config or not tool_config.get("enabled", True):
                 continue
 
             # Expand env vars in headers
-            headers = tool_config.get('headers', {})
+            headers = tool_config.get("headers", {})
             for key, value in headers.items():
-                if isinstance(value, str) and value.startswith('${') and value.endswith('}'):
+                if (
+                    isinstance(value, str)
+                    and value.startswith("${")
+                    and value.endswith("}")
+                ):
                     env_var = value[2:-1]
-                    headers[key] = os.getenv(env_var, '')
+                    headers[key] = os.getenv(env_var, "")
 
             # Convert parameters to expected format
-            params = tool_config.get('parameters', [])
+            params = tool_config.get("parameters", [])
             if params and isinstance(params, list):
                 # Already in list format from YAML
                 pass
 
             tool_class = create_mcp_tool_class(
                 name=tool_name,
-                url=tool_config['url'],
-                func_name=tool_config['func_name'],
-                description=tool_config.get('description', f'MCP tool {tool_name}'),
-                category=tool_config.get('category', 'mcp'),
+                url=tool_config["url"],
+                func_name=tool_config["func_name"],
+                description=tool_config.get("description", f"MCP tool {tool_name}"),
+                category=tool_config.get("category", "mcp"),
                 headers=headers if headers else None,
                 parameters=params if params else None,
             )
@@ -161,6 +171,7 @@ async def startup_event():
         CalculatorTool,
         FileReadTool,
         FileWriteTool,
+        PythonWasiExecutorTool,
     ]
 
     for tool_class in tools_to_register:
@@ -183,19 +194,19 @@ async def list_tools(
 ) -> List[str]:
     """
     List available tools
-    
+
     Args:
         category: Filter by category (e.g., "search", "calculation", "file")
         exclude_dangerous: Whether to exclude dangerous tools
     """
     registry = get_registry()
-    
+
     if category:
         # Filter by category
         tools = registry.list_tools_by_category(category)
     else:
         tools = registry.list_tools()
-    
+
     # Apply danger filter if requested
     if exclude_dangerous:
         filtered = []
@@ -204,7 +215,7 @@ async def list_tools(
             if tool and not tool.metadata.dangerous:
                 filtered.append(tool_name)
         tools = filtered
-    
+
     return tools
 
 
@@ -219,20 +230,20 @@ async def list_categories() -> List[str]:
 async def get_tool_schema(tool_name: str) -> ToolSchemaResponse:
     """
     Get schema for a specific tool
-    
+
     Args:
         tool_name: Name of the tool
     """
     registry = get_registry()
     schema = registry.get_tool_schema(tool_name)
-    
+
     if not schema:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    
+
     return ToolSchemaResponse(
         name=schema["name"],
         description=schema["description"],
-        parameters=schema["parameters"]
+        parameters=schema["parameters"],
     )
 
 
@@ -243,42 +254,46 @@ async def get_all_schemas(
 ) -> List[ToolSchemaResponse]:
     """
     Get schemas for all available tools
-    
+
     Args:
         category: Filter by category
         exclude_dangerous: Whether to exclude dangerous tools
     """
     registry = get_registry()
-    
+
     # Get filtered tool names
     if category:
         tool_names = registry.list_tools_by_category(category)
     else:
         tool_names = registry.list_tools()
-    
+
     # Build schemas
     schemas = []
     for tool_name in tool_names:
         tool = registry.get_tool(tool_name)
         if not tool:
             continue
-        
+
         # Skip dangerous tools if requested
         if exclude_dangerous and tool.metadata.dangerous:
             continue
-        
+
         schema = tool.get_schema()
-        schemas.append(ToolSchemaResponse(
-            name=schema["name"],
-            description=schema["description"],
-            parameters=schema["parameters"]
-        ))
-    
+        schemas.append(
+            ToolSchemaResponse(
+                name=schema["name"],
+                description=schema["description"],
+                parameters=schema["parameters"],
+            )
+        )
+
     return schemas
 
 
 @router.post("/mcp/register", response_model=MCPRegisterResponse)
-async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPRegisterResponse:
+async def register_mcp_tool(
+    req: MCPRegisterRequest, request: Request
+) -> MCPRegisterResponse:
     """Register a remote MCP function as a local Tool.
 
     After registration, the tool is accessible via /tools/execute with the given name.
@@ -290,10 +305,10 @@ async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPReg
         auth = request.headers.get("Authorization", "")
         x_token = request.headers.get("X-Admin-Token", "")
         bearer_ok = auth.startswith("Bearer ") and auth.split(" ", 1)[1] == admin_token
-        header_ok = (x_token == admin_token)
+        header_ok = x_token == admin_token
         if not (bearer_ok or header_ok):
             raise HTTPException(status_code=401, detail="Unauthorized")
-        
+
     registry = get_registry()
     registry = get_registry()
 
@@ -324,20 +339,22 @@ async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPReg
 async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
     """
     Execute a tool with given parameters
-    
+
     Args:
         request: Tool execution request
     """
     registry = get_registry()
     tool = registry.get_tool(request.tool_name)
-    
+
     if not tool:
-        raise HTTPException(status_code=404, detail=f"Tool '{request.tool_name}' not found")
-    
+        raise HTTPException(
+            status_code=404, detail=f"Tool '{request.tool_name}' not found"
+        )
+
     try:
         # Execute the tool
         result = await tool.execute(**request.parameters)
-        
+
         return ToolExecuteResponse(
             success=result.success,
             output=result.output,
@@ -355,27 +372,31 @@ async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
 
 
 @router.post("/batch-execute", response_model=List[ToolExecuteResponse])
-async def batch_execute_tools(requests: List[ToolExecuteRequest]) -> List[ToolExecuteResponse]:
+async def batch_execute_tools(
+    requests: List[ToolExecuteRequest],
+) -> List[ToolExecuteResponse]:
     """
     Execute multiple tools in batch (sequentially for now)
-    
+
     Args:
         requests: List of tool execution requests
     """
     results = []
-    
+
     for request in requests:
         try:
             result = await execute_tool(request)
             results.append(result)
         except HTTPException as e:
             # Add error result for missing tools
-            results.append(ToolExecuteResponse(
-                success=False,
-                output=None,
-                error=e.detail,
-            ))
-    
+            results.append(
+                ToolExecuteResponse(
+                    success=False,
+                    output=None,
+                    error=e.detail,
+                )
+            )
+
     return results
 
 
@@ -383,16 +404,16 @@ async def batch_execute_tools(requests: List[ToolExecuteRequest]) -> List[ToolEx
 async def get_tool_metadata(tool_name: str) -> Dict[str, Any]:
     """
     Get detailed metadata for a tool
-    
+
     Args:
         tool_name: Name of the tool
     """
     registry = get_registry()
     metadata = registry.get_tool_metadata(tool_name)
-    
+
     if not metadata:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    
+
     return {
         "name": metadata.name,
         "version": metadata.version,
@@ -420,6 +441,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
     # Cache key ignores context to keep things simple and safe
     cache_key = f"{body.task}|{body.exclude_dangerous}|{body.max_tools}"
     import time
+
     now = time.time()
     cached = _SELECT_CACHE.get(cache_key)
     if cached and (now - cached.get("ts", 0)) <= _SELECT_TTL_SECONDS:
@@ -446,7 +468,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
         return ToolSelectResponse(selected_tools=[], calls=[], provider_used=None)
 
     # Try LLM-based selection when providers are configured
-    providers = getattr(req.app.state, 'providers', None)
+    providers = getattr(req.app.state, "providers", None)
     if providers and providers.is_configured():
         try:
             # Build concise tool descriptions to keep prompt small
@@ -455,15 +477,22 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
                 tool = registry.get_tool(name)
                 if not tool:
                     continue
-                tools_summary.append({
-                    "name": name,
-                    "description": tool.metadata.description,
-                    "parameters": list(tool.get_schema().get("parameters", {}).get("properties", {}).keys())
-                })
+                tools_summary.append(
+                    {
+                        "name": name,
+                        "description": tool.metadata.description,
+                        "parameters": list(
+                            tool.get_schema()
+                            .get("parameters", {})
+                            .get("properties", {})
+                            .keys()
+                        ),
+                    }
+                )
 
             sys = (
                 "You are a tool selection assistant. Read the task and choose at most N suitable tools. "
-                "Return compact JSON only with fields: {\"selected_tools\": [names], \"calls\": [{\"tool_name\": name, \"parameters\": object}]}. "
+                'Return compact JSON only with fields: {"selected_tools": [names], "calls": [{"tool_name": name, "parameters": object}]}. '
                 "Only include tools from the provided list and prefer zero or minimal arguments."
             )
             user = {
@@ -475,13 +504,17 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
 
             # Ask a small model to return JSON; avoid provider-specific tool_call plumbing
             result = await providers.generate_completion(
-                messages=[{"role": "system", "content": sys}, {"role": "user", "content": str(user)}],
+                messages=[
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": str(user)},
+                ],
                 max_tokens=300,
                 temperature=0.1,
                 response_format={"type": "json_object"},
             )
 
             import json as _json
+
             raw = result.get("completion", "")
             data = None
             try:
@@ -489,6 +522,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             except Exception:
                 # lenient fallback: try to find first {...}
                 import re
+
                 m = re.search(r"\{[\s\S]*\}", raw)
                 if m:
                     try:
@@ -497,7 +531,9 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
                         data = None
 
             if isinstance(data, dict):
-                selected = [s for s in data.get("selected_tools", []) if s in filtered_tools][: body.max_tools]
+                selected = [
+                    s for s in data.get("selected_tools", []) if s in filtered_tools
+                ][: body.max_tools]
                 calls_in = data.get("calls", []) or []
                 calls: List[ToolCall] = []
                 for c in calls_in:
@@ -524,13 +560,17 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             logger.warning(f"Tool selection LLM fallback due to error: {e}")
 
     # Heuristic fallback: very small, safe defaults
-    task_lower = body.task.lower()
+    _ = body.task.lower()  # Reserved for heuristic analysis
     selected: List[str] = []
     calls: List[ToolCall] = []
 
     def add(name: str, params: Dict[str, Any]):
         nonlocal selected, calls
-        if name in filtered_tools and name not in selected and len(selected) < body.max_tools:
+        if (
+            name in filtered_tools
+            and name not in selected
+            and len(selected) < body.max_tools
+        ):
             selected.append(name)
             calls.append(ToolCall(tool_name=name, parameters=params))
 

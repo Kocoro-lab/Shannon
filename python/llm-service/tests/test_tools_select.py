@@ -1,4 +1,3 @@
-import json
 from fastapi.testclient import TestClient
 
 from main import app
@@ -33,4 +32,3 @@ def test_tools_select_basic():
     assert r2.status_code == 200
     data2 = r2.json()
     assert data == data2
-

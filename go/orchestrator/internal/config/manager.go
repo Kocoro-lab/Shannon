@@ -36,20 +36,20 @@ type ChangeHandler func(event ChangeEvent) error
 
 // ConfigManager manages file-based configuration with hot-reload
 type ConfigManager struct {
-	configDir     string
-	configs       map[string]map[string]interface{}
-	handlers      map[string][]ChangeHandler
-	policyHandlers []func() error  // Policy reload handlers for .rego files
-	watcher       *fsnotify.Watcher
-	started       bool
-	stopCh        chan struct{}
-	logger        *zap.Logger
-	mu            sync.RWMutex
-	watcherMu     sync.Mutex
-	
+	configDir      string
+	configs        map[string]map[string]interface{}
+	handlers       map[string][]ChangeHandler
+	policyHandlers []func() error // Policy reload handlers for .rego files
+	watcher        *fsnotify.Watcher
+	started        bool
+	stopCh         chan struct{}
+	logger         *zap.Logger
+	mu             sync.RWMutex
+	watcherMu      sync.Mutex
+
 	// Configuration validation
-	validators    map[string]func(map[string]interface{}) error
-	
+	validators map[string]func(map[string]interface{}) error
+
 	// Polling fallback for when fsnotify isn't reliable
 	pollInterval  time.Duration
 	enablePolling bool
@@ -86,47 +86,47 @@ func NewConfigManager(configDir string, logger *zap.Logger) (*ConfigManager, err
 
 // Start begins watching for configuration changes
 func (cm *ConfigManager) Start(ctx context.Context) error {
-    // Fast path: avoid holding cm.mu while doing I/O (watcher add, file loads)
-    cm.mu.Lock()
-    if cm.started {
-        cm.mu.Unlock()
-        return nil
-    }
-    cm.mu.Unlock()
+	// Fast path: avoid holding cm.mu while doing I/O (watcher add, file loads)
+	cm.mu.Lock()
+	if cm.started {
+		cm.mu.Unlock()
+		return nil
+	}
+	cm.mu.Unlock()
 
-    // Add config directory to watcher (no cm.mu needed)
-    if err := cm.watcher.Add(cm.configDir); err != nil {
-        return fmt.Errorf("failed to watch config directory: %w", err)
-    }
+	// Add config directory to watcher (no cm.mu needed)
+	if err := cm.watcher.Add(cm.configDir); err != nil {
+		return fmt.Errorf("failed to watch config directory: %w", err)
+	}
 
-    // Load initial configurations outside of cm.mu to avoid deadlocks
-    if err := cm.loadAllConfigs(); err != nil {
-        return fmt.Errorf("failed to load initial configs: %w", err)
-    }
+	// Load initial configurations outside of cm.mu to avoid deadlocks
+	if err := cm.loadAllConfigs(); err != nil {
+		return fmt.Errorf("failed to load initial configs: %w", err)
+	}
 
-    // Mark as started
-    cm.mu.Lock()
-    cm.started = true
-    // Snapshot values for logging while holding the lock
-    loaded := len(cm.configs)
-    polling := cm.enablePolling
-    cm.mu.Unlock()
+	// Mark as started
+	cm.mu.Lock()
+	cm.started = true
+	// Snapshot values for logging while holding the lock
+	loaded := len(cm.configs)
+	polling := cm.enablePolling
+	cm.mu.Unlock()
 
-    // Start file watcher goroutine
-    go cm.watchLoop()
+	// Start file watcher goroutine
+	go cm.watchLoop()
 
-    // Start polling fallback if enabled
-    if polling {
-        go cm.pollLoop()
-    }
+	// Start polling fallback if enabled
+	if polling {
+		go cm.pollLoop()
+	}
 
-    cm.logger.Info("Configuration manager started",
-        zap.String("config_dir", cm.configDir),
-        zap.Int("loaded_configs", loaded),
-        zap.Bool("polling_enabled", polling),
-    )
+	cm.logger.Info("Configuration manager started",
+		zap.String("config_dir", cm.configDir),
+		zap.Int("loaded_configs", loaded),
+		zap.Bool("polling_enabled", polling),
+	)
 
-    return nil
+	return nil
 }
 
 // Stop stops watching for configuration changes
@@ -142,10 +142,10 @@ func (cm *ConfigManager) Stop() error {
 	if err := cm.watcher.Close(); err != nil {
 		cm.logger.Error("Error closing file watcher", zap.Error(err))
 	}
-	
+
 	cm.started = false
 	cm.logger.Info("Configuration manager stopped")
-	
+
 	return nil
 }
 
@@ -178,7 +178,7 @@ func (cm *ConfigManager) RegisterValidator(filename string, validator func(map[s
 func (cm *ConfigManager) RegisterPolicyHandler(handler func() error) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	
+
 	cm.policyHandlers = append(cm.policyHandlers, handler)
 	cm.logger.Info("Policy reload handler registered")
 }
@@ -198,7 +198,7 @@ func (cm *ConfigManager) GetConfig(filename string) (map[string]interface{}, boo
 	for k, v := range config {
 		result[k] = v
 	}
-	
+
 	return result, true
 }
 
@@ -215,7 +215,7 @@ func (cm *ConfigManager) GetAllConfigs() map[string]map[string]interface{} {
 		}
 		result[filename] = configCopy
 	}
-	
+
 	return result
 }
 
@@ -232,61 +232,61 @@ func (cm *ConfigManager) ReloadAllConfigs() error {
 
 // SetConfig programmatically sets a configuration (useful for testing)
 func (cm *ConfigManager) SetConfig(filename string, config map[string]interface{}) error {
-    // Get validator with minimal lock time
-    cm.mu.RLock()
-    validator, hasValidator := cm.validators[filename]
-    cm.mu.RUnlock()
-    
-    // Validate outside of lock
-    if hasValidator {
-        if err := validator(config); err != nil {
-            return fmt.Errorf("configuration validation failed for %s: %w", filename, err)
-        }
-    }
+	// Get validator with minimal lock time
+	cm.mu.RLock()
+	validator, hasValidator := cm.validators[filename]
+	cm.mu.RUnlock()
 
-    // Create a deep copy of the config for handlers
-    configCopy := make(map[string]interface{})
-    for k, v := range config {
-        configCopy[k] = v
-    }
+	// Validate outside of lock
+	if hasValidator {
+		if err := validator(config); err != nil {
+			return fmt.Errorf("configuration validation failed for %s: %w", filename, err)
+		}
+	}
 
-    // Update config and copy handlers under lock
-    cm.mu.Lock()
-    cm.configs[filename] = config
-    handlers := make([]ChangeHandler, len(cm.handlers[filename]))
-    copy(handlers, cm.handlers[filename])
-    cm.mu.Unlock()
+	// Create a deep copy of the config for handlers
+	configCopy := make(map[string]interface{})
+	for k, v := range config {
+		configCopy[k] = v
+	}
 
-    // Notify handlers asynchronously without holding any locks
-    if len(handlers) > 0 {
-        event := ChangeEvent{
-            File:      filename,
-            Action:    "programmatic_set",
-            Config:    configCopy, // Use the copy to prevent concurrent modification
-            Timestamp: time.Now(),
-        }
+	// Update config and copy handlers under lock
+	cm.mu.Lock()
+	cm.configs[filename] = config
+	handlers := make([]ChangeHandler, len(cm.handlers[filename]))
+	copy(handlers, cm.handlers[filename])
+	cm.mu.Unlock()
 
-        // Execute handlers asynchronously to prevent blocking
-        for _, handler := range handlers {
-            h := handler
-            go func() {
-                if err := h(event); err != nil {
-                    cm.logger.Error("Configuration handler error",
-                        zap.String("filename", filename),
-                        zap.String("action", "programmatic_set"),
-                        zap.Error(err),
-                    )
-                }
-            }()
-        }
-    }
+	// Notify handlers asynchronously without holding any locks
+	if len(handlers) > 0 {
+		event := ChangeEvent{
+			File:      filename,
+			Action:    "programmatic_set",
+			Config:    configCopy, // Use the copy to prevent concurrent modification
+			Timestamp: time.Now(),
+		}
 
-    cm.logger.Info("Configuration set programmatically",
-        zap.String("filename", filename),
-        zap.Int("keys", len(config)),
-    )
+		// Execute handlers asynchronously to prevent blocking
+		for _, handler := range handlers {
+			h := handler
+			go func() {
+				if err := h(event); err != nil {
+					cm.logger.Error("Configuration handler error",
+						zap.String("filename", filename),
+						zap.String("action", "programmatic_set"),
+						zap.Error(err),
+					)
+				}
+			}()
+		}
+	}
 
-    return nil
+	cm.logger.Info("Configuration set programmatically",
+		zap.String("filename", filename),
+		zap.Int("keys", len(config)),
+	)
+
+	return nil
 }
 
 // EnablePolling enables polling fallback for unreliable filesystems
@@ -296,7 +296,7 @@ func (cm *ConfigManager) EnablePolling(interval time.Duration) {
 
 	cm.enablePolling = true
 	cm.pollInterval = interval
-	
+
 	cm.logger.Info("Configuration polling enabled", zap.Duration("interval", interval))
 }
 
@@ -386,11 +386,11 @@ func (cm *ConfigManager) handleWatchEvent(event fsnotify.Event) {
 	defer cm.watcherMu.Unlock()
 
 	filename := filepath.Base(event.Name)
-	
+
 	// Process config files OR policy files
 	isConfig := cm.isConfigFile(event.Name)
 	isPolicy := cm.isPolicyFile(event.Name)
-	
+
 	if !isConfig && !isPolicy {
 		return
 	}
@@ -428,7 +428,7 @@ func (cm *ConfigManager) handleWatchEvent(event fsnotify.Event) {
 	} else {
 		// Small delay to handle rapid successive writes
 		time.Sleep(50 * time.Millisecond)
-		
+
 		if isConfig {
 			if err := cm.loadConfigFile(event.Name, action); err != nil {
 				cm.logger.Error("Failed to load config file",
@@ -438,7 +438,7 @@ func (cm *ConfigManager) handleWatchEvent(event fsnotify.Event) {
 				)
 			}
 		}
-		
+
 		if isPolicy {
 			cm.handlePolicyReload(filename, action)
 		}
@@ -490,7 +490,7 @@ func (cm *ConfigManager) loadConfigFile(filePath, action string) error {
 	cm.mu.RLock()
 	validator := cm.validators[filename]
 	cm.mu.RUnlock()
-	
+
 	// Validate outside of lock
 	if validator != nil {
 		if err := validator(config); err != nil {
@@ -598,13 +598,13 @@ func (cm *ConfigManager) handlePolicyReload(filename, action string) {
 	handlers := make([]func() error, len(cm.policyHandlers))
 	copy(handlers, cm.policyHandlers)
 	cm.mu.RUnlock()
-	
+
 	cm.logger.Info("Policy file changed, triggering reload",
 		zap.String("file", filename),
 		zap.String("action", action),
 		zap.Int("handlers", len(handlers)),
 	)
-	
+
 	for _, handler := range handlers {
 		if err := handler(); err != nil {
 			cm.logger.Error("Policy reload handler failed",
