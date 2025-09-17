@@ -171,7 +171,12 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 
 	// Update session
 	if input.SessionID != "" {
-		updateSession(ctx, input.SessionID, finalResult, totalTokens, totResult.TotalThoughts)
+		if err := updateSession(ctx, input.SessionID, finalResult, totalTokens, totResult.TotalThoughts); err != nil {
+			logger.Warn("Failed to update session",
+				"error", err,
+				"session_id", input.SessionID,
+			)
+		}
 	}
 
 	logger.Info("ExploratoryWorkflow completed",

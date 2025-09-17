@@ -12,6 +12,7 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -564,12 +565,7 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		}
 
 			// Set completed time if terminal (prefer Temporal CloseTime)
-			var completedAt time.Time
-			if desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
-				completedAt = desc.WorkflowExecutionInfo.CloseTime.AsTime()
-			} else {
-				completedAt = time.Now()
-			}
+			completedAt := getWorkflowEndTime(desc)
 			taskExecution.CompletedAt = &completedAt
 
 			// Calculate duration
@@ -668,12 +664,7 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		// Compute duration seconds (prefer Temporal CloseTime)
 		durationSeconds := 0.0
 		if workflowStartTime != nil {
-			var endTime time.Time
-			if desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
-				endTime = desc.WorkflowExecutionInfo.CloseTime.AsTime()
-			} else {
-				endTime = time.Now()
-			}
+			endTime := getWorkflowEndTime(desc)
 			durationSeconds = endTime.Sub(workflowStartTime.AsTime()).Seconds()
 		}
 		// Cost
@@ -904,9 +895,18 @@ func mapDBModeToProto(mode string) common.ExecutionMode {
 	}
 }
 
+// getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.
+// Falls back to time.Now() if CloseTime is unavailable (e.g., race or visibility lag).
+func getWorkflowEndTime(desc *workflowservice.DescribeWorkflowExecutionResponse) time.Time {
+    if desc != nil && desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
+        return desc.WorkflowExecutionInfo.CloseTime.AsTime()
+    }
+    return time.Now()
+}
+
 // RegisterOrchestratorServiceServer registers the service with the gRPC server
 func RegisterOrchestratorServiceServer(s *grpc.Server, srv pb.OrchestratorServiceServer) {
-	pb.RegisterOrchestratorServiceServer(s, srv)
+    pb.RegisterOrchestratorServiceServer(s, srv)
 }
 
 // calculateTokenCost calculates the cost based on token count and model
