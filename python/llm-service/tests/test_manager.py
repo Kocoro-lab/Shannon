@@ -19,7 +19,14 @@ def _import_manager_with_stubs():
     oi = types.ModuleType("openai")
     class _AsyncOpenAI:  # minimal placeholder
         def __init__(self, *a, **kw):
-            pass
+            class _Responses:
+                async def create(self, *args, **kwargs):
+                    raise NotImplementedError
+
+                def stream(self, *args, **kwargs):
+                    raise NotImplementedError
+
+            self.responses = _Responses()
     oi.AsyncOpenAI = _AsyncOpenAI
     sys.modules["openai"] = oi
     # Stub tiktoken as it's imported by openai_provider

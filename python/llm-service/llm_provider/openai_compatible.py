@@ -8,6 +8,17 @@ import os
 from typing import Dict, List, Any, Optional, AsyncIterator
 from openai import AsyncOpenAI
 
+from .openai_responses import (
+    build_extra_body,
+    determine_finish_reason,
+    extract_output_text,
+    normalize_response_tool_calls,
+    prepare_responses_input,
+    prepare_tool_choice,
+    prepare_tools,
+    select_primary_function_call,
+)
+
 from .base import (
     LLMProvider, ModelConfig, ModelTier, CompletionRequest, 
     CompletionResponse, TokenUsage, TokenCounter
@@ -209,65 +220,70 @@ class OpenAICompatibleProvider(LLMProvider):
         input_tokens = self.count_tokens(request.messages, model)
         
         # Prepare API request
-        api_request = {
+        api_request: Dict[str, Any] = {
             "model": model,
-            "messages": request.messages,
+            "input": prepare_responses_input(request.messages),
             "temperature": request.temperature,
             "top_p": request.top_p,
-            "frequency_penalty": request.frequency_penalty,
-            "presence_penalty": request.presence_penalty,
         }
-        
+
         if request.max_tokens:
-            api_request["max_tokens"] = request.max_tokens
-        
-        if request.stop:
-            api_request["stop"] = request.stop
-        
-        if request.functions and model_config.supports_functions:
-            api_request["functions"] = request.functions
-            if request.function_call:
-                api_request["function_call"] = request.function_call
-        
-        if request.seed is not None:
-            api_request["seed"] = request.seed
-        
-        if request.response_format:
-            api_request["response_format"] = request.response_format
-        
+            api_request["max_output_tokens"] = request.max_tokens
+
         if request.user:
             api_request["user"] = request.user
+
+        if request.functions and model_config.supports_functions:
+            tools = prepare_tools(request.functions)
+            if tools:
+                api_request["tools"] = tools
+                tool_choice = prepare_tool_choice(request.function_call)
+                if tool_choice:
+                    api_request["tool_choice"] = tool_choice
+
+        if request.response_format:
+            api_request["text"] = {"format": request.response_format}
+
+        extra_body = build_extra_body(
+            stop=request.stop,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty,
+            seed=request.seed,
+        )
+        if extra_body:
+            api_request["extra_body"] = extra_body
         
         # Make API call
         import time
         start_time = time.time()
         
         try:
-            response = await self.client.chat.completions.create(**api_request)
+            response = await self.client.responses.create(**api_request)
         except Exception as e:
             raise Exception(f"OpenAI-compatible API error ({self.base_url}): {e}")
-        
+
         latency_ms = int((time.time() - start_time) * 1000)
-        
-        # Extract response
-        choice = response.choices[0]
-        message = choice.message
-        
-        # Handle token usage (some providers might not return this)
-        if hasattr(response, 'usage') and response.usage:
-            output_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
+
+        content = extract_output_text(response)
+        usage = getattr(response, "usage", None)
+
+        if usage:
+            output_tokens = getattr(usage, "output_tokens", 0)
+            total_tokens = getattr(usage, "total_tokens", output_tokens)
         else:
-            # Estimate if not provided
-            output_tokens = self.count_tokens([{"role": "assistant", "content": message.content}], model)
+            output_tokens = self.count_tokens([{"role": "assistant", "content": content}], model)
             total_tokens = input_tokens + output_tokens
-        
+
+        tool_calls = normalize_response_tool_calls(response)
+        function_call = select_primary_function_call(tool_calls)
+        finish_reason = determine_finish_reason(response)
+
         # Calculate cost
         cost = self.estimate_cost(input_tokens, output_tokens, model)
-        
+
         # Build response
         return CompletionResponse(
-            content=message.content or "",
+            content=content or "",
             model=model,
             provider=self.config.get("name", "openai_compatible"),
             usage=TokenUsage(
@@ -276,9 +292,9 @@ class OpenAICompatibleProvider(LLMProvider):
                 total_tokens=total_tokens,
                 estimated_cost=cost,
             ),
-            finish_reason=choice.finish_reason if hasattr(choice, 'finish_reason') else "stop",
-            function_call=message.function_call if hasattr(message, 'function_call') else None,
-            request_id=response.id if hasattr(response, 'id') else None,
+            finish_reason=finish_reason,
+            function_call=function_call,
+            request_id=getattr(response, 'id', None),
             latency_ms=latency_ms,
         )
     
@@ -290,23 +306,45 @@ class OpenAICompatibleProvider(LLMProvider):
         model = model_config.model_id
         
         # Prepare API request
-        api_request = {
+        api_request: Dict[str, Any] = {
             "model": model,
-            "messages": request.messages,
+            "input": prepare_responses_input(request.messages),
             "temperature": request.temperature,
-            "stream": True,
         }
-        
+
         if request.max_tokens:
-            api_request["max_tokens"] = request.max_tokens
-        
+            api_request["max_output_tokens"] = request.max_tokens
+
+        if request.functions and model_config.supports_functions:
+            tools = prepare_tools(request.functions)
+            if tools:
+                api_request["tools"] = tools
+                tool_choice = prepare_tool_choice(request.function_call)
+                if tool_choice:
+                    api_request["tool_choice"] = tool_choice
+
+        if request.response_format:
+            api_request["text"] = {"format": request.response_format}
+
+        extra_body = build_extra_body(
+            stop=request.stop,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty,
+            seed=request.seed,
+        )
+        if extra_body:
+            api_request["extra_body"] = extra_body
+
         # Make streaming API call
         try:
-            stream = await self.client.chat.completions.create(**api_request)
-            
-            async for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-                    
+            async with self.client.responses.stream(**api_request) as stream:
+                async for event in stream:
+                    event_type = getattr(event, "type", None)
+                    if event_type == "response.output_text.delta":
+                        yield getattr(event, "delta", "")
+                    elif event_type == "error":
+                        message = getattr(event, "message", "streaming error")
+                        raise Exception(f"OpenAI-compatible streaming error ({self.base_url}): {message}")
+
         except Exception as e:
             raise Exception(f"OpenAI-compatible streaming error ({self.base_url}): {e}")

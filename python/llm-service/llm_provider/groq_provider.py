@@ -7,6 +7,17 @@ import os
 from typing import Dict, List, Any, Optional, AsyncIterator
 from openai import AsyncOpenAI
 
+from .openai_responses import (
+    build_extra_body,
+    determine_finish_reason,
+    extract_output_text,
+    normalize_response_tool_calls,
+    prepare_responses_input,
+    prepare_tool_choice,
+    prepare_tools,
+    select_primary_function_call,
+)
+
 from .base import (
     LLMProvider, ModelConfig, ModelTier, CompletionRequest,
     CompletionResponse, TokenUsage, TokenCounter
@@ -147,69 +158,72 @@ class GroqProvider(LLMProvider):
         model_config = self.models[model_id]
         
         # Prepare OpenAI-compatible request
-        completion_params = {
+        completion_params: Dict[str, Any] = {
             "model": model_id,
-            "messages": request.messages,
+            "input": prepare_responses_input(request.messages),
             "temperature": request.temperature,
-            "max_tokens": request.max_tokens or model_config.max_tokens,
             "top_p": request.top_p,
-            "frequency_penalty": request.frequency_penalty,
-            "presence_penalty": request.presence_penalty,
-            "stream": False,
         }
-        
-        if request.stop:
-            completion_params["stop"] = request.stop
-        
-        if request.seed is not None:
-            completion_params["seed"] = request.seed
-        
+
+        max_tokens = request.max_tokens or model_config.max_tokens
+        if max_tokens:
+            completion_params["max_output_tokens"] = max_tokens
+
         if request.response_format:
-            completion_params["response_format"] = request.response_format
-        
-        # Functions are supported by some models
+            completion_params["text"] = {"format": request.response_format}
+
         if request.functions and model_config.supports_functions:
-            completion_params["functions"] = request.functions
-            if request.function_call:
-                completion_params["function_call"] = request.function_call
-        
+            tools = prepare_tools(request.functions)
+            if tools:
+                completion_params["tools"] = tools
+                tool_choice = prepare_tool_choice(request.function_call)
+                if tool_choice:
+                    completion_params["tool_choice"] = tool_choice
+
+        extra_body = build_extra_body(
+            stop=request.stop,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty,
+            seed=request.seed,
+        )
+        if extra_body:
+            completion_params["extra_body"] = extra_body
+
         try:
             # Execute completion
-            response = await self.client.chat.completions.create(**completion_params)
-            
-            # Extract response
-            choice = response.choices[0]
-            content = choice.message.content or ""
-            
-            # Handle function calls if present
-            if hasattr(choice.message, 'function_call') and choice.message.function_call:
-                content = {
-                    "function_call": {
-                        "name": choice.message.function_call.name,
-                        "arguments": choice.message.function_call.arguments,
-                    }
-                }
-            
-            # Calculate usage
-            usage = TokenUsage(
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens,
+            response = await self.client.responses.create(**completion_params)
+
+            content = extract_output_text(response)
+            usage = getattr(response, "usage", None)
+
+            input_tokens = getattr(usage, "input_tokens", 0) if usage else 0
+            output_tokens = getattr(usage, "output_tokens", 0) if usage else 0
+            total_tokens = getattr(usage, "total_tokens", input_tokens + output_tokens)
+
+            normalized_calls = normalize_response_tool_calls(response)
+            function_call = select_primary_function_call(normalized_calls)
+            finish_reason = determine_finish_reason(response)
+
+            usage_record = TokenUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
                 estimated_cost=self._calculate_cost(
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                    model_config
-                )
+                    input_tokens,
+                    output_tokens,
+                    model_config,
+                ),
             )
-            
+
             return CompletionResponse(
                 content=content,
                 model=model_id,
-                usage=usage,
-                finish_reason=choice.finish_reason,
+                usage=usage_record,
+                finish_reason=finish_reason,
+                function_call=function_call,
                 raw_response=response,
             )
-            
+
         except Exception as e:
             self.logger.error(f"Groq completion failed: {e}")
             raise
@@ -225,71 +239,79 @@ class GroqProvider(LLMProvider):
         model_config = self.models[model_id]
         
         # Prepare request
-        completion_params = {
+        completion_params: Dict[str, Any] = {
             "model": model_id,
-            "messages": request.messages,
+            "input": prepare_responses_input(request.messages),
             "temperature": request.temperature,
-            "max_tokens": request.max_tokens or model_config.max_tokens,
             "top_p": request.top_p,
-            "frequency_penalty": request.frequency_penalty,
-            "presence_penalty": request.presence_penalty,
-            "stream": True,
         }
-        
-        if request.stop:
-            completion_params["stop"] = request.stop
-        
-        if request.seed is not None:
-            completion_params["seed"] = request.seed
-        
+
+        max_tokens = request.max_tokens or model_config.max_tokens
+        if max_tokens:
+            completion_params["max_output_tokens"] = max_tokens
+
         if request.functions and model_config.supports_functions:
-            completion_params["functions"] = request.functions
-            if request.function_call:
-                completion_params["function_call"] = request.function_call
-        
+            tools = prepare_tools(request.functions)
+            if tools:
+                completion_params["tools"] = tools
+                tool_choice = prepare_tool_choice(request.function_call)
+                if tool_choice:
+                    completion_params["tool_choice"] = tool_choice
+
+        if request.response_format:
+            completion_params["text"] = {"format": request.response_format}
+
+        extra_body = build_extra_body(
+            stop=request.stop,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty,
+            seed=request.seed,
+        )
+        if extra_body:
+            completion_params["extra_body"] = extra_body
+
         try:
             # Stream response
-            stream = await self.client.chat.completions.create(**completion_params)
-            
-            input_tokens = 0
-            output_tokens = 0
-            
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
+            async with self.client.responses.stream(**completion_params) as stream:
+                async for event in stream:
+                    event_type = getattr(event, "type", None)
+                    if event_type == "response.output_text.delta":
+                        yield CompletionResponse(
+                            content=getattr(event, "delta", ""),
+                            model=model_id,
+                            usage=None,
+                            finish_reason=None,
+                            raw_response=event,
+                        )
+                    elif event_type == "error":
+                        message = getattr(event, "message", "streaming error")
+                        raise Exception(f"Groq streaming failed: {message}")
+
+                final_response = stream.get_final_response()
+                usage = getattr(final_response, "usage", None)
+                if usage:
+                    input_tokens = getattr(usage, "input_tokens", 0)
+                    output_tokens = getattr(usage, "output_tokens", 0)
+                    total_tokens = getattr(usage, "total_tokens", input_tokens + output_tokens)
+                    usage_record = TokenUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                        estimated_cost=self._calculate_cost(
+                            input_tokens,
+                            output_tokens,
+                            model_config,
+                        ),
+                    )
+
                     yield CompletionResponse(
-                        content=chunk.choices[0].delta.content,
+                        content="",
                         model=model_id,
-                        usage=None,
-                        finish_reason=None,
-                        raw_response=chunk,
+                        usage=usage_record,
+                        finish_reason=determine_finish_reason(final_response),
+                        raw_response=final_response,
                     )
-                
-                # Track token usage from chunks if available
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    input_tokens = chunk.usage.prompt_tokens or input_tokens
-                    output_tokens = chunk.usage.completion_tokens or output_tokens
-            
-            # Final response with usage
-            if input_tokens > 0 or output_tokens > 0:
-                usage = TokenUsage(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=input_tokens + output_tokens,
-                    estimated_cost=self._calculate_cost(
-                        input_tokens,
-                        output_tokens,
-                        model_config
-                    )
-                )
-                
-                yield CompletionResponse(
-                    content="",
-                    model=model_id,
-                    usage=usage,
-                    finish_reason="stop",
-                    raw_response=None,
-                )
-                
+
         except Exception as e:
             self.logger.error(f"Groq streaming failed: {e}")
             raise

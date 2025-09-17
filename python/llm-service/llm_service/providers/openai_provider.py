@@ -1,7 +1,19 @@
 from typing import List, Dict, Any, Optional
+import json
 import logging
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+from llm_provider.openai_responses import (
+    build_extra_body,
+    determine_finish_reason,
+    extract_output_text,
+    normalize_response_tool_calls,
+    prepare_responses_input,
+    prepare_tool_choice,
+    prepare_tools,
+    select_primary_function_call,
+)
 
 from .base import LLMProvider, ModelInfo, ModelTier, TokenUsage
 
@@ -72,19 +84,13 @@ class OpenAIProvider(LLMProvider):
     ) -> dict:
         """Generate completion using OpenAI API"""
         try:
-            # Use Chat Completions API for all models
-            # Note: Responses API doesn't exist in OpenAI SDK, removed to avoid warnings
-            return await self._chat_completions_call(messages, model, temperature, max_tokens, tools, **kwargs)
-            
+            return await self._responses_call(messages, model, temperature, max_tokens, tools, **kwargs)
+
         except Exception as e:
             logger.error(f"OpenAI completion error: {e}")
             raise
 
-    # Removed: _responses_api_call method - OpenAI SDK doesn't have responses API
-    # This was likely confused with a beta or internal API that doesn't exist
-    # All calls now use the standard Chat Completions API
-    
-    async def _responses_api_call_removed(
+    async def _responses_call(
         self,
         messages: List[dict],
         model: str,
@@ -94,102 +100,67 @@ class OpenAIProvider(LLMProvider):
         **kwargs,
     ) -> dict:
         """Call the OpenAI Responses API and normalize output."""
-        # Convert chat messages to Responses input format
-        inputs = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            inputs.append({
-                "role": role,
-                "content": [{"type": "text", "text": content}],
-            })
 
-        request_params = {
+        request_params: Dict[str, Any] = {
             "model": model,
-            "input": inputs,
+            "input": prepare_responses_input(messages),
             "temperature": temperature,
-            "max_output_tokens": max_tokens,
         }
+
+        top_p = kwargs.get("top_p")
+        if top_p is not None:
+            request_params["top_p"] = top_p
+
+        if max_tokens:
+            request_params["max_output_tokens"] = max_tokens
+
         if tools:
-            request_params["tools"] = tools
-            request_params["tool_choice"] = "auto"
-        request_params.update(kwargs)
+            prepared_tools = prepare_tools(tools)
+            if prepared_tools:
+                request_params["tools"] = prepared_tools
+                tool_choice = prepare_tool_choice(kwargs.get("tool_choice") or kwargs.get("function_call"))
+                if tool_choice:
+                    request_params["tool_choice"] = tool_choice
+
+        response_format = kwargs.get("response_format")
+        if response_format:
+            request_params["text"] = {"format": response_format}
+
+        for field in ("instructions", "parallel_tool_calls", "previous_response_id", "reasoning", "store", "metadata"):
+            value = kwargs.get(field)
+            if value is not None:
+                request_params[field] = value
+
+        user = kwargs.get("user")
+        if user:
+            request_params["user"] = user
+
+        extra_body = build_extra_body(
+            stop=kwargs.get("stop"),
+            frequency_penalty=kwargs.get("frequency_penalty"),
+            presence_penalty=kwargs.get("presence_penalty"),
+            seed=kwargs.get("seed"),
+        )
+        if extra_body:
+            request_params["extra_body"] = extra_body
 
         response = await self.client.responses.create(**request_params)
 
-        # Extract text
-        completion_text = getattr(response, "output_text", None)
-        if not completion_text:
-            # Fallback: walk output blocks and concatenate message text
-            completion_text = ""
-            output = getattr(response, "output", []) or []
-            for item in output:
-                if isinstance(item, dict):
-                    if item.get("type") == "message":
-                        for block in item.get("content", []) or []:
-                            if block.get("type") == "text":
-                                completion_text += block.get("text", "")
+        completion_text = extract_output_text(response) or ""
 
-        # Usage normalization
         usage = getattr(response, "usage", None)
         prompt_tokens = getattr(usage, "input_tokens", 0) if usage else 0
         completion_tokens = getattr(usage, "output_tokens", 0) if usage else 0
-        total_tokens = prompt_tokens + completion_tokens
-        cost = self.calculate_cost(prompt_tokens, completion_tokens, model)
-
-        # Tool calls normalization (Responses may return tool call outputs)
-        tool_calls = self._normalize_tool_calls_from_responses(response)
-
-        return {
-            "completion": completion_text or "",
-            "tool_calls": tool_calls,
-            "finish_reason": getattr(response, "finish_reason", None) or "stop",
-            "usage": TokenUsage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-                cost_usd=cost,
-                model=model,
-            ).__dict__,
-            "cache_hit": False,
-        }
-
-    async def _chat_completions_call(
-        self,
-        messages: List[dict],
-        model: str,
-        temperature: float,
-        max_tokens: int,
-        tools: Optional[List[dict]] = None,
-        **kwargs,
-    ) -> dict:
-        """Call the Chat Completions API and normalize output."""
-        request_params = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-        }
-        if tools:
-            request_params["tools"] = tools
-            request_params["tool_choice"] = "auto"
-        request_params.update(kwargs)
-
-        response = await self.client.chat.completions.create(**request_params)
-        choice = response.choices[0]
-        usage = response.usage
-        prompt_tokens = getattr(usage, "prompt_tokens", 0)
-        completion_tokens = getattr(usage, "completion_tokens", 0)
         total_tokens = getattr(usage, "total_tokens", prompt_tokens + completion_tokens)
         cost = self.calculate_cost(prompt_tokens, completion_tokens, model)
 
-        # Normalize tool calls from ChatCompletions
-        tool_calls = self._normalize_tool_calls_from_chat(choice)
+        tool_calls = self._normalize_tool_calls_from_responses(response)
+        finish_reason = determine_finish_reason(response)
 
         return {
-            "completion": getattr(choice.message, "content", ""),
+            "completion": completion_text,
             "tool_calls": tool_calls,
-            "finish_reason": getattr(choice, "finish_reason", None),
+            "finish_reason": finish_reason,
             "usage": TokenUsage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -199,30 +170,6 @@ class OpenAIProvider(LLMProvider):
             ).__dict__,
             "cache_hit": False,
         }
-
-    def _normalize_tool_calls_from_chat(self, choice: Any) -> Optional[List[Dict[str, Any]]]:
-        """Normalize OpenAI ChatCompletions tool calls to a consistent schema."""
-        calls = getattr(getattr(choice, "message", object()), "tool_calls", None)
-        if not calls:
-            return None
-        normalized = []
-        for c in calls:
-            fn = getattr(c, "function", None)
-            if not fn:
-                continue
-            name = getattr(fn, "name", None)
-            args = getattr(fn, "arguments", "{}")
-            try:
-                import json as _json
-                parsed = _json.loads(args) if isinstance(args, str) else args
-            except Exception:
-                parsed = {"_raw": args}
-            normalized.append({
-                "type": "function",
-                "name": name,
-                "arguments": parsed,
-            })
-        return normalized or None
 
     async def _maybe_discover_models(self) -> None:
         """Best-effort dynamic model discovery via OpenAI models.list()."""
@@ -265,36 +212,30 @@ class OpenAIProvider(LLMProvider):
 
     def _normalize_tool_calls_from_responses(self, response: Any) -> Optional[List[Dict[str, Any]]]:
         """Best-effort normalization for Responses API outputs with tool calls."""
-        output = getattr(response, "output", None)
-        if not output:
+        calls = normalize_response_tool_calls(response)
+        if not calls:
             return None
+
         normalized: List[Dict[str, Any]] = []
-        try:
-            for item in output:
-                # Some SDKs emit objects; others dicts. Handle dicts here.
-                if isinstance(item, dict) and item.get("type") == "tool_call":
-                    name = item.get("name") or item.get("tool_name")
-                    args = item.get("arguments") or item.get("input") or {}
-                    normalized.append({
-                        "type": "function",
-                        "name": name,
-                        "arguments": args,
-                    })
-                elif isinstance(item, dict) and item.get("type") == "message":
-                    # Look for nested tool calls in content blocks
-                    for block in item.get("content", []) or []:
-                        if isinstance(block, dict) and block.get("type") in ("tool_call", "tool_calls"):
-                            calls = block.get("calls") or [block]
-                            for c in calls:
-                                name = c.get("name")
-                                args = c.get("arguments") or {}
-                                normalized.append({
-                                    "type": "function",
-                                    "name": name,
-                                    "arguments": args,
-                                })
-        except Exception:
-            return normalized or None
+        for call in calls:
+            name = call.get("name")
+            if not name:
+                continue
+            arguments = call.get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    parsed = json.loads(arguments)
+                except Exception:
+                    parsed = {"_raw": arguments}
+            else:
+                parsed = arguments
+            normalized.append(
+                {
+                    "type": "function",
+                    "name": name,
+                    "arguments": parsed,
+                }
+            )
         return normalized or None
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
