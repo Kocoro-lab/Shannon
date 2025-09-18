@@ -646,6 +646,18 @@ cd Shannon && make setup-env && make dev
 - 💬 **Need help?** [Join our Discord](https://discord.gg/NB7C2fMcQR)
 - ⭐ **Like the project?** Give us a star!
 
+## 🔮 Coming Soon
+
+### Solana Integration for Web3 Trust
+We're building decentralized trust infrastructure with Solana blockchain:
+- **Cryptographic Verification**: On-chain attestation of AI agent actions and results
+- **Immutable Audit Trail**: Blockchain-based proof of task execution
+- **Smart Contract Interoperability**: Enable AI agents to interact with DeFi and Web3 protocols
+- **Token-Gated Capabilities**: Control agent permissions through blockchain tokens
+- **Decentralized Reputation**: Build trust through verifiable on-chain agent performance
+
+Stay tuned for our Web3 trust layer - bringing transparency and verifiability to AI systems!
+
 ## 📄 License
 
 MIT License - Use it anywhere, modify anything, zero restrictions. See [LICENSE](LICENSE).
