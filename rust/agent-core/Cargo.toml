@@ -7,6 +7,11 @@ edition = "2021"
 name = "shannon_agent_core"
 path = "src/lib.rs"
 
+[features]
+default = ["wasi"]
+wasi = ["dep:wasmtime", "dep:wasmtime-wasi"]
+default-no-wasi = []
+
 [dependencies]
 # Async runtime
 tokio = { version = "1.41", features = ["full"] }
@@ -18,9 +23,9 @@ tonic-reflection = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 
-# WASM runtime
-wasmtime = "28.0"
-wasmtime-wasi = "28.0"
+# WASM runtime (optional, gated behind wasi feature)
+wasmtime = { version = "28.0", optional = true }
+wasmtime-wasi = { version = "28.0", optional = true }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

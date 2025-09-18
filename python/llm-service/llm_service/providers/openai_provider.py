@@ -373,8 +373,14 @@ class OpenAIProvider(LLMProvider):
         # Normalize tool calls from ChatCompletions
         tool_calls = self._normalize_tool_calls_from_chat(choice)
 
+        completion_text = getattr(choice.message, "content", "")
+
         return {
-            "completion": getattr(choice.message, "content", ""),
+            # Maintain compatibility with Responses-style consumers
+            "output_text": completion_text,
+            # Also expose the legacy ChatCompletions field name
+            "completion": completion_text,
+            "model": model,
             "tool_calls": tool_calls,
             "finish_reason": getattr(choice, "finish_reason", None),
             "usage": TokenUsage(

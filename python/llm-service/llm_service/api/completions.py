@@ -22,6 +22,40 @@ async def generate_completion(request: Request, body: CompletionRequest):
     cache = request.app.state.cache
     providers = request.app.state.providers
     
+    # If no providers are configured, return a simple mock response to keep local dev flows working
+    try:
+        if not providers or not providers.is_configured():
+            # Simple deterministic mock based on last user message
+            user_text = ""
+            for m in reversed(body.messages or []):
+                if m.get("role") == "user":
+                    user_text = m.get("content") or ""
+                    break
+            reply = (
+                "(mock) I received your request and would normally ask the configured LLM. "
+                "No providers are configured, so this is a placeholder response."
+            )
+            # Minimal usage estimate
+            prompt_tokens = max(len(user_text.split()), 1)
+            completion_tokens = max(len(reply.split()), 1)
+            total_tokens = prompt_tokens + completion_tokens
+            result = {
+                "provider": "mock",
+                "model": "mock-model-v1",
+                "output_text": reply,
+                "usage": {
+                    "input_tokens": prompt_tokens,
+                    "output_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "cost_usd": 0.0,
+                },
+                "cache_hit": False,
+            }
+            return result
+    except Exception:
+        # If provider check fails unexpectedly, fall through to normal path which will error gracefully
+        pass
+    
     # Check cache first
     cache_result = await cache.get(
         messages=body.messages,
