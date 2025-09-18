@@ -1,0 +1,107 @@
+# Docker Compose Override for Local Development
+#
+# Copy this file to docker-compose.override.yml for local development settings
+# that won't be committed to the repository.
+#
+# Usage:
+#   cp docker-compose.override.example.yml docker-compose.override.yml
+#   docker compose up -d
+#
+# The override file is automatically used by Docker Compose when present.
+
+version: '3.8'
+
+services:
+  # Gateway overrides for local development
+  gateway:
+    environment:
+      # Authentication bypass for easy local development
+      # Set to 0 to enable authentication
+      - GATEWAY_SKIP_AUTH=1
+
+      # Debug logging
+      - LOG_LEVEL=debug
+
+      # Use local JWT secret for testing
+      - JWT_SECRET=local-dev-secret-key
+
+    # Expose gateway port for local access
+    ports:
+      - "8080:8080"
+
+    # Mount local code for hot reload (if using air or similar)
+    # volumes:
+    #   - ../../go/orchestrator:/app/go/orchestrator
+
+  # Orchestrator overrides for debugging
+  orchestrator:
+    environment:
+      - LOG_LEVEL=debug
+      # Enable detailed workflow logging
+      - TEMPORAL_LOG_LEVEL=debug
+
+    # Expose admin port for local debugging
+    ports:
+      - "8081:8081"
+
+  # LLM Service overrides
+  llm-service:
+    environment:
+      - LOG_LEVEL=DEBUG
+      # Use mock LLM for testing without API costs
+      # - USE_MOCK_LLM=true
+
+    # Mount local code for hot reload
+    # volumes:
+    #   - ../../python/llm-service:/app
+
+  # Agent Core overrides
+  agent-core:
+    environment:
+      - RUST_LOG=debug
+      # Enable WASI sandbox debug output
+      - WASI_DEBUG=1
+
+    # Mount local code for development
+    # volumes:
+    #   - ../../rust/agent-core:/app
+
+  # Temporal UI - ensure it's accessible
+  temporal-ui:
+    ports:
+      - "8088:8080"
+
+  # PostgreSQL - expose for local debugging
+  postgres:
+    ports:
+      - "5432:5432"
+    # Persist data between restarts (remove for clean slate)
+    # volumes:
+    #   - postgres_data:/var/lib/postgresql/data
+
+  # Redis - expose for debugging
+  redis:
+    ports:
+      - "6379:6379"
+    command: redis-server --loglevel debug
+
+  # Prometheus for metrics debugging
+  prometheus:
+    ports:
+      - "9090:9090"
+
+  # Grafana for metrics visualization
+  grafana:
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+
+# Volume overrides (uncomment to persist data)
+# volumes:
+#   postgres_data:
+#     driver: local
+#   redis_data:
+#     driver: local

@@ -234,3 +234,39 @@ services:
       - ../../config:/app/config:ro
       - ../../wasm-interpreters:/opt/wasm-interpreters:ro
     networks: [shannon-net]
+
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: go/orchestrator/cmd/gateway/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      - PORT=8080
+      - ORCHESTRATOR_GRPC=orchestrator:50052
+      - ADMIN_SERVER=http://orchestrator:8081
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=shannon
+      - POSTGRES_PASSWORD=shannon
+      - POSTGRES_DB=shannon
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key}
+      - GATEWAY_SKIP_AUTH=${GATEWAY_SKIP_AUTH:-1}  # Default to 1 for easy open-source adoption
+    depends_on:
+      orchestrator:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:8080/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [shannon-net]

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
-	"go.uber.org/zap"
+	"go.temporal.io/sdk/activity"
 )
 
 // StreamEventType is a minimal set of event types for streaming_v1
@@ -25,6 +25,15 @@ const (
 	StreamEventRoleAssigned        StreamEventType = "ROLE_ASSIGNED"
 	StreamEventDelegation          StreamEventType = "DELEGATION"
 	StreamEventDependencySatisfied StreamEventType = "DEPENDENCY_SATISFIED"
+
+	// Human-readable UX events
+	StreamEventToolInvoked     StreamEventType = "TOOL_INVOKED"     // Tool usage with details in message
+	StreamEventAgentThinking   StreamEventType = "AGENT_THINKING"   // Planning/reasoning phases
+	StreamEventTeamStatus      StreamEventType = "TEAM_STATUS"      // Multi-agent coordination updates
+	StreamEventProgress        StreamEventType = "PROGRESS"         // Step completion updates
+	StreamEventDataProcessing  StreamEventType = "DATA_PROCESSING"  // Processing/analyzing data
+	StreamEventWaiting         StreamEventType = "WAITING"          // Waiting for resources/responses
+	StreamEventErrorRecovery   StreamEventType = "ERROR_RECOVERY"   // Handling and recovering from errors
 )
 
 // EmitTaskUpdateInput carries minimal event data for streaming_v1
@@ -38,13 +47,13 @@ type EmitTaskUpdateInput struct {
 
 // EmitTaskUpdate logs a minimal deterministic event. In future it can publish to a stream.
 func EmitTaskUpdate(ctx context.Context, in EmitTaskUpdateInput) error {
-	logger := zap.L()
+	logger := activity.GetLogger(ctx)
 	logger.Info("streaming_v1 event",
-		zap.String("workflow_id", in.WorkflowID),
-		zap.String("type", string(in.EventType)),
-		zap.String("agent_id", in.AgentID),
-		zap.String("message", in.Message),
-		zap.Time("ts", in.Timestamp),
+		"workflow_id", in.WorkflowID,
+		"type", string(in.EventType),
+		"agent_id", in.AgentID,
+		"message", in.Message,
+		"ts", in.Timestamp,
 	)
 	// Publish to in-process stream manager (best-effort)
 	streaming.Get().Publish(in.WorkflowID, streaming.Event{

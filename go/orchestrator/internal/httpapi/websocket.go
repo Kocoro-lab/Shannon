@@ -42,29 +42,74 @@ func (h *StreamingHandler) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	var lastID uint64
-	if q := r.URL.Query().Get("last_event_id"); q != "" {
-		if n, err := strconv.ParseUint(q, 10, 64); err == nil {
-			lastID = n
+
+	// Parse Last-Event-ID for resume support (StreamID or seq)
+	var lastSeq uint64
+	var lastStreamID string
+	var lastSentStreamID string
+	lastEventID := r.URL.Query().Get("last_event_id")
+
+	if lastEventID != "" {
+		// Check if it's a Redis stream ID (contains "-")
+		if strings.Contains(lastEventID, "-") {
+			lastStreamID = lastEventID
+		} else {
+			// Try to parse as numeric sequence
+			if n, err := strconv.ParseUint(lastEventID, 10, 64); err == nil {
+				lastSeq = n
+			}
 		}
 	}
 
-	ch := h.mgr.Subscribe(wf, 256)
-	defer h.mgr.Unsubscribe(wf, ch)
-
-	// Replay backlog
-	if lastID > 0 {
-		for _, ev := range h.mgr.ReplaySince(wf, lastID) {
+	// Replay missed events based on resume point
+	if lastStreamID != "" {
+		// Resume from Redis stream ID
+		events := h.mgr.ReplayFromStreamID(wf, lastStreamID)
+		for _, ev := range events {
 			if len(typeFilter) > 0 {
 				if _, ok := typeFilter[ev.Type]; !ok {
 					continue
 				}
+			}
+			// Track last stream ID from replay
+			if ev.StreamID != "" {
+				lastSentStreamID = ev.StreamID
+			}
+			if err := conn.WriteJSON(ev); err != nil {
+				return
+			}
+		}
+	} else if lastSeq > 0 {
+		// Resume from numeric sequence
+		events := h.mgr.ReplaySince(wf, lastSeq)
+		for _, ev := range events {
+			if len(typeFilter) > 0 {
+				if _, ok := typeFilter[ev.Type]; !ok {
+					continue
+				}
+			}
+			// Track last stream ID from replay
+			if ev.StreamID != "" {
+				lastSentStreamID = ev.StreamID
 			}
 			if err := conn.WriteJSON(ev); err != nil {
 				return
 			}
 		}
 	}
+
+	// Subscribe to live events starting from where replay ended
+	// Use last stream ID if available to avoid gaps, otherwise start fresh
+	startFrom := "$" // Default to new messages only
+	if lastSentStreamID != "" {
+		// Continue from last replayed message to avoid gaps
+		startFrom = lastSentStreamID
+	} else if lastStreamID == "" && lastSeq == 0 {
+		// No resume point, start from beginning
+		startFrom = "0-0"
+	}
+	ch := h.mgr.SubscribeFrom(wf, 256, startFrom)
+	defer h.mgr.Unsubscribe(wf, ch)
 
 	// Heartbeat ping
 	conn.SetReadLimit(512)

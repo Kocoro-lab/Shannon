@@ -17,6 +17,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/open-policy-agent/opa v0.68.0
 	github.com/prometheus/client_golang v1.20.5
+	github.com/redis/go-redis/v9 v9.14.0
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/otel v1.38.0

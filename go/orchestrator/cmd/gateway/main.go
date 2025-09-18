@@ -1,0 +1,231 @@
+package main
+
+import (
+	"context"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/handlers"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/middleware"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/proxy"
+	authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+)
+
+func main() {
+	// Initialize logger
+	logger, err := zap.NewProduction()
+	if err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer logger.Sync()
+
+	// Initialize database
+	dbConfig := &db.Config{
+		Host:     getEnvOrDefault("POSTGRES_HOST", "postgres"),
+		Port:     getEnvOrDefaultInt("POSTGRES_PORT", 5432),
+		User:     getEnvOrDefault("POSTGRES_USER", "shannon"),
+		Password: getEnvOrDefault("POSTGRES_PASSWORD", "shannon"),
+		Database: getEnvOrDefault("POSTGRES_DB", "shannon"),
+		SSLMode:  getEnvOrDefault("POSTGRES_SSLMODE", "disable"),
+	}
+
+	dbClient, err := db.NewClient(dbConfig, logger)
+	if err != nil {
+		logger.Fatal("Failed to connect to database", zap.Error(err))
+	}
+	defer dbClient.Close()
+
+	// Create sqlx.DB wrapper for auth service
+	pgDB := sqlx.NewDb(dbClient.GetDB(), "postgres")
+
+	// Initialize Redis client for rate limiting and idempotency
+	redisURL := getEnvOrDefault("REDIS_URL", "redis://redis:6379")
+	redisOpts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		logger.Fatal("Failed to parse Redis URL", zap.Error(err))
+	}
+	redisClient := redis.NewClient(redisOpts)
+	defer redisClient.Close()
+
+	// Test Redis connection
+	ctx := context.Background()
+	if _, err := redisClient.Ping(ctx).Result(); err != nil {
+		logger.Fatal("Failed to connect to Redis", zap.Error(err))
+	}
+
+	// Initialize auth service (direct access to internal package)
+	jwtSecret := getEnvOrDefault("JWT_SECRET", "your-secret-key")
+	authService := authpkg.NewService(pgDB, logger, jwtSecret)
+
+	// Connect to orchestrator gRPC
+	orchAddr := getEnvOrDefault("ORCHESTRATOR_GRPC", "orchestrator:50052")
+	conn, err := grpc.Dial(orchAddr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(50*1024*1024)), // 50MB
+	)
+	if err != nil {
+		logger.Fatal("Failed to connect to orchestrator", zap.Error(err))
+	}
+	defer conn.Close()
+
+	orchClient := orchpb.NewOrchestratorServiceClient(conn)
+
+	// Create handlers
+	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, logger)
+	healthHandler := handlers.NewHealthHandler(orchClient, logger)
+	openapiHandler := handlers.NewOpenAPIHandler()
+
+	// Create middlewares
+	authMiddleware := middleware.NewAuthMiddleware(authService, logger).Middleware
+	rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
+	idempotencyMiddleware := middleware.NewIdempotencyMiddleware(redisClient, logger).Middleware
+	tracingMiddleware := middleware.NewTracingMiddleware(logger).Middleware
+
+	// Setup HTTP mux
+	mux := http.NewServeMux()
+
+	// Health check (no auth required)
+	mux.HandleFunc("GET /health", healthHandler.Health)
+	mux.HandleFunc("GET /readiness", healthHandler.Readiness)
+
+	// OpenAPI spec (no auth required)
+	mux.HandleFunc("GET /openapi.json", openapiHandler.ServeSpec)
+
+	// Task endpoints (require auth)
+	mux.Handle("POST /api/v1/tasks",
+		tracingMiddleware(
+			authMiddleware(
+				rateLimiter(
+					idempotencyMiddleware(
+						http.HandlerFunc(taskHandler.SubmitTask),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/tasks/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(taskHandler.GetTaskStatus),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/tasks/{id}/stream",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(taskHandler.StreamTask),
+			),
+		),
+	)
+
+	// SSE/WebSocket reverse proxy to admin server
+	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
+	streamProxy, err := proxy.NewStreamingProxy(adminURL, logger)
+	if err != nil {
+		logger.Fatal("Failed to create streaming proxy", zap.Error(err))
+	}
+
+	// Proxy SSE and WebSocket endpoints
+	mux.Handle("/api/v1/stream/sse",
+		tracingMiddleware(
+			authMiddleware(
+				streamProxy,
+			),
+		),
+	)
+
+	mux.Handle("/api/v1/stream/ws",
+		tracingMiddleware(
+			authMiddleware(
+				streamProxy,
+			),
+		),
+	)
+
+	// CORS middleware for all routes (development friendly)
+	corsHandler := corsMiddleware(mux)
+
+	// Create HTTP server
+	port := getEnvOrDefaultInt("PORT", 8080)
+	server := &http.Server{
+		Addr:         ":" + strconv.Itoa(port),
+		Handler:      corsHandler,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Start server in goroutine
+	go func() {
+		logger.Info("Gateway starting", zap.Int("port", port))
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal("Failed to start gateway", zap.Error(err))
+		}
+	}()
+
+	// Wait for interrupt signal to gracefully shutdown the server
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logger.Info("Gateway shutting down...")
+
+	// Graceful shutdown with timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Gateway forced to shutdown", zap.Error(err))
+	}
+
+	logger.Info("Gateway stopped")
+}
+
+// corsMiddleware adds CORS headers for development
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow CORS for development
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, Idempotency-Key, traceparent, tracestate")
+		w.Header().Set("Access-Control-Max-Age", "3600")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// Helper functions
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+func getEnvOrDefaultInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}

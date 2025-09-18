@@ -24,6 +24,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		"session_id", input.SessionID,
 	)
 
+	// Emit workflow started event
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventWorkflowStarted,
+		AgentID:    "orchestrator",
+		Message:    "Task processing started",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil); err != nil {
+		logger.Warn("Failed to emit workflow started event", "error", err)
+	}
+
 	// Conservative activity options for fast planning
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 60 * time.Second,
@@ -48,6 +63,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		AvailableTools: []string{},
 	}).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
+		// Emit error event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventErrorOccurred,
+			Message:    "Task decomposition failed: " + err.Error(),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
@@ -178,6 +200,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		// Keep simple path lightweight as a child for isolation (unless P2P is forced)
 		var result TaskResult
 		ometrics.WorkflowsStarted.WithLabelValues("SimpleTaskWorkflow", "simple").Inc()
+		// Emit delegation event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDelegation,
+			Message:    "Routing to SimpleTaskWorkflow",
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
 		if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, input).Get(ctx, &result); err != nil {
 			return result, err
 		}
@@ -186,6 +215,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	case len(decomp.Subtasks) > 5 || hasDeps:
 		var result TaskResult
 		ometrics.WorkflowsStarted.WithLabelValues("SupervisorWorkflow", "complex").Inc()
+		// Emit delegation event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDelegation,
+			Message:    "Routing to SupervisorWorkflow",
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
 		if err := workflow.ExecuteChildWorkflow(ctx, SupervisorWorkflow, input).Get(ctx, &result); err != nil {
 			return result, err
 		}
@@ -194,6 +230,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	default:
 		// Standard DAG strategy (fan-out/fan-in)
 		ometrics.WorkflowsStarted.WithLabelValues("DAGWorkflow", "standard").Inc()
+		// Emit delegation event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDelegation,
+			Message:    "Routing to DAGWorkflow",
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
 		strategiesInput := convertToStrategiesInput(input)
 		var strategiesResult strategies.TaskResult
 		if err := workflow.ExecuteChildWorkflow(ctx, strategies.DAGWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {

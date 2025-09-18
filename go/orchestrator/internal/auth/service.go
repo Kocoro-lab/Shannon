@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -179,13 +180,22 @@ func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) (*UserConte
 	// Find API key by prefix first
 	var keys []APIKey
 	query := `
-		SELECT * FROM auth.api_keys 
+		SELECT id, key_hash, key_prefix, user_id, tenant_id, name, description,
+		       scopes, rate_limit_per_hour, last_used, expires_at, is_active, created_at
+		FROM auth.api_keys
 		WHERE key_prefix = $1 AND is_active = true
 	`
 	err := s.db.SelectContext(ctx, &keys, query, keyPrefix)
 	if err != nil {
+		s.logger.Error("Failed to query API keys",
+			zap.String("key_prefix", keyPrefix),
+			zap.Error(err))
 		return nil, fmt.Errorf("failed to query API keys: %w", err)
 	}
+
+	s.logger.Debug("Found API keys",
+		zap.String("key_prefix", keyPrefix),
+		zap.Int("count", len(keys)))
 
 	// Find matching key with constant-time comparison
 	var key *APIKey
@@ -232,7 +242,7 @@ func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) (*UserConte
 		Username:  user.Username,
 		Email:     user.Email,
 		Role:      user.Role,
-		Scopes:    key.Scopes,
+		Scopes:    []string(key.Scopes),
 		IsAPIKey:  true,
 		TokenType: "api_key",
 	}, nil
@@ -273,7 +283,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, req *Creat
 		TenantID:         user.TenantID,
 		Name:             req.Name,
 		Description:      req.Description,
-		Scopes:           scopes,
+		Scopes:           pq.StringArray(scopes),
 		RateLimitPerHour: 1000,
 		ExpiresAt:        req.ExpiresAt,
 		IsActive:         true,

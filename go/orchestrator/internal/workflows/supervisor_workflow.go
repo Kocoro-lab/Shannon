@@ -219,6 +219,24 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
 	}
 
+	// Emit team status event after decomposition
+	if len(decomp.Subtasks) > 1 {
+		message := fmt.Sprintf("Coordinating %d agents to handle subtasks", len(decomp.Subtasks))
+		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 30 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
+		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventTeamStatus,
+			AgentID:    "supervisor",
+			Message:    message,
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil); err != nil {
+			logger.Warn("Failed to emit team status event", "error", err)
+		}
+	}
+
 	// If simple task, delegate full task to DAGWorkflow (reuse behavior)
 	// Route simple tasks properly: check mode, complexity score, or single subtask
 	isSimpleTask := decomp.Mode == "simple" || decomp.ComplexityScore < 0.3 || len(decomp.Subtasks) <= 1
@@ -243,6 +261,25 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	maxRetriesPerTask := 3                    // Max 3 retries per individual task (handles transient failures)
 
 	for i, st := range decomp.Subtasks {
+		// Emit progress event for this subtask
+		progressMessage := fmt.Sprintf("Starting subtask %d of %d: %s", i+1, len(decomp.Subtasks), st.Description)
+		if len(st.Description) > 50 {
+			progressMessage = fmt.Sprintf("Starting subtask %d of %d: %s...", i+1, len(decomp.Subtasks), st.Description[:47])
+		}
+		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 30 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
+		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventProgress,
+			AgentID:    fmt.Sprintf("agent-%s", st.ID),
+			Message:    progressMessage,
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil); err != nil {
+			logger.Warn("Failed to emit progress event", "error", err)
+		}
+
 		// Build context, injecting role when enabled
 		childCtx := make(map[string]interface{})
 		for k, v := range input.Context {
@@ -299,6 +336,24 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					attempts := 0
 
 					for workflow.Now(ctx).Sub(startTime) < maxWaitTime {
+						// Emit waiting event on first attempt
+						if attempts == 0 {
+							waitMessage := fmt.Sprintf("Waiting for dependency: %s", topic)
+							emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+								StartToCloseTimeout: 30 * time.Second,
+								RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+							})
+							if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+								WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+								EventType:  activities.StreamEventWaiting,
+								AgentID:    fmt.Sprintf("agent-%s", st.ID),
+								Message:    waitMessage,
+								Timestamp:  workflow.Now(ctx),
+							}).Get(ctx, nil); err != nil {
+								logger.Warn("Failed to emit waiting event", "error", err)
+							}
+						}
+
 						// Check if entries already exist
 						var entries []activities.WorkspaceEntry
 						if err := workflow.ExecuteActivity(ctx, constants.WorkspaceListActivity, activities.WorkspaceListInput{
@@ -488,6 +543,24 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					}
 				}
 			}
+		}
+	}
+
+	// Emit data processing event for synthesis
+	if len(childResults) > 1 {
+		synthMessage := fmt.Sprintf("Synthesizing results from %d agents", len(childResults))
+		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 30 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
+		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDataProcessing,
+			AgentID:    "supervisor",
+			Message:    synthMessage,
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil); err != nil {
+			logger.Warn("Failed to emit data processing event", "error", err)
 		}
 	}
 

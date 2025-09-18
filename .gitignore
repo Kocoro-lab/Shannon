@@ -151,6 +151,9 @@ data/
 volumes/
 postgres_data/
 qdrant_data/
+# Docker Compose overrides for local development
+docker-compose.override.yml
+deploy/compose/docker-compose.override.yml
 
 # Environment and secrets
 .env
@@ -178,6 +181,10 @@ protos/gen/
 **/*_pb2_grpc.py
 *.pb.cc
 *.pb.h
+
+# Python gRPC generated files
+python/llm-service/llm_service/grpc_gen/
+python/llm-service/llm_service/generated/
 
 # Logs
 logs/

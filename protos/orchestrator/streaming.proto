@@ -12,7 +12,8 @@ service StreamingService {
 message StreamRequest {
   string workflow_id = 1;
   repeated string types = 2; // optional filter by event types
-  uint64 last_event_id = 3; // resume from this event id (exclusive)
+  uint64 last_event_id = 3; // resume from this event id (exclusive) - backward compat
+  string last_stream_id = 4; // resume from this Redis stream ID (preferred)
 }
 
 message TaskUpdate {
@@ -21,6 +22,7 @@ message TaskUpdate {
   string agent_id = 3;
   string message = 4;
   google.protobuf.Timestamp timestamp = 5;
-  uint64 seq = 6;
+  uint64 seq = 6; // backward compat
+  string stream_id = 7; // Redis stream ID for robust resume
 }
 

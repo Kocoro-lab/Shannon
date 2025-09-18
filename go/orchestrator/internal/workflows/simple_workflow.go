@@ -20,6 +20,32 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		"session_id", input.SessionID,
 	)
 
+	// Emit workflow started event
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventWorkflowStarted,
+		AgentID:    "simple-agent",
+		Message:    "Starting simple task workflow",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
+	// Emit thinking event
+	truncatedQuery := input.Query
+	if len(truncatedQuery) > 80 {
+		truncatedQuery = truncatedQuery[:77] + "..."
+	}
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventAgentThinking,
+		AgentID:    "simple-agent",
+		Message:    "Analyzing: " + truncatedQuery,
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 2 * time.Minute, // Simple tasks should be fast
@@ -28,6 +54,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
+
+	// Emit agent started event
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventAgentStarted,
+		AgentID:    "simple-agent",
+		Message:    "Processing query",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	// Execute the consolidated simple task activity
 	// This single activity handles everything: agent execution, session update, etc.
@@ -43,6 +78,14 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	if err != nil {
 		logger.Error("Simple task execution failed", "error", err)
+		// Emit error event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventErrorOccurred,
+			AgentID:    "simple-agent",
+			Message:    "Task execution failed: " + err.Error(),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
 		return TaskResult{
 			Success:      false,
 			ErrorMessage: err.Error(),
@@ -90,6 +133,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	logger.Info("SimpleTaskWorkflow completed successfully",
 		"tokens_used", result.TokensUsed,
 	)
+
+	// Emit completion event
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventAgentCompleted,
+		AgentID:    "simple-agent",
+		Message:    "Task completed successfully",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     result.Response,
