@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"go.temporal.io/sdk/workflow"
 )
 
 // convertHistoryForAgent converts message history to string format for agents
@@ -77,19 +77,18 @@ func getWorkflowConfig(ctx workflow.Context) activities.WorkflowConfig {
 		workflow.GetLogger(ctx).Warn("Failed to load config, using defaults", "error", err)
 		// Return sensible defaults
 		config = activities.WorkflowConfig{
-			ExploratoryMaxIterations:          5,
-			ExploratoryConfidenceThreshold:    0.85,
-			ExploratoryBranchFactor:           3,
-			ExploratoryMaxConcurrentAgents:    3,
-			ScientificMaxHypotheses:           3,
-			ScientificMaxIterations:           4,
-			ScientificConfidenceThreshold:     0.85,
-			ScientificContradictionThreshold:  0.2,
+			ExploratoryMaxIterations:         5,
+			ExploratoryConfidenceThreshold:   0.85,
+			ExploratoryBranchFactor:          3,
+			ExploratoryMaxConcurrentAgents:   3,
+			ScientificMaxHypotheses:          3,
+			ScientificMaxIterations:          4,
+			ScientificConfidenceThreshold:    0.85,
+			ScientificContradictionThreshold: 0.2,
 		}
 	}
 	return config
 }
-
 
 // extractPersonaHints extracts persona suggestions from context
 func extractPersonaHints(context map[string]interface{}) []string {

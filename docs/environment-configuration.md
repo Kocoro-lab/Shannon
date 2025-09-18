@@ -21,8 +21,8 @@ Docker Compose loads environment variables in this order of precedence:
 
 1. **Shell environment variables** (highest priority)
 2. **`.env` file in the docker-compose directory**
-3. **`env_file` directive in compose.yml**
-4. **`environment` section in compose.yml** (lowest priority)
+3. **`env_file` directive in docker-compose.yml**
+4. **`environment` section in docker-compose.yml** (lowest priority)
 
 ### Critical Setup Steps
 
@@ -36,7 +36,7 @@ cp .env.example .env
 
 #### 2. Create Symlink for Docker Compose
 
-Docker Compose looks for `.env` in the same directory as the `compose.yml` file:
+Docker Compose looks for `.env` in the same directory as the `docker-compose.yml` file:
 ```bash
 cd deploy/compose
 ln -sf ../../.env .env
@@ -49,10 +49,10 @@ This symlink ensures Docker Compose can find your environment variables.
 Test that your environment variables are loaded correctly:
 ```bash
 # From project root
-docker compose -f deploy/compose/compose.yml config | grep EXA_API_KEY
+docker compose -f deploy/compose/docker-compose.yml config | grep EXA_API_KEY
 
 # Check inside running container
-docker compose -f deploy/compose/compose.yml exec llm-service env | grep EXA
+docker compose -f deploy/compose/docker-compose.yml exec llm-service env | grep EXA
 ```
 
 ## Required Configuration
@@ -98,7 +98,7 @@ Error: No web search provider configured. Please set one of:
 **Solution**:
 1. Ensure `.env` file contains the API keys
 2. Create the symlink: `cd deploy/compose && ln -sf ../../.env .env`
-3. Restart services: `docker compose -f deploy/compose/compose.yml up -d`
+3. Restart services: `docker compose -f deploy/compose/docker-compose.yml up -d`
 
 ### Issue: Docker Compose warnings about missing variables
 
@@ -108,7 +108,7 @@ level=warning msg="The \"EXA_API_KEY\" variable is not set. Defaulting to a blan
 ```
 
 **Solution**:
-These warnings appear during the build phase when Docker Compose evaluates the compose.yml file. They can be safely ignored if:
+These warnings appear during the build phase when Docker Compose evaluates the docker-compose.yml file. They can be safely ignored if:
 1. The symlink exists (`deploy/compose/.env -> ../../.env`)
 2. The variables are correctly set inside the container (verify with `docker compose exec llm-service env`)
 
@@ -186,8 +186,8 @@ setup-env:
 .PHONY: check-env
 check-env:
 	@echo "Checking environment configuration..."
-	@docker compose -f deploy/compose/compose.yml config > /dev/null 2>&1
-	@docker compose -f deploy/compose/compose.yml exec llm-service env | grep -q EXA_API_KEY || \
+	@docker compose -f deploy/compose/docker-compose.yml config > /dev/null 2>&1
+	@docker compose -f deploy/compose/docker-compose.yml exec llm-service env | grep -q EXA_API_KEY || \
 		echo "Warning: EXA_API_KEY not set in container"
 	@echo "Environment check complete"
 ```
@@ -199,14 +199,14 @@ check-env:
 ls -la .env deploy/compose/.env
 
 # View current environment in container
-docker compose -f deploy/compose/compose.yml exec llm-service env | sort
+docker compose -f deploy/compose/docker-compose.yml exec llm-service env | sort
 
 # Test with explicit env file
-docker compose --env-file .env -f deploy/compose/compose.yml up -d
+docker compose --env-file .env -f deploy/compose/docker-compose.yml up -d
 
 # Export shell variables (temporary, for testing)
 export $(grep -v '^#' .env | xargs)
-docker compose -f deploy/compose/compose.yml up -d
+docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
 ## Summary

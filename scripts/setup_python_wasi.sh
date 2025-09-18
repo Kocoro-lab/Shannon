@@ -139,11 +139,11 @@ fi
 
 # Docker compose check
 echo ""
-if [ -f "deploy/compose/compose.yml" ]; then
+if [ -f "deploy/compose/docker-compose.yml" ]; then
     echo -e "${YELLOW}Checking Docker Compose configuration...${NC}"
 
     # Check if volumes are configured
-    if grep -q "wasm-interpreters:/opt/wasm-interpreters" deploy/compose/compose.yml; then
+    if grep -q "wasm-interpreters:/opt/wasm-interpreters" deploy/compose/docker-compose.yml; then
         echo -e "${GREEN}✓ Docker Compose already configured for WASI interpreters${NC}"
     else
         echo -e "${YELLOW}Note: Docker Compose needs to be updated to mount WASI interpreters${NC}"
@@ -165,8 +165,8 @@ echo "3. Test Python execution:"
 echo "   ./scripts/submit_task.sh \"Execute Python: print('Hello World')\""
 echo ""
 echo "For more information, see:"
-echo "  - docs/PYTHON_WASI_SETUP.md"
-echo "  - rust/agent-core/WASI_SETUP.md"
+echo "  - docs/python-wasi-setup.md"
+echo "  - docs/python-code-execution.md"
 echo ""
 echo "Python WASI interpreter location:"
 echo "  Local: $(pwd)/$WASM_DIR/$PYTHON_WASM_FILE"

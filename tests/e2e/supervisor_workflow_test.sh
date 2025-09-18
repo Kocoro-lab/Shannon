@@ -27,7 +27,7 @@ sleep 3
 
 # Check if SupervisorWorkflow was spawned
 echo "Checking for SupervisorWorkflow..."
-SUPERVISOR_COUNT=$(docker compose -f deploy/compose/compose.yml exec temporal \
+SUPERVISOR_COUNT=$(docker compose -f deploy/compose/docker-compose.yml exec temporal \
     temporal workflow list --address temporal:7233 2>/dev/null | \
     grep -c "SupervisorWorkflow" || echo "0")
 
@@ -35,14 +35,14 @@ if [ "$SUPERVISOR_COUNT" -gt 0 ]; then
     echo "✅ SupervisorWorkflow detected!"
 
     # Get supervisor workflow ID
-    SUPERVISOR_ID=$(docker compose -f deploy/compose/compose.yml exec temporal \
+    SUPERVISOR_ID=$(docker compose -f deploy/compose/docker-compose.yml exec temporal \
         temporal workflow list --address temporal:7233 2>/dev/null | \
         grep "SupervisorWorkflow" | awk '{print $2}' | head -1)
 
     echo "Supervisor Workflow ID: $SUPERVISOR_ID"
 
     # Check supervisor details
-    docker compose -f deploy/compose/compose.yml exec temporal \
+    docker compose -f deploy/compose/docker-compose.yml exec temporal \
         temporal workflow describe --workflow-id "$SUPERVISOR_ID" --address temporal:7233 2>/dev/null | \
         grep -E "WorkflowId|Type|Status" | head -5
 else
@@ -68,7 +68,7 @@ done
 
 if [ $COUNTER -ge $MAX_WAIT ]; then
     echo "⚠️  Task did not complete within ${MAX_WAIT}s, terminating..."
-    docker compose -f deploy/compose/compose.yml exec temporal \
+    docker compose -f deploy/compose/docker-compose.yml exec temporal \
         temporal workflow terminate --workflow-id "$WORKFLOW_ID" --address temporal:7233 \
         --reason "Test timeout" 2>/dev/null || true
 fi
@@ -76,7 +76,7 @@ fi
 # Check database for execution mode
 echo ""
 echo "Checking execution mode in database..."
-MODE=$(docker compose -f deploy/compose/compose.yml exec -T postgres \
+MODE=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
     psql -U shannon -d shannon -t -c \
     "SELECT mode FROM tasks WHERE workflow_id='$WORKFLOW_ID';" 2>/dev/null | xargs)
 
@@ -99,14 +99,14 @@ echo "Submitted workflow: $WORKFLOW_ID"
 sleep 5
 
 # Check workflow type
-WORKFLOW_TYPE=$(docker compose -f deploy/compose/compose.yml exec temporal \
+WORKFLOW_TYPE=$(docker compose -f deploy/compose/docker-compose.yml exec temporal \
     temporal workflow describe --workflow-id "$WORKFLOW_ID" --address temporal:7233 2>/dev/null | \
     grep "Type" | head -1 | awk '{print $2}')
 
 echo "Workflow type: $WORKFLOW_TYPE"
 
 # Check for child workflows
-CHILD_COUNT=$(docker compose -f deploy/compose/compose.yml exec temporal \
+CHILD_COUNT=$(docker compose -f deploy/compose/docker-compose.yml exec temporal \
     temporal workflow describe --workflow-id "$WORKFLOW_ID" --address temporal:7233 2>/dev/null | \
     grep -c "Child Workflows" || echo "0")
 
@@ -121,7 +121,7 @@ echo "Final status: $STATUS"
 
 # Terminate if still running
 if [ "$STATUS" = "RUNNING" ]; then
-    docker compose -f deploy/compose/compose.yml exec temporal \
+    docker compose -f deploy/compose/docker-compose.yml exec temporal \
         temporal workflow terminate --workflow-id "$WORKFLOW_ID" --address temporal:7233 \
         --reason "Test cleanup" 2>/dev/null || true
 fi
@@ -142,7 +142,7 @@ sleep 5
 
 # Check for DAG pattern
 echo "Checking workflow pattern..."
-docker compose -f deploy/compose/compose.yml logs orchestrator --tail 100 2>/dev/null | \
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail 100 2>/dev/null | \
     grep -i "$WORKFLOW_ID" | grep -E "DAG|chain|dependency" | head -3 || \
     echo "Pattern detection in progress..."
 
@@ -153,7 +153,7 @@ echo "Task status: $STATUS"
 
 # Cleanup
 if [ "$STATUS" = "RUNNING" ]; then
-    docker compose -f deploy/compose/compose.yml exec temporal \
+    docker compose -f deploy/compose/docker-compose.yml exec temporal \
         temporal workflow terminate --workflow-id "$WORKFLOW_ID" --address temporal:7233 \
         --reason "Test cleanup" 2>/dev/null || true
 fi
@@ -169,4 +169,4 @@ echo "- Multi-step analysis tested"
 echo "- DAG workflow with dependencies tested"
 echo ""
 echo "Check logs for detailed execution patterns:"
-echo "  docker compose -f deploy/compose/compose.yml logs orchestrator --tail 200 | grep -i supervisor"
+echo "  docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail 200 | grep -i supervisor"

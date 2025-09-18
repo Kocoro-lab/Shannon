@@ -151,10 +151,10 @@ func (h *HTTPHandler) handleDetailedHealth(w http.ResponseWriter, r *http.Reques
 	}
 
 	ctx := r.Context()
-	
+
 	// Check for cached results parameter
 	cached := r.URL.Query().Get("cached") == "true"
-	
+
 	var detailed DetailedHealth
 	if cached {
 		// Return cached results without running new checks
@@ -163,7 +163,7 @@ func (h *HTTPHandler) handleDetailedHealth(w http.ResponseWriter, r *http.Reques
 		for name, result := range lastResults {
 			components[name] = result
 		}
-		
+
 		// Calculate summary from cached results
 		summary := HealthSummary{Total: len(components)}
 		for _, result := range components {
@@ -181,10 +181,10 @@ func (h *HTTPHandler) handleDetailedHealth(w http.ResponseWriter, r *http.Reques
 				summary.NonCritical++
 			}
 		}
-		
+
 		// Use manager's calculateOverallStatus method (need to make it accessible)
 		overall := h.calculateOverallStatusForHTTP(components, summary)
-		
+
 		detailed = DetailedHealth{
 			Overall:    overall,
 			Components: components,
@@ -235,7 +235,7 @@ func (h *HTTPHandler) calculateOverallStatusForHTTP(components map[string]CheckR
 		if result.Status == StatusDegraded {
 			degradedComponents++
 		}
-		
+
 		if result.Status == StatusUnhealthy {
 			if result.Critical {
 				criticalFailures++

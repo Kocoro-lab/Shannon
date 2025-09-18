@@ -146,17 +146,17 @@ func (mm *ModeManager) ShouldUsePartialResults(ctx context.Context, workflowType
 // GetFallbackBehaviorForOperation returns the appropriate fallback behavior
 func (mm *ModeManager) GetFallbackBehaviorForOperation(operation string) FallbackBehavior {
 	behavior := mm.strategy.GetFallbackBehavior(operation)
-	
+
 	// Record that fallback behavior was requested
 	RecordFallbackBehavior(operation, behavior)
-	
+
 	return behavior
 }
 
 // CanExecuteOperation checks if an operation should proceed in current degradation state
 func (mm *ModeManager) CanExecuteOperation(ctx context.Context, operation string) (bool, FallbackBehavior, error) {
 	behavior := mm.GetFallbackBehaviorForOperation(operation)
-	
+
 	switch behavior {
 	case BehaviorProceed:
 		return true, behavior, nil
@@ -175,12 +175,12 @@ func (mm *ModeManager) CanExecuteOperation(ctx context.Context, operation string
 
 // ModeDowngradeDecision encapsulates a mode downgrade decision for workflow context
 type ModeDowngradeDecision struct {
-	OriginalMode    ExecutionMode
-	FinalMode       ExecutionMode
-	WasDowngraded   bool
-	Reason          ModeDowngradeReason
+	OriginalMode     ExecutionMode
+	FinalMode        ExecutionMode
+	WasDowngraded    bool
+	Reason           ModeDowngradeReason
 	DegradationLevel DegradationLevel
-	Timestamp       int64 // Unix timestamp for determinism
+	Timestamp        int64 // Unix timestamp for determinism
 }
 
 // CreateModeDecision creates a deterministic mode decision for workflow use

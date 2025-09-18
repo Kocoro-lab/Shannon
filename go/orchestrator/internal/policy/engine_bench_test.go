@@ -12,7 +12,7 @@ import (
 
 // BenchmarkPolicyEvaluationCold measures performance without cache
 func BenchmarkPolicyEvaluationCold(b *testing.B) {
-	
+
 	input := &PolicyInput{
 		Query:       "What is the weather today?",
 		UserID:      "wayland",
@@ -20,10 +20,10 @@ func BenchmarkPolicyEvaluationCold(b *testing.B) {
 		TokenBudget: 1000,
 		AgentID:     "test-agent",
 	}
-	
+
 	b.ResetTimer()
 	b.StartTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		// Create new engine each time to avoid cache
 		freshEngine := setupBenchmarkEngine(b)
@@ -32,7 +32,7 @@ func BenchmarkPolicyEvaluationCold(b *testing.B) {
 			b.Fatalf("Policy evaluation failed: %v", err)
 		}
 	}
-	
+
 	b.StopTimer()
 	reportBenchmarkResults(b, "Cold evaluation (no cache)")
 }
@@ -40,31 +40,31 @@ func BenchmarkPolicyEvaluationCold(b *testing.B) {
 // BenchmarkPolicyEvaluationWarm measures performance with cache hits
 func BenchmarkPolicyEvaluationWarm(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
-	
+
 	input := &PolicyInput{
 		Query:       "What is the weather today?",
-		UserID:      "wayland", 
+		UserID:      "wayland",
 		Mode:        "standard",
 		TokenBudget: 1000,
 		AgentID:     "test-agent",
 	}
-	
+
 	// Warm up cache
 	_, err := engine.Evaluate(context.Background(), input)
 	if err != nil {
 		b.Fatalf("Warmup failed: %v", err)
 	}
-	
+
 	b.ResetTimer()
 	b.StartTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_, err := engine.Evaluate(context.Background(), input)
 		if err != nil {
 			b.Fatalf("Policy evaluation failed: %v", err)
 		}
 	}
-	
+
 	b.StopTimer()
 	reportBenchmarkResults(b, "Warm evaluation (cache hit)")
 }
@@ -72,24 +72,24 @@ func BenchmarkPolicyEvaluationWarm(b *testing.B) {
 // BenchmarkPolicyEvaluationConcurrent measures concurrent performance
 func BenchmarkPolicyEvaluationConcurrent(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
-	
+
 	// Warm up cache with different inputs
 	inputs := []*PolicyInput{
 		{Query: "What is the weather?", UserID: "user1", Mode: "standard", TokenBudget: 1000, AgentID: "agent1"},
-		{Query: "Calculate 2+2", UserID: "user2", Mode: "simple", TokenBudget: 500, AgentID: "agent2"},  
+		{Query: "Calculate 2+2", UserID: "user2", Mode: "simple", TokenBudget: 500, AgentID: "agent2"},
 		{Query: "Complex analysis", UserID: "admin", Mode: "complex", TokenBudget: 5000, AgentID: "agent3"},
 	}
-	
+
 	for _, input := range inputs {
 		_, err := engine.Evaluate(context.Background(), input)
 		if err != nil {
 			b.Fatalf("Warmup failed: %v", err)
 		}
 	}
-	
+
 	b.ResetTimer()
 	b.StartTimer()
-	
+
 	b.RunParallel(func(pb *testing.PB) {
 		inputIndex := 0
 		for pb.Next() {
@@ -101,7 +101,7 @@ func BenchmarkPolicyEvaluationConcurrent(b *testing.B) {
 			inputIndex++
 		}
 	})
-	
+
 	b.StopTimer()
 	reportBenchmarkResults(b, "Concurrent evaluation")
 }
@@ -110,31 +110,31 @@ func BenchmarkPolicyEvaluationConcurrent(b *testing.B) {
 func BenchmarkPolicyLoadingAndEvaluation(b *testing.B) {
 	config := setupBenchmarkConfig(b)
 	logger := zap.NewNop()
-	
+
 	input := &PolicyInput{
 		Query:       "What is the weather today?",
 		UserID:      "wayland",
-		Mode:        "standard", 
+		Mode:        "standard",
 		TokenBudget: 1000,
 		AgentID:     "test-agent",
 	}
-	
+
 	b.ResetTimer()
 	b.StartTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		// Create engine and load policies each time
 		engine, err := NewOPAEngine(config, logger)
 		if err != nil {
 			b.Fatalf("Engine creation failed: %v", err)
 		}
-		
+
 		_, err = engine.Evaluate(context.Background(), input)
 		if err != nil {
 			b.Fatalf("Policy evaluation failed: %v", err)
 		}
 	}
-	
+
 	b.StopTimer()
 	reportBenchmarkResults(b, "Full load + evaluation")
 }
@@ -150,7 +150,7 @@ func BenchmarkPolicyEvaluationDifferentModes(b *testing.B) {
 		{"Standard", "standard", 2000},
 		{"Complex", "complex", 10000},
 	}
-	
+
 	for _, mode := range modes {
 		b.Run(mode.name, func(b *testing.B) {
 			engine := setupBenchmarkEngine(b)
@@ -161,22 +161,22 @@ func BenchmarkPolicyEvaluationDifferentModes(b *testing.B) {
 				TokenBudget: mode.budget,
 				AgentID:     "test-agent",
 			}
-			
+
 			// Warmup
 			_, err := engine.Evaluate(context.Background(), input)
 			if err != nil {
 				b.Fatalf("Warmup failed: %v", err)
 			}
-			
+
 			b.ResetTimer()
-			
+
 			for i := 0; i < b.N; i++ {
 				_, err := engine.Evaluate(context.Background(), input)
 				if err != nil {
 					b.Fatalf("Policy evaluation failed: %v", err)
 				}
 			}
-			
+
 			reportBenchmarkResults(b, fmt.Sprintf("%s mode evaluation", mode.name))
 		})
 	}
@@ -185,7 +185,7 @@ func BenchmarkPolicyEvaluationDifferentModes(b *testing.B) {
 // BenchmarkCachePerformance measures cache hit/miss scenarios
 func BenchmarkCachePerformance(b *testing.B) {
 	engine := setupBenchmarkEngine(b)
-	
+
 	// Generate many unique inputs to test cache behavior
 	inputs := make([]*PolicyInput, 100)
 	for i := 0; i < 100; i++ {
@@ -197,7 +197,7 @@ func BenchmarkCachePerformance(b *testing.B) {
 			AgentID:     "test-agent",
 		}
 	}
-	
+
 	b.Run("CacheHits", func(b *testing.B) {
 		// Warm up cache with first 10 inputs
 		for i := 0; i < 10; i++ {
@@ -206,9 +206,9 @@ func BenchmarkCachePerformance(b *testing.B) {
 				b.Fatalf("Cache warmup failed: %v", err)
 			}
 		}
-		
+
 		b.ResetTimer()
-		
+
 		for i := 0; i < b.N; i++ {
 			// Only use first 10 inputs (should hit cache)
 			input := inputs[i%10]
@@ -217,13 +217,13 @@ func BenchmarkCachePerformance(b *testing.B) {
 				b.Fatalf("Cache hit evaluation failed: %v", err)
 			}
 		}
-		
+
 		reportBenchmarkResults(b, "Cache hits")
 	})
-	
+
 	b.Run("CacheMisses", func(b *testing.B) {
 		b.ResetTimer()
-		
+
 		for i := 0; i < b.N; i++ {
 			// Use different input each time (cache misses)
 			input := inputs[i%100]
@@ -232,7 +232,7 @@ func BenchmarkCachePerformance(b *testing.B) {
 				b.Fatalf("Cache miss evaluation failed: %v", err)
 			}
 		}
-		
+
 		reportBenchmarkResults(b, "Cache misses")
 	})
 }
@@ -242,19 +242,19 @@ func BenchmarkCachePerformance(b *testing.B) {
 func setupBenchmarkEngine(b *testing.B) Engine {
 	config := setupBenchmarkConfig(b)
 	logger := zap.NewNop()
-	
+
 	engine, err := NewOPAEngine(config, logger)
 	if err != nil {
 		b.Fatalf("Failed to create benchmark engine: %v", err)
 	}
-	
+
 	return engine
 }
 
 func setupBenchmarkConfig(b *testing.B) *Config {
 	// Create temporary directory for benchmark policies
 	tempDir := b.TempDir()
-	
+
 	// Write benchmark policy
 	policyContent := `
 package shannon.task
@@ -296,13 +296,13 @@ decision := {
     input.token_budget <= 15000
 }
 `
-	
+
 	policyPath := filepath.Join(tempDir, "benchmark.rego")
 	err := os.WriteFile(policyPath, []byte(policyContent), 0644)
 	if err != nil {
 		b.Fatalf("Failed to write benchmark policy: %v", err)
 	}
-	
+
 	return &Config{
 		Enabled:     true,
 		Mode:        ModeEnforce,
@@ -316,10 +316,10 @@ func reportBenchmarkResults(b *testing.B, description string) {
 	nsPerOp := b.Elapsed().Nanoseconds() / int64(b.N)
 	usPerOp := float64(nsPerOp) / 1000.0
 	msPerOp := usPerOp / 1000.0
-	
-	b.Logf("%s: %d ops, %.2f ms/op, %.2f μs/op, %d ns/op", 
+
+	b.Logf("%s: %d ops, %.2f ms/op, %.2f μs/op, %d ns/op",
 		description, b.N, msPerOp, usPerOp, nsPerOp)
-		
+
 	// Validate sub-millisecond claim
 	if msPerOp >= 1.0 {
 		b.Logf("WARNING: Operation took %.2f ms (>1ms target)", msPerOp)
@@ -338,10 +338,10 @@ func BenchmarkMemoryUsage(b *testing.B) {
 		TokenBudget: 1000,
 		AgentID:     "test-agent",
 	}
-	
+
 	b.ReportAllocs()
 	b.ResetTimer()
-	
+
 	for i := 0; i < b.N; i++ {
 		_, err := engine.Evaluate(context.Background(), input)
 		if err != nil {

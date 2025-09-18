@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
@@ -166,9 +166,14 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-	// Update session with results
+	// Update session with results (include per-agent usage for accurate cost)
 	if input.SessionID != "" {
 		var updRes activities.SessionUpdateResult
+		// Build per-agent usage from pattern loop results
+		usages := make([]activities.AgentUsage, 0, len(reactResult.AgentResults))
+		for _, ar := range reactResult.AgentResults {
+			usages = append(usages, activities.AgentUsage{Model: ar.ModelUsed, Tokens: ar.TokensUsed, InputTokens: ar.InputTokens, OutputTokens: ar.OutputTokens})
+		}
 		err = workflow.ExecuteActivity(ctx,
 			constants.UpdateSessionResultActivity,
 			activities.SessionUpdateInput{
@@ -176,6 +181,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				Result:     finalResult,
 				TokensUsed: totalTokens,
 				AgentsUsed: reactResult.Iterations * 2, // Reasoner + Actor per iteration
+				AgentUsage: usages,
 			}).Get(ctx, &updRes)
 
 		if err != nil {

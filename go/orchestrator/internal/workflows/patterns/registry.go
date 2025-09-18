@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"go.temporal.io/sdk/workflow"
 )
 
 // PatternType represents the type of multi-agent pattern
@@ -25,7 +25,7 @@ type PatternCapability string
 
 const (
 	CapabilityIterativeImprovement PatternCapability = "iterative_improvement"
-	CapabilityStepByStep          PatternCapability = "step_by_step"
+	CapabilityStepByStep           PatternCapability = "step_by_step"
 	CapabilityMultiPerspective     PatternCapability = "multi_perspective"
 	CapabilityConflictResolution   PatternCapability = "conflict_resolution"
 	CapabilityExploration          PatternCapability = "exploration"
@@ -49,14 +49,14 @@ type Pattern interface {
 
 // PatternInput provides input to a pattern
 type PatternInput struct {
-	Query       string
-	Context     map[string]interface{}
-	History     []string
-	SessionID   string
-	UserID      string
-	Config      interface{} // Pattern-specific config
-	BudgetMax   int
-	ModelTier   string
+	Query     string
+	Context   map[string]interface{}
+	History   []string
+	SessionID string
+	UserID    string
+	Config    interface{} // Pattern-specific config
+	BudgetMax int
+	ModelTier string
 }
 
 // PatternResult contains the output from a pattern
@@ -178,12 +178,12 @@ func (r *PatternRegistry) SetSelector(selector PatternSelector) {
 
 // registerDefaultPatterns registers built-in patterns
 func registerDefaultPatterns() {
-    // Register existing patterns
-    // These will be implemented as Pattern interface wrappers
-    // around existing implementations
-    _ = globalRegistry.Register(reflectionPattern{})
-    _ = globalRegistry.Register(reactPattern {})
-    _ = globalRegistry.Register(chainOfThoughtPattern{})
-    _ = globalRegistry.Register(debatePattern{})
-    _ = globalRegistry.Register(treeOfThoughtsPattern{})
+	// Register existing patterns
+	// These will be implemented as Pattern interface wrappers
+	// around existing implementations
+	_ = globalRegistry.Register(reflectionPattern{})
+	_ = globalRegistry.Register(reactPattern{})
+	_ = globalRegistry.Register(chainOfThoughtPattern{})
+	_ = globalRegistry.Register(debatePattern{})
+	_ = globalRegistry.Register(treeOfThoughtsPattern{})
 }

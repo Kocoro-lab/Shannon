@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock as TokioRwLock;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 use wasmtime::*;
@@ -47,6 +48,53 @@ pub struct SandboxResult {
     pub error: Option<String>,
 }
 
+/// Cache for compiled WASM modules to avoid recompilation
+struct ModuleCache {
+    modules: HashMap<String, Arc<Module>>,
+}
+
+impl ModuleCache {
+    fn new() -> Self {
+        Self {
+            modules: HashMap::new(),
+        }
+    }
+
+    fn get_or_compile(
+        &mut self,
+        path: &str,
+        engine: &Engine,
+        wasm_bytes: &[u8],
+    ) -> Result<Arc<Module>> {
+        if let Some(module) = self.modules.get(path) {
+            debug!("Using cached WASM module for {}", path);
+            return Ok(Arc::clone(module));
+        }
+
+        debug!("Compiling WASM module for {} ({}MB)", path, wasm_bytes.len() / 1024 / 1024);
+        let module = Module::new(engine, wasm_bytes)
+            .context("Failed to compile WASM module")?;
+        let module = Arc::new(module);
+        self.modules.insert(path.to_string(), Arc::clone(&module));
+        info!("Cached compiled WASM module for {}", path);
+        Ok(module)
+    }
+
+    fn clear(&mut self) {
+        self.modules.clear();
+        info!("Cleared WASM module cache");
+    }
+}
+
+// Use tokio::sync::OnceCell for async-safe static initialization
+static MODULE_CACHE: std::sync::OnceLock<Arc<TokioRwLock<ModuleCache>>> = std::sync::OnceLock::new();
+
+fn get_module_cache() -> Arc<TokioRwLock<ModuleCache>> {
+    MODULE_CACHE
+        .get_or_init(|| Arc::new(TokioRwLock::new(ModuleCache::new())))
+        .clone()
+}
+
 /// WASM Sandbox for secure tool execution using Wasmtime
 #[allow(dead_code)]
 pub struct WasmSandbox {
@@ -54,6 +102,15 @@ pub struct WasmSandbox {
     env_vars: HashMap<String, String>,
     allowed_paths: Vec<String>,
     engine: Arc<Engine>, // Thread-safe shared engine
+}
+
+impl WasmSandbox {
+    /// Clear the WASM module cache (useful for development or when modules change)
+    pub async fn clear_module_cache() {
+        let cache_lock = get_module_cache();
+        let mut cache = cache_lock.write().await;
+        cache.clear();
+    }
 }
 
 #[allow(dead_code)]
@@ -281,30 +338,45 @@ impl WasmSandbox {
             return Err(anyhow::anyhow!("Input exceeds memory limit"));
         }
 
-        // Read WASM module
-        let wasm_bytes = tokio::fs::read(wasm_path)
-            .await
-            .context("Failed to read WASM module")?;
+        // Get path as string for cache key
+        let wasm_path_str = wasm_path.to_string_lossy().to_string();
 
-        // Validate WASM module size (50MB limit to prevent memory exhaustion)
-        const MAX_WASM_SIZE: usize = 50 * 1024 * 1024;
-        if wasm_bytes.len() > MAX_WASM_SIZE {
-            error!(
-                "WASM module size {} exceeds limit of {} bytes",
-                wasm_bytes.len(),
-                MAX_WASM_SIZE
-            );
-            return Err(anyhow::anyhow!("WASM module exceeds size limit of 50MB"));
-        }
+        // Try to get cached module first
+        let cache_lock = get_module_cache();
+        let cached_module = {
+            let cache = cache_lock.read().await;
+            cache.modules.get(&wasm_path_str).map(Arc::clone)
+        };
 
-        // Additional validation: check for WASM magic number
-        if wasm_bytes.len() < 4 || &wasm_bytes[0..4] != b"\0asm" {
-            return Err(anyhow::anyhow!("Invalid WASM module format"));
-        }
+        let module = if let Some(module) = cached_module {
+            debug!("Using cached WASM module for {}", wasm_path_str);
+            module
+        } else {
+            // Read WASM module
+            let wasm_bytes = tokio::fs::read(wasm_path)
+                .await
+                .context("Failed to read WASM module")?;
 
-        // Compile module
-        let module =
-            Module::new(&self.engine, &wasm_bytes).context("Failed to compile WASM module")?;
+            // Validate WASM module size (50MB limit to prevent memory exhaustion)
+            const MAX_WASM_SIZE: usize = 50 * 1024 * 1024;
+            if wasm_bytes.len() > MAX_WASM_SIZE {
+                error!(
+                    "WASM module size {} exceeds limit of {} bytes",
+                    wasm_bytes.len(),
+                    MAX_WASM_SIZE
+                );
+                return Err(anyhow::anyhow!("WASM module exceeds size limit of 50MB"));
+            }
+
+            // Additional validation: check for WASM magic number
+            if wasm_bytes.len() < 4 || &wasm_bytes[0..4] != b"\0asm" {
+                return Err(anyhow::anyhow!("Invalid WASM module format"));
+            }
+
+            // Compile and cache module
+            let mut cache = cache_lock.write().await;
+            cache.get_or_compile(&wasm_path_str, &self.engine, &wasm_bytes)?
+        };
 
         // Simple execution approach without complex WASI for now
         // This provides sandboxing through resource limits and fuel metering
@@ -335,11 +407,10 @@ impl WasmSandbox {
                                 input
                             )
                             .into_bytes(),
-                            Err(e) => format!(
-                                "[SANDBOXED] WASM execution error: {}\nInput: {}",
-                                e, input
-                            )
-                            .into_bytes(),
+                            Err(e) => {
+                                format!("[SANDBOXED] WASM execution error: {}\nInput: {}", e, input)
+                                    .into_bytes()
+                            }
                         }
                     } else {
                         // No execute function, just indicate the module was loaded

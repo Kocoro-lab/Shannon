@@ -3,17 +3,17 @@ package circuitbreaker
 import (
 	"context"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"go.uber.org/zap"
 )
 
 // GRPCWrapper provides circuit breaker functionality for gRPC calls
 type GRPCWrapper struct {
-	cb     *CircuitBreaker
-	logger *zap.Logger
-	name   string
+	cb      *CircuitBreaker
+	logger  *zap.Logger
+	name    string
 	service string
 }
 
@@ -21,7 +21,7 @@ type GRPCWrapper struct {
 func NewGRPCWrapper(name, service string, logger *zap.Logger) *GRPCWrapper {
 	config := GetGRPCConfig().ToConfig()
 	cb := NewCircuitBreaker(name, config, logger)
-	
+
 	// Register with metrics collector
 	GlobalMetricsCollector.RegisterCircuitBreaker(name, service, cb)
 
@@ -36,7 +36,7 @@ func NewGRPCWrapper(name, service string, logger *zap.Logger) *GRPCWrapper {
 // Execute executes a gRPC call with circuit breaker protection
 func (gw *GRPCWrapper) Execute(ctx context.Context, fn func() error) error {
 	var originalErr error
-	
+
 	cbErr := gw.cb.Execute(ctx, func() error {
 		originalErr = fn()
 		// Only count server/transient errors toward circuit breaker state
@@ -46,12 +46,12 @@ func (gw *GRPCWrapper) Execute(ctx context.Context, fn func() error) error {
 		// Client errors don't count toward circuit breaker failure
 		return nil
 	})
-	
+
 	// Record metrics based on actual error, not circuit breaker decision
 	state := gw.cb.State()
 	var success bool
 	var err error
-	
+
 	if cbErr == ErrCircuitBreakerOpen || cbErr == ErrTooManyRequests {
 		// Circuit breaker is open/throttling
 		success = false
@@ -61,9 +61,9 @@ func (gw *GRPCWrapper) Execute(ctx context.Context, fn func() error) error {
 		success = originalErr == nil
 		err = originalErr
 	}
-	
+
 	GlobalMetricsCollector.RecordRequest(gw.name, gw.service, state, success)
-	
+
 	return err
 }
 
@@ -104,12 +104,12 @@ func isCircuitBreakerError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	// Circuit breaker specific errors
 	if err == ErrCircuitBreakerOpen || err == ErrTooManyRequests {
 		return true
 	}
-	
+
 	// Check gRPC status codes
 	if st, ok := status.FromError(err); ok {
 		switch st.Code() {
@@ -122,7 +122,7 @@ func isCircuitBreakerError(err error) bool {
 			return true
 		}
 	}
-	
+
 	return true
 }
 
@@ -138,7 +138,7 @@ type GRPCConnectionWrapper struct {
 func NewGRPCConnectionWrapper(target, service string, logger *zap.Logger) *GRPCConnectionWrapper {
 	config := GetGRPCConnectionConfig().ToConfig()
 	cb := NewCircuitBreaker("grpc-connection", config, logger)
-	
+
 	// Register with metrics collector
 	GlobalMetricsCollector.RegisterCircuitBreaker("grpc-connection", service, cb)
 
@@ -154,17 +154,17 @@ func NewGRPCConnectionWrapper(target, service string, logger *zap.Logger) *GRPCC
 func (gcw *GRPCConnectionWrapper) DialContext(ctx context.Context, opts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	var conn *grpc.ClientConn
 	var err error
-	
+
 	cbErr := gcw.cb.Execute(ctx, func() error {
 		conn, err = grpc.DialContext(ctx, gcw.target, opts...)
 		return err
 	})
-	
+
 	// Record metrics
 	state := gcw.cb.State()
 	success := cbErr == nil && err == nil
 	GlobalMetricsCollector.RecordRequest("grpc-connection", gcw.service, state, success)
-	
+
 	if cbErr != nil {
 		return nil, cbErr
 	}

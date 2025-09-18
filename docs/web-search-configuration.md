@@ -88,7 +88,7 @@ GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
 # FIRECRAWL_API_KEY=your_firecrawl_api_key_here
 ```
 
-The environment variables are already configured in `deploy/compose/compose.yml`:
+The environment variables are already configured in `deploy/compose/docker-compose.yml`:
 ```yaml
 llm-service:
   environment:

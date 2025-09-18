@@ -81,7 +81,7 @@ decision := {
 		{
 			name: "denied_request_wrong_env",
 			input: &PolicyInput{
-				SessionID:   "test-session", 
+				SessionID:   "test-session",
 				AgentID:     "test-agent",
 				Query:       "what is the weather?",
 				Mode:        "simple",
@@ -94,7 +94,7 @@ decision := {
 			name: "denied_request_wrong_mode",
 			input: &PolicyInput{
 				SessionID:   "test-session",
-				AgentID:     "test-agent", 
+				AgentID:     "test-agent",
 				Query:       "what is the weather?",
 				Mode:        "complex", // Wrong mode
 				Environment: "test",
@@ -113,7 +113,7 @@ decision := {
 			}
 
 			if decision.Allow != tt.expected {
-				t.Errorf("Expected allow=%v, got allow=%v, reason=%s", 
+				t.Errorf("Expected allow=%v, got allow=%v, reason=%s",
 					tt.expected, decision.Allow, decision.Reason)
 			}
 
@@ -305,7 +305,7 @@ deny["dangerous query pattern detected"] {
 	}
 
 	ctx := context.Background()
-	
+
 	// Test 1: Allow rule should work when no deny rules match
 	input1 := &PolicyInput{
 		SessionID:   "test",
@@ -315,41 +315,41 @@ deny["dangerous query pattern detected"] {
 		Environment: "test",
 		Timestamp:   time.Now(),
 	}
-	
+
 	decision1, err := engine.Evaluate(ctx, input1)
 	if err != nil {
 		t.Fatalf("Evaluation failed: %v", err)
 	}
-	
+
 	if !decision1.Allow {
-		t.Errorf("Expected allow=true for safe simple query, got allow=%v, reason=%s", 
+		t.Errorf("Expected allow=true for safe simple query, got allow=%v, reason=%s",
 			decision1.Allow, decision1.Reason)
 	}
-	
+
 	// Test 2: Deny rule should override allow rule
 	input2 := &PolicyInput{
 		SessionID:   "test",
-		AgentID:     "test", 
+		AgentID:     "test",
 		Query:       "dangerous query here", // Triggers deny rule
-		Mode:        "simple",              // Would normally be allowed
+		Mode:        "simple",               // Would normally be allowed
 		Environment: "test",
 		Timestamp:   time.Now(),
 	}
-	
+
 	decision2, err := engine.Evaluate(ctx, input2)
 	if err != nil {
 		t.Fatalf("Evaluation failed: %v", err)
 	}
-	
+
 	if decision2.Allow {
 		t.Errorf("Expected deny precedence - allow=false, but got allow=%v, reason=%s",
 			decision2.Allow, decision2.Reason)
 	}
-	
+
 	if decision2.Reason != "dangerous query pattern detected" {
 		t.Errorf("Expected deny reason, got: %s", decision2.Reason)
 	}
-	
+
 	t.Logf("Deny precedence test passed - deny overrides allow")
 	t.Logf("Allow case: %v (%s)", decision1.Allow, decision1.Reason)
 	t.Logf("Deny case: %v (%s)", decision2.Allow, decision2.Reason)

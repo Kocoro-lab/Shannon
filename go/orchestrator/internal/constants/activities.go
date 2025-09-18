@@ -5,7 +5,7 @@ package constants
 const (
 	// Session Management Activities
 	UpdateSessionResultActivity = "UpdateSessionResult"
-	
+
 	// Budget Management Activities
 	CheckTokenBudgetActivity                   = "CheckTokenBudget"
 	CheckTokenBudgetWithBackpressureActivity   = "CheckTokenBudgetWithBackpressure"
@@ -13,30 +13,30 @@ const (
 	RecordTokenUsageActivity                   = "RecordTokenUsage"
 	GenerateUsageReportActivity                = "GenerateUsageReport"
 	UpdateBudgetPolicyActivity                 = "UpdateBudgetPolicy"
-	
+
 	// Agent Execution Activities
 	ExecuteAgentWithBudgetActivity = "ExecuteAgentWithBudget"
 
 	// Planning/Decomposition Activities
 	DecomposeTaskActivity     = "DecomposeTask"
 	AnalyzeComplexityActivity = "AnalyzeComplexity" // legacy compatibility for replay
-	
+
 	// Human Intervention Activities
-	RequestApprovalActivity        = "RequestApproval"
+	RequestApprovalActivity         = "RequestApproval"
 	ProcessApprovalResponseActivity = "ProcessApprovalResponse"
-	GetApprovalStatusActivity      = "GetApprovalStatus"
-	
+	GetApprovalStatusActivity       = "GetApprovalStatus"
+
 	// Streaming Activities
-	StreamExecuteActivity         = "StreamExecute"
-	BatchStreamExecuteActivity    = "BatchStreamExecute"
-	GetStreamingMetricsActivity   = "GetStreamingMetrics"
+	StreamExecuteActivity       = "StreamExecute"
+	BatchStreamExecuteActivity  = "BatchStreamExecute"
+	GetStreamingMetricsActivity = "GetStreamingMetrics"
 
 	// P2P Activities
-	SendAgentMessageActivity      = "SendAgentMessage"
-	FetchAgentMessagesActivity    = "FetchAgentMessages"
-	WorkspaceAppendActivity       = "WorkspaceAppend"
-	WorkspaceListActivity         = "WorkspaceList"
-	SendTaskRequestActivity       = "SendTaskRequest"
-	SendTaskOfferActivity         = "SendTaskOffer"
-	SendTaskAcceptActivity        = "SendTaskAccept"
+	SendAgentMessageActivity   = "SendAgentMessage"
+	FetchAgentMessagesActivity = "FetchAgentMessages"
+	WorkspaceAppendActivity    = "WorkspaceAppend"
+	WorkspaceListActivity      = "WorkspaceList"
+	SendTaskRequestActivity    = "SendTaskRequest"
+	SendTaskOfferActivity      = "SendTaskOffer"
+	SendTaskAcceptActivity     = "SendTaskAccept"
 )

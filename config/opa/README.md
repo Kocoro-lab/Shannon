@@ -31,7 +31,7 @@ grep -A5 "^policy:" config/shannon.yaml
 ./scripts/submit_task.sh "Help me delete all files"
 
 # Check orchestrator logs for policy decisions
-docker compose -f deploy/compose/compose.yml logs orchestrator --tail=10 | grep -i delete
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail=10 | grep -i delete
 ```
 
 ### Step 4: Check Policy Metrics

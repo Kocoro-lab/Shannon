@@ -1,14 +1,15 @@
 package execution
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"strings"
+	"time"
 
-    "go.temporal.io/sdk/workflow"
-    "go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 )
 
 // ParallelConfig controls parallel execution behavior
@@ -40,14 +41,14 @@ type ParallelResult struct {
 // ExecuteParallel runs multiple tasks in parallel with concurrency control.
 // It supports optional budget enforcement and streaming events.
 func ExecuteParallel(
-    ctx workflow.Context,
-    tasks []ParallelTask,
-    sessionID string,
-    history []string,
-    config ParallelConfig,
-    budgetPerAgent int,
-    userID string,
-    modelTier string,
+	ctx workflow.Context,
+	tasks []ParallelTask,
+	sessionID string,
+	history []string,
+	config ParallelConfig,
+	budgetPerAgent int,
+	userID string,
+	modelTier string,
 ) (*ParallelResult, error) {
 
 	logger := workflow.GetLogger(ctx)
@@ -61,15 +62,15 @@ func ExecuteParallel(
 		config.Semaphore = workflow.NewSemaphore(ctx, int64(config.MaxConcurrency))
 	}
 
-    // Channel for collecting in-flight futures with a release handshake
-    futuresChan := workflow.NewChannel(ctx)
+	// Channel for collecting in-flight futures with a release handshake
+	futuresChan := workflow.NewChannel(ctx)
 
 	// Track futures with their original index
-    type futureWithIndex struct {
-        Index   int
-        Future  workflow.Future
-        Release workflow.Channel // send a signal when it's safe to release the semaphore
-    }
+	type futureWithIndex struct {
+		Index   int
+		Future  workflow.Future
+		Release workflow.Channel // send a signal when it's safe to release the semaphore
+	}
 
 	// Activity options
 	activityOpts := workflow.ActivityOptions{
@@ -82,21 +83,21 @@ func ExecuteParallel(
 
 	// Launch parallel executions
 	for i, task := range tasks {
-		i := i // Capture for closure
+		i := i       // Capture for closure
 		task := task // Capture for closure
 
-        workflow.Go(ctx, func(ctx workflow.Context) {
-            // Acquire semaphore
-            if err := config.Semaphore.Acquire(ctx, 1); err != nil {
-                logger.Error("Failed to acquire semaphore",
-                    "task_id", task.ID,
-                    "error", err,
-                )
-                futuresChan.Send(ctx, futureWithIndex{Index: i, Future: nil, Release: nil})
-                return
-            }
-            // Create a release channel so the collector can signal when to release
-            rel := workflow.NewChannel(ctx)
+		workflow.Go(ctx, func(ctx workflow.Context) {
+			// Acquire semaphore
+			if err := config.Semaphore.Acquire(ctx, 1); err != nil {
+				logger.Error("Failed to acquire semaphore",
+					"task_id", task.ID,
+					"error", err,
+				)
+				futuresChan.Send(ctx, futureWithIndex{Index: i, Future: nil, Release: nil})
+				return
+			}
+			// Create a release channel so the collector can signal when to release
+			rel := workflow.NewChannel(ctx)
 
 			// Prepare task context
 			taskContext := make(map[string]interface{})
@@ -119,56 +120,61 @@ func ExecuteParallel(
 			}
 
 			// Execute agent
-            var future workflow.Future
+			var future workflow.Future
 
 			if budgetPerAgent > 0 {
 				// Execute with budget
 				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-                    future = workflow.ExecuteActivity(ctx,
-                        constants.ExecuteAgentWithBudgetActivity,
-                        activities.BudgetedAgentInput{
-                            AgentInput: activities.AgentExecutionInput{
-                                Query:          task.Description,
-                                AgentID:        fmt.Sprintf("agent-%s", task.ID),
-                                Context:        taskContext,
-                                Mode:           "standard",
-                                SessionID:      sessionID,
-                                History:        history,
-                                SuggestedTools: task.SuggestedTools,
-                                ToolParameters: task.ToolParameters,
-                                PersonaID:      task.PersonaID,
-                            },
-                            MaxTokens: budgetPerAgent,
-                            UserID:    userID,
-                            TaskID:    wid,
-                            ModelTier: modelTier,
-                        })
+				// Extract base UUID from workflow ID (remove suffix like "_23")
+				taskID := wid
+				if idx := strings.LastIndex(wid, "_"); idx > 0 {
+					taskID = wid[:idx]
+				}
+				future = workflow.ExecuteActivity(ctx,
+					constants.ExecuteAgentWithBudgetActivity,
+					activities.BudgetedAgentInput{
+						AgentInput: activities.AgentExecutionInput{
+							Query:          task.Description,
+							AgentID:        fmt.Sprintf("agent-%s", task.ID),
+							Context:        taskContext,
+							Mode:           "standard",
+							SessionID:      sessionID,
+							History:        history,
+							SuggestedTools: task.SuggestedTools,
+							ToolParameters: task.ToolParameters,
+							PersonaID:      task.PersonaID,
+						},
+						MaxTokens: budgetPerAgent,
+						UserID:    userID,
+						TaskID:    taskID,
+						ModelTier: modelTier,
+					})
 			} else {
 				// Execute without budget
-                    future = workflow.ExecuteActivity(ctx,
-                        activities.ExecuteAgent,
-                        activities.AgentExecutionInput{
-                            Query:          task.Description,
-                            AgentID:        fmt.Sprintf("agent-%s", task.ID),
-                            Context:        taskContext,
-                            Mode:           "standard",
-                            SessionID:      sessionID,
-                            History:        history,
-                            SuggestedTools: task.SuggestedTools,
-                            ToolParameters: task.ToolParameters,
-                            PersonaID:      task.PersonaID,
-                        })
+				future = workflow.ExecuteActivity(ctx,
+					activities.ExecuteAgent,
+					activities.AgentExecutionInput{
+						Query:          task.Description,
+						AgentID:        fmt.Sprintf("agent-%s", task.ID),
+						Context:        taskContext,
+						Mode:           "standard",
+						SessionID:      sessionID,
+						History:        history,
+						SuggestedTools: task.SuggestedTools,
+						ToolParameters: task.ToolParameters,
+						PersonaID:      task.PersonaID,
+					})
 			}
 
-            futuresChan.Send(ctx, futureWithIndex{Index: i, Future: future, Release: rel})
+			futuresChan.Send(ctx, futureWithIndex{Index: i, Future: future, Release: rel})
 
-            // Hold the permit until the collector signals that it has finished processing the result
-            var _sig struct{}
-            rel.Receive(ctx, &_sig)
-            // Now safe to release the semaphore
-            config.Semaphore.Release(1)
-        })
-    }
+			// Hold the permit until the collector signals that it has finished processing the result
+			var _sig struct{}
+			rel.Receive(ctx, &_sig)
+			// Now safe to release the semaphore
+			config.Semaphore.Release(1)
+		})
+	}
 
 	// Collect results
 	results := make([]activities.AgentExecutionResult, len(tasks))
@@ -180,11 +186,11 @@ func ExecuteParallel(
 		var fwi futureWithIndex
 		futuresChan.Receive(ctx, &fwi)
 
-        if fwi.Future == nil {
-            errorCount++
-            // Nothing was acquired; no release needed
-            continue
-        }
+		if fwi.Future == nil {
+			errorCount++
+			// Nothing was acquired; no release needed
+			continue
+		}
 
 		var result activities.AgentExecutionResult
 		err := fwi.Future.Get(ctx, &result)
@@ -208,10 +214,10 @@ func ExecuteParallel(
 						Timestamp:  workflow.Now(ctx),
 					}).Get(ctx, nil)
 			}
-        } else {
-            results[fwi.Index] = result
-            totalTokens += result.TokensUsed
-            successCount++
+		} else {
+			results[fwi.Index] = result
+			totalTokens += result.TokensUsed
+			successCount++
 
 			// Emit completion event
 			if config.EmitEvents {
@@ -243,14 +249,14 @@ func ExecuteParallel(
 							"task_id": tasks[fwi.Index].ID,
 						},
 					})
-        }
+			}
 
-        // Signal the producer goroutine that we're done with this future
-        if fwi.Release != nil {
-            var sig struct{}
-            fwi.Release.Send(ctx, sig)
-        }
-    }
+			// Signal the producer goroutine that we're done with this future
+			if fwi.Release != nil {
+				var sig struct{}
+				fwi.Release.Send(ctx, sig)
+			}
+		}
 	}
 
 	logger.Info("Parallel execution completed",

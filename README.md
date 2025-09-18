@@ -21,8 +21,17 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 
 ## ⚡ Core Capabilities
 
+### 🎯 Intelligent P2P Agent Coordination
+- **Automatic Dependency Detection** - Shannon understands when tasks depend on each other from natural language
+- **Zero Configuration** - No manual DAG specification needed - just describe what you want
+- **Smart Data Flow** - Agents automatically wait for required data before executing
+- **Force Mode** - Override with `context: {"force_p2p": true}` for any task ([→ Guide](docs/p2p-coordination.md))
+
+Example: "Analyze the data, then create a report" → Shannon automatically makes report wait for analysis to complete
+
 ### Developer Experience
 - **Multiple AI Patterns** - Supports ReAct, Tree-of-Thoughts, Chain-of-Thought, Debate, and Reflection patterns (configurable via cognitive_strategy)
+- **Secure Code Execution** - Full Python 3.11 support in WASI sandbox with session persistence ([→ Guide](docs/python-code-execution.md))
 - **Time-Travel Debugging** - Export and replay any workflow to reproduce exact agent behavior
 - **Hot Configuration** - Change models, prompts, and policies without restarts
 - **Streaming Everything** - Real-time SSE updates for every agent action (WebSocket coming soon)
@@ -38,6 +47,8 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - **Distributed by Design** - Horizontal scaling with Temporal workflow orchestration
 - **Provider Agnostic** - OpenAI, Anthropic, Google, Azure, Bedrock, DeepSeek, Groq, and more
 - **Observable by Default** - Shannon Dashboard (_coming soon_), Prometheus metrics, Grafana dashboards, OpenTelemetry tracing
+
+Note: Model pricing is centralized under `config/models.yaml` (`pricing:` section). All services (Go/Rust/Python) load from this file to compute costs consistently.
 
 ## 🎯 Why Shannon vs. Others?
 
@@ -113,6 +124,9 @@ The `make dev` command starts all services:
 git clone https://github.com/Kocoro-lab/Shannon.git
 cd shannon
 make setup-env
+
+# Download Python WASI interpreter for secure code execution (20MB)
+./scripts/setup_python_wasi.sh
 ```
 
 Add at least one LLM API key to `.env` (for example):
@@ -200,15 +214,20 @@ deny_tool("database_write") if team == "support"
 ```
 
 ### Example 4: Security-First Code Execution
-```python
-# WASI sandbox prevents filesystem access, network calls, and process spawning
-{
-    "query": "Run this Python code and analyze the output",
-    "code": "import os; os.system('rm -rf /')",  # Nice try
-    "execution_mode": "wasi_sandbox"
-}
-# Result: Code runs in isolated WASI runtime, zero risk
+```bash
+# Python code runs in isolated WASI sandbox with full standard library
+./scripts/submit_task.sh "Execute Python: print('Hello from secure WASI!')"
+
+# Even malicious code is safe
+./scripts/submit_task.sh "Execute Python: import os; os.system('rm -rf /')"
+# Result: OSError - system calls blocked by WASI sandbox
+
+# Advanced: Session persistence for data analysis
+./scripts/submit_task.sh "Execute Python with session 'analysis': data = [1,2,3,4,5]"
+./scripts/submit_task.sh "Execute Python with session 'analysis': print(sum(data))"
+# Output: 15
 ```
+[→ Full Python Execution Guide](docs/python-code-execution.md)
 
 <details>
 <summary><b>More Production Examples</b> (click to expand)</summary>
@@ -389,7 +408,7 @@ teams:
 - TODO: Add docs for budget controls & policy engine
 
 ### Architecture
-- [Platform Architecture Overview](docs/SHANNON-PLATFORM-ARCHITECTURE.md)
+- [Platform Architecture Overview](docs/shannon-platform-architecture.md)
 - [Multi-Agent Workflow Architecture](docs/multi-agent-workflow-architecture.md)
 - [Agent Core Architecture](docs/agent-core-architecture.md)
 - [Pattern Selection Guide](docs/pattern-usage-guide.md)
@@ -398,7 +417,7 @@ teams:
 - [Agent Core API Reference](docs/agent-core-api.md)
 - [Streaming APIs](docs/streaming-api.md)
 - [Providers & Models](docs/providers-models.md)
-- [Python WASI Setup](docs/PYTHON_WASI_SETUP.md)
+- [Python WASI Setup](docs/python-wasi-setup.md)
 
 ## 🔧 Development
 
@@ -530,6 +549,20 @@ A: Zero lock-in. Standard protocols (gRPC, HTTP, SSE). Export your workflows any
 - [ ] **AI safety frameworks** - Constitutional AI and alignment mechanisms
 
 [Track detailed progress →](https://github.com/Kocoro-lab/Shannon/projects/1)
+
+## 📚 Documentation
+
+### Core Guides
+- [**Python Code Execution**](docs/python-code-execution.md) - Secure Python execution via WASI sandbox
+- [**Multi-Agent Workflows**](docs/multi-agent-workflow-architecture.md) - Orchestration patterns and best practices
+- [**Pattern Usage Guide**](docs/pattern-usage-guide.md) - ReAct, Tree-of-Thoughts, Debate patterns
+- [**Streaming APIs**](docs/streaming-api.md) - Real-time agent output streaming
+- [**Policy Engine**](docs/opa-policy-guide.md) - Team-based access control with OPA
+
+### API References
+- [Agent Core API](docs/agent-core-api.md) - Rust service endpoints
+- [Orchestrator API](docs/orchestrator-api.md) - Workflow management
+- [LLM Service API](python/llm-service/README.md) - Provider abstraction
 
 ## 🚀 Start Building Production AI Today
 

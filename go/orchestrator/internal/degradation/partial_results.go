@@ -25,35 +25,35 @@ func NewPartialResultsManager(strategy DegradationStrategy, logger *zap.Logger) 
 
 // PartialResult represents a partial result from a failed operation
 type PartialResult struct {
-	Source       string                 `json:"source"`        // Component that generated result
-	Success      bool                   `json:"success"`       // Whether this component succeeded
-	Result       interface{}            `json:"result"`        // Actual result data
-	Error        string                 `json:"error,omitempty"` // Error message if failed
-	Timestamp    time.Time              `json:"timestamp"`     // When result was generated
-	Metadata     map[string]interface{} `json:"metadata,omitempty"` // Additional context
-	Confidence   float64                `json:"confidence"`    // Confidence score (0-1)
-	Degraded     bool                   `json:"degraded"`      // Whether this was a degraded result
+	Source     string                 `json:"source"`             // Component that generated result
+	Success    bool                   `json:"success"`            // Whether this component succeeded
+	Result     interface{}            `json:"result"`             // Actual result data
+	Error      string                 `json:"error,omitempty"`    // Error message if failed
+	Timestamp  time.Time              `json:"timestamp"`          // When result was generated
+	Metadata   map[string]interface{} `json:"metadata,omitempty"` // Additional context
+	Confidence float64                `json:"confidence"`         // Confidence score (0-1)
+	Degraded   bool                   `json:"degraded"`           // Whether this was a degraded result
 }
 
 // AggregatedResult combines multiple partial results into a coherent response
 type AggregatedResult struct {
-	Success         bool             `json:"success"`         // Overall success status
-	Result          interface{}      `json:"result"`          // Combined result
-	PartialResults  []PartialResult  `json:"partial_results"` // Individual component results
-	TotalComponents int              `json:"total_components"` // Total number of components attempted
-	SuccessCount    int              `json:"success_count"`   // Number of successful components
-	FailureCount    int              `json:"failure_count"`   // Number of failed components
+	Success         bool             `json:"success"`                    // Overall success status
+	Result          interface{}      `json:"result"`                     // Combined result
+	PartialResults  []PartialResult  `json:"partial_results"`            // Individual component results
+	TotalComponents int              `json:"total_components"`           // Total number of components attempted
+	SuccessCount    int              `json:"success_count"`              // Number of successful components
+	FailureCount    int              `json:"failure_count"`              // Number of failed components
 	DegradationInfo *DegradationInfo `json:"degradation_info,omitempty"` // Degradation context
-	Timestamp       time.Time        `json:"timestamp"`       // When aggregation was completed
-	Warning         string           `json:"warning,omitempty"` // Warning message for partial results
+	Timestamp       time.Time        `json:"timestamp"`                  // When aggregation was completed
+	Warning         string           `json:"warning,omitempty"`          // Warning message for partial results
 }
 
 // DegradationInfo provides context about why results were degraded
 type DegradationInfo struct {
-	Level           DegradationLevel `json:"level"`
-	FailedDependencies []string      `json:"failed_dependencies"`
-	Reason          string           `json:"reason"`
-	RecommendedAction string         `json:"recommended_action"`
+	Level              DegradationLevel `json:"level"`
+	FailedDependencies []string         `json:"failed_dependencies"`
+	Reason             string           `json:"reason"`
+	RecommendedAction  string           `json:"recommended_action"`
 }
 
 // AggregateResults combines partial results into a meaningful response
@@ -110,8 +110,8 @@ func (prm *PartialResultsManager) AggregateResults(
 	shouldDegrade, degradationLevel, err := prm.strategy.ShouldDegrade(ctx)
 	if err == nil && shouldDegrade {
 		aggregated.DegradationInfo = &DegradationInfo{
-			Level:  degradationLevel,
-			Reason: fmt.Sprintf("partial results due to %s degradation", degradationLevel.String()),
+			Level:             degradationLevel,
+			Reason:            fmt.Sprintf("partial results due to %s degradation", degradationLevel.String()),
 			RecommendedAction: prm.getRecommendedAction(degradationLevel),
 		}
 
@@ -195,10 +195,10 @@ func (prm *PartialResultsManager) combineResults(results []interface{}, workflow
 	case "agent_dag":
 		// For agent DAG, results are typically structured
 		return map[string]interface{}{
-			"type":           "combined_agent_results",
-			"results":        results,
-			"result_count":   len(results),
-			"combined_at":    time.Now(),
+			"type":         "combined_agent_results",
+			"results":      results,
+			"result_count": len(results),
+			"combined_at":  time.Now(),
 		}
 	default:
 		// For other workflows, concatenate string results or return structured data

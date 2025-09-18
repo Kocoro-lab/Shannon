@@ -16,7 +16,7 @@ var (
 		},
 		[]string{"decision", "mode", "reason"},
 	)
-	
+
 	policyEvaluationDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "shannon_policy_evaluation_duration_seconds",
@@ -25,7 +25,7 @@ var (
 		},
 		[]string{"mode"},
 	)
-	
+
 	policyErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "shannon_policy_errors_total",
@@ -33,7 +33,7 @@ var (
 		},
 		[]string{"error_type", "mode"},
 	)
-	
+
 	// Dry-run comparison metrics
 	policyDryRunDivergence = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -42,7 +42,7 @@ var (
 		},
 		[]string{"divergence_type"}, // "would_deny", "would_allow"
 	)
-	
+
 	// Policy load metrics
 	policyLoadTime = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -51,7 +51,7 @@ var (
 		},
 		[]string{"policy_path"},
 	)
-	
+
 	policyCount = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "shannon_policy_files_loaded",
@@ -59,7 +59,7 @@ var (
 		},
 		[]string{"policy_path"},
 	)
-	
+
 	// Cache performance metrics
 	policyCacheHits = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -68,15 +68,15 @@ var (
 		},
 		[]string{"effective_mode"},
 	)
-	
+
 	policyCacheMisses = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "shannon_policy_cache_misses_total", 
+			Name: "shannon_policy_cache_misses_total",
 			Help: "Total number of policy cache misses",
 		},
 		[]string{"effective_mode"},
 	)
-	
+
 	policyCacheSize = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "shannon_policy_cache_entries",
@@ -84,7 +84,7 @@ var (
 		},
 		[]string{"cache_type"},
 	)
-	
+
 	// Canary deployment metrics
 	policyCanaryDecisions = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -93,7 +93,7 @@ var (
 		},
 		[]string{"configured_mode", "effective_mode", "routing_reason", "decision"},
 	)
-	
+
 	// Top deny reasons tracking (top 10 most frequent)
 	policyDenyReasons = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -102,7 +102,7 @@ var (
 		},
 		[]string{"reason_hash", "mode", "truncated_reason"},
 	)
-	
+
 	// Policy version tracking
 	policyVersionInfo = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -111,7 +111,7 @@ var (
 		},
 		[]string{"policy_path", "version_hash", "load_timestamp"},
 	)
-	
+
 	// Enhanced dry-run analysis
 	policyModeComparison = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -120,21 +120,21 @@ var (
 		},
 		[]string{"original_decision", "effective_mode", "would_enforce_decision", "user_type"},
 	)
-	
-	// SLO tracking metrics  
+
+	// SLO tracking metrics
 	policyLatencyObjective = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name: "shannon_policy_latency_slo_seconds",
-			Help: "Policy evaluation latency for SLO tracking",
+			Name:    "shannon_policy_latency_slo_seconds",
+			Help:    "Policy evaluation latency for SLO tracking",
 			Buckets: []float64{0.0005, 0.001, 0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0},
 		},
 		[]string{"effective_mode", "cache_hit"},
 	)
-	
+
 	// Error rate SLO tracking
 	policyErrorRate = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "shannon_policy_slo_errors_total", 
+			Name: "shannon_policy_slo_errors_total",
 			Help: "Policy errors for SLO error rate calculation",
 		},
 		[]string{"error_category", "effective_mode"},

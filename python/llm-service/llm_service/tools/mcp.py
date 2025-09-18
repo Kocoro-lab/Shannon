@@ -52,7 +52,9 @@ def create_mcp_tool_class(
 
     # Simple per-tool rate limiter (process-local)
     _tool_requests: Dict[str, deque] = defaultdict(deque)
-    _rate_default = int(os.getenv("MCP_RATE_LIMIT_DEFAULT", "60"))  # requests per minute
+    _rate_default = int(
+        os.getenv("MCP_RATE_LIMIT_DEFAULT", "60")
+    )  # requests per minute
 
     class _McpTool(Tool):  # type: ignore
         _client = HttpStatelessClient(name=name, url=url, headers=headers or {})
@@ -101,7 +103,11 @@ def create_mcp_tool_class(
                 while dq and dq[0] < now - window:
                     dq.popleft()
                 if len(dq) >= limit:
-                    return ToolResult(success=False, output=None, error=f"Rate limit exceeded: {limit}/min")
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Rate limit exceeded: {limit}/min",
+                    )
                 dq.append(now)
 
                 # If schema not provided, expect a single OBJECT parameter "args"
@@ -111,7 +117,9 @@ def create_mcp_tool_class(
                 else:
                     call_args = kwargs.get("args", {}) or {}
                     if not isinstance(call_args, dict):
-                        return ToolResult(success=False, output=None, error="'args' must be an object")
+                        return ToolResult(
+                            success=False, output=None, error="'args' must be an object"
+                        )
 
                 result = await self._client._invoke(func_name, **call_args)
                 return ToolResult(success=True, output=result)

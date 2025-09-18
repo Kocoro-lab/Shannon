@@ -4,7 +4,7 @@ set -euo pipefail
 # Shannon Platform E2E Test Suite
 # Comprehensive testing of multi-agent workflows and cognitive patterns
 
-COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/docker-compose.yml}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Color codes for output
@@ -87,6 +87,17 @@ else
     SESSION_RESULT=0
 fi
 
+echo ""
+echo -e "${BLUE}[Test Suite 6] P2P Coordination Tests${NC}"
+echo "----------------------------------------"
+if [ -f "$SCRIPT_DIR/p2p_coordination_test.sh" ]; then
+    bash "$SCRIPT_DIR/p2p_coordination_test.sh"
+    P2P_RESULT=$?
+else
+    echo "P2P coordination test not found, skipping..."
+    P2P_RESULT=0
+fi
+
 # Performance metrics check
 echo ""
 echo -e "${BLUE}[Metrics] Checking Performance Metrics${NC}"
@@ -135,7 +146,7 @@ echo "E2E Test Summary"
 echo "=========================================="
 echo -e "${NC}"
 
-TOTAL_TESTS=5
+TOTAL_TESTS=6
 PASSED_TESTS=0
 
 [ $SMOKE_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
@@ -143,6 +154,7 @@ PASSED_TESTS=0
 [ $SUPERVISOR_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
 [ $COGNITIVE_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
 [ $SESSION_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
+[ $P2P_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
 
 echo "Test Results: $PASSED_TESTS/$TOTAL_TESTS passed"
 echo ""
@@ -151,6 +163,7 @@ echo -e "2. Calculator Tests:      $([ $CALC_RESULT -eq 0 ] && echo -e "${GREEN}
 echo -e "3. Supervisor Tests:      $([ $SUPERVISOR_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
 echo -e "4. Cognitive Tests:       $([ $COGNITIVE_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
 echo -e "5. Session Memory Tests:  $([ $SESSION_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
+echo -e "6. P2P Coordination:      $([ $P2P_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
 
 echo ""
 echo "For detailed logs, run:"

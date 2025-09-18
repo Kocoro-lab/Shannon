@@ -170,16 +170,88 @@ impl LLMClient {
 }
 
 fn calculate_cost(model: &str, tokens: u32) -> f64 {
-    // Rough cost estimates per 1K tokens
-    let cost_per_1k = match model {
-        m if m.contains("gpt-3.5") => 0.002,
-        m if m.contains("gpt-4-turbo") => 0.03,
-        m if m.contains("gpt-4") => 0.06,
-        m if m.contains("claude-3-haiku") => 0.001,
-        m if m.contains("claude-3-sonnet") => 0.015,
-        m if m.contains("claude-3-opus") => 0.075,
-        _ => 0.001, // Default/mock
-    };
+    // Try centralized pricing from /app/config/models.yaml
+    if let Some(per_1k) = pricing_cost_per_1k(model) {
+        return (tokens as f64 / 1000.0) * per_1k;
+    }
 
-    (tokens as f64 / 1000.0) * cost_per_1k
+    // Fallback rough estimates per 1K tokens
+    let fallback_per_1k = if model.contains("gpt-4-turbo") {
+        0.03
+    } else if model.contains("gpt-4") {
+        0.06
+    } else if model.contains("gpt-3.5") {
+        0.002
+    } else if model.contains("claude-3-opus") {
+        0.075
+    } else if model.contains("claude-3-sonnet") {
+        0.015
+    } else if model.contains("claude-3-haiku") {
+        0.001
+    } else {
+        0.001
+    };
+    (tokens as f64 / 1000.0) * fallback_per_1k
+}
+
+fn pricing_cost_per_1k(model: &str) -> Option<f64> {
+    use serde::Deserialize;
+    use std::collections::HashMap;
+
+    #[derive(Deserialize)]
+    struct ModelPrice {
+        input_per_1k: Option<f64>,
+        output_per_1k: Option<f64>,
+        combined_per_1k: Option<f64>,
+    }
+    #[derive(Deserialize)]
+    struct Pricing {
+        defaults: Option<Defaults>,
+        models: Option<HashMap<String, HashMap<String, ModelPrice>>>,
+    }
+    #[derive(Deserialize)]
+    struct Defaults {
+        combined_per_1k: Option<f64>,
+    }
+    #[derive(Deserialize)]
+    struct Root {
+        pricing: Option<Pricing>,
+    }
+
+    let candidates = [
+        std::env::var("MODELS_CONFIG_PATH").unwrap_or_default(),
+        "/app/config/models.yaml".to_string(),
+        "./config/models.yaml".to_string(),
+    ];
+    for p in candidates.iter() {
+        if p.is_empty() {
+            continue;
+        }
+        let data = std::fs::read_to_string(p);
+        if data.is_err() {
+            continue;
+        }
+        if let Ok(root) = serde_yaml::from_str::<Root>(&data.unwrap()) {
+            if let Some(pr) = root.pricing {
+                if let Some(models) = pr.models {
+                    for (_prov, mm) in models.iter() {
+                        if let Some(mp) = mm.get(model) {
+                            if let Some(c) = mp.combined_per_1k {
+                                return Some(c);
+                            }
+                            if let (Some(i), Some(o)) = (mp.input_per_1k, mp.output_per_1k) {
+                                return Some((i + o) / 2.0);
+                            }
+                        }
+                    }
+                }
+                if let Some(def) = pr.defaults {
+                    if let Some(c) = def.combined_per_1k {
+                        return Some(c);
+                    }
+                }
+            }
+        }
+    }
+    None
 }

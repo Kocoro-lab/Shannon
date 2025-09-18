@@ -100,8 +100,15 @@ impl ToolExecutor {
 
         // Route calculator to local execution
         if tool_call.tool_name == "calculator" {
-            if let Some(expression) = tool_call.parameters.get("expression").and_then(|v| v.as_str()) {
-                info!("Executing calculator locally with expression: {}", expression);
+            if let Some(expression) = tool_call
+                .parameters
+                .get("expression")
+                .and_then(|v| v.as_str())
+            {
+                info!(
+                    "Executing calculator locally with expression: {}",
+                    expression
+                );
 
                 // Use meval for mathematical expression evaluation
                 match meval::eval_str(expression) {
@@ -147,6 +154,19 @@ impl ToolExecutor {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 
+                // Extract argv parameters if provided (needed for Python WASM)
+                let argv = tool_call
+                    .parameters
+                    .get("argv")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect::<Vec<String>>()
+                    });
+
+                debug!("code_executor: stdin length={}, argv={:?}", stdin.len(), argv);
+
                 // Prefer base64 payload if provided
                 let wasm_bytes_res: Result<Vec<u8>> = if let Some(b64) = tool_call
                     .parameters
@@ -171,7 +191,7 @@ impl ToolExecutor {
                 };
 
                 match wasm_bytes_res {
-                    Ok(bytes) => match wasi.execute_wasm(&bytes, stdin).await {
+                    Ok(bytes) => match wasi.execute_wasm_with_args(&bytes, stdin, argv).await {
                         Ok(output) => {
                             return Ok(ToolResult {
                                 tool: tool_call.tool_name.clone(),

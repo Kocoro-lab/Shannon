@@ -28,12 +28,12 @@ func TestGRPCWrapper_ErrorClassification(t *testing.T) {
 		err := wrapper.Execute(ctx, func() error {
 			return status.Error(code, "client error")
 		})
-		
+
 		// Original error should be returned
 		if status.Code(err) != code {
 			t.Errorf("Expected original error code %v, got %v", code, status.Code(err))
 		}
-		
+
 		// Circuit breaker should remain closed
 		if wrapper.GetState() != StateClosed {
 			t.Errorf("Circuit breaker should remain closed for client error %v, got %s", code, wrapper.GetState())
@@ -56,14 +56,14 @@ func TestGRPCWrapper_ErrorClassification(t *testing.T) {
 		err := wrapper.Execute(ctx, func() error {
 			return status.Error(code, "server error")
 		})
-		
+
 		failureCount++
-		
+
 		// Original error should be returned (unless circuit is open)
 		if wrapper.GetState() != StateOpen && status.Code(err) != code {
 			t.Errorf("Expected original error code %v, got %v", code, status.Code(err))
 		}
-		
+
 		// After enough failures, circuit should open
 		if failureCount >= 3 && wrapper.GetState() != StateOpen {
 			t.Errorf("Circuit breaker should be open after %d server errors, got %s", failureCount, wrapper.GetState())
@@ -100,17 +100,17 @@ func TestGRPCWrapper_CircuitBreakerOpen(t *testing.T) {
 
 func TestGRPCWrapper_Recovery(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	
+
 	// Use short timeouts for testing
 	config := Config{
-		MaxRequests:       2,
-		Interval:          100 * time.Millisecond,
-		Timeout:           50 * time.Millisecond,
-		FailureThreshold:  2,
-		SuccessThreshold:  1,
-		OnStateChange:     nil,
+		MaxRequests:      2,
+		Interval:         100 * time.Millisecond,
+		Timeout:          50 * time.Millisecond,
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+		OnStateChange:    nil,
 	}
-	
+
 	cb := NewCircuitBreaker("test-recovery", config, logger)
 	wrapper := &GRPCWrapper{
 		cb:      cb,
@@ -118,7 +118,7 @@ func TestGRPCWrapper_Recovery(t *testing.T) {
 		name:    "test-recovery",
 		service: "test-service",
 	}
-	
+
 	ctx := context.Background()
 
 	// Trip the circuit breaker

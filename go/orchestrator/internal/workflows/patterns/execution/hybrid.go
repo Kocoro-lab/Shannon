@@ -1,22 +1,22 @@
 package execution
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"time"
 
-    "go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 )
 
 // HybridConfig controls hybrid parallel/sequential execution with dependencies
 type HybridConfig struct {
-	MaxConcurrency          int                    // Maximum concurrent agents
-	EmitEvents              bool                   // Whether to emit streaming events
-	Context                 map[string]interface{} // Base context for all agents
-	DependencyWaitTimeout   time.Duration          // Max time to wait for dependencies
-	PassDependencyResults   bool                   // Pass dependency results to dependent tasks
-	ClearDependentToolParams bool                  // Clear tool params for dependent tasks
+	MaxConcurrency           int                    // Maximum concurrent agents
+	EmitEvents               bool                   // Whether to emit streaming events
+	Context                  map[string]interface{} // Base context for all agents
+	DependencyWaitTimeout    time.Duration          // Max time to wait for dependencies
+	PassDependencyResults    bool                   // Pass dependency results to dependent tasks
+	ClearDependentToolParams bool                   // Clear tool params for dependent tasks
 }
 
 // HybridTask represents a task with dependencies
@@ -41,14 +41,14 @@ type HybridResult struct {
 // Tasks without dependencies run in parallel up to MaxConcurrency.
 // Tasks with dependencies wait for their dependencies to complete first.
 func ExecuteHybrid(
-    ctx workflow.Context,
-    tasks []HybridTask,
-    sessionID string,
-    history []string,
-    config HybridConfig,
-    budgetPerAgent int,
-    userID string,
-    modelTier string,
+	ctx workflow.Context,
+	tasks []HybridTask,
+	sessionID string,
+	history []string,
+	config HybridConfig,
+	budgetPerAgent int,
+	userID string,
+	modelTier string,
 ) (*HybridResult, error) {
 
 	logger := workflow.GetLogger(ctx)
@@ -143,19 +143,19 @@ type taskExecutionResult struct {
 
 // executeHybridTask handles execution of a single task with dependency management
 func executeHybridTask(
-    ctx workflow.Context,
-    task HybridTask,
-    taskIndex map[string]*HybridTask,
-    completedTasks map[string]bool,
-    taskResults map[string]activities.AgentExecutionResult,
-    semaphore workflow.Semaphore,
-    resultsChan workflow.Channel,
-    sessionID string,
-    history []string,
-    config HybridConfig,
-    budgetPerAgent int,
-    userID string,
-    modelTier string,
+	ctx workflow.Context,
+	task HybridTask,
+	taskIndex map[string]*HybridTask,
+	completedTasks map[string]bool,
+	taskResults map[string]activities.AgentExecutionResult,
+	semaphore workflow.Semaphore,
+	resultsChan workflow.Channel,
+	sessionID string,
+	history []string,
+	config HybridConfig,
+	budgetPerAgent int,
+	userID string,
+	modelTier string,
 ) {
 	logger := workflow.GetLogger(ctx)
 

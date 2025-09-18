@@ -19,24 +19,24 @@ var tracer oteltrace.Tracer
 
 // Config holds tracing configuration
 type Config struct {
-	Enabled     bool   `mapstructure:"enabled"`
-	ServiceName string `mapstructure:"service_name"`
+	Enabled      bool   `mapstructure:"enabled"`
+	ServiceName  string `mapstructure:"service_name"`
 	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
 }
 
 // Initialize sets up minimal OTLP tracing
 func Initialize(cfg Config, logger *zap.Logger) error {
-    // Always initialize a tracer handle, even if provider is disabled.
-    // This ensures Start* helpers never panic when tracing is disabled.
-    if cfg.ServiceName == "" {
-        cfg.ServiceName = "shannon-orchestrator"
-    }
-    tracer = otel.Tracer(cfg.ServiceName)
+	// Always initialize a tracer handle, even if provider is disabled.
+	// This ensures Start* helpers never panic when tracing is disabled.
+	if cfg.ServiceName == "" {
+		cfg.ServiceName = "shannon-orchestrator"
+	}
+	tracer = otel.Tracer(cfg.ServiceName)
 
-    if !cfg.Enabled {
-        logger.Info("Tracing disabled")
-        return nil
-    }
+	if !cfg.Enabled {
+		logger.Info("Tracing disabled")
+		return nil
+	}
 
 	// Default values
 	if cfg.ServiceName == "" {
@@ -73,9 +73,9 @@ func Initialize(cfg Config, logger *zap.Logger) error {
 		trace.WithResource(res),
 	)
 
-    // Set global tracer provider and keep tracer handle
-    otel.SetTracerProvider(tp)
-    tracer = otel.Tracer(cfg.ServiceName)
+	// Set global tracer provider and keep tracer handle
+	otel.SetTracerProvider(tp)
+	tracer = otel.Tracer(cfg.ServiceName)
 
 	logger.Info("Tracing initialized", zap.String("endpoint", cfg.OTLPEndpoint))
 	return nil
@@ -110,18 +110,17 @@ func StartSpan(ctx context.Context, spanName string) (context.Context, oteltrace
 
 // StartHTTPSpan creates a span for HTTP operations with method and URL
 func StartHTTPSpan(ctx context.Context, method, url string) (context.Context, oteltrace.Span) {
-    if tracer == nil {
-        tracer = otel.Tracer("shannon-orchestrator")
-    }
-    spanName := fmt.Sprintf("HTTP %s", method)
-    ctx, span := tracer.Start(ctx, spanName)
+	if tracer == nil {
+		tracer = otel.Tracer("shannon-orchestrator")
+	}
+	spanName := fmt.Sprintf("HTTP %s", method)
+	ctx, span := tracer.Start(ctx, spanName)
 	span.SetAttributes(
 		semconv.HTTPRequestMethodKey.String(method),
 		semconv.URLFull(url),
 	)
 	return ctx, span
 }
-
 
 // ParseTraceparent parses W3C traceparent header
 func ParseTraceparent(traceparent string) (traceID, spanID string, flags byte, valid bool) {
@@ -137,7 +136,7 @@ func ParseTraceparent(traceparent string) (traceID, spanID string, flags byte, v
 
 	traceID = parts[1]
 	spanID = parts[2]
-	
+
 	var flagsInt int
 	if _, err := fmt.Sscanf(parts[3], "%02x", &flagsInt); err != nil {
 		return "", "", 0, false

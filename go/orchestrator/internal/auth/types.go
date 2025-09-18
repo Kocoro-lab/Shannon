@@ -34,20 +34,20 @@ func (j JSONMap) Value() (driver.Value, error) {
 
 // User represents an authenticated user
 type User struct {
-	ID               uuid.UUID  `json:"id" db:"id"`
-	Email            string     `json:"email" db:"email"`
-	Username         string     `json:"username" db:"username"`
-	PasswordHash     string     `json:"-" db:"password_hash"`
-	FullName         string     `json:"full_name" db:"full_name"`
-	TenantID         uuid.UUID  `json:"tenant_id" db:"tenant_id"`
-	Role             string     `json:"role" db:"role"` // user, admin, owner
-	IsActive         bool       `json:"is_active" db:"is_active"`
-	IsVerified       bool       `json:"is_verified" db:"is_verified"`
-	EmailVerifiedAt  *time.Time  `json:"email_verified_at,omitempty" db:"email_verified_at"`
-	CreatedAt        time.Time   `json:"created_at" db:"created_at"`
-	UpdatedAt        time.Time   `json:"updated_at" db:"updated_at"`
-	LastLogin        *time.Time  `json:"last_login,omitempty" db:"last_login"`
-	Metadata         JSONMap     `json:"metadata,omitempty" db:"metadata"`
+	ID              uuid.UUID  `json:"id" db:"id"`
+	Email           string     `json:"email" db:"email"`
+	Username        string     `json:"username" db:"username"`
+	PasswordHash    string     `json:"-" db:"password_hash"`
+	FullName        string     `json:"full_name" db:"full_name"`
+	TenantID        uuid.UUID  `json:"tenant_id" db:"tenant_id"`
+	Role            string     `json:"role" db:"role"` // user, admin, owner
+	IsActive        bool       `json:"is_active" db:"is_active"`
+	IsVerified      bool       `json:"is_verified" db:"is_verified"`
+	EmailVerifiedAt *time.Time `json:"email_verified_at,omitempty" db:"email_verified_at"`
+	CreatedAt       time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at" db:"updated_at"`
+	LastLogin       *time.Time `json:"last_login,omitempty" db:"last_login"`
+	Metadata        JSONMap    `json:"metadata,omitempty" db:"metadata"`
 }
 
 // Tenant represents an organization/workspace
@@ -132,9 +132,9 @@ type RegisterRequest struct {
 
 // CreateAPIKeyRequest represents a request to create an API key
 type CreateAPIKeyRequest struct {
-	Name        string   `json:"name" validate:"required"`
-	Description string   `json:"description"`
-	Scopes      []string `json:"scopes"`
+	Name        string     `json:"name" validate:"required"`
+	Description string     `json:"description"`
+	Scopes      []string   `json:"scopes"`
 	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
 }
 

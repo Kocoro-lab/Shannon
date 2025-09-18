@@ -29,6 +29,7 @@ type ReactLoopResult struct {
 	FinalResult  string
 	TotalTokens  int
 	Iterations   int
+	AgentResults []activities.AgentExecutionResult
 }
 
 // ReactLoop executes a Reason-Act-Observe loop for step-by-step problem solving.
@@ -62,6 +63,7 @@ func ReactLoop(
 	iteration := 0
 
 	// Main Reason-Act-Observe loop
+	var agentResults []activities.AgentExecutionResult
 	for iteration < config.MaxIterations {
 		logger.Info("ReAct iteration",
 			"iteration", iteration+1,
@@ -103,7 +105,7 @@ func ReactLoop(
 						History:   history,
 					},
 					MaxTokens: opts.BudgetAgentMax,
-            		UserID:    opts.UserID,
+					UserID:    opts.UserID,
 					TaskID:    wid,
 					ModelTier: opts.ModelTier,
 				}).Get(ctx, &reasonResult)
@@ -175,7 +177,7 @@ func ReactLoop(
 						SuggestedTools: suggestedTools,
 					},
 					MaxTokens: opts.BudgetAgentMax,
-            		UserID:    opts.UserID,
+					UserID:    opts.UserID,
 					TaskID:    wid,
 					ModelTier: opts.ModelTier,
 				}).Get(ctx, &actionResult)
@@ -262,7 +264,7 @@ func ReactLoop(
 					History:   history,
 				},
 				MaxTokens: opts.BudgetAgentMax,
-            		UserID:    opts.UserID,
+				UserID:    opts.UserID,
 				TaskID:    wid,
 				ModelTier: opts.ModelTier,
 			}).Get(ctx, &finalResult)
@@ -288,6 +290,7 @@ func ReactLoop(
 	}
 
 	totalTokens += finalResult.TokensUsed
+	agentResults = append(agentResults, finalResult)
 
 	return &ReactLoopResult{
 		Thoughts:     thoughts,
@@ -296,6 +299,7 @@ func ReactLoop(
 		FinalResult:  finalResult.Response,
 		TotalTokens:  totalTokens,
 		Iterations:   iteration,
+		AgentResults: agentResults,
 	}, nil
 }
 
@@ -337,10 +341,10 @@ func extractToolsFromReasoning(reasoning string) []string {
 	lowerReasoning := strings.ToLower(reasoning)
 
 	toolKeywords := map[string][]string{
-		"calculator":   {"calculate", "compute", "math", "arithmetic"},
-		"web_search":   {"search", "look up", "find information"},
+		"calculator":    {"calculate", "compute", "math", "arithmetic"},
+		"web_search":    {"search", "look up", "find information"},
 		"code_executor": {"run code", "execute", "python", "script"},
-		"file_ops":     {"read file", "write file", "save", "load"},
+		"file_ops":      {"read file", "write file", "save", "load"},
 	}
 
 	for tool, keywords := range toolKeywords {
