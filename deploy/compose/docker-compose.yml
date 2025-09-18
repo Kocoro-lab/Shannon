@@ -253,7 +253,9 @@ services:
       - POSTGRES_PASSWORD=shannon
       - POSTGRES_DB=shannon
       - REDIS_URL=redis://redis:6379
-      - JWT_SECRET=${JWT_SECRET:-your-secret-key}
+      # IMPORTANT: Change JWT_SECRET in production! Use a strong, random secret.
+      # Generate one with: openssl rand -hex 32
+      - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
       - GATEWAY_SKIP_AUTH=${GATEWAY_SKIP_AUTH:-1}  # Default to 1 for easy open-source adoption
     depends_on:
       orchestrator:
