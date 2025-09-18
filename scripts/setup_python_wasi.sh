@@ -139,11 +139,11 @@ fi
 
 # Docker compose check
 echo ""
-if [ -f "deploy/compose/compose.yml" ]; then
+if [ -f "deploy/compose/docker-compose.yml" ]; then
     echo -e "${YELLOW}Checking Docker Compose configuration...${NC}"
 
     # Check if volumes are configured
-    if grep -q "wasm-interpreters:/opt/wasm-interpreters" deploy/compose/compose.yml; then
+    if grep -q "wasm-interpreters:/opt/wasm-interpreters" deploy/compose/docker-compose.yml; then
         echo -e "${GREEN}✓ Docker Compose already configured for WASI interpreters${NC}"
     else
         echo -e "${YELLOW}Note: Docker Compose needs to be updated to mount WASI interpreters${NC}"

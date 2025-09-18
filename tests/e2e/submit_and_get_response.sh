@@ -24,5 +24,5 @@ for i in {1..30}; do
 done
 
 # Get the actual response from the database
-docker compose -f deploy/compose/compose.yml exec -T postgres \
+docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
   psql -U shannon -d shannon -At -c "SELECT response FROM tasks WHERE workflow_id='${WORKFLOW_ID}' LIMIT 1;" 2>/dev/null

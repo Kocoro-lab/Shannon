@@ -285,7 +285,7 @@ auth:
 
 3. **Restart services**
 ```bash
-docker compose -f deploy/compose/compose.yml restart orchestrator
+docker compose -f deploy/compose/docker-compose.yml restart orchestrator
 ```
 
 4. **Create initial admin**

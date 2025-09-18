@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/docker-compose.yml}"
 SEED_FILE="${SEED_FILE:-tests/fixtures/seed_data.sql}"
 PGUSER_ENV="${POSTGRES_USER:-shannon}"
 
