@@ -55,4 +55,3 @@ def get_role_preset(name: str) -> Dict[str, object]:
     """
     key = (name or "").strip().lower() or "generalist"
     return _PRESETS.get(key, _PRESETS["generalist"]).copy()
-

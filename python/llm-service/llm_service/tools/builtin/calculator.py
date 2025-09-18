@@ -53,7 +53,7 @@ class CalculatorTool(Tool):
     Safe calculator that can evaluate mathematical expressions.
     Uses AST parsing to ensure safety - no arbitrary code execution.
     """
-    
+
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
             name="calculator",
@@ -69,7 +69,7 @@ class CalculatorTool(Tool):
             dangerous=False,
             cost_per_use=0.0,
         )
-    
+
     def _get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
@@ -88,25 +88,27 @@ class CalculatorTool(Tool):
                 max_value=15,
             ),
         ]
-    
-    async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
+
+    async def _execute_impl(
+        self, session_context: Optional[Dict] = None, **kwargs
+    ) -> ToolResult:
         """
         Safely evaluate mathematical expression
         """
         expression = kwargs["expression"]
         precision = kwargs.get("precision", 6)
-        
+
         try:
             # Parse and evaluate the expression safely
             result = self._safe_eval(expression)
-            
+
             # Format the result based on precision
             if isinstance(result, float):
                 if precision == 0:
                     result = int(round(result))
                 else:
                     result = round(result, precision)
-            
+
             return ToolResult(
                 success=True,
                 output=result,
@@ -114,28 +116,20 @@ class CalculatorTool(Tool):
                     "expression": expression,
                     "result_type": type(result).__name__,
                     "precision": precision,
-                }
+                },
             )
-            
+
         except ZeroDivisionError:
-            return ToolResult(
-                success=False,
-                output=None,
-                error="Division by zero"
-            )
+            return ToolResult(success=False, output=None, error="Division by zero")
         except ValueError as e:
             return ToolResult(
-                success=False,
-                output=None,
-                error=f"Math domain error: {str(e)}"
+                success=False, output=None, error=f"Math domain error: {str(e)}"
             )
         except Exception as e:
             return ToolResult(
-                success=False,
-                output=None,
-                error=f"Invalid expression: {str(e)}"
+                success=False, output=None, error=f"Invalid expression: {str(e)}"
             )
-    
+
     def _safe_eval(self, expression: str) -> Any:
         """
         Safely evaluate a mathematical expression using AST parsing.
@@ -143,13 +137,13 @@ class CalculatorTool(Tool):
         """
         # Parse the expression into an AST
         try:
-            node = ast.parse(expression, mode='eval')
+            node = ast.parse(expression, mode="eval")
         except SyntaxError as e:
             raise ValueError(f"Invalid expression syntax: {e}")
-        
+
         # Evaluate the AST safely
         return self._eval_node(node.body)
-    
+
     def _eval_node(self, node: ast.AST) -> Any:
         """
         Recursively evaluate an AST node.
@@ -208,7 +202,7 @@ class StatisticalCalculatorTool(Tool):
     """
     Advanced statistical calculations
     """
-    
+
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
             name="statistics",
@@ -224,7 +218,7 @@ class StatisticalCalculatorTool(Tool):
             dangerous=False,
             cost_per_use=0.0,
         )
-    
+
     def _get_parameters(self) -> List[ToolParameter]:
         return [
             ToolParameter(
@@ -238,30 +232,38 @@ class StatisticalCalculatorTool(Tool):
                 type=ToolParameterType.STRING,
                 description="Statistical operation to perform",
                 required=True,
-                enum=["mean", "median", "mode", "std", "variance", "min", "max", "sum", "count"],
+                enum=[
+                    "mean",
+                    "median",
+                    "mode",
+                    "std",
+                    "variance",
+                    "min",
+                    "max",
+                    "sum",
+                    "count",
+                ],
             ),
         ]
-    
-    async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
+
+    async def _execute_impl(
+        self, session_context: Optional[Dict] = None, **kwargs
+    ) -> ToolResult:
         """
         Perform statistical calculation
         """
         import statistics
-        
+
         data = kwargs["data"]
         operation = kwargs["operation"]
-        
+
         if not data:
-            return ToolResult(
-                success=False,
-                output=None,
-                error="Empty dataset"
-            )
-        
+            return ToolResult(success=False, output=None, error="Empty dataset")
+
         try:
             # Ensure all values are numeric
             numeric_data = [float(x) for x in data]
-            
+
             result = None
             if operation == "mean":
                 result = statistics.mean(numeric_data)
@@ -290,26 +292,24 @@ class StatisticalCalculatorTool(Tool):
                 result = sum(numeric_data)
             elif operation == "count":
                 result = len(numeric_data)
-            
+
             return ToolResult(
                 success=True,
                 output=result,
                 metadata={
                     "operation": operation,
                     "data_points": len(numeric_data),
-                    "data_range": [min(numeric_data), max(numeric_data)] if numeric_data else [None, None],
-                }
+                    "data_range": [min(numeric_data), max(numeric_data)]
+                    if numeric_data
+                    else [None, None],
+                },
             )
-            
+
         except ValueError as e:
             return ToolResult(
-                success=False,
-                output=None,
-                error=f"Invalid data: {str(e)}"
+                success=False, output=None, error=f"Invalid data: {str(e)}"
             )
         except Exception as e:
             return ToolResult(
-                success=False,
-                output=None,
-                error=f"Calculation error: {str(e)}"
+                success=False, output=None, error=f"Calculation error: {str(e)}"
             )

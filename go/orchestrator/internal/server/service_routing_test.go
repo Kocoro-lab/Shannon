@@ -32,7 +32,7 @@ func TestExecutionModeRouting(t *testing.T) {
 			name:             "Simple mode routes to OrchestratorWorkflow",
 			mode:             common.ExecutionMode_EXECUTION_MODE_SIMPLE,
 			expectedWorkflow: "OrchestratorWorkflow",
-			expectedModeStr:  "standard",  // Simple is converted to standard for workflow analysis
+			expectedModeStr:  "standard", // Simple is converted to standard for workflow analysis
 		},
 		{
 			name:             "Standard mode routes to OrchestratorWorkflow",
@@ -204,7 +204,7 @@ func TestDefaultExecutionMode(t *testing.T) {
 	assert.NotNil(t, resp)
 	assert.Equal(t, common.ExecutionMode_EXECUTION_MODE_STANDARD, resp.Decomposition.Mode)
 	assert.Equal(t, "standard", capturedInput.Mode)
-	
+
 	// Verify OrchestratorWorkflow was called (default for standard mode)
 	workflowName := ""
 	if capturedWorkflow != nil {
@@ -332,9 +332,9 @@ func TestPriorityQueueRouting(t *testing.T) {
 			// Verify
 			assert.NoError(t, err)
 			assert.NotNil(t, resp)
-			
+
 			// Verify the correct task queue was used
-			assert.Equal(t, tt.expectedQueue, capturedOptions.TaskQueue, 
+			assert.Equal(t, tt.expectedQueue, capturedOptions.TaskQueue,
 				"Priority '%s' should route to queue '%s'", tt.priority, tt.expectedQueue)
 
 			mockClient.AssertExpectations(t)

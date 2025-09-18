@@ -26,6 +26,7 @@ type ExecuteSimpleTaskResult struct {
 	TokensUsed int    `json:"tokens_used"`
 	Success    bool   `json:"success"`
 	Error      string `json:"error,omitempty"`
+	ModelUsed  string `json:"model_used,omitempty"`
 }
 
 // ExecuteSimpleTask executes a simple query with minimal overhead
@@ -80,5 +81,6 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		Response:   agentResult.Response,
 		TokensUsed: agentResult.TokensUsed,
 		Success:    true,
+		ModelUsed:  agentResult.ModelUsed,
 	}, nil
 }

@@ -1,13 +1,22 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import make_asgi_app
 import uvicorn
 
-from llm_service.api import health, completions, embeddings, complexity, agent, tools, evaluate, context as context_api, providers as providers_api
+from llm_service.api import (
+    health,
+    completions,
+    embeddings,
+    complexity,
+    agent,
+    tools,
+    evaluate,
+    context as context_api,
+    providers as providers_api,
+)
 from llm_service.api import mcp_mock
 from llm_service.cache import CacheManager
 from llm_service.config import Settings
@@ -26,8 +35,7 @@ from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -43,50 +51,57 @@ def setup_tracing(app: FastAPI):
         service_name = os.getenv("OTEL_SERVICE_NAME", "shannon-llm-service")
         endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:4317")
 
-        provider = TracerProvider(resource=Resource.create({SERVICE_NAME: service_name}))
+        provider = TracerProvider(
+            resource=Resource.create({SERVICE_NAME: service_name})
+        )
         exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
         provider.add_span_processor(BatchSpanProcessor(exporter))
         trace.set_tracer_provider(provider)
 
         FastAPIInstrumentor.instrument_app(app)
         HTTPXClientInstrumentor().instrument()
-        logger.info("OpenTelemetry tracing initialized", extra={"service": service_name, "endpoint": endpoint})
+        logger.info(
+            "OpenTelemetry tracing initialized",
+            extra={"service": service_name, "endpoint": endpoint},
+        )
     except Exception as e:
         logger.warning(f"Failed to initialize OpenTelemetry: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
     global cache_manager, provider_manager
-    
+
     logger.info("Starting Shannon LLM Service")
-    
+
     # Initialize cache
     cache_manager = CacheManager(settings)
     await cache_manager.initialize()
-    
+
     # Initialize LLM providers
     provider_manager = ProviderManager(settings)
     await provider_manager.initialize()
-    
+
     # Store in app state
     app.state.cache = cache_manager
     app.state.providers = provider_manager
     app.state.settings = settings
-    
+
     yield
-    
+
     # Cleanup
     logger.info("Shutting down Shannon LLM Service")
     await cache_manager.close()
     await provider_manager.close()
+
 
 # Create FastAPI app
 app = FastAPI(
     title="Shannon LLM Service",
     description="LLM integration service for Shannon platform",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # Initialize tracing after app creation
@@ -117,20 +132,14 @@ app.include_router(mcp_mock.router, tags=["mcp-mock"])
 metrics_app = make_asgi_app()
 app.mount("/metrics", metrics_app)
 
+
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {
-        "service": "Shannon LLM Service",
-        "version": "0.1.0",
-        "status": "running"
-    }
+    return {"service": "Shannon LLM Service", "version": "0.1.0", "status": "running"}
+
 
 if __name__ == "__main__":
     uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=settings.debug,
-        log_level="info"
+        "main:app", host="0.0.0.0", port=8000, reload=settings.debug, log_level="info"
     )

@@ -28,8 +28,8 @@ func NewService(db *sqlx.DB, logger *zap.Logger, jwtSecret string) *Service {
 		logger: logger,
 		jwtManager: NewJWTManager(
 			jwtSecret,
-			30*time.Minute,  // Access token expiry
-			7*24*time.Hour,  // Refresh token expiry
+			30*time.Minute, // Access token expiry
+			7*24*time.Hour, // Refresh token expiry
 		),
 	}
 }
@@ -38,7 +38,7 @@ func NewService(db *sqlx.DB, logger *zap.Logger, jwtSecret string) *Service {
 func (s *Service) Register(ctx context.Context, req *RegisterRequest) (*User, error) {
 	// Check if email already exists
 	var exists bool
-	err := s.db.GetContext(ctx, &exists, 
+	err := s.db.GetContext(ctx, &exists,
 		"SELECT EXISTS(SELECT 1 FROM auth.users WHERE email = $1)", req.Email)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check email existence: %w", err)
@@ -97,7 +97,7 @@ func (s *Service) Register(ctx context.Context, req *RegisterRequest) (*User, er
 		INSERT INTO auth.users (id, email, username, password_hash, full_name, tenant_id, role, is_active, is_verified)
 		VALUES (:id, :email, :username, :password_hash, :full_name, :tenant_id, :role, :is_active, :is_verified)
 	`
-	
+
 	_, err = s.db.NamedExecContext(ctx, query, user)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create user: %w", err)
@@ -123,7 +123,7 @@ func (s *Service) Login(ctx context.Context, req *LoginRequest) (*TokenPair, err
 	if err != nil {
 		if err == sql.ErrNoRows {
 			// Log failed attempt
-			s.logAuditEvent(ctx, AuditEventLoginFailed, uuid.Nil, uuid.Nil, 
+			s.logAuditEvent(ctx, AuditEventLoginFailed, uuid.Nil, uuid.Nil,
 				map[string]interface{}{"email": req.Email})
 			return nil, fmt.Errorf("invalid email or password")
 		}
@@ -186,7 +186,7 @@ func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) (*UserConte
 	if err != nil {
 		return nil, fmt.Errorf("failed to query API keys: %w", err)
 	}
-	
+
 	// Find matching key with constant-time comparison
 	var key *APIKey
 	for _, k := range keys {
@@ -195,7 +195,7 @@ func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) (*UserConte
 			break
 		}
 	}
-	
+
 	if key == nil {
 		return nil, fmt.Errorf("invalid API key")
 	}
@@ -285,7 +285,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, userID uuid.UUID, req *Creat
 		(id, key_hash, key_prefix, user_id, tenant_id, name, description, scopes, expires_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
-	
+
 	_, err = s.db.ExecContext(ctx, query,
 		key.ID, key.KeyHash, key.KeyPrefix, key.UserID, key.TenantID,
 		key.Name, key.Description, key.Scopes, key.ExpiresAt)
@@ -325,7 +325,7 @@ func (s *Service) createTenant(ctx context.Context, username string) (uuid.UUID,
 		INSERT INTO auth.tenants (id, name, slug, plan, token_limit, rate_limit_per_hour)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`
-	
+
 	_, err := s.db.ExecContext(ctx, query,
 		tenant.ID, tenant.Name, tenant.Slug, tenant.Plan, tenant.TokenLimit, tenant.RateLimitPerHour)
 	if err != nil {
@@ -340,7 +340,7 @@ func (s *Service) storeRefreshToken(ctx context.Context, user *User, tokenHash s
 		INSERT INTO auth.refresh_tokens (user_id, tenant_id, token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)
 	`
-	
+
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 	_, err := s.db.ExecContext(ctx, query, user.ID, user.TenantID, tokenHash, expiresAt)
 	return err
@@ -351,7 +351,7 @@ func (s *Service) logAuditEvent(ctx context.Context, eventType string, userID, t
 		INSERT INTO auth.audit_logs (event_type, user_id, tenant_id, details)
 		VALUES ($1, $2, $3, $4)
 	`
-	
+
 	// Convert nil UUIDs to NULL
 	var userIDPtr, tenantIDPtr *uuid.UUID
 	if userID != uuid.Nil {
@@ -360,7 +360,7 @@ func (s *Service) logAuditEvent(ctx context.Context, eventType string, userID, t
 	if tenantID != uuid.Nil {
 		tenantIDPtr = &tenantID
 	}
-	
+
 	_, err := s.db.ExecContext(ctx, query, eventType, userIDPtr, tenantIDPtr, details)
 	if err != nil {
 		s.logger.Warn("Failed to log audit event",
@@ -375,7 +375,7 @@ func generateAPIKey() (key, hash, prefix string, err error) {
 	if _, err := rand.Read(b); err != nil {
 		return "", "", "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}
-	
+
 	key = "sk_" + hex.EncodeToString(b)
 	hash = hashToken(key)
 	prefix = key[:8]

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"go.temporal.io/sdk/workflow"
 )
 
 // DebateConfig configures the debate pattern
@@ -22,13 +22,13 @@ type DebateConfig struct {
 
 // DebateResult contains the outcome of a debate
 type DebateResult struct {
-	FinalPosition   string
-	Positions       []DebatePosition
+	FinalPosition    string
+	Positions        []DebatePosition
 	ConsensusReached bool
-	TotalTokens     int
-	Rounds          int
-	WinningArgument string
-	Votes           map[string]int
+	TotalTokens      int
+	Rounds           int
+	WinningArgument  string
+	Votes            map[string]int
 }
 
 // DebatePosition represents one agent's position
@@ -194,10 +194,10 @@ func Debate(
 
 			responsePrompt := fmt.Sprintf(
 				"Round %d: Consider these other perspectives:\n%s\n\n"+
-				"As %s, respond with:\n"+
-				"1. Counter-arguments to opposing views\n"+
-				"2. Strengthen your position\n"+
-				"3. Find any common ground\n",
+					"As %s, respond with:\n"+
+					"1. Counter-arguments to opposing views\n"+
+					"2. Strengthen your position\n"+
+					"3. Find any common ground\n",
 				round,
 				strings.Join(othersPositions, "\n"),
 				debater.AgentID,
@@ -332,10 +332,10 @@ func extractArguments(position string) []string {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "1.") ||
-		   strings.HasPrefix(line, "2.") ||
-		   strings.HasPrefix(line, "3.") ||
-		   strings.HasPrefix(line, "-") ||
-		   strings.HasPrefix(line, "•") {
+			strings.HasPrefix(line, "2.") ||
+			strings.HasPrefix(line, "3.") ||
+			strings.HasPrefix(line, "-") ||
+			strings.HasPrefix(line, "•") {
 			arguments = append(arguments, line)
 		}
 	}
@@ -362,29 +362,29 @@ func calculateArgumentStrength(response string) float64 {
 
 	// Evidence indicators
 	if strings.Contains(strings.ToLower(response), "evidence") ||
-	   strings.Contains(strings.ToLower(response), "study") ||
-	   strings.Contains(strings.ToLower(response), "data") {
+		strings.Contains(strings.ToLower(response), "study") ||
+		strings.Contains(strings.ToLower(response), "data") {
 		strength += 0.15
 	}
 
 	// Logical structure
 	if strings.Contains(response, "therefore") ||
-	   strings.Contains(response, "because") ||
-	   strings.Contains(response, "consequently") {
+		strings.Contains(response, "because") ||
+		strings.Contains(response, "consequently") {
 		strength += 0.1
 	}
 
 	// Counter-arguments addressed
 	if strings.Contains(strings.ToLower(response), "however") ||
-	   strings.Contains(strings.ToLower(response), "although") ||
-	   strings.Contains(strings.ToLower(response), "counter") {
+		strings.Contains(strings.ToLower(response), "although") ||
+		strings.Contains(strings.ToLower(response), "counter") {
 		strength += 0.15
 	}
 
 	// Specific examples
 	if strings.Contains(strings.ToLower(response), "for example") ||
-	   strings.Contains(strings.ToLower(response), "such as") ||
-	   strings.Contains(strings.ToLower(response), "instance") {
+		strings.Contains(strings.ToLower(response), "such as") ||
+		strings.Contains(strings.ToLower(response), "instance") {
 		strength += 0.1
 	}
 
@@ -406,9 +406,9 @@ func checkConsensus(positions []DebatePosition) bool {
 	for _, pos := range positions {
 		lower := strings.ToLower(pos.Position)
 		if strings.Contains(lower, "agree") ||
-		   strings.Contains(lower, "consensus") ||
-		   strings.Contains(lower, "common ground") ||
-		   strings.Contains(lower, "alignment") {
+			strings.Contains(lower, "consensus") ||
+			strings.Contains(lower, "common ground") ||
+			strings.Contains(lower, "alignment") {
 			agreementCount++
 		}
 	}

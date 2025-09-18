@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"go.uber.org/zap"
 )
@@ -36,8 +37,40 @@ func (a *Activities) UpdateSessionResult(ctx context.Context, input SessionUpdat
 		}, err
 	}
 
-	// Update token usage and cost
-	costUSD := float64(input.TokensUsed) * 0.000002 // Default GPT-3.5 pricing
+	// Update token usage and cost (centralized pricing; prefer per-agent, then model, then default)
+	costUSD := input.CostUSD
+	if costUSD <= 0 {
+		if len(input.AgentUsage) > 0 {
+			var total float64
+			for _, au := range input.AgentUsage {
+				if au.Model == "" {
+					if au.InputTokens > 0 || au.OutputTokens > 0 {
+						total += pricing.CostForSplit("", au.InputTokens, au.OutputTokens)
+					} else {
+						total += pricing.CostForTokens("", au.Tokens)
+					}
+					a.logger.Warn("Pricing fallback used (missing model)", zap.Int("tokens", au.Tokens))
+					continue
+				}
+				if _, ok := pricing.PricePerTokenForModel(au.Model); !ok {
+					a.logger.Warn("Pricing model not found; using default", zap.String("model", au.Model), zap.Int("tokens", au.Tokens))
+				}
+				if au.InputTokens > 0 || au.OutputTokens > 0 {
+					total += pricing.CostForSplit(au.Model, au.InputTokens, au.OutputTokens)
+				} else {
+					total += pricing.CostForTokens(au.Model, au.Tokens)
+				}
+			}
+			costUSD = total
+		} else if input.ModelUsed != "" {
+			if _, ok := pricing.PricePerTokenForModel(input.ModelUsed); !ok {
+				a.logger.Warn("Pricing model not found; using default", zap.String("model", input.ModelUsed), zap.Int("tokens", input.TokensUsed))
+			}
+			costUSD = pricing.CostForTokens(input.ModelUsed, input.TokensUsed)
+		} else {
+			costUSD = float64(input.TokensUsed) * pricing.DefaultPerToken()
+		}
+	}
 	sess.UpdateTokenUsage(input.TokensUsed, costUSD)
 
 	// Record metrics

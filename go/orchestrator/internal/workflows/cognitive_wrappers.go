@@ -1,8 +1,8 @@
 package workflows
 
 import (
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ReactWorkflow is a wrapper for strategies.ReactWorkflow to maintain test compatibility

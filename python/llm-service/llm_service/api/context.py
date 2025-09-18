@@ -24,7 +24,7 @@ class CompressResponse(BaseModel):
 
 @router.post("/context/compress", response_model=CompressResponse)
 async def compress_context(request: Request, body: CompressRequest) -> CompressResponse:
-    providers = getattr(request.app.state, 'providers', None)
+    providers = getattr(request.app.state, "providers", None)
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages required")
 
@@ -32,10 +32,12 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
     if not providers or not providers.is_configured():
         joined = "\n".join([m.content for m in body.messages[-10:]])
         # Very simple heuristic compression
-        summary = joined[:min(len(joined), 1000)]
+        summary = joined[: min(len(joined), 1000)]
         if len(joined) > 1000:
             summary += "..."
-        return CompressResponse(summary=summary, tokens_saved=max(0, len(joined) - len(summary)))
+        return CompressResponse(
+            summary=summary, tokens_saved=max(0, len(joined) - len(summary))
+        )
 
     # Build prompt for compact summary
     sys = (
@@ -48,8 +50,12 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
 
     try:
         from ..providers.base import ModelTier
+
         result = await providers.generate_completion(
-            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            messages=[
+                {"role": "system", "content": sys},
+                {"role": "user", "content": user},
+            ],
             tier=ModelTier.SMALL,
             max_tokens=int(body.target_tokens or 400),
             temperature=0.2,
@@ -67,4 +73,3 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

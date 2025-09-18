@@ -5,33 +5,33 @@ import (
 	"sort"
 	"strings"
 
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"go.temporal.io/sdk/workflow"
 )
 
 // TreeOfThoughtsConfig configures the tree-of-thoughts pattern
 type TreeOfThoughtsConfig struct {
-	MaxDepth          int      // Maximum tree depth
-	BranchingFactor   int      // Number of branches per node (2-4)
-	EvaluationMethod  string   // "scoring", "voting", "llm"
-	PruningThreshold  float64  // Minimum score to continue branch (0-1)
-	ExplorationBudget int      // Max total thoughts to explore
-	BacktrackEnabled  bool     // Allow backtracking to promising branches
-	ModelTier         string   // Model tier for thought generation
+	MaxDepth          int     // Maximum tree depth
+	BranchingFactor   int     // Number of branches per node (2-4)
+	EvaluationMethod  string  // "scoring", "voting", "llm"
+	PruningThreshold  float64 // Minimum score to continue branch (0-1)
+	ExplorationBudget int     // Max total thoughts to explore
+	BacktrackEnabled  bool    // Allow backtracking to promising branches
+	ModelTier         string  // Model tier for thought generation
 }
 
 // ThoughtNode represents a node in the thought tree
 type ThoughtNode struct {
-	ID           string
-	Thought      string
-	Score        float64
-	Depth        int
-	ParentID     string
-	Children     []*ThoughtNode
-	TokensUsed   int
-	IsTerminal   bool
-	Explanation  string
+	ID          string
+	Thought     string
+	Score       float64
+	Depth       int
+	ParentID    string
+	Children    []*ThoughtNode
+	TokensUsed  int
+	IsTerminal  bool
+	Explanation string
 }
 
 // TreeOfThoughtsResult contains the exploration result
@@ -341,29 +341,29 @@ func evaluateThought(
 	// Check for solution indicators
 	thought := strings.ToLower(node.Thought)
 	if strings.Contains(thought, "therefore") ||
-	   strings.Contains(thought, "solution") ||
-	   strings.Contains(thought, "answer") {
+		strings.Contains(thought, "solution") ||
+		strings.Contains(thought, "answer") {
 		score += 0.2
 	}
 
 	// Check for logical progression
 	if strings.Contains(thought, "because") ||
-	   strings.Contains(thought, "since") ||
-	   strings.Contains(thought, "thus") {
+		strings.Contains(thought, "since") ||
+		strings.Contains(thought, "thus") {
 		score += 0.1
 	}
 
 	// Check for concrete steps
 	if strings.Contains(thought, "step") ||
-	   strings.Contains(thought, "first") ||
-	   strings.Contains(thought, "next") {
+		strings.Contains(thought, "first") ||
+		strings.Contains(thought, "next") {
 		score += 0.1
 	}
 
 	// Penalize vague thoughts
 	if strings.Contains(thought, "maybe") ||
-	   strings.Contains(thought, "perhaps") ||
-	   strings.Contains(thought, "might") {
+		strings.Contains(thought, "perhaps") ||
+		strings.Contains(thought, "might") {
 		score -= 0.1
 	}
 
@@ -540,11 +540,11 @@ func parseBranches(response string, expectedCount int) []string {
 
 		// Check for numbered points
 		if strings.HasPrefix(line, "1.") ||
-		   strings.HasPrefix(line, "2.") ||
-		   strings.HasPrefix(line, "3.") ||
-		   strings.HasPrefix(line, "4.") ||
-		   strings.HasPrefix(line, "-") ||
-		   strings.HasPrefix(line, "•") {
+			strings.HasPrefix(line, "2.") ||
+			strings.HasPrefix(line, "3.") ||
+			strings.HasPrefix(line, "4.") ||
+			strings.HasPrefix(line, "-") ||
+			strings.HasPrefix(line, "•") {
 			// Remove prefix
 			thought := strings.TrimLeft(line, "1234567890.-• ")
 			if len(thought) > 10 {

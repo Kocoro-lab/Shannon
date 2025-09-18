@@ -7,7 +7,7 @@ from .registry import ToolRegistry, get_registry
 
 __all__ = [
     "Tool",
-    "ToolResult", 
+    "ToolResult",
     "ToolParameter",
     "ToolMetadata",
     "ToolRegistry",

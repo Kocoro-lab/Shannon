@@ -176,6 +176,15 @@ var (
 		[]string{"collection"},
 	)
 
+	// Pricing fallback metrics
+	PricingFallbacks = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_pricing_fallback_total",
+			Help: "Total number of pricing fallbacks (missing/unknown model)",
+		},
+		[]string{"reason"},
+	)
+
 	// Embedding metrics
 	EmbeddingRequests = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -185,57 +194,57 @@ var (
 		[]string{"model", "status"},
 	)
 
-    EmbeddingLatency = promauto.NewHistogramVec(
-        prometheus.HistogramOpts{
-            Name:    "shannon_embedding_latency_seconds",
-            Help:    "Embedding generation latency in seconds",
-            Buckets: prometheus.DefBuckets,
-        },
-        []string{"model"},
-    )
+	EmbeddingLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "shannon_embedding_latency_seconds",
+			Help:    "Embedding generation latency in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"model"},
+	)
 
-    // Decomposition metrics
-    DecompositionLatency = promauto.NewHistogram(
-        prometheus.HistogramOpts{
-            Name:    "shannon_decomposition_latency_seconds",
-            Help:    "Task decomposition latency in seconds",
-            Buckets: prometheus.DefBuckets,
-        },
-    )
+	// Decomposition metrics
+	DecompositionLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "shannon_decomposition_latency_seconds",
+			Help:    "Task decomposition latency in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
 
-    DecompositionErrors = promauto.NewCounter(
-        prometheus.CounterOpts{
-            Name: "shannon_decomposition_errors_total",
-            Help: "Total number of decomposition errors",
-        },
-    )
+	DecompositionErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_decomposition_errors_total",
+			Help: "Total number of decomposition errors",
+		},
+	)
 
-    // Complexity metrics
-    ComplexityLatency = promauto.NewHistogram(
-        prometheus.HistogramOpts{
-            Name:    "shannon_complexity_latency_seconds",
-            Help:    "Complexity analysis latency in seconds",
-            Buckets: prometheus.DefBuckets,
-        },
-    )
-    ComplexityErrors = promauto.NewCounter(
-        prometheus.CounterOpts{
-            Name: "shannon_complexity_errors_total",
-            Help: "Total number of complexity analysis errors",
-        },
-    )
+	// Complexity metrics
+	ComplexityLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "shannon_complexity_latency_seconds",
+			Help:    "Complexity analysis latency in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+	ComplexityErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_complexity_errors_total",
+			Help: "Total number of complexity analysis errors",
+		},
+	)
 )
 
 // RecordWorkflowMetrics records metrics for a completed workflow
 func RecordWorkflowMetrics(workflowType, mode, status string, durationSeconds float64, tokensUsed int, costUSD float64) {
 	WorkflowsCompleted.WithLabelValues(workflowType, mode, status).Inc()
 	WorkflowDuration.WithLabelValues(workflowType, mode).Observe(durationSeconds)
-	
+
 	if tokensUsed > 0 {
 		TaskTokensUsed.Observe(float64(tokensUsed))
 		// Don't add to SessionTokensTotal here - it's tracked in session updates to avoid double-counting
 	}
-	
+
 	if costUSD > 0 {
 		TaskCostUSD.Observe(costUSD)
 	}
@@ -249,31 +258,29 @@ func RecordAgentMetrics(agentID, mode string, durationMs float64) {
 
 // RecordGRPCMetrics records metrics for a gRPC request
 func RecordGRPCMetrics(service, method, status string, durationSeconds float64) {
-    GRPCRequestsTotal.WithLabelValues(service, method, status).Inc()
-    GRPCRequestDuration.WithLabelValues(service, method).Observe(durationSeconds)
+	GRPCRequestsTotal.WithLabelValues(service, method, status).Inc()
+	GRPCRequestDuration.WithLabelValues(service, method).Observe(durationSeconds)
 }
 
 // RecordSessionTokens increments the session tokens counter
 func RecordSessionTokens(tokens int) {
-    if tokens > 0 {
-        SessionTokensTotal.Add(float64(tokens))
-    }
+	if tokens > 0 {
+		SessionTokensTotal.Add(float64(tokens))
+	}
 }
 
 // RecordVectorSearchMetrics records vector search metrics
 func RecordVectorSearchMetrics(collection, status string, durationSeconds float64) {
-    VectorSearches.WithLabelValues(collection, status).Inc()
-    if durationSeconds > 0 {
-        VectorSearchLatency.WithLabelValues(collection).Observe(durationSeconds)
-    }
+	VectorSearches.WithLabelValues(collection, status).Inc()
+	if durationSeconds > 0 {
+		VectorSearchLatency.WithLabelValues(collection).Observe(durationSeconds)
+	}
 }
 
 // RecordEmbeddingMetrics records embedding metrics
 func RecordEmbeddingMetrics(model, status string, durationSeconds float64) {
-    EmbeddingRequests.WithLabelValues(model, status).Inc()
-    if durationSeconds > 0 {
-        EmbeddingLatency.WithLabelValues(model).Observe(durationSeconds)
-    }
+	EmbeddingRequests.WithLabelValues(model, status).Inc()
+	if durationSeconds > 0 {
+		EmbeddingLatency.WithLabelValues(model).Observe(durationSeconds)
+	}
 }
-
-

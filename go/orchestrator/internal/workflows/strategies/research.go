@@ -1,16 +1,16 @@
 package strategies
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"time"
 
-    "go.temporal.io/sdk/workflow"
-    "go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
 
 // ResearchWorkflow demonstrates composed patterns for complex research tasks.
@@ -32,24 +32,24 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
 
-    // Prepare base context (merge input.Context + SessionCtx)
-    baseContext := make(map[string]interface{})
-    for k, v := range input.Context {
-        baseContext[k] = v
-    }
-    for k, v := range input.SessionCtx {
-        baseContext[k] = v
-    }
+	// Prepare base context (merge input.Context + SessionCtx)
+	baseContext := make(map[string]interface{})
+	for k, v := range input.Context {
+		baseContext[k] = v
+	}
+	for k, v := range input.SessionCtx {
+		baseContext[k] = v
+	}
 
-    // Step 1: Decompose the research query
-    var decomp activities.DecompositionResult
-    err := workflow.ExecuteActivity(ctx,
-        constants.DecomposeTaskActivity,
-        activities.DecompositionInput{
-            Query:          input.Query,
-            Context:        baseContext,
-            AvailableTools: []string{},
-        }).Get(ctx, &decomp)
+	// Step 1: Decompose the research query
+	var decomp activities.DecompositionResult
+	err := workflow.ExecuteActivity(ctx,
+		constants.DecomposeTaskActivity,
+		activities.DecompositionInput{
+			Query:          input.Query,
+			Context:        baseContext,
+			AvailableTools: []string{},
+		}).Get(ctx, &decomp)
 
 	if err != nil {
 		logger.Error("Task decomposition failed", "error", err)
@@ -59,8 +59,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}, err
 	}
 
-    // Check for budget configuration
-    agentMaxTokens := 0
+	// Check for budget configuration
+	agentMaxTokens := 0
 	if v, ok := baseContext["budget_agent_max"].(int); ok {
 		agentMaxTokens = v
 	}
@@ -87,14 +87,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			MaxActions:        10,
 		}
 
-        reactOpts := patterns.Options{
-            BudgetAgentMax: agentMaxTokens,
-            SessionID:      input.SessionID,
-            UserID:         input.UserID,
-            EmitEvents:     true,
-            ModelTier:      modelTier,
-            Context:        baseContext,
-        }
+		reactOpts := patterns.Options{
+			BudgetAgentMax: agentMaxTokens,
+			SessionID:      input.SessionID,
+			UserID:         input.UserID,
+			EmitEvents:     true,
+			ModelTier:      modelTier,
+			Context:        baseContext,
+		}
 
 		reactResult, err := patterns.ReactLoop(
 			ctx,
@@ -170,16 +170,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				ClearDependentToolParams: true,
 			}
 
-            hybridResult, err := execution.ExecuteHybrid(
-                ctx,
-                hybridTasks,
-                input.SessionID,
-                convertHistoryForAgent(input.History),
-                hybridConfig,
-                agentMaxTokens,
-                input.UserID,
-                modelTier,
-            )
+			hybridResult, err := execution.ExecuteHybrid(
+				ctx,
+				hybridTasks,
+				input.SessionID,
+				convertHistoryForAgent(input.History),
+				hybridConfig,
+				agentMaxTokens,
+				input.UserID,
+				modelTier,
+			)
 
 			if err != nil {
 				return TaskResult{
@@ -221,16 +221,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				Context:        baseContext,
 			}
 
-            parallelResult, err := execution.ExecuteParallel(
-                ctx,
-                parallelTasks,
-                input.SessionID,
-                convertHistoryForAgent(input.History),
-                parallelConfig,
-                agentMaxTokens,
-                input.UserID,
-                modelTier,
-            )
+			parallelResult, err := execution.ExecuteParallel(
+				ctx,
+				parallelTasks,
+				input.SessionID,
+				convertHistoryForAgent(input.History),
+				parallelConfig,
+				agentMaxTokens,
+				input.UserID,
+				modelTier,
+			)
 
 			if err != nil {
 				return TaskResult{

@@ -32,34 +32,34 @@ type ShannonConfig struct {
 
 	// Logging configuration
 	Logging LoggingConfig `json:"logging" yaml:"logging"`
-	
-    // Policy engine configuration
-    Policy PolicyConfig `json:"policy" yaml:"policy"`
 
-    // Vector/Embedding configuration
-    Vector VectorConfig `json:"vector" yaml:"vector"`
+	// Policy engine configuration
+	Policy PolicyConfig `json:"policy" yaml:"policy"`
 
-    // Tracing configuration
-    Tracing TracingConfig `json:"tracing" yaml:"tracing"`
+	// Vector/Embedding configuration
+	Vector VectorConfig `json:"vector" yaml:"vector"`
 
-    // Streaming configuration (v1)
-    Streaming StreamingConfig `json:"streaming" yaml:"streaming"`
+	// Tracing configuration
+	Tracing TracingConfig `json:"tracing" yaml:"tracing"`
 
-    // Workflow orchestration behavior (evaluation/synthesis toggles)
-    Workflow WorkflowConfig `json:"workflow" yaml:"workflow"`
+	// Streaming configuration (v1)
+	Streaming StreamingConfig `json:"streaming" yaml:"streaming"`
+
+	// Workflow orchestration behavior (evaluation/synthesis toggles)
+	Workflow WorkflowConfig `json:"workflow" yaml:"workflow"`
 }
 
 // AuthConfig contains authentication configuration
 type AuthConfig struct {
-	Enabled              bool          `json:"enabled" yaml:"enabled"`
-	SkipAuth             bool          `json:"skip_auth" yaml:"skip_auth"` // Development mode
-	JWTSecret            string        `json:"jwt_secret" yaml:"jwt_secret"`
-	AccessTokenExpiry    time.Duration `json:"access_token_expiry" yaml:"access_token_expiry"`
-	RefreshTokenExpiry   time.Duration `json:"refresh_token_expiry" yaml:"refresh_token_expiry"`
-	APIKeyRateLimit      int           `json:"api_key_rate_limit" yaml:"api_key_rate_limit"`
-	DefaultTenantLimit   int           `json:"default_tenant_limit" yaml:"default_tenant_limit"`
-	EnableRegistration   bool          `json:"enable_registration" yaml:"enable_registration"`
-	RequireEmailVerification bool      `json:"require_email_verification" yaml:"require_email_verification"`
+	Enabled                  bool          `json:"enabled" yaml:"enabled"`
+	SkipAuth                 bool          `json:"skip_auth" yaml:"skip_auth"` // Development mode
+	JWTSecret                string        `json:"jwt_secret" yaml:"jwt_secret"`
+	AccessTokenExpiry        time.Duration `json:"access_token_expiry" yaml:"access_token_expiry"`
+	RefreshTokenExpiry       time.Duration `json:"refresh_token_expiry" yaml:"refresh_token_expiry"`
+	APIKeyRateLimit          int           `json:"api_key_rate_limit" yaml:"api_key_rate_limit"`
+	DefaultTenantLimit       int           `json:"default_tenant_limit" yaml:"default_tenant_limit"`
+	EnableRegistration       bool          `json:"enable_registration" yaml:"enable_registration"`
+	RequireEmailVerification bool          `json:"require_email_verification" yaml:"require_email_verification"`
 }
 
 // ServiceConfig contains basic service configuration
@@ -210,50 +210,50 @@ type LoggingConfig struct {
 
 // VectorConfig contains vector DB and embedding settings
 type VectorConfig struct {
-    Enabled bool   `json:"enabled" yaml:"enabled"`
-    // Qdrant
-    Host    string `json:"host" yaml:"host"`
-    Port    int    `json:"port" yaml:"port"`
-    TaskEmbeddings string `json:"task_embeddings" yaml:"task_embeddings"`
-    ToolResults    string `json:"tool_results" yaml:"tool_results"`
-    Cases          string `json:"cases" yaml:"cases"`
-    DocumentChunks string `json:"document_chunks" yaml:"document_chunks"`
-    Summaries      string `json:"summaries" yaml:"summaries"`
-    TopK       int     `json:"top_k" yaml:"top_k"`
-    Threshold  float64 `json:"threshold" yaml:"threshold"`
-    Timeout    time.Duration `json:"timeout" yaml:"timeout"`
-    // Embeddings service
-    DefaultModel string `json:"default_model" yaml:"default_model"`
-    CacheTTL     time.Duration `json:"cache_ttl" yaml:"cache_ttl"`
-    UseRedisCache bool `json:"use_redis_cache" yaml:"use_redis_cache"`
-    RedisAddr     string `json:"redis_addr" yaml:"redis_addr"`
+	Enabled bool `json:"enabled" yaml:"enabled"`
+	// Qdrant
+	Host           string        `json:"host" yaml:"host"`
+	Port           int           `json:"port" yaml:"port"`
+	TaskEmbeddings string        `json:"task_embeddings" yaml:"task_embeddings"`
+	ToolResults    string        `json:"tool_results" yaml:"tool_results"`
+	Cases          string        `json:"cases" yaml:"cases"`
+	DocumentChunks string        `json:"document_chunks" yaml:"document_chunks"`
+	Summaries      string        `json:"summaries" yaml:"summaries"`
+	TopK           int           `json:"top_k" yaml:"top_k"`
+	Threshold      float64       `json:"threshold" yaml:"threshold"`
+	Timeout        time.Duration `json:"timeout" yaml:"timeout"`
+	// Embeddings service
+	DefaultModel  string        `json:"default_model" yaml:"default_model"`
+	CacheTTL      time.Duration `json:"cache_ttl" yaml:"cache_ttl"`
+	UseRedisCache bool          `json:"use_redis_cache" yaml:"use_redis_cache"`
+	RedisAddr     string        `json:"redis_addr" yaml:"redis_addr"`
 }
 
 // TracingConfig contains OpenTelemetry tracing settings
 type TracingConfig struct {
-    Enabled      bool   `json:"enabled" yaml:"enabled"`
-    ServiceName  string `json:"service_name" yaml:"service_name"`
-    OTLPEndpoint string `json:"otlp_endpoint" yaml:"otlp_endpoint"`
+	Enabled      bool   `json:"enabled" yaml:"enabled"`
+	ServiceName  string `json:"service_name" yaml:"service_name"`
+	OTLPEndpoint string `json:"otlp_endpoint" yaml:"otlp_endpoint"`
 }
 
 // StreamingConfig contains streaming settings (ring buffer)
 type StreamingConfig struct {
-    RingCapacity int `json:"ring_capacity" yaml:"ring_capacity"`
+	RingCapacity int `json:"ring_capacity" yaml:"ring_capacity"`
 }
 
 // WorkflowConfig controls workflow behavior
 type WorkflowConfig struct {
-    // BypassSingleResult: skip synthesis if only one successful result
-    BypassSingleResult bool `json:"bypass_single_result" yaml:"bypass_single_result"`
+	// BypassSingleResult: skip synthesis if only one successful result
+	BypassSingleResult bool `json:"bypass_single_result" yaml:"bypass_single_result"`
 }
 
 // PolicyConfig contains policy engine settings
 type PolicyConfig struct {
-	Enabled     bool   `json:"enabled" yaml:"enabled"`
-	Mode        string `json:"mode" yaml:"mode"` // "off", "dry-run", "enforce"
-	Path        string `json:"path" yaml:"path"`
-	FailClosed  bool   `json:"fail_closed" yaml:"fail_closed"`
-	Environment string `json:"environment" yaml:"environment"`
+	Enabled     bool              `json:"enabled" yaml:"enabled"`
+	Mode        string            `json:"mode" yaml:"mode"` // "off", "dry-run", "enforce"
+	Path        string            `json:"path" yaml:"path"`
+	FailClosed  bool              `json:"fail_closed" yaml:"fail_closed"`
+	Environment string            `json:"environment" yaml:"environment"`
 	Audit       PolicyAuditConfig `json:"audit" yaml:"audit"`
 }
 
@@ -267,23 +267,23 @@ type PolicyAuditConfig struct {
 
 // DefaultShannonConfig returns the default configuration
 func DefaultShannonConfig() *ShannonConfig {
-    return &ShannonConfig{
-        Auth: AuthConfig{
-            Enabled:                false,
-            SkipAuth:               true,
-            JWTSecret:              "change-this-to-a-secure-32-char-minimum-secret",
-            AccessTokenExpiry:      30 * time.Minute,
-            RefreshTokenExpiry:     7 * 24 * time.Hour,
-            APIKeyRateLimit:        1000,
-            DefaultTenantLimit:     10000,
-            EnableRegistration:     true,
-            RequireEmailVerification: false,
-        },
-        Service: ServiceConfig{
-            Port:            50052,
-            HealthPort:      8080,
-            GracefulTimeout: 30 * time.Second,
-            ReadTimeout:     10 * time.Second,
+	return &ShannonConfig{
+		Auth: AuthConfig{
+			Enabled:                  false,
+			SkipAuth:                 true,
+			JWTSecret:                "change-this-to-a-secure-32-char-minimum-secret",
+			AccessTokenExpiry:        30 * time.Minute,
+			RefreshTokenExpiry:       7 * 24 * time.Hour,
+			APIKeyRateLimit:          1000,
+			DefaultTenantLimit:       10000,
+			EnableRegistration:       true,
+			RequireEmailVerification: false,
+		},
+		Service: ServiceConfig{
+			Port:            50052,
+			HealthPort:      8080,
+			GracefulTimeout: 30 * time.Second,
+			ReadTimeout:     10 * time.Second,
 			WriteTimeout:    10 * time.Second,
 			MaxHeaderBytes:  1 << 20, // 1MB
 		},
@@ -439,48 +439,48 @@ func DefaultShannonConfig() *ShannonConfig {
 			OutputPaths:      []string{"stdout"},
 			ErrorOutputPaths: []string{"stderr"},
 		},
-        Policy: PolicyConfig{
-            Enabled:     false,
-            Mode:        "off",
-            Path:        "/app/config/opa/policies",
-            FailClosed:  false,
-            Environment: "dev",
-            Audit: PolicyAuditConfig{
-                Enabled:         true,
-                LogLevel:        "info",
-                IncludeInput:    true,
-                IncludeDecision: true,
-            },
-        },
-        Vector: VectorConfig{
-            Enabled:        false,
-            Host:           "qdrant",
-            Port:           6333,
-            TaskEmbeddings: "task_embeddings",
-            ToolResults:    "tool_results",
-            Cases:          "cases",
-            DocumentChunks: "document_chunks",
-            Summaries:      "",
-            TopK:           5,
-            Threshold:      0.0,
-            Timeout:        3 * time.Second,
-            DefaultModel:   "text-embedding-3-small",
-            CacheTTL:       time.Hour,
-            UseRedisCache:  false,
-            RedisAddr:      "redis:6379",
-        },
-        Tracing: TracingConfig{
-            Enabled:      false,
-            ServiceName:  "shannon-orchestrator",
-            OTLPEndpoint: "localhost:4317",
-        },
-        Streaming: StreamingConfig{
-            RingCapacity: 256,
-        },
-        Workflow: WorkflowConfig{
-            BypassSingleResult: true,
-        },
-    }
+		Policy: PolicyConfig{
+			Enabled:     false,
+			Mode:        "off",
+			Path:        "/app/config/opa/policies",
+			FailClosed:  false,
+			Environment: "dev",
+			Audit: PolicyAuditConfig{
+				Enabled:         true,
+				LogLevel:        "info",
+				IncludeInput:    true,
+				IncludeDecision: true,
+			},
+		},
+		Vector: VectorConfig{
+			Enabled:        false,
+			Host:           "qdrant",
+			Port:           6333,
+			TaskEmbeddings: "task_embeddings",
+			ToolResults:    "tool_results",
+			Cases:          "cases",
+			DocumentChunks: "document_chunks",
+			Summaries:      "",
+			TopK:           5,
+			Threshold:      0.0,
+			Timeout:        3 * time.Second,
+			DefaultModel:   "text-embedding-3-small",
+			CacheTTL:       time.Hour,
+			UseRedisCache:  false,
+			RedisAddr:      "redis:6379",
+		},
+		Tracing: TracingConfig{
+			Enabled:      false,
+			ServiceName:  "shannon-orchestrator",
+			OTLPEndpoint: "localhost:4317",
+		},
+		Streaming: StreamingConfig{
+			RingCapacity: 256,
+		},
+		Workflow: WorkflowConfig{
+			BypassSingleResult: true,
+		},
+	}
 }
 
 // ValidateShannonConfig validates the Shannon configuration
@@ -601,8 +601,8 @@ func (scm *ShannonConfigManager) handleConfigChange(event ChangeEvent) error {
 
 // updateConfigFromMap updates the current config from a map
 func (scm *ShannonConfigManager) updateConfigFromMap(configMap map[string]interface{}) error {
-    newConfig := DefaultShannonConfig()
-	
+	newConfig := DefaultShannonConfig()
+
 	// Update service config
 	if service, ok := configMap["service"].(map[string]interface{}); ok {
 		if port, ok := service["port"].(float64); ok {
@@ -653,45 +653,47 @@ func (scm *ShannonConfigManager) updateConfigFromMap(configMap map[string]interf
 		scm.updateTemporalConfig(temporal, &newConfig.Temporal)
 	}
 
-    // Update logging config
-    if logging, ok := configMap["logging"].(map[string]interface{}); ok {
-        scm.updateLoggingConfig(logging, &newConfig.Logging)
-    }
+	// Update logging config
+	if logging, ok := configMap["logging"].(map[string]interface{}); ok {
+		scm.updateLoggingConfig(logging, &newConfig.Logging)
+	}
 
-    // Update auth config
-    if auth, ok := configMap["auth"].(map[string]interface{}); ok {
-        scm.updateAuthConfig(auth, &newConfig.Auth)
-    }
+	// Update auth config
+	if auth, ok := configMap["auth"].(map[string]interface{}); ok {
+		scm.updateAuthConfig(auth, &newConfig.Auth)
+	}
 
-    // Update policy config
-    if policy, ok := configMap["policy"].(map[string]interface{}); ok {
-        scm.updatePolicyConfig(policy, &newConfig.Policy)
-    }
+	// Update policy config
+	if policy, ok := configMap["policy"].(map[string]interface{}); ok {
+		scm.updatePolicyConfig(policy, &newConfig.Policy)
+	}
 
-    // Update streaming config
-    if streaming, ok := configMap["streaming"].(map[string]interface{}); ok {
-        if capv, ok := streaming["ring_capacity"].(float64); ok {
-            if capv > 0 { newConfig.Streaming.RingCapacity = int(capv) }
-        }
-    }
+	// Update streaming config
+	if streaming, ok := configMap["streaming"].(map[string]interface{}); ok {
+		if capv, ok := streaming["ring_capacity"].(float64); ok {
+			if capv > 0 {
+				newConfig.Streaming.RingCapacity = int(capv)
+			}
+		}
+	}
 
-    // Update workflow config
-    if wf, ok := configMap["workflow"].(map[string]interface{}); ok {
-        if v, ok := wf["bypass_single_result"].(bool); ok { 
-            newConfig.Workflow.BypassSingleResult = v 
-        }
-    }
+	// Update workflow config
+	if wf, ok := configMap["workflow"].(map[string]interface{}); ok {
+		if v, ok := wf["bypass_single_result"].(bool); ok {
+			newConfig.Workflow.BypassSingleResult = v
+		}
+	}
 
-    oldConfig := scm.currentConfig
-    scm.currentConfig = newConfig
+	oldConfig := scm.currentConfig
+	scm.currentConfig = newConfig
 	scm.logger.Info("Shannon configuration updated successfully")
-	
+
 	// Trigger change notifications for significant changes
 	scm.notifyConfigChanges(oldConfig, newConfig)
-	
+
 	// Trigger callbacks for configuration updates
 	scm.triggerCallbacks(oldConfig, newConfig)
-	
+
 	return nil
 }
 
@@ -741,17 +743,17 @@ func (scm *ShannonConfigManager) updateDegradationConfig(degMap map[string]inter
 			config.CheckInterval = d
 		}
 	}
-	
+
 	// Update thresholds
 	if thresholds, ok := degMap["thresholds"].(map[string]interface{}); ok {
 		scm.updateDegradationThresholds(thresholds, &config.ThresholdConfig)
 	}
-	
+
 	// Update partial results config
 	if partial, ok := degMap["partial_results"].(map[string]interface{}); ok {
 		scm.updatePartialResultsConfig(partial, &config.PartialResults)
 	}
-	
+
 	// Update fallback behaviors
 	if behaviors, ok := degMap["fallback_behaviors"].(map[string]interface{}); ok {
 		config.FallbackBehaviors = make(map[string]string)
@@ -828,7 +830,7 @@ func (scm *ShannonConfigManager) updateHealthConfig(healthMap map[string]interfa
 	if port, ok := healthMap["port"].(float64); ok {
 		config.Port = int(port)
 	}
-	
+
 	// Update per-check configuration
 	if checks, ok := healthMap["checks"].(map[string]interface{}); ok {
 		config.Checks = make(map[string]HealthCheckConfig)
@@ -935,41 +937,41 @@ func (scm *ShannonConfigManager) updateLoggingConfig(loggingMap map[string]inter
 
 // updateAuthConfig updates authentication configuration
 func (scm *ShannonConfigManager) updateAuthConfig(authMap map[string]interface{}, config *AuthConfig) {
-    if enabled, ok := authMap["enabled"].(bool); ok {
-        config.Enabled = enabled
-    }
-    if skip, ok := authMap["skip_auth"].(bool); ok {
-        config.SkipAuth = skip
-    }
-    if secret, ok := authMap["jwt_secret"].(string); ok {
-        config.JWTSecret = secret
-    }
-    if v, ok := authMap["access_token_expiry"].(string); ok {
-        if d, err := time.ParseDuration(v); err == nil {
-            config.AccessTokenExpiry = d
-        } else {
-            scm.logger.Warn("Invalid access_token_expiry, using default", zap.String("value", v), zap.Error(err))
-        }
-    }
-    if v, ok := authMap["refresh_token_expiry"].(string); ok {
-        if d, err := time.ParseDuration(v); err == nil {
-            config.RefreshTokenExpiry = d
-        } else {
-            scm.logger.Warn("Invalid refresh_token_expiry, using default", zap.String("value", v), zap.Error(err))
-        }
-    }
-    if rl, ok := authMap["api_key_rate_limit"].(float64); ok {
-        config.APIKeyRateLimit = int(rl)
-    }
-    if tl, ok := authMap["default_tenant_limit"].(float64); ok {
-        config.DefaultTenantLimit = int(tl)
-    }
-    if reg, ok := authMap["enable_registration"].(bool); ok {
-        config.EnableRegistration = reg
-    }
-    if rev, ok := authMap["require_email_verification"].(bool); ok {
-        config.RequireEmailVerification = rev
-    }
+	if enabled, ok := authMap["enabled"].(bool); ok {
+		config.Enabled = enabled
+	}
+	if skip, ok := authMap["skip_auth"].(bool); ok {
+		config.SkipAuth = skip
+	}
+	if secret, ok := authMap["jwt_secret"].(string); ok {
+		config.JWTSecret = secret
+	}
+	if v, ok := authMap["access_token_expiry"].(string); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.AccessTokenExpiry = d
+		} else {
+			scm.logger.Warn("Invalid access_token_expiry, using default", zap.String("value", v), zap.Error(err))
+		}
+	}
+	if v, ok := authMap["refresh_token_expiry"].(string); ok {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.RefreshTokenExpiry = d
+		} else {
+			scm.logger.Warn("Invalid refresh_token_expiry, using default", zap.String("value", v), zap.Error(err))
+		}
+	}
+	if rl, ok := authMap["api_key_rate_limit"].(float64); ok {
+		config.APIKeyRateLimit = int(rl)
+	}
+	if tl, ok := authMap["default_tenant_limit"].(float64); ok {
+		config.DefaultTenantLimit = int(tl)
+	}
+	if reg, ok := authMap["enable_registration"].(bool); ok {
+		config.EnableRegistration = reg
+	}
+	if rev, ok := authMap["require_email_verification"].(bool); ok {
+		config.RequireEmailVerification = rev
+	}
 }
 
 // notifyConfigChanges triggers notifications for configuration changes
@@ -981,33 +983,33 @@ func (scm *ShannonConfigManager) notifyConfigChanges(oldConfig, newConfig *Shann
 			zap.String("new", newConfig.Agents.AgentCoreEndpoint),
 		)
 	}
-	
+
 	if oldConfig.Agents.LLMServiceEndpoint != newConfig.Agents.LLMServiceEndpoint {
 		scm.logger.Info("LLM Service endpoint changed",
 			zap.String("old", oldConfig.Agents.LLMServiceEndpoint),
 			zap.String("new", newConfig.Agents.LLMServiceEndpoint),
 		)
 	}
-	
+
 	if oldConfig.Health.Port != newConfig.Health.Port {
 		scm.logger.Info("Health server port changed",
 			zap.Int("old", oldConfig.Health.Port),
 			zap.Int("new", newConfig.Health.Port),
 		)
 	}
-	
-    // Check for health check configuration changes
-    if oldConfig.Health.Enabled != newConfig.Health.Enabled ||
-        oldConfig.Health.CheckInterval != newConfig.Health.CheckInterval {
-        scm.logger.Info("Health check global settings changed")
-    }
 
-    // Notify of workflow behavior changes (useful in logs)
-    if oldConfig.Workflow != newConfig.Workflow {
-        scm.logger.Info("Workflow behavior changed",
-            zap.Bool("bypass_single_result", newConfig.Workflow.BypassSingleResult),
-        )
-    }
+	// Check for health check configuration changes
+	if oldConfig.Health.Enabled != newConfig.Health.Enabled ||
+		oldConfig.Health.CheckInterval != newConfig.Health.CheckInterval {
+		scm.logger.Info("Health check global settings changed")
+	}
+
+	// Notify of workflow behavior changes (useful in logs)
+	if oldConfig.Workflow != newConfig.Workflow {
+		scm.logger.Info("Workflow behavior changed",
+			zap.Bool("bypass_single_result", newConfig.Workflow.BypassSingleResult),
+		)
+	}
 }
 
 // RegisterCallback registers a callback to be called when configuration changes
@@ -1033,7 +1035,7 @@ func (scm *ShannonConfigManager) updatePolicyConfig(policyMap map[string]interfa
 	if environment, ok := policyMap["environment"].(string); ok {
 		config.Environment = environment
 	}
-	
+
 	// Update audit config
 	if audit, ok := policyMap["audit"].(map[string]interface{}); ok {
 		if enabled, ok := audit["enabled"].(bool); ok {

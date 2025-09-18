@@ -9,7 +9,7 @@ type WorkflowRegistrar interface {
 	RegisterWorkflows(w worker.Worker) error
 }
 
-// ActivityRegistrar defines the interface for registering activities  
+// ActivityRegistrar defines the interface for registering activities
 type ActivityRegistrar interface {
 	RegisterActivities(w worker.Worker) error
 }
@@ -24,7 +24,7 @@ type Registry interface {
 type RegistryConfig struct {
 	// EnableBudgetedWorkflows controls whether budget-aware workflows are registered
 	EnableBudgetedWorkflows bool
-	// EnableStreamingWorkflows controls whether streaming workflows are registered  
+	// EnableStreamingWorkflows controls whether streaming workflows are registered
 	EnableStreamingWorkflows bool
 	// EnableApprovalWorkflows controls whether human approval workflows are registered
 	EnableApprovalWorkflows bool

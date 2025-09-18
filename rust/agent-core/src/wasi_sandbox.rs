@@ -63,11 +63,11 @@ impl WasiSandbox {
             memory_limit: app_config.wasi.memory_limit_bytes,
             fuel_limit: app_config.wasi.max_fuel,
             execution_timeout: app_config.wasi_timeout(),
-            // conservative, single-execution defaults
-            table_elements_limit: 1024,
-            instances_limit: 4,
-            tables_limit: 4,
-            memories_limit: 2,
+            // Python WASM requires larger table limits (5413+ elements)
+            table_elements_limit: 10000,  // Increased for Python WASM
+            instances_limit: 10,
+            tables_limit: 10,
+            memories_limit: 4,
         })
     }
 
@@ -122,7 +122,16 @@ impl WasiSandbox {
     }
 
     pub async fn execute_wasm(&self, wasm_bytes: &[u8], input: &str) -> Result<String> {
-        info!("Executing WASM with WASI isolation");
+        self.execute_wasm_with_args(wasm_bytes, input, None).await
+    }
+
+    pub async fn execute_wasm_with_args(
+        &self,
+        wasm_bytes: &[u8],
+        input: &str,
+        argv: Option<Vec<String>>,
+    ) -> Result<String> {
+        info!("Executing WASM with WASI isolation (argv: {:?})", argv);
         let start = Instant::now();
 
         // Validate permissions first
@@ -170,6 +179,7 @@ impl WasiSandbox {
         // Clone data needed for the blocking task
         let wasm_bytes = wasm_bytes.to_vec();
         let input = input.to_string();
+        let argv = argv.clone();
         let engine = self.engine.clone();
         let memory_limit = self.memory_limit;
         let table_elements_limit = self.table_elements_limit;
@@ -208,6 +218,12 @@ impl WasiSandbox {
             // Create WASI context with security-focused configuration
             let mut wasi_builder = WasiCtxBuilder::new();
 
+            // Configure argv if provided (needed for Python WASM and other interpreters)
+            if let Some(args) = argv {
+                debug!("WASI: Setting argv: {:?}", args);
+                wasi_builder.args(&args);
+            }
+
             // Explicitly disable network access for security
             // WASI preview1 does not provide network capabilities by default.
             // Network socket operations will fail with ENOSYS (function not implemented).
@@ -222,10 +238,7 @@ impl WasiSandbox {
                 for (key, value) in &env_vars {
                     wasi_builder.env(key, value);
                 }
-                debug!(
-                    "WASI: Allowed {} environment variables",
-                    env_vars.len()
-                );
+                debug!("WASI: Allowed {} environment variables", env_vars.len());
             }
 
             // Configure filesystem access with read-only permissions by default
@@ -300,8 +313,11 @@ impl WasiSandbox {
             }
 
             // Compile module
-            let module =
-                Module::new(&engine, &wasm_bytes).context("Failed to compile WASM module")?;
+            let module = Module::new(&engine, &wasm_bytes)
+                .map_err(|e| {
+                    warn!("WASI: Failed to compile WASM module: {}", e);
+                    anyhow::anyhow!("Failed to compile WASM module: {}", e)
+                })?;
 
             // Create store with WASI context and resource limits
             let mut store = Store::new(
@@ -338,10 +354,14 @@ impl WasiSandbox {
             // Execute the module
             let instance = linker
                 .instantiate(&mut store, &module)
-                .context("Failed to instantiate WASM module")?;
+                .map_err(|e| {
+                    warn!("WASI: Failed to instantiate WASM module: {}", e);
+                    anyhow::anyhow!("Failed to instantiate WASM module: {}", e)
+                })?;
 
             // Try to call _start (WASI main entry point)
-            let execution_result = if let Some(start_func) = instance.get_func(&mut store, "_start") {
+            let execution_result = if let Some(start_func) = instance.get_func(&mut store, "_start")
+            {
                 debug!("WASI: Found _start function, executing module with security limits");
                 start_func.call(&mut store, &[], &mut [])
             } else {

@@ -73,6 +73,11 @@ workflows:
       - relevance     # Is the answer relevant to the query?
     timeout_ms: 5000  # Timeout for reflection evaluation
 
+  # P2P Coordination for task dependencies
+  p2p:
+    enabled: false  # Set to true to enable P2P coordination between agents
+    timeout_seconds: 360  # Maximum wait time for dependencies (6 minutes default)
+
 # Learning system
 continuous_learning:
   enabled: true

@@ -7,9 +7,10 @@ from .base import LLMProvider, ModelInfo, ModelTier, TokenUsage
 
 logger = logging.getLogger(__name__)
 
+
 class OpenAIProvider(LLMProvider):
     """OpenAI LLM provider (modern models only)"""
-    
+
     # Strict, modern-only registry (seed, can be augmented dynamically)
     MODELS = {
         # 4o family (2024/2025)
@@ -38,29 +39,32 @@ class OpenAIProvider(LLMProvider):
             available=True,
         ),
     }
-    
+
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.client = None
         # Instance-level model registry, initialized from class seed
         self._models: Dict[str, ModelInfo] = {k: v for k, v in self.MODELS.items()}
-        
+
     async def initialize(self):
         """Initialize OpenAI client"""
         self.client = AsyncOpenAI(api_key=self.api_key)
         # Set provider reference in models
         from . import ProviderType
+
         for model in self._models.values():
             model.provider = ProviderType.OPENAI
         # Attempt dynamic discovery to capture newest models
         await self._maybe_discover_models()
-    
+
     async def close(self):
         """Close OpenAI client"""
         if self.client:
             await self.client.close()
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+    )
     async def generate_completion(
         self,
         messages: List[dict],
@@ -68,14 +72,16 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.7,
         max_tokens: int = 2000,
         tools: List[dict] = None,
-        **kwargs
+        **kwargs,
     ) -> dict:
         """Generate completion using OpenAI API"""
         try:
             # Use Chat Completions API for all models
             # Note: Responses API doesn't exist in OpenAI SDK, removed to avoid warnings
-            return await self._chat_completions_call(messages, model, temperature, max_tokens, tools, **kwargs)
-            
+            return await self._chat_completions_call(
+                messages, model, temperature, max_tokens, tools, **kwargs
+            )
+
         except Exception as e:
             logger.error(f"OpenAI completion error: {e}")
             raise
@@ -83,7 +89,7 @@ class OpenAIProvider(LLMProvider):
     # Removed: _responses_api_call method - OpenAI SDK doesn't have responses API
     # This was likely confused with a beta or internal API that doesn't exist
     # All calls now use the standard Chat Completions API
-    
+
     async def _responses_api_call_removed(
         self,
         messages: List[dict],
@@ -99,10 +105,12 @@ class OpenAIProvider(LLMProvider):
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            inputs.append({
-                "role": role,
-                "content": [{"type": "text", "text": content}],
-            })
+            inputs.append(
+                {
+                    "role": role,
+                    "content": [{"type": "text", "text": content}],
+                }
+            )
 
         request_params = {
             "model": model,
@@ -200,7 +208,9 @@ class OpenAIProvider(LLMProvider):
             "cache_hit": False,
         }
 
-    def _normalize_tool_calls_from_chat(self, choice: Any) -> Optional[List[Dict[str, Any]]]:
+    def _normalize_tool_calls_from_chat(
+        self, choice: Any
+    ) -> Optional[List[Dict[str, Any]]]:
         """Normalize OpenAI ChatCompletions tool calls to a consistent schema."""
         calls = getattr(getattr(choice, "message", object()), "tool_calls", None)
         if not calls:
@@ -214,14 +224,17 @@ class OpenAIProvider(LLMProvider):
             args = getattr(fn, "arguments", "{}")
             try:
                 import json as _json
+
                 parsed = _json.loads(args) if isinstance(args, str) else args
             except Exception:
                 parsed = {"_raw": args}
-            normalized.append({
-                "type": "function",
-                "name": name,
-                "arguments": parsed,
-            })
+            normalized.append(
+                {
+                    "type": "function",
+                    "name": name,
+                    "arguments": parsed,
+                }
+            )
         return normalized or None
 
     async def _maybe_discover_models(self) -> None:
@@ -234,15 +247,24 @@ class OpenAIProvider(LLMProvider):
                 if not isinstance(mid, str):
                     continue
                 # Filter to current families we care about
-                if not (mid.startswith("gpt-4o") or mid.startswith("o") or mid.startswith("gpt-4.1")):
+                if not (
+                    mid.startswith("gpt-4o")
+                    or mid.startswith("o")
+                    or mid.startswith("gpt-4.1")
+                ):
                     continue
                 # Skip if already in seed models (preserve configured settings)
                 if mid in self._models:
                     logger.debug(f"Skipping {mid} - already in seed models")
                     continue
                 # Tier heuristic
-                tier = ModelTier.SMALL if ("mini" in mid or "small" in mid) else ModelTier.LARGE
+                tier = (
+                    ModelTier.SMALL
+                    if ("mini" in mid or "small" in mid)
+                    else ModelTier.LARGE
+                )
                 from . import ProviderType
+
                 info = ModelInfo(
                     id=mid,
                     name=mid,
@@ -263,7 +285,9 @@ class OpenAIProvider(LLMProvider):
         """Return cached model list (seed + dynamic)."""
         return list(self._models.values())
 
-    def _normalize_tool_calls_from_responses(self, response: Any) -> Optional[List[Dict[str, Any]]]:
+    def _normalize_tool_calls_from_responses(
+        self, response: Any
+    ) -> Optional[List[Dict[str, Any]]]:
         """Best-effort normalization for Responses API outputs with tool calls."""
         output = getattr(response, "output", None)
         if not output:
@@ -275,48 +299,60 @@ class OpenAIProvider(LLMProvider):
                 if isinstance(item, dict) and item.get("type") == "tool_call":
                     name = item.get("name") or item.get("tool_name")
                     args = item.get("arguments") or item.get("input") or {}
-                    normalized.append({
-                        "type": "function",
-                        "name": name,
-                        "arguments": args,
-                    })
+                    normalized.append(
+                        {
+                            "type": "function",
+                            "name": name,
+                            "arguments": args,
+                        }
+                    )
                 elif isinstance(item, dict) and item.get("type") == "message":
                     # Look for nested tool calls in content blocks
                     for block in item.get("content", []) or []:
-                        if isinstance(block, dict) and block.get("type") in ("tool_call", "tool_calls"):
+                        if isinstance(block, dict) and block.get("type") in (
+                            "tool_call",
+                            "tool_calls",
+                        ):
                             calls = block.get("calls") or [block]
                             for c in calls:
                                 name = c.get("name")
                                 args = c.get("arguments") or {}
-                                normalized.append({
-                                    "type": "function",
-                                    "name": name,
-                                    "arguments": args,
-                                })
+                                normalized.append(
+                                    {
+                                        "type": "function",
+                                        "name": name,
+                                        "arguments": args,
+                                    }
+                                )
         except Exception:
             return normalized or None
         return normalized or None
-    
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def generate_embedding(self, text: str, model: str = "text-embedding-3-small") -> List[float]:
+
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10)
+    )
+    async def generate_embedding(
+        self, text: str, model: str = "text-embedding-3-small"
+    ) -> List[float]:
         """Generate text embedding"""
         try:
-            response = await self.client.embeddings.create(
-                input=text,
-                model=model
-            )
+            response = await self.client.embeddings.create(input=text, model=model)
             return response.data[0].embedding
         except Exception as e:
             logger.error(f"OpenAI embedding error: {e}")
             raise
-    
-    def calculate_cost(self, prompt_tokens: int, completion_tokens: int, model: str) -> float:
+
+    def calculate_cost(
+        self, prompt_tokens: int, completion_tokens: int, model: str
+    ) -> float:
         """Calculate cost for OpenAI usage"""
         model_info = self._models.get(model)
         if not model_info:
             return 0.0
-        
+
         prompt_cost = (prompt_tokens / 1000) * model_info.cost_per_1k_prompt_tokens
-        completion_cost = (completion_tokens / 1000) * model_info.cost_per_1k_completion_tokens
-        
+        completion_cost = (
+            completion_tokens / 1000
+        ) * model_info.cost_per_1k_completion_tokens
+
         return round(prompt_cost + completion_cost, 6)

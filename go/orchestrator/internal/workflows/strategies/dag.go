@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"go.temporal.io/sdk/workflow"
 	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
@@ -39,15 +39,15 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		logger.Warn("Failed to load config, using defaults", "error", err)
 		// Use defaults if config load fails
 		config = activities.WorkflowConfig{
-			SimpleThreshold:          0.3,
-			MaxParallelAgents:        5,
-			ReflectionEnabled:        true,
-			ReflectionMaxRetries:     2,
+			SimpleThreshold:               0.3,
+			MaxParallelAgents:             5,
+			ReflectionEnabled:             true,
+			ReflectionMaxRetries:          2,
 			ReflectionConfidenceThreshold: 0.8,
-			ParallelMaxConcurrency:   5,
-			HybridDependencyTimeout:  360,
-			SequentialPassResults:    true,
-			SequentialExtractNumeric: true,
+			ParallelMaxConcurrency:        5,
+			HybridDependencyTimeout:       360,
+			SequentialPassResults:         true,
+			SequentialExtractNumeric:      true,
 		}
 	}
 
@@ -126,7 +126,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 		// Update session
 		if input.SessionID != "" {
-			_ = updateSession(ctx, input.SessionID, simpleResult.Response, totalTokens, 1)
+			_ = updateSessionWithAgentUsage(ctx, input.SessionID, simpleResult.Response, totalTokens, 1, []activities.AgentExecutionResult{{AgentID: "simple-agent", TokensUsed: simpleResult.TokensUsed, ModelUsed: simpleResult.ModelUsed, Success: true, Response: simpleResult.Response}})
 			_ = recordToVectorStore(ctx, input, simpleResult.Response, "simple", decomp.ComplexityScore)
 		}
 
@@ -136,8 +136,8 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			TokensUsed: totalTokens,
 			Metadata: map[string]interface{}{
 				"complexity_score": decomp.ComplexityScore,
-				"mode":            "simple",
-				"num_agents":      1,
+				"mode":             "simple",
+				"num_agents":       1,
 			},
 		}, nil
 	}
@@ -255,7 +255,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	// Step 6: Update session and persist
 	if input.SessionID != "" {
-		_ = updateSession(ctx, input.SessionID, finalResult, totalTokens, len(agentResults))
+		_ = updateSessionWithAgentUsage(ctx, input.SessionID, finalResult, totalTokens, len(agentResults), agentResults)
 		_ = recordToVectorStore(ctx, input, finalResult, decomp.Mode, decomp.ComplexityScore)
 	}
 
@@ -293,12 +293,12 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		Success:    true,
 		TokensUsed: totalTokens,
 		Metadata: map[string]interface{}{
-			"version":         "v2",
-			"complexity":      decomp.ComplexityScore,
-			"quality_score":   qualityScore,
-			"agent_count":     len(agentResults),
-			"execution_mode":  execStrategy,
-			"had_reflection":  shouldReflect(decomp.ComplexityScore),
+			"version":        "v2",
+			"complexity":     decomp.ComplexityScore,
+			"quality_score":  qualityScore,
+			"agent_count":    len(agentResults),
+			"execution_mode": execStrategy,
+			"had_reflection": shouldReflect(decomp.ComplexityScore),
 		},
 	}, nil
 }
@@ -486,6 +486,24 @@ func updateSession(ctx workflow.Context, sessionID, result string, tokens, agent
 			Result:     result,
 			TokensUsed: tokens,
 			AgentsUsed: agents,
+		}).Get(ctx, &updRes)
+}
+
+// updateSessionWithAgentUsage passes per-agent model/token usage for accurate cost
+func updateSessionWithAgentUsage(ctx workflow.Context, sessionID, result string, tokens, agents int, results []activities.AgentExecutionResult) error {
+	var usages []activities.AgentUsage
+	for _, r := range results {
+		usages = append(usages, activities.AgentUsage{Model: r.ModelUsed, Tokens: r.TokensUsed, InputTokens: r.InputTokens, OutputTokens: r.OutputTokens})
+	}
+	var updRes activities.SessionUpdateResult
+	return workflow.ExecuteActivity(ctx,
+		constants.UpdateSessionResultActivity,
+		activities.SessionUpdateInput{
+			SessionID:  sessionID,
+			Result:     result,
+			TokensUsed: tokens,
+			AgentsUsed: agents,
+			AgentUsage: usages,
 		}).Get(ctx, &updRes)
 }
 

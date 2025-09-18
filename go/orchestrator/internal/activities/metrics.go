@@ -9,13 +9,13 @@ import (
 
 // PatternMetricsInput contains pattern execution metrics
 type PatternMetricsInput struct {
-	Pattern       string
-	Version       string
-	AgentCount    int
-	TokensUsed    int
-	Duration      time.Duration
-	Improved      bool // For reflection pattern
-	WorkflowType  string
+	Pattern      string
+	Version      string
+	AgentCount   int
+	TokensUsed   int
+	Duration     time.Duration
+	Improved     bool // For reflection pattern
+	WorkflowType string
 }
 
 // RecordPatternMetrics records pattern execution metrics

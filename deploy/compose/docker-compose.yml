@@ -91,18 +91,22 @@ services:
     restart: "no"
 
   agent-core:
-    build: 
+    build:
       context: ../../
       dockerfile: rust/agent-core/Dockerfile
     restart: unless-stopped
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=info,shannon_agent_core::wasi_sandbox=debug,wasmtime=debug
       - CONFIG_PATH=/app/config/features.yaml
       - METRICS_PORT=${AGENT_CORE_METRICS_PORT:-2113}
       # Tool parallelism: number of concurrent tool executions (default 1 for sequential)
       - TOOL_PARALLELISM=${TOOL_PARALLELISM:-1}
       # Optional distributed rate limiting (leave empty to use in-memory limiter)
       - ENFORCE_RATE_REDIS_URL=${ENFORCE_RATE_REDIS_URL:-}
+      # Python WASI interpreter configuration
+      - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
+      - WASI_MEMORY_LIMIT_MB=512
+      - WASI_TIMEOUT_SECONDS=60
     depends_on:
       temporal:
         condition: service_started
@@ -118,6 +122,7 @@ services:
       retries: 5
     volumes:
       - ../../config:/app/config:ro
+      - ../../wasm-interpreters:/opt/wasm-interpreters:ro
     networks: [shannon-net]
 
   orchestrator:
@@ -207,6 +212,10 @@ services:
       - MCP_RATE_LIMIT_DEFAULT=${MCP_RATE_LIMIT_DEFAULT:-60}
       - MCP_CB_FAILURES=${MCP_CB_FAILURES:-5}
       - MCP_CB_RECOVERY_SECONDS=${MCP_CB_RECOVERY_SECONDS:-60}
+      # Python WASI interpreter path
+      - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
+      # Agent Core address for WASI execution
+      - AGENT_CORE_ADDR=agent-core:50051
     depends_on:
       redis:
         condition: service_healthy
@@ -223,4 +232,5 @@ services:
       retries: 5
     volumes:
       - ../../config:/app/config:ro
+      - ../../wasm-interpreters:/opt/wasm-interpreters:ro
     networks: [shannon-net]

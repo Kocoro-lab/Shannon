@@ -10,9 +10,9 @@ import (
 
 	"github.com/google/uuid"
 	enumspb "go.temporal.io/api/enums/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
-	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -27,6 +27,7 @@ import (
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
 )
@@ -156,7 +157,14 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	var tenantID string
 	var userID string
 	if userCtx, err := auth.GetUserContext(ctx); err == nil {
-		userID = userCtx.UserID.String()
+		// Check if this is the default dev user (indicates skipAuth mode)
+		if userCtx.UserID.String() == "00000000-0000-0000-0000-000000000002" && req.Metadata.GetUserId() != "" {
+			// In dev/demo mode with skipAuth, prefer the userId from request metadata
+			// This allows testing with different user identities
+			userID = req.Metadata.GetUserId()
+		} else {
+			userID = userCtx.UserID.String()
+		}
 		tenantID = userCtx.TenantID.String()
 	} else {
 		// Fallback to request metadata for backward compatibility
@@ -191,13 +199,22 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	// Create new session if needed
 	if sess == nil {
 		var createErr error
-		sess, createErr = s.sessionManager.CreateSession(ctx, userID, tenantID, map[string]interface{}{
-			"created_from": "orchestrator",
-		})
+		// If a specific session ID was requested, use it; otherwise generate new
+		if sessionID != "" {
+			// Create session with the requested ID
+			sess, createErr = s.sessionManager.CreateSessionWithID(ctx, sessionID, userID, tenantID, map[string]interface{}{
+				"created_from": "orchestrator",
+			})
+		} else {
+			// Generate new session ID
+			sess, createErr = s.sessionManager.CreateSession(ctx, userID, tenantID, map[string]interface{}{
+				"created_from": "orchestrator",
+			})
+			sessionID = sess.ID
+		}
 		if createErr != nil {
 			return nil, status.Error(codes.Internal, "failed to create session")
 		}
-		sessionID = sess.ID
 		s.logger.Info("Created new session", zap.String("session_id", sessionID))
 	}
 	// Ensure session exists in PostgreSQL for FK integrity (idempotent)
@@ -564,16 +581,16 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			ErrorMessage: &result.ErrorMessage,
 		}
 
-			// Set completed time if terminal (prefer Temporal CloseTime)
-			completedAt := getWorkflowEndTime(desc)
-			taskExecution.CompletedAt = &completedAt
+		// Set completed time if terminal (prefer Temporal CloseTime)
+		completedAt := getWorkflowEndTime(desc)
+		taskExecution.CompletedAt = &completedAt
 
-			// Calculate duration
-			if !workflowStartTime.AsTime().IsZero() {
-				end := completedAt
-				durationMs := int(end.Sub(workflowStartTime.AsTime()).Milliseconds())
-				taskExecution.DurationMs = &durationMs
-			}
+		// Calculate duration
+		if !workflowStartTime.AsTime().IsZero() {
+			end := completedAt
+			durationMs := int(end.Sub(workflowStartTime.AsTime()).Milliseconds())
+			taskExecution.DurationMs = &durationMs
+		}
 
 		// Extract metadata from result
 		if result.Metadata != nil {
@@ -898,37 +915,27 @@ func mapDBModeToProto(mode string) common.ExecutionMode {
 // getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.
 // Falls back to time.Now() if CloseTime is unavailable (e.g., race or visibility lag).
 func getWorkflowEndTime(desc *workflowservice.DescribeWorkflowExecutionResponse) time.Time {
-    if desc != nil && desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
-        return desc.WorkflowExecutionInfo.CloseTime.AsTime()
-    }
-    return time.Now()
+	if desc != nil && desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.CloseTime != nil {
+		return desc.WorkflowExecutionInfo.CloseTime.AsTime()
+	}
+	return time.Now()
 }
 
 // RegisterOrchestratorServiceServer registers the service with the gRPC server
 func RegisterOrchestratorServiceServer(s *grpc.Server, srv pb.OrchestratorServiceServer) {
-    pb.RegisterOrchestratorServiceServer(s, srv)
+	pb.RegisterOrchestratorServiceServer(s, srv)
 }
 
 // calculateTokenCost calculates the cost based on token count and model
 func calculateTokenCost(tokens int, metadata map[string]interface{}) float64 {
-	// Default to GPT-3.5 pricing: $0.002 per 1K tokens
-	pricePerToken := 0.000002
-
+	// Prefer centralized pricing config (model-specific) with sensible fallback.
+	var model string
 	if metadata != nil {
-		if model, ok := metadata["model"].(string); ok {
-			// Adjust pricing based on model
-			switch {
-			case strings.Contains(model, "gpt-4"):
-				pricePerToken = 0.00003 // $0.03 per 1K tokens
-			case strings.Contains(model, "gpt-3.5"):
-				pricePerToken = 0.000002 // $0.002 per 1K tokens
-			case strings.Contains(model, "claude"):
-				pricePerToken = 0.00001 // Rough estimate
-			}
+		if m, ok := metadata["model"].(string); ok {
+			model = m
 		}
 	}
-
-	return float64(tokens) * pricePerToken
+	return pricing.CostForTokens(model, tokens)
 }
 
 // Helper function to convert session history for workflow

@@ -36,6 +36,13 @@ This directory contains end-to-end tests for the Shannon platform, providing com
    - Graph of Thoughts
    - Reflexion patterns
 
+6. **p2p_coordination_test.sh** - Tests P2P agent coordination
+   - Automatic dependency detection from natural language
+   - Sequential task coordination (Task B waits for Task A)
+   - Force P2P mode with `context: {"force_p2p": true}`
+   - Complex pipeline with multiple dependencies
+   - Verifies SupervisorWorkflow routing for dependent tasks
+
 ### Helper Scripts
 
 - **submit_and_get_response.sh** - Helper for task submission and retrieval
@@ -61,6 +68,7 @@ brew install wabt  # For wat2wasm
 ./tests/e2e/python_execution_test.sh
 ./tests/e2e/supervisor_workflow_test.sh
 ./tests/e2e/cognitive_patterns_test.sh
+./tests/e2e/p2p_coordination_test.sh
 ```
 
 ### Run All Tests

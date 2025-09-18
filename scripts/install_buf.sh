@@ -35,4 +35,5 @@ else
 fi
 
 echo "buf installation complete!"
-buf --version || true
+export PATH="$HOME/.local/bin:$PATH"
+"$HOME/.local/bin/buf" --version || true

@@ -313,7 +313,10 @@ impl AgentServiceImpl {
             }
             Err(e) => {
                 let execution_time_ms = start_time.elapsed().as_millis() as i64;
-                error!("LLM-native tool execution failed in {}ms: {}", execution_time_ms, e);
+                error!(
+                    "LLM-native tool execution failed in {}ms: {}",
+                    execution_time_ms, e
+                );
                 Err(Status::internal(format!("Tool execution failed: {}", e)))
             }
         }
@@ -777,7 +780,10 @@ impl AgentService for AgentServiceImpl {
         // Check for multi-tool sequence first
         info!("Request context: {:?}", req.context);
         if let Some(context) = &req.context {
-            info!("Context fields available: {:?}", context.fields.keys().collect::<Vec<_>>());
+            info!(
+                "Context fields available: {:?}",
+                context.fields.keys().collect::<Vec<_>>()
+            );
             if let Some(tc_list) = context.fields.get("tool_calls") {
                 if let Some(prost_types::value::Kind::ListValue(list)) = &tc_list.kind {
                     info!("Detected tool_calls list; executing (parallelism may apply)");
@@ -807,7 +813,9 @@ impl AgentService for AgentServiceImpl {
             }
             // ENFORCEMENT: Check for tool parameters and execute tools directly
             if let Some(tool_params) = context.fields.get("tool_parameters") {
-                info!("ENFORCING tool execution from orchestration parameters - bypassing LLM choice");
+                info!(
+                    "ENFORCING tool execution from orchestration parameters - bypassing LLM choice"
+                );
                 let key = req
                     .metadata
                     .as_ref()
@@ -949,7 +957,10 @@ impl AgentService for AgentServiceImpl {
 
         // Complex or unspecified -> LLM path with enforcement and optional context
         if has_suggested_tools {
-            info!("Tool-enabled LLM query path for complex with suggested tools: {:?}", req.available_tools);
+            info!(
+                "Tool-enabled LLM query path for complex with suggested tools: {:?}",
+                req.available_tools
+            );
         } else {
             info!("Direct LLM query path (no tools) for complex");
         }
@@ -988,9 +999,15 @@ impl AgentService for AgentServiceImpl {
 
         let (result, usage) = enforcer
             .enforce(&key, est, || async {
-                llm.query_agent(&q, "agent-core", mode_str, Some(ctx_json), tools_option.clone())
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e.to_string()))
+                llm.query_agent(
+                    &q,
+                    "agent-core",
+                    mode_str,
+                    Some(ctx_json),
+                    tools_option.clone(),
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))
             })
             .await
             .map_err(|e| match e.to_string().as_str() {

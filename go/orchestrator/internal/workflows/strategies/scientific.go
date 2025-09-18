@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"go.temporal.io/sdk/workflow"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ScientificWorkflow implements hypothesis-driven investigation using patterns
@@ -119,10 +119,10 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 
 	debateQuery := fmt.Sprintf(
 		"Test and evaluate these competing hypotheses for '%s':\n%s\n"+
-		"Each debater should:\n"+
-		"1. Present evidence supporting their hypothesis\n"+
-		"2. Challenge contradictory hypotheses\n"+
-		"3. Acknowledge limitations",
+			"Each debater should:\n"+
+			"1. Present evidence supporting their hypothesis\n"+
+			"2. Challenge contradictory hypotheses\n"+
+			"3. Acknowledge limitations",
 		input.Query,
 		strings.Join(hypotheses, "\n"),
 	)
@@ -163,7 +163,7 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	// Explore implications of winning hypothesis
 	totQuery := fmt.Sprintf(
 		"Based on the winning hypothesis: %s\n"+
-		"What are the implications and next steps for: %s",
+			"What are the implications and next steps for: %s",
 		debateResult.WinningArgument,
 		input.Query,
 	)
@@ -211,10 +211,10 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	// Create comprehensive result for reflection
 	comprehensiveResult := fmt.Sprintf(
 		"Scientific Investigation Results:\n\n"+
-		"Hypotheses Tested:\n%s\n\n"+
-		"Debate Outcome:\n%s\n\n"+
-		"Implications:\n%s\n\n"+
-		"Confidence Level: %.2f%%",
+			"Hypotheses Tested:\n%s\n\n"+
+			"Debate Outcome:\n%s\n\n"+
+			"Implications:\n%s\n\n"+
+			"Confidence Level: %.2f%%",
 		strings.Join(hypotheses, "\n"),
 		debateResult.FinalPosition,
 		totResult.BestSolution,
@@ -275,19 +275,18 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		"final_confidence", finalConfidence,
 	)
 
-
 	return TaskResult{
 		Result:     scientificReport,
 		Success:    true,
 		TokensUsed: totalTokens,
 		Metadata: map[string]interface{}{
-			"workflow_type":      "scientific",
-			"patterns_used":      []string{"chain_of_thought", "debate", "tree_of_thoughts", "reflection"},
-			"hypotheses_count":   len(hypotheses),
-			"consensus_reached":  debateResult.ConsensusReached,
-			"final_confidence":   finalConfidence,
-			"debate_rounds":      debateResult.Rounds,
-			"exploration_depth":  totResult.TreeDepth,
+			"workflow_type":     "scientific",
+			"patterns_used":     []string{"chain_of_thought", "debate", "tree_of_thoughts", "reflection"},
+			"hypotheses_count":  len(hypotheses),
+			"consensus_reached": debateResult.ConsensusReached,
+			"final_confidence":  finalConfidence,
+			"debate_rounds":     debateResult.Rounds,
+			"exploration_depth": totResult.TreeDepth,
 		},
 	}, nil
 }
