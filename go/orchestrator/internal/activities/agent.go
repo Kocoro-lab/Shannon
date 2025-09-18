@@ -18,6 +18,7 @@ import (
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/policy"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
@@ -531,6 +532,9 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		zap.Any("tool_parameters_received", input.ToolParameters),
 	)
 
+	// Emit human-readable "agent thinking" event
+	emitAgentThinkingEvent(ctx, input)
+
 	// Policy check - Phase 0.5: Basic enforcement at agent execution boundary
 	if policyEngine != nil && policyEngine.IsEnabled() {
 		decision, err := evaluateAgentPolicy(ctx, input, logger)
@@ -704,6 +708,10 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			}
 			if len(toolsToSelect) > 0 {
 				selectedToolCalls = selectToolsForQuery(ctx, input.Query, toolsToSelect, logger)
+				// Emit tool selection events
+				if len(selectedToolCalls) > 0 {
+					emitToolSelectionEvent(ctx, input, selectedToolCalls)
+				}
 			}
 		}
 	} else if len(input.SuggestedTools) == 0 {
@@ -871,6 +879,28 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			tool := tr.ToolId
 			toolsUsed = append(toolsUsed, tool)
 			success := tr.Status == commonpb.StatusCode_STATUS_CODE_OK
+
+			// Emit human-readable tool invocation event
+			if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+				message := humanizeToolCall(tool, nil)
+				eventData := EmitTaskUpdateInput{
+					WorkflowID: info.WorkflowExecution.ID,
+					EventType:  StreamEventToolInvoked,
+					AgentID:    input.AgentID,
+					Message:    message,
+					Timestamp:  time.Now(),
+				}
+				activity.RecordHeartbeat(ctx, eventData)
+				// Also publish to Redis Streams for SSE
+				streaming.Get().Publish(info.WorkflowExecution.ID, streaming.Event{
+					WorkflowID: eventData.WorkflowID,
+					Type:       string(eventData.EventType),
+					AgentID:    eventData.AgentID,
+					Message:    eventData.Message,
+					Timestamp:  eventData.Timestamp,
+				})
+			}
+
 			var out interface{}
 			if tr.Output != nil {
 				// Safely handle potential panic from malformed protobuf
@@ -1160,4 +1190,110 @@ func getenvInt(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// emitAgentThinkingEvent emits a human-readable thinking event
+func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
+	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		message := fmt.Sprintf("Analyzing: %s", truncateQuery(input.Query, 80))
+		eventData := EmitTaskUpdateInput{
+			WorkflowID: info.WorkflowExecution.ID,
+			EventType:  StreamEventAgentThinking,
+			AgentID:    input.AgentID,
+			Message:    message,
+			Timestamp:  time.Now(),
+		}
+		activity.RecordHeartbeat(ctx, eventData)
+		// Also publish to Redis Streams for SSE
+		streaming.Get().Publish(info.WorkflowExecution.ID, streaming.Event{
+			WorkflowID: eventData.WorkflowID,
+			Type:       string(eventData.EventType),
+			AgentID:    eventData.AgentID,
+			Message:    eventData.Message,
+			Timestamp:  eventData.Timestamp,
+		})
+	}
+}
+
+// emitToolSelectionEvent emits events for selected tools
+func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, toolCalls []map[string]interface{}) {
+	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		for _, call := range toolCalls {
+			toolName, _ := call["tool"].(string)
+			if toolName == "" {
+				continue
+			}
+			message := humanizeToolCall(toolName, call["parameters"])
+			eventData := EmitTaskUpdateInput{
+				WorkflowID: info.WorkflowExecution.ID,
+				EventType:  StreamEventToolInvoked,
+				AgentID:    input.AgentID,
+				Message:    message,
+				Timestamp:  time.Now(),
+			}
+			activity.RecordHeartbeat(ctx, eventData)
+			// Also publish to Redis Streams for SSE
+			streaming.Get().Publish(info.WorkflowExecution.ID, streaming.Event{
+				WorkflowID: eventData.WorkflowID,
+				Type:       string(eventData.EventType),
+				AgentID:    eventData.AgentID,
+				Message:    eventData.Message,
+				Timestamp:  eventData.Timestamp,
+			})
+		}
+	}
+}
+
+// humanizeToolCall creates a human-readable description of a tool invocation
+func humanizeToolCall(toolName string, params interface{}) string {
+	paramsMap, _ := params.(map[string]interface{})
+
+	switch toolName {
+	case "web_search":
+		if query, ok := paramsMap["query"].(string); ok {
+			return fmt.Sprintf("Searching web for '%s'", truncateQuery(query, 50))
+		}
+		return "Searching the web"
+	case "calculator":
+		if expr, ok := paramsMap["expression"].(string); ok {
+			return fmt.Sprintf("Calculating: %s", expr)
+		}
+		return "Performing calculation"
+	case "python_code", "code_executor":
+		return "Executing Python code"
+	case "read_file", "file_reader":
+		if path, ok := paramsMap["path"].(string); ok {
+			return fmt.Sprintf("Reading file: %s", path)
+		}
+		return "Reading file"
+	case "web_fetch":
+		if url, ok := paramsMap["url"].(string); ok {
+			return fmt.Sprintf("Fetching content from: %s", truncateURL(url))
+		}
+		return "Fetching web content"
+	case "code_reader":
+		return "Analyzing code structure"
+	default:
+		return fmt.Sprintf("Using %s tool", toolName)
+	}
+}
+
+// truncateQuery truncates a query to a specified length
+func truncateQuery(query string, maxLen int) string {
+	if len(query) <= maxLen {
+		return query
+	}
+	return query[:maxLen-3] + "..."
+}
+
+// truncateURL shortens a URL for display
+func truncateURL(url string) string {
+	if len(url) <= 50 {
+		return url
+	}
+	// Try to preserve domain
+	if idx := strings.Index(url, "?"); idx > 0 && idx < 50 {
+		return url[:idx] + "?..."
+	}
+	return url[:47] + "..."
 }

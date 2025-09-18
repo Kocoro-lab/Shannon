@@ -438,6 +438,10 @@ func main() {
 		if rw := orchestratorService.SessionManager().RedisWrapper(); rw != nil {
 			rc := health.NewRedisHealthChecker(rw.GetClient(), rw, logger)
 			_ = hm.RegisterChecker(rc)
+
+			// Initialize streaming manager with Redis client
+			streaming.InitializeRedis(rw.GetClient(), logger)
+			logger.Info("Initialized streaming manager with Redis Streams")
 		}
 	}
 

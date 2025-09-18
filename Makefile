@@ -1,4 +1,4 @@
-.PHONY: dev down logs ps proto fmt lint seed smoke clean replay replay-export ci-replay coverage coverage-go coverage-python coverage-gate integration-tests integration-single integration-session integration-qdrant
+.PHONY: dev down logs ps proto fmt lint seed smoke clean replay replay-export ci-replay coverage coverage-go coverage-python coverage-gate integration-tests integration-single integration-session integration-qdrant seed-api-key
 
 COMPOSE_BASE=deploy/compose
 
@@ -99,6 +99,14 @@ smoke-stream:
 clean:
 	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml down -v || true
 	@docker system prune -f || true
+
+# Seed test API key for development/testing
+seed-api-key:
+	@echo "Seeding test API key (sk_test_123456)..."
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml exec -T postgres psql -U shannon -d shannon < scripts/create_test_api_key.sql
+	@echo "✅ Test API key created. Use 'sk_test_123456' for testing."
+	@echo "Note: Authentication is disabled by default (GATEWAY_SKIP_AUTH=1)"
+	@echo "To enable auth, run: export GATEWAY_SKIP_AUTH=0 && make dev"
 
 # --- Temporal deterministic replay helpers ---
 # Export a workflow history from Temporal into a JSON file

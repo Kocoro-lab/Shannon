@@ -33,16 +33,34 @@ func (s *StreamingServiceServer) StreamTaskExecution(req *pb.StreamRequest, srv 
 		}
 	}
 
-	ch := s.mgr.Subscribe(wf, 256)
-	defer s.mgr.Unsubscribe(wf, ch)
+	var lastSentStreamID string
 
-	// Replay if requested
-	if req.GetLastEventId() > 0 {
+	// Replay based on stream ID or seq (prefer stream ID)
+	if req.GetLastStreamId() != "" {
+		// Resume from Redis stream ID
+		for _, ev := range s.mgr.ReplayFromStreamID(wf, req.GetLastStreamId()) {
+			if len(typeFilter) > 0 {
+				if _, ok := typeFilter[ev.Type]; !ok {
+					continue
+				}
+			}
+			if ev.StreamID != "" {
+				lastSentStreamID = ev.StreamID
+			}
+			if err := srv.Send(toProto(ev)); err != nil {
+				return err
+			}
+		}
+	} else if req.GetLastEventId() > 0 {
+		// Backward compat: resume from numeric seq
 		for _, ev := range s.mgr.ReplaySince(wf, req.GetLastEventId()) {
 			if len(typeFilter) > 0 {
 				if _, ok := typeFilter[ev.Type]; !ok {
 					continue
 				}
+			}
+			if ev.StreamID != "" {
+				lastSentStreamID = ev.StreamID
 			}
 			if err := srv.Send(toProto(ev)); err != nil {
 				return err
@@ -50,7 +68,19 @@ func (s *StreamingServiceServer) StreamTaskExecution(req *pb.StreamRequest, srv 
 		}
 	}
 
-	// Stream live
+	// Subscribe to live events, avoiding gaps
+	startFrom := "$" // Default to new messages only
+	if lastSentStreamID != "" {
+		// Continue from last replayed message
+		startFrom = lastSentStreamID
+	} else if req.GetLastStreamId() == "" && req.GetLastEventId() == 0 {
+		// No resume point, start from beginning
+		startFrom = "0-0"
+	}
+	ch := s.mgr.SubscribeFrom(wf, 256, startFrom)
+	defer s.mgr.Unsubscribe(wf, ch)
+
+	// Stream live events
 	for {
 		select {
 		case <-srv.Context().Done():
@@ -80,5 +110,6 @@ func toProto(ev streaming.Event) *pb.TaskUpdate {
 		Message:    ev.Message,
 		Timestamp:  timestamppb.New(ts),
 		Seq:        ev.Seq,
+		StreamId:   ev.StreamID,
 	}
 }

@@ -157,6 +157,75 @@ grpcurl -plaintext \
 ./scripts/replay_workflow.sh <WORKFLOW_ID>
 ```
 
+### 🌐 REST API & Real-Time Streaming
+
+Shannon provides a simple REST API for easy integration and real-time SSE (Server-Sent Events) streaming to monitor agent actions:
+
+#### Submit a Task via REST API
+
+```bash
+# For development (no auth required)
+export GATEWAY_SKIP_AUTH=1
+
+# Submit a task
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Analyze the top 3 programming languages in 2024",
+    "session_id": "demo-session-123"
+  }'
+
+# Response includes workflow_id for tracking
+# {"workflow_id":"task-dev-1234567890","status":"running"}
+```
+
+#### Monitor Real-Time Events with SSE
+
+```bash
+# Stream live events as agents work (replace with your workflow_id)
+curl -N http://localhost:8081/stream/sse?workflow_id=task-dev-1234567890
+
+# You'll see human-readable events like:
+# event: AGENT_THINKING
+# data: {"message":"Analyzing: top 3 programming languages in 2024"}
+#
+# event: TOOL_INVOKED
+# data: {"message":"Searching web for: programming language rankings 2024"}
+#
+# event: AGENT_COMPLETED
+# data: {"message":"Task completed successfully"}
+```
+
+#### Check Task Status
+
+```bash
+# Get current status and result
+curl http://localhost:8080/api/v1/tasks/task-dev-1234567890
+
+# Response includes status, result, tokens used, and metadata
+```
+
+#### Production Authentication
+
+For production, use API keys instead of GATEWAY_SKIP_AUTH:
+
+```bash
+# Create an API key (one-time setup)
+make seed-api-key  # Creates test key: sk_test_123456
+
+# Use in requests
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "X-API-Key: sk_test_123456" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Your task here"}'
+```
+
+The REST API supports:
+- **Idempotency**: Use `Idempotency-Key` header for safe retries
+- **Rate Limiting**: Per-API-key limits to prevent abuse
+- **Resume on Reconnect**: SSE streams can resume from last event using `Last-Event-ID`
+- **WebSocket**: Available at `/api/v1/stream/ws` for bidirectional streaming
+
 ## 💰 Real-World Impact
 
 ### Before Shannon vs After
@@ -576,6 +645,18 @@ cd Shannon && make setup-env && make dev
 - 💡 **Have an idea?** [Start a discussion](https://github.com/Kocoro-lab/Shannon/discussions)
 - 💬 **Need help?** [Join our Discord](https://discord.gg/NB7C2fMcQR)
 - ⭐ **Like the project?** Give us a star!
+
+## 🔮 Coming Soon
+
+### Solana Integration for Web3 Trust
+We're building decentralized trust infrastructure with Solana blockchain:
+- **Cryptographic Verification**: On-chain attestation of AI agent actions and results
+- **Immutable Audit Trail**: Blockchain-based proof of task execution
+- **Smart Contract Interoperability**: Enable AI agents to interact with DeFi and Web3 protocols
+- **Token-Gated Capabilities**: Control agent permissions through blockchain tokens
+- **Decentralized Reputation**: Build trust through verifiable on-chain agent performance
+
+Stay tuned for our Web3 trust layer - bringing transparency and verifiability to AI systems!
 
 ## 📄 License
 
