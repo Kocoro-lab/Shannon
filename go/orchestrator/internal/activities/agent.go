@@ -675,18 +675,28 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	if len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 {
 		if getenvInt("ENABLE_TOOL_SELECTION", 1) > 0 {
 			// Only select tools if we have valid parameters or the tool doesn't require them
-			// Skip calculator if tool_parameters is nil/empty to avoid execution errors
+			// Skip tools that require parameters when none are provided to avoid execution errors
 			toolsToSelect := allowedByRole
 			if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
 				// Filter out tools that require parameters when none are provided
 				filtered := make([]string, 0, len(allowedByRole))
 				for _, tool := range allowedByRole {
-					// Skip calculator when no parameters provided to avoid "missing expression" errors
-					if tool == "calculator" {
+					// Skip tools that require specific parameters when none are provided
+					switch tool {
+					case "calculator":
+						// Calculator requires an expression parameter
 						logger.Info("Skipping calculator tool - no parameters provided",
 							zap.String("agent_id", input.AgentID),
 						)
 						continue
+					case "code_executor":
+						// Code executor requires wasm_path or wasm_base64
+						logger.Info("Skipping code_executor tool - no parameters provided",
+							zap.String("agent_id", input.AgentID),
+						)
+						continue
+					// web_search and file_read can work with minimal/inferred parameters
+					// so we don't skip them
 					}
 					filtered = append(filtered, tool)
 				}
