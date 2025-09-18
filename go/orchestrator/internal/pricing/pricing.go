@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"errors"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -26,9 +27,9 @@ type config struct {
 }
 
 var (
-	once   sync.Once
-	mu     sync.RWMutex
-	loaded *config
+	mu         sync.RWMutex
+	loaded     *config
+	initialized bool
 )
 
 // default locations inside containers / local dev
@@ -38,7 +39,8 @@ var defaultPaths = []string{
 	"./config/models.yaml",
 }
 
-func load() {
+// loadLocked loads the configuration - must be called while holding mu.Lock()
+func loadLocked() {
 	var cfg config
 	for _, p := range defaultPaths {
 		if p == "" {
@@ -50,20 +52,33 @@ func load() {
 		}
 		var tmp config
 		if err := yaml.Unmarshal(data, &tmp); err != nil {
+			log.Printf("WARNING: Failed to unmarshal pricing config from %s: %v", p, err)
 			continue
 		}
 		cfg = tmp
+		log.Printf("Loaded pricing configuration from %s", p)
 		break
 	}
-	mu.Lock()
+	// No locking needed - caller must hold the lock
 	loaded = &cfg
-	mu.Unlock()
+	initialized = true
 }
 
 func get() *config {
-	once.Do(load)
 	mu.RLock()
-	defer mu.RUnlock()
+	if initialized {
+		defer mu.RUnlock()
+		return loaded
+	}
+	mu.RUnlock()
+
+	// Need to initialize - use write lock to prevent races
+	mu.Lock()
+	defer mu.Unlock()
+	// Double-check after acquiring write lock
+	if !initialized {
+		loadLocked() // Call the version that doesn't lock
+	}
 	return loaded
 }
 
@@ -83,13 +98,13 @@ func ModifiedTime() time.Time {
 // Reload forces a re-read of pricing configuration.
 // Thread-safe: uses mutex to prevent race conditions.
 func Reload() {
-	// Reset once to allow load to be called again
 	mu.Lock()
-	once = sync.Once{}
-	mu.Unlock()
+	defer mu.Unlock()
 
-	// Trigger a new load via get()
-	get()
+	// Mark as uninitialized to force reload
+	initialized = false
+	// Load new configuration
+	loadLocked()
 }
 
 // DefaultPerToken returns default combined price per token

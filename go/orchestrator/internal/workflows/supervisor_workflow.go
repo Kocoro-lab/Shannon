@@ -470,6 +470,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 						Topic:      topic,
 						Entry:      map[string]interface{}{"subtask_id": st.ID, "summary": res.Response},
+						Timestamp:  workflow.Now(ctx),
 					}).Get(ctx, &wr); err != nil {
 						logger.Warn("Failed to append to workspace", "topic", topic, "error", err)
 						continue

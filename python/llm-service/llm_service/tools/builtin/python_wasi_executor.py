@@ -16,6 +16,7 @@ Features:
 import os
 import json
 import asyncio
+import ast
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
@@ -225,8 +226,8 @@ print("__SESSION_STATE__", json.dumps({
                 state = json.loads(state_part)
                 for name, repr_value in state.items():
                     try:
-                        # Safely evaluate the repr'd value
-                        session.variables[name] = eval(repr_value, {"__builtins__": {}})
+                        # Safely evaluate the repr'd value using ast.literal_eval
+                        session.variables[name] = ast.literal_eval(repr_value)
                     except Exception:
                         session.variables[name] = repr_value
 
@@ -246,7 +247,7 @@ print("__SESSION_STATE__", json.dumps({
         code = kwargs.get("code", "")
         session_id = kwargs.get("session_id")
         timeout = min(kwargs.get("timeout_seconds", 30), 60)  # Max 60 seconds
-        stdin = kwargs.get("stdin", "")
+        # stdin = kwargs.get("stdin", "")  # Not used currently, but kept for future use
 
         if not code:
             return ToolResult(

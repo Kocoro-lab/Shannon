@@ -9,6 +9,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/fsnotify/fsnotify v1.8.0
 	github.com/go-redis/redis/v8 v8.11.5
+	github.com/go-redis/redismock/v8 v8.11.5
 	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.1

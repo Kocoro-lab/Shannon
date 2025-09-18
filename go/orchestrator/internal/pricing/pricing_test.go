@@ -2,14 +2,15 @@ package pricing
 
 import (
 	"math"
-	"sync"
 	"testing"
 )
 
 func TestDefaultPerToken(t *testing.T) {
-	// Reset the once to ensure fresh load
-	once.Do(func() {})
-	once = sync.Once{}
+	// Reset to ensure fresh load
+	mu.Lock()
+	initialized = false
+	loaded = nil
+	mu.Unlock()
 
 	price := DefaultPerToken()
 	if price <= 0 {
@@ -25,9 +26,11 @@ func TestDefaultPerToken(t *testing.T) {
 }
 
 func TestPricePerTokenForModel(t *testing.T) {
-	// Reset the once to ensure fresh load
-	once.Do(func() {})
-	once = sync.Once{}
+	// Reset to ensure fresh load
+	mu.Lock()
+	initialized = false
+	loaded = nil
+	mu.Unlock()
 
 	tests := []struct {
 		model     string
@@ -56,9 +59,11 @@ func TestPricePerTokenForModel(t *testing.T) {
 }
 
 func TestCostForTokens(t *testing.T) {
-	// Reset the once to ensure fresh load
-	once.Do(func() {})
-	once = sync.Once{}
+	// Reset to ensure fresh load
+	mu.Lock()
+	initialized = false
+	loaded = nil
+	mu.Unlock()
 
 	tests := []struct {
 		model   string

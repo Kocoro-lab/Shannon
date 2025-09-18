@@ -27,6 +27,7 @@ type SendAgentMessageInput struct {
 	To         string                 `json:"to"`
 	Type       MessageType            `json:"type"`
 	Payload    map[string]interface{} `json:"payload"`
+	Timestamp  time.Time              `json:"timestamp"` // Passed from workflow.Now()
 }
 
 type SendAgentMessageResult struct {
@@ -38,22 +39,35 @@ func (a *Activities) SendAgentMessage(ctx context.Context, in SendAgentMessageIn
 	if in.WorkflowID == "" || in.To == "" || in.From == "" {
 		return SendAgentMessageResult{}, fmt.Errorf("invalid message args")
 	}
+
+	// Validate payload size to prevent memory exhaustion
+	const maxPayloadSize = 1 * 1024 * 1024 // 1MB limit
+	payloadSize := lenMust(in.Payload)
+	if payloadSize > maxPayloadSize {
+		return SendAgentMessageResult{}, fmt.Errorf("payload size %d exceeds maximum allowed size of %d bytes", payloadSize, maxPayloadSize)
+	}
+
 	// Policy gate via existing team action authorizer
 	_, _ = AuthorizeTeamAction(ctx, TeamActionInput{Action: "message_send", SessionID: "", UserID: "", AgentID: in.From, Role: "", Metadata: map[string]interface{}{
-		"to": in.To, "type": string(in.Type), "size": lenMust(in.Payload),
+		"to": in.To, "type": string(in.Type), "size": payloadSize,
 	}})
 
 	rc := a.sessionManager.RedisWrapper().GetClient()
 	seqKey := fmt.Sprintf("wf:%s:mbox:%s:seq", in.WorkflowID, in.To)
 	listKey := fmt.Sprintf("wf:%s:mbox:%s:msgs", in.WorkflowID, in.To)
 	seq := rc.Incr(ctx, seqKey).Val()
+	// Use timestamp from workflow for deterministic replay
+	ts := in.Timestamp
+	if ts.IsZero() {
+		ts = time.Now() // Fallback for backward compatibility
+	}
 	msg := map[string]interface{}{
 		"seq":     seq,
 		"from":    in.From,
 		"to":      in.To,
 		"type":    string(in.Type),
 		"payload": in.Payload,
-		"ts":      time.Now().UnixNano(), // Note: In real workflow this should come from workflow.Now()
+		"ts":      ts.UnixNano(),
 	}
 	b, _ := json.Marshal(msg)
 	if err := rc.RPush(ctx, listKey, b).Err(); err != nil {
@@ -63,12 +77,11 @@ func (a *Activities) SendAgentMessage(ctx context.Context, in SendAgentMessageIn
 	rc.Expire(ctx, seqKey, 48*time.Hour)
 	rc.Expire(ctx, listKey, 48*time.Hour)
 
-	// Publish streaming events
-	now := time.Now() // Use same timestamp for both events
-	evt := streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventMessageSent), AgentID: in.From, Message: fmt.Sprintf("to=%s type=%s", in.To, in.Type), Timestamp: now, Seq: 0}
+	// Publish streaming events using workflow timestamp
+	evt := streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventMessageSent), AgentID: in.From, Message: fmt.Sprintf("to=%s type=%s", in.To, in.Type), Timestamp: ts, Seq: 0}
 	streaming.Get().Publish(in.WorkflowID, evt)
 	// Receiver event (for dashboards)
-	evtR := streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventMessageReceived), AgentID: in.To, Message: fmt.Sprintf("from=%s type=%s", in.From, in.Type), Timestamp: now, Seq: 0}
+	evtR := streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventMessageReceived), AgentID: in.To, Message: fmt.Sprintf("from=%s type=%s", in.From, in.Type), Timestamp: ts, Seq: 0}
 	streaming.Get().Publish(in.WorkflowID, evtR)
 
 	return SendAgentMessageResult{Seq: uint64(seq)}, nil
@@ -127,6 +140,7 @@ type WorkspaceAppendInput struct {
 	WorkflowID string                 `json:"workflow_id"`
 	Topic      string                 `json:"topic"`
 	Entry      map[string]interface{} `json:"entry"`
+	Timestamp  time.Time              `json:"timestamp"` // Passed from workflow.Now()
 }
 
 type WorkspaceAppendResult struct {
@@ -138,14 +152,26 @@ func (a *Activities) WorkspaceAppend(ctx context.Context, in WorkspaceAppendInpu
 	if in.WorkflowID == "" || in.Topic == "" {
 		return WorkspaceAppendResult{}, fmt.Errorf("invalid args")
 	}
+
+	// Validate entry size to prevent memory exhaustion
+	const maxEntrySize = 1 * 1024 * 1024 // 1MB limit
+	entrySize := lenMust(in.Entry)
+	if entrySize > maxEntrySize {
+		return WorkspaceAppendResult{}, fmt.Errorf("entry size %d exceeds maximum allowed size of %d bytes", entrySize, maxEntrySize)
+	}
+
 	// Policy gate
-	_, _ = AuthorizeTeamAction(ctx, TeamActionInput{Action: "workspace_append", Metadata: map[string]interface{}{"topic": in.Topic, "size": lenMust(in.Entry)}})
+	_, _ = AuthorizeTeamAction(ctx, TeamActionInput{Action: "workspace_append", Metadata: map[string]interface{}{"topic": in.Topic, "size": entrySize}})
 	rc := a.sessionManager.RedisWrapper().GetClient()
 	seqKey := fmt.Sprintf("wf:%s:ws:seq", in.WorkflowID)
 	seq := rc.Incr(ctx, seqKey).Val()
 	listKey := fmt.Sprintf("wf:%s:ws:%s", in.WorkflowID, in.Topic)
-	now := time.Now()
-	entry := map[string]interface{}{"seq": seq, "topic": in.Topic, "entry": in.Entry, "ts": now.UnixNano()}
+	// Use timestamp from workflow for deterministic replay
+	ts := in.Timestamp
+	if ts.IsZero() {
+		ts = time.Now() // Fallback for backward compatibility
+	}
+	entry := map[string]interface{}{"seq": seq, "topic": in.Topic, "entry": in.Entry, "ts": ts.UnixNano()}
 	b, _ := json.Marshal(entry)
 	if err := rc.RPush(ctx, listKey, b).Err(); err != nil {
 		return WorkspaceAppendResult{}, err
@@ -154,7 +180,7 @@ func (a *Activities) WorkspaceAppend(ctx context.Context, in WorkspaceAppendInpu
 	rc.Expire(ctx, seqKey, 48*time.Hour)
 	rc.Expire(ctx, listKey, 48*time.Hour)
 	// stream event
-	streaming.Get().Publish(in.WorkflowID, streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventWorkspaceUpdated), AgentID: "", Message: in.Topic, Timestamp: now})
+	streaming.Get().Publish(in.WorkflowID, streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventWorkspaceUpdated), AgentID: "", Message: in.Topic, Timestamp: ts})
 	return WorkspaceAppendResult{Seq: uint64(seq)}, nil
 }
 
@@ -231,21 +257,21 @@ type TaskAccept struct {
 }
 
 // Convenience wrappers
-func (a *Activities) SendTaskRequest(ctx context.Context, wf, from, to string, req TaskRequest) (SendAgentMessageResult, error) {
+func (a *Activities) SendTaskRequest(ctx context.Context, wf, from, to string, req TaskRequest, timestamp time.Time) (SendAgentMessageResult, error) {
 	payload := map[string]interface{}{
 		"task_id": req.TaskID, "description": req.Description, "required_by": req.RequiredBy, "skills": req.Skills, "topic": req.Topic,
 	}
-	return a.SendAgentMessage(ctx, SendAgentMessageInput{WorkflowID: wf, From: from, To: to, Type: MessageTypeRequest, Payload: payload})
+	return a.SendAgentMessage(ctx, SendAgentMessageInput{WorkflowID: wf, From: from, To: to, Type: MessageTypeRequest, Payload: payload, Timestamp: timestamp})
 }
 
-func (a *Activities) SendTaskOffer(ctx context.Context, wf, from, to string, off TaskOffer) (SendAgentMessageResult, error) {
+func (a *Activities) SendTaskOffer(ctx context.Context, wf, from, to string, off TaskOffer, timestamp time.Time) (SendAgentMessageResult, error) {
 	payload := map[string]interface{}{
 		"request_id": off.RequestID, "agent_id": off.AgentID, "confidence": off.Confidence, "estimate_hours": off.EstimateHours,
 	}
-	return a.SendAgentMessage(ctx, SendAgentMessageInput{WorkflowID: wf, From: from, To: to, Type: MessageTypeOffer, Payload: payload})
+	return a.SendAgentMessage(ctx, SendAgentMessageInput{WorkflowID: wf, From: from, To: to, Type: MessageTypeOffer, Payload: payload, Timestamp: timestamp})
 }
 
-func (a *Activities) SendTaskAccept(ctx context.Context, wf, from, to string, ac TaskAccept) (SendAgentMessageResult, error) {
+func (a *Activities) SendTaskAccept(ctx context.Context, wf, from, to string, ac TaskAccept, timestamp time.Time) (SendAgentMessageResult, error) {
 	payload := map[string]interface{}{"request_id": ac.RequestID, "agent_id": ac.AgentID}
-	return a.SendAgentMessage(ctx, SendAgentMessageInput{WorkflowID: wf, From: from, To: to, Type: MessageTypeAccept, Payload: payload})
+	return a.SendAgentMessage(ctx, SendAgentMessageInput{WorkflowID: wf, From: from, To: to, Type: MessageTypeAccept, Payload: payload, Timestamp: timestamp})
 }
