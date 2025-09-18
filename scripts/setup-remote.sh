@@ -32,7 +32,7 @@ fi
 # Generate proto files
 echo "Generating proto files..."
 cd protos
-buf generate
+/usr/local/bin/buf generate
 cd ..
 
 echo "Proto files generated successfully!"
@@ -43,15 +43,13 @@ if [ ! -d "go/orchestrator/internal/pb" ]; then
     exit 1
 fi
 
-if [ ! -d "rust/agent-core/src/pb" ]; then
-    echo "ERROR: Proto generation failed - rust/agent-core/src/pb not found"
+# Python proto files are generated in protos/gen/python
+if [ ! -d "protos/gen/python" ]; then
+    echo "ERROR: Proto generation failed - protos/gen/python not found"
     exit 1
 fi
 
-if [ ! -d "python/llm-service/llm_service/pb" ]; then
-    echo "ERROR: Proto generation failed - python/llm-service/llm_service/pb not found"
-    exit 1
-fi
+# Note: Rust protobuf generation is handled separately by the Rust build process
 
 echo ""
 echo "=== Setup Complete ==="
