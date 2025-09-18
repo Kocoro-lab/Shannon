@@ -1,6 +1,16 @@
+#[cfg(feature = "wasi")]
 use std::env;
+#[cfg(feature = "wasi")]
 use std::fs;
 
+#[cfg(not(feature = "wasi"))]
+fn main() {
+    eprintln!("This example requires the 'wasi' feature to be enabled");
+    eprintln!("Run with: cargo run --example wasi_hello --features wasi -- <wasm_path>");
+    std::process::exit(1);
+}
+
+#[cfg(feature = "wasi")]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();

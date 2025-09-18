@@ -9,6 +9,7 @@ pub mod llm_client;
 pub mod memory;
 pub mod metrics;
 pub mod proto;
+#[cfg(feature = "wasi")]
 pub mod sandbox;
 pub mod tool_cache;
 pub mod tool_registry;

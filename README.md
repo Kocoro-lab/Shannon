@@ -122,7 +122,7 @@ The `make dev` command starts all services:
 
 ```bash
 git clone https://github.com/Kocoro-lab/Shannon.git
-cd shannon
+cd Shannon
 make setup-env
 
 # Download Python WASI interpreter for secure code execution (20MB)
@@ -323,7 +323,7 @@ See `docs/production-examples/` for battle-tested implementations.
 ```bash
 # Clone and configure
 git clone https://github.com/Kocoro-lab/Shannon.git
-cd shannon
+cd Shannon
 make setup-env
 echo "OPENAI_API_KEY=sk-..." >> .env
 
@@ -569,7 +569,7 @@ A: Zero lock-in. Standard protocols (gRPC, HTTP, SSE). Export your workflows any
 ```bash
 # You're 3 commands away from production-ready AI agents
 git clone https://github.com/Kocoro-lab/Shannon.git
-cd shannon && make setup-env && make dev
+cd Shannon && make setup-env && make dev
 
 # Join 1,000+ developers shipping reliable AI
 ```

@@ -63,6 +63,7 @@ impl AgentServiceImpl {
 
         Self {
             memory_pool: MemoryPool::new(512).start_sweeper(sweep_interval_ms), // 512MB memory pool with sweeper
+            #[cfg(feature = "wasi")]
             sandbox: WasiSandbox::new().expect("Failed to create WASI sandbox"),
             start_time: std::time::Instant::now(),
             llm: std::sync::Arc::new(LLMClient::new(None).expect("Failed to create LLM client")),
@@ -206,7 +207,10 @@ impl AgentServiceImpl {
             )),
         };
 
+        #[cfg(feature = "wasi")]
         let tool_executor = ToolExecutor::new_with_wasi(Some(self.sandbox.clone()), None);
+        #[cfg(not(feature = "wasi"))]
+        let tool_executor = ToolExecutor::new_with_wasi(None, None);
 
         // Measure execution time
         let start_time = std::time::Instant::now();
@@ -339,7 +343,10 @@ impl AgentServiceImpl {
             crate::grpc_server::prost_value_to_json(v)
         }
 
+        #[cfg(feature = "wasi")]
         let tool_executor = ToolExecutor::new_with_wasi(Some(self.sandbox.clone()), None);
+        #[cfg(not(feature = "wasi"))]
+        let tool_executor = ToolExecutor::new_with_wasi(None, None);
         let mut tool_calls_vec = Vec::new();
         let mut tool_results_vec = Vec::new();
         let mut overall_status = proto::common::StatusCode::Ok.into();
@@ -430,7 +437,10 @@ impl AgentServiceImpl {
             let mut handles = Vec::with_capacity(total);
             for (idx, tool_name, params_map) in parsed.into_iter() {
                 let permit = semaphore.clone().acquire_owned().await.unwrap();
+                #[cfg(feature = "wasi")]
                 let sandbox = self.sandbox.clone();
+                #[cfg(not(feature = "wasi"))]
+                let sandbox = ();
                 let tool_name_c = tool_name.clone();
                 let params_map_c = params_map.clone();
                 let jh = tokio::spawn(async move {
@@ -753,6 +763,7 @@ impl AgentService for AgentServiceImpl {
         info!("Executing task: {}", req.query);
 
         // Validate sandbox permissions early (non-fatal). Ensures WASI sandbox wiring is active.
+        #[cfg(feature = "wasi")]
         if let Err(e) = self.sandbox.validate_permissions() {
             tracing::warn!("WASI sandbox permission validation warning: {}", e);
         }
@@ -768,7 +779,11 @@ impl AgentService for AgentServiceImpl {
 
         // Configure sandbox from request config (timeouts, memory)
         // Note: currently unused in this code path; kept for future wiring.
+        #[cfg(feature = "wasi")]
         let mut _sandbox = self.sandbox.clone();
+        #[cfg(not(feature = "wasi"))]
+        let mut _sandbox = ();
+        #[cfg(feature = "wasi")]
         if let Some(cfg) = &req.config {
             if cfg.timeout_seconds > 0 {
                 _sandbox = _sandbox.set_execution_timeout(std::time::Duration::from_secs(
@@ -779,6 +794,8 @@ impl AgentService for AgentServiceImpl {
                 _sandbox = _sandbox.set_memory_limit((cfg.memory_limit_mb as usize) * 1024 * 1024);
             }
         }
+        #[cfg(not(feature = "wasi"))]
+        let _ = &req.config; // Avoid unused variable warning
 
         // Check for multi-tool sequence first
         info!("Request context: {:?}", req.context);

@@ -1,3 +1,4 @@
+#[cfg(feature = "wasi")]
 use crate::wasi_sandbox::WasiSandbox;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ mod tests {
     ];
 
     #[tokio::test]
+    #[cfg(feature = "wasi")]
     async fn test_code_executor_with_base64_payload() {
         let wasi = WasiSandbox::new().expect("sandbox");
         let exec = ToolExecutor::new_with_wasi(Some(wasi), None);
@@ -55,6 +57,7 @@ pub struct ToolResult {
 
 pub struct ToolExecutor {
     llm_service_url: String,
+    #[cfg(feature = "wasi")]
     wasi: Option<WasiSandbox>,
 }
 
@@ -64,10 +67,12 @@ impl ToolExecutor {
             llm_service_url: llm_service_url
                 .or_else(|| std::env::var("LLM_SERVICE_URL").ok())
                 .unwrap_or_else(|| "http://llm-service:8000".to_string()),
+            #[cfg(feature = "wasi")]
             wasi: None,
         }
     }
 
+    #[cfg(feature = "wasi")]
     pub fn new_with_wasi(wasi: Option<WasiSandbox>, llm_service_url: Option<String>) -> Self {
         Self {
             llm_service_url: llm_service_url
@@ -77,8 +82,23 @@ impl ToolExecutor {
         }
     }
 
+    #[cfg(not(feature = "wasi"))]
+    pub fn new_with_wasi(_wasi: Option<()>, llm_service_url: Option<String>) -> Self {
+        Self {
+            llm_service_url: llm_service_url
+                .or_else(|| std::env::var("LLM_SERVICE_URL").ok())
+                .unwrap_or_else(|| "http://llm-service:8000".to_string()),
+        }
+    }
+
+    #[cfg(feature = "wasi")]
     pub fn set_wasi(&mut self, wasi: Option<WasiSandbox>) {
         self.wasi = wasi;
+    }
+
+    #[cfg(not(feature = "wasi"))]
+    pub fn set_wasi(&mut self, _wasi: Option<()>) {
+        // No-op when WASI is disabled
     }
 
     /// Select tools remotely (stub implementation)
@@ -145,6 +165,7 @@ impl ToolExecutor {
         }
 
         // Route code execution to WASI sandbox when requested
+        #[cfg(feature = "wasi")]
         if tool_call.tool_name == "code_executor" {
             if let Some(wasi) = &self.wasi {
                 // Expect a wasm module path and optional stdin

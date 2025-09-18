@@ -1,3 +1,6 @@
+#![cfg(feature = "wasi")]
+
+#![cfg(feature = "wasi")]
 #[cfg(test)]
 mod tests {
     use shannon_agent_core::sandbox::{WasmSandbox, ResourceLimits};
