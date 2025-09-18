@@ -419,6 +419,16 @@ teams:
 - [Providers & Models](docs/providers-models.md)
 - [Python WASI Setup](docs/python-wasi-setup.md)
 
+### Embeddings & Vector Memory
+
+- **How vectors are generated**: The Go orchestrator calls the Python LLM Service at `/embeddings/`, which by default uses OpenAI (model `text-embedding-3-small`).
+- **Graceful degradation**: If no embedding provider is configured (e.g., no `OPENAI_API_KEY`) or the endpoint is unavailable, workflows still run. Vector features degrade gracefully:
+  - No vectors are stored (vector upserts are skipped)
+  - Session memory retrieval returns an empty list
+  - Similar-query enrichment is skipped
+- **Enable vectors**: Set `OPENAI_API_KEY` in `.env`, keep `vector.enabled: true` in `config/shannon.yaml`, and run Qdrant (port 6333)
+- **Disable vectors**: Set `vector.enabled: false` in `config/shannon.yaml` (or set `degradation.fallback_behaviors.vector_search: skip`)
+
 ## 🔧 Development
 
 ### Local Development

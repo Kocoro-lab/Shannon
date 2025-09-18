@@ -674,7 +674,37 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	var selectedToolCalls []map[string]interface{}
 	if len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 {
 		if getenvInt("ENABLE_TOOL_SELECTION", 1) > 0 {
-			selectedToolCalls = selectToolsForQuery(ctx, input.Query, allowedByRole, logger)
+			// Only select tools if we have valid parameters or the tool doesn't require them
+			// Skip tools that require parameters when none are provided to avoid execution errors
+			toolsToSelect := allowedByRole
+			if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
+				// Filter out tools that require parameters when none are provided
+				filtered := make([]string, 0, len(allowedByRole))
+				for _, tool := range allowedByRole {
+					// Skip tools that require specific parameters when none are provided
+					switch tool {
+					case "calculator":
+						// Calculator requires an expression parameter
+						logger.Info("Skipping calculator tool - no parameters provided",
+							zap.String("agent_id", input.AgentID),
+						)
+						continue
+					case "code_executor":
+						// Code executor requires wasm_path or wasm_base64
+						logger.Info("Skipping code_executor tool - no parameters provided",
+							zap.String("agent_id", input.AgentID),
+						)
+						continue
+					// web_search and file_read can work with minimal/inferred parameters
+					// so we don't skip them
+					}
+					filtered = append(filtered, tool)
+				}
+				toolsToSelect = filtered
+			}
+			if len(toolsToSelect) > 0 {
+				selectedToolCalls = selectToolsForQuery(ctx, input.Query, toolsToSelect, logger)
+			}
 		}
 	} else if len(input.SuggestedTools) == 0 {
 		logger.Info("No tools suggested by decomposition, skipping tool selection",
