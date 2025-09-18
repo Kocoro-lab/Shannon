@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Send dynamic team signals (recruit/retire) to a running workflow via Temporal CLI inside docker compose.
-# Requires the Temporal container from deploy/compose/compose.yml.
+# Requires the Temporal container from deploy/compose/docker-compose.yml.
 #
 # Usage:
 #   ./scripts/signal_team.sh recruit WF_ID "Description text" [role]
@@ -22,7 +22,7 @@ if [[ -z "$ACTION" || -z "$WF_ID" ]]; then
   exit 1
 fi
 
-COMPOSE_FILE="deploy/compose/compose.yml"
+COMPOSE_FILE="deploy/compose/docker-compose.yml"
 NAMESPACE=${NAMESPACE:-default}
 ADDRESS=${ADDRESS:-temporal:7233}
 

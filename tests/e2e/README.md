@@ -177,11 +177,11 @@ Show how advances in one area impact others."
 ### Check Service Health
 ```bash
 # Service status
-docker compose -f deploy/compose/compose.yml ps
+docker compose -f deploy/compose/docker-compose.yml ps
 
 # Service logs
-docker compose -f deploy/compose/compose.yml logs orchestrator
-docker compose -f deploy/compose/compose.yml logs agent-core
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator
+docker compose -f deploy/compose/docker-compose.yml logs agent-core
 ```
 
 ### Verify Workflow Execution

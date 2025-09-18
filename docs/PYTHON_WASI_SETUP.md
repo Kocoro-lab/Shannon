@@ -26,8 +26,8 @@ PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
 
 ```bash
 # Rebuild and restart services
-docker compose -f deploy/compose/compose.yml down
-docker compose -f deploy/compose/compose.yml up -d --build
+docker compose -f deploy/compose/docker-compose.yml down
+docker compose -f deploy/compose/docker-compose.yml up -d --build
 ```
 
 ## Testing Python WASI Execution
@@ -93,7 +93,7 @@ curl -L -o wasm-interpreters/rustpython.wasm \
 
 ### Docker Compose Configuration
 
-The `deploy/compose/compose.yml` already includes:
+The `deploy/compose/docker-compose.yml` already includes:
 ```yaml
 services:
   agent-core:

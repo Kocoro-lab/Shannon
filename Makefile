@@ -26,22 +26,22 @@ check-env:
 		echo "Run 'make setup-env' to fix this"; \
 		exit 1; \
 	fi
-	@docker compose -f $(COMPOSE_BASE)/compose.yml config > /dev/null 2>&1 || true
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml config > /dev/null 2>&1 || true
 	@echo "Environment check complete"
 
 # Full stack
 dev: check-env
-	@docker compose -f $(COMPOSE_BASE)/compose.yml up -d
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml up -d
 	@echo "Temporal UI: http://localhost:8088"
 
 down:
-	@docker compose -f $(COMPOSE_BASE)/compose.yml down -v
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml down -v
 
 logs:
-	@docker compose -f $(COMPOSE_BASE)/compose.yml logs -f --tail=100
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml logs -f --tail=100
 
 ps:
-	@docker compose -f $(COMPOSE_BASE)/compose.yml ps
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml ps
 
 # Proto generation via buf  
 proto:
@@ -97,7 +97,7 @@ smoke-stream:
 	@ADMIN=$(ADMIN) GRPC=$(GRPC) WF_ID=$(WF_ID) ./scripts/stream_smoke.sh
 
 clean:
-	@docker compose -f $(COMPOSE_BASE)/compose.yml down -v || true
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml down -v || true
 	@docker system prune -f || true
 
 # --- Temporal deterministic replay helpers ---
@@ -116,7 +116,7 @@ replay-export:
 	    mkdir -p "$$OUT_DIR"; \
 	  fi; \
 	  echo "Exporting history to $$OUT_FILE"; \
-	  docker compose -f $(COMPOSE_BASE)/compose.yml exec -T temporal \
+	  docker compose -f $(COMPOSE_BASE)/docker-compose.yml exec -T temporal \
 	  temporal workflow show --workflow-id $(WORKFLOW_ID) $(if $(RUN_ID),--run-id $(RUN_ID),) \
 	  --namespace default --address temporal:7233 --output json > "$$OUT_FILE" && \
 	  echo "✅ History exported successfully to $$OUT_FILE"

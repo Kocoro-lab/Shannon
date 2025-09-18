@@ -21,7 +21,7 @@ check_pattern() {
     local workflow_id=$1
     local pattern=$2
 
-    docker compose -f deploy/compose/compose.yml logs orchestrator --tail 200 2>/dev/null | \
+    docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail 200 2>/dev/null | \
         grep -i "$workflow_id" | grep -iE "$pattern" > /dev/null 2>&1
     return $?
 }
@@ -99,7 +99,7 @@ else
 fi
 
 # Check for tool usage (indicates action)
-TOOL_USAGE=$(docker compose -f deploy/compose/compose.yml logs llm-service --tail 100 2>/dev/null | \
+TOOL_USAGE=$(docker compose -f deploy/compose/docker-compose.yml logs llm-service --tail 100 2>/dev/null | \
     grep -c "tool" || echo "0")
 
 if [ "$TOOL_USAGE" -gt 0 ]; then
@@ -177,7 +177,7 @@ echo "Workflow ID: $WORKFLOW_ID"
 sleep 5
 
 # Check for supervisor workflow (complex tasks often trigger it)
-SUPERVISOR=$(docker compose -f deploy/compose/compose.yml exec temporal \
+SUPERVISOR=$(docker compose -f deploy/compose/docker-compose.yml exec temporal \
     temporal workflow list --address temporal:7233 2>/dev/null | \
     grep -c "SupervisorWorkflow" || echo "0")
 
@@ -203,11 +203,11 @@ echo "Final status: $STATUS"
 # Cleanup any long-running workflows
 echo ""
 echo "Cleaning up long-running workflows..."
-for wf in $(docker compose -f deploy/compose/compose.yml exec temporal \
+for wf in $(docker compose -f deploy/compose/docker-compose.yml exec temporal \
     temporal workflow list --address temporal:7233 2>/dev/null | \
     grep "Running" | grep "task-" | awk '{print $2}'); do
 
-    docker compose -f deploy/compose/compose.yml exec temporal \
+    docker compose -f deploy/compose/docker-compose.yml exec temporal \
         temporal workflow terminate --workflow-id "$wf" --address temporal:7233 \
         --reason "Test cleanup" 2>/dev/null || true
 done
@@ -227,4 +227,4 @@ echo "  6. Hybrid - Complex multi-strategy"
 echo ""
 echo "Note: Pattern detection depends on query complexity and system configuration."
 echo "Check orchestrator logs for detailed pattern routing:"
-echo "  docker compose -f deploy/compose/compose.yml logs orchestrator | grep -i pattern"
+echo "  docker compose -f deploy/compose/docker-compose.yml logs orchestrator | grep -i pattern"

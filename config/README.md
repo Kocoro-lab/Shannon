@@ -185,7 +185,7 @@ Shannon supports **hot-reload** for most configuration changes without service r
 ### Testing Hot-Reload
 ```bash
 # Monitor configuration changes
-docker compose -f deploy/compose/compose.yml logs orchestrator -f &
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator -f &
 
 # Make configuration change
 sed -i 's/health_port: 8081/health_port: 8082/' config/shannon.yaml
@@ -228,7 +228,7 @@ export DB_PASSWORD="secure-database-password"
 yaml-lint config/*.yaml
 
 # Test configuration load
-docker compose -f deploy/compose/compose.yml config
+docker compose -f deploy/compose/docker-compose.yml config
 ```
 
 ### Integration Testing
@@ -263,13 +263,13 @@ ls -la config/*.yaml
 python3 -c "import yaml; yaml.safe_load(open('config/shannon.yaml'))"
 
 # Check orchestrator logs
-docker compose -f deploy/compose/compose.yml logs orchestrator | tail -20
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator | tail -20
 ```
 
 ### Hot-Reload Not Working
 ```bash
 # Check configuration manager logs
-docker compose -f deploy/compose/compose.yml logs orchestrator | grep -i "config"
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator | grep -i "config"
 
 # Verify file watchers
 # Configuration changes should appear in logs within 30 seconds
@@ -278,7 +278,7 @@ docker compose -f deploy/compose/compose.yml logs orchestrator | grep -i "config
 ### Invalid Configuration Values
 ```bash
 # Check validation errors in logs
-docker compose -f deploy/compose/compose.yml logs orchestrator | grep -i "error\|invalid"
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator | grep -i "error\|invalid"
 
 # Reset to known good configuration
 cp config/shannon.yaml.backup config/shannon.yaml

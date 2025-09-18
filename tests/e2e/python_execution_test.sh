@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/docker-compose.yml}"
 
 pass() { echo -e "[OK]  $1"; }
 fail() { echo -e "[ERR] $1"; exit 1; }

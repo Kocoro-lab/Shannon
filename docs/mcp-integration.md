@@ -32,7 +32,7 @@ WEATHER_API_KEY=your_api_key_here
 
 3. **Restart service**:
 ```bash
-docker compose -f deploy/compose/compose.yml restart llm-service
+docker compose -f deploy/compose/docker-compose.yml restart llm-service
 ```
 
 4. **Use the tool**:

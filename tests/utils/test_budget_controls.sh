@@ -20,7 +20,7 @@ done
 
 echo ""
 echo "Checking orchestrator logs for budget activity..."
-docker compose -f deploy/compose/compose.yml logs orchestrator --tail 50 | grep -i "budget" | tail -10 || echo "No budget logs found"
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail 50 | grep -i "budget" | tail -10 || echo "No budget logs found"
 
 echo ""
 echo "Testing with high token usage to trigger backpressure..."

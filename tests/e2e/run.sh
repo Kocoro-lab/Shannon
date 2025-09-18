@@ -4,7 +4,7 @@ set -euo pipefail
 # Shannon Platform E2E Test Suite
 # Comprehensive testing of multi-agent workflows and cognitive patterns
 
-COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/docker-compose.yml}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Color codes for output

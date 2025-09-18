@@ -26,7 +26,7 @@ The test scripts require the following tools on the host:
 
 1. Bring the stack up:
 ```bash
-docker compose -f deploy/compose/compose.yml up -d
+docker compose -f deploy/compose/docker-compose.yml up -d
 ```
 
 2. Run the smoke test:
@@ -82,7 +82,7 @@ make replay-export WORKFLOW_ID=task-dev-1234567890 OUT=tests/histories/my-test.j
 
 3. **Direct with Temporal CLI**:
 ```bash
-docker compose -f deploy/compose/compose.yml exec temporal \
+docker compose -f deploy/compose/docker-compose.yml exec temporal \
   temporal workflow show --workflow-id task-dev-1234567890 \
   --namespace default --address temporal:7233 --output json > tests/histories/my-test.json
 ```

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/compose.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-deploy/compose/docker-compose.yml}"
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Utilities

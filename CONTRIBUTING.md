@@ -44,7 +44,7 @@ There are many ways to contribute to Shannon:
 3. **Start Services for Development**
    ```bash
    # Start all dependencies (DB, Redis, etc.)
-   docker compose -f deploy/compose/compose.yml up -d postgres redis qdrant temporal
+   docker compose -f deploy/compose/docker-compose.yml up -d postgres redis qdrant temporal
 
    # Run services locally for development
    # Terminal 1: Orchestrator

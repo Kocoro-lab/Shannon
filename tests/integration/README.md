@@ -150,20 +150,20 @@ Integration Test: Single Agent Flow
 ### Service Connectivity Issues
 ```bash
 # Check service status
-docker compose -f deploy/compose/compose.yml ps
+docker compose -f deploy/compose/docker-compose.yml ps
 
 # Check service logs
-docker compose -f deploy/compose/compose.yml logs orchestrator
-docker compose -f deploy/compose/compose.yml logs agent-core
+docker compose -f deploy/compose/docker-compose.yml logs orchestrator
+docker compose -f deploy/compose/docker-compose.yml logs agent-core
 ```
 
 ### Database Issues
 ```bash  
 # Check PostgreSQL connectivity
-docker compose -f deploy/compose/compose.yml exec postgres psql -U shannon -d shannon -c 'SELECT 1'
+docker compose -f deploy/compose/docker-compose.yml exec postgres psql -U shannon -d shannon -c 'SELECT 1'
 
 # Check recent sessions
-docker compose -f deploy/compose/compose.yml exec postgres psql -U shannon -d shannon -c 'SELECT id, user_id, created_at FROM sessions ORDER BY created_at DESC LIMIT 5'
+docker compose -f deploy/compose/docker-compose.yml exec postgres psql -U shannon -d shannon -c 'SELECT id, user_id, created_at FROM sessions ORDER BY created_at DESC LIMIT 5'
 ```
 
 ### Qdrant Issues
@@ -194,7 +194,7 @@ Integration tests can be added to CI pipelines:
 - name: Run Integration Tests
   run: make integration-tests
   env:
-    COMPOSE_FILE: deploy/compose/compose.yml
+    COMPOSE_FILE: deploy/compose/docker-compose.yml
 ```
 
 For local development, run integration tests after major changes:
@@ -222,7 +222,7 @@ curl -X POST http://localhost:6333/collections/tool_results/points/delete \
   -d '{"filter": {"must": [{"key": "test", "match": {"value": true}}]}}'
 
 # Clean test sessions from PostgreSQL
-docker compose -f deploy/compose/compose.yml exec postgres \
+docker compose -f deploy/compose/docker-compose.yml exec postgres \
   psql -U shannon -d shannon -c "DELETE FROM sessions WHERE user_id LIKE 'test-%';"
 ```
 

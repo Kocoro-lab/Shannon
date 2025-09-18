@@ -2,6 +2,7 @@ package execution
 
 import (
     "fmt"
+    "strings"
     "time"
 
     "go.temporal.io/sdk/workflow"
@@ -178,6 +179,11 @@ func ExecuteSequential(
 		if budgetPerAgent > 0 {
 			// Execute with budget
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			// Extract base UUID from workflow ID (remove suffix like "_23")
+			taskID := wid
+			if idx := strings.LastIndex(wid, "_"); idx > 0 {
+				taskID = wid[:idx]
+			}
             err = workflow.ExecuteActivity(ctx,
                 constants.ExecuteAgentWithBudgetActivity,
                 activities.BudgetedAgentInput{
@@ -194,7 +200,7 @@ func ExecuteSequential(
                     },
                     MaxTokens: budgetPerAgent,
                     UserID:    userID,
-                    TaskID:    wid,
+                    TaskID:    taskID,
                     ModelTier: modelTier,
                 }).Get(ctx, &result)
 		} else {
