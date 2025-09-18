@@ -60,7 +60,7 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
             max_tokens=int(body.target_tokens or 400),
             temperature=0.2,
         )
-        completion = result.get("completion", "").strip()
+        completion = (result.get("output_text") or "").strip()
         usage = result.get("usage", {})
         tokens = usage.get("total_tokens", 0)
         est_original = max(tokens * 2, 1000)  # loose heuristic
@@ -68,7 +68,7 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
         return CompressResponse(
             summary=completion or "",
             tokens_saved=saved,
-            model_used=result.get("model_used", "unknown"),
+            model_used=result.get("model", "unknown"),
             usage=usage,
         )
     except Exception as e:

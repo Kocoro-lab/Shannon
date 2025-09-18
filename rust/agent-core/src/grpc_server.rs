@@ -6,6 +6,8 @@ use tracing::{debug, error, info};
 use crate::enforcement::RequestEnforcer;
 use crate::llm_client::LLMClient;
 use crate::memory::MemoryPool;
+
+#[cfg(feature = "wasi")]
 use crate::wasi_sandbox::WasiSandbox;
 
 // Include the generated proto code
@@ -29,6 +31,7 @@ use proto::agent::*;
 
 pub struct AgentServiceImpl {
     memory_pool: MemoryPool,
+    #[cfg(feature = "wasi")]
     sandbox: WasiSandbox,
     start_time: std::time::Instant,
     llm: std::sync::Arc<LLMClient>,

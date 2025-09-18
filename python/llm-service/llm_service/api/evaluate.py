@@ -124,7 +124,7 @@ async def evaluate_results(
             temperature=0.0,
             response_format={"type": "json_object"},
         )
-        raw = result.get("completion", "")
+        raw = result.get("output_text", "")
         data = _extract_json_block(raw)
         if not data:
             return _heuristic_evaluate(body)
