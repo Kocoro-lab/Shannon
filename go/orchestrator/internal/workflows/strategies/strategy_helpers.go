@@ -155,11 +155,15 @@ func shouldReflect(complexity float64) bool {
 }
 
 // emitTaskUpdate sends a task update event (fire-and-forget with timeout)
-func emitTaskUpdate(ctx workflow.Context, eventType activities.StreamEventType, agentID, message string) {
+func emitTaskUpdate(ctx workflow.Context, input TaskInput, eventType activities.StreamEventType, agentID, message string) {
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 	})
-	wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+	// Use parent workflow ID if this is a child workflow, otherwise use own ID
+	wid := input.ParentWorkflowID
+	if wid == "" {
+		wid = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate",
 		activities.EmitTaskUpdateInput{
 			WorkflowID: wid,

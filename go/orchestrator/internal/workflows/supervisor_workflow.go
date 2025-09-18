@@ -39,13 +39,20 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// - Failure threshold (50%+1) provides intelligent abort criteria
 	// - See docs/timeout-retry-strategy.md for full details
 
+	// Determine workflow ID for event streaming
+	// Use parent workflow ID if this is a child workflow, otherwise use own ID
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Emit WORKFLOW_STARTED event
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 	if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
 		AgentID:    "supervisor",
 		Message:    "SupervisorWorkflow started",
@@ -156,7 +163,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 					})
 					if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-						WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+						WorkflowID: workflowID,
 						EventType:  activities.StreamEventTeamRecruited,
 						AgentID:    role,
 						Message:    req.Description,
@@ -169,6 +176,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, TaskInput{
 						Query: req.Description, UserID: input.UserID, SessionID: input.SessionID,
 						Context: map[string]interface{}{"role": role}, Mode: input.Mode, History: input.History, SessionCtx: input.SessionCtx,
+						ParentWorkflowID: workflowID, // Preserve parent workflow ID for event streaming
 					}).Get(ctx, &res); err != nil {
 						logger.Error("Dynamic child workflow failed", "error", err)
 						return
@@ -195,7 +203,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 					})
 					if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-						WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+						WorkflowID: workflowID,
 						EventType:  activities.StreamEventTeamRetired,
 						AgentID:    req.AgentID,
 						Timestamp:  workflow.Now(ctx),
@@ -227,7 +235,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		})
 		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: workflowID,
 			EventType:  activities.StreamEventTeamStatus,
 			AgentID:    "supervisor",
 			Message:    message,
@@ -271,7 +279,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		})
 		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: workflowID,
 			EventType:  activities.StreamEventProgress,
 			AgentID:    fmt.Sprintf("agent-%s", st.ID),
 			Message:    progressMessage,
@@ -302,7 +310,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 			})
 			if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+				WorkflowID: workflowID,
 				EventType:  activities.StreamEventRoleAssigned,
 				AgentID:    fmt.Sprintf("agent-%s", st.ID),
 				Message:    role,
@@ -344,7 +352,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 								RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 							})
 							if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-								WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+								WorkflowID: workflowID,
 								EventType:  activities.StreamEventWaiting,
 								AgentID:    fmt.Sprintf("agent-%s", st.ID),
 								Message:    waitMessage,
@@ -357,7 +365,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						// Check if entries already exist
 						var entries []activities.WorkspaceEntry
 						if err := workflow.ExecuteActivity(ctx, constants.WorkspaceListActivity, activities.WorkspaceListInput{
-							WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+							WorkflowID: workflowID,
 							Topic:      topic,
 							SinceSeq:   0,
 							Limit:      1,
@@ -403,7 +411,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 					})
 					if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-						WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+						WorkflowID: workflowID,
 						EventType:  activities.StreamEventDependencySatisfied,
 						AgentID:    fmt.Sprintf("agent-%s", st.ID),
 						Message:    topic,
@@ -461,7 +469,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				}
 			}
 			if agentMax > 0 {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+				wid := workflowID
 				execErr = workflow.ExecuteActivity(ctx, constants.ExecuteAgentWithBudgetActivity, activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
 						Query:          st.Description,
@@ -522,7 +530,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				for _, topic := range decomp.Subtasks[i].Produces {
 					var wr activities.WorkspaceAppendResult
 					if err := workflow.ExecuteActivity(ctx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
-						WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+						WorkflowID: workflowID,
 						Topic:      topic,
 						Entry:      map[string]interface{}{"subtask_id": st.ID, "summary": res.Response},
 						Timestamp:  workflow.Now(ctx),
@@ -554,7 +562,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		})
 		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: workflowID,
 			EventType:  activities.StreamEventDataProcessing,
 			AgentID:    "supervisor",
 			Message:    synthMessage,

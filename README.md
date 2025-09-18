@@ -19,36 +19,27 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - **"Different teams need different models"** → Hot-swap between 15+ LLM providers
 - **"We need audit trails for compliance"** → Every decision logged and traceable
 
-## ⚡ Core Capabilities
+## ⚡ What Makes Shannon Different
 
-### 🎯 Intelligent P2P Agent Coordination
-- **Automatic Dependency Detection** - Shannon understands when tasks depend on each other from natural language
-- **Zero Configuration** - No manual DAG specification needed - just describe what you want
-- **Smart Data Flow** - Agents automatically wait for required data before executing
-- **Force Mode** - Override with `context: {"force_p2p": true}` for any task ([→ Guide](docs/p2p-coordination.md))
-
-Example: "Analyze the data, then create a report" → Shannon automatically makes report wait for analysis to complete
-
-### Developer Experience
-- **Multiple AI Patterns** - Supports ReAct, Tree-of-Thoughts, Chain-of-Thought, Debate, and Reflection patterns (configurable via cognitive_strategy)
-- **Secure Code Execution** - Full Python 3.11 support in WASI sandbox with session persistence ([→ Guide](docs/python-code-execution.md))
+### 🚀 Ship Faster
+- **Zero Configuration Multi-Agent** - Just describe what you want: "Analyze data, then create report" → Shannon handles dependencies automatically
+- **Multiple AI Patterns** - ReAct, Tree-of-Thoughts, Chain-of-Thought, Debate, and Reflection (configurable via `cognitive_strategy`)
 - **Time-Travel Debugging** - Export and replay any workflow to reproduce exact agent behavior
 - **Hot Configuration** - Change models, prompts, and policies without restarts
-- **Streaming Everything** - Real-time SSE updates for every agent action (WebSocket coming soon)
 
-### Production Readiness
+### 🔒 Production Ready
+- **WASI Sandbox** - Full Python 3.11 support with bulletproof security ([→ Guide](docs/python-code-execution.md))
 - **Token Budget Control** - Hard limits per user/session with real-time tracking
 - **Policy Engine (OPA)** - Define who can use which tools, models, and data
-- **Fault Tolerance** - Automatic retries, circuit breakers, and graceful degradation
 - **Multi-Tenancy** - Complete isolation between users, sessions, and organizations
 
-### Scale & Performance
+### 📈 Scale Without Breaking
 - **70% Cost Reduction** - Smart caching, session management, and token optimization
-- **Distributed by Design** - Horizontal scaling with Temporal workflow orchestration
 - **Provider Agnostic** - OpenAI, Anthropic, Google, Azure, Bedrock, DeepSeek, Groq, and more
-- **Observable by Default** - Shannon Dashboard (_coming soon_), Prometheus metrics, Grafana dashboards, OpenTelemetry tracing
+- **Observable by Default** - Prometheus metrics, Grafana dashboards, OpenTelemetry tracing
+- **Distributed by Design** - Horizontal scaling with Temporal workflow orchestration
 
-Note: Model pricing is centralized under `config/models.yaml` (`pricing:` section). All services (Go/Rust/Python) load from this file to compute costs consistently.
+*Model pricing is centralized in `config/models.yaml` - all services load from this single source for consistent cost tracking.*
 
 ## 🎯 Why Shannon vs. Others?
 
@@ -144,24 +135,9 @@ make smoke
 
 ### Your First Agent
 
-```bash
-# Submit a simple task
-./scripts/submit_task.sh "Analyze the sentiment of: 'Shannon makes AI agents simple!'"
+Shannon provides a simple REST API for easy integration and real-time streaming to monitor agent actions:
 
-# Check session usage and token tracking (session ID is in SubmitTask response message)
-grpcurl -plaintext \
-  -d '{"sessionId":"YOUR_SESSION_ID"}' \
-  localhost:50052 shannon.orchestrator.OrchestratorService/GetSessionContext
-
-# Export and replay a workflow history (use the workflow ID from submit_task output)
-./scripts/replay_workflow.sh <WORKFLOW_ID>
-```
-
-### 🌐 REST API & Real-Time Streaming
-
-Shannon provides a simple REST API for easy integration and real-time SSE (Server-Sent Events) streaming to monitor agent actions:
-
-#### Submit a Task via REST API
+#### Submit Your First Task
 
 ```bash
 # For development (no auth required)
@@ -171,7 +147,7 @@ export GATEWAY_SKIP_AUTH=1
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "Analyze the top 3 programming languages in 2024",
+    "query": "Analyze the sentiment of: Shannon makes AI agents simple!",
     "session_id": "demo-session-123"
   }'
 
@@ -179,33 +155,33 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 # {"workflow_id":"task-dev-1234567890","status":"running"}
 ```
 
-#### Monitor Real-Time Events with SSE
+#### Watch Your Agent Work in Real-Time
 
 ```bash
-# Stream live events as agents work (replace with your workflow_id)
+# Stream live events as your agent works (replace with your workflow_id)
 curl -N http://localhost:8081/stream/sse?workflow_id=task-dev-1234567890
 
 # You'll see human-readable events like:
 # event: AGENT_THINKING
-# data: {"message":"Analyzing: top 3 programming languages in 2024"}
+# data: {"message":"Analyzing sentiment: Shannon makes AI agents simple!"}
 #
 # event: TOOL_INVOKED
-# data: {"message":"Searching web for: programming language rankings 2024"}
+# data: {"message":"Processing natural language sentiment analysis"}
 #
 # event: AGENT_COMPLETED
 # data: {"message":"Task completed successfully"}
 ```
 
-#### Check Task Status
+#### Get Your Results
 
 ```bash
-# Get current status and result
+# Check final status and result
 curl http://localhost:8080/api/v1/tasks/task-dev-1234567890
 
 # Response includes status, result, tokens used, and metadata
 ```
 
-#### Production Authentication
+#### Production Setup
 
 For production, use API keys instead of GATEWAY_SKIP_AUTH:
 
@@ -219,6 +195,70 @@ curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{"query":"Your task here"}'
 ```
+
+<details>
+<summary><b>Advanced Methods: Scripts, gRPC, and Command Line</b> (click to expand)</summary>
+
+#### Using Shell Scripts
+
+```bash
+# Submit a simple task
+./scripts/submit_task.sh "Analyze the sentiment of: 'Shannon makes AI agents simple!'"
+
+# Check session usage and token tracking (session ID is in SubmitTask response message)
+grpcurl -plaintext \
+  -d '{"sessionId":"YOUR_SESSION_ID"}' \
+  localhost:50052 shannon.orchestrator.OrchestratorService/GetSessionContext
+
+# Export and replay a workflow history (use the workflow ID from submit_task output)
+./scripts/replay_workflow.sh <WORKFLOW_ID>
+```
+
+#### Direct gRPC Calls
+
+```bash
+# Submit via gRPC
+grpcurl -plaintext \
+  -d '{"query":"Analyze sentiment","sessionId":"test-session"}' \
+  localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
+
+# Stream events via gRPC
+grpcurl -plaintext \
+  -d '{"workflowId":"task-dev-1234567890"}' \
+  localhost:50052 shannon.orchestrator.OrchestratorService/StreamEvents
+```
+
+#### WebSocket Streaming
+
+```bash
+# Connect to WebSocket for bidirectional streaming
+wscat -c ws://localhost:8081/api/v1/stream/ws?workflow_id=task-dev-1234567890
+```
+
+#### Temporal UI (Visual Workflow Debugging)
+
+```bash
+# Access Temporal Web UI for visual workflow inspection
+open http://localhost:8088
+
+# Or navigate manually to see:
+# - Workflow execution history and timeline
+# - Task status, retries, and failures
+# - Input/output data for each step
+# - Real-time workflow progress
+# - Search workflows by ID, type, or status
+```
+
+The Temporal UI provides a powerful visual interface to:
+- **Debug workflows** - See exactly where and why workflows fail
+- **Monitor performance** - Track execution times and bottlenecks  
+- **Inspect state** - View all workflow inputs, outputs, and intermediate data
+- **Search & filter** - Find workflows by various criteria
+- **Replay workflows** - Visual replay of historical executions
+
+</details>
+
+### 🌐 API Features
 
 The REST API supports:
 - **Idempotency**: Use `Idempotency-Key` header for safe retries
@@ -666,8 +706,6 @@ MIT License - Use it anywhere, modify anything, zero restrictions. See [LICENSE]
 
 <p align="center">
   <b>Stop debugging AI failures. Start shipping reliable agents.</b><br><br>
-  <a href="https://shannon.kocoro.dev">Website</a> •
-  <a href="https://shannon.kocoro.dev/docs">Documentation</a> •
   <a href="https://discord.gg/NB7C2fMcQR">Discord</a> •
   <a href="https://github.com/Kocoro-lab/Shannon">GitHub</a>
 </p>

@@ -150,7 +150,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	)
 
 	// Emit workflow started event
-	emitTaskUpdate(ctx, activities.StreamEventWorkflowStarted, "", "")
+	emitTaskUpdate(ctx, input, activities.StreamEventWorkflowStarted, "", "")
 
 	// Determine execution strategy
 	hasDependencies := false

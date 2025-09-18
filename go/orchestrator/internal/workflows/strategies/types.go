@@ -21,6 +21,9 @@ type TaskInput struct {
 
 	// Workflow behavior flags (deterministic per-run)
 	BypassSingleResult bool // If true, return single successful result directly
+
+	// Parent workflow ID for event streaming (used by child workflows)
+	ParentWorkflowID string // Parent workflow ID for unified event streaming
 }
 
 // Message represents a conversation message

@@ -195,6 +195,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 	}
 
+	// Set parent workflow ID for child workflows to use for unified event streaming
+	parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	input.ParentWorkflowID = parentWorkflowID
+
 	switch {
 	case isSimple && !forceP2P:
 		// Keep simple path lightweight as a child for isolation (unless P2P is forced)
@@ -202,7 +206,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		ometrics.WorkflowsStarted.WithLabelValues("SimpleTaskWorkflow", "simple").Inc()
 		// Emit delegation event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
 			Message:    "Routing to SimpleTaskWorkflow",
 			Timestamp:  workflow.Now(ctx),
@@ -217,7 +221,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		ometrics.WorkflowsStarted.WithLabelValues("SupervisorWorkflow", "complex").Inc()
 		// Emit delegation event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
 			Message:    "Routing to SupervisorWorkflow",
 			Timestamp:  workflow.Now(ctx),
@@ -232,7 +236,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		ometrics.WorkflowsStarted.WithLabelValues("DAGWorkflow", "standard").Inc()
 		// Emit delegation event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
 			Message:    "Routing to DAGWorkflow",
 			Timestamp:  workflow.Now(ctx),
@@ -270,6 +274,7 @@ func convertToStrategiesInput(input TaskInput) strategies.TaskInput {
 		RequireApproval:    input.RequireApproval,
 		ApprovalTimeout:    input.ApprovalTimeout,
 		BypassSingleResult: input.BypassSingleResult,
+		ParentWorkflowID:   input.ParentWorkflowID,
 	}
 }
 

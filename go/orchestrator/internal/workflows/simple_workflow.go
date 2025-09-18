@@ -20,13 +20,20 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		"session_id", input.SessionID,
 	)
 
+	// Determine workflow ID for event streaming
+	// Use parent workflow ID if this is a child workflow, otherwise use own ID
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Emit workflow started event
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
 		AgentID:    "simple-agent",
 		Message:    "Starting simple task workflow",
@@ -39,7 +46,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		truncatedQuery = truncatedQuery[:77] + "..."
 	}
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentThinking,
 		AgentID:    "simple-agent",
 		Message:    "Analyzing: " + truncatedQuery,
@@ -57,7 +64,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Emit agent started event
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentStarted,
 		AgentID:    "simple-agent",
 		Message:    "Processing query",
@@ -80,7 +87,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		logger.Error("Simple task execution failed", "error", err)
 		// Emit error event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			WorkflowID: workflowID,
 			EventType:  activities.StreamEventErrorOccurred,
 			AgentID:    "simple-agent",
 			Message:    "Task execution failed: " + err.Error(),
@@ -136,7 +143,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Emit completion event
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentCompleted,
 		AgentID:    "simple-agent",
 		Message:    "Task completed successfully",
