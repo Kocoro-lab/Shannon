@@ -458,20 +458,6 @@ make coverage
 
 We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
-### Quick Contribution Steps
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-### Development Priorities
-
-- 🔥 **Hot**: WebSocket streaming, Kubernetes operator
-- 🎯 **Next**: LangGraph adapter, expanded MCP tools
-- 🔮 **Future**: Multi-modal agents, edge deployment
-
 ## 🌟 Community
 
 - **Discord**: [Join our Discord](https://discord.gg/NB7C2fMcQR) (Coming Soon)
@@ -496,7 +482,7 @@ A: We run 1M+ agent executions/day in production. Temporal (our workflow engine)
 **Q: What about vendor lock-in?**
 A: Zero lock-in. Standard protocols (gRPC, HTTP, SSE). Export your workflows anytime. Swap LLM providers with one line. MIT licensed forever.
 
-## 📊 Production Status
+## 📊 Project Status
 
 ### Battle-Tested in Production
 - **1M+ workflows/day** across 50+ organizations
@@ -584,14 +570,6 @@ cd Shannon && make setup-env && make dev
 ## 📄 License
 
 MIT License - Use it anywhere, modify anything, zero restrictions. See [LICENSE](LICENSE).
-
-## 🙏 Standing on the Shoulders of Giants
-
-- [Temporal](https://temporal.io) - Workflow orchestration that powers half the internet
-- [WASI](https://wasi.dev) - W3C standard for secure code execution
-- [OPA](https://www.openpolicyagent.org) - Policy engine trusted by CNCF
-- [MCP](https://modelcontextprotocol.io) - Anthropic's tool protocol standard
-- Our amazing contributors and production users
 
 ---
 

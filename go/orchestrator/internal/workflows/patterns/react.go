@@ -151,8 +151,9 @@ func ReactLoop(
 		actionContext["current_thought"] = reasonResult.Response
 		actionContext["observations"] = getRecentObservations(observations, config.ObservationWindow)
 
-		// Determine which tools to use based on reasoning
-		suggestedTools := extractToolsFromReasoning(reasonResult.Response)
+		// Let LLM decide tools - no pattern matching
+		// The agent will select appropriate tools based on the action query
+		var suggestedTools []string
 
 		actionQuery := fmt.Sprintf(
 			"ACT on this plan: %s\nExecute the next step with available tools.",
@@ -334,30 +335,8 @@ func isTaskComplete(reasoning string) bool {
 	return false
 }
 
-func extractToolsFromReasoning(reasoning string) []string {
-	// Simple keyword-based tool extraction
-	// In production, this could use more sophisticated NLP
-	var tools []string
-	lowerReasoning := strings.ToLower(reasoning)
-
-	toolKeywords := map[string][]string{
-		"calculator":    {"calculate", "compute", "math", "arithmetic"},
-		"web_search":    {"search", "look up", "find information"},
-		"code_executor": {"run code", "execute", "python", "script"},
-		"file_ops":      {"read file", "write file", "save", "load"},
-	}
-
-	for tool, keywords := range toolKeywords {
-		for _, keyword := range keywords {
-			if strings.Contains(lowerReasoning, keyword) {
-				tools = append(tools, tool)
-				break
-			}
-		}
-	}
-
-	return tools
-}
+// Removed extractToolsFromReasoning - all tool selection is now LLM-driven
+// to maintain consistency with the LLM-native architecture
 
 func hasHighConfidenceSolution(observations []string, thoughts []string) bool {
 	// Check if we have strong indicators of a solution
