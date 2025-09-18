@@ -46,11 +46,11 @@ docker compose -v
 ### Recommended Installation Path
 
 ```bash
-# Project deployment directory
-/data
+# Project deployment directory (customize as needed)
+${SHANNON_BASE_DIR:-/data}
 
-# Code path
-/data/Shannon/
+# Code path (relative to base directory)
+${SHANNON_BASE_DIR:-/data}/Shannon/
 ```
 
 ## Dependencies Installation
@@ -97,16 +97,17 @@ grpcurl --version
 
 ```bash
 # Create and enter project directory
-sudo mkdir -p /data
-cd /data
+export SHANNON_BASE_DIR=${SHANNON_BASE_DIR:-/data}
+sudo mkdir -p $SHANNON_BASE_DIR
+cd $SHANNON_BASE_DIR
 
 # Clone Shannon project repository
 git clone https://github.com/Kocoro-lab/Shannon.git
-cd /data/Shannon/
+cd $SHANNON_BASE_DIR/Shannon/
 
 # Check current directory
 pwd
-/data/Shannon/
+# Expected output: $SHANNON_BASE_DIR/Shannon/
 ```
 
 ### 2. Environment Configuration

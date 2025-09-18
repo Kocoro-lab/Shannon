@@ -178,6 +178,7 @@ protos/gen/
 **/*_pb2_grpc.py
 *.pb.cc
 *.pb.h
+**/generated/
 
 # Logs
 logs/

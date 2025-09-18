@@ -61,11 +61,11 @@ docker-compose -v
 ### Recommended Installation Path
 
 ```bash
-# Project deployment directory
-/data
+# Project deployment directory (customize as needed)
+${SHANNON_BASE_DIR:-/data}
 
-# Code path
-/data/Shannon/
+# Code path (relative to base directory)
+${SHANNON_BASE_DIR:-/data}/Shannon/
 ```
 
 ## Dependencies Installation
@@ -155,16 +155,17 @@ cp -r /tmp/include/google /usr/local/include/
 
 ```bash
 # Create and enter project directory
-sudo mkdir -p /data
-cd /data
+export SHANNON_BASE_DIR=${SHANNON_BASE_DIR:-/data}
+sudo mkdir -p $SHANNON_BASE_DIR
+cd $SHANNON_BASE_DIR
 
 # Clone Shannon project repository
 git clone https://github.com/Kocoro-lab/Shannon.git
-cd /data/Shannon/
+cd $SHANNON_BASE_DIR/Shannon/
 
 # Check current directory
 pwd
-/data/Shannon/
+# Expected output: $SHANNON_BASE_DIR/Shannon/
 ```
 
 ### 2. Environment Configuration
@@ -376,10 +377,10 @@ The following are the most frequently encountered problems during Rocky Linux de
 
    ```bash
    # Fix buf command path in setup-remote.sh
-   # Edit /data/Shannon/scripts/setup-remote.sh line 35
+   # Edit $SHANNON_BASE_DIR/Shannon/scripts/setup-remote.sh line 35
    # Change: buf generate
    # To: /usr/local/bin/buf generate
-   
+
    # Or add to PATH temporarily
    export PATH="/usr/local/bin:$PATH"
    ./scripts/setup-remote.sh
@@ -416,7 +417,7 @@ The following are the most frequently encountered problems during Rocky Linux de
    pip3 install grpcio-tools==1.68.1
 
    # Step 3: Generate Python protobuf files
-   cd /data/Shannon/protos
+   cd $SHANNON_BASE_DIR/Shannon/protos
    mkdir -p ../python/llm-service/llm_service/generated/agent
    mkdir -p ../python/llm-service/llm_service/generated/common
 
@@ -438,7 +439,7 @@ The following are the most frequently encountered problems during Rocky Linux de
    # To: from ..common import common_pb2 as common_dot_common__pb2
 
    # Step 6: Rebuild and restart
-   cd /data/Shannon
+   cd $SHANNON_BASE_DIR/Shannon
    docker compose build llm-service
    docker compose up -d llm-service
    ```
@@ -586,7 +587,7 @@ ss -tulpn | grep -E "8000|8088|50051|50052"
 
 ```bash
 # Check if proto files are generated
-ls -la /data/Shannon/python/llm-service/llm_service/generated/
+ls -la $SHANNON_BASE_DIR/Shannon/python/llm-service/llm_service/generated/
 
 # Verify Python dependencies
 pip3 list | grep -E "grpc|protobuf"
@@ -607,7 +608,7 @@ docker compose down -v
 docker system prune -f
 
 # Regenerate proto files
-cd /data/Shannon
+cd $SHANNON_BASE_DIR/Shannon
 make proto  # or use manual commands above
 
 # Rebuild all services
