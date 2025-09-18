@@ -10,6 +10,10 @@ plugins:
     opt:
       - paths=source_relative
   - plugin: buf.build/protocolbuffers/python
-    out: gen/python
+    out: ../python/llm-service/llm_service/generated
+    opt:
+      - relative_imports
   - plugin: buf.build/grpc/python
-    out: gen/python
+    out: ../python/llm-service/llm_service/generated
+    opt:
+      - relative_imports
