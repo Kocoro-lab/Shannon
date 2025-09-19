@@ -153,7 +153,7 @@ for i in range(100000):
         session_id = "test_session_123"
 
         # First execution - set variable
-        session = executor._get_or_create_session(session_id)
+        session = await executor._get_or_create_session(session_id)
         assert session is not None
         assert session.session_id == session_id
 
@@ -162,7 +162,7 @@ for i in range(100000):
         session.variables["name"] = "Alice"
 
         # Second execution - verify variables exist
-        session2 = executor._get_or_create_session(session_id)
+        session2 = await executor._get_or_create_session(session_id)
         assert session2 is not None
         assert session2.variables["x"] == 42
         assert session2.variables["name"] == "Alice"
@@ -233,20 +233,60 @@ for i in range(1000):
 
         # Create multiple sessions
         for i in range(5):
-            session = executor._get_or_create_session(f"session_{i}")
+            session = await executor._get_or_create_session(f"session_{i}")
             session.last_accessed = time.time() - (executor._session_timeout + 100)  # Expired
 
         # Create one active session
-        executor._get_or_create_session("active_session")
+        await executor._get_or_create_session("active_session")
 
         # Trigger cleanup by creating another session
-        executor._get_or_create_session("new_session")
+        await executor._get_or_create_session("new_session")
 
         # Check that expired sessions are removed
         assert "active_session" in executor._sessions
         assert "new_session" in executor._sessions
         for i in range(5):
             assert f"session_{i}" not in executor._sessions
+
+    @pytest.mark.asyncio
+    async def test_concurrent_session_access(self, executor):
+        """Test thread-safe concurrent access to sessions"""
+        import asyncio
+
+        # Clear any existing sessions
+        executor._sessions.clear()
+
+        async def create_and_modify_session(session_id: str, value: int):
+            """Create a session and modify its variables"""
+            session = await executor._get_or_create_session(session_id)
+            await asyncio.sleep(0.01)  # Simulate some work
+            session.variables[f"var_{value}"] = value
+            return session
+
+        # Create multiple concurrent tasks accessing different sessions
+        tasks = []
+        for i in range(10):
+            # Some tasks use same session, some use different
+            session_id = f"session_{i % 3}"  # 3 unique sessions, accessed multiple times
+            tasks.append(create_and_modify_session(session_id, i))
+
+        # Run all tasks concurrently
+        results = await asyncio.gather(*tasks)
+
+        # Verify sessions were created correctly
+        assert len(executor._sessions) == 3  # Only 3 unique sessions
+
+        # Verify all variables were set (no race condition data loss)
+        all_vars = set()
+        for session in executor._sessions.values():
+            all_vars.update(session.variables.keys())
+
+        # Should have variables from all 10 tasks
+        assert len(all_vars) == 10
+
+        # Verify execution counts
+        total_executions = sum(s.execution_count for s in executor._sessions.values())
+        assert total_executions == 10
 
     @pytest.mark.asyncio
     async def test_empty_code_handling(self, executor):
@@ -284,7 +324,8 @@ print(f"The answer is {x}")
                 assert "Hello, World!" in result.output
                 assert "The answer is 42" in result.output
 
-    def test_session_state_extraction(self, executor):
+    @pytest.mark.asyncio
+    async def test_session_state_extraction(self, executor):
         """Test extraction of session state from output"""
         session = ExecutionSession(session_id="test")
 
@@ -295,7 +336,7 @@ Result: 42
 __SESSION_STATE__:{"x": "42", "name": "'Alice'", "data": "[1, 2, 3]"}__END_SESSION__
 """
 
-        clean_output = executor._extract_session_state(output_with_state, session)
+        clean_output = await executor._extract_session_state(output_with_state, session)
 
         # Check that state was extracted
         assert session.variables["x"] == 42

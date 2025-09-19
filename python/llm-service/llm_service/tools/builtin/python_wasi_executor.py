@@ -26,8 +26,8 @@ import hashlib
 import grpc
 from google.protobuf import struct_pb2
 
-from ...generated.agent import agent_pb2, agent_pb2_grpc
-from ...generated.common import common_pb2
+from ...grpc_gen.agent import agent_pb2, agent_pb2_grpc
+from ...grpc_gen.common import common_pb2
 from ..base import (
     Tool,
     ToolMetadata,
@@ -62,8 +62,9 @@ class PythonWasiExecutorTool(Tool):
     _interpreter_cache: Optional[bytes] = None
     _cache_hash: Optional[str] = None
     _sessions: Dict[str, ExecutionSession] = {}
+    _session_lock: asyncio.Lock = asyncio.Lock()  # Thread-safe session access
     _max_sessions: int = 100
-    _session_timeout: int = 3600  # 1 hour
+    _session_timeout: int = int(os.getenv("PYTHON_WASI_SESSION_TIMEOUT", "3600"))  # Default 1 hour
 
     def __init__(self):
         super().__init__()
@@ -141,34 +142,35 @@ class PythonWasiExecutorTool(Tool):
         except Exception as e:
             logger.error(f"Failed to cache interpreter: {e}")
 
-    def _get_or_create_session(self, session_id: Optional[str]) -> Optional[ExecutionSession]:
-        """Get or create a persistent execution session"""
+    async def _get_or_create_session(self, session_id: Optional[str]) -> Optional[ExecutionSession]:
+        """Get or create a persistent execution session (thread-safe)"""
         if not session_id:
             return None
 
-        # Clean expired sessions
-        current_time = time.time()
-        expired = [
-            sid for sid, sess in self._sessions.items()
-            if current_time - sess.last_accessed > self._session_timeout
-        ]
-        for sid in expired:
-            del self._sessions[sid]
+        async with self._session_lock:
+            # Clean expired sessions
+            current_time = time.time()
+            expired = [
+                sid for sid, sess in self._sessions.items()
+                if current_time - sess.last_accessed > self._session_timeout
+            ]
+            for sid in expired:
+                del self._sessions[sid]
 
-        # Get or create session
-        if session_id not in self._sessions:
-            if len(self._sessions) >= self._max_sessions:
-                # Remove oldest session
-                oldest = min(self._sessions.items(), key=lambda x: x[1].last_accessed)
-                del self._sessions[oldest[0]]
+            # Get or create session
+            if session_id not in self._sessions:
+                if len(self._sessions) >= self._max_sessions:
+                    # Remove oldest session
+                    oldest = min(self._sessions.items(), key=lambda x: x[1].last_accessed)
+                    del self._sessions[oldest[0]]
 
-            self._sessions[session_id] = ExecutionSession(session_id=session_id)
+                self._sessions[session_id] = ExecutionSession(session_id=session_id)
 
-        session = self._sessions[session_id]
-        session.last_accessed = current_time
-        session.execution_count += 1
+            session = self._sessions[session_id]
+            session.last_accessed = current_time
+            session.execution_count += 1
 
-        return session
+            return session
 
     def _prepare_code_with_session(self, code: str, session: Optional[ExecutionSession]) -> str:
         """Prepare code with session context if available"""
@@ -210,8 +212,14 @@ print("__SESSION_STATE__", json.dumps({
 
         return full_code + "\n" + capture_code
 
-    def _extract_session_state(self, output: str, session: Optional[ExecutionSession]) -> str:
-        """Extract and store session state from output"""
+    async def _extract_session_state(self, output: str, session: Optional[ExecutionSession]) -> str:
+        """Extract and store session state from output (thread-safe).
+
+        Note: Session state persistence is limited to Python literals that can be
+        evaluated with ast.literal_eval (int, float, str, bool, list, dict, tuple, None).
+        Complex objects (classes, functions, etc.) will be stored as string representations
+        but won't be restored as functional objects in future sessions.
+        """
         if not session or "__SESSION_STATE__" not in output:
             return output
 
@@ -224,12 +232,18 @@ print("__SESSION_STATE__", json.dumps({
 
                 # Parse state
                 state = json.loads(state_part)
-                for name, repr_value in state.items():
-                    try:
-                        # Safely evaluate the repr'd value using ast.literal_eval
-                        session.variables[name] = ast.literal_eval(repr_value)
-                    except Exception:
-                        session.variables[name] = repr_value
+
+                # Use lock when modifying session variables
+                async with self._session_lock:
+                    for name, repr_value in state.items():
+                        try:
+                            # Safely evaluate the repr'd value using ast.literal_eval
+                            # This limits persistence to Python literals only
+                            session.variables[name] = ast.literal_eval(repr_value)
+                        except (ValueError, SyntaxError):
+                            # For complex objects, store string representation
+                            session.variables[name] = repr_value
+                            logger.debug(f"Session variable '{name}' stored as string (not a Python literal)")
 
                 return clean_output
         except Exception as e:
@@ -258,7 +272,7 @@ print("__SESSION_STATE__", json.dumps({
 
         try:
             # Get or create session
-            session = self._get_or_create_session(session_id)
+            session = await self._get_or_create_session(session_id)
 
             # Prepare code with session context
             if session:
@@ -316,7 +330,7 @@ print("__SESSION_STATE__", json.dumps({
 
                 # Extract session state if applicable
                 if session:
-                    output = self._extract_session_state(output, session)
+                    output = await self._extract_session_state(output, session)
 
                 return ToolResult(
                     success=True,

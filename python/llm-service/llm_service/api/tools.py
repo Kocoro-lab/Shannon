@@ -17,6 +17,7 @@ from ..tools.builtin import (
     CalculatorTool,
     FileReadTool,
     FileWriteTool,
+    PythonWasiExecutorTool,
 )
 
 logger = logging.getLogger(__name__)
@@ -161,6 +162,7 @@ async def startup_event():
         CalculatorTool,
         FileReadTool,
         FileWriteTool,
+        PythonWasiExecutorTool,
     ]
 
     for tool_class in tools_to_register:
