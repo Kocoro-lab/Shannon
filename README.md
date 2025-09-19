@@ -1,5 +1,22 @@
 # Shannon — Production AI Agents That Actually Work
 
+<div align="center">
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│     We're building a unified dashboard and a centralized documentation hub,  │
+│     with all features already implemented in the code. We're working hard    │
+│     to polish them, and we'd love your support!                              │
+│                                                                              │
+│     Please ⭐ star this repo to show your interest and stay updated as we    │
+│     refine these tools. Thanks for your patience and encouragement!          │
+│                                                                              │
+└────────────────────────────────────────────────────────────────────────────-─┘
+```
+
+</div>
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
@@ -579,10 +596,8 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 
 ## 🌟 Community
 
-- **Discord**: [Join our Discord](https://discord.gg/NB7C2fMcQR) (Coming Soon)
-- **Discussions**: [GitHub Discussions](https://github.com/Kocoro-lab/Shannon/discussions)
+- **Discord**: [Join our Discord](https://discord.gg/NB7C2fMcQR)
 - **Twitter/X**: [@ShannonAI](https://twitter.com/ShannonAgents)
-- **Blog**: [shannon.ai/blog](https://shannon.ai/blog)
 
 ## ❓ FAQ
 
