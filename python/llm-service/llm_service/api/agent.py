@@ -236,7 +236,24 @@ async def agent_query(request: Request, query: AgentQuery):
                                 }
                             }
                         })
-            
+                    elif tool_name == "python_executor":
+                        tools_param.append({
+                            "type": "function",
+                            "function": {
+                                "name": "python_executor",
+                                "description": "Execute Python code in a secure WASI sandbox environment. Supports full Python 3.11 standard library. Use this tool to run Python scripts, perform calculations, data processing, or any Python programming task. IMPORTANT: Always use print() statements to output results.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": {"type": "string", "description": "Python source code to execute. Must include print() statements to produce visible output."},
+                                        "session_id": {"type": "string", "description": "Optional session ID for maintaining persistent state across executions"},
+                                        "stdin": {"type": "string", "description": "Optional input data to provide via stdin to the Python script"}
+                                    },
+                                    "required": ["code"]
+                                }
+                            }
+                        })
+
             result_data = await request.app.state.providers.generate_completion(
                 messages=messages,
                 tier=tier,
@@ -336,7 +353,6 @@ async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_to
                 if "language" in args or "code" in args:
                     # LLM is trying to execute source code, not WASM
                     lang = args.get("language", "unknown")
-                    code = args.get("code", "")
                     formatted_results.append(
                         f"Error: The code_executor tool only executes compiled WASM bytecode, not {lang} source code. "
                         f"To execute {lang} code, it must first be compiled to WebAssembly (.wasm format). "
@@ -483,7 +499,8 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "  * NOT for: general knowledge, concepts, explanations, analysis, or guidance\n"
             "- calculator: ONLY for complex mathematical computations beyond basic arithmetic\n"
             "- file_read: ONLY when explicitly asked to read/open a specific file\n"
-            "- code_executor: ONLY for executing provided WASM code\n\n"
+            "- python_executor: For executing Python code, data analysis, or programming tasks\n"
+            "- code_executor: ONLY for executing provided WASM code (do not use for Python)\n\n"
             "DO NOT USE TOOLS FOR:\n"
             "- General knowledge questions or explanations\n"
             "- Analysis, recommendations, or strategic advice\n"
@@ -513,13 +530,14 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "}\n\n"
 
             "Available tools:\n"
-            "- code_executor: Execute code in sandbox (NOTE: Do NOT suggest this tool - it requires pre-compiled WASM)\n"
+            "- python_executor: Execute Python code in sandbox (params: tool, code)\n"
+            "- code_executor: Execute WASM bytecode (NOTE: Do NOT suggest this - it's for pre-compiled WASM only)\n"
             "- calculator: Perform calculations (params: tool, expression)\n"
             "- web_search: Search the web (params: tool, query)\n"
             "- file_reader: Read files (params: tool, path)\n\n"
 
-            "IMPORTANT: For code_executor, do NOT suggest it unless user explicitly provides WASM. For general code tasks,\n"
-            "let the agent handle code generation directly without tools.\n\n"
+            "IMPORTANT: Use python_executor for Python code execution tasks. Never suggest code_executor unless user\n"
+            "explicitly provides WASM bytecode. For general code writing (without execution), handle directly.\n\n"
 
             "Example for Chinese stock query '分析苹果股票走势':\n"
             "{\n"

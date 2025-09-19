@@ -2,6 +2,17 @@
 
 The LLM Service is Shannon's AI provider gateway, managing LLM interactions, tool execution, and MCP integration with support for multiple providers and intelligent tool selection.
 
+## ⚠️ Important Setup Note
+
+**Before building or running the service**, you must generate the protobuf files:
+
+```bash
+# From repository root
+./scripts/generate_protos_local.sh
+```
+
+This creates the `python/llm-service/llm_service/grpc_gen` directory with protobuf v5-compatible files required for the Python WASI executor and other gRPC communication.
+
 ## 🎯 Core Responsibilities
 
 - **Multi-Provider LLM Gateway** - Unified interface for OpenAI, Anthropic, Google, AWS Bedrock, Azure, Groq

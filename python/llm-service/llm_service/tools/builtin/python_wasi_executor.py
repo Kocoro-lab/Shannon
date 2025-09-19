@@ -26,8 +26,8 @@ import hashlib
 import grpc
 from google.protobuf import struct_pb2
 
-from ...generated.agent import agent_pb2, agent_pb2_grpc
-from ...generated.common import common_pb2
+from ...grpc_gen.agent import agent_pb2, agent_pb2_grpc
+from ...grpc_gen.common import common_pb2
 from ..base import (
     Tool,
     ToolMetadata,
