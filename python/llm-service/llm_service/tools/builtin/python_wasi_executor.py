@@ -64,7 +64,7 @@ class PythonWasiExecutorTool(Tool):
     _sessions: Dict[str, ExecutionSession] = {}
     _session_lock: asyncio.Lock = asyncio.Lock()  # Thread-safe session access
     _max_sessions: int = 100
-    _session_timeout: int = 3600  # 1 hour
+    _session_timeout: int = int(os.getenv("PYTHON_WASI_SESSION_TIMEOUT", "3600"))  # Default 1 hour
 
     def __init__(self):
         super().__init__()
@@ -213,7 +213,13 @@ print("__SESSION_STATE__", json.dumps({
         return full_code + "\n" + capture_code
 
     async def _extract_session_state(self, output: str, session: Optional[ExecutionSession]) -> str:
-        """Extract and store session state from output (thread-safe)"""
+        """Extract and store session state from output (thread-safe).
+
+        Note: Session state persistence is limited to Python literals that can be
+        evaluated with ast.literal_eval (int, float, str, bool, list, dict, tuple, None).
+        Complex objects (classes, functions, etc.) will be stored as string representations
+        but won't be restored as functional objects in future sessions.
+        """
         if not session or "__SESSION_STATE__" not in output:
             return output
 
@@ -232,9 +238,12 @@ print("__SESSION_STATE__", json.dumps({
                     for name, repr_value in state.items():
                         try:
                             # Safely evaluate the repr'd value using ast.literal_eval
+                            # This limits persistence to Python literals only
                             session.variables[name] = ast.literal_eval(repr_value)
-                        except Exception:
+                        except (ValueError, SyntaxError):
+                            # For complex objects, store string representation
                             session.variables[name] = repr_value
+                            logger.debug(f"Session variable '{name}' stored as string (not a Python literal)")
 
                 return clean_output
         except Exception as e:
