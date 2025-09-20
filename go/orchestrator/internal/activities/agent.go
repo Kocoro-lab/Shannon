@@ -13,6 +13,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/personas"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
@@ -455,27 +456,48 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 	// Apply persona settings if specified
 	if input.PersonaID != "" {
-		// TODO: Re-enable when personas package is complete
-		// persona, err := personas.GetPersona(input.PersonaID)
-		type Persona struct {
-			SystemPrompt string
-			Temperature  float64
-			TokenBudget  string
-			Tools        []string
-		}
-		var persona *Persona
-		err := fmt.Errorf("personas package not yet implemented")
-		if err != nil {
-			logger.Warn("Failed to load persona, using defaults",
-				zap.String("persona_id", input.PersonaID),
-				zap.Error(err))
-		} else {
-			// Apply persona configuration
-			if persona.SystemPrompt != "" {
-				if input.Context == nil {
-					input.Context = make(map[string]interface{})
+		manager := getPersonaManagerForAgent()
+		if manager != nil {
+			persona, err := manager.GetPersona(input.PersonaID)
+			if err != nil {
+				logger.Warn("Failed to load persona, using defaults",
+					zap.String("persona_id", input.PersonaID),
+					zap.Error(err))
+			} else {
+				// Apply persona configuration
+				if persona.SystemPrompt != "" {
+					if input.Context == nil {
+						input.Context = make(map[string]interface{})
+					}
+					input.Context["system_prompt"] = persona.SystemPrompt
 				}
-				input.Context["system_prompt"] = persona.SystemPrompt
+				
+				// Apply temperature setting
+				if persona.Temperature > 0 {
+					input.Context["temperature"] = persona.Temperature
+				}
+				
+				// Apply token budget
+				if persona.MaxTokens > 0 {
+					input.Context["max_tokens"] = persona.MaxTokens
+				}
+				
+				// Apply tools restriction (if persona has specific tools)
+				if len(persona.Tools) > 0 {
+					input.Context["allowed_tools"] = persona.Tools
+				}
+				
+				logger.Info("Applied persona configuration",
+					zap.String("persona_id", input.PersonaID),
+					zap.String("description", persona.Description),
+					zap.Int("max_tokens", persona.MaxTokens),
+					zap.Float64("temperature", persona.Temperature))
+			}
+		} else {
+			logger.Warn("Persona manager not available, using defaults",
+				zap.String("persona_id", input.PersonaID))
+		}
+	}
 			}
 
 			// Override tools if persona specifies them, but intersect with available tools
@@ -1301,4 +1323,9 @@ func truncateURL(url string) string {
 		return url[:idx] + "?..."
 	}
 	return url[:47] + "..."
+}
+
+// getPersonaManagerForAgent returns the global persona manager instance for agent activities
+func getPersonaManagerForAgent() personas.PersonaManager {
+	return globalPersonaManager // Use the same global instance from decompose.go
 }
