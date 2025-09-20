@@ -197,6 +197,9 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	// Check if decomposition included a synthesis/summarization subtask
 	// Following SOTA patterns: detect and use existing synthesis to avoid duplication
+	// TODO: Replace string matching with structured subtask types to avoid false positives
+	// (e.g., "photosynthesis" would incorrectly match). For now, this pragmatic approach
+	// works well for typical decomposition outputs.
 	hasSynthesisSubtask := false
 	var synthesisTaskIdx int
 
@@ -238,14 +241,14 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		// Works for both sequential (1 result) and parallel (1 success among N) modes
 		synthesis = activities.SynthesisResult{
 			FinalResult: singleSuccessResult.Response,
-			TokensUsed:  singleSuccessResult.TokensUsed,
+			TokensUsed:  0, // No synthesis performed, tokens already counted in agent execution
 		}
 		logger.Info("Bypassing synthesis for single successful result",
 			"agent_id", singleSuccessResult.AgentID,
 			"total_agents", len(agentResults),
 			"successful", successfulCount,
 		)
-	} else if hasSynthesisSubtask && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
+	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
 		// Use the synthesis subtask's result as final output
 		synthesisResult := agentResults[synthesisTaskIdx]
 		synthesis = activities.SynthesisResult{

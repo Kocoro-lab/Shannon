@@ -554,14 +554,13 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 					uid, usage.UserID,
 				).Scan(&uid)
 				if err != nil {
-					bm.logger.Warn("Failed to resolve user_id",
+					bm.logger.Error("Failed to create or retrieve user",
 						zap.String("user_id", usage.UserID),
 						zap.Error(err))
-					// Continue without user_id
-					userUUID = nil
-				} else {
-					userUUID = &uid
+					// Return error instead of silently continuing
+					return fmt.Errorf("failed to resolve user_id %s: %w", usage.UserID, err)
 				}
+				userUUID = &uid
 			} else {
 				userUUID = &uid
 			}
