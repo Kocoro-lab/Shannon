@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     rate_limit_requests: int = Field(default=100, env="RATE_LIMIT_REQUESTS")
     rate_limit_window: int = Field(default=60, env="RATE_LIMIT_WINDOW")
 
+    # Tool-specific rate limits (per minute)
+    web_search_rate_limit: int = Field(default=60, env="WEB_SEARCH_RATE_LIMIT")
+    calculator_rate_limit: int = Field(default=1000, env="CALCULATOR_RATE_LIMIT")
+    python_executor_rate_limit: int = Field(default=30, env="PYTHON_EXECUTOR_RATE_LIMIT")
+
     # Token budget management
     max_tokens_per_request: int = Field(default=4000, env="MAX_TOKENS_PER_REQUEST")
     max_cost_per_request: float = Field(default=0.10, env="MAX_COST_PER_REQUEST")

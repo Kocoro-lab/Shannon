@@ -35,6 +35,7 @@ from ..base import (
     ToolParameterType,
     ToolResult,
 )
+from ...config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ class PythonWasiExecutorTool(Tool):
 
     def __init__(self):
         super().__init__()
+        self.settings = Settings()
         self.interpreter_path = os.getenv(
             "PYTHON_WASI_WASM_PATH",
             "/opt/wasm-interpreters/python-3.11.4.wasm"
@@ -83,7 +85,7 @@ class PythonWasiExecutorTool(Tool):
             category="code",
             author="Shannon",
             requires_auth=False,
-            rate_limit=100,
+            rate_limit=self.settings.python_executor_rate_limit,  # Configurable via PYTHON_EXECUTOR_RATE_LIMIT env var
             timeout_seconds=30,
             memory_limit_mb=256,
             sandboxed=True,

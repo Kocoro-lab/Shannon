@@ -10,6 +10,7 @@ from typing import List, Any
 from typing import Dict, Optional
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
+from ...config import Settings
 
 
 # Safe operators for expression evaluation
@@ -54,6 +55,10 @@ class CalculatorTool(Tool):
     Uses AST parsing to ensure safety - no arbitrary code execution.
     """
 
+    def __init__(self):
+        self.settings = Settings()
+        super().__init__()
+
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
             name="calculator",
@@ -62,7 +67,7 @@ class CalculatorTool(Tool):
             category="calculation",
             author="Shannon",
             requires_auth=False,
-            rate_limit=1000,  # High rate limit for calculations
+            rate_limit=self.settings.calculator_rate_limit,  # Configurable via CALCULATOR_RATE_LIMIT env var
             timeout_seconds=5,
             memory_limit_mb=64,
             sandboxed=True,
