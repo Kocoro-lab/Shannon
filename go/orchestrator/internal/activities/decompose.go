@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/personas"
+	"go.uber.org/zap"
 )
 
 // DecompositionInput is the input for DecomposeTask activity
@@ -85,17 +88,82 @@ func (a *Activities) DecomposeTask(ctx context.Context, in DecompositionInput) (
 		return DecompositionResult{Mode: "standard", ComplexityScore: 0.5, Subtasks: nil, TotalEstimatedTokens: 0}, nil
 	}
 
-	// TODO: Assign personas to each subtask when personas package is complete
-	// logger := activity.GetLogger(ctx)
-	// for i := range out.Subtasks {
-	//     personaID := personas.SelectPersona(out.Subtasks[i].Description, out.ComplexityScore)
-	//     out.Subtasks[i].SuggestedPersona = personaID
-	//     logger.Debug("Assigned persona to subtask",
-	//         "subtask_id", out.Subtasks[i].ID,
-	//         "description", out.Subtasks[i].Description,
-	//         "persona", personaID)
-	// }
+	// Assign personas to each subtask
+	logger := activity.GetLogger(ctx)
+	for i := range out.Subtasks {
+		personaID, err := assignPersonaToSubtask(ctx, out.Subtasks[i].Description, out.ComplexityScore)
+		if err != nil {
+			logger.Warn("Failed to assign persona to subtask, using generalist",
+				zap.String("subtask_id", out.Subtasks[i].ID),
+				zap.Error(err))
+			personaID = "generalist"
+		}
+		out.Subtasks[i].SuggestedPersona = personaID
+		logger.Debug("Assigned persona to subtask",
+			zap.String("subtask_id", out.Subtasks[i].ID),
+			zap.String("description", out.Subtasks[i].Description),
+			zap.String("persona", personaID))
+	}
 
 	ometrics.DecompositionLatency.Observe(time.Since(start).Seconds())
 	return out, nil
+}
+
+// assignPersonaToSubtask assigns a persona to a subtask based on its description
+func assignPersonaToSubtask(ctx context.Context, description string, complexityScore float64) (string, error) {
+	// Get the global persona manager (this would be initialized at startup)
+	manager := getPersonaManager()
+	if manager == nil {
+		return "generalist", fmt.Errorf("persona manager not available")
+	}
+
+	// Create selection request
+	req := &personas.SelectionRequest{
+		Description:     description,
+		ComplexityScore: complexityScore,
+		TaskType:        inferTaskType(description),
+	}
+
+	// Select persona
+	result, err := manager.SelectPersona(ctx, req)
+	if err != nil {
+		return "generalist", err
+	}
+
+	return result.PersonaID, nil
+}
+
+// inferTaskType infers the task type from the description
+func inferTaskType(description string) string {
+	description = strings.ToLower(description)
+	
+	if strings.Contains(description, "code") || strings.Contains(description, "implement") || 
+	   strings.Contains(description, "debug") || strings.Contains(description, "program") {
+		return "coding"
+	}
+	
+	if strings.Contains(description, "research") || strings.Contains(description, "search") || 
+	   strings.Contains(description, "find") || strings.Contains(description, "investigate") {
+		return "research"
+	}
+	
+	if strings.Contains(description, "analyze") || strings.Contains(description, "data") || 
+	   strings.Contains(description, "statistics") || strings.Contains(description, "chart") {
+		return "analysis"
+	}
+	
+	return "general"
+}
+
+// Global persona manager instance
+var globalPersonaManager personas.PersonaManager
+
+// getPersonaManager returns the global persona manager instance
+func getPersonaManager() personas.PersonaManager {
+	return globalPersonaManager
+}
+
+// SetPersonaManager sets the global persona manager instance
+func SetPersonaManager(manager personas.PersonaManager) {
+	globalPersonaManager = manager
 }
