@@ -34,10 +34,10 @@ func NewIdempotencyMiddleware(redis *redis.Client, logger *zap.Logger) *Idempote
 
 // IdempotencyResult stores the cached result of an idempotent request
 type IdempotencyResult struct {
-	StatusCode int                    `json:"status_code"`
-	Headers    map[string][]string    `json:"headers"`
-	Body       []byte                 `json:"body"`
-	Timestamp  time.Time              `json:"timestamp"`
+	StatusCode int                 `json:"status_code"`
+	Headers    map[string][]string `json:"headers"`
+	Body       []byte              `json:"body"`
+	Timestamp  time.Time           `json:"timestamp"`
 }
 
 // responseRecorder captures the response for caching

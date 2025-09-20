@@ -26,8 +26,8 @@ func NewRateLimiter(redis *redis.Client, logger *zap.Logger) *RateLimiter {
 	return &RateLimiter{
 		redis:                    redis,
 		logger:                   logger,
-		defaultRequestsPerMinute: 60,  // 60 requests per minute default
-		defaultBurstSize:         10,  // Allow burst of 10 requests
+		defaultRequestsPerMinute: 60, // 60 requests per minute default
+		defaultBurstSize:         10, // Allow burst of 10 requests
 	}
 }
 
@@ -109,7 +109,7 @@ func (rl *RateLimiter) sendRateLimitError(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusTooManyRequests)
 
 	response := map[string]interface{}{
-		"error": "Rate limit exceeded",
+		"error":   "Rate limit exceeded",
 		"message": "Too many requests. Please retry after the rate limit window resets.",
 	}
 

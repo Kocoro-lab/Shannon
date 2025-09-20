@@ -608,6 +608,19 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// Emit workflow completed event for dashboards
+	emitCtx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "supervisor",
+		Message:    "Workflow completed",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
 	return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: map[string]interface{}{
 		"num_children": len(childResults),
 	}}, nil

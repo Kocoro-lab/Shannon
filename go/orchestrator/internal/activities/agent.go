@@ -648,7 +648,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 	}
 
-	// Use LLM-suggested tools if provided, otherwise fetch available tools
+	// Use LLM-suggested tools if provided, otherwise NO tools
 	var allowedByRole []string
 	if len(input.SuggestedTools) > 0 {
 		// LLM has already suggested tools - use them directly
@@ -658,12 +658,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			zap.String("agent_id", input.AgentID),
 		)
 	} else {
-		// Fallback to fetching tools from service
-		baseTools := fetchAvailableTools(ctx)
-		allowedByRole = baseTools
-		if roleVal, ok := input.Context["role"].(string); ok && roleVal != "" {
-			allowedByRole = filterToolsByRole(roleVal, baseTools)
-		}
+		// No tools suggested - keep empty to let LLM answer directly
+		allowedByRole = []string{}
+		logger.Info("No tools suggested by decomposition, using direct LLM response",
+			zap.String("agent_id", input.AgentID),
+		)
 	}
 	// Pass tool parameters to context if provided
 	if len(input.ToolParameters) > 0 {
@@ -676,7 +675,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	// Auto-populate tool_calls via /tools/select only if tools were suggested by decomposition
 	// Respect the decomposition decision: if no tools suggested, don't override with tool selection
 	var selectedToolCalls []map[string]interface{}
-	if len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 {
+	// Skip tool selection if we already have tool_parameters from decomposition
+	if len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
 		if getenvInt("ENABLE_TOOL_SELECTION", 1) > 0 {
 			// Only select tools if we have valid parameters or the tool doesn't require them
 			// Skip tools that require parameters when none are provided to avoid execution errors
@@ -699,8 +699,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 							zap.String("agent_id", input.AgentID),
 						)
 						continue
-					// web_search and file_read can work with minimal/inferred parameters
-					// so we don't skip them
+						// web_search and file_read can work with minimal/inferred parameters
+						// so we don't skip them
 					}
 					filtered = append(filtered, tool)
 				}
@@ -718,6 +718,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		logger.Info("No tools suggested by decomposition, skipping tool selection",
 			zap.String("agent_id", input.AgentID),
 			zap.String("query", input.Query),
+		)
+	} else if input.ToolParameters != nil && len(input.ToolParameters) > 0 {
+		logger.Info("Using tool_parameters from decomposition, skipping tool selection",
+			zap.String("agent_id", input.AgentID),
+			zap.Any("tool_parameters", input.ToolParameters),
 		)
 	}
 

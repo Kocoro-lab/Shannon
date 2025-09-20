@@ -72,11 +72,11 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// CORS (dev-friendly)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Keep-Alive", "timeout=65")
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
@@ -158,8 +158,8 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	ch := h.mgr.SubscribeFrom(wf, 256, startFrom)
 	defer h.mgr.Unsubscribe(wf, ch)
 
-	// Heartbeat ticker
-	hb := time.NewTicker(15 * time.Second)
+	// Heartbeat ticker (shorter to keep intermediaries happy)
+	hb := time.NewTicker(10 * time.Second)
 	defer hb.Stop()
 
 	ctx := r.Context()

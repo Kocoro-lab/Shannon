@@ -12,13 +12,14 @@ import (
 type StreamEventType string
 
 const (
-	StreamEventWorkflowStarted  StreamEventType = "WORKFLOW_STARTED"
-	StreamEventAgentStarted     StreamEventType = "AGENT_STARTED"
-	StreamEventAgentCompleted   StreamEventType = "AGENT_COMPLETED"
-	StreamEventErrorOccurred    StreamEventType = "ERROR_OCCURRED"
-	StreamEventMessageSent      StreamEventType = "MESSAGE_SENT"
-	StreamEventMessageReceived  StreamEventType = "MESSAGE_RECEIVED"
-	StreamEventWorkspaceUpdated StreamEventType = "WORKSPACE_UPDATED"
+	StreamEventWorkflowStarted   StreamEventType = "WORKFLOW_STARTED"
+	StreamEventWorkflowCompleted StreamEventType = "WORKFLOW_COMPLETED"
+	StreamEventAgentStarted      StreamEventType = "AGENT_STARTED"
+	StreamEventAgentCompleted    StreamEventType = "AGENT_COMPLETED"
+	StreamEventErrorOccurred     StreamEventType = "ERROR_OCCURRED"
+	StreamEventMessageSent       StreamEventType = "MESSAGE_SENT"
+	StreamEventMessageReceived   StreamEventType = "MESSAGE_RECEIVED"
+	StreamEventWorkspaceUpdated  StreamEventType = "WORKSPACE_UPDATED"
 	// Extended types (emitted when corresponding gates are enabled)
 	StreamEventTeamRecruited       StreamEventType = "TEAM_RECRUITED"
 	StreamEventTeamRetired         StreamEventType = "TEAM_RETIRED"
@@ -27,13 +28,13 @@ const (
 	StreamEventDependencySatisfied StreamEventType = "DEPENDENCY_SATISFIED"
 
 	// Human-readable UX events
-	StreamEventToolInvoked     StreamEventType = "TOOL_INVOKED"     // Tool usage with details in message
-	StreamEventAgentThinking   StreamEventType = "AGENT_THINKING"   // Planning/reasoning phases
-	StreamEventTeamStatus      StreamEventType = "TEAM_STATUS"      // Multi-agent coordination updates
-	StreamEventProgress        StreamEventType = "PROGRESS"         // Step completion updates
-	StreamEventDataProcessing  StreamEventType = "DATA_PROCESSING"  // Processing/analyzing data
-	StreamEventWaiting         StreamEventType = "WAITING"          // Waiting for resources/responses
-	StreamEventErrorRecovery   StreamEventType = "ERROR_RECOVERY"   // Handling and recovering from errors
+	StreamEventToolInvoked    StreamEventType = "TOOL_INVOKED"    // Tool usage with details in message
+	StreamEventAgentThinking  StreamEventType = "AGENT_THINKING"  // Planning/reasoning phases
+	StreamEventTeamStatus     StreamEventType = "TEAM_STATUS"     // Multi-agent coordination updates
+	StreamEventProgress       StreamEventType = "PROGRESS"        // Step completion updates
+	StreamEventDataProcessing StreamEventType = "DATA_PROCESSING" // Processing/analyzing data
+	StreamEventWaiting        StreamEventType = "WAITING"         // Waiting for resources/responses
+	StreamEventErrorRecovery  StreamEventType = "ERROR_RECOVERY"  // Handling and recovering from errors
 )
 
 // EmitTaskUpdateInput carries minimal event data for streaming_v1
