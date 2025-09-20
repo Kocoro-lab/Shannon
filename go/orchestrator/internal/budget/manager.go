@@ -530,14 +530,63 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 		return nil
 	}
 
-	// Convert UUID string to proper UUID if needed
+	// Handle user_id - convert to UUID or lookup/create user
+	var userUUID *uuid.UUID
+	if usage.UserID != "" {
+		parsed, err := uuid.Parse(usage.UserID)
+		if err == nil {
+			// Valid UUID
+			userUUID = &parsed
+		} else {
+			// Not a UUID, lookup or create user by external_id
+			var uid uuid.UUID
+			err := bm.db.QueryRowContext(ctx,
+				"SELECT id FROM users WHERE external_id = $1",
+				usage.UserID,
+			).Scan(&uid)
+
+			if err != nil {
+				// User doesn't exist, create it
+				uid = uuid.New()
+				// Use QueryRowContext with RETURNING to properly get the id on conflict
+				err = bm.db.QueryRowContext(ctx,
+					"INSERT INTO users (id, external_id, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) ON CONFLICT (external_id) DO UPDATE SET updated_at = NOW() RETURNING id",
+					uid, usage.UserID,
+				).Scan(&uid)
+				if err != nil {
+					bm.logger.Warn("Failed to resolve user_id",
+						zap.String("user_id", usage.UserID),
+						zap.Error(err))
+					// Continue without user_id
+					userUUID = nil
+				} else {
+					userUUID = &uid
+				}
+			} else {
+				userUUID = &uid
+			}
+		}
+	}
+
+	// Handle task_id - convert to UUID or null
+	var taskUUID *uuid.UUID
+	if usage.TaskID != "" {
+		parsed, err := uuid.Parse(usage.TaskID)
+		if err == nil {
+			taskUUID = &parsed
+		} else {
+			bm.logger.Warn("Invalid task_id UUID, will store as NULL",
+				zap.String("task_id", usage.TaskID))
+		}
+	}
+
 	// Store using schema that matches migration: prompt_tokens, completion_tokens, created_at
 	_, err := bm.db.ExecContext(ctx, `
 		INSERT INTO token_usage (
 			user_id, task_id, provider, model,
 			prompt_tokens, completion_tokens, total_tokens, cost_usd
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, usage.UserID, usage.TaskID, usage.Provider, usage.Model,
+	`, userUUID, taskUUID, usage.Provider, usage.Model,
 		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD)
 
 	if err != nil {
