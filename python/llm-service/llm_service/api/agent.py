@@ -241,11 +241,11 @@ async def agent_query(request: Request, query: AgentQuery):
                             "type": "function",
                             "function": {
                                 "name": "python_executor",
-                                "description": "Execute Python code in a secure WASI sandbox environment. Supports full Python 3.11 standard library. Use this tool to run Python scripts, perform calculations, data processing, or any Python programming task. IMPORTANT: Always use print() statements to output results.",
+                                "description": "Execute Python code in a secure WASI sandbox environment. Supports full Python 3.11 standard library. Use this tool to run Python scripts, perform calculations, data processing, or any Python programming task. CRITICAL: You MUST use print() statements to output ALL results - values returned without print() will NOT be visible.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
-                                        "code": {"type": "string", "description": "Python source code to execute. Must include print() statements to produce visible output."},
+                                        "code": {"type": "string", "description": "Python source code to execute. MUST include print() statements for ALL output you want to show. Example: result = fibonacci(133); print(result)"},
                                         "session_id": {"type": "string", "description": "Optional session ID for maintaining persistent state across executions"},
                                         "stdin": {"type": "string", "description": "Optional input data to provide via stdin to the Python script"}
                                     },
@@ -530,7 +530,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "}\n\n"
 
             "Available tools:\n"
-            "- python_executor: Execute Python code in sandbox (params: tool, code)\n"
+            "- python_executor: Execute Python code in sandbox (params: tool, code) - IMPORTANT: code MUST include print() to show output\n"
             "- code_executor: Execute WASM bytecode (NOTE: Do NOT suggest this - it's for pre-compiled WASM only)\n"
             "- calculator: Perform calculations (params: tool, expression)\n"
             "- web_search: Search the web (params: tool, query)\n"
@@ -598,7 +598,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 if match:
                     try:
                         data = _json.loads(match.group())
-                    except:
+                    except Exception:
                         pass
 
             if not data:

@@ -20,7 +20,7 @@ type Event struct {
 	Message    string    `json:"message,omitempty"`
 	Timestamp  time.Time `json:"timestamp"`
 	Seq        uint64    `json:"seq"`
-	StreamID   string    `json:"stream_id,omitempty"`  // Redis stream ID for deduplication
+	StreamID   string    `json:"stream_id,omitempty"` // Redis stream ID for deduplication
 }
 
 // Manager provides Redis Streams-based pub/sub for workflow events.

@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -574,9 +575,50 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Synthesize results using configured mode
 	var synth activities.SynthesisResult
+
+	// Check if the decomposition included a synthesis/summarization subtask
+	// This commonly happens when users request specific output formats (e.g., "summarize in Chinese")
+	// Following SOTA patterns: if decomposition includes synthesis, use that instead of duplicating
+	hasSynthesisSubtask := false
+	var synthesisTaskIdx int
+
+	for i, subtask := range decomp.Subtasks {
+		taskLower := strings.ToLower(subtask.Description)
+		// Check if this subtask is a synthesis/summary task
+		if strings.Contains(taskLower, "synthesize") ||
+			strings.Contains(taskLower, "synthesis") ||
+			strings.Contains(taskLower, "summarize") ||
+			strings.Contains(taskLower, "summary") ||
+			strings.Contains(taskLower, "combine") ||
+			strings.Contains(taskLower, "aggregate") {
+			hasSynthesisSubtask = true
+			synthesisTaskIdx = i
+			logger.Info("Detected synthesis subtask in decomposition",
+				"task_id", subtask.ID,
+				"description", subtask.Description,
+				"index", i,
+			)
+		}
+	}
+
 	if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
+		// Single result bypass
 		synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
+	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
+		// Use the synthesis subtask's result as the final result
+		// This prevents double synthesis and respects the user's requested format
+		synthesisResult := childResults[synthesisTaskIdx]
+		synth = activities.SynthesisResult{
+			FinalResult: synthesisResult.Response,
+			TokensUsed:  0, // Don't double-count tokens as they're already counted in agent execution
+		}
+		logger.Info("Using synthesis subtask result as final output",
+			"agent_id", synthesisResult.AgentID,
+			"response_length", len(synthesisResult.Response),
+		)
 	} else {
+		// No synthesis subtask in decomposition, perform standard synthesis
+		logger.Info("Performing standard synthesis of agent results")
 		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: childResults}).Get(ctx, &synth); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
@@ -607,6 +649,19 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			)
 		}
 	}
+
+	// Emit workflow completed event for dashboards
+	emitCtx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "supervisor",
+		Message:    "Workflow completed",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: map[string]interface{}{
 		"num_children": len(childResults),

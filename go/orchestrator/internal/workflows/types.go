@@ -24,6 +24,10 @@ type TaskInput struct {
 
 	// Parent workflow ID for event streaming (used by child workflows)
 	ParentWorkflowID string // Parent workflow ID for unified event streaming
+
+	// Tool suggestions from decomposition (for simple tasks with tools)
+	SuggestedTools []string               // Tools suggested by decomposition
+	ToolParameters map[string]interface{} // Pre-structured parameters for tool execution
 }
 
 // Message represents a conversation message

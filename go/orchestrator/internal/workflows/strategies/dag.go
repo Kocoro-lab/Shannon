@@ -2,6 +2,7 @@ package strategies
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -193,30 +194,100 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	)
 
 	var synthesis activities.SynthesisResult
-	err = workflow.ExecuteActivity(ctx,
-		activities.SynthesizeResultsLLM,
-		activities.SynthesisInput{
-			Query:        input.Query,
-			AgentResults: agentResults,
-			Context:      baseContext,
-		}).Get(ctx, &synthesis)
 
-	if err != nil {
-		logger.Error("Synthesis failed", "error", err)
-		return TaskResult{
-			Success:      false,
-			ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
-		}, err
+	// Check if decomposition included a synthesis/summarization subtask
+	// Following SOTA patterns: detect and use existing synthesis to avoid duplication
+	// TODO: Replace string matching with structured subtask types to avoid false positives
+	// (e.g., "photosynthesis" would incorrectly match). For now, this pragmatic approach
+	// works well for typical decomposition outputs.
+	hasSynthesisSubtask := false
+	var synthesisTaskIdx int
+
+	for i, subtask := range decomp.Subtasks {
+		taskLower := strings.ToLower(subtask.Description)
+		if strings.Contains(taskLower, "synthesize") ||
+			strings.Contains(taskLower, "synthesis") ||
+			strings.Contains(taskLower, "summarize") ||
+			strings.Contains(taskLower, "summary") ||
+			strings.Contains(taskLower, "combine") ||
+			strings.Contains(taskLower, "aggregate") {
+			hasSynthesisSubtask = true
+			synthesisTaskIdx = i
+			logger.Info("Detected synthesis subtask in decomposition",
+				"task_id", subtask.ID,
+				"description", subtask.Description,
+				"index", i,
+			)
+		}
 	}
 
-	totalTokens += synthesis.TokensUsed
+	// Priority order for synthesis decision:
+	// 1. BypassSingleResult (config-driven optimization)
+	// 2. Synthesis subtask detection (respects user intent)
+	// 3. Standard synthesis (default behavior)
+
+	// Count successful results for bypass logic
+	successfulCount := 0
+	var singleSuccessResult activities.AgentExecutionResult
+	for _, result := range agentResults {
+		if result.Success {
+			successfulCount++
+			singleSuccessResult = result
+		}
+	}
+
+	if input.BypassSingleResult && successfulCount == 1 {
+		// Single success bypass - skip synthesis entirely for efficiency
+		// Works for both sequential (1 result) and parallel (1 success among N) modes
+		synthesis = activities.SynthesisResult{
+			FinalResult: singleSuccessResult.Response,
+			TokensUsed:  0, // No synthesis performed, tokens already counted in agent execution
+		}
+		logger.Info("Bypassing synthesis for single successful result",
+			"agent_id", singleSuccessResult.AgentID,
+			"total_agents", len(agentResults),
+			"successful", successfulCount,
+		)
+	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
+		// Use the synthesis subtask's result as final output
+		synthesisResult := agentResults[synthesisTaskIdx]
+		synthesis = activities.SynthesisResult{
+			FinalResult: synthesisResult.Response,
+			TokensUsed:  0, // Already counted in agent execution
+		}
+		logger.Info("Using synthesis subtask result as final output",
+			"agent_id", synthesisResult.AgentID,
+		)
+	} else {
+		// No bypass or synthesis subtask, perform standard synthesis
+		logger.Info("Performing standard synthesis of agent results")
+		err = workflow.ExecuteActivity(ctx,
+			activities.SynthesizeResultsLLM,
+			activities.SynthesisInput{
+				Query:        input.Query,
+				AgentResults: agentResults,
+				Context:      baseContext,
+			}).Get(ctx, &synthesis)
+
+		if err != nil {
+			logger.Error("Synthesis failed", "error", err)
+			return TaskResult{
+				Success:      false,
+				ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
+			}, err
+		}
+
+		totalTokens += synthesis.TokensUsed
+	}
 
 	// Step 5: Optional reflection for quality improvement
 	finalResult := synthesis.FinalResult
 	qualityScore := 0.5
 	reflectionTokens := 0
 
-	if config.ReflectionEnabled && shouldReflect(decomp.ComplexityScore) {
+	if config.ReflectionEnabled && shouldReflect(decomp.ComplexityScore) && !hasSynthesisSubtask {
+		// Only reflect if we didn't detect a synthesis subtask
+		// This preserves user-specified output formats (e.g., Chinese text)
 		reflectionConfig := patterns.ReflectionConfig{
 			Enabled:             true,
 			MaxRetries:          config.ReflectionMaxRetries,
@@ -251,6 +322,8 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				"tokens", reflectionTokens,
 			)
 		}
+	} else if hasSynthesisSubtask && config.ReflectionEnabled {
+		logger.Info("Skipping reflection to preserve synthesis subtask output format")
 	}
 
 	// Step 6: Update session and persist

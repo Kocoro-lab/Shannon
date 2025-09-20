@@ -10,6 +10,7 @@ import logging
 from enum import Enum
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
+from ...config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -481,6 +482,7 @@ class WebSearchTool(Tool):
 
     def __init__(self):
         self.provider = self._initialize_provider()
+        self.settings = Settings()
         super().__init__()
 
     def _initialize_provider(self) -> Optional[WebSearchProvider]:
@@ -591,7 +593,7 @@ class WebSearchTool(Tool):
             category="search",
             author="Shannon",
             requires_auth=True,
-            rate_limit=30,  # 30 searches per minute
+            rate_limit=self.settings.web_search_rate_limit,  # Configurable via WEB_SEARCH_RATE_LIMIT env var
             timeout_seconds=20,
             memory_limit_mb=256,
             sandboxed=True,

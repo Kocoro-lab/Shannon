@@ -75,12 +75,14 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// This single activity handles everything: agent execution, session update, etc.
 	var result activities.ExecuteSimpleTaskResult
 	err := workflow.ExecuteActivity(ctx, activities.ExecuteSimpleTask, activities.ExecuteSimpleTaskInput{
-		Query:      input.Query,
-		UserID:     input.UserID,
-		SessionID:  input.SessionID,
-		Context:    input.Context,
-		SessionCtx: input.SessionCtx,
-		History:    convertHistoryForAgent(input.History),
+		Query:          input.Query,
+		UserID:         input.UserID,
+		SessionID:      input.SessionID,
+		Context:        input.Context,
+		SessionCtx:     input.SessionCtx,
+		History:        convertHistoryForAgent(input.History),
+		SuggestedTools: input.SuggestedTools,
+		ToolParameters: input.ToolParameters,
 	}).Get(ctx, &result)
 
 	if err != nil {
@@ -147,6 +149,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		EventType:  activities.StreamEventAgentCompleted,
 		AgentID:    "simple-agent",
 		Message:    "Task completed successfully",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
+	// Emit workflow completed event for dashboards
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "simple-agent",
+		Message:    "Workflow completed",
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 

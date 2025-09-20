@@ -27,8 +27,8 @@ type config struct {
 }
 
 var (
-	mu         sync.RWMutex
-	loaded     *config
+	mu          sync.RWMutex
+	loaded      *config
 	initialized bool
 )
 

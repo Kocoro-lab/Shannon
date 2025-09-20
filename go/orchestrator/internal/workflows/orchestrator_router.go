@@ -185,7 +185,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	// Supervisor heuristic: very large plans, explicit dependencies, or forced P2P
-	hasDeps := forceP2P  // Start with force flag
+	hasDeps := forceP2P // Start with force flag
 	if !hasDeps {
 		for _, st := range decomp.Subtasks {
 			if len(st.Dependencies) > 0 || len(st.Consumes) > 0 {
@@ -211,6 +211,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			Message:    "Routing to SimpleTaskWorkflow",
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
+
+		// Pass suggested tools from decomposition to SimpleTaskWorkflow
+		if len(decomp.Subtasks) > 0 && len(decomp.Subtasks[0].SuggestedTools) > 0 {
+			input.SuggestedTools = decomp.Subtasks[0].SuggestedTools
+			input.ToolParameters = decomp.Subtasks[0].ToolParameters
+		}
+
 		if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, input).Get(ctx, &result); err != nil {
 			return result, err
 		}

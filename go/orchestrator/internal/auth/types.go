@@ -67,19 +67,19 @@ type Tenant struct {
 
 // APIKey represents an API key for programmatic access
 type APIKey struct {
-	ID               uuid.UUID  `json:"id" db:"id"`
-	KeyHash          string     `json:"-" db:"key_hash"`
-	KeyPrefix        string     `json:"key_prefix" db:"key_prefix"`
-	UserID           uuid.UUID  `json:"user_id" db:"user_id"`
-	TenantID         uuid.UUID  `json:"tenant_id" db:"tenant_id"`
-	Name             string     `json:"name" db:"name"`
-	Description      string     `json:"description" db:"description"`
+	ID               uuid.UUID      `json:"id" db:"id"`
+	KeyHash          string         `json:"-" db:"key_hash"`
+	KeyPrefix        string         `json:"key_prefix" db:"key_prefix"`
+	UserID           uuid.UUID      `json:"user_id" db:"user_id"`
+	TenantID         uuid.UUID      `json:"tenant_id" db:"tenant_id"`
+	Name             string         `json:"name" db:"name"`
+	Description      string         `json:"description" db:"description"`
 	Scopes           pq.StringArray `json:"scopes" db:"scopes"`
-	RateLimitPerHour int        `json:"rate_limit_per_hour" db:"rate_limit_per_hour"`
-	LastUsed         *time.Time `json:"last_used,omitempty" db:"last_used"`
-	ExpiresAt        *time.Time `json:"expires_at,omitempty" db:"expires_at"`
-	IsActive         bool       `json:"is_active" db:"is_active"`
-	CreatedAt        time.Time  `json:"created_at" db:"created_at"`
+	RateLimitPerHour int            `json:"rate_limit_per_hour" db:"rate_limit_per_hour"`
+	LastUsed         *time.Time     `json:"last_used,omitempty" db:"last_used"`
+	ExpiresAt        *time.Time     `json:"expires_at,omitempty" db:"expires_at"`
+	IsActive         bool           `json:"is_active" db:"is_active"`
+	CreatedAt        time.Time      `json:"created_at" db:"created_at"`
 }
 
 // RefreshToken represents a JWT refresh token
