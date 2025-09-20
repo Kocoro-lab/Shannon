@@ -2,7 +2,6 @@ package personas
 
 import (
 	"context"
-	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -599,7 +598,7 @@ func TestEnhancedSelector_SemanticMatching(t *testing.T) {
 				t.Error("Method should not be empty")
 			}
 
-			t.Logf("Selected persona: %s, confidence: %.3f, method: %s", 
+			t.Logf("Selected persona: %s, confidence: %.3f, method: %s",
 				result.PersonaID, result.Confidence, result.Method)
 		})
 	}
@@ -693,9 +692,9 @@ func TestAdaptiveLearning_BasicFunctionality(t *testing.T) {
 	}
 
 	result1 := &SelectionResult{
-		PersonaID:   "ai_specialist",
-		Confidence:  0.85,
-		Method:      "semantic",
+		PersonaID:  "ai_specialist",
+		Confidence: 0.85,
+		Method:     "semantic",
 	}
 
 	req2 := &SelectionRequest{
@@ -705,9 +704,9 @@ func TestAdaptiveLearning_BasicFunctionality(t *testing.T) {
 	}
 
 	result2 := &SelectionResult{
-		PersonaID:   "coder",
-		Confidence:  0.75,
-		Method:      "keyword",
+		PersonaID:  "coder",
+		Confidence: 0.75,
+		Method:     "keyword",
 	}
 
 	// Record selections
@@ -813,29 +812,11 @@ selection:
 		t.Error("Method should be set by enhanced selector")
 	}
 
-	t.Logf("Manager selected: %s with method: %s, confidence: %.3f", 
+	t.Logf("Manager selected: %s with method: %s, confidence: %.3f",
 		result.PersonaID, result.Method, result.Confidence)
 }
 
-// Helper function for cosine similarity calculation
-func cosineSimilarity(a, b []float64) float64 {
-	if len(a) != len(b) {
-		return 0
-	}
-
-	var dotProduct, normA, normB float64
-	for i := 0; i < len(a); i++ {
-		dotProduct += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-
-	return dotProduct / (math.Sqrt(normA) * math.Sqrt(normB))
-}
+// Note: cosineSimilarity function is now defined in embedding_api.go
 
 func BenchmarkKeywordSelector_SelectPersona(b *testing.B) {
 	config := &Config{
@@ -885,7 +866,7 @@ func BenchmarkEnhancedSelector_SelectPersona(b *testing.B) {
 				Keywords:    []string{"research", "search", "find", "investigate", "analyze"},
 			},
 			"coder": {
-				ID:          "coder", 
+				ID:          "coder",
 				Description: "Programming and development expert",
 				Keywords:    []string{"code", "program", "debug", "implement", "develop"},
 			},

@@ -12,14 +12,14 @@ import (
 
 // SemanticMatcher provides enhanced persona matching using multiple techniques
 type SemanticMatcher struct {
-	keywordMatcher   *KeywordMatcher
-	tfidfModel       *TFIDFModel
-	embeddingAPI     EmbeddingAPI
-	localEmbeddings  *LocalEmbeddingModel
-	config           *MatcherConfig
-	logger           *zap.Logger
-	metrics          *Metrics
-	fallbackMode     bool
+	keywordMatcher  *KeywordMatcher
+	tfidfModel      *TFIDFModel
+	embeddingAPI    EmbeddingAPI
+	localEmbeddings *LocalEmbeddingModel
+	config          *MatcherConfig
+	logger          *zap.Logger
+	metrics         *Metrics
+	fallbackMode    bool
 }
 
 // NewSemanticMatcher creates a new semantic matcher
@@ -34,7 +34,19 @@ func NewSemanticMatcher(config *MatcherConfig, logger *zap.Logger, metrics *Metr
 		fallbackMode:    false,
 	}
 
-	// Initialize with persona descriptions for training
+	// Initialize external embedding API if configured
+	if config.EmbeddingConfig != nil {
+		embeddingAPI, err := NewMultiProviderEmbeddingAPI(config.EmbeddingConfig, logger, metrics)
+		if err != nil {
+			logger.Warn("Failed to initialize external embedding API, using local fallback", zap.Error(err))
+			sm.fallbackMode = true
+		} else {
+			sm.embeddingAPI = embeddingAPI
+			logger.Info("External embedding API initialized successfully",
+				zap.String("provider", string(config.EmbeddingConfig.Provider)))
+		}
+	}
+
 	return sm
 }
 
@@ -47,10 +59,10 @@ func (sm *SemanticMatcher) CalculateScore(description string, persona *PersonaCo
 
 	// 1. Start with keyword matching (fast, reliable baseline)
 	keywordScore := sm.keywordMatcher.CalculateScore(description, persona.Keywords)
-	
+
 	// 2. Add TF-IDF similarity for better semantic understanding
 	tfidfScore := sm.tfidfModel.Similarity(description, persona.Description)
-	
+
 	// 3. For uncertain cases, use embedding similarity
 	var embeddingScore float64
 	if sm.config.EmbeddingEnabled && (keywordScore < 0.4 || tfidfScore < 0.4) {
@@ -58,7 +70,7 @@ func (sm *SemanticMatcher) CalculateScore(description string, persona *PersonaCo
 		embeddingScore, err = sm.getEmbeddingSimilarityWithFallback(
 			context.Background(), description, persona.Description)
 		if err != nil {
-			sm.logger.Warn("Embedding similarity failed, using TF-IDF + keywords", 
+			sm.logger.Warn("Embedding similarity failed, using TF-IDF + keywords",
 				zap.Error(err), zap.String("persona", persona.ID))
 			return (keywordScore + tfidfScore) / 2, nil
 		}
@@ -66,7 +78,7 @@ func (sm *SemanticMatcher) CalculateScore(description string, persona *PersonaCo
 
 	// 4. Domain-specific boosting
 	domainBoost := sm.calculateDomainBoost(description, persona)
-	
+
 	// 5. Weighted combination based on confidence
 	if embeddingScore > 0 {
 		// Use all three methods with weights
@@ -86,14 +98,14 @@ func (sm *SemanticMatcher) getEmbeddingSimilarityWithFallback(ctx context.Contex
 	// Try external API first if available and not in fallback mode
 	if !sm.fallbackMode && sm.embeddingAPI != nil && sm.config.EmbeddingEnabled {
 		apiStartTime := time.Now()
-		
+
 		// Use short timeout for quick failure
 		apiCtx, cancel := context.WithTimeout(ctx, time.Duration(sm.config.APITimeout))
 		defer cancel()
 
 		score, err := sm.embeddingAPI.GetSimilarity(apiCtx, desc1, desc2)
 		sm.metrics.RecordEmbeddingAPICall("external", "similarity", time.Since(apiStartTime))
-		
+
 		if err == nil {
 			return score, nil
 		}
@@ -107,12 +119,12 @@ func (sm *SemanticMatcher) getEmbeddingSimilarityWithFallback(ctx context.Contex
 	// Use local embedding model
 	if sm.localEmbeddings != nil {
 		localStartTime := time.Now()
-		
+
 		emb1, err := sm.localEmbeddings.GetEmbedding(desc1)
 		if err != nil {
 			return 0, fmt.Errorf("local embedding for desc1 failed: %w", err)
 		}
-		
+
 		emb2, err := sm.localEmbeddings.GetEmbedding(desc2)
 		if err != nil {
 			return 0, fmt.Errorf("local embedding for desc2 failed: %w", err)
@@ -120,7 +132,7 @@ func (sm *SemanticMatcher) getEmbeddingSimilarityWithFallback(ctx context.Contex
 
 		similarity := sm.cosineSimilarity(emb1, emb2)
 		sm.metrics.RecordEmbeddingAPICall("local", "similarity", time.Since(localStartTime))
-		
+
 		return similarity, nil
 	}
 
@@ -173,7 +185,7 @@ func (sm *SemanticMatcher) cosineSimilarity(a, b []float64) float64 {
 // TrainTFIDF trains the TF-IDF model with persona descriptions
 func (sm *SemanticMatcher) TrainTFIDF(personas map[string]*PersonaConfig) error {
 	documents := make([]string, 0, len(personas))
-	
+
 	for _, persona := range personas {
 		// Combine description and keywords for training
 		doc := persona.Description + " " + strings.Join(persona.Keywords, " ")
@@ -213,7 +225,7 @@ func (model *TFIDFModel) Train(documents []string) error {
 
 	// Build vocabulary and calculate term frequencies
 	termDocCount := make(map[string]int)
-	
+
 	for docIdx, doc := range documents {
 		words := model.tokenize(doc)
 		wordCount := make(map[string]int)
@@ -272,7 +284,7 @@ func (model *TFIDFModel) tokenize(text string) []string {
 	// Simple tokenization - in production, use more sophisticated NLP
 	words := strings.Fields(strings.ToLower(text))
 	var tokens []string
-	
+
 	for _, word := range words {
 		// Remove punctuation
 		word = strings.Trim(word, ".,!?;:()[]{}\"'")
@@ -280,7 +292,7 @@ func (model *TFIDFModel) tokenize(text string) []string {
 			tokens = append(tokens, word)
 		}
 	}
-	
+
 	return tokens
 }
 
@@ -353,7 +365,7 @@ func NewLocalEmbeddingModel(dimension int) *LocalEmbeddingModel {
 
 	// Initialize with some basic embeddings for common words
 	lem.initializeBasicVocabulary()
-	
+
 	return lem
 }
 
@@ -417,18 +429,18 @@ func (lem *LocalEmbeddingModel) initializeBasicVocabulary() {
 	// Generate consistent vectors for each cluster
 	for clusterName, words := range clusters {
 		baseVector := lem.generateSeededVector(clusterName)
-		
+
 		for i, word := range words {
 			// Slight variations around the base vector
 			vector := make([]float64, lem.dim)
 			copy(vector, baseVector)
-			
+
 			// Add small perturbations
 			for j := range vector {
 				perturbation := 0.1 * math.Sin(float64(i+j)) // Deterministic perturbation
 				vector[j] += perturbation
 			}
-			
+
 			lem.normalizeVector(vector)
 			lem.model[word] = vector
 		}
@@ -438,7 +450,7 @@ func (lem *LocalEmbeddingModel) initializeBasicVocabulary() {
 // generateSeededVector creates a deterministic vector based on a seed string
 func (lem *LocalEmbeddingModel) generateSeededVector(seed string) []float64 {
 	vector := make([]float64, lem.dim)
-	
+
 	// Use seed string to generate deterministic values
 	hash := 0
 	for _, char := range seed {
@@ -473,26 +485,26 @@ func (lem *LocalEmbeddingModel) normalizeVector(vector []float64) {
 // calculateDomainBoost provides domain-specific boosting for specialized personas
 func (sm *SemanticMatcher) calculateDomainBoost(description string, persona *PersonaConfig) float64 {
 	lowerDesc := strings.ToLower(description)
-	
+
 	// Define domain-specific keywords with weights
 	domainKeywords := map[string]map[string]float64{
 		"ai_specialist": {"machine": 0.1, "learning": 0.1, "neural": 0.1, "network": 0.08, "model": 0.08, "training": 0.08, "classification": 0.08, "intelligence": 0.1, "artificial": 0.1, "deep": 0.08},
 		"researcher":    {"research": 0.1, "study": 0.08, "investigate": 0.08, "analyze": 0.08, "explore": 0.06, "examine": 0.06, "find": 0.05, "trends": 0.08, "behavior": 0.08, "market": 0.08, "data": 0.08},
 		"coder":         {"code": 0.1, "program": 0.08, "develop": 0.08, "implement": 0.1, "debug": 0.08, "software": 0.08, "api": 0.08, "rest": 0.05, "function": 0.08, "error": 0.05, "handling": 0.05, "algorithm": 0.1, "binary": 0.08, "search": 0.06},
 	}
-	
+
 	keywords, exists := domainKeywords[persona.ID]
 	if !exists {
 		return 0.0
 	}
-	
+
 	boost := 0.0
 	for keyword, weight := range keywords {
 		if strings.Contains(lowerDesc, keyword) {
 			boost += weight // Use weighted boost per matching domain keyword
 		}
 	}
-	
+
 	// Cap the boost at 0.3 to avoid overwhelming other factors
 	return math.Min(boost, 0.3)
 }

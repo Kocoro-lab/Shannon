@@ -32,21 +32,21 @@ type PersonaPerformance struct {
 
 // ContextPattern represents learned patterns about request contexts
 type ContextPattern struct {
-	Keywords      []string
+	Keywords           []string
 	SuccessfulPersonas map[string]float64 // persona ID -> success rate
-	Frequency     int
-	LastSeen      time.Time
+	Frequency          int
+	LastSeen           time.Time
 }
 
 // SelectionOutcome represents the outcome of a persona selection
 type SelectionOutcome struct {
-	PersonaID   string
-	Success     bool
-	Confidence  float64
-	TaskType    string
+	PersonaID    string
+	Success      bool
+	Confidence   float64
+	TaskType     string
 	UserFeedback float64 // 0-1 satisfaction score
-	Timestamp   time.Time
-	Description string
+	Timestamp    time.Time
+	Description  string
 }
 
 // NewAdaptiveLearning creates a new adaptive learning system
@@ -65,7 +65,7 @@ func (al *AdaptiveLearning) RecordSelection(req *SelectionRequest, result *Selec
 	defer al.mu.Unlock()
 
 	personaID := result.PersonaID
-	
+
 	// Initialize persona performance if needed
 	if _, exists := al.personaPerformance[personaID]; !exists {
 		al.personaPerformance[personaID] = &PersonaPerformance{
@@ -84,20 +84,20 @@ func (al *AdaptiveLearning) RecordSelection(req *SelectionRequest, result *Selec
 
 	// For now, assume success based on confidence (real implementation would get feedback)
 	success := result.Confidence > 0.6
-	
+
 	outcome := SelectionOutcome{
-		PersonaID:   personaID,
-		Success:     success,
-		Confidence:  result.Confidence,
-		TaskType:    req.TaskType,
+		PersonaID:    personaID,
+		Success:      success,
+		Confidence:   result.Confidence,
+		TaskType:     req.TaskType,
 		UserFeedback: result.Confidence, // Placeholder - would be real user feedback
-		Timestamp:   time.Now(),
-		Description: req.Description,
+		Timestamp:    time.Now(),
+		Description:  req.Description,
 	}
 
 	// Add to recent results
 	perf.RecentResults = append(perf.RecentResults, outcome)
-	
+
 	// Keep only recent results within window
 	cutoff := time.Now().Add(-al.windowSize)
 	validResults := make([]SelectionOutcome, 0)
@@ -110,7 +110,7 @@ func (al *AdaptiveLearning) RecordSelection(req *SelectionRequest, result *Selec
 
 	// Update metrics
 	al.updatePersonaMetrics(perf)
-	
+
 	// Learn context patterns
 	al.learnContextPattern(req.Description, personaID, success)
 
@@ -137,7 +137,7 @@ func (al *AdaptiveLearning) updatePersonaMetrics(perf *PersonaPerformance) {
 			successCount++
 		}
 		totalConfidence += result.Confidence
-		
+
 		if result.TaskType != "" {
 			taskCounts[result.TaskType]++
 			if result.Success {
@@ -166,7 +166,7 @@ func (al *AdaptiveLearning) learnContextPattern(description, personaID string, s
 
 	// Create pattern signature
 	signature := strings.Join(keywords, "_")
-	
+
 	// Initialize pattern if needed
 	if _, exists := al.contextPatterns[signature]; !exists {
 		al.contextPatterns[signature] = &ContextPattern{
@@ -190,13 +190,13 @@ func (al *AdaptiveLearning) learnContextPattern(description, personaID string, s
 	alpha := 0.1 // Learning rate
 	currentRate := pattern.SuccessfulPersonas[personaID]
 	newRate := currentRate
-	
+
 	if success {
 		newRate = currentRate + alpha*(1.0-currentRate)
 	} else {
 		newRate = currentRate + alpha*(0.0-currentRate)
 	}
-	
+
 	pattern.SuccessfulPersonas[personaID] = newRate
 }
 
@@ -204,7 +204,7 @@ func (al *AdaptiveLearning) learnContextPattern(description, personaID string, s
 func (al *AdaptiveLearning) extractKeyTerms(description string) []string {
 	// Simple keyword extraction - in production, use more sophisticated NLP
 	words := strings.Fields(strings.ToLower(description))
-	
+
 	// Important terms that indicate context
 	importantTerms := map[string]bool{
 		"algorithm": true, "analyze": true, "api": true, "architecture": true,
@@ -334,7 +334,7 @@ func (al *AdaptiveLearning) GetConfidenceAdjustment(personaID string) float64 {
 
 	// If actual success is much different from predicted confidence
 	confidenceDelta := actualSuccess - expectedConfidence
-	
+
 	// Apply small adjustment (max ±0.1)
 	adjustment := confidenceDelta * 0.1
 	return math.Max(-0.1, math.Min(0.1, adjustment))
@@ -351,11 +351,11 @@ func (al *AdaptiveLearning) GetPersonaRecommendations(req *SelectionRequest, lim
 	}
 
 	var scores []PersonaScore
-	
+
 	// Score all personas based on learned patterns
 	for personaID, perf := range al.personaPerformance {
 		score := perf.SuccessRate
-		
+
 		// Task-specific bonus
 		if req.TaskType != "" {
 			if taskRate, exists := perf.TaskSpecialty[req.TaskType]; exists {
@@ -387,9 +387,9 @@ func (al *AdaptiveLearning) GetPersonaRecommendations(req *SelectionRequest, lim
 
 		if perf, exists := al.personaPerformance[scoreItem.PersonaID]; exists {
 			recommendations = append(recommendations, PersonaRecommendation{
-				PersonaID:   scoreItem.PersonaID,
-				Confidence:  scoreItem.Score,
-				Reasoning:   fmt.Sprintf("Historical success rate: %.1f%%", perf.SuccessRate*100),
+				PersonaID:      scoreItem.PersonaID,
+				Confidence:     scoreItem.Score,
+				Reasoning:      fmt.Sprintf("Historical success rate: %.1f%%", perf.SuccessRate*100),
 				SelectionCount: perf.SelectionCount,
 			})
 		}
@@ -436,10 +436,10 @@ func (al *AdaptiveLearning) GetLearningStats() LearningStats {
 	defer al.mu.RUnlock()
 
 	stats := LearningStats{
-		TrackedPersonas:   len(al.personaPerformance),
-		ContextPatterns:   len(al.contextPatterns),
-		TotalSelections:   0,
-		AvgSuccessRate:    0.0,
+		TrackedPersonas: len(al.personaPerformance),
+		ContextPatterns: len(al.contextPatterns),
+		TotalSelections: 0,
+		AvgSuccessRate:  0.0,
 	}
 
 	totalSuccessRate := 0.0
@@ -457,8 +457,8 @@ func (al *AdaptiveLearning) GetLearningStats() LearningStats {
 
 // LearningStats provides statistics about the learning system
 type LearningStats struct {
-	TrackedPersonas  int
-	ContextPatterns  int
-	TotalSelections  int
-	AvgSuccessRate   float64
+	TrackedPersonas int
+	ContextPatterns int
+	TotalSelections int
+	AvgSuccessRate  float64
 }

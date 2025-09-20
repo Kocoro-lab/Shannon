@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samber/lo"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,7 @@ import (
 type Config struct {
 	Personas  map[string]*PersonaConfig `yaml:"personas"`
 	Selection *SelectionConfig          `yaml:"selection"`
+	Embedding *EmbeddingConfig          `yaml:"embedding,omitempty"`
 }
 
 // BudgetCalculator handles token budget calculations
@@ -63,6 +65,13 @@ func (c *Config) Validate() error {
 	// Validate selection config
 	if c.Selection != nil {
 		if err := c.validateSelection(); err != nil {
+			return err
+		}
+	}
+
+	// Validate embedding config
+	if c.Embedding != nil {
+		if err := c.validateEmbedding(); err != nil {
 			return err
 		}
 	}
@@ -122,6 +131,49 @@ func (c *Config) validateSelection() error {
 	return nil
 }
 
+// validateEmbedding validates the embedding configuration
+func (c *Config) validateEmbedding() error {
+	if c.Embedding.Provider == "" {
+		return NewConfigError("", "embedding", "provider", fmt.Errorf("embedding provider is required"))
+	}
+
+	validProviders := []EmbeddingProvider{ProviderOpenAI, ProviderAzureAI, ProviderLocal, ProviderHuggingFace}
+	valid := false
+	for _, provider := range validProviders {
+		if c.Embedding.Provider == provider {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return NewConfigError("", "embedding", "provider", fmt.Errorf("invalid provider: %s", c.Embedding.Provider))
+	}
+
+	if c.Embedding.Timeout <= 0 {
+		return NewConfigError("", "embedding", "timeout", fmt.Errorf("timeout must be positive"))
+	}
+
+	if c.Embedding.MaxRetries < 0 {
+		return NewConfigError("", "embedding", "max_retries", fmt.Errorf("max_retries cannot be negative"))
+	}
+
+	if c.Embedding.RequestsPerMinute < 0 {
+		return NewConfigError("", "embedding", "requests_per_minute", fmt.Errorf("requests_per_minute cannot be negative"))
+	}
+
+	// Validate individual provider configs
+	for i, providerConfig := range c.Embedding.Providers {
+		if providerConfig.Name == "" {
+			return NewConfigError("", "embedding", fmt.Sprintf("providers[%d].name", i), fmt.Errorf("provider name is required"))
+		}
+		if providerConfig.Weight < 0 {
+			return NewConfigError("", "embedding", fmt.Sprintf("providers[%d].weight", i), fmt.Errorf("provider weight cannot be negative"))
+		}
+	}
+
+	return nil
+}
+
 // setDefaults sets default values for missing configuration fields
 func (c *Config) setDefaults() {
 	// Set persona defaults
@@ -166,6 +218,42 @@ func (c *Config) setDefaults() {
 	if c.Selection.FallbackStrategy == "" {
 		c.Selection.FallbackStrategy = "generalist"
 	}
+
+	// Set embedding defaults
+	if c.Embedding != nil {
+		if c.Embedding.Provider == "" {
+			c.Embedding.Provider = ProviderLocal // Default to local if not specified
+		}
+		if c.Embedding.Model == "" {
+			switch c.Embedding.Provider {
+			case ProviderOpenAI:
+				c.Embedding.Model = "text-embedding-3-small"
+			case ProviderAzureAI:
+				c.Embedding.Model = "text-embedding-ada-002"
+			default:
+				c.Embedding.Model = "default"
+			}
+		}
+		if c.Embedding.Timeout == 0 {
+			c.Embedding.Timeout = 30 * time.Second
+		}
+		if c.Embedding.MaxRetries == 0 {
+			c.Embedding.MaxRetries = 3
+		}
+		if c.Embedding.CacheTTL == 0 {
+			c.Embedding.CacheTTL = 24 * time.Hour // Cache for 24 hours by default
+		}
+		if c.Embedding.RequestsPerMinute == 0 {
+			c.Embedding.RequestsPerMinute = 60 // Default rate limit
+		}
+		// Default to enabling cache and local fallback
+		if !c.Embedding.EnableCache {
+			c.Embedding.EnableCache = true
+		}
+		if !c.Embedding.FallbackToLocal {
+			c.Embedding.FallbackToLocal = true
+		}
+	}
 }
 
 // GetPersona retrieves a persona by ID
@@ -208,15 +296,10 @@ func (c *Config) matchesFilter(persona *PersonaConfig, filter *PersonaFilter) bo
 
 	// Check capabilities filter
 	if len(filter.Capabilities) > 0 {
-		personaCapabilities := make(map[string]bool)
-		for _, cap := range persona.Capabilities {
-			personaCapabilities[cap] = true
-		}
-
-		for _, requiredCap := range filter.Capabilities {
-			if !personaCapabilities[requiredCap] {
-				return false
-			}
+		if !lo.EveryBy(filter.Capabilities, func(requiredCap string) bool {
+			return lo.Contains(persona.Capabilities, requiredCap)
+		}) {
+			return false
 		}
 	}
 

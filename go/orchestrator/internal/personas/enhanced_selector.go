@@ -14,19 +14,19 @@ import (
 
 // EnhancedSelector implements advanced persona selection with semantic matching
 type EnhancedSelector struct {
-	config              *Config
-	cache               Cache
-	concurrencyControl  *ConcurrencyController
-	keywordMatcher      *KeywordMatcher
-	semanticMatcher     *SemanticMatcher
-	budgetCalculator    *BudgetCalculator
-	metrics             *Metrics
-	logger              *zap.Logger
-	errorClassifier     *ErrorClassifier
-	
+	config             *Config
+	cache              Cache
+	concurrencyControl *ConcurrencyController
+	keywordMatcher     *KeywordMatcher
+	semanticMatcher    *SemanticMatcher
+	budgetCalculator   *BudgetCalculator
+	metrics            *Metrics
+	logger             *zap.Logger
+	errorClassifier    *ErrorClassifier
+
 	// Advanced features
-	adaptiveLearning    *AdaptiveLearning
-	
+	adaptiveLearning *AdaptiveLearning
+
 	// State management
 	mu     sync.RWMutex
 	closed bool
@@ -39,36 +39,40 @@ func NewEnhancedSelector(config *Config, cache Cache, metrics *Metrics, logger *
 		matcherConfig = &MatcherConfig{
 			EmbeddingEnabled: config.Selection.Method == "semantic" || config.Selection.Method == "enhanced",
 			LocalFallback:    true,
-			APITimeout:       2000, // 2 second timeout
+			APITimeout:       2000,             // 2 second timeout
+			EmbeddingConfig:  config.Embedding, // Pass embedding config from main config
 		}
+	} else if matcherConfig.EmbeddingConfig == nil {
+		// If matcher config is provided but no embedding config, use from main config
+		matcherConfig.EmbeddingConfig = config.Embedding
 	}
 
 	semanticMatcher := NewSemanticMatcher(matcherConfig, logger, metrics)
-	
+
 	// Train TF-IDF model with persona descriptions
 	if err := semanticMatcher.TrainTFIDF(config.Personas); err != nil {
 		logger.Warn("Failed to train TF-IDF model", zap.Error(err))
 	}
 
 	return &EnhancedSelector{
-		config:              config,
-		cache:               cache,
-		concurrencyControl:  NewConcurrencyController(config.Selection.MaxConcurrentSelections, metrics, logger),
-		keywordMatcher:      NewKeywordMatcher(logger),
-		semanticMatcher:     semanticMatcher,
-		budgetCalculator:    NewBudgetCalculator(),
-		metrics:             metrics,
-		logger:              logger,
-		errorClassifier:     NewErrorClassifier(),
-		adaptiveLearning:    NewAdaptiveLearning(logger),
-		closed:              false,
+		config:             config,
+		cache:              cache,
+		concurrencyControl: NewConcurrencyController(config.Selection.MaxConcurrentSelections, metrics, logger),
+		keywordMatcher:     NewKeywordMatcher(logger),
+		semanticMatcher:    semanticMatcher,
+		budgetCalculator:   NewBudgetCalculator(),
+		metrics:            metrics,
+		logger:             logger,
+		errorClassifier:    NewErrorClassifier(),
+		adaptiveLearning:   NewAdaptiveLearning(logger),
+		closed:             false,
 	}
 }
 
 // SelectPersona selects the best persona using enhanced matching techniques
 func (s *EnhancedSelector) SelectPersona(ctx context.Context, req *SelectionRequest) (*SelectionResult, error) {
 	startTime := time.Now()
-	
+
 	// Check if selector is closed
 	s.mu.RLock()
 	if s.closed {
@@ -169,7 +173,7 @@ func (s *EnhancedSelector) performEnhancedSelection(ctx context.Context, req *Se
 
 	// Select the best candidate
 	best := candidates[0]
-	
+
 	// Validate the selection
 	if err := s.validateSelection(best, req); err != nil {
 		return nil, err
@@ -195,10 +199,10 @@ func (s *EnhancedSelector) shouldUseSemanticMatching(req *SelectionRequest) bool
 	// 1. Complex requests (high complexity score)
 	// 2. Long descriptions (more context for semantic analysis)
 	// 3. When semantic matching is enabled
-	
+
 	// Semantic matching is enabled if explicitly set or if method is semantic/enhanced
-	if !s.config.Selection.EnableSemanticMatching && 
-		s.config.Selection.Method != "semantic" && 
+	if !s.config.Selection.EnableSemanticMatching &&
+		s.config.Selection.Method != "semantic" &&
 		s.config.Selection.Method != "enhanced" {
 		return false
 	}
@@ -228,7 +232,7 @@ func (s *EnhancedSelector) shouldUseSemanticMatching(req *SelectionRequest) bool
 // semanticSelection performs selection using semantic matching
 func (s *EnhancedSelector) semanticSelection(ctx context.Context, req *SelectionRequest, personas []*PersonaConfig) ([]*CandidatePersona, string) {
 	candidates := make([]*CandidatePersona, 0, len(personas))
-	
+
 	for _, persona := range personas {
 		select {
 		case <-ctx.Done():
@@ -239,7 +243,7 @@ func (s *EnhancedSelector) semanticSelection(ctx context.Context, req *Selection
 		// Use semantic matcher for scoring
 		score, err := s.semanticMatcher.CalculateScore(req.Description, persona)
 		if err != nil {
-			s.logger.Warn("Semantic matching failed for persona", 
+			s.logger.Warn("Semantic matching failed for persona",
 				zap.String("persona", persona.ID), zap.Error(err))
 			// Fallback to keyword matching
 			score = s.keywordMatcher.CalculateScore(req.Description, persona.Keywords)
@@ -267,7 +271,7 @@ func (s *EnhancedSelector) semanticSelection(ctx context.Context, req *Selection
 // keywordSelection performs traditional keyword-based selection
 func (s *EnhancedSelector) keywordSelection(ctx context.Context, req *SelectionRequest, personas []*PersonaConfig) ([]*CandidatePersona, string) {
 	candidates := make([]*CandidatePersona, 0, len(personas))
-	
+
 	for _, persona := range personas {
 		select {
 		case <-ctx.Done():
@@ -339,7 +343,7 @@ func (s *EnhancedSelector) calculateEnhancedConfidence(score float64, persona *P
 // Implement other required methods from Selector interface
 func (s *EnhancedSelector) evaluatePersonaKeywords(req *SelectionRequest, persona *PersonaConfig) *CandidatePersona {
 	keywordScore := s.keywordMatcher.CalculateScore(req.Description, persona.Keywords)
-	
+
 	return &CandidatePersona{
 		PersonaID:  persona.ID,
 		Config:     persona,
@@ -420,7 +424,7 @@ func (s *EnhancedSelector) validateSelection(candidate *CandidatePersona, req *S
 
 func (s *EnhancedSelector) filterByPreferences(prefs *UserPreferences) []*PersonaConfig {
 	var result []*PersonaConfig
-	
+
 	excluded := make(map[string]bool)
 	if prefs != nil {
 		for _, personaID := range prefs.ExcludedPersonas {
@@ -437,7 +441,7 @@ func (s *EnhancedSelector) filterByPreferences(prefs *UserPreferences) []*Person
 				}
 			}
 		}
-		
+
 		// Add non-preferred, non-excluded personas
 		for _, persona := range s.config.Personas {
 			if !excluded[persona.ID] && !s.isInPreferred(persona.ID, prefs.PreferredPersonas) {
@@ -471,12 +475,12 @@ func (s *EnhancedSelector) generateCacheKey(req *SelectionRequest) string {
 
 func (s *EnhancedSelector) getAlternatives(candidates []*CandidatePersona, n int) []AlternativeChoice {
 	var alternatives []AlternativeChoice
-	
+
 	start := 1
 	if len(candidates) <= start {
 		return alternatives
 	}
-	
+
 	end := start + n
 	if end > len(candidates) {
 		end = len(candidates)
@@ -496,7 +500,7 @@ func (s *EnhancedSelector) getAlternatives(candidates []*CandidatePersona, n int
 
 func (s *EnhancedSelector) handleSelectionError(ctx context.Context, req *SelectionRequest, err error, startTime time.Time) (*SelectionResult, error) {
 	s.logger.Warn("Enhanced selection failed, attempting fallback", zap.Error(err))
-	
+
 	fallbackPersonaID := s.config.Selection.FallbackStrategy
 	if fallbackPersonaID == "" {
 		fallbackPersonaID = "generalist"
@@ -527,7 +531,7 @@ func (s *EnhancedSelector) handleSelectionError(ctx context.Context, req *Select
 func (s *EnhancedSelector) GetPersona(personaID string) (*PersonaConfig, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	if s.closed {
 		return nil, ErrManagerClosed
 	}
@@ -538,7 +542,7 @@ func (s *EnhancedSelector) GetPersona(personaID string) (*PersonaConfig, error) 
 func (s *EnhancedSelector) ListPersonas(filter *PersonaFilter) ([]*PersonaConfig, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	if s.closed {
 		return nil, ErrManagerClosed
 	}
@@ -549,7 +553,7 @@ func (s *EnhancedSelector) ListPersonas(filter *PersonaFilter) ([]*PersonaConfig
 func (s *EnhancedSelector) ValidateConfig() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	if s.closed {
 		return ErrManagerClosed
 	}
@@ -560,13 +564,13 @@ func (s *EnhancedSelector) ValidateConfig() error {
 func (s *EnhancedSelector) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
+
 	if s.closed {
 		return nil
 	}
-	
+
 	s.closed = true
-	
+
 	if s.cache != nil {
 		if err := s.cache.Close(); err != nil {
 			s.logger.Error("Failed to close cache", zap.Error(err))

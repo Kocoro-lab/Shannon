@@ -3,6 +3,8 @@ package personas
 import (
 	"context"
 	"time"
+
+	"github.com/samber/lo"
 )
 
 // PersonaConfig defines the configuration for a specific persona
@@ -109,38 +111,18 @@ func (f *PersonaFilter) Matches(persona *PersonaConfig) bool {
 
 	// Check capabilities filter
 	if len(f.Capabilities) > 0 {
-		hasCapability := false
-		for _, filterCap := range f.Capabilities {
-			for _, personaCap := range persona.Capabilities {
-				if filterCap == personaCap {
-					hasCapability = true
-					break
-				}
-			}
-			if hasCapability {
-				break
-			}
-		}
-		if !hasCapability {
+		if !lo.SomeBy(f.Capabilities, func(filterCap string) bool {
+			return lo.Contains(persona.Capabilities, filterCap)
+		}) {
 			return false
 		}
 	}
 
 	// Check keywords filter
 	if len(f.Keywords) > 0 {
-		hasKeyword := false
-		for _, filterKeyword := range f.Keywords {
-			for _, personaKeyword := range persona.Keywords {
-				if filterKeyword == personaKeyword {
-					hasKeyword = true
-					break
-				}
-			}
-			if hasKeyword {
-				break
-			}
-		}
-		if !hasKeyword {
+		if !lo.SomeBy(f.Keywords, func(filterKeyword string) bool {
+			return lo.Contains(persona.Keywords, filterKeyword)
+		}) {
 			return false
 		}
 	}
@@ -213,11 +195,12 @@ type Cache interface {
 
 // MatcherConfig defines configuration for semantic matching
 type MatcherConfig struct {
-	EnableSemanticMatching bool          `yaml:"enable_semantic_matching"`
-	TFIDFEnabled           bool          `yaml:"tfidf_enabled"`
-	EmbeddingEnabled       bool          `yaml:"embedding_enabled"`
-	APITimeout             time.Duration `yaml:"api_timeout"`
-	LocalFallback          bool          `yaml:"local_fallback"`
+	EnableSemanticMatching bool             `yaml:"enable_semantic_matching"`
+	TFIDFEnabled           bool             `yaml:"tfidf_enabled"`
+	EmbeddingEnabled       bool             `yaml:"embedding_enabled"`
+	APITimeout             time.Duration    `yaml:"api_timeout"`
+	LocalFallback          bool             `yaml:"local_fallback"`
+	EmbeddingConfig        *EmbeddingConfig `yaml:"embedding_config,omitempty"`
 }
 
 // EmbeddingAPI interface for external embedding services
