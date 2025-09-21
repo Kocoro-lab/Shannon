@@ -1,0 +1,97 @@
+@import "tailwindcss";
+
+:root {
+  --background: #000000; /* Force full black */
+  --foreground: #ededed;
+  /* Global theme colors */
+  --green-bright: #57ff7a;
+  /* UI label variables (used for small section titles/badges) */
+  --ui-label-font-size: 0.8rem; /* ~10px, about half of text-lg */
+  --ui-label-line-height: 1.15;
+  --ui-label-py: 0.125rem; /* 2px */
+  --ui-label-px: 0.5rem;   /* 8px */
+  --ui-label-bg: #c79325ff; /* Tailwind yellow-300 */
+  --ui-label-fg: #000000;
+  /* Consistent header row height for section headers */
+  --ui-header-row-height: 28px;
+  /* Row status colors (easy to tweak) */
+  --row-done-bg: #05291dff;        /* emerald-800 */
+  --row-done-fg: #047f54ff;        /* emerald-200 */
+  --row-inprog-bg: #212107ff;      /* amber-900 */
+  --row-inprog-fg: #9aa40aff;      /* amber-300 */
+  --row-queued-bg: #0e1d46;      /* blue-800 */
+  --row-queued-fg: #8aa9cf;      /* blue-200 */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* Map Tailwind font tokens to Source Code Pro */
+  --font-sans: var(--font-jet-brains-mono);
+  --font-mono: var(--font-jet-brains-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #000000; /* Full black in dark mode too */
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* Reusable small title/label style for consistent height */
+.ui-label {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--ui-label-font-size);
+  line-height: var(--ui-label-line-height);
+  padding: var(--ui-label-py) var(--ui-label-px);
+  background: var(--ui-label-bg);
+  color: var(--ui-label-fg);
+  font-weight: 700; /* use Bold face we loaded */
+}
+
+/* Variant: make it look like a tab sitting on the card border */
+.ui-label--tab {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  margin-top: -1px; /* overlap the top border for a flush tab look */
+}
+
+/* Tighter horizontal padding (≈2px each side) */
+.ui-label--tight {
+  padding-left: 0.125rem;  /* 2px */
+  padding-right: 0.125rem; /* 2px */
+}
+
+/* Make the label fill the container height */
+.ui-label--fill {
+  height: 100%;
+}
+
+/* Utility to hide scrollbars while enabling scroll */
+.no-scrollbar {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari and Opera */
+}
+
+/* Table row status helpers */
+.tr-status-done {
+  background-color: var(--row-done-bg) !important;
+  color: var(--row-done-fg) !important;
+}
+.tr-status-inprogress {
+  background-color: var(--row-inprog-bg) !important;
+  color: var(--row-inprog-fg) !important;
+}
+.tr-status-queued {
+  background-color: var(--row-queued-bg) !important;
+  color: var(--row-queued-fg) !important;
+}

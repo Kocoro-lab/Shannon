@@ -610,7 +610,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             result = await providers.generate_completion(
                 messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
                 tier=ModelTier.SMALL,
-                max_tokens=400,
+                max_tokens=4096,  # Increased from 400 to handle complex multi-subtask decompositions
                 temperature=0.1,
                 response_format={"type": "json_object"},
                 specific_model=(settings.decomposition_model_id if settings and settings.decomposition_model_id else None),

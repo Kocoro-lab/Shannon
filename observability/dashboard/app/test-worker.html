@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Worker Test</title>
+</head>
+<body>
+    <h1>Worker Test</h1>
+    <div id="status">Loading...</div>
+    <div id="tick">Tick: 0</div>
+    <button id="toggle">Run/Pause</button>
+    
+    <script>
+        const worker = new Worker('/workers/engine.worker.ts', { type: 'module' });
+        let running = false;
+        let tickCount = 0;
+        
+        worker.onmessage = (e) => {
+            console.log('Message from worker:', e.data);
+            document.getElementById('status').textContent = 'Connected: ' + JSON.stringify(e.data);
+            
+            if (e.data.type === 'tick') {
+                tickCount = e.data.tick_id;
+                document.getElementById('tick').textContent = 'Tick: ' + tickCount;
+            }
+            
+            if (e.data.type === 'snapshot') {
+                running = e.data.state.running;
+            }
+        };
+        
+        document.getElementById('toggle').onclick = () => {
+            running = !running;
+            worker.postMessage({ type: 'set_running', running });
+        };
+    </script>
+</body>
+</html>
