@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -139,8 +140,66 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// Check if we need synthesis for web_search or JSON results
+	finalResult := result.Response
+	totalTokens := result.TokensUsed
+
+	// Determine if synthesis is needed
+	needsSynthesis := false
+
+	// Check if web_search was used
+	if input.SuggestedTools != nil {
+		for _, tool := range input.SuggestedTools {
+			if strings.EqualFold(tool, "web_search") {
+				needsSynthesis = true
+				break
+			}
+		}
+	}
+
+	// Check if response looks like JSON
+	if !needsSynthesis {
+		trimmed := strings.TrimSpace(result.Response)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			needsSynthesis = true
+		}
+	}
+
+	// Perform synthesis if needed
+	if needsSynthesis && result.Success {
+		logger.Info("Response appears to be web_search results or JSON, performing synthesis")
+
+		// Convert to agent results format for synthesis
+		agentResults := []activities.AgentExecutionResult{
+			{
+				AgentID:    "simple-agent",
+				Response:   result.Response,
+				Success:    true,
+				TokensUsed: result.TokensUsed,
+			},
+		}
+
+		var synthesis activities.SynthesisResult
+		err = workflow.ExecuteActivity(ctx,
+			activities.SynthesizeResultsLLM,
+			activities.SynthesisInput{
+				Query:        input.Query,
+				AgentResults: agentResults,
+				Context:      input.Context,
+			},
+		).Get(ctx, &synthesis)
+
+		if err != nil {
+			logger.Warn("Synthesis failed, using raw result", "error", err)
+		} else {
+			finalResult = synthesis.FinalResult
+			totalTokens += synthesis.TokensUsed
+			logger.Info("Synthesis completed", "additional_tokens", synthesis.TokensUsed)
+		}
+	}
+
 	logger.Info("SimpleTaskWorkflow completed successfully",
-		"tokens_used", result.TokensUsed,
+		"tokens_used", totalTokens,
 	)
 
 	// Emit completion event
@@ -162,9 +221,9 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}).Get(ctx, nil)
 
 	return TaskResult{
-		Result:     result.Response,
+		Result:     finalResult,
 		Success:    true,
-		TokensUsed: result.TokensUsed,
+		TokensUsed: totalTokens,
 		Metadata: map[string]interface{}{
 			"mode":       "simple",
 			"num_agents": 1,

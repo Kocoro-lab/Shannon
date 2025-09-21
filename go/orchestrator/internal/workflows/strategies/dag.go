@@ -236,19 +236,61 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-	if input.BypassSingleResult && successfulCount == 1 {
-		// Single success bypass - skip synthesis entirely for efficiency
-		// Works for both sequential (1 result) and parallel (1 success among N) modes
-		synthesis = activities.SynthesisResult{
-			FinalResult: singleSuccessResult.Response,
-			TokensUsed:  0, // No synthesis performed, tokens already counted in agent execution
-		}
-		logger.Info("Bypassing synthesis for single successful result",
-			"agent_id", singleSuccessResult.AgentID,
-			"total_agents", len(agentResults),
-			"successful", successfulCount,
-		)
-	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
+    if input.BypassSingleResult && successfulCount == 1 {
+        // Heuristic guard: if the single result likely needs synthesis (e.g., web_search JSON),
+        // do not bypass — proceed to standard LLM synthesis for a user‑ready answer.
+        shouldBypass := true
+        // 1) If tools used include web_search, prefer synthesis for natural language output
+        if len(singleSuccessResult.ToolsUsed) > 0 {
+            for _, t := range singleSuccessResult.ToolsUsed {
+                if strings.EqualFold(t, "web_search") {
+                    shouldBypass = false
+                    break
+                }
+            }
+        }
+        // 2) If response looks like raw JSON, avoid bypass
+        if shouldBypass {
+            trimmed := strings.TrimSpace(singleSuccessResult.Response)
+            if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+                shouldBypass = false
+            }
+        }
+
+        if shouldBypass {
+            // Single success bypass - skip synthesis entirely for efficiency
+            // Works for both sequential (1 result) and parallel (1 success among N) modes
+            synthesis = activities.SynthesisResult{
+                FinalResult: singleSuccessResult.Response,
+                TokensUsed:  0, // No synthesis performed here
+            }
+            logger.Info("Bypassing synthesis for single successful result",
+                "agent_id", singleSuccessResult.AgentID,
+                "total_agents", len(agentResults),
+                "successful", successfulCount,
+            )
+        } else {
+            // Fall through to standard synthesis below
+            logger.Info("Single result requires synthesis (web_search/JSON detected)")
+            err = workflow.ExecuteActivity(ctx,
+                activities.SynthesizeResultsLLM,
+                activities.SynthesisInput{
+                    Query:        input.Query,
+                    AgentResults: agentResults,
+                    Context:      baseContext,
+                },
+            ).Get(ctx, &synthesis)
+
+            if err != nil {
+                logger.Error("Synthesis failed", "error", err)
+                return TaskResult{
+                    Success:      false,
+                    ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
+                }, err
+            }
+            totalTokens += synthesis.TokensUsed
+        }
+    } else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
 		// Use the synthesis subtask's result as final output
 		synthesisResult := agentResults[synthesisTaskIdx]
 		synthesis = activities.SynthesisResult{

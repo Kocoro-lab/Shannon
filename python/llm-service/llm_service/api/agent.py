@@ -153,7 +153,7 @@ async def agent_query(request: Request, query: AgentQuery):
             if query.context:
                 context_str = "\n".join([f"{k}: {v}" for k, v in query.context.items()])
                 messages[0]["content"] += f"\n\nContext:\n{context_str}"
-            
+
             # Get the appropriate model tier
             from ..providers.base import ModelTier
             tier_map = {
@@ -411,25 +411,29 @@ async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_to
                         search_results = []
                         for i, item in enumerate(filtered_results, 1):
                             title = item.get("title", "")
-                            content = item.get("content", "")
                             snippet = item.get("snippet", "")
                             url = item.get("url", "")
                             date = item.get("published_date", "")
+                            # Prefer markdown when available (e.g., Firecrawl), else use content, else snippet
+                            markdown = item.get("markdown") if isinstance(item.get("markdown"), str) else None
+                            raw_content = markdown if markdown else item.get("content", "")
 
-                            # Clean HTML entities
+                            # Clean HTML entities for title and text
                             title = html.unescape(title)
-                            content = html.unescape(content) if content else html.unescape(snippet)
+                            content_or_snippet = raw_content if raw_content else snippet
+                            content_or_snippet = html.unescape(content_or_snippet) if content_or_snippet else ""
 
                             if title and url:
-                                # Use full content if available, otherwise use snippet
-                                text_content = content[:1500] if content else snippet[:500]
+                                # Use up to 1500 chars to give LLM enough context
+                                text_content = content_or_snippet[:1500] if content_or_snippet else ""
 
                                 result_text = f"**{title}**"
                                 if date:
                                     result_text += f" ({date[:10]})"
-                                result_text += f"\n{text_content}"
-                                if len(content) > 1500 or len(snippet) > 500:
-                                    result_text += "..."
+                                if text_content:
+                                    result_text += f"\n{text_content}"
+                                    if len(content_or_snippet) > 1500 or len(snippet) > 500:
+                                        result_text += "..."
                                 result_text += f"\nSource: {url}\n"
 
                                 search_results.append(result_text)

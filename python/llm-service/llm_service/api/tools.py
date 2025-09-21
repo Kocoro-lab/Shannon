@@ -326,20 +326,20 @@ async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPReg
 async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
     """
     Execute a tool with given parameters
-    
+
     Args:
         request: Tool execution request
     """
     registry = get_registry()
     tool = registry.get_tool(request.tool_name)
-    
+
     if not tool:
         raise HTTPException(status_code=404, detail=f"Tool '{request.tool_name}' not found")
-    
+
     try:
-        # Execute the tool
+        # Execute the tool and return raw results
         result = await tool.execute(**request.parameters)
-        
+
         return ToolExecuteResponse(
             success=result.success,
             output=result.output,
