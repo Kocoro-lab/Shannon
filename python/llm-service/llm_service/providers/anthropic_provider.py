@@ -38,13 +38,17 @@ class AnthropicProvider(LLMProvider):
         ),
     }
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: str = None):
         self.api_key = api_key
+        self.base_url = base_url
         self.client = None
         
     async def initialize(self):
         """Initialize Anthropic client"""
-        self.client = AsyncAnthropic(api_key=self.api_key)
+        client_kwargs = {"api_key": self.api_key}
+        if self.base_url:
+            client_kwargs["base_url"] = self.base_url
+        self.client = AsyncAnthropic(**client_kwargs)
         # Set provider reference in models
         from . import ProviderType
         for model in self.MODELS.values():

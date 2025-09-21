@@ -45,7 +45,10 @@ class ProviderManager:
         
         # Initialize Anthropic
         if self.settings.anthropic_api_key:
-            provider = AnthropicProvider(self.settings.anthropic_api_key)
+            provider = AnthropicProvider(
+                self.settings.anthropic_api_key,
+                self.settings.anthropic_base_url
+            )
             await provider.initialize()
             self.providers[ProviderType.ANTHROPIC] = provider
             self._register_models(provider)

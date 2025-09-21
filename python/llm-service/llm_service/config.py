@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # LLM Provider API keys (optional, can be configured at runtime)
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
     anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
+    anthropic_base_url: Optional[str] = Field(default=None, env="ANTHROPIC_BASE_URL")
     google_api_key: Optional[str] = Field(default=None, env="GOOGLE_API_KEY")
     deepseek_api_key: Optional[str] = Field(default=None, env="DEEPSEEK_API_KEY")
     qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
@@ -50,6 +51,8 @@ class Settings(BaseSettings):
     decomposition_model_id: Optional[str] = Field(
         default=None, env="DECOMPOSITION_MODEL_ID"
     )
+    # Default Anthropic model (optional override)
+    default_anthropic_model: Optional[str] = Field(default=None, env="ANTHROPIC_MODEL")
 
     # Cache configuration
     enable_cache: bool = Field(default=True, env="ENABLE_CACHE")
