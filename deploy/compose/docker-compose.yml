@@ -145,6 +145,11 @@ services:
       - PRIORITY_QUEUES=${PRIORITY_QUEUES:-}
       # Enable automatic tool selection for parallel execution
       - ENABLE_TOOL_SELECTION=${ENABLE_TOOL_SELECTION:-1}
+      # Enable LLM event streaming (prompts, partials, outputs)
+      - ENABLE_LLM_PARTIALS=${ENABLE_LLM_PARTIALS:-1}
+      - PARTIAL_CHUNK_CHARS=${PARTIAL_CHUNK_CHARS:-512}
+      - EVENTLOG_BATCH_SIZE=${EVENTLOG_BATCH_SIZE:-100}
+      - EVENTLOG_BATCH_INTERVAL_MS=${EVENTLOG_BATCH_INTERVAL_MS:-100}
       # Priority worker concurrency (optional; defaults shown)
       - WORKER_ACT_CRITICAL=${WORKER_ACT_CRITICAL:-12}
       - WORKER_WF_CRITICAL=${WORKER_WF_CRITICAL:-12}

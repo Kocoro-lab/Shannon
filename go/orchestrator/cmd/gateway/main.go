@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -117,6 +118,16 @@ func main() {
 		),
 	)
 
+	mux.Handle("GET /api/v1/tasks",
+		tracingMiddleware(
+			authMiddleware(
+				rateLimiter(
+					http.HandlerFunc(taskHandler.ListTasks),
+				),
+			),
+		),
+	)
+
 	mux.Handle("GET /api/v1/tasks/{id}",
 		tracingMiddleware(
 			authMiddleware(
@@ -129,6 +140,16 @@ func main() {
 		tracingMiddleware(
 			authMiddleware(
 				http.HandlerFunc(taskHandler.StreamTask),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/tasks/{id}/events",
+		tracingMiddleware(
+			authMiddleware(
+				rateLimiter(
+					http.HandlerFunc(taskHandler.GetTaskEvents),
+				),
 			),
 		),
 	)
@@ -153,6 +174,32 @@ func main() {
 		tracingMiddleware(
 			authMiddleware(
 				streamProxy,
+			),
+		),
+	)
+
+	// Timeline proxy: GET /api/v1/tasks/{id}/timeline -> admin /timeline
+	mux.Handle("GET /api/v1/tasks/{id}/timeline",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					id := r.PathValue("id")
+					if id == "" { http.Error(w, "{\"error\":\"Task ID required\"}", http.StatusBadRequest); return }
+					// Rebuild target URL
+					target := strings.TrimRight(adminURL, "/") + "/timeline?workflow_id=" + id
+					if raw := r.URL.RawQuery; raw != "" { target += "&" + raw }
+					req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						logger.Error("timeline proxy error", zap.Error(err))
+						http.Error(w, "{\"error\":\"upstream unavailable\"}", http.StatusBadGateway)
+						return
+					}
+					defer resp.Body.Close()
+					for k, v := range resp.Header { for _, vv := range v { w.Header().Add(k, vv) } }
+					w.WriteHeader(resp.StatusCode)
+					_, _ = io.Copy(w, resp.Body)
+				}),
 			),
 		),
 	)

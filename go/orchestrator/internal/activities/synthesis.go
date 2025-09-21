@@ -99,12 +99,15 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-	if err != nil {
-		logger.Warn("LLM synthesis: request build failed, falling back", zap.Error(err))
-		return simpleSynthesis(ctx, input)
-	}
-	req.Header.Set("Content-Type", "application/json")
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+    if err != nil {
+        logger.Warn("LLM synthesis: request build failed, falling back", zap.Error(err))
+        return simpleSynthesis(ctx, input)
+    }
+    req.Header.Set("Content-Type", "application/json")
+    if input.ParentWorkflowID != "" {
+        req.Header.Set("X-Parent-Workflow-ID", input.ParentWorkflowID)
+    }
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

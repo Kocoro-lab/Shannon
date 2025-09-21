@@ -29,11 +29,11 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 	config := getWorkflowConfig(ctx)
 
 	// Prepare pattern options
-	opts := patterns.Options{
-		UserID:         input.UserID,
-		BudgetAgentMax: getBudgetMax(input.Context),
-		ModelTier:      determineModelTier(input.Context, "medium"),
-	}
+    opts := patterns.Options{
+        UserID:         input.UserID,
+        BudgetAgentMax: getBudgetMax(input.Context),
+        ModelTier:      determineModelTier(input.Context, "medium"),
+    }
 
 	// Phase 1: Use Tree-of-Thoughts for systematic exploration
 	totConfig := patterns.TreeOfThoughtsConfig{
@@ -51,15 +51,20 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"branching_factor", totConfig.BranchingFactor,
 	)
 
-	totResult, err := patterns.TreeOfThoughts(
-		ctx,
-		input.Query,
-		input.Context,
-		input.SessionID,
-		convertHistoryForAgent(input.History),
-		totConfig,
-		opts,
-	)
+    // Ensure parent workflow ID is available in context passed to patterns
+    ctxMap := make(map[string]interface{})
+    for k, v := range input.Context { ctxMap[k] = v }
+    if input.ParentWorkflowID != "" { ctxMap["parent_workflow_id"] = input.ParentWorkflowID }
+
+    totResult, err := patterns.TreeOfThoughts(
+        ctx,
+        input.Query,
+        ctxMap,
+        input.SessionID,
+        convertHistoryForAgent(input.History),
+        totConfig,
+        opts,
+    )
 
 	if err != nil {
 		logger.Error("Tree-of-Thoughts exploration failed", "error", err)
@@ -102,11 +107,12 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		}
 
 		// Prepare debate context with exploration findings
-		debateContext := make(map[string]interface{})
-		for k, v := range input.Context {
-			debateContext[k] = v
-		}
-		debateContext["exploration_findings"] = totResult.BestPath
+        debateContext := make(map[string]interface{})
+        for k, v := range input.Context {
+            debateContext[k] = v
+        }
+        if input.ParentWorkflowID != "" { debateContext["parent_workflow_id"] = input.ParentWorkflowID }
+        debateContext["exploration_findings"] = totResult.BestPath
 
 		debateResult, err := patterns.Debate(
 			ctx,

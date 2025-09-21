@@ -17,10 +17,12 @@ import (
 
 // CompressContextInput requests summary for long conversation history
 type CompressContextInput struct {
-	SessionID string `json:"session_id"`
-	// History messages as pairs: {role, content}
-	History      []map[string]string `json:"history"`
-	TargetTokens int                 `json:"target_tokens"`
+    SessionID string `json:"session_id"`
+    // History messages as pairs: {role, content}
+    History      []map[string]string `json:"history"`
+    TargetTokens int                 `json:"target_tokens"`
+    // Parent workflow ID for unified event streaming
+    ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
 }
 
 // CompressContextResult returns the summary and persistence status
@@ -52,7 +54,10 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 	if err != nil {
 		return CompressContextResult{Summary: "", Stored: false, Error: err.Error()}, nil
 	}
-	req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Content-Type", "application/json")
+    if in.ParentWorkflowID != "" {
+        req.Header.Set("X-Parent-Workflow-ID", in.ParentWorkflowID)
+    }
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Warn("Context compress HTTP error", zap.Error(err))

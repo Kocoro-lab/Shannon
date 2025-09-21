@@ -61,15 +61,20 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		input.Query,
 	)
 
-	cotResult, err := patterns.ChainOfThought(
-		ctx,
-		hypothesisQuery,
-		input.Context,
-		input.SessionID,
-		convertHistoryForAgent(input.History),
-		cotConfig,
-		opts,
-	)
+    // Ensure parent workflow ID is included in context for downstream activities
+    cotCtx := make(map[string]interface{})
+    for k, v := range input.Context { cotCtx[k] = v }
+    if input.ParentWorkflowID != "" { cotCtx["parent_workflow_id"] = input.ParentWorkflowID }
+
+    cotResult, err := patterns.ChainOfThought(
+        ctx,
+        hypothesisQuery,
+        cotCtx,
+        input.SessionID,
+        convertHistoryForAgent(input.History),
+        cotConfig,
+        opts,
+    )
 
 	if err != nil {
 		logger.Error("Hypothesis generation failed", "error", err)
@@ -109,11 +114,12 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	}
 
 	// Prepare debate context with hypotheses
-	debateContext := make(map[string]interface{})
-	for k, v := range input.Context {
-		debateContext[k] = v
-	}
-	debateContext["hypotheses"] = hypotheses
+    debateContext := make(map[string]interface{})
+    for k, v := range input.Context {
+        debateContext[k] = v
+    }
+    if input.ParentWorkflowID != "" { debateContext["parent_workflow_id"] = input.ParentWorkflowID }
+    debateContext["hypotheses"] = hypotheses
 	debateContext["original_query"] = input.Query
 	debateContext["confidence_threshold"] = config.ScientificConfidenceThreshold
 
@@ -168,11 +174,10 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		input.Query,
 	)
 
-	totContext := make(map[string]interface{})
-	for k, v := range input.Context {
-		totContext[k] = v
-	}
-	totContext["winning_hypothesis"] = debateResult.WinningArgument
+    totContext := make(map[string]interface{})
+    for k, v := range input.Context { totContext[k] = v }
+    if input.ParentWorkflowID != "" { totContext["parent_workflow_id"] = input.ParentWorkflowID }
+    totContext["winning_hypothesis"] = debateResult.WinningArgument
 	totContext["debate_positions"] = debateResult.Positions
 	totContext["consensus_reached"] = debateResult.ConsensusReached
 

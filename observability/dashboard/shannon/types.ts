@@ -13,6 +13,10 @@ export interface TaskStatusResponse {
   response?: Record<string, unknown>;
   created_at?: string;
   updated_at?: string;
+  // Enriched fields for replay/audit
+  query?: string;
+  session_id?: string;
+  mode?: string;
 }
 
 export type EventType =
@@ -40,4 +44,19 @@ export interface TaskEvent {
   seq: number;
   stream_id?: string;
   formatted?: string;
+}
+
+export interface TaskSummary {
+  task_id: string;
+  query?: string;
+  status: string;
+  mode?: string;
+  created_at?: string;
+  completed_at?: string;
+  total_token_usage?: Record<string, unknown>;
+}
+
+export interface ListTasksResponse {
+  tasks: TaskSummary[];
+  total_count: number;
 }

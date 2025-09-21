@@ -44,7 +44,7 @@ func CheckApprovalPolicyWith(policy activities.ApprovalPolicy, input TaskInput, 
 // RequestAndWaitApproval requests approval and waits on a signal until the
 // timeout is reached. Returns the final approval result.
 func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string) (*activities.HumanApprovalResult, error) {
-	logger := workflow.GetLogger(ctx)
+    logger := workflow.GetLogger(ctx)
 
 	// Request approval via activity
 	var approval activities.HumanApprovalResult
@@ -58,11 +58,20 @@ func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string
 		Reason:         reason,
 		Metadata:       map[string]interface{}{"subtasks": len(input.History)},
 	}).Get(ctx, &approval)
-	if err != nil {
-		return nil, err
-	}
+    if err != nil {
+        return nil, err
+    }
 
-	logger.Info("Waiting for human approval", "approval_id", approval.ApprovalID)
+    // Emit APPROVAL_REQUESTED event via activity
+    _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+        EventType:  activities.StreamEventApprovalRequested,
+        AgentID:    "orchestrator",
+        Message:    "Approval requested: " + reason + ", id=" + approval.ApprovalID,
+        Timestamp:  workflow.Now(ctx),
+    }).Get(ctx, nil)
+
+    logger.Info("Waiting for human approval", "approval_id", approval.ApprovalID)
 
 	// Await either signal or timeout
 	sigName := "human-approval-" + approval.ApprovalID
@@ -87,8 +96,20 @@ func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string
 	})
 	sel.Select(ctx)
 
-	if timedOut {
-		logger.Warn("Approval timed out", "approval_id", approval.ApprovalID)
-	}
-	return &result, nil
+    if timedOut {
+        logger.Warn("Approval timed out", "approval_id", approval.ApprovalID)
+    }
+    // Emit APPROVAL_DECISION event
+    decision := "denied"
+    if result.Approved {
+        decision = "approved"
+    }
+    _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+        EventType:  activities.StreamEventApprovalDecision,
+        AgentID:    "orchestrator",
+        Message:    "Approval " + decision + ": id=" + approval.ApprovalID + ", feedback=" + result.Feedback,
+        Timestamp:  workflow.Now(ctx),
+    }).Get(ctx, nil)
+    return &result, nil
 }

@@ -87,6 +87,7 @@ function DashboardShell() {
             {SKIP_AUTH && (
               <span className="text-[10px] leading-none text-[#f87171]">(Skip Auth Mode)</span>
             )}
+            <a href="/tasks" className="ml-4 text-[10px] leading-none text-[#c79325] underline">Tasks & Audit</a>
           </div>
         </div>
       </header>

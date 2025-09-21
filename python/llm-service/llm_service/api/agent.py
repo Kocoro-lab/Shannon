@@ -259,7 +259,9 @@ async def agent_query(request: Request, query: AgentQuery):
                 tier=tier,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                tools=tools_param
+                tools=tools_param,
+                workflow_id=request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id'),
+                agent_id=query.agent_id
             )
             
             # Process the response (Responses API shape)
@@ -304,7 +306,9 @@ async def agent_query(request: Request, query: AgentQuery):
                         tier=tier,
                         max_tokens=max_tokens,
                         temperature=temperature,
-                        tools=None  # No tools for interpretation pass
+                        tools=None,  # No tools for interpretation pass
+                        workflow_id=request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id'),
+                        agent_id=query.agent_id
                     )
 
                     # Use the interpretation as the final response
@@ -359,6 +363,20 @@ async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_to
     registry = get_registry()
     
     formatted_results = []
+
+    # Set up event emitter and workflow/agent IDs for tool events
+    emitter = None
+    try:
+        providers = getattr(request.app.state, 'providers', None) if request else None
+        emitter = getattr(providers, '_emitter', None) if providers else None
+    except Exception:
+        emitter = None
+
+    wf_id = None
+    agent_id = None
+    if request:
+        wf_id = request.headers.get('X-Parent-Workflow-ID') or request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id')
+        agent_id = request.headers.get('X-Agent-ID') or request.headers.get('x-agent-id')
     
     for call in tool_calls:
         tool_name = call.get("name")
@@ -396,6 +414,13 @@ async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_to
                     )
                     continue
             
+            # Emit TOOL_INVOKED event
+            if emitter and wf_id:
+                try:
+                    emitter.emit(wf_id, 'TOOL_INVOKED', agent_id=agent_id, message=f"Executing {tool_name}", payload={"tool": tool_name, "params": args})
+                except Exception:
+                    pass
+
             result = await tool.execute(**args)
             
             if result.success:
@@ -454,6 +479,14 @@ async def _execute_and_format_tools(tool_calls: List[Dict[str, Any]], allowed_to
                     formatted_results.append(f"{tool_name} result: {result.output}")
             else:
                 formatted_results.append(f"Error executing {tool_name}: {result.error}")
+
+            # Emit TOOL_OBSERVATION event (success or failure)
+            if emitter and wf_id:
+                try:
+                    msg = str(result.output) if result and result.success else (result.error or "")
+                    emitter.emit(wf_id, 'TOOL_OBSERVATION', agent_id=agent_id, message=(msg[:2000] if msg else ''), payload={"tool": tool_name, "success": bool(result and result.success)})
+                except Exception:
+                    pass
                 
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")

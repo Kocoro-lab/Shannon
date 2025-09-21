@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     max_tokens_per_request: int = Field(default=4000, env="MAX_TOKENS_PER_REQUEST")
     max_cost_per_request: float = Field(default=0.10, env="MAX_COST_PER_REQUEST")
 
+    # Event emission to orchestrator
+    enable_llm_events: bool = Field(default=True, env="ENABLE_LLM_EVENTS")
+    enable_llm_partials: bool = Field(default=True, env="ENABLE_LLM_PARTIALS")
+    partial_chunk_chars: int = Field(default=512, env="PARTIAL_CHUNK_CHARS")
+    events_ingest_url: str = Field(default="http://orchestrator:8081/events", env="EVENTS_INGEST_URL")
+    events_auth_token: Optional[str] = Field(default=None, env="EVENTS_AUTH_TOKEN")
+
     class Config:
         env_file = ".env"
         case_sensitive = False

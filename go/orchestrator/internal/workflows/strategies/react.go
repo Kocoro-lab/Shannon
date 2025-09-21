@@ -45,13 +45,16 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	}
 
 	// Prepare base context
-	baseContext := make(map[string]interface{})
-	for k, v := range input.Context {
-		baseContext[k] = v
-	}
-	for k, v := range input.SessionCtx {
-		baseContext[k] = v
-	}
+    baseContext := make(map[string]interface{})
+    for k, v := range input.Context {
+        baseContext[k] = v
+    }
+    for k, v := range input.SessionCtx {
+        baseContext[k] = v
+    }
+    if input.ParentWorkflowID != "" {
+        baseContext["parent_workflow_id"] = input.ParentWorkflowID
+    }
 
 	// Check for budget configuration
 	agentMaxTokens := 0

@@ -471,7 +471,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 			if agentMax > 0 {
 				wid := workflowID
-				execErr = workflow.ExecuteActivity(ctx, constants.ExecuteAgentWithBudgetActivity, activities.BudgetedAgentInput{
+					execErr = workflow.ExecuteActivity(ctx, constants.ExecuteAgentWithBudgetActivity, activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
 						Query:          st.Description,
 						AgentID:        fmt.Sprintf("agent-%s", st.ID),
@@ -481,6 +481,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						History:        convertHistoryForAgent(input.History),
 						SuggestedTools: st.SuggestedTools,
 						ToolParameters: st.ToolParameters,
+						ParentWorkflowID: workflowID,
 					},
 					MaxTokens: agentMax,
 					UserID:    input.UserID,
@@ -497,6 +498,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					History:        convertHistoryForAgent(input.History),
 					SuggestedTools: st.SuggestedTools,
 					ToolParameters: st.ToolParameters,
+					ParentWorkflowID: workflowID,
 				}).Get(ctx, &res)
 			}
 			if execErr == nil {

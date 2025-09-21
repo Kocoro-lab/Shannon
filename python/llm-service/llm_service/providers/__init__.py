@@ -32,6 +32,7 @@ class ProviderManager:
         # Token budget tracking per session
         self.session_tokens: Dict[str, int] = {}
         self.max_tokens_per_session = 100000  # Default limit
+        self._emitter = None
         
     async def initialize(self):
         """Initialize available providers"""
@@ -68,6 +69,10 @@ class ProviderManager:
         """Close all providers"""
         for provider in self.providers.values():
             await provider.close()
+
+    def set_emitter(self, emitter):
+        """Inject shared event emitter (optional)."""
+        self._emitter = emitter
     
     def select_model(self, tier: ModelTier = None, specific_model: str = None) -> Optional[str]:
         """Select a model based on tier or specific request"""
@@ -100,7 +105,7 @@ class ProviderManager:
         specific_model: str = None,
         **kwargs
     ) -> dict:
-        """Generate completion using appropriate provider and model"""
+        """Generate completion using appropriate provider and model with unified event emission."""
         # Check token budget if session_id provided
         session_id = kwargs.get('session_id')
         if session_id:
@@ -123,6 +128,22 @@ class ProviderManager:
         if not provider:
             raise ValueError(f"Provider {model_info.provider} not available")
         
+        # Unified event emission (extract + remove tracking keys so they don't reach vendor SDKs)
+        wf_id = kwargs.pop('workflow_id', None) or kwargs.pop('workflowId', None) or kwargs.pop('WORKFLOW_ID', None)
+        agent_id = kwargs.pop('agent_id', None) or kwargs.pop('agentId', None) or kwargs.pop('AGENT_ID', None)
+
+        if self.settings.enable_llm_events and self._emitter and wf_id:
+            # Emit sanitized prompt (use last user message)
+            try:
+                last_user = next((m.get('content','') for m in reversed(messages) if m.get('role')=='user'), '')
+                payload = {
+                    "provider": provider.__class__.__name__.replace('Provider','').lower(),
+                    "model": model_id,
+                }
+                self._emitter.emit(wf_id, 'LLM_PROMPT', agent_id=agent_id, message=(last_user[:2000] if last_user else ''), payload=payload)
+            except Exception:
+                pass
+
         result = await provider.generate_completion(
             messages=messages,
             model=model_id,
@@ -143,6 +164,26 @@ class ProviderManager:
         # Ensure provider tag present for observability; model should already be included by provider
         result["provider"] = result.get("provider", model_info.provider.value)
         
+        # Emit partials + output (normalize for non-streaming)
+        if self.settings.enable_llm_events and self._emitter and wf_id:
+            try:
+                text = result.get('output_text') or ''
+                if text:
+                    if self.settings.enable_llm_partials:
+                        n = max(int(self.settings.partial_chunk_chars), 1)
+                        total = (len(text) + n - 1) // n
+                        for ix, i in enumerate(range(0, len(text), n)):
+                            self._emitter.emit(wf_id, 'LLM_PARTIAL', agent_id=agent_id, message=text[i:i+n], payload={"chunk_index": ix, "total_chunks": total})
+                    usage = result.get('usage') or {}
+                    payload = {
+                        "provider": provider.__class__.__name__.replace('Provider','').lower(),
+                        "model": result.get('model', model_id),
+                        "usage": usage,
+                    }
+                    self._emitter.emit(wf_id, 'LLM_OUTPUT', agent_id=agent_id, message=text[:4000], payload=payload)
+            except Exception:
+                pass
+
         return result
     
     async def generate_embedding(self, text: str, model: str = None) -> List[float]:

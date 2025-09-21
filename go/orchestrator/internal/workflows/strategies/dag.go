@@ -53,13 +53,17 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	}
 
 	// Prepare base context
-	baseContext := make(map[string]interface{})
-	for k, v := range input.Context {
-		baseContext[k] = v
-	}
-	for k, v := range input.SessionCtx {
-		baseContext[k] = v
-	}
+    baseContext := make(map[string]interface{})
+    for k, v := range input.Context {
+        baseContext[k] = v
+    }
+    for k, v := range input.SessionCtx {
+        baseContext[k] = v
+    }
+    // Propagate parent workflow ID to downstream activities (pattern helpers)
+    if input.ParentWorkflowID != "" {
+        baseContext["parent_workflow_id"] = input.ParentWorkflowID
+    }
 
 	// Step 1: Decompose the task
 	var decomp activities.DecompositionResult
@@ -108,6 +112,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				UserID:     input.UserID,
 				Context:    baseContext,
 				SessionCtx: input.SessionCtx,
+				ParentWorkflowID: input.ParentWorkflowID,
 			}).Get(ctx, &simpleResult)
 
 		if err != nil {
@@ -272,14 +277,15 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
         } else {
             // Fall through to standard synthesis below
             logger.Info("Single result requires synthesis (web_search/JSON detected)")
-            err = workflow.ExecuteActivity(ctx,
-                activities.SynthesizeResultsLLM,
-                activities.SynthesisInput{
-                    Query:        input.Query,
-                    AgentResults: agentResults,
-                    Context:      baseContext,
-                },
-            ).Get(ctx, &synthesis)
+        err = workflow.ExecuteActivity(ctx,
+            activities.SynthesizeResultsLLM,
+            activities.SynthesisInput{
+                Query:        input.Query,
+                AgentResults: agentResults,
+                Context:      baseContext,
+                ParentWorkflowID: input.ParentWorkflowID,
+            },
+        ).Get(ctx, &synthesis)
 
             if err != nil {
                 logger.Error("Synthesis failed", "error", err)

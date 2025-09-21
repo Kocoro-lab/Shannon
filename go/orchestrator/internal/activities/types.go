@@ -31,17 +31,19 @@ type Subtask struct {
 
 // AgentExecutionInput is the input for agent execution
 type AgentExecutionInput struct {
-	Query     string
-	AgentID   string
-	Context   map[string]interface{}
-	Mode      string
-	SessionID string   // Session identifier
-	History   []string // Conversation history
-	// LLM-native tool selection
-	SuggestedTools []string               `json:"suggested_tools"`
-	ToolParameters map[string]interface{} `json:"tool_parameters"`
-	// Persona for specialized agent behavior
-	PersonaID string `json:"persona_id"`
+    Query     string
+    AgentID   string
+    Context   map[string]interface{}
+    Mode      string
+    SessionID string   // Session identifier
+    History   []string // Conversation history
+    // LLM-native tool selection
+    SuggestedTools []string               `json:"suggested_tools"`
+    ToolParameters map[string]interface{} `json:"tool_parameters"`
+    // Persona for specialized agent behavior
+    PersonaID string `json:"persona_id"`
+    // Parent workflow ID for unified event streaming
+    ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
 }
 
 // AgentExecutionResult is the result of agent execution
@@ -70,9 +72,11 @@ type ToolExecution struct {
 
 // SynthesisInput is the input for result synthesis
 type SynthesisInput struct {
-	Query        string
-	AgentResults []AgentExecutionResult
-	Context      map[string]interface{} // Optional context for synthesis
+    Query        string
+    AgentResults []AgentExecutionResult
+    Context      map[string]interface{} // Optional context for synthesis
+    // Parent workflow ID for unified event streaming
+    ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
 }
 
 // SynthesisResult is the result of synthesis

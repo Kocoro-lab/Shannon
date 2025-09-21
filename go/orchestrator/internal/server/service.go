@@ -379,7 +379,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		s.logger.Info("Starting OrchestratorWorkflow (router)",
 			zap.String("workflow_id", workflowID),
 			zap.String("initial_mode", modeStr))
-		workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+	workflowExecution, err = s.temporalClient.ExecuteWorkflow(
 			ctx,
 			workflowOptions,
 			workflows.OrchestratorWorkflow,
@@ -403,6 +403,34 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	if err != nil {
 		s.logger.Error("Failed to start workflow", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to start workflow")
+	}
+
+	// Write-on-submit: persist initial RUNNING record to tasks table (idempotent by workflow_id)
+	if s.dbClient != nil {
+		var uidPtr *uuid.UUID
+		if userID != "" {
+			if u, err := uuid.Parse(userID); err == nil {
+				uidPtr = &u
+			}
+		}
+		started := time.Now()
+		initial := &db.TaskExecution{
+			WorkflowID: workflowExecution.GetID(),
+			UserID:     uidPtr,
+			SessionID:  sessionID,
+			Query:      req.Query,
+			Mode:       modeStr,
+			Status:     "RUNNING",
+			StartedAt:  started,
+		}
+		_ = s.dbClient.QueueWrite(db.WriteTypeTaskExecution, initial, func(err error) {
+			if err != nil {
+				s.logger.Warn("Initial task persist failed", zap.String("workflow_id", workflowExecution.GetID()), zap.Error(err))
+			}
+		})
+
+		// Start async finalizer to persist terminal state regardless of status polling
+		go s.watchAndPersist(workflowExecution.GetID(), workflowExecution.GetRunID())
 	}
 
 	// Create response with session info
@@ -726,12 +754,128 @@ func (s *OrchestratorService) CancelTask(ctx context.Context, req *pb.CancelTask
 
 // ListTasks lists tasks for a user/session
 func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRequest) (*pb.ListTasksResponse, error) {
-	// This would query Temporal's visibility API in production
-	// For now, return empty list
-	return &pb.ListTasksResponse{
-		Tasks:      []*pb.TaskSummary{},
-		TotalCount: 0,
-	}, nil
+    if s.dbClient == nil {
+        return &pb.ListTasksResponse{Tasks: []*pb.TaskSummary{}, TotalCount: 0}, nil
+    }
+
+    // Build filters
+    where := []string{"1=1"}
+    args := []interface{}{}
+    ai := 1
+
+    // Filter by user_id if provided
+    if req.UserId != "" {
+        if uid, err := uuid.Parse(req.UserId); err == nil {
+            where = append(where, fmt.Sprintf("(user_id = $%d OR user_id IS NULL)", ai))
+            args = append(args, uid)
+            ai++
+        }
+    }
+    // Filter by session_id if provided
+    if req.SessionId != "" {
+        if sid, err := uuid.Parse(req.SessionId); err == nil {
+            where = append(where, fmt.Sprintf("session_id = $%d", ai))
+            args = append(args, sid)
+            ai++
+        }
+    }
+    // Filter by status if provided
+    if req.FilterStatus != pb.TaskStatus_TASK_STATUS_UNSPECIFIED {
+        statusStr := mapProtoStatusToDB(req.FilterStatus)
+        if statusStr != "" {
+            where = append(where, fmt.Sprintf("UPPER(status) = UPPER($%d)", ai))
+            args = append(args, statusStr)
+            ai++
+        }
+    }
+
+    // Pagination
+    limit := int(req.Limit)
+    if limit <= 0 || limit > 100 {
+        limit = 20
+    }
+    offset := int(req.Offset)
+    if offset < 0 {
+        offset = 0
+    }
+
+    // Total count query
+    countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks WHERE %s", strings.Join(where, " AND "))
+    var total int32
+    if err := s.dbClient.Wrapper().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+        s.logger.Warn("ListTasks count failed", zap.Error(err))
+        total = 0
+    }
+
+    // Data query
+    dataQuery := fmt.Sprintf(`
+        SELECT workflow_id, query, status, mode,
+               started_at, completed_at, created_at,
+               NULLIF(metrics->>'total_tokens', '')::bigint AS total_tokens,
+               NULLIF(metrics->>'total_cost_usd', '')::double precision AS total_cost_usd
+        FROM tasks
+        WHERE %s
+        ORDER BY COALESCE(started_at, created_at) DESC
+        LIMIT %d OFFSET %d`, strings.Join(where, " AND "), limit, offset)
+
+    rows, err := s.dbClient.Wrapper().QueryContext(ctx, dataQuery, args...)
+    if err != nil {
+        return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list tasks: %v", err))
+    }
+    defer rows.Close()
+
+    summaries := make([]*pb.TaskSummary, 0, limit)
+    for rows.Next() {
+        var (
+            workflowID string
+            queryText  sql.NullString
+            statusStr  sql.NullString
+            modeStr    sql.NullString
+            started    sql.NullTime
+            completed  sql.NullTime
+            created    sql.NullTime
+            tokens     sql.NullInt64
+            costUSD    sql.NullFloat64
+        )
+
+        if err := rows.Scan(&workflowID, &queryText, &statusStr, &modeStr, &started, &completed, &created, &tokens, &costUSD); err != nil {
+            return nil, status.Error(codes.Internal, fmt.Sprintf("failed to scan row: %v", err))
+        }
+
+        summary := &pb.TaskSummary{
+            TaskId: workflowID,
+            Query:  queryText.String,
+            Status: mapDBStatusToProto(statusStr.String),
+            Mode:   mapDBModeToProto(modeStr.String),
+        }
+        if started.Valid {
+            summary.CreatedAt = timestamppb.New(started.Time)
+        } else if created.Valid {
+            summary.CreatedAt = timestamppb.New(created.Time)
+        }
+        if completed.Valid {
+            summary.CompletedAt = timestamppb.New(completed.Time)
+        }
+        if tokens.Valid || costUSD.Valid {
+            tokenUsage := &common.TokenUsage{}
+            if tokens.Valid {
+                tokenUsage.TotalTokens = int32(tokens.Int64)
+            }
+            if costUSD.Valid {
+                tokenUsage.CostUsd = costUSD.Float64
+            }
+            summary.TotalTokenUsage = tokenUsage
+        }
+        summaries = append(summaries, summary)
+    }
+    if err := rows.Err(); err != nil {
+        return nil, status.Error(codes.Internal, fmt.Sprintf("failed to iterate rows: %v", err))
+    }
+
+    return &pb.ListTasksResponse{
+        Tasks:      summaries,
+        TotalCount: total,
+    }, nil
 }
 
 // GetSessionContext gets session context
@@ -910,6 +1054,103 @@ func mapDBModeToProto(mode string) common.ExecutionMode {
 	default:
 		return common.ExecutionMode_EXECUTION_MODE_STANDARD
 	}
+}
+
+func mapProtoStatusToDB(st pb.TaskStatus) string {
+    switch st {
+    case pb.TaskStatus_TASK_STATUS_QUEUED:
+        return "QUEUED"
+    case pb.TaskStatus_TASK_STATUS_RUNNING:
+        return "RUNNING"
+    case pb.TaskStatus_TASK_STATUS_COMPLETED:
+        return "COMPLETED"
+    case pb.TaskStatus_TASK_STATUS_FAILED:
+        return "FAILED"
+    case pb.TaskStatus_TASK_STATUS_CANCELLED:
+        return "CANCELLED"
+    case pb.TaskStatus_TASK_STATUS_TIMEOUT:
+        return "TIMEOUT"
+    default:
+        return ""
+    }
+}
+
+// watchAndPersist waits for workflow completion and persists terminal state to DB.
+func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
+    if s.temporalClient == nil || s.dbClient == nil {
+        return
+    }
+    ctx := context.Background()
+    // Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
+    we := s.temporalClient.GetWorkflow(ctx, workflowID, runID)
+    var tmp interface{}
+    _ = we.Get(ctx, &tmp)
+
+    // Describe to fetch status and times
+    desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, workflowID, runID)
+    if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+        s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(err))
+        return
+    }
+
+    st := desc.WorkflowExecutionInfo.GetStatus()
+    statusStr := "RUNNING"
+    switch st {
+    case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+        statusStr = "COMPLETED"
+    case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+        statusStr = "FAILED"
+    case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+        statusStr = "TIMEOUT"
+    case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+        statusStr = "CANCELLED"
+    case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+        statusStr = "FAILED"
+    default:
+        statusStr = "RUNNING"
+    }
+
+    start := time.Now()
+    if desc.WorkflowExecutionInfo.GetStartTime() != nil {
+        start = desc.WorkflowExecutionInfo.GetStartTime().AsTime()
+    }
+    end := getWorkflowEndTime(desc)
+
+    te := &db.TaskExecution{
+        WorkflowID:  workflowID,
+        Status:      statusStr,
+        StartedAt:   start,
+        CompletedAt: &end,
+    }
+    // Best-effort: copy memo fields (user_id/session_id/query/mode)
+    if m := desc.WorkflowExecutionInfo.Memo; m != nil {
+        dc := converter.GetDefaultDataConverter()
+        if f, ok := m.Fields["user_id"]; ok && f != nil {
+            var uidStr string
+            if err := dc.FromPayload(f, &uidStr); err == nil {
+                if u, err := uuid.Parse(uidStr); err == nil {
+                    te.UserID = &u
+                }
+            }
+        }
+        if f, ok := m.Fields["session_id"]; ok && f != nil {
+            _ = dc.FromPayload(f, &te.SessionID)
+        }
+        if f, ok := m.Fields["query"]; ok && f != nil {
+            _ = dc.FromPayload(f, &te.Query)
+        }
+        if f, ok := m.Fields["mode"]; ok && f != nil {
+            _ = dc.FromPayload(f, &te.Mode)
+        }
+    }
+
+    _ = s.dbClient.QueueWrite(db.WriteTypeTaskExecution, te, func(err error) {
+        if err != nil {
+            s.logger.Warn("watchAndPersist: final write failed", zap.String("workflow_id", workflowID), zap.Error(err))
+        } else {
+            s.logger.Debug("watchAndPersist: final write ok", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
+        }
+    })
 }
 
 // getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.
