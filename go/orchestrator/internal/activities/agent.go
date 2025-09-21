@@ -13,11 +13,11 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/personas"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/personas"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/policy"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
@@ -471,22 +471,22 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					}
 					input.Context["system_prompt"] = persona.SystemPrompt
 				}
-				
+
 				// Apply temperature setting
 				if persona.Temperature > 0 {
 					input.Context["temperature"] = persona.Temperature
 				}
-				
+
 				// Apply token budget
 				if persona.MaxTokens > 0 {
 					input.Context["max_tokens"] = persona.MaxTokens
 				}
-				
+
 				// Apply tools restriction (if persona has specific tools)
 				if len(persona.Tools) > 0 {
 					input.Context["allowed_tools"] = persona.Tools
 				}
-				
+
 				logger.Info("Applied persona configuration",
 					zap.String("persona_id", input.PersonaID),
 					zap.String("description", persona.Description),
@@ -496,53 +496,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		} else {
 			logger.Warn("Persona manager not available, using defaults",
 				zap.String("persona_id", input.PersonaID))
-		}
-	}
-			}
-
-			// Override tools if persona specifies them, but intersect with available tools
-			if len(persona.Tools) > 0 {
-				// Fetch available tools to intersect with persona tools
-				availableTools := fetchAvailableTools(ctx)
-				intersectedTools := intersectTools(persona.Tools, availableTools)
-
-				if len(intersectedTools) > 0 {
-					input.SuggestedTools = intersectedTools
-					logger.Debug("Intersected persona tools with available tools",
-						zap.Strings("persona_tools", persona.Tools),
-						zap.Strings("available_tools", availableTools),
-						zap.Strings("intersected_tools", intersectedTools))
-				} else {
-					logger.Warn("No valid tools after intersection, using all available tools",
-						zap.Strings("persona_tools", persona.Tools),
-						zap.Strings("available_tools", availableTools))
-					// Don't constrain if no tools match
-					input.SuggestedTools = nil
-				}
-			}
-
-			// Apply temperature setting
-			if persona.Temperature > 0 {
-				if input.Context == nil {
-					input.Context = make(map[string]interface{})
-				}
-				input.Context["temperature"] = persona.Temperature
-			}
-
-			// Apply token budget
-			// tokenBudget := personas.GetTokenBudgetValue(persona.TokenBudget)
-			tokenBudget := 5000 // Default medium budget
-			if input.Context == nil {
-				input.Context = make(map[string]interface{})
-			}
-			input.Context["max_tokens"] = tokenBudget
-
-			logger.Info("Applied persona settings",
-				zap.String("persona_id", input.PersonaID),
-				zap.String("agent_id", input.AgentID),
-				zap.Int("tools_count", len(persona.Tools)),
-				zap.Float64("temperature", persona.Temperature),
-				zap.Int("token_budget", tokenBudget))
 		}
 	}
 

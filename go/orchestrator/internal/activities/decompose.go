@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/personas"
+	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
 )
 
