@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Usage examples:
+#   ./scripts/submit_task.sh "Say hello"
+#   ./scripts/submit_task.sh "Execute Python: print('Hello, World!')"
+#   ./scripts/submit_task.sh "Run Python code to calculate factorial of 10"
+#   ./scripts/submit_task.sh "Execute Python: print('Unicode test: 🚀 💻 🎉')"
+#   SESSION_ID="persistent-1" ./scripts/submit_task.sh "Execute Python: x = 42"
+#   SESSION_ID="persistent-1" ./scripts/submit_task.sh "Execute Python: print(x)"
+
 QUERY=${1:-"Say hello"}
 # Accept user ID as second parameter, or from env, or default
 USER_ID=${2:-${USER_ID:-dev}}

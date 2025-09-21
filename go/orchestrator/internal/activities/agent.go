@@ -664,12 +664,52 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			zap.String("agent_id", input.AgentID),
 		)
 	}
-	// Pass tool parameters to context if provided
+	// Pass tool parameters to context if provided and valid
 	if len(input.ToolParameters) > 0 {
-		if input.Context == nil {
-			input.Context = make(map[string]interface{})
+		// Check if tool parameters have required fields
+		toolName, hasToolName := input.ToolParameters["tool"].(string)
+		validParams := false
+
+		if hasToolName {
+			switch toolName {
+			case "python_executor":
+				// Python executor requires code parameter
+				if code, hasCode := input.ToolParameters["code"].(string); hasCode && code != "" {
+					validParams = true
+				}
+			case "code_executor":
+				// Code executor requires wasm_path or wasm_base64
+				_, hasWasmPath := input.ToolParameters["wasm_path"].(string)
+				_, hasWasmBase64 := input.ToolParameters["wasm_base64"].(string)
+				validParams = hasWasmPath || hasWasmBase64
+			case "calculator":
+				// Calculator requires expression parameter
+				if expr, hasExpr := input.ToolParameters["expression"].(string); hasExpr && expr != "" {
+					validParams = true
+				}
+			default:
+				// Other tools may not require specific parameters
+				validParams = true
+			}
 		}
-		input.Context["tool_parameters"] = input.ToolParameters
+
+		// Only pass parameters if they're valid
+		if validParams {
+			if input.Context == nil {
+				input.Context = make(map[string]interface{})
+			}
+			input.Context["tool_parameters"] = input.ToolParameters
+			logger.Info("Passing valid tool parameters to context",
+				zap.String("tool", toolName),
+				zap.String("agent_id", input.AgentID),
+			)
+		} else {
+			logger.Info("Skipping invalid/incomplete tool parameters",
+				zap.String("tool", toolName),
+				zap.String("agent_id", input.AgentID),
+				zap.Any("params", input.ToolParameters),
+			)
+		}
 	}
 
 	// Auto-populate tool_calls via /tools/select only if tools were suggested by decomposition
@@ -696,6 +736,12 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					case "code_executor":
 						// Code executor requires wasm_path or wasm_base64
 						logger.Info("Skipping code_executor tool - no parameters provided",
+							zap.String("agent_id", input.AgentID),
+						)
+						continue
+					case "python_executor":
+						// Python executor requires code parameter
+						logger.Info("Skipping python_executor tool - no parameters provided",
 							zap.String("agent_id", input.AgentID),
 						)
 						continue
@@ -1264,7 +1310,7 @@ func humanizeToolCall(toolName string, params interface{}) string {
 			return fmt.Sprintf("Calculating: %s", expr)
 		}
 		return "Performing calculation"
-	case "python_code", "code_executor":
+	case "python_code", "code_executor", "python_executor":
 		return "Executing Python code"
 	case "read_file", "file_reader":
 		if path, ok := paramsMap["path"].(string); ok {

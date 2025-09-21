@@ -277,6 +277,8 @@ async def agent_query(request: Request, query: AgentQuery):
                 tool_calls_from_output = []
 
             # Execute tools if requested
+            total_tokens = result_data.get("usage", {}).get("total_tokens", 0)
+
             if tool_calls_from_output and query.tools:
                 tool_results = await _execute_and_format_tools(
                     tool_calls_from_output,
@@ -285,12 +287,39 @@ async def agent_query(request: Request, query: AgentQuery):
                     request
                 )
                 if tool_results:
-                    # Append formatted tool results to response
-                    response_text = f"{response_text}\n\n{tool_results}" if response_text else tool_results
-            
+                    # Re-engage LLM to interpret tool results
+                    # Add the assistant's tool call and the tool results to conversation
+                    messages.append({
+                        "role": "assistant",
+                        "content": f"I'll execute the {tool_calls_from_output[0]['name']} tool to help with this task."
+                    })
+                    messages.append({
+                        "role": "user",
+                        "content": f"Tool execution result:\n{tool_results}\n\nBased on this result, please provide a clear and complete answer to the original query."
+                    })
+
+                    # Call LLM again to interpret the tool results
+                    interpretation_result = await request.app.state.providers.generate_completion(
+                        messages=messages,
+                        tier=tier,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        tools=None  # No tools for interpretation pass
+                    )
+
+                    # Use the interpretation as the final response
+                    response_text = interpretation_result.get("output_text", tool_results)
+
+                    # Add tokens from interpretation pass
+                    interpretation_tokens = interpretation_result.get("usage", {}).get("total_tokens", 0)
+                    total_tokens += interpretation_tokens
+
+                    logger.info(f"Tool result interpretation: original_tokens={result_data.get('usage', {}).get('total_tokens', 0)}, "
+                              f"interpretation_tokens={interpretation_tokens}, total={total_tokens}")
+
             result = {
                 "response": response_text,
-                "tokens_used": result_data.get("usage", {}).get("total_tokens", 0),
+                "tokens_used": total_tokens,
                 "model_used": result_data.get("model", "unknown")
             }
         else:

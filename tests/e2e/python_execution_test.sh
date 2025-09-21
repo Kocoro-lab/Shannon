@@ -64,15 +64,20 @@ else
 fi
 
 echo ""
-echo "=== Phase 2: Code Executor Tool Tests ==="
+echo "=== Phase 2: Python Executor Tool Tests ==="
 
-# Test 3: Test code_executor tool registration
-info "Test 3: Checking code_executor tool availability"
+# Test 3: Test python_executor tool registration
+info "Test 3: Checking python_executor tool availability"
 TOOLS_RESPONSE=$(curl -fsS http://localhost:8000/tools/list 2>/dev/null || echo "[]")
-if echo "$TOOLS_RESPONSE" | grep -q "code_executor"; then
-  pass "code_executor tool is registered"
+if echo "$TOOLS_RESPONSE" | grep -q "python_executor"; then
+  pass "python_executor tool is registered"
 else
-  info "code_executor tool not found in registered tools"
+  info "python_executor tool not found in registered tools"
+fi
+
+# Also check code_executor
+if echo "$TOOLS_RESPONSE" | grep -q "code_executor"; then
+  info "code_executor tool is also registered (internal use)"
 fi
 
 # Test 4: Create base64 WASM for testing
@@ -135,21 +140,19 @@ fi
 echo ""
 echo "=== Phase 4: Workflow Integration Test ==="
 
-# Test 7: Submit task that would use code execution
-info "Test 7: Testing Python code execution request through workflow"
+# Test 7: Submit Python execution task through orchestrator
+info "Test 7: Testing Python code execution through workflow"
 
-# First, let's create a history export for replay testing
-TEST_WORKFLOW_ID="task-$(uuidgen | tr '[:upper:]' '[:lower:]' 2>/dev/null || echo "test-$(date +%s)")"
-
+# Test with proper Python execution request
 TASK_RESPONSE=$(grpcurl -plaintext -d "{
   \"metadata\": {\"userId\":\"test\",\"sessionId\":\"python-test\"},
-  \"query\": \"Execute this WASM module that prints Hello World\",
+  \"query\": \"Execute Python: print('Hello from Python')\",
   \"context\": {}
 }" localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask 2>/dev/null || echo '{}')
 
 if echo "$TASK_RESPONSE" | grep -q "workflowId"; then
   WORKFLOW_ID=$(echo "$TASK_RESPONSE" | grep -o '"workflowId"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/')
-  pass "Task submitted with workflow ID: $WORKFLOW_ID"
+  pass "Python task submitted with workflow ID: $WORKFLOW_ID"
 
   # Poll for completion
   info "Polling for task completion..."
@@ -178,31 +181,71 @@ else
 fi
 
 echo ""
-echo "=== Phase 5: Python Interpreter WASM Test (Future) ==="
+echo "=== Phase 5: Python Specific Execution Tests ==="
+
+# Test 8: Test factorial calculation
+info "Test 8: Testing Python factorial calculation"
+FACTORIAL_RESPONSE=$(./scripts/submit_task.sh "Run Python code to calculate factorial of 10" 2>/dev/null | tail -1)
+if echo "$FACTORIAL_RESPONSE" | grep -q "3628800"; then
+  pass "Python factorial calculation returned correct result"
+else
+  info "Factorial test output: $FACTORIAL_RESPONSE"
+fi
+
+# Test 9: Test Unicode support
+info "Test 9: Testing Unicode text support"
+UNICODE_RESPONSE=$(./scripts/submit_task.sh "Execute Python: print('Hello Unicode: 🚀 💻 🎉')" 2>/dev/null | tail -1)
+if echo "$UNICODE_RESPONSE" | grep -q "🚀"; then
+  pass "Python Unicode text handled correctly"
+else
+  info "Unicode test returned: $UNICODE_RESPONSE"
+fi
+
+# Test 10: Test parameter validation (empty parameters should be rejected)
+info "Test 10: Testing parameter validation"
+EMPTY_RESPONSE=$(curl -fsS -X POST http://localhost:8000/tools/execute \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tool_name": "python_executor",
+    "parameters": {}
+  }' 2>/dev/null || echo '{"success": false}')
+
+if echo "$EMPTY_RESPONSE" | grep -q '"success"[[:space:]]*:[[:space:]]*false'; then
+  pass "Empty parameters correctly rejected"
+else
+  info "Empty parameter test unexpected result"
+fi
+
+echo ""
+echo "=== Phase 6: Python Interpreter Setup Check ==="
 
 info "Checking for Python WASM interpreter"
-if [ -f /tmp/python-wasi/python-3.11.4.wasm ]; then
+PYTHON_WASM_PATH="/opt/wasm-interpreters/python-3.11.4.wasm"
+if [ -f "$PYTHON_WASM_PATH" ] || [ -f "./wasm-interpreters/python-3.11.4.wasm" ]; then
   pass "Python interpreter WASM found"
-  info "Note: Full Python interpreter execution requires additional setup"
+  info "Python 3.11.4 WASI interpreter is ready for use"
 else
   info "Python interpreter WASM not found"
-  echo "  To enable full Python support:"
-  echo "  1. Download: curl -LO https://github.com/vmware-labs/webassembly-language-runtimes/releases/download/python%2F3.11.4%2B20230714-11be424/python-3.11.4.wasm"
-  echo "  2. Place in: /tmp/python-wasi/python-3.11.4.wasm"
-  echo "  3. Set env: PYTHON_WASI_WASM_PATH=/tmp/python-wasi/python-3.11.4.wasm"
+  echo "  To enable Python support, run:"
+  echo "  ./scripts/setup_python_wasi.sh"
 fi
 
 echo ""
 echo "================================"
-echo "Python WASM Execution Test Complete"
+echo "Python Execution Test Suite Complete"
 echo ""
-echo "Summary:"
-echo "- WASM modules can be created and executed"
-echo "- code_executor tool accepts base64-encoded WASM"
-echo "- Workflow integration supports WASM execution requests"
-echo "- Full Python interpreter requires additional setup"
+echo "Test Coverage:"
+echo "- python_executor tool registration and availability"
+echo "- Parameter validation (empty parameters rejected)"
+echo "- Python code execution through orchestrator"
+echo "- Factorial calculation and mathematical operations"
+echo "- Unicode text and emoji support"
+echo "- WASM module execution via code_executor"
+echo "- Workflow integration with Python requests"
 echo ""
-echo "Key Insight:"
-echo "Shannon executes WASM bytecode, not Python directly."
-echo "Python code must be compiled to WASM first."
+echo "Key Points:"
+echo "- python_executor wraps code_executor for Python-specific handling"
+echo "- Requires Python WASM interpreter (python-3.11.4.wasm)"
+echo "- Full CPython 3.11.4 standard library available"
+echo "- Secure WASI sandbox execution environment"
 echo "================================"

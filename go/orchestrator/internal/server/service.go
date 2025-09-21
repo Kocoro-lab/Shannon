@@ -931,7 +931,10 @@ func calculateTokenCost(tokens int, metadata map[string]interface{}) float64 {
 	// Prefer centralized pricing config (model-specific) with sensible fallback.
 	var model string
 	if metadata != nil {
-		if m, ok := metadata["model"].(string); ok {
+		if m, ok := metadata["model"].(string); ok && m != "" {
+			model = m
+		} else if m, ok := metadata["model_used"].(string); ok && m != "" {
+			// Fallback to model_used if model is not present
 			model = m
 		}
 	}

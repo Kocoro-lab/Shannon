@@ -119,8 +119,10 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	var out struct {
 		Completion string                 `json:"completion"`
+		OutputText string                 `json:"output_text"` // OpenAI uses output_text
 		Usage      map[string]interface{} `json:"usage"`
 		ModelUsed  string                 `json:"model_used"`
+		Model      string                 `json:"model"`      // Some providers use "model" instead of "model_used"
 		Provider   string                 `json:"provider"`
 		CacheHit   bool                   `json:"cache_hit"`
 	}
@@ -128,8 +130,16 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		logger.Warn("LLM synthesis: decode error, falling back", zap.Error(err))
 		return simpleSynthesis(ctx, input)
 	}
+	// Try both field names for compatibility
 	outCompletion := out.Completion
+	if outCompletion == "" && out.OutputText != "" {
+		outCompletion = out.OutputText
+	}
+	// Try both model field names
 	model := out.ModelUsed
+	if model == "" && out.Model != "" {
+		model = out.Model
+	}
 	cacheHit := out.CacheHit
 	tokens := 0
 	if out.Usage != nil {

@@ -436,10 +436,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						"tokens":   prevResult.TokensUsed,
 						"success":  prevResult.Success,
 					}
-					// Try to extract numeric value from response
-					if numVal, ok := parseNumericValue(prevResult.Response); ok {
-						resultMap["value"] = numVal
-					}
+                // Try to extract numeric value from response (standardize key name)
+                if numVal, ok := parseNumericValue(prevResult.Response); ok {
+                    resultMap["numeric_value"] = numVal
+                }
 					previousResults[decomp.Subtasks[j].ID] = resultMap
 				}
 			}

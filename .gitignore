@@ -186,6 +186,8 @@ protos/gen/
 # Python gRPC generated files
 python/llm-service/llm_service/grpc_gen/
 python/llm-service/llm_service/generated/
+python/llm-service/llm_service/**/__pycache__/
+go/orchestrator/.pytest_cache/
 
 # Logs
 logs/
@@ -215,6 +217,7 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+.next/
 
 # Editor directories and files
 .vscode/*
@@ -282,9 +285,11 @@ local/
 
 # Binary outputs (component-specific)
 go/orchestrator/orchestrator
+go/orchestrator/gateway
 go/orchestrator/replay
 go/orchestrator/*.test
 rust/agent-core/agent-core
+rust/agent-core/target/
 python/llm-service/__pycache__/
 
 # Deployment artifacts

@@ -63,6 +63,8 @@ make dev
 
 # Mathematical computation
 ./scripts/submit_task.sh "Execute Python code to calculate factorial of 10"
+# Or more directly:
+./scripts/submit_task.sh "Run Python code to calculate factorial of 10"
 
 # Data processing
 ./scripts/submit_task.sh "Use Python to generate the first 20 Fibonacci numbers"

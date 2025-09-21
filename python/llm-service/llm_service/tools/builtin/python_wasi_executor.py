@@ -68,13 +68,15 @@ class PythonWasiExecutorTool(Tool):
     _session_timeout: int = int(os.getenv("PYTHON_WASI_SESSION_TIMEOUT", "3600"))  # Default 1 hour
 
     def __init__(self):
-        super().__init__()
+        # Initialize settings before calling super().__init__()
+        # because _get_metadata() needs it
         self.settings = Settings()
         self.interpreter_path = os.getenv(
             "PYTHON_WASI_WASM_PATH",
             "/opt/wasm-interpreters/python-3.11.4.wasm"
         )
         self.agent_core_addr = os.getenv("AGENT_CORE_ADDR", "agent-core:50051")
+        super().__init__()
         self._load_interpreter_cache()
 
     def _get_metadata(self) -> ToolMetadata:

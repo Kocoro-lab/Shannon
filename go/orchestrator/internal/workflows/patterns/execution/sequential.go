@@ -1,9 +1,10 @@
 package execution
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "strconv"
+    "strings"
+    "time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -302,17 +303,33 @@ func ExecuteSequential(
 
 // Helper function to parse numeric values from responses
 func parseNumericValue(response string) (float64, bool) {
-	// Simple numeric extraction - in production use more sophisticated parsing
-	var value float64
-	if _, err := fmt.Sscanf(response, "%f", &value); err == nil {
-		return value, true
-	}
-	// Try to find a number in the response
-	if _, err := fmt.Sscanf(response, "The answer is %f", &value); err == nil {
-		return value, true
-	}
-	if _, err := fmt.Sscanf(response, "Result: %f", &value); err == nil {
-		return value, true
-	}
-	return 0, false
+    // Prefer patterns like "equals N" or "is N"; otherwise take the last number.
+    response = strings.TrimSpace(response)
+
+    // Direct parse
+    var direct float64
+    if _, err := fmt.Sscanf(response, "%f", &direct); err == nil {
+        return direct, true
+    }
+
+    // Token scanning with preferences
+    fields := strings.Fields(response)
+    var numbers []float64
+    for i := 0; i < len(fields); i++ {
+        token := strings.Trim(fields[i], ".,!?:;")
+        // Prefer "equals X" or "is X"
+        if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
+            next := strings.Trim(fields[i+1], ".,!?:;")
+            if val, err := strconv.ParseFloat(next, 64); err == nil {
+                return val, true
+            }
+        }
+        if val, err := strconv.ParseFloat(token, 64); err == nil {
+            numbers = append(numbers, val)
+        }
+    }
+    if len(numbers) > 0 {
+        return numbers[len(numbers)-1], true
+    }
+    return 0, false
 }
