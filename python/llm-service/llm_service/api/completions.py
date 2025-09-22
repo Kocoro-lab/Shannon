@@ -92,6 +92,8 @@ async def generate_completion(request: Request, body: CompletionRequest):
     
     with TimedOperation("llm_completion", "llm") as timer:
         try:
+            wf_id = request.headers.get('X-Parent-Workflow-ID') or request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id')
+            ag_id = request.headers.get('X-Agent-ID') or request.headers.get('x-agent-id')
             # Generate completion
             result = await providers.generate_completion(
                 messages=body.messages,
@@ -99,7 +101,9 @@ async def generate_completion(request: Request, body: CompletionRequest):
                 specific_model=body.specific_model,
                 temperature=body.temperature,
                 max_tokens=body.max_tokens,
-                tools=body.tools
+                tools=body.tools,
+                workflow_id=wf_id,
+                agent_id=ag_id
             )
         except Exception as e:
             metrics.record_error("CompletionError", "llm")

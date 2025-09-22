@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -90,9 +91,10 @@ func main() {
 
 	// Create middlewares
 	authMiddleware := middleware.NewAuthMiddleware(authService, logger).Middleware
-	rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
-	idempotencyMiddleware := middleware.NewIdempotencyMiddleware(redisClient, logger).Middleware
-	tracingMiddleware := middleware.NewTracingMiddleware(logger).Middleware
+    rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
+    idempotencyMiddleware := middleware.NewIdempotencyMiddleware(redisClient, logger).Middleware
+    tracingMiddleware := middleware.NewTracingMiddleware(logger).Middleware
+    validationMiddleware := middleware.NewValidationMiddleware(logger).Middleware
 
 	// Setup HTTP mux
 	mux := http.NewServeMux()
@@ -105,33 +107,63 @@ func main() {
 	mux.HandleFunc("GET /openapi.json", openapiHandler.ServeSpec)
 
 	// Task endpoints (require auth)
-	mux.Handle("POST /api/v1/tasks",
-		tracingMiddleware(
-			authMiddleware(
-				rateLimiter(
-					idempotencyMiddleware(
-						http.HandlerFunc(taskHandler.SubmitTask),
-					),
-				),
-			),
-		),
-	)
+    mux.Handle("POST /api/v1/tasks",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    rateLimiter(
+                        idempotencyMiddleware(
+                            http.HandlerFunc(taskHandler.SubmitTask),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("GET /api/v1/tasks/{id}",
-		tracingMiddleware(
-			authMiddleware(
-				http.HandlerFunc(taskHandler.GetTaskStatus),
-			),
-		),
-	)
+    mux.Handle("GET /api/v1/tasks",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    rateLimiter(
+                        http.HandlerFunc(taskHandler.ListTasks),
+                    ),
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("GET /api/v1/tasks/{id}/stream",
-		tracingMiddleware(
-			authMiddleware(
-				http.HandlerFunc(taskHandler.StreamTask),
-			),
-		),
-	)
+    mux.Handle("GET /api/v1/tasks/{id}",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    http.HandlerFunc(taskHandler.GetTaskStatus),
+                ),
+            ),
+        ),
+    )
+
+    mux.Handle("GET /api/v1/tasks/{id}/stream",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    http.HandlerFunc(taskHandler.StreamTask),
+                ),
+            ),
+        ),
+    )
+
+    mux.Handle("GET /api/v1/tasks/{id}/events",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    rateLimiter(
+                        http.HandlerFunc(taskHandler.GetTaskEvents),
+                    ),
+                ),
+            ),
+        ),
+    )
 
 	// SSE/WebSocket reverse proxy to admin server
 	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
@@ -141,18 +173,48 @@ func main() {
 	}
 
 	// Proxy SSE and WebSocket endpoints
-	mux.Handle("/api/v1/stream/sse",
-		tracingMiddleware(
-			authMiddleware(
-				streamProxy,
-			),
-		),
-	)
+    mux.Handle("/api/v1/stream/sse",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    streamProxy,
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("/api/v1/stream/ws",
+    mux.Handle("/api/v1/stream/ws",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    streamProxy,
+                ),
+            ),
+        ),
+    )
+
+	// Timeline proxy: GET /api/v1/tasks/{id}/timeline -> admin /timeline
+	mux.Handle("GET /api/v1/tasks/{id}/timeline",
 		tracingMiddleware(
 			authMiddleware(
-				streamProxy,
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					id := r.PathValue("id")
+					if id == "" { http.Error(w, "{\"error\":\"Task ID required\"}", http.StatusBadRequest); return }
+					// Rebuild target URL
+					target := strings.TrimRight(adminURL, "/") + "/timeline?workflow_id=" + id
+					if raw := r.URL.RawQuery; raw != "" { target += "&" + raw }
+					req, _ := http.NewRequestWithContext(r.Context(), http.MethodGet, target, nil)
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						logger.Error("timeline proxy error", zap.Error(err))
+						http.Error(w, "{\"error\":\"upstream unavailable\"}", http.StatusBadGateway)
+						return
+					}
+					defer resp.Body.Close()
+					for k, v := range resp.Header { for _, vv := range v { w.Header().Add(k, vv) } }
+					w.WriteHeader(resp.StatusCode)
+					_, _ = io.Copy(w, resp.Body)
+				}),
 			),
 		),
 	)

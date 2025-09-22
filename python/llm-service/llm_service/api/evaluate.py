@@ -114,6 +114,9 @@ async def evaluate_results(
     try:
         from ..providers.base import ModelTier
 
+        wf_id = request.headers.get('X-Parent-Workflow-ID') or request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id')
+        ag_id = request.headers.get('X-Agent-ID') or request.headers.get('x-agent-id')
+
         result = await providers.generate_completion(
             messages=[
                 {"role": "system", "content": sys},
@@ -123,6 +126,8 @@ async def evaluate_results(
             max_tokens=250,
             temperature=0.0,
             response_format={"type": "json_object"},
+            workflow_id=wf_id,
+            agent_id=ag_id,
         )
         raw = result.get("output_text", "")
         data = _extract_json_block(raw)

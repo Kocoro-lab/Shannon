@@ -112,10 +112,13 @@ grpcurl -plaintext \
   localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
 ```
 
-#### HTTP with API Key (future)
+#### HTTP with API Key
 ```bash
-curl -H "X-API-Key: sk_your_api_key" \
-  http://localhost:8081/api/tasks
+# Via Gateway (recommended for HTTP)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "X-API-Key: sk_test_123456" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Hello Shannon"}'
 ```
 
 ## Multi-Tenancy Design

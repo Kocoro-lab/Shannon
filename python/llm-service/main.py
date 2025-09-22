@@ -21,6 +21,7 @@ from llm_service.api import mcp_mock
 from llm_service.cache import CacheManager
 from llm_service.config import Settings
 from llm_service.providers import ProviderManager
+from llm_service.events import EventEmitter, build_default_emitter_from_env
 
 # OpenTelemetry (minimal) instrumentation
 import os
@@ -79,8 +80,27 @@ async def lifespan(app: FastAPI):
     cache_manager = CacheManager(settings)
     await cache_manager.initialize()
 
-    # Initialize LLM providers
+    # Initialize LLM providers and event emitter
+    # Prefer Settings-derived URL; fall back to ADMIN_SERVER or default helper
+    emitter = None
+    try:
+        ingest_url = settings.events_ingest_url
+        # If events_ingest_url not explicitly set and ADMIN_SERVER present, derive from it
+        if (not ingest_url or ingest_url.strip() == ""):
+            admin = os.getenv("ADMIN_SERVER", "").strip()
+            if admin:
+                ingest_url = admin.rstrip("/") + "/events"
+        token = settings.events_auth_token
+        if ingest_url:
+            emitter = EventEmitter(ingest_url=ingest_url, auth_token=token)
+        else:
+            emitter = build_default_emitter_from_env()
+    except Exception:
+        emitter = build_default_emitter_from_env()
+    await emitter.start()
+    logger.info("EventEmitter started", extra={"ingest_url": getattr(emitter, 'ingest_url', 'unknown')})
     provider_manager = ProviderManager(settings)
+    provider_manager.set_emitter(emitter)
     await provider_manager.initialize()
 
     # Store in app state
@@ -94,6 +114,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Shannon LLM Service")
     await cache_manager.close()
     await provider_manager.close()
+    await emitter.close()
 
 
 # Create FastAPI app

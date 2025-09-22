@@ -73,8 +73,8 @@ func main() {
 			streaming.Configure(n)
 		}
 	}
-	// Register streaming SSE/WS on the shared admin HTTP mux (community-ready)
-	httpapi.NewStreamingHandler(streaming.Get(), logger).RegisterRoutes(httpMux)
+    // Register streaming SSE/WS on the shared admin HTTP mux (community-ready)
+    httpapi.NewStreamingHandler(streaming.Get(), logger).RegisterRoutes(httpMux)
 
 	// Start background checks and shared HTTP server
 	go func() {
@@ -112,6 +112,8 @@ func main() {
 	if dbClient != nil {
 		dbChecker := health.NewDatabaseHealthChecker(dbClient.GetDB(), dbClient.Wrapper(), logger)
 		_ = hm.RegisterChecker(dbChecker)
+        // Initialize persistent event store for streaming logs
+        streaming.InitializeEventStore(dbClient, logger)
 	}
 
 	// Start configuration manager (hot-reload) - ASYNC to prevent deadlock
@@ -509,6 +511,15 @@ func main() {
 		// Register approvals endpoint on the shared admin mux (same port as health)
 		httpapi.NewApprovalHandler(tClient, logger, approvalsToken).RegisterRoutes(httpMux)
 		logger.Info("Approvals API registered on admin HTTP server", zap.Int("port", healthPort), zap.String("path", "/approvals/decision"))
+
+		// Register generic event ingestion endpoint for services (Python LLM, etc.)
+		eventsToken := getEnvOrDefault("EVENTS_AUTH_TOKEN", approvalsToken)
+		httpapi.NewIngestHandler(logger, eventsToken).RegisterRoutes(httpMux)
+		logger.Info("Events ingest API registered on admin HTTP server", zap.Int("port", healthPort), zap.String("path", "/events"))
+
+		// Register timeline builder endpoint on admin HTTP mux
+		httpapi.NewTimelineHandler(tClient, dbClient, logger).RegisterRoutes(httpMux)
+		logger.Info("Timeline API registered on admin HTTP server", zap.Int("port", healthPort), zap.String("path", "/timeline"))
 
 		// Create workers (single queue or priority queues)
 		priorityQueues := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") || os.Getenv("PRIORITY_QUEUES") == "1" || strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "true")

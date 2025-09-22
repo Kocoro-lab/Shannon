@@ -84,6 +84,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		History:        convertHistoryForAgent(input.History),
 		SuggestedTools: input.SuggestedTools,
 		ToolParameters: input.ToolParameters,
+		ParentWorkflowID: workflowID,
 	}).Get(ctx, &result)
 
 	if err != nil {
@@ -180,14 +181,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 
 		var synthesis activities.SynthesisResult
-		err = workflow.ExecuteActivity(ctx,
-			activities.SynthesizeResultsLLM,
-			activities.SynthesisInput{
-				Query:        input.Query,
-				AgentResults: agentResults,
-				Context:      input.Context,
-			},
-		).Get(ctx, &synthesis)
+        err = workflow.ExecuteActivity(ctx,
+            activities.SynthesizeResultsLLM,
+            activities.SynthesisInput{
+                Query:        input.Query,
+                AgentResults: agentResults,
+                Context:      input.Context,
+                ParentWorkflowID: workflowID,
+            },
+        ).Get(ctx, &synthesis)
 
 		if err != nil {
 			logger.Warn("Synthesis failed, using raw result", "error", err)

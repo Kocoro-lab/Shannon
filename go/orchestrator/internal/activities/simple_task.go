@@ -9,15 +9,17 @@ import (
 
 // ExecuteSimpleTaskInput contains everything needed for a simple task
 type ExecuteSimpleTaskInput struct {
-	Query          string                 `json:"query"`
-	UserID         string                 `json:"user_id"`
-	SessionID      string                 `json:"session_id"`
-	Context        map[string]interface{} `json:"context"`
-	SessionCtx     map[string]interface{} `json:"session_ctx"`
-	History        []string               `json:"history"`
-	PersonaID      string                 `json:"persona_id"`
-	SuggestedTools []string               `json:"suggested_tools,omitempty"`
-	ToolParameters map[string]interface{} `json:"tool_parameters,omitempty"`
+    Query          string                 `json:"query"`
+    UserID         string                 `json:"user_id"`
+    SessionID      string                 `json:"session_id"`
+    Context        map[string]interface{} `json:"context"`
+    SessionCtx     map[string]interface{} `json:"session_ctx"`
+    History        []string               `json:"history"`
+    PersonaID      string                 `json:"persona_id"`
+    SuggestedTools []string               `json:"suggested_tools,omitempty"`
+    ToolParameters map[string]interface{} `json:"tool_parameters,omitempty"`
+    // Parent workflow ID for unified event streaming
+    ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
 }
 
 // ExecuteSimpleTaskResult contains the complete result
@@ -65,6 +67,7 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		PersonaID:      input.PersonaID,
 		SuggestedTools: input.SuggestedTools,
 		ToolParameters: input.ToolParameters,
+		ParentWorkflowID: input.ParentWorkflowID,
 	}, logger)
 
 	if err != nil {

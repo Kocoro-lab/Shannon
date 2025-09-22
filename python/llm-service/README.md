@@ -15,7 +15,7 @@ This creates the `python/llm-service/llm_service/grpc_gen` directory with protob
 
 ## 🎯 Core Responsibilities
 
-- **Multi-Provider LLM Gateway** - Unified interface for OpenAI, Anthropic, Google, AWS Bedrock, Azure, Groq
+- **Multi-Provider LLM Gateway** - Unified interface for OpenAI and Anthropic (additional providers available via the internal LLM manager library)
 - **Tool Management** - MCP tool registration, validation, and execution
 - **Intelligent Tool Selection** - Automatic tool selection based on task requirements
 - **Web Search Integration** - Multiple search providers (Exa, Perplexity, Brave, DuckDuckGo)
@@ -31,10 +31,7 @@ FastAPI Application
     ├── LLM Router → Provider Selection
     │   ├── OpenAI (GPT-4, GPT-3.5)
     │   ├── Anthropic (Claude 3)
-    │   ├── Google (Gemini)
-    │   ├── AWS Bedrock
-    │   ├── Azure OpenAI
-    │   └── Groq
+    │   └── (Additional providers via library)
     ├── Tools Router → MCP Integration
     │   ├── Tool Registry
     │   ├── Tool Validation
@@ -75,8 +72,6 @@ python/llm-service/
 │   ├── openai_provider.py     # OpenAI implementation
 │   ├── anthropic_provider.py  # Anthropic implementation
 │   ├── google_provider.py     # Google Gemini
-│   ├── bedrock_provider.py    # AWS Bedrock
-│   ├── azure_provider.py      # Azure OpenAI
 │   └── groq_provider.py       # Groq implementation
 ├── integrations/               # External integrations
 │   └── mcp/                   # MCP protocol implementation
@@ -194,10 +189,6 @@ curl http://localhost:8000/metrics
 # LLM Providers (at least one required)
 OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=...
-GOOGLE_API_KEY=...
-AWS_BEDROCK_ACCESS_KEY=...
-AZURE_OPENAI_API_KEY=...
-GROQ_API_KEY=...
 
 # Search Providers (optional)
 EXA_API_KEY=...
@@ -222,8 +213,6 @@ Each provider supports different models. See [providers-models.md](../../docs/pr
 Common models:
 - **OpenAI**: gpt-4, gpt-4-turbo, gpt-3.5-turbo
 - **Anthropic**: claude-3-opus, claude-3-sonnet, claude-3-haiku
-- **Google**: gemini-pro, gemini-pro-vision
-- **Groq**: llama2-70b, mixtral-8x7b
 
 ## 🧪 Testing
 

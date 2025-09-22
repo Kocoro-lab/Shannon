@@ -45,10 +45,44 @@ curl http://localhost:8080/openapi.json | jq
 #### Authenticated Endpoints
 
 - `POST /api/v1/tasks` - Submit a new task
-- `GET /api/v1/tasks/{id}` - Get task status
+- `GET /api/v1/tasks` - List tasks (limit, offset, status, session_id)
+- `GET /api/v1/tasks/{id}` - Get task status (includes query/session_id/mode)
+- `GET /api/v1/tasks/{id}/events` - Get persisted event history (from Postgres)
+- `GET /api/v1/tasks/{id}/timeline` - Build human‑readable timeline from Temporal history (summary/full, persist)
 - `GET /api/v1/tasks/{id}/stream` - Stream task events (SSE)
 - `GET /api/v1/stream/sse` - Direct SSE stream
 - `GET /api/v1/stream/ws` - WebSocket stream
+
+##### Task Listing
+
+```bash
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/tasks?limit=20&offset=0&status=COMPLETED"
+```
+
+##### Event History (persistent)
+
+```bash
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/tasks/$TASK_ID/events?limit=200"
+```
+
+##### Deterministic Timeline (Temporal replay)
+
+```bash
+# Persist derived timeline (async, 202)
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/tasks/$TASK_ID/timeline?mode=summary&persist=true"
+
+# Preview timeline only (no DB writes, 200)
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/tasks/$TASK_ID/timeline?mode=full&include_payloads=false&persist=false" | jq
+```
+
+Notes:
+- SSE events are stored in Redis Streams (~24h TTL) for live viewing.
+- Persistent event history is stored in Postgres `event_logs`.
+- Timeline API derives a human‑readable history from Temporal’s canonical event store and persists it asynchronously when `persist=true`.
 
 ### Authentication
 
@@ -61,11 +95,12 @@ curl http://localhost:8080/openapi.json | jq
 export GATEWAY_SKIP_AUTH=0
 docker compose up -d gateway
 
-# Then use API keys
+# Then use API keys via header (recommended)
 curl -H "X-API-Key: sk_test_123456" http://localhost:8080/api/v1/tasks
 
-# Or via query parameter (for SSE connections)
-curl "http://localhost:8080/api/v1/stream/sse?api_key=sk_test_123456&workflow_id=xxx"
+# For SSE connections, also use headers (query params are not accepted)
+curl -N -H "X-API-Key: sk_test_123456" \
+  "http://localhost:8080/api/v1/stream/sse?workflow_id=xxx"
 ```
 
 ### Task Submission
@@ -126,7 +161,8 @@ curl -N -H "X-API-Key: sk_test_123456" \
   "http://localhost:8080/api/v1/tasks/{task_id}/stream"
 
 # Or use the general SSE endpoint
-curl -N "http://localhost:8080/api/v1/stream/sse?api_key=sk_test_123456&workflow_id={task_id}"
+curl -N -H "X-API-Key: sk_test_123456" \
+  "http://localhost:8080/api/v1/stream/sse?workflow_id={task_id}"
 ```
 
 ### Environment Variables

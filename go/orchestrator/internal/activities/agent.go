@@ -753,7 +753,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				toolsToSelect = filtered
 			}
 			if len(toolsToSelect) > 0 {
-				selectedToolCalls = selectToolsForQuery(ctx, input.Query, toolsToSelect, logger)
+				selectedToolCalls = selectToolsForQuery(ctx, input.Query, toolsToSelect, logger, input.ParentWorkflowID)
 				// Emit tool selection events
 				if len(selectedToolCalls) > 0 {
 					emitToolSelectionEvent(ctx, input, selectedToolCalls)
@@ -879,6 +879,32 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		},
 	}
 
+	// Emit LLM prompt (sanitized) using parent workflow ID when provided
+	wfID := ""
+	if input.ParentWorkflowID != "" {
+		wfID = input.ParentWorkflowID
+	} else if input.Context != nil {
+		if v, ok := input.Context["parent_workflow_id"]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				wfID = s
+			}
+		}
+	}
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMPrompt),
+			AgentID:    input.AgentID,
+			Message:    truncateQuery(input.Query, 2000),
+			Timestamp:  time.Now(),
+		})
+	}
+
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
 	grpcCtx, grpcCancel := context.WithTimeout(ctx, grpcTimeout)
@@ -892,6 +918,43 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	})
 	if err != nil {
 		return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("ExecuteTask error: %v", err)}, err
+	}
+
+	// Emit LLM partials + final output (best-effort)
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
+	if wfID != "" {
+		out := ""
+		if resp != nil && resp.Result != "" {
+			out = resp.Result
+		}
+		if out != "" {
+			chunk := getenvInt("PARTIAL_CHUNK_CHARS", 512)
+			if chunk <= 0 { chunk = 512 }
+			if getenvInt("ENABLE_LLM_PARTIALS", 1) == 1 {
+				for i := 0; i < len(out); i += chunk {
+					j := i + chunk
+					if j > len(out) { j = len(out) }
+					streaming.Get().Publish(wfID, streaming.Event{
+						WorkflowID: wfID,
+						Type:       string(StreamEventLLMPartial),
+						AgentID:    input.AgentID,
+						Message:    out[i:j],
+						Timestamp:  time.Now(),
+					})
+				}
+			}
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    input.AgentID,
+				Message:    truncateQuery(out, 4000),
+				Timestamp:  time.Now(),
+			})
+		}
 	}
 
 	duration := time.Since(start).Milliseconds()
@@ -968,6 +1031,24 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					out = tr.Output.AsInterface()
 				}()
 			}
+			// Emit tool observation (truncated)
+			if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+				obs := ""
+				switch v := out.(type) {
+				case string:
+					obs = v
+				default:
+					if b, err := json.Marshal(v); err == nil { obs = string(b) }
+				}
+				streaming.Get().Publish(info.WorkflowExecution.ID, streaming.Event{
+					WorkflowID: info.WorkflowExecution.ID,
+					Type:       string(StreamEventToolObs),
+					AgentID:    input.AgentID,
+					Message:    truncateQuery(fmt.Sprintf("%s: %s", tool, obs), 2000),
+					Timestamp:  time.Now(),
+				})
+			}
+
 			toolExecs = append(toolExecs, ToolExecution{
 				Tool:    tool,
 				Success: success,
@@ -1076,7 +1157,7 @@ func fetchAvailableTools(ctx context.Context) []string {
 
 // selectToolsForQuery queries Python LLM service to select appropriate tools for the given query
 // and returns structured tool calls that can be executed in parallel by agent-core.
-func selectToolsForQuery(ctx context.Context, query string, availableTools []string, logger *zap.Logger) []map[string]interface{} {
+func selectToolsForQuery(ctx context.Context, query string, availableTools []string, logger *zap.Logger, parentWorkflowID string) []map[string]interface{} {
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 	url := fmt.Sprintf("%s/tools/select", base)
 
@@ -1101,6 +1182,10 @@ func selectToolsForQuery(ctx context.Context, query string, availableTools []str
 		return nil
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Prefer parent workflow ID when available for unified event streaming in llm-service
+	if parentWorkflowID != "" {
+		req.Header.Set("X-Parent-Workflow-ID", parentWorkflowID)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -200,7 +200,18 @@ class OpenAIProvider(LLMProvider):
         if str(model).startswith("gpt-5"):
             request_params["reasoning"] = {"effort": "medium"}
 
-        request_params.update(kwargs)
+        # Filter kwargs to only include supported keys for Responses API
+        allowed_keys = {
+            "temperature",
+            "max_output_tokens",
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "response_format",
+            # do not pass tracking keys like workflow_id/agent_id
+        }
+        if kwargs:
+            request_params.update({k: v for k, v in kwargs.items() if k in allowed_keys})
 
         try:
             response = await self.client.responses.create(**request_params)
@@ -360,7 +371,10 @@ class OpenAIProvider(LLMProvider):
         if tools:
             request_params["tools"] = tools
             request_params["tool_choice"] = "auto"
-        request_params.update(kwargs)
+        # Filter kwargs to only include supported Chat Completions keys
+        allowed_cc = {"stream", "stop", "top_p", "frequency_penalty", "presence_penalty", "n"}
+        if kwargs:
+            request_params.update({k: v for k, v in kwargs.items() if k in allowed_cc})
 
         response = await self.client.chat.completions.create(**request_params)
         choice = response.choices[0]

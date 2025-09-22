@@ -51,6 +51,9 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
     try:
         from ..providers.base import ModelTier
 
+        wf_id = request.headers.get('X-Parent-Workflow-ID') or request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id')
+        ag_id = request.headers.get('X-Agent-ID') or request.headers.get('x-agent-id')
+
         result = await providers.generate_completion(
             messages=[
                 {"role": "system", "content": sys},
@@ -59,6 +62,8 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
             tier=ModelTier.SMALL,
             max_tokens=int(body.target_tokens or 400),
             temperature=0.2,
+            workflow_id=wf_id,
+            agent_id=ag_id,
         )
         completion = (result.get("output_text") or "").strip()
         usage = result.get("usage", {})

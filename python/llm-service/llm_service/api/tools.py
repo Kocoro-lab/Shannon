@@ -476,11 +476,16 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             }
 
             # Ask a small model to return JSON; avoid provider-specific tool_call plumbing
+            wf_id = req.headers.get('X-Parent-Workflow-ID') or req.headers.get('X-Workflow-ID') or req.headers.get('x-workflow-id')
+            ag_id = req.headers.get('X-Agent-ID') or req.headers.get('x-agent-id')
+
             result = await providers.generate_completion(
                 messages=[{"role": "system", "content": sys}, {"role": "user", "content": str(user)}],
                 max_tokens=300,
                 temperature=0.1,
                 response_format={"type": "json_object"},
+                workflow_id=wf_id,
+                agent_id=ag_id,
             )
 
             import json as _json

@@ -33,13 +33,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
 
 	// Prepare base context (merge input.Context + SessionCtx)
-	baseContext := make(map[string]interface{})
-	for k, v := range input.Context {
-		baseContext[k] = v
-	}
-	for k, v := range input.SessionCtx {
-		baseContext[k] = v
-	}
+    baseContext := make(map[string]interface{})
+    for k, v := range input.Context {
+        baseContext[k] = v
+    }
+    for k, v := range input.SessionCtx {
+        baseContext[k] = v
+    }
+    if input.ParentWorkflowID != "" {
+        baseContext["parent_workflow_id"] = input.ParentWorkflowID
+    }
 
 	// Step 1: Decompose the research query
 	var decomp activities.DecompositionResult

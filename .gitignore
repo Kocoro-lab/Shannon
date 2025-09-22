@@ -104,6 +104,7 @@ vendor/
 .cache/
 .gocache/
 go/orchestrator/.gocache/
+go/orchestrator/.gomodcache/
 
 # ---------------------------------
 # Rust

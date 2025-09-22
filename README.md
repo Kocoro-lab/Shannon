@@ -2,17 +2,19 @@
 
 <div align="center">
 
+![Shannon Dashboard](docs/images/dashboard-demo.gif)
+
+*Real-time observability dashboard showing agent traffic control, metrics, and event streams*
+
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                                                              │
-│     We're building a unified dashboard and a centralized documentation hub,  │
-│     with all features already implemented in the code. We're working hard    │
-│     to polish them, and we'd love your support!                              │
+│     Real-time metrics, event tracking, and system health monitoring.         │
+│     Access at http://localhost:3000 after running 'make dev'                 │
 │                                                                              │
-│     Please ⭐ star this repo to show your interest and stay updated as we    │
-│     refine these tools. Thanks for your patience and encouragement!          │
+│     Please ⭐ star this repo to show your support and stay updated!          │
 │                                                                              │
-└────────────────────────────────────────────────────────────────────────────-─┘
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 </div>
@@ -53,7 +55,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 ### 📈 Scale Without Breaking
 - **70% Cost Reduction** - Smart caching, session management, and token optimization
 - **Provider Agnostic** - OpenAI, Anthropic, Google, Azure, Bedrock, DeepSeek, Groq, and more
-- **Observable by Default** - Prometheus metrics, Grafana dashboards, OpenTelemetry tracing
+- **Observable by Default** - Real-time dashboard, Prometheus metrics, OpenTelemetry tracing
 - **Distributed by Design** - Horizontal scaling with Temporal workflow orchestration
 
 *Model pricing is centralized in `config/models.yaml` - all services load from this single source for consistent cost tracking.*
@@ -65,14 +67,14 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 | **Multi-Agent Orchestration** | ✅ DAG/Graph workflows | ✅ Stateful graphs | ✅ Group chat | ✅ Crew/roles |
 | **Agent Communication** | ✅ Message passing | ✅ Tool calling | ✅ Conversations | ✅ Delegation |
 | **Memory & Context** | ✅ Long/short-term, vector | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
-| **Debugging Production Issues** | ✅ Replay any workflow | ❌ Good luck | ❌ Printf debugging | ❌ |
+| **Debugging Production Issues** | ✅ Replay any workflow | ❌ Limited debugging | ❌ Basic logging | ❌ |
 | **Token Cost Control** | ✅ Hard budget limits | ❌ | ❌ | ❌ |
 | **Security Sandbox** | ✅ WASI isolation | ❌ | ❌ | ❌ |
 | **Policy Control (OPA)** | ✅ Fine-grained rules | ❌ | ❌ | ❌ |
 | **Deterministic Replay** | ✅ Time-travel debugging | ❌ | ❌ | ❌ |
 | **Session Persistence** | ✅ Redis-backed, durable | ⚠️ In-memory only | ⚠️ Limited | ❌ |
 | **Multi-Language** | ✅ Go/Rust/Python | ⚠️ Python only | ⚠️ Python only | ⚠️ Python only |
-| **Production Metrics** | ✅ Prometheus/Grafana | ⚠️ DIY | ❌ | ❌ |
+| **Production Metrics** | ✅ Dashboard/Prometheus | ⚠️ DIY | ❌ | ❌ |
 
 ## 🚀 Quick Start
 
@@ -123,6 +125,8 @@ The `make dev` command starts all services:
 - **Orchestrator**: Go service on port 50052
 - **Agent Core**: Rust service on port 50051
 - **LLM Service**: Python service on port 8000
+- **Gateway**: REST API gateway on port 8080
+- **Dashboard**: Real-time observability UI on port 3000
 
 </details>
 
@@ -152,15 +156,28 @@ make smoke
 
 ### Your First Agent
 
-Shannon provides a simple REST API for easy integration and real-time streaming to monitor agent actions:
+Shannon provides multiple ways to interact with your AI agents:
 
-#### Submit Your First Task
+#### Option 1: Use the Dashboard UI (Recommended for Getting Started)
+
+```bash
+# Open the Shannon Dashboard in your browser
+open http://localhost:3000
+
+# The dashboard provides:
+# - Visual task submission interface
+# - Real-time event streaming
+# - System metrics and monitoring
+# - Task history and results
+```
+
+#### Option 2: Use the REST API
 
 ```bash
 # For development (no auth required)
 export GATEWAY_SKIP_AUTH=1
 
-# Submit a task
+# Submit a task via API
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
@@ -249,16 +266,31 @@ grpcurl -plaintext \
 
 ```bash
 # Connect to WebSocket for bidirectional streaming
-wscat -c ws://localhost:8081/api/v1/stream/ws?workflow_id=task-dev-1234567890
+# Via admin port (no auth):
+wscat -c ws://localhost:8081/stream/ws?workflow_id=task-dev-1234567890
+
+# Or via gateway (with auth):
+# wscat -c ws://localhost:8080/api/v1/stream/ws?workflow_id=task-dev-1234567890 \
+#   -H "Authorization: Bearer YOUR_API_KEY"
 ```
 
-#### Temporal UI (Visual Workflow Debugging)
+#### Visual Debugging Tools
 
 ```bash
-# Access Temporal Web UI for visual workflow inspection
+# Access Shannon Dashboard for real-time monitoring
+open http://localhost:3000
+
+# Dashboard features:
+# - Real-time task execution and event streams
+# - System metrics and performance graphs
+# - Token usage tracking and budget monitoring
+# - Agent traffic control visualization
+# - Interactive command execution
+
+# Access Temporal Web UI for workflow debugging
 open http://localhost:8088
 
-# Or navigate manually to see:
+# Temporal UI provides:
 # - Workflow execution history and timeline
 # - Task status, retries, and failures
 # - Input/output data for each step
@@ -266,52 +298,29 @@ open http://localhost:8088
 # - Search workflows by ID, type, or status
 ```
 
-The Temporal UI provides a powerful visual interface to:
-- **Debug workflows** - See exactly where and why workflows fail
-- **Monitor performance** - Track execution times and bottlenecks  
-- **Inspect state** - View all workflow inputs, outputs, and intermediate data
-- **Search & filter** - Find workflows by various criteria
-- **Replay workflows** - Visual replay of historical executions
+The visual tools provide comprehensive monitoring:
+- **Shannon Dashboard** (http://localhost:3000) - Real-time agent traffic control, metrics, and events
+- **Temporal UI** (http://localhost:8088) - Workflow debugging and state inspection
+- **Combined view** - Full visibility into your AI agents' behavior and system performance
 
 </details>
-
-### 🌐 API Features
-
-The REST API supports:
-- **Idempotency**: Use `Idempotency-Key` header for safe retries
-- **Rate Limiting**: Per-API-key limits to prevent abuse
-- **Resume on Reconnect**: SSE streams can resume from last event using `Last-Event-ID`
-- **WebSocket**: Available at `/api/v1/stream/ws` for bidirectional streaming
-
-## 💰 Real-World Impact
-
-### Before Shannon vs After
-
-| Metric | Before | After | Impact |
-|--------|--------|-------|--------|
-| **Monthly LLM Costs** | $50,000 | $15,000 | -70% |
-| **Debug Time (P1 issues)** | 4-6 hours | 15 minutes | -95% |
-| **Agent Success Rate** | 72% | 94% | +22% |
-| **Mean Time to Recovery** | 45 min | 3 min | -93% |
-| **Security Incidents** | 3/month | 0 | -100% |
 
 ## 📚 Examples That Actually Matter
 
 ### Example 1: Cost-Controlled Customer Support
-```python
-# Set hard budget limits - agent stops before breaking the bank
-{
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
     "query": "Help me troubleshoot my deployment issue",
-    "session_id": "user-123-session",
-    "budget": {
-        "max_tokens": 10000,        # Hard stop at 10k tokens
-        "alert_at": 8000,           # Alert at 80% usage
-        "rate_limit": "100/hour"    # Max 100 requests per hour
-    },
-    "policy": "customer_support.rego"  # OPA policy for allowed actions
-}
-# Result: 70% cost reduction, zero runaway bills
+    "session_id": "user-123-session"
+  }'
 ```
+Key features:
+- **Session persistence** - Maintains conversation context across requests
+- **Token tracking** - Every request returns token usage and costs
+- **Policy control** - Apply OPA policies for allowed actions (see Example 3)
+- **Result**: 70% cost reduction through smart caching and session management
 
 ### Example 2: Debugging Production Failures
 ```bash
@@ -327,16 +336,38 @@ The REST API supports:
 ```
 
 ### Example 3: Multi-Team Model Governance
-```yaml
-# teams/data-science/policy.rego
-allow_model("gpt-4o") if team == "data-science"
-allow_model("claude-4") if team == "data-science"
-max_tokens(50000) if team == "data-science"
+```rego
+# config/opa/policies/data-science.rego
+package shannon.teams.datascience
 
-# teams/customer-support/policy.rego
-allow_model("gpt-4o-mini") if team == "support"
-max_tokens(5000) if team == "support"
-deny_tool("database_write") if team == "support"
+default allow = false
+
+allow {
+    input.team == "data-science"
+    input.model in ["gpt-4o", "claude-3-sonnet"]
+}
+
+max_tokens = 50000 {
+    input.team == "data-science"
+}
+
+# config/opa/policies/customer-support.rego
+package shannon.teams.support
+
+default allow = false
+
+allow {
+    input.team == "support"
+    input.model == "gpt-4o-mini"
+}
+
+max_tokens = 5000 {
+    input.team == "support"
+}
+
+deny_tool["database_write"] {
+    input.team == "support"
+}
 ```
 
 ### Example 4: Security-First Code Execution
@@ -363,8 +394,6 @@ deny_tool("database_write") if team == "support"
 - **Data Pipeline Monitor**: Replays failed workflows for debugging
 - **Compliance Auditor**: Full trace of every decision and data access
 - **Multi-Tenant SaaS**: Complete isolation between customer agents
-
-See `docs/production-examples/` for battle-tested implementations.
 
 </details>
 
@@ -440,8 +469,10 @@ See `docs/production-examples/` for battle-tested implementations.
 - **Orchestrator (Go)**: Task routing, budget enforcement, session management, OPA policy evaluation
 - **Agent Core (Rust)**: WASI sandbox execution, policy enforcement, agent-to-agent communication
 - **LLM Service (Python)**: Provider abstraction (15+ LLMs), MCP tools, prompt optimization
+- **Gateway (Go)**: REST API, authentication, rate limiting, request validation
+- **Dashboard (React/Next.js)**: Real-time monitoring, metrics visualization, event streaming
 - **Data Layer**: PostgreSQL (workflow state), Redis (session cache), Qdrant (vector memory)
-- **Observability**: Prometheus metrics, OpenTelemetry tracing, Grafana dashboards
+- **Observability**: Built-in dashboard, Prometheus metrics, OpenTelemetry tracing
 
 ## 🚦 Getting Started for Production
 
@@ -453,18 +484,17 @@ cd Shannon
 make setup-env
 echo "OPENAI_API_KEY=sk-..." >> .env
 
-# Start with budget limits
-echo "DEFAULT_MAX_TOKENS=5000" >> .env
-echo "DEFAULT_RATE_LIMIT=100/hour" >> .env
-
 # Launch
 make dev
+
+# Set budgets per request (see "Examples That Actually Matter" section)
+# Configure in SubmitTask payload: {"budget": {"max_tokens": 5000}}
 ```
 
 ### Day 2: Add Policies
 ```bash
 # Create your first OPA policy
-cat > config/policies/default.rego << EOF
+cat > config/opa/policies/default.rego << EOF
 package shannon
 
 default allow = false
@@ -520,18 +550,6 @@ teams:
     tools: ["code_*", "test_*", "deploy_*"]
 ```
 
-## 📖 Documentation
-
-### Getting Started
-- [Environment Configuration](docs/environment-configuration.md)
-- [Testing Guide](docs/testing.md)
-- TODO: Publish an open-source quickstart walkthrough
-
-### Core Features
-- [Authentication & Multitenancy](docs/authentication-and-multitenancy.md)
-- [MCP Integration](docs/mcp-integration.md)
-- [Web Search Configuration](docs/web-search-configuration.md)
-- TODO: Add docs for budget controls & policy engine
 
 ### Architecture
 - [Platform Architecture Overview](docs/shannon-platform-architecture.md)
@@ -597,32 +615,7 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 ## 🌟 Community
 
 - **Discord**: [Join our Discord](https://discord.gg/NB7C2fMcQR)
-- **Twitter/X**: [@ShannonAI](https://twitter.com/ShannonAgents)
-
-## ❓ FAQ
-
-**Q: How is this different from just using LangGraph?**
-A: LangGraph is a library for building stateful agents. Shannon is production infrastructure. We handle the hard parts: deterministic replay for debugging, token budget enforcement, security sandboxing, and multi-tenancy. You can even use LangGraph within Shannon if you want.
-
-**Q: Can I migrate from my existing LangGraph/AutoGen setup?**
-A: Yes. Most migrations take 1-2 days. We provide adapters and migration guides. Your agents get instant upgrades: 70% cost reduction, replay debugging, and production monitoring.
-
-**Q: What's the overhead?**
-A: ~50ms latency, 100MB memory per agent. The tradeoff: your agents don't randomly fail at 3am, and you can actually debug when they do.
-
-**Q: Is it really enterprise-ready?**
-A: We run 1M+ agent executions/day in production. Temporal (our workflow engine) powers Uber, Netflix, and Stripe. WASI (our sandbox) is a W3C standard. This isn't a weekend project.
-
-**Q: What about vendor lock-in?**
-A: Zero lock-in. Standard protocols (gRPC, HTTP, SSE). Export your workflows anytime. Swap LLM providers with one line. MIT licensed forever.
-
-## 📊 Project Status
-
-### Battle-Tested in Production
-- **1M+ workflows/day** across 50+ organizations
-- **99.95% uptime** (excluding LLM provider outages)
-- **$2M+ saved** in token costs across users
-- **Zero security incidents** with WASI sandboxing
+- **Twitter/X**: [@shannon_agents](https://twitter.com/shannon_agents)
 
 ### What's Coming (Roadmap)
 
@@ -668,8 +661,6 @@ A: Zero lock-in. Standard protocols (gRPC, HTTP, SSE). Export your workflows any
 - [ ] **Regulatory compliance** - SOC 2, GDPR, HIPAA automation
 - [ ] **AI safety frameworks** - Constitutional AI and alignment mechanisms
 
-[Track detailed progress →](https://github.com/Kocoro-lab/Shannon/projects/1)
-
 ## 📚 Documentation
 
 ### Core Guides
@@ -677,22 +668,12 @@ A: Zero lock-in. Standard protocols (gRPC, HTTP, SSE). Export your workflows any
 - [**Multi-Agent Workflows**](docs/multi-agent-workflow-architecture.md) - Orchestration patterns and best practices
 - [**Pattern Usage Guide**](docs/pattern-usage-guide.md) - ReAct, Tree-of-Thoughts, Debate patterns
 - [**Streaming APIs**](docs/streaming-api.md) - Real-time agent output streaming
-- [**Policy Engine**](docs/opa-policy-guide.md) - Team-based access control with OPA
+- [**Authentication & Access Control**](docs/authentication-and-multitenancy.md) - Multi-tenancy and OPA policies
 
 ### API References
 - [Agent Core API](docs/agent-core-api.md) - Rust service endpoints
-- [Orchestrator API](docs/orchestrator-api.md) - Workflow management
+- [Orchestrator Service](go/orchestrator/README.md) - Workflow management and patterns
 - [LLM Service API](python/llm-service/README.md) - Provider abstraction
-
-## 🚀 Start Building Production AI Today
-
-```bash
-# You're 3 commands away from production-ready AI agents
-git clone https://github.com/Kocoro-lab/Shannon.git
-cd Shannon && make setup-env && make dev
-
-# Join 1,000+ developers shipping reliable AI
-```
 
 ### Get Involved
 
@@ -713,6 +694,25 @@ We're building decentralized trust infrastructure with Solana blockchain:
 
 Stay tuned for our Web3 trust layer - bringing transparency and verifiability to AI systems!
 
+## 🙏 Acknowledgments & Inspirations
+
+Shannon builds upon and integrates amazing work from the open-source community:
+
+### Core Inspirations
+- **[Agent Traffic Control](https://github.com/gkamradt/agenttrafficcontrol)** - The original inspiration for our retro terminal UI design and agent visualization concept
+- **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** - Anthropic's protocol for standardized LLM-tool interactions
+- **[Claude Code](https://claude.ai/code)** - Used extensively in developing Shannon's codebase
+- **[Temporal](https://temporal.io/)** - The bulletproof workflow orchestration engine powering Shannon's reliability
+
+### Key Technologies
+- **[LangGraph](https://github.com/langchain-ai/langgraph)** - Inspiration for stateful agent architectures
+- **[AutoGen](https://github.com/microsoft/autogen)** - Microsoft's multi-agent conversation framework
+- **[WASI](https://wasi.dev/)** - WebAssembly System Interface for secure code execution
+- **[Open Policy Agent](https://www.openpolicyagent.org/)** - Policy engine for fine-grained access control
+
+### Community Contributors
+Special thanks to all our contributors and the broader AI agent community for feedback, bug reports, and feature suggestions.
+
 ## 📄 License
 
 MIT License - Use it anywhere, modify anything, zero restrictions. See [LICENSE](LICENSE).
@@ -727,5 +727,5 @@ MIT License - Use it anywhere, modify anything, zero restrictions. See [LICENSE]
 
 <p align="center">
   <i>If Shannon saves you time or money, let us know! We love success stories.</i><br>
-  <i>Twitter/X: @ShannonAgents</i>
+  <i>Twitter/X: @shannon_agents</i>
 </p>
