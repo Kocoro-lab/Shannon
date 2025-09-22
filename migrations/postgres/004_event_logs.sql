@@ -5,7 +5,7 @@
 CREATE TABLE IF NOT EXISTS event_logs (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     workflow_id VARCHAR(255) NOT NULL,
-    task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+    task_id UUID,  -- Nullable, no foreign key as it's not used in the application
     type VARCHAR(100) NOT NULL,
     agent_id VARCHAR(255),
     message TEXT,

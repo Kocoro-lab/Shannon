@@ -45,6 +45,8 @@ func (h *IngestHandler) handleIngest(w http.ResponseWriter, r *http.Request) {
             return
         }
     }
+    // Limit request body to 10MB to prevent DoS attacks
+    r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
     body, err := io.ReadAll(r.Body)
     if err != nil || len(body) == 0 {
         http.Error(w, `{"error":"invalid body"}`, http.StatusBadRequest)
