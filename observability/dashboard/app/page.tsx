@@ -7,7 +7,7 @@ import { TopOverview } from '../components/shannon/TopOverview';
 import { InsightsPanel } from '../components/shannon/InsightsPanel';
 import { GlobalQueue } from '../components/shannon/GlobalQueue';
 import { ATCRadarPanel } from '../components/shannon/ATCRadarPanel';
-import { TimelineStatusBar } from '../components/shannon/TimelineStatusBar';
+// import { TimelineStatusBar } from '../components/shannon/TimelineStatusBar';
 import { MasterControlPanel } from '../components/shannon/MasterControlPanel';
 import { DashboardProvider, useDashboardContext } from '../shannon/dashboardContext';
 import { useSSE } from '../shannon/useSSE';
@@ -65,7 +65,7 @@ function DashboardShell() {
     setShowApiKeyModal(false);
   };
 
-  const clearApiKey = () => {
+  const _clearApiKey = () => {
     setApiKey('');
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem('api_key');

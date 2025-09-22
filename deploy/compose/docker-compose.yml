@@ -277,3 +277,27 @@ services:
       timeout: 5s
       retries: 5
     networks: [shannon-net]
+
+  dashboard:
+    build:
+      context: ../../observability/dashboard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://gateway:8080
+      - NEXT_PUBLIC_ORCHESTRATOR_URL=http://orchestrator:8081
+      - NEXT_PUBLIC_REFRESH_INTERVAL=${DASHBOARD_REFRESH_INTERVAL:-5000}
+    depends_on:
+      gateway:
+        condition: service_started
+      orchestrator:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:3000/api/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    networks: [shannon-net]

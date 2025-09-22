@@ -83,8 +83,8 @@ func generateOpenAPISpec() map[string]interface{} {
                     "summary":     "List tasks",
                     "description": "List tasks for the authenticated user (optionally filter by session/status)",
                     "parameters": []map[string]interface{}{
-                        {"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 20}},
-                        {"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0}},
+                        {"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 20, "minimum": 1, "maximum": 100}},
+                        {"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
                         {"name": "status", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"QUEUED","RUNNING","COMPLETED","FAILED","CANCELLED","TIMEOUT"}}},
                         {"name": "session_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
                     },
@@ -141,15 +141,17 @@ func generateOpenAPISpec() map[string]interface{} {
 					"summary":     "Get task status",
 					"description": "Get the status of a submitted task",
 					"parameters": []map[string]interface{}{
-						{
-							"name":        "id",
-							"in":          "path",
-							"description": "Task ID",
-							"required":    true,
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
-						},
+                        {
+                            "name":        "id",
+                            "in":          "path",
+                            "description": "Task ID",
+                            "required":    true,
+                            "schema": map[string]interface{}{
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                        },
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
@@ -173,15 +175,17 @@ func generateOpenAPISpec() map[string]interface{} {
 					"summary":     "Stream task events",
 					"description": "Stream real-time events for a task via Server-Sent Events",
 					"parameters": []map[string]interface{}{
-						{
-							"name":        "id",
-							"in":          "path",
-							"description": "Task ID",
-							"required":    true,
-							"schema": map[string]interface{}{
-								"type": "string",
-							},
-						},
+                        {
+                            "name":        "id",
+                            "in":          "path",
+                            "description": "Task ID",
+                            "required":    true,
+                            "schema": map[string]interface{}{
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 128,
+                            },
+                        },
 						{
 							"name":        "types",
 							"in":          "query",
@@ -218,6 +222,8 @@ func generateOpenAPISpec() map[string]interface{} {
 							"required":    true,
 							"schema": map[string]interface{}{
 								"type": "string",
+								"minLength": 1,
+								"maxLength": 128,
 							},
 						},
 					},
@@ -233,9 +239,9 @@ func generateOpenAPISpec() map[string]interface{} {
                     "summary":     "Get task events",
                     "description": "Get historical events for a task",
                     "parameters": []map[string]interface{}{
-                        {"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-                        {"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 50}},
-                        {"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0}},
+                        {"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 128}},
+                        {"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 50, "minimum": 1, "maximum": 200}},
+                        {"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
                     },
                     "responses": map[string]interface{}{
                         "200": map[string]interface{}{

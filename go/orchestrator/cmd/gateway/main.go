@@ -91,9 +91,10 @@ func main() {
 
 	// Create middlewares
 	authMiddleware := middleware.NewAuthMiddleware(authService, logger).Middleware
-	rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
-	idempotencyMiddleware := middleware.NewIdempotencyMiddleware(redisClient, logger).Middleware
-	tracingMiddleware := middleware.NewTracingMiddleware(logger).Middleware
+    rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
+    idempotencyMiddleware := middleware.NewIdempotencyMiddleware(redisClient, logger).Middleware
+    tracingMiddleware := middleware.NewTracingMiddleware(logger).Middleware
+    validationMiddleware := middleware.NewValidationMiddleware(logger).Middleware
 
 	// Setup HTTP mux
 	mux := http.NewServeMux()
@@ -106,53 +107,63 @@ func main() {
 	mux.HandleFunc("GET /openapi.json", openapiHandler.ServeSpec)
 
 	// Task endpoints (require auth)
-	mux.Handle("POST /api/v1/tasks",
-		tracingMiddleware(
-			authMiddleware(
-				rateLimiter(
-					idempotencyMiddleware(
-						http.HandlerFunc(taskHandler.SubmitTask),
-					),
-				),
-			),
-		),
-	)
+    mux.Handle("POST /api/v1/tasks",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    rateLimiter(
+                        idempotencyMiddleware(
+                            http.HandlerFunc(taskHandler.SubmitTask),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("GET /api/v1/tasks",
-		tracingMiddleware(
-			authMiddleware(
-				rateLimiter(
-					http.HandlerFunc(taskHandler.ListTasks),
-				),
-			),
-		),
-	)
+    mux.Handle("GET /api/v1/tasks",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    rateLimiter(
+                        http.HandlerFunc(taskHandler.ListTasks),
+                    ),
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("GET /api/v1/tasks/{id}",
-		tracingMiddleware(
-			authMiddleware(
-				http.HandlerFunc(taskHandler.GetTaskStatus),
-			),
-		),
-	)
+    mux.Handle("GET /api/v1/tasks/{id}",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    http.HandlerFunc(taskHandler.GetTaskStatus),
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("GET /api/v1/tasks/{id}/stream",
-		tracingMiddleware(
-			authMiddleware(
-				http.HandlerFunc(taskHandler.StreamTask),
-			),
-		),
-	)
+    mux.Handle("GET /api/v1/tasks/{id}/stream",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    http.HandlerFunc(taskHandler.StreamTask),
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("GET /api/v1/tasks/{id}/events",
-		tracingMiddleware(
-			authMiddleware(
-				rateLimiter(
-					http.HandlerFunc(taskHandler.GetTaskEvents),
-				),
-			),
-		),
-	)
+    mux.Handle("GET /api/v1/tasks/{id}/events",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    rateLimiter(
+                        http.HandlerFunc(taskHandler.GetTaskEvents),
+                    ),
+                ),
+            ),
+        ),
+    )
 
 	// SSE/WebSocket reverse proxy to admin server
 	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
@@ -162,21 +173,25 @@ func main() {
 	}
 
 	// Proxy SSE and WebSocket endpoints
-	mux.Handle("/api/v1/stream/sse",
-		tracingMiddleware(
-			authMiddleware(
-				streamProxy,
-			),
-		),
-	)
+    mux.Handle("/api/v1/stream/sse",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    streamProxy,
+                ),
+            ),
+        ),
+    )
 
-	mux.Handle("/api/v1/stream/ws",
-		tracingMiddleware(
-			authMiddleware(
-				streamProxy,
-			),
-		),
-	)
+    mux.Handle("/api/v1/stream/ws",
+        tracingMiddleware(
+            authMiddleware(
+                validationMiddleware(
+                    streamProxy,
+                ),
+            ),
+        ),
+    )
 
 	// Timeline proxy: GET /api/v1/tasks/{id}/timeline -> admin /timeline
 	mux.Handle("GET /api/v1/tasks/{id}/timeline",

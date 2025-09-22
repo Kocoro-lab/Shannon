@@ -62,7 +62,15 @@ export default function TasksPage() {
         getTaskEvents(taskId, { limit: 200, offset: 0 }, apiKey),
       ]);
       setDetails(d);
-      const arr = (ev?.events || []) as any[];
+      const arr = (ev?.events || []) as Array<{
+        workflow_id: string;
+        type: string;
+        agent_id?: string;
+        message: string;
+        timestamp: string;
+        seq: number;
+        stream_id?: string;
+      }>;
       setEvents(
         arr.map((e) => ({
           workflow_id: e.workflow_id,
@@ -76,8 +84,8 @@ export default function TasksPage() {
       );
       setTimeline([]);
       setTlNotice(null);
-    } catch (e: any) {
-      setError(e?.message || 'Failed to load task details');
+    } catch (e) {
+      setError((e as Error)?.message || 'Failed to load task details');
     }
   };
 
