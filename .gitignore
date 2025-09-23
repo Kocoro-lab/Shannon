@@ -17,8 +17,11 @@ dist/
 downloads/
 eggs/
 .eggs/
+# Python virtual environment lib folders
 lib/
 lib64/
+# But explicitly allow dashboard lib
+!observability/dashboard/lib/
 parts/
 sdist/
 var/
