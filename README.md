@@ -135,24 +135,23 @@ The `make dev` command starts all services:
 ```bash
 git clone https://github.com/Kocoro-lab/Shannon.git
 cd Shannon
-make setup-env
+
+# One-stop setup: creates .env, generates protobuf files
+make setup
+
+# Add your LLM API key to .env
+echo "OPENAI_API_KEY=your-key-here" >> .env
 
 # Download Python WASI interpreter for secure code execution (20MB)
 ./scripts/setup_python_wasi.sh
-```
 
-Add at least one LLM API key to `.env` (for example):
-
-```bash
-echo "OPENAI_API_KEY=your-key-here" >> .env
-```
-
-Start the stack and run a smoke check:
-
-```bash
+# Start all services and verify
 make dev
 make smoke
-```
+
+> **Note:** The setup process handles environment configuration and protobuf generation automatically. This is required for first-time setup since generated files are not checked into the repository. If `make` is not available on your system, use the provided shell scripts instead.
+>
+> **Important:** Shannon requires protobuf version 5.x (specifically 5.29.2). The setup scripts ensure the correct version is installed automatically.
 
 ### Your First Agent
 
