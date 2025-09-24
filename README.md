@@ -148,9 +148,10 @@ echo "OPENAI_API_KEY=your-key-here" >> .env
 # Start all services and verify
 make dev
 make smoke
-```
 
-> **Note:** The `make setup` command handles environment configuration and protobuf generation automatically. This is required for first-time setup since generated files are not checked into the repository.
+> **Note:** The setup process handles environment configuration and protobuf generation automatically. This is required for first-time setup since generated files are not checked into the repository. If `make` is not available on your system, use the provided shell scripts instead.
+>
+> **Important:** Shannon requires protobuf version 5.x (specifically 5.29.2). The setup scripts ensure the correct version is installed automatically.
 
 ### Your First Agent
 

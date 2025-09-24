@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Generate protobuf files locally without BSR dependencies
+# IMPORTANT: This script ensures version compatibility across all services
 
 set -euo pipefail
 
@@ -9,13 +10,15 @@ cd "$(dirname "$0")/.."
 export PATH="$HOME/go/bin:$PATH"
 
 echo "Generating protobuf files locally..."
+echo "Note: Using language-specific protoc to ensure compatibility"
 
-# Ensure protoc is installed
-if ! command -v protoc &> /dev/null; then
-    echo "Error: protoc is not installed. Please install protobuf compiler."
+# For Go - protoc is compatible across versions for Go
+if command -v protoc &> /dev/null; then
+    echo "System protoc found: $(protoc --version)"
+else
+    echo "Warning: protoc is not installed for Go generation."
     echo "On macOS: brew install protobuf"
     echo "On Ubuntu: apt-get install protobuf-compiler"
-    exit 1
 fi
 
 # Ensure Go protoc plugins are installed
@@ -25,30 +28,43 @@ if ! command -v protoc-gen-go &> /dev/null; then
     go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 fi
 
-# Ensure Python grpc tools are installed
+# Ensure Python grpc tools are installed with correct protobuf version
 if ! python3 -c "import grpc_tools" 2>/dev/null; then
-    echo "Installing Python gRPC tools..."
-    pip3 install grpcio-tools
+    echo "Installing Python gRPC tools with protobuf 5.29.2..."
+    pip3 install grpcio-tools==1.68.1 protobuf==5.29.2
+else
+    # Check protobuf version
+    PROTOBUF_VERSION=$(python3 -c "import google.protobuf; print(google.protobuf.__version__)" 2>/dev/null || echo "unknown")
+    if [[ ! "$PROTOBUF_VERSION" =~ ^5\. ]]; then
+        echo "Warning: Protobuf version $PROTOBUF_VERSION detected, expected 5.x"
+        echo "Installing correct version..."
+        pip3 install --upgrade protobuf==5.29.2 grpcio-tools==1.68.1
+    fi
 fi
 
 cd protos
 
-# Generate Go files
-echo "Generating Go protobuf files..."
-for proto in $(find . -name "*.proto" -type f); do
-    protoc \
-        --go_out=../go/orchestrator/internal/pb \
-        --go_opt=paths=source_relative \
-        --go-grpc_out=../go/orchestrator/internal/pb \
-        --go-grpc_opt=paths=source_relative \
-        --go-grpc_opt=require_unimplemented_servers=false \
-        -I . \
-        "$proto"
-done
+# Generate Go files (Go is flexible with protoc versions)
+if command -v protoc &> /dev/null; then
+    echo "Generating Go protobuf files with system protoc..."
+    for proto in $(find . -name "*.proto" -type f); do
+        protoc \
+            --go_out=../go/orchestrator/internal/pb \
+            --go_opt=paths=source_relative \
+            --go-grpc_out=../go/orchestrator/internal/pb \
+            --go-grpc_opt=paths=source_relative \
+            --go-grpc_opt=require_unimplemented_servers=false \
+            -I . \
+            "$proto"
+    done
+else
+    echo "Skipping Go generation - protoc not installed"
+fi
 
-# Generate Python files
-echo "Generating Python protobuf files..."
+# Generate Python files using grpc_tools.protoc (ensures correct version)
+echo "Generating Python protobuf files with grpc_tools.protoc (protobuf 5.x)..."
 mkdir -p gen/python
+# Use Python's bundled protoc to ensure version compatibility
 python3 -m grpc_tools.protoc \
     --python_out=gen/python \
     --grpc_python_out=gen/python \

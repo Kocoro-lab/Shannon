@@ -78,6 +78,10 @@ proto:
 # Local proto generation (fallback when BSR is rate-limited)
 proto-local:
 	@echo "Generating proto files locally (without BSR)..."
+	@echo "Checking protobuf version compatibility..."
+	@python3 -c "import google.protobuf; v=google.protobuf.__version__; print(f'Python protobuf version: {v}'); exit(0 if v.startswith('5.') else 1)" || \
+		(echo "Warning: Python protobuf not 5.x - installing correct version..." && \
+		 pip3 install --upgrade protobuf==5.29.2 grpcio-tools==1.68.1)
 	@./scripts/generate_protos_local.sh
 
 # Formatting & linting (best-effort; tools must be installed locally)
