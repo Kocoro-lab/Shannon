@@ -18,6 +18,17 @@ setup-env:
 	@echo "Environment setup complete"
 	@echo "Please edit .env with your API keys if you haven't already"
 
+# Complete setup for fresh clones (one-stop setup)
+setup: setup-env proto-local
+	@echo "======================================"
+	@echo "Initial setup complete!"
+	@echo "======================================"
+	@echo "Next steps:"
+	@echo "1. Add your API keys to .env file"
+	@echo "2. Run './scripts/setup_python_wasi.sh' for Python code execution"
+	@echo "3. Run 'make dev' to start all services"
+	@echo "4. Run 'make smoke' to test the setup"
+
 # Validate environment configuration
 check-env:
 	@echo "Checking environment configuration..."
@@ -30,9 +41,21 @@ check-env:
 	@echo "Environment check complete"
 
 # Full stack
-dev: check-env
+dev: check-env check-protos
 	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml up -d
 	@echo "Temporal UI: http://localhost:8088"
+
+# Check if protobuf files are generated
+check-protos:
+	@if [ ! -d "python/llm-service/llm_service/grpc_gen" ]; then \
+		echo "========================================"; \
+		echo "ERROR: Protobuf files not generated!"; \
+		echo "========================================"; \
+		echo "Run 'make setup' or 'make proto-local' first"; \
+		echo ""; \
+		exit 1; \
+	fi
+	@echo "✅ Protobuf files found"
 
 down:
 	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml down -v
@@ -43,12 +66,19 @@ logs:
 ps:
 	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml ps
 
-# Proto generation via buf  
+# Proto generation via buf
 proto:
 	@echo "Installing buf if needed..."
 	@command -v buf >/dev/null 2>&1 || ./scripts/install_buf.sh
 	@echo "Generating proto files..."
-	@cd protos && PATH="$$HOME/.local/bin:$$PATH" buf generate
+	@cd protos && PATH="$$HOME/.local/bin:$$PATH" buf generate || \
+		(echo "BSR rate limit hit or buf generation failed, using local generation..." && \
+		 cd .. && ./scripts/generate_protos_local.sh)
+
+# Local proto generation (fallback when BSR is rate-limited)
+proto-local:
+	@echo "Generating proto files locally (without BSR)..."
+	@./scripts/generate_protos_local.sh
 
 # Formatting & linting (best-effort; tools must be installed locally)
 fmt:
