@@ -47,6 +47,9 @@ type ShannonConfig struct {
 
 	// Workflow orchestration behavior (evaluation/synthesis toggles)
 	Workflow WorkflowConfig `json:"workflow" yaml:"workflow"`
+
+	// Session management configuration
+	Session SessionConfig `json:"session" yaml:"session"`
 }
 
 // AuthConfig contains authentication configuration
@@ -239,6 +242,13 @@ type TracingConfig struct {
 // StreamingConfig contains streaming settings (ring buffer)
 type StreamingConfig struct {
 	RingCapacity int `json:"ring_capacity" yaml:"ring_capacity"`
+}
+
+// SessionConfig contains session management settings
+type SessionConfig struct {
+	MaxHistory int           `json:"max_history" yaml:"max_history"` // Maximum messages to keep in Redis per session
+	TTL        time.Duration `json:"ttl" yaml:"ttl"`                 // Session expiry time
+	CacheSize  int           `json:"cache_size" yaml:"cache_size"`   // Max sessions to keep in local cache
 }
 
 // WorkflowConfig controls workflow behavior

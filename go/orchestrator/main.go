@@ -24,6 +24,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/registry"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/server"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/temporal"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/tracing"
@@ -251,8 +252,23 @@ func main() {
 		}
 	}()
 
-	// Create orchestrator service first (Temporal client may not be ready yet)
-	orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger)
+	// Wait for config to be ready before creating service
+	<-cfgReady
+
+	// Get session config from Shannon config
+	var sessionCfg *session.ManagerConfig
+	if shannonCfgMgr != nil {
+		if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
+			sessionCfg = &session.ManagerConfig{
+				MaxHistory: shCfg.Session.MaxHistory,
+				TTL:        shCfg.Session.TTL,
+				CacheSize:  shCfg.Session.CacheSize,
+			}
+		}
+	}
+
+	// Create orchestrator service with session config
+	orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger, sessionCfg)
 	if err != nil {
 		logger.Fatal("Failed to create orchestrator service", zap.Error(err))
 	}

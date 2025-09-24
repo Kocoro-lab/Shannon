@@ -20,6 +20,11 @@ auth:
   enable_registration: true
   require_email_verification: false
 
+session:
+  max_history: 500  # Maximum messages to keep in Redis per session
+  ttl: "720h"       # Session expiry time (30 days)
+  cache_size: 10000 # Max sessions to keep in local cache
+
 circuit_breakers:
   redis:
     max_requests: 5

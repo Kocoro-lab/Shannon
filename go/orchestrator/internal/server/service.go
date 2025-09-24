@@ -74,7 +74,8 @@ func (s *OrchestratorService) SetWorkflowDefaultsProvider(f func() bool) {
 }
 
 // NewOrchestratorService creates a new orchestrator service
-func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, logger *zap.Logger) (*OrchestratorService, error) {
+// Pass nil for sessionCfg to use default configuration
+func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, logger *zap.Logger, sessionCfg *session.ManagerConfig) (*OrchestratorService, error) {
 	// Initialize session manager with retry (handles startup races)
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
@@ -84,7 +85,7 @@ func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, l
 	var sessionMgr *session.Manager
 	var err error
 	for attempt := 1; attempt <= 15; attempt++ {
-		sessionMgr, err = session.NewManager(redisAddr, logger)
+		sessionMgr, err = session.NewManagerWithConfig(redisAddr, logger, sessionCfg)
 		if err == nil {
 			break
 		}
