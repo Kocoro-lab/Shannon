@@ -1,0 +1,54 @@
+services:
+  shannon-prometheus-1:
+    image: prom/prometheus:v2.39.0
+    container_name: shannon-prometheus-1
+    volumes:
+      - ./data/prometheus-data:/prometheus
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    restart: always
+    networks:
+      - shannon-net
+
+  shannon-grafana-1:
+    image: grafana/grafana:latest
+    container_name: shannon-grafana-1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data/grafana-data:/var/lib/grafana
+      - ./config/grafana.ini:/etc/grafana/grafana.ini
+      - ./config/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=shannon
+      - GF_SECURITY_ADMIN_PASSWORD=shannon
+    restart: always
+    networks:
+      - shannon-net
+    depends_on:
+      - shannon-prometheus-1
+
+  shannon-node-exporter-1:
+    image: prom/node-exporter:latest
+    container_name: shannon-node-exporter-1
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/host'
+      - '--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|var/lib/docker/.+|var/lib/kubelet/pods/.+)($|/)'
+    restart: always
+    networks:
+      - shannon-net
+
