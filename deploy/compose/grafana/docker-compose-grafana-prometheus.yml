@@ -24,7 +24,7 @@ services:
     volumes:
       - ./data/grafana-data:/var/lib/grafana
       - ./config/grafana.ini:/etc/grafana/grafana.ini
-      - ./config/provisioning:/etc/grafana/provisioning
+      # Removed provisioning mount, now using API import instead
     environment:
       - GF_SECURITY_ADMIN_USER=shannon
       - GF_SECURITY_ADMIN_PASSWORD=shannon
@@ -33,6 +33,33 @@ services:
       - shannon-net
     depends_on:
       - shannon-prometheus-1
+
+  # Dashboard importer - automatically imports dashboards after Grafana starts
+  shannon-dashboard-importer:
+    image: alpine:latest
+    container_name: shannon-dashboard-importer
+    volumes:
+      - ./scripts/import-dashboards.sh:/tmp/import-dashboards.sh:ro
+      - ./config/provisioning/dashboards:/dashboards:ro
+    environment:
+      - GRAFANA_URL=http://shannon-grafana-1:3000
+      - GRAFANA_USER=shannon
+      - GRAFANA_PASSWORD=shannon
+      - DATASOURCE_NAME=Prometheus
+      - PROMETHEUS_URL=http://shannon-prometheus-1:9090
+    command: |
+      sh -c "
+        apk add --no-cache curl jq bash &&
+        cp /tmp/import-dashboards.sh /import-dashboards.sh &&
+        chmod +x /import-dashboards.sh &&
+        /import-dashboards.sh
+      "
+    networks:
+      - shannon-net
+    depends_on:
+      - shannon-grafana-1
+      - shannon-prometheus-1
+    restart: "no"
 
   shannon-node-exporter-1:
     image: prom/node-exporter:latest
@@ -52,3 +79,7 @@ services:
     networks:
       - shannon-net
 
+
+networks:
+  shannon-net:
+    driver: bridge

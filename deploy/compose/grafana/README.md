@@ -45,6 +45,16 @@ This is a Docker Compose based monitoring solution that integrates Grafana, Prom
   - System load and uptime
   - Process and file descriptor statistics
 
+### 4. **shannon-dashboard-importer** (alpine:latest)
+- **Function**: Automatic dashboard and data source configuration
+- **Type**: One-time execution container (exits after completion)
+- **Tasks**:
+  - Wait for Grafana to be fully ready
+  - Configure Prometheus as default data source
+  - Import all JSON dashboards from `/dashboards` directory
+  - Fix data source references in imported dashboards
+- **Restart Policy**: "no" (runs once and exits)
+
 ## Quick Start
 
 ### Prerequisites
@@ -54,6 +64,13 @@ This is a Docker Compose based monitoring solution that integrates Grafana, Prom
 
 ### Start Services
 
+#### Quick Start Script
+```bash
+# Use the provided startup script
+./start.sh
+```
+
+#### Manual Start
 ```bash
 # Start all services
 docker compose -f docker-compose-grafana-prometheus.yml up -d
@@ -65,6 +82,7 @@ docker ps | grep -E "shannon-prometheus-1|shannon-grafana-1|shannon-node-exporte
 docker logs shannon-grafana-1
 docker logs shannon-prometheus-1
 docker logs shannon-node-exporter-1
+docker logs shannon-dashboard-importer
 ```
 
 ### Stop Services
@@ -83,21 +101,67 @@ docker compose -f docker-compose-grafana-prometheus.yml stop
 /data/grafana/
 ├── README.md                                   # This document
 ├── docker-compose-grafana-prometheus.yml      # Docker Compose configuration
-├── cleanup.sh                                 # Cleanup script for data volumes
-├── config/                                    # Configuration directory
-│   ├── grafana.ini                           # Grafana configuration file
-│   ├── prometheus.yml                        # Prometheus configuration file
-│   └── provisioning/                         # Grafana auto-configuration
+├── start.sh                                    # Service startup script
+├── config/                                     # Configuration directory
+│   ├── grafana.ini                            # Grafana configuration file
+│   ├── prometheus.yml                         # Prometheus configuration file
+│   └── provisioning/                          # Grafana provisioning directory
 │       ├── datasources/
-│       │   └── prometheus.yml                # Data source configuration
+│       │   └── prometheus.yml                 # Data source configuration
 │       └── dashboards/
-│           ├── dashboard.yml                 # Dashboard configuration
-│           └── node-exporter-full.json      # Node Exporter dashboard
-├── data/                                      # Data storage directory
-│   ├── prometheus-data/                      # Prometheus data storage
-│   └── grafana-data/                         # Grafana data storage
-
+│           └── node-exporter-1860.json        # Node Exporter dashboard (ID: 1860)
+├── scripts/                                    # Script directory
+│   └── import-dashboards.sh                   # Dashboard import script
+└── data/                                      # Data storage directory
+    ├── prometheus-data/                       # Prometheus data storage
+    └── grafana-data/                          # Grafana data storage
 ```
+
+## Dashboard Import System
+
+### Overview
+This project uses an optimized dashboard loading logic that has been changed from the previous provisioning static configuration to dynamic import via API after service startup.
+
+### How It Works
+
+1. **Grafana Service Startup**: The `shannon-grafana-1` container starts normally without mounting provisioning configuration
+2. **Automatic Importer**: The `shannon-dashboard-importer` container runs automatically after Grafana starts
+3. **Import Process**:
+   - Wait for Grafana service to be fully ready
+   - Automatically configure Prometheus data source
+   - Import all JSON dashboard files from `/dashboards` directory
+   - Container exits automatically after import completes
+
+### Dashboard Management
+
+#### Add New Dashboard
+1. Place the new dashboard JSON file in the `config/provisioning/dashboards/` directory
+2. Re-run the importer:
+```bash
+docker-compose -f docker-compose-grafana-prometheus.yml up shannon-dashboard-importer
+```
+
+#### Manual Dashboard Import
+If you need to manually import dashboards:
+```bash
+docker exec -it shannon-dashboard-importer /import-dashboards.sh
+```
+
+### Configuration Parameters
+
+The importer supports the following environment variables (set in docker-compose.yml):
+- `GRAFANA_URL`: Grafana service address (default: http://shannon-grafana-1:3000)
+- `GRAFANA_USER`: Grafana admin username (default: shannon)
+- `GRAFANA_PASSWORD`: Grafana admin password (default: shannon)
+- `DATASOURCE_NAME`: Prometheus data source name (default: Prometheus)
+- `PROMETHEUS_URL`: Prometheus service address (default: http://shannon-prometheus-1:9090)
+
+### Advantages
+
+1. **Flexibility**: Can dynamically add/update dashboards at runtime
+2. **Maintainability**: Dashboard files are separated from configuration, facilitating version control
+3. **Automation**: All configurations are completed automatically after service startup
+4. **Idempotency**: Repeated runs do not produce side effects, existing configurations are updated
 
 ## Automatic Configuration
 
@@ -191,6 +255,18 @@ curl http://localhost:9090/api/v1/targets
 - Check data source configuration: Settings → Data Sources
 - Confirm Prometheus address: http://shannon-prometheus-1:9090
 - Test data source connection
+
+### 4. Dashboard Not Imported
+
+- Check importer logs: `docker logs shannon-dashboard-importer`
+- Confirm Grafana service is running: `docker ps | grep grafana`
+- Verify dashboard file format is correct
+
+### 5. Data Source Connection Failed
+
+- Confirm Prometheus service is running normally
+- Check network connectivity
+- Verify environment variable configuration is correct
 
 ## Performance Optimization Suggestions
 
