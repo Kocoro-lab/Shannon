@@ -13,7 +13,7 @@ git clone https://github.com/gkamradt/agenttrafficcontrol && cd agenttrafficcont
 npm install
 cp .env.example .env  # add your keys if needed
 npm run dev
-# Open http://localhost:3000
+# Open http://localhost:2111
 ```
 
 ## How It Works

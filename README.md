@@ -10,7 +10,7 @@
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                                                                              │
 │     Real-time metrics, event tracking, and system health monitoring.         │
-│     Access at http://localhost:3000 after running 'make dev'                 │
+│     Access at http://localhost:2111 after running 'make dev'                 │
 │                                                                              │
 │     Please ⭐ star this repo to show your support and stay updated!          │
 │                                                                              │
@@ -126,7 +126,7 @@ The `make dev` command starts all services:
 - **Agent Core**: Rust service on port 50051
 - **LLM Service**: Python service on port 8000
 - **Gateway**: REST API gateway on port 8080
-- **Dashboard**: Real-time observability UI on port 3000
+- **Dashboard**: Real-time observability UI on port 2111
 
 </details>
 
@@ -161,7 +161,7 @@ Shannon provides multiple ways to interact with your AI agents:
 
 ```bash
 # Open the Shannon Dashboard in your browser
-open http://localhost:3000
+open http://localhost:2111
 
 # The dashboard provides:
 # - Visual task submission interface
@@ -277,7 +277,7 @@ wscat -c ws://localhost:8081/stream/ws?workflow_id=task-dev-1234567890
 
 ```bash
 # Access Shannon Dashboard for real-time monitoring
-open http://localhost:3000
+open http://localhost:2111
 
 # Dashboard features:
 # - Real-time task execution and event streams
@@ -298,7 +298,7 @@ open http://localhost:8088
 ```
 
 The visual tools provide comprehensive monitoring:
-- **Shannon Dashboard** (http://localhost:3000) - Real-time agent traffic control, metrics, and events
+- **Shannon Dashboard** (http://localhost:2111) - Real-time agent traffic control, metrics, and events
 - **Temporal UI** (http://localhost:8088) - Workflow debugging and state inspection
 - **Combined view** - Full visibility into your AI agents' behavior and system performance
 
