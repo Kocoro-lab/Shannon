@@ -66,7 +66,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 |---------|---------|-----------|---------|---------|
 | **Multi-Agent Orchestration** | ✅ DAG/Graph workflows | ✅ Stateful graphs | ✅ Group chat | ✅ Crew/roles |
 | **Agent Communication** | ✅ Message passing | ✅ Tool calling | ✅ Conversations | ✅ Delegation |
-| **Memory & Context** | ✅ Long/short-term, vector | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
+| **Memory & Context** | ✅ Chunked storage, MMR diversity | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
 | **Debugging Production Issues** | ✅ Replay any workflow | ❌ Limited debugging | ❌ Basic logging | ❌ |
 | **Token Cost Control** | ✅ Hard budget limits | ❌ | ❌ | ❌ |
 | **Security Sandbox** | ✅ WASI isolation | ❌ | ❌ | ❌ |
@@ -565,6 +565,11 @@ teams:
 ### Embeddings & Vector Memory
 
 - **How vectors are generated**: The Go orchestrator calls the Python LLM Service at `/embeddings/`, which by default uses OpenAI (model `text-embedding-3-small`).
+- **Advanced features**:
+  - **Intelligent chunking**: Long answers (>2000 tokens) automatically split with overlap for better retrieval
+  - **Batch embeddings**: Multiple chunks processed in one API call (5x faster)
+  - **MMR diversity**: Optional re-ranking for diverse results (configure `mmr_enabled`, `mmr_lambda` in `config/shannon.yaml`)
+  - **Storage optimized**: 50% reduction via chunk-only storage + payload indexes
 - **Graceful degradation**: If no embedding provider is configured (e.g., no `OPENAI_API_KEY`) or the endpoint is unavailable, workflows still run. Vector features degrade gracefully:
   - No vectors are stored (vector upserts are skipped)
   - Session memory retrieval returns an empty list

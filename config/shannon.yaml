@@ -216,6 +216,7 @@ vector:
   tool_results: "tool_results"
   cases: "cases"
   document_chunks: "document_chunks"
+  summaries: "summaries"
   top_k: 5
   threshold: 0.5
   timeout: "3s"
@@ -223,6 +224,25 @@ vector:
   cache_ttl: "1h"
   use_redis_cache: true
   redis_addr: "redis:6379"
+  expected_embedding_dim: 1536  # OpenAI text-embedding-3-small dimension
+  # MMR (Maximal Marginal Relevance) diversity settings
+  mmr_enabled: true              # Enable diversity re-ranking (set to true to activate)
+  mmr_lambda: 0.7                # Balance between relevance (1.0) and diversity (0.0)
+  mmr_pool_multiplier: 3         # Fetch 3x candidates for re-ranking
+
+# Embeddings configuration
+embeddings:
+  base_url: "http://llm-service:8000"
+  default_model: "text-embedding-3-small"
+  timeout: "5s"
+  cache_ttl: "1h"
+  max_lru: 2048
+  # Chunking configuration for long texts
+  chunking:
+    enabled: true
+    max_tokens: 2000       # Target chunk size in tokens
+    overlap_tokens: 200    # Overlap between chunks (10% of max_tokens)
+    min_chunk_tokens: 100  # Minimum size for a chunk
 
 tracing:
   enabled: false  # Enable for development/staging environments

@@ -87,6 +87,9 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivity(activities.GetWorkflowConfig)
 	// Context compression + store
 	w.RegisterActivity(activities.CompressAndStoreContext)
+	// Compression rate limiting activities
+	w.RegisterActivity(acts.CheckCompressionNeeded)
+	w.RegisterActivity(acts.UpdateCompressionStateActivity)
 
 	// Vector intelligence activities
 	w.RegisterActivity(activities.RecordQuery)
@@ -94,6 +97,14 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	// Agent-scoped memory activities (agent_memory_v1)
 	w.RegisterActivity(activities.FetchAgentMemory)
 	w.RegisterActivity(activities.RecordAgentMemory)
+	// Semantic memory activities (Phase 1.1)
+	w.RegisterActivity(activities.FetchSemanticMemory)
+	w.RegisterActivity(activities.FetchHierarchicalMemory)
+
+	// Enhanced supervisor memory activities
+	w.RegisterActivity(activities.FetchSupervisorMemory)
+	w.RegisterActivity(activities.RecordDecomposition)
+
 	// Dynamic team authorization
 	w.RegisterActivity(activities.AuthorizeTeamAction)
 
@@ -154,6 +165,11 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(activities.RecordPatternMetrics, activity.RegisterOptions{
 		Name: "RecordPatternMetrics",
 	})
+
+	// Persistence activities for agent and tool executions
+	// These use a global dbClient that must be set during initialization
+	w.RegisterActivity(activities.PersistAgentExecutionStandalone)
+	w.RegisterActivity(activities.PersistToolExecutionStandalone)
 
 	// Budget activities
 	if r.config.EnableBudgetedWorkflows {

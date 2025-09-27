@@ -24,11 +24,13 @@ type ExecuteSimpleTaskInput struct {
 
 // ExecuteSimpleTaskResult contains the complete result
 type ExecuteSimpleTaskResult struct {
-	Response   string `json:"response"`
-	TokensUsed int    `json:"tokens_used"`
-	Success    bool   `json:"success"`
-	Error      string `json:"error,omitempty"`
-	ModelUsed  string `json:"model_used,omitempty"`
+	Response        string                   `json:"response"`
+	TokensUsed      int                      `json:"tokens_used"`
+	Success         bool                     `json:"success"`
+	Error           string                   `json:"error,omitempty"`
+	ModelUsed       string                   `json:"model_used,omitempty"`
+	DurationMs      int64                    `json:"duration_ms,omitempty"`
+	ToolExecutions  []ToolExecution          `json:"tool_executions,omitempty"`
 }
 
 // ExecuteSimpleTask executes a simple query with minimal overhead
@@ -78,12 +80,14 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		}, err
 	}
 
-	// Return the result - session update and vector persistence
-	// are handled by the workflow to maintain separation of concerns
+	// Return the complete result including details needed for persistence
+	// The workflow will handle persistence via Temporal activities for better resilience
 	return ExecuteSimpleTaskResult{
-		Response:   agentResult.Response,
-		TokensUsed: agentResult.TokensUsed,
-		Success:    true,
-		ModelUsed:  agentResult.ModelUsed,
+		Response:       agentResult.Response,
+		TokensUsed:     agentResult.TokensUsed,
+		Success:        true,
+		ModelUsed:      agentResult.ModelUsed,
+		DurationMs:     agentResult.DurationMs,
+		ToolExecutions: agentResult.ToolExecutions,
 	}, nil
 }

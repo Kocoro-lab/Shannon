@@ -71,55 +71,52 @@ type TaskExecution struct {
 
 // AgentExecution represents an individual agent execution
 type AgentExecution struct {
-	ID              uuid.UUID `db:"id"`
-	TaskExecutionID uuid.UUID `db:"task_execution_id"`
-	AgentID         string    `db:"agent_id"`
-	ExecutionOrder  int       `db:"execution_order"`
+	ID         string    `db:"id"`
+	WorkflowID string    `db:"workflow_id"`  // References tasks.workflow_id
+	TaskID     string    `db:"task_id"`      // Optional reference to tasks.id
+	AgentID    string    `db:"agent_id"`
 
 	// Execution details
-	Input  string  `db:"input"`
-	Output *string `db:"output"`
-	Mode   string  `db:"mode"`
-	State  string  `db:"state"`
+	Input        string  `db:"input"`
+	Output       string  `db:"output"`
+	State        string  `db:"state"`
+	ErrorMessage string  `db:"error_message"`
 
 	// Token usage
-	TokensUsed int     `db:"tokens_used"`
-	CostUSD    float64 `db:"cost_usd"`
-	ModelUsed  string  `db:"model_used"`
+	TokensUsed int    `db:"tokens_used"`
+	ModelUsed  string `db:"model_used"`
 
 	// Performance
-	DurationMs   int `db:"duration_ms"`
-	MemoryUsedMB int `db:"memory_used_mb"`
+	DurationMs int64 `db:"duration_ms"`
 
-	CreatedAt   time.Time  `db:"created_at"`
-	CompletedAt *time.Time `db:"completed_at"`
+	// Metadata
+	Metadata  JSONB     `db:"metadata"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
 }
 
 // ToolExecution represents a tool execution record
 type ToolExecution struct {
-	ID               uuid.UUID  `db:"id"`
-	AgentExecutionID *uuid.UUID `db:"agent_execution_id"`
-	TaskExecutionID  uuid.UUID  `db:"task_execution_id"`
+	ID               string     `db:"id"`
+	WorkflowID       string     `db:"workflow_id"`       // References tasks.workflow_id
+	AgentID          string     `db:"agent_id"`          // Agent that executed the tool
+	AgentExecutionID *string    `db:"agent_execution_id"` // Optional reference to agent_executions.id
 
-	ToolName    string `db:"tool_name"`
-	ToolVersion string `db:"tool_version"`
-	Category    string `db:"category"`
+	ToolName string `db:"tool_name"`
 
 	// Execution details
-	InputParams  JSONB   `db:"input_params"`
-	Output       JSONB   `db:"output"`
-	Success      bool    `db:"success"`
-	ErrorMessage *string `db:"error_message"`
+	InputParams    JSONB  `db:"input_params"`
+	Output         string `db:"output"`
+	Success        bool   `db:"success"`
+	Error          string `db:"error"`
 
 	// Performance
-	DurationMs     int `db:"duration_ms"`
-	TokensConsumed int `db:"tokens_consumed"`
+	DurationMs     int64 `db:"duration_ms"`
+	TokensConsumed int   `db:"tokens_consumed"`
 
-	// Sandbox info
-	Sandboxed    bool `db:"sandboxed"`
-	MemoryUsedMB int  `db:"memory_used_mb"`
-
-	ExecutedAt time.Time `db:"executed_at"`
+	// Metadata
+	Metadata  JSONB     `db:"metadata"`
+	CreatedAt time.Time `db:"created_at"`
 }
 
 // SessionArchive represents a snapshot of a Redis session

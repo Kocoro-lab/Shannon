@@ -39,6 +39,9 @@ type ShannonConfig struct {
 	// Vector/Embedding configuration
 	Vector VectorConfig `json:"vector" yaml:"vector"`
 
+	// Embeddings service configuration
+	Embeddings EmbeddingsConfig `json:"embeddings" yaml:"embeddings"`
+
 	// Tracing configuration
 	Tracing TracingConfig `json:"tracing" yaml:"tracing"`
 
@@ -226,10 +229,34 @@ type VectorConfig struct {
 	Threshold      float64       `json:"threshold" yaml:"threshold"`
 	Timeout        time.Duration `json:"timeout" yaml:"timeout"`
 	// Embeddings service
-	DefaultModel  string        `json:"default_model" yaml:"default_model"`
-	CacheTTL      time.Duration `json:"cache_ttl" yaml:"cache_ttl"`
+	DefaultModel         string        `json:"default_model" yaml:"default_model"`
+	CacheTTL             time.Duration `json:"cache_ttl" yaml:"cache_ttl"`
+	ExpectedEmbeddingDim int           `json:"expected_embedding_dim" yaml:"expected_embedding_dim"`
 	UseRedisCache bool          `json:"use_redis_cache" yaml:"use_redis_cache"`
 	RedisAddr     string        `json:"redis_addr" yaml:"redis_addr"`
+
+    // MMR re-ranking (diversity)
+    MmrEnabled        bool    `json:"mmr_enabled" yaml:"mmr_enabled"`
+    MmrLambda         float64 `json:"mmr_lambda" yaml:"mmr_lambda"`
+    MmrPoolMultiplier int     `json:"mmr_pool_multiplier" yaml:"mmr_pool_multiplier"`
+}
+
+// EmbeddingsConfig contains embeddings service settings
+type EmbeddingsConfig struct {
+	BaseURL      string                    `json:"base_url" yaml:"base_url"`
+	DefaultModel string                    `json:"default_model" yaml:"default_model"`
+	Timeout      time.Duration             `json:"timeout" yaml:"timeout"`
+	CacheTTL     time.Duration             `json:"cache_ttl" yaml:"cache_ttl"`
+	MaxLRU       int                       `json:"max_lru" yaml:"max_lru"`
+	Chunking     EmbeddingsChunkingConfig  `json:"chunking" yaml:"chunking"`
+}
+
+// EmbeddingsChunkingConfig contains chunking settings for embeddings
+type EmbeddingsChunkingConfig struct {
+	Enabled          bool `json:"enabled" yaml:"enabled"`
+	MaxTokens        int  `json:"max_tokens" yaml:"max_tokens"`
+	OverlapTokens    int  `json:"overlap_tokens" yaml:"overlap_tokens"`
+	MinChunkTokens   int  `json:"min_chunk_tokens" yaml:"min_chunk_tokens"`
 }
 
 // TracingConfig contains OpenTelemetry tracing settings
@@ -472,12 +499,29 @@ func DefaultShannonConfig() *ShannonConfig {
 			DocumentChunks: "document_chunks",
 			Summaries:      "",
 			TopK:           5,
-			Threshold:      0.0,
+			Threshold:      0.75,  // Standardized default threshold for semantic search
 			Timeout:        3 * time.Second,
 			DefaultModel:   "text-embedding-3-small",
 			CacheTTL:       time.Hour,
 			UseRedisCache:  false,
 			RedisAddr:      "redis:6379",
+            // MMR defaults
+            MmrEnabled:        false,
+            MmrLambda:         0.7,
+            MmrPoolMultiplier: 3,
+		},
+		Embeddings: EmbeddingsConfig{
+			BaseURL:      "",
+			DefaultModel: "text-embedding-3-small",
+			Timeout:      5 * time.Second,
+			CacheTTL:     time.Hour,
+			MaxLRU:       2048,
+			Chunking: EmbeddingsChunkingConfig{
+				Enabled:        true,
+				MaxTokens:      2000,
+				OverlapTokens:  200,
+				MinChunkTokens: 100,
+			},
 		},
 		Tracing: TracingConfig{
 			Enabled:      false,
@@ -692,6 +736,31 @@ func (scm *ShannonConfigManager) updateConfigFromMap(configMap map[string]interf
 		if v, ok := wf["bypass_single_result"].(bool); ok {
 			newConfig.Workflow.BypassSingleResult = v
 		}
+	}
+
+	// Update session config
+	if session, ok := configMap["session"].(map[string]interface{}); ok {
+		if v, ok := session["max_history"].(float64); ok {
+			newConfig.Session.MaxHistory = int(v)
+		}
+		if v, ok := session["ttl"].(string); ok {
+			if d, err := time.ParseDuration(v); err == nil {
+				newConfig.Session.TTL = d
+			}
+		}
+		if v, ok := session["cache_size"].(float64); ok {
+			newConfig.Session.CacheSize = int(v)
+		}
+	}
+
+	// Update vector config
+	if vector, ok := configMap["vector"].(map[string]interface{}); ok {
+		scm.updateVectorConfig(vector, &newConfig.Vector)
+	}
+
+	// Update embeddings config
+	if embeddings, ok := configMap["embeddings"].(map[string]interface{}); ok {
+		scm.updateEmbeddingsConfig(embeddings, &newConfig.Embeddings)
 	}
 
 	oldConfig := scm.currentConfig
@@ -1059,6 +1128,100 @@ func (scm *ShannonConfigManager) updatePolicyConfig(policyMap map[string]interfa
 		}
 		if includeDecision, ok := audit["include_decision"].(bool); ok {
 			config.Audit.IncludeDecision = includeDecision
+		}
+	}
+}
+
+// updateVectorConfig updates vector configuration
+func (scm *ShannonConfigManager) updateVectorConfig(vectorMap map[string]interface{}, config *VectorConfig) {
+	if enabled, ok := vectorMap["enabled"].(bool); ok {
+		config.Enabled = enabled
+	}
+	if host, ok := vectorMap["host"].(string); ok {
+		config.Host = host
+	}
+	if port, ok := vectorMap["port"].(float64); ok {
+		config.Port = int(port)
+	}
+	if taskEmbeddings, ok := vectorMap["task_embeddings"].(string); ok {
+		config.TaskEmbeddings = taskEmbeddings
+	}
+	if toolResults, ok := vectorMap["tool_results"].(string); ok {
+		config.ToolResults = toolResults
+	}
+	if cases, ok := vectorMap["cases"].(string); ok {
+		config.Cases = cases
+	}
+	if documentChunks, ok := vectorMap["document_chunks"].(string); ok {
+		config.DocumentChunks = documentChunks
+	}
+	if summaries, ok := vectorMap["summaries"].(string); ok {
+		config.Summaries = summaries
+	}
+	if topK, ok := vectorMap["top_k"].(float64); ok {
+		config.TopK = int(topK)
+	}
+	if threshold, ok := vectorMap["threshold"].(float64); ok {
+		config.Threshold = threshold
+	}
+	if timeout, ok := vectorMap["timeout"].(string); ok {
+		if d, err := time.ParseDuration(timeout); err == nil {
+			config.Timeout = d
+		}
+	}
+	if defaultModel, ok := vectorMap["default_model"].(string); ok {
+		config.DefaultModel = defaultModel
+	}
+	if cacheTTL, ok := vectorMap["cache_ttl"].(string); ok {
+		if d, err := time.ParseDuration(cacheTTL); err == nil {
+			config.CacheTTL = d
+		}
+	}
+	if expectedEmbeddingDim, ok := vectorMap["expected_embedding_dim"].(float64); ok {
+		config.ExpectedEmbeddingDim = int(expectedEmbeddingDim)
+	}
+	if useRedisCache, ok := vectorMap["use_redis_cache"].(bool); ok {
+		config.UseRedisCache = useRedisCache
+	}
+	if redisAddr, ok := vectorMap["redis_addr"].(string); ok {
+		config.RedisAddr = redisAddr
+	}
+}
+
+// updateEmbeddingsConfig updates embeddings configuration
+func (scm *ShannonConfigManager) updateEmbeddingsConfig(embeddingsMap map[string]interface{}, config *EmbeddingsConfig) {
+	if baseURL, ok := embeddingsMap["base_url"].(string); ok {
+		config.BaseURL = baseURL
+	}
+	if defaultModel, ok := embeddingsMap["default_model"].(string); ok {
+		config.DefaultModel = defaultModel
+	}
+	if timeout, ok := embeddingsMap["timeout"].(string); ok {
+		if d, err := time.ParseDuration(timeout); err == nil {
+			config.Timeout = d
+		}
+	}
+	if cacheTTL, ok := embeddingsMap["cache_ttl"].(string); ok {
+		if d, err := time.ParseDuration(cacheTTL); err == nil {
+			config.CacheTTL = d
+		}
+	}
+	if maxLRU, ok := embeddingsMap["max_lru"].(float64); ok {
+		config.MaxLRU = int(maxLRU)
+	}
+	// Parse chunking configuration
+	if chunking, ok := embeddingsMap["chunking"].(map[string]interface{}); ok {
+		if enabled, ok := chunking["enabled"].(bool); ok {
+			config.Chunking.Enabled = enabled
+		}
+		if maxTokens, ok := chunking["max_tokens"].(float64); ok {
+			config.Chunking.MaxTokens = int(maxTokens)
+		}
+		if overlapTokens, ok := chunking["overlap_tokens"].(float64); ok {
+			config.Chunking.OverlapTokens = int(overlapTokens)
+		}
+		if minChunkTokens, ok := chunking["min_chunk_tokens"].(float64); ok {
+			config.Chunking.MinChunkTokens = int(minChunkTokens)
 		}
 	}
 }

@@ -18,4 +18,6 @@ type Config struct {
 	CacheTTL time.Duration
 	// MaxLRU controls in-process LRU size
 	MaxLRU int
+	// Chunking configuration for long texts
+	Chunking ChunkingConfig
 }

@@ -125,6 +125,53 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 	ctx = workflow.WithActivityOptions(ctx, actOpts)
 
+	// Version gate for enhanced supervisor memory
+	supervisorMemoryVersion := workflow.GetVersion(ctx, "supervisor_memory_v2", workflow.DefaultVersion, 2)
+
+	// TODO: Integrate decomposition advisor with task decomposition
+	// var decompositionAdvisor *activities.DecompositionAdvisor
+
+	if supervisorMemoryVersion >= 2 && input.SessionID != "" {
+		// Fetch enhanced supervisor memory with strategic insights
+		var supervisorMemory *activities.SupervisorMemoryContext
+		supervisorMemoryInput := activities.FetchSupervisorMemoryInput{
+			SessionID: input.SessionID,
+			UserID:    input.UserID,
+			TenantID:  input.TenantID,
+			Query:     input.Query,
+		}
+
+		// Execute enhanced memory fetch
+		if err := workflow.ExecuteActivity(ctx, "FetchSupervisorMemory", supervisorMemoryInput).Get(ctx, &supervisorMemory); err == nil {
+			// Store conversation history in context
+			if len(supervisorMemory.ConversationHistory) > 0 {
+				if input.Context == nil {
+					input.Context = make(map[string]interface{})
+				}
+				input.Context["agent_memory"] = supervisorMemory.ConversationHistory
+			}
+
+			// Create decomposition advisor for intelligent task breakdown
+			// TODO: Use this advisor in decomposition below
+			// decompositionAdvisor = activities.NewDecompositionAdvisor(supervisorMemory)
+			_ = supervisorMemory // Mark as used to prevent compiler warning
+
+			// Log strategic memory insights
+			logger.Info("Enhanced supervisor memory loaded",
+				"decomposition_patterns", len(supervisorMemory.DecompositionHistory),
+				"strategies_tracked", len(supervisorMemory.StrategyPerformance),
+				"failure_patterns", len(supervisorMemory.FailurePatterns),
+				"user_expertise", supervisorMemory.UserPreferences.ExpertiseLevel)
+		} else {
+			logger.Warn("Failed to fetch enhanced supervisor memory, falling back to basic", "error", err)
+			// Fall back to basic hierarchical memory
+			fallbackToBasicMemory(ctx, &input, logger)
+		}
+	} else if supervisorMemoryVersion >= 1 && input.SessionID != "" {
+		// Use basic memory for older versions
+		fallbackToBasicMemory(ctx, &input, logger)
+	}
+
 	// Dynamic team v1: handle recruit/retire signals
 	type RecruitRequest struct {
 		Description string
@@ -502,6 +549,37 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				}).Get(ctx, &res)
 			}
 			if execErr == nil {
+				// Persist agent execution (fire-and-forget)
+				persistCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+					StartToCloseTimeout: 5 * time.Second,
+					RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+				})
+
+				state := "COMPLETED"
+				if !res.Success {
+					state = "FAILED"
+				}
+
+				workflow.ExecuteActivity(
+					persistCtx,
+					activities.PersistAgentExecutionStandalone,
+					activities.PersistAgentExecutionInput{
+						WorkflowID:   workflowID,
+						AgentID:      fmt.Sprintf("agent-%s", st.ID),
+						Input:        st.Description,
+						Output:       res.Response,
+						State:        state,
+						TokensUsed:   res.TokensUsed,
+						ModelUsed:    res.ModelUsed,
+						DurationMs:   res.DurationMs,
+						Error:        res.Error,
+						Metadata: map[string]interface{}{
+							"workflow": "supervisor",
+							"strategy": "supervisor",
+							"task_id":  st.ID,
+						},
+					},
+				)
 				break
 			}
 			taskRetries[st.ID]++

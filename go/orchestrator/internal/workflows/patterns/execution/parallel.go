@@ -1,6 +1,7 @@
 package execution
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -176,88 +177,118 @@ func ExecuteParallel(
 		})
 	}
 
-	// Collect results
-	results := make([]activities.AgentExecutionResult, len(tasks))
-	totalTokens := 0
-	successCount := 0
-	errorCount := 0
+    // Collect results
+    results := make([]activities.AgentExecutionResult, len(tasks))
+    totalTokens := 0
+    successCount := 0
+    errorCount := 0
 
-	for i := 0; i < len(tasks); i++ {
-		var fwi futureWithIndex
-		futuresChan.Receive(ctx, &fwi)
+    // Use a selector to receive futures and process completions in completion order
+    sel := workflow.NewSelector(ctx)
+    received := 0
+    skippedNil := 0
+    processed := 0
 
-		if fwi.Future == nil {
-			errorCount++
-			// Nothing was acquired; no release needed
-			continue
-		}
+    var registerReceive func()
+    registerReceive = func() {
+        sel.AddReceive(futuresChan, func(c workflow.ReceiveChannel, more bool) {
+            var fwi futureWithIndex
+            c.Receive(ctx, &fwi)
+            received++
+            if fwi.Future == nil {
+                // Failed to acquire or schedule; count as error and skip
+                errorCount++
+                skippedNil++
+            } else {
+                fwi := fwi // capture for closure
+                sel.AddFuture(fwi.Future, func(f workflow.Future) {
+                    var result activities.AgentExecutionResult
+                    err := f.Get(ctx, &result)
+                    if err != nil {
+                        logger.Error("Agent execution failed",
+                            "task_id", tasks[fwi.Index].ID,
+                            "error", err,
+                        )
+                        errorCount++
+                        // Emit error event
+                        if config.EmitEvents {
+                            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+                                activities.EmitTaskUpdateInput{
+                                    WorkflowID: wid,
+                                    EventType:  activities.StreamEventErrorOccurred,
+                                    AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
+                                    Message:    err.Error(),
+                                    Timestamp:  workflow.Now(ctx),
+                                }).Get(ctx, nil)
+                        }
+                    } else {
+                        results[fwi.Index] = result
+                        totalTokens += result.TokensUsed
+                        successCount++
 
-		var result activities.AgentExecutionResult
-		err := fwi.Future.Get(ctx, &result)
+                        // Persist agent execution (fire-and-forget)
+                        workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+                        persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
 
-		if err != nil {
-			logger.Error("Agent execution failed",
-				"task_id", tasks[fwi.Index].ID,
-				"error", err,
-			)
-			errorCount++
+                        // Emit completion event
+                        if config.EmitEvents {
+                            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+                                activities.EmitTaskUpdateInput{
+                                    WorkflowID: wid,
+                                    EventType:  activities.StreamEventAgentCompleted,
+                                    AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
+                                    Timestamp:  workflow.Now(ctx),
+                                }).Get(ctx, nil)
+                        }
 
-			// Emit error event
-			if config.EmitEvents {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-					activities.EmitTaskUpdateInput{
-						WorkflowID: wid,
-						EventType:  activities.StreamEventErrorOccurred,
-						AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
-						Message:    err.Error(),
-						Timestamp:  workflow.Now(ctx),
-					}).Get(ctx, nil)
-			}
-		} else {
-			results[fwi.Index] = result
-			totalTokens += result.TokensUsed
-			successCount++
+                        // Record agent memory if session exists
+                        if sessionID != "" {
+                            detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
+                            workflow.ExecuteActivity(detachedCtx,
+                                activities.RecordAgentMemory,
+                                activities.RecordAgentMemoryInput{
+                                    SessionID: sessionID,
+                                    UserID:    userID,
+                                    AgentID:   result.AgentID,
+                                    Role:      tasks[fwi.Index].Role,
+                                    Query:     tasks[fwi.Index].Description,
+                                    Answer:    result.Response,
+                                    Model:     result.ModelUsed,
+                                    RedactPII: true,
+                                    Extra: map[string]interface{}{
+                                        "task_id": tasks[fwi.Index].ID,
+                                    },
+                                })
+                        }
+                    }
 
-			// Emit completion event
-			if config.EmitEvents {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-					activities.EmitTaskUpdateInput{
-						WorkflowID: wid,
-						EventType:  activities.StreamEventAgentCompleted,
-						AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
-						Timestamp:  workflow.Now(ctx),
-					}).Get(ctx, nil)
-			}
+                    // Signal producer that we're done with this future (release semaphore)
+                    if fwi.Release != nil {
+                        var sig struct{}
+                        fwi.Release.Send(ctx, sig)
+                    }
+                    processed++
+                })
+            }
 
-			// Record agent memory if session exists
-			if sessionID != "" {
-				detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
-				workflow.ExecuteActivity(detachedCtx,
-					activities.RecordAgentMemory,
-					activities.RecordAgentMemoryInput{
-						SessionID: sessionID,
-						UserID:    userID,
-						AgentID:   result.AgentID,
-						Role:      tasks[fwi.Index].Role,
-						Query:     tasks[fwi.Index].Description,
-						Answer:    result.Response,
-						Model:     result.ModelUsed,
-						RedactPII: true,
-						Extra: map[string]interface{}{
-							"task_id": tasks[fwi.Index].ID,
-						},
-					})
-			}
+            // Continue receiving until we've seen all producer messages
+            if received < len(tasks) {
+                registerReceive()
+            }
+        })
+    }
 
-			// Signal the producer goroutine that we're done with this future
-			if fwi.Release != nil {
-				var sig struct{}
-				fwi.Release.Send(ctx, sig)
-			}
-		}
-	}
+    // Prime the selector to start receiving
+    if len(tasks) > 0 {
+        registerReceive()
+    }
+
+    // Event loop: select until all non-nil futures are processed
+    for processed < (len(tasks) - skippedNil) {
+        sel.Select(ctx)
+    }
 
 	logger.Info("Parallel execution completed",
 		"total_tasks", len(tasks),
@@ -277,4 +308,71 @@ func ExecuteParallel(
 	}, nil
 }
 
-// no local helpers; callers must pass []string history
+// persistAgentExecutionLocal is a local helper to avoid circular imports
+// It mirrors the logic from supervisor_workflow.go and sequential.go
+func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input string, result activities.AgentExecutionResult) {
+	logger := workflow.GetLogger(ctx)
+
+	// Use detached context for fire-and-forget persistence
+	detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
+	activityOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	}
+	detachedCtx = workflow.WithActivityOptions(detachedCtx, activityOpts)
+
+	// Persist agent execution asynchronously
+	workflow.ExecuteActivity(detachedCtx,
+		activities.PersistAgentExecutionStandalone,
+		activities.PersistAgentExecutionInput{
+			WorkflowID: workflowID,
+			AgentID:    agentID,
+			Input:      input,
+			Output:     result.Response,
+			State:      "COMPLETED",
+			TokensUsed: result.TokensUsed,
+			ModelUsed:  result.ModelUsed,
+			DurationMs: result.DurationMs,
+			Error:      result.Error,
+			Metadata: map[string]interface{}{
+				"workflow": "parallel",
+				"strategy": "parallel",
+			},
+		})
+
+	// Persist tool executions if any
+	for _, tool := range result.ToolExecutions {
+		outputStr := ""
+		if tool.Output != nil {
+			switch v := tool.Output.(type) {
+			case string:
+				outputStr = v
+			default:
+				// Properly serialize complex outputs to JSON
+				if jsonBytes, err := json.Marshal(v); err == nil {
+					outputStr = string(jsonBytes)
+				} else {
+					outputStr = "complex output"
+				}
+			}
+		}
+
+		workflow.ExecuteActivity(detachedCtx,
+			activities.PersistToolExecutionStandalone,
+			activities.PersistToolExecutionInput{
+				WorkflowID: workflowID,
+				AgentID:    agentID,
+				ToolName:   tool.Tool,
+				Output:     outputStr,
+				Success:    tool.Success,
+				Error:      tool.Error,
+			})
+	}
+
+	logger.Debug("Scheduled persistence for agent execution",
+		"workflow_id", workflowID,
+		"agent_id", agentID,
+	)
+}

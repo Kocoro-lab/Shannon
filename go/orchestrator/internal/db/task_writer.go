@@ -202,30 +202,33 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 
 // SaveAgentExecution saves an agent execution record
 func (c *Client) SaveAgentExecution(ctx context.Context, agent *AgentExecution) error {
-	if agent.ID == uuid.Nil {
-		agent.ID = uuid.New()
+	if agent.ID == "" {
+		agent.ID = uuid.New().String()
 	}
 	if agent.CreatedAt.IsZero() {
 		agent.CreatedAt = time.Now()
 	}
+	if agent.UpdatedAt.IsZero() {
+		agent.UpdatedAt = time.Now()
+	}
 
 	query := `
 		INSERT INTO agent_executions (
-			id, task_execution_id, agent_id, execution_order,
-			input, output, mode, state,
-			tokens_used, cost_usd, model_used,
-			duration_ms, memory_used_mb,
-			created_at, completed_at
+			id, workflow_id, task_id, agent_id,
+			input, output, state, error_message,
+			tokens_used, model_used,
+			duration_ms, metadata,
+			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		)`
 
 	_, err := c.db.ExecContext(ctx, query,
-		agent.ID, agent.TaskExecutionID, agent.AgentID, agent.ExecutionOrder,
-		agent.Input, agent.Output, agent.Mode, agent.State,
-		agent.TokensUsed, agent.CostUSD, agent.ModelUsed,
-		agent.DurationMs, agent.MemoryUsedMB,
-		agent.CreatedAt, agent.CompletedAt,
+		agent.ID, agent.WorkflowID, agent.TaskID, agent.AgentID,
+		agent.Input, agent.Output, agent.State, agent.ErrorMessage,
+		agent.TokensUsed, agent.ModelUsed,
+		agent.DurationMs, agent.Metadata,
+		agent.CreatedAt, agent.UpdatedAt,
 	)
 
 	if err != nil {
@@ -242,39 +245,42 @@ func (c *Client) BatchSaveAgentExecutions(ctx context.Context, agents []*AgentEx
 	}
 
 	valueStrings := make([]string, 0, len(agents))
-	valueArgs := make([]interface{}, 0, len(agents)*15)
+	valueArgs := make([]interface{}, 0, len(agents)*14)
 
 	for i, agent := range agents {
-		if agent.ID == uuid.Nil {
-			agent.ID = uuid.New()
+		if agent.ID == "" {
+			agent.ID = uuid.New().String()
 		}
 		if agent.CreatedAt.IsZero() {
 			agent.CreatedAt = time.Now()
 		}
+		if agent.UpdatedAt.IsZero() {
+			agent.UpdatedAt = time.Now()
+		}
 
 		valueStrings = append(valueStrings, fmt.Sprintf(
-			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			i*15+1, i*15+2, i*15+3, i*15+4, i*15+5,
-			i*15+6, i*15+7, i*15+8, i*15+9, i*15+10,
-			i*15+11, i*15+12, i*15+13, i*15+14, i*15+15,
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*14+1, i*14+2, i*14+3, i*14+4, i*14+5,
+			i*14+6, i*14+7, i*14+8, i*14+9, i*14+10,
+			i*14+11, i*14+12, i*14+13, i*14+14,
 		))
 
 		valueArgs = append(valueArgs,
-			agent.ID, agent.TaskExecutionID, agent.AgentID, agent.ExecutionOrder,
-			agent.Input, agent.Output, agent.Mode, agent.State,
-			agent.TokensUsed, agent.CostUSD, agent.ModelUsed,
-			agent.DurationMs, agent.MemoryUsedMB,
-			agent.CreatedAt, agent.CompletedAt,
+			agent.ID, agent.WorkflowID, agent.TaskID, agent.AgentID,
+			agent.Input, agent.Output, agent.State, agent.ErrorMessage,
+			agent.TokensUsed, agent.ModelUsed,
+			agent.DurationMs, agent.Metadata,
+			agent.CreatedAt, agent.UpdatedAt,
 		)
 	}
 
 	query := fmt.Sprintf(`
 		INSERT INTO agent_executions (
-			id, task_execution_id, agent_id, execution_order,
-			input, output, mode, state,
-			tokens_used, cost_usd, model_used,
-			duration_ms, memory_used_mb,
-			created_at, completed_at
+			id, workflow_id, task_id, agent_id,
+			input, output, state, error_message,
+			tokens_used, model_used,
+			duration_ms, metadata,
+			created_at, updated_at
 		) VALUES %s`,
 		strings.Join(valueStrings, ","),
 	)
@@ -289,32 +295,32 @@ func (c *Client) BatchSaveAgentExecutions(ctx context.Context, agents []*AgentEx
 
 // SaveToolExecution saves a tool execution record
 func (c *Client) SaveToolExecution(ctx context.Context, tool *ToolExecution) error {
-	if tool.ID == uuid.Nil {
-		tool.ID = uuid.New()
+	if tool.ID == "" {
+		tool.ID = uuid.New().String()
 	}
-	if tool.ExecutedAt.IsZero() {
-		tool.ExecutedAt = time.Now()
+	if tool.CreatedAt.IsZero() {
+		tool.CreatedAt = time.Now()
 	}
 
 	query := `
 		INSERT INTO tool_executions (
-			id, agent_execution_id, task_execution_id,
-			tool_name, tool_version, category,
-			input_params, output, success, error_message,
+			id, workflow_id, agent_id, agent_execution_id,
+			tool_name,
+			input_params, output, success, error,
 			duration_ms, tokens_consumed,
-			sandboxed, memory_used_mb,
-			executed_at
+			metadata,
+			created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)`
 
 	_, err := c.db.ExecContext(ctx, query,
-		tool.ID, tool.AgentExecutionID, tool.TaskExecutionID,
-		tool.ToolName, tool.ToolVersion, tool.Category,
-		tool.InputParams, tool.Output, tool.Success, tool.ErrorMessage,
+		tool.ID, tool.WorkflowID, tool.AgentID, tool.AgentExecutionID,
+		tool.ToolName,
+		tool.InputParams, tool.Output, tool.Success, tool.Error,
 		tool.DurationMs, tool.TokensConsumed,
-		tool.Sandboxed, tool.MemoryUsedMB,
-		tool.ExecutedAt,
+		tool.Metadata,
+		tool.CreatedAt,
 	)
 
 	if err != nil {
@@ -333,14 +339,14 @@ func (c *Client) BatchSaveToolExecutions(ctx context.Context, tools []*ToolExecu
 	return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO tool_executions (
-				id, agent_execution_id, task_execution_id,
-				tool_name, tool_version, category,
-				input_params, output, success, error_message,
+				id, workflow_id, agent_id, agent_execution_id,
+				tool_name,
+				input_params, output, success, error,
 				duration_ms, tokens_consumed,
-				sandboxed, memory_used_mb,
-				executed_at
+				metadata,
+				created_at
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 			)`)
 		if err != nil {
 			return err
@@ -348,20 +354,20 @@ func (c *Client) BatchSaveToolExecutions(ctx context.Context, tools []*ToolExecu
 		defer stmt.Close()
 
 		for _, tool := range tools {
-			if tool.ID == uuid.Nil {
-				tool.ID = uuid.New()
+			if tool.ID == "" {
+				tool.ID = uuid.New().String()
 			}
-			if tool.ExecutedAt.IsZero() {
-				tool.ExecutedAt = time.Now()
+			if tool.CreatedAt.IsZero() {
+				tool.CreatedAt = time.Now()
 			}
 
 			_, err := stmt.ExecContext(ctx,
-				tool.ID, tool.AgentExecutionID, tool.TaskExecutionID,
-				tool.ToolName, tool.ToolVersion, tool.Category,
-				tool.InputParams, tool.Output, tool.Success, tool.ErrorMessage,
+				tool.ID, tool.WorkflowID, tool.AgentID, tool.AgentExecutionID,
+				tool.ToolName,
+				tool.InputParams, tool.Output, tool.Success, tool.Error,
 				tool.DurationMs, tool.TokensConsumed,
-				tool.Sandboxed, tool.MemoryUsedMB,
-				tool.ExecutedAt,
+				tool.Metadata,
+				tool.CreatedAt,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert tool %s: %w", tool.ToolName, err)
