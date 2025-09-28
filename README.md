@@ -243,7 +243,7 @@ grpcurl -plaintext \
 # Stream events via gRPC
 grpcurl -plaintext \
   -d '{"workflowId":"task-dev-1234567890"}' \
-  localhost:50052 shannon.orchestrator.OrchestratorService/StreamEvents
+  localhost:50052 shannon.orchestrator.StreamingService/StreamTaskExecution
 ```
 
 #### WebSocket Streaming
