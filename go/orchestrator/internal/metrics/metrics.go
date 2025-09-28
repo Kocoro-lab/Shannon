@@ -257,6 +257,43 @@ var (
 		},
 	)
 
+	// Decomposition pattern metrics
+	DecompositionPatternCacheHits = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_decomposition_pattern_cache_hits_total",
+			Help: "Total number of decomposition pattern cache hits",
+		},
+	)
+
+	DecompositionPatternCacheMisses = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_decomposition_pattern_cache_misses_total",
+			Help: "Total number of decomposition pattern cache misses",
+		},
+	)
+
+	StrategySelectionDistribution = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_strategy_selection_total",
+			Help: "Distribution of selected execution strategies",
+		},
+		[]string{"strategy"},
+	)
+
+	DecompositionPatternsRecorded = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_decomposition_patterns_recorded_total",
+			Help: "Total number of decomposition patterns recorded for learning",
+		},
+	)
+
+	UserPreferenceInferenceAccuracy = promauto.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "shannon_user_preference_inference_accuracy",
+			Help: "Accuracy of user preference inference (0-1)",
+		},
+	)
+
 	// Chunking metrics
 	ChunksPerQA = promauto.NewHistogram(
 		prometheus.HistogramOpts{

@@ -453,9 +453,9 @@ Shannon's memory system provides a robust foundation for context-aware AI intera
 Despite being mentioned in this document:
 1. **Cross-session memory retrieval** - Sessions are strictly isolated
 2. **Content-based hashing for deduplication** - Uses embedding similarity (95% threshold) instead
-3. **Full DecompositionAdvisor Integration** - Created but not wired to decomposition (TODOs in code)
-4. **Performance-based agent selection** - Metrics collected but routing not yet automated
-5. **User consent mechanisms** - No API for cross-session memory access with consent
+3. **Performance-based agent selection** - Metrics collected but routing not yet automated
+4. **User consent mechanisms** - No API for cross-session memory access with consent
+5. **User preference inference accuracy metric** - Defined but not yet calculated/updated
 
 ## Recent Enhancements (v3.0)
 
@@ -509,11 +509,108 @@ user_preferences         -- Inferred user interaction preferences
 - ✅ Database schema created
 - ✅ Activities registered
 - ✅ Version gating in place
-- ⚠️ DecompositionAdvisor created but not fully integrated (marked with TODOs)
-- ⚠️ RecordDecomposition activity ready but not called yet
+- ✅ DecompositionAdvisor fully integrated with supervisor workflow
+- ✅ RecordDecomposition activity integrated and called on workflow completion
+- ✅ Circuit breaker pattern implemented for database resilience
+- ✅ Configurable thresholds via environment variables
+- ✅ Comprehensive metrics for monitoring and observability
+- ✅ Unit tests for all new components
 
 ### Performance Improvements
 - **Deduplication**: Reduces storage by ~30% by filtering duplicates
 - **Error Filtering**: Prevents storing non-valuable error responses
 - **Batch Operations**: Efficient bulk embedding generation
 - **Fire-and-forget**: Non-blocking persistence for learning
+
+## Privacy and Data Governance
+
+### PII Handling Policy
+
+The supervisor memory system collects and stores user interaction patterns to improve task decomposition and strategy selection. This section outlines our approach to handling Personally Identifiable Information (PII).
+
+#### Data Collection
+The system collects the following types of data:
+- **Query Patterns**: User queries and task descriptions (may contain project names, business logic)
+- **Interaction History**: Conversation context and Q&A pairs
+- **Performance Metrics**: Task success rates, execution times, token usage
+- **User Preferences**: Inferred expertise level and speed/accuracy preferences
+
+#### PII Protection Measures
+
+1. **Data Minimization**
+   - Store only essential fields needed for pattern matching
+   - Avoid storing raw user inputs when patterns suffice
+   - Aggregate metrics rather than individual events where possible
+
+2. **Anonymization**
+   - User IDs are stored as UUIDs, not real names or emails
+   - Session IDs are randomly generated and temporary
+   - No correlation between sessions without explicit user consent
+
+3. **Redaction Before Storage**
+   - Sensitive patterns detected and redacted:
+     - Email addresses replaced with `[EMAIL]`
+     - Phone numbers replaced with `[PHONE]`
+     - API keys/tokens replaced with `[REDACTED]`
+   - Configurable redaction rules via environment variables
+
+4. **Access Control**
+   - Database access restricted to service accounts
+   - Read/write permissions separated
+   - Audit logging for all data access
+
+#### Data Retention Policy
+
+1. **Conversation History**
+   - Retained for 30 days by default
+   - Configurable via `MEMORY_RETENTION_DAYS` environment variable
+   - Automatic cleanup job runs daily
+
+2. **Decomposition Patterns**
+   - Aggregated patterns retained for 90 days
+   - Individual patterns purged after 30 days
+   - Success metrics kept indefinitely in aggregated form
+
+3. **User Preferences**
+   - Updated on each interaction
+   - Reset when session expires (24 hours of inactivity)
+   - No long-term profiling without explicit opt-in
+
+4. **Right to Erasure**
+   - Users can request deletion via API endpoint
+   - Cascade deletion removes all associated data
+   - Audit trail maintained for compliance
+
+#### Compliance Considerations
+
+- **GDPR**: Right to access, rectification, and erasure supported
+- **CCPA**: User data disclosure and deletion mechanisms in place
+- **SOC2**: Audit logging and access controls implemented
+- **HIPAA**: Not storing health information; additional safeguards needed if deployed in healthcare
+
+#### Configuration
+
+Environment variables for PII handling:
+```bash
+# Data retention settings
+MEMORY_RETENTION_DAYS=30
+PATTERN_RETENTION_DAYS=90
+AGGREGATE_RETENTION_DAYS=365
+
+# PII redaction
+ENABLE_PII_REDACTION=true
+REDACT_EMAILS=true
+REDACT_PHONES=true
+REDACT_API_KEYS=true
+
+# Audit logging
+ENABLE_AUDIT_LOGGING=true
+AUDIT_LOG_PATH=/var/log/shannon/audit.log
+```
+
+#### Monitoring and Alerts
+
+- Metric: `shannon_pii_redactions_total` - Count of PII redactions
+- Metric: `shannon_data_retention_cleanups_total` - Cleanup job executions
+- Alert: Unusual data access patterns detected
+- Alert: Retention cleanup job failures

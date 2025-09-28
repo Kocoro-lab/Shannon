@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,37 @@ import (
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
 )
+
+// Configuration constants for supervisor memory
+var (
+	// Similarity threshold for matching decomposition patterns (0.0 to 1.0)
+	DecompositionSimilarityThreshold = getFloatEnv("DECOMPOSITION_SIMILARITY_THRESHOLD", 0.8)
+
+	// Success rate threshold for considering a pattern successful (0.0 to 1.0)
+	PatternSuccessThreshold = getFloatEnv("PATTERN_SUCCESS_THRESHOLD", 0.7)
+
+	// Exploration rate for epsilon-greedy strategy selection (0.0 to 1.0)
+	StrategyExplorationRate = getFloatEnv("STRATEGY_EXPLORATION_RATE", 0.1)
+
+	// Speed vs accuracy thresholds
+	SpeedPriorityThreshold = getFloatEnv("SPEED_PRIORITY_THRESHOLD", 0.3)
+	AccuracyPriorityThreshold = getFloatEnv("ACCURACY_PRIORITY_THRESHOLD", 0.8)
+
+	// Default speed vs accuracy balance
+	DefaultSpeedVsAccuracy = getFloatEnv("DEFAULT_SPEED_VS_ACCURACY", 0.7)
+
+	// Maximum duration baseline for speed scoring (milliseconds)
+	MaxDurationBaseline = getFloatEnv("MAX_DURATION_BASELINE_MS", 30000)
+)
+
+func getFloatEnv(key string, defaultValue float64) float64 {
+	if val := os.Getenv(key); val != "" {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
+		}
+	}
+	return defaultValue
+}
 
 // SupervisorMemoryContext enriches raw memory with strategic insights
 type SupervisorMemoryContext struct {
@@ -84,6 +117,8 @@ type FetchSupervisorMemoryInput struct {
 }
 
 // FetchSupervisorMemory fetches and enriches memory for strategic decisions
+// TODO: Implement cache layer for frequently accessed decomposition patterns
+// TODO: Add TTL/cleanup for old decomposition patterns to prevent unbounded growth
 func FetchSupervisorMemory(ctx context.Context, input FetchSupervisorMemoryInput) (*SupervisorMemoryContext, error) {
 	logger := activity.GetLogger(ctx)
 	logger.Info("Fetching enhanced supervisor memory",
@@ -201,49 +236,57 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
 }
 
 func fetchStrategyPerformance(ctx context.Context, memory *SupervisorMemoryContext, sessionID, userID string) error {
-	dbClient := GetGlobalDBClient()
-	if dbClient == nil {
-		return fmt.Errorf("database client unavailable")
-	}
+	logger := activity.GetLogger(ctx)
 
-	db := dbClient.GetDB()
-	if db == nil {
-		return fmt.Errorf("database connection unavailable")
-	}
-
-	// Query agent_executions table for strategy performance
-	query := `
-		SELECT
-			strategy,
-			COUNT(*) as total_runs,
-			AVG(CASE WHEN status = 'COMPLETED' THEN 1.0 ELSE 0.0 END) as success_rate,
-			AVG(duration_ms) as avg_duration_ms,
-			AVG(tokens_used) as avg_token_cost
-		FROM agent_executions
-		WHERE session_id = $1 OR user_id = $2
-		GROUP BY strategy
-	`
-
-	rows, err := db.QueryContext(ctx, query, sessionID, userID)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var strategy string
-		var stats StrategyStats
-
-		err := rows.Scan(&strategy, &stats.TotalRuns, &stats.SuccessRate,
-			&stats.AvgDuration, &stats.AvgTokenCost)
-		if err != nil {
-			continue
+	// Wrap database operation in circuit breaker
+	return WithCircuitBreaker(ctx, func(ctx context.Context) error {
+		dbClient := GetGlobalDBClient()
+		if dbClient == nil {
+			return fmt.Errorf("database client unavailable")
 		}
 
-		memory.StrategyPerformance[strategy] = stats
-	}
+		db := dbClient.GetDB()
+		if db == nil {
+			return fmt.Errorf("database connection unavailable")
+		}
 
-	return nil
+		// Query agent_executions table for strategy performance
+		// Note: GROUP BY naturally limits results to number of unique strategies (typically <10)
+		query := `
+			SELECT
+				strategy,
+				COUNT(*) as total_runs,
+				AVG(CASE WHEN status = 'COMPLETED' THEN 1.0 ELSE 0.0 END) as success_rate,
+				AVG(duration_ms) as avg_duration_ms,
+				AVG(tokens_used) as avg_token_cost
+			FROM agent_executions
+			WHERE session_id = $1 OR user_id = $2
+			GROUP BY strategy
+			LIMIT 20
+		`
+
+		rows, err := db.QueryContext(ctx, query, sessionID, userID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var strategy string
+			var stats StrategyStats
+
+			err := rows.Scan(&strategy, &stats.TotalRuns, &stats.SuccessRate,
+				&stats.AvgDuration, &stats.AvgTokenCost)
+			if err != nil {
+				logger.Warn("Failed to scan strategy performance row", "error", err, "strategy", strategy)
+				continue
+			}
+
+			memory.StrategyPerformance[strategy] = stats
+		}
+
+		return nil
+	})
 }
 
 func identifyFailurePatterns(ctx context.Context, memory *SupervisorMemoryContext, query string) error {
@@ -335,7 +378,18 @@ func loadUserPreferences(ctx context.Context, memory *SupervisorMemoryContext, s
 	}
 
 	// Speed vs accuracy preference (based on retry patterns)
-	memory.UserPreferences.SpeedVsAccuracy = 0.7 // Default balanced
+	memory.UserPreferences.SpeedVsAccuracy = DefaultSpeedVsAccuracy // Default balanced
+
+	// Ensure SpeedVsAccuracy is within valid range [0.0, 1.0]
+	if memory.UserPreferences.SpeedVsAccuracy < 0.0 {
+		memory.UserPreferences.SpeedVsAccuracy = 0.0
+	} else if memory.UserPreferences.SpeedVsAccuracy > 1.0 {
+		memory.UserPreferences.SpeedVsAccuracy = 1.0
+	}
+
+	// TODO: Calculate and update user preference inference accuracy metric
+	// This would compare inferred preferences against actual user behavior
+	// metrics.UserPreferenceInferenceAccuracy.Set(calculatedAccuracy)
 
 	return nil
 }
@@ -360,18 +414,28 @@ func (da *DecompositionAdvisor) SuggestDecomposition(query string) Decomposition
 	// 1. Check decomposition history for similar successful patterns
 	for _, prev := range da.Memory.DecompositionHistory {
 		similarity := calculateSimilarity(query, prev.QueryPattern)
-		if similarity > 0.8 && prev.SuccessRate > 0.7 {
+		if similarity > DecompositionSimilarityThreshold && prev.SuccessRate > PatternSuccessThreshold {
 			suggestion.UsesPreviousSuccess = true
 			suggestion.SuggestedSubtasks = prev.Subtasks
 			suggestion.Strategy = prev.Strategy
 			suggestion.Confidence = prev.SuccessRate * similarity
+			metrics.DecompositionPatternCacheHits.Inc()
 			break
 		}
+	}
+
+	if !suggestion.UsesPreviousSuccess {
+		metrics.DecompositionPatternCacheMisses.Inc()
 	}
 
 	// 2. Select optimal strategy based on performance history
 	if !suggestion.UsesPreviousSuccess {
 		suggestion.Strategy = da.selectOptimalStrategy()
+	}
+
+	// Track strategy selection
+	if suggestion.Strategy != "" {
+		metrics.StrategySelectionDistribution.WithLabelValues(suggestion.Strategy).Inc()
 	}
 
 	// 3. Check for failure patterns and add warnings
@@ -397,11 +461,11 @@ func (da *DecompositionAdvisor) SuggestDecomposition(query string) Decomposition
 	}
 
 	// 5. Consider speed vs accuracy preference
-	if da.Memory.UserPreferences.SpeedVsAccuracy < 0.3 {
+	if da.Memory.UserPreferences.SpeedVsAccuracy < SpeedPriorityThreshold {
 		// Prioritize speed
 		suggestion.Strategy = "parallel"
 		suggestion.PreferSequential = false
-	} else if da.Memory.UserPreferences.SpeedVsAccuracy > 0.8 {
+	} else if da.Memory.UserPreferences.SpeedVsAccuracy > AccuracyPriorityThreshold {
 		// Prioritize accuracy
 		suggestion.Strategy = "sequential"
 		suggestion.PreferSequential = true
@@ -412,7 +476,7 @@ func (da *DecompositionAdvisor) SuggestDecomposition(query string) Decomposition
 
 func (da *DecompositionAdvisor) selectOptimalStrategy() string {
 	// Use epsilon-greedy selection based on performance history
-	epsilon := 0.1 // 10% exploration
+	epsilon := StrategyExplorationRate
 
 	if rand.Float64() < epsilon {
 		// Explore: try less-used strategies
@@ -425,7 +489,7 @@ func (da *DecompositionAdvisor) selectOptimalStrategy() string {
 
 	for strategy, stats := range da.Memory.StrategyPerformance {
 		// Balance success rate with speed based on user preference
-		maxDuration := float64(30000) // 30 seconds as baseline
+		maxDuration := MaxDurationBaseline
 		speedScore := 1.0 - float64(stats.AvgDuration)/maxDuration
 		if speedScore < 0 {
 			speedScore = 0
@@ -580,6 +644,8 @@ func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) er
 		"strategy", input.Strategy,
 		"success", input.Success,
 		"subtasks", len(input.Subtasks))
+
+	metrics.DecompositionPatternsRecorded.Inc()
 
 	return nil
 }

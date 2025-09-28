@@ -34,6 +34,9 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	logger := workflow.GetLogger(ctx)
 	logger.Info("Starting SupervisorWorkflow", "query", input.Query, "user_id", input.UserID)
 
+	// Capture workflow start time for duration tracking
+	workflowStartTime := workflow.Now(ctx)
+
 	// ENTERPRISE TIMEOUT STRATEGY:
 	// - No overall workflow timeout (complex tasks may take hours/days)
 	// - Per-task retry limits (3 max) prevent infinite loops
@@ -128,8 +131,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// Version gate for enhanced supervisor memory
 	supervisorMemoryVersion := workflow.GetVersion(ctx, "supervisor_memory_v2", workflow.DefaultVersion, 2)
 
-	// TODO: Integrate decomposition advisor with task decomposition
-	// var decompositionAdvisor *activities.DecompositionAdvisor
+	var decompositionAdvisor *activities.DecompositionAdvisor
+	var decompositionSuggestion activities.DecompositionSuggestion
 
 	if supervisorMemoryVersion >= 2 && input.SessionID != "" {
 		// Fetch enhanced supervisor memory with strategic insights
@@ -152,9 +155,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 
 			// Create decomposition advisor for intelligent task breakdown
-			// TODO: Use this advisor in decomposition below
-			// decompositionAdvisor = activities.NewDecompositionAdvisor(supervisorMemory)
-			_ = supervisorMemory // Mark as used to prevent compiler warning
+			decompositionAdvisor = activities.NewDecompositionAdvisor(supervisorMemory)
+			decompositionSuggestion = decompositionAdvisor.SuggestDecomposition(input.Query)
 
 			// Log strategic memory insights
 			logger.Info("Enhanced supervisor memory loaded",
@@ -264,15 +266,46 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		})
 	}
 
-	// Decompose the task to get subtasks and agent types
-	var decomp activities.DecompositionResult
-	if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, activities.DecompositionInput{
+	// Prepare decomposition input with advisor suggestions
+	decomposeInput := activities.DecompositionInput{
 		Query:          input.Query,
 		Context:        input.Context,
 		AvailableTools: []string{},
-	}).Get(ctx, &decomp); err != nil {
+	}
+
+	// Apply decomposition advisor suggestions if available
+	if decompositionAdvisor != nil {
+		if decompositionSuggestion.UsesPreviousSuccess {
+			// Add suggested subtasks to context for LLM to consider
+			if decomposeInput.Context == nil {
+				decomposeInput.Context = make(map[string]interface{})
+			}
+			decomposeInput.Context["suggested_subtasks"] = decompositionSuggestion.SuggestedSubtasks
+			decomposeInput.Context["suggested_strategy"] = decompositionSuggestion.Strategy
+			decomposeInput.Context["confidence"] = decompositionSuggestion.Confidence
+		}
+
+		if len(decompositionSuggestion.Warnings) > 0 {
+			decomposeInput.Context["decomposition_warnings"] = decompositionSuggestion.Warnings
+		}
+
+		logger.Info("Using decomposition advisor suggestions",
+			"strategy", decompositionSuggestion.Strategy,
+			"confidence", decompositionSuggestion.Confidence,
+			"uses_previous", decompositionSuggestion.UsesPreviousSuccess)
+	}
+
+	// Decompose the task to get subtasks and agent types
+	var decomp activities.DecompositionResult
+	if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
 		return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
+	}
+
+	// Override strategy if advisor has high confidence
+	if decompositionAdvisor != nil && decompositionSuggestion.Confidence > 0.8 {
+		decomp.ExecutionStrategy = decompositionSuggestion.Strategy
+		logger.Info("Overriding execution strategy based on advisor", "strategy", decomp.ExecutionStrategy)
 	}
 
 	// Emit team status event after decomposition
@@ -728,6 +761,39 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				"error", err,
 			)
 		}
+	}
+
+	// Record decomposition results for future learning (fire-and-forget)
+	if supervisorMemoryVersion >= 2 && input.SessionID != "" && len(decomp.Subtasks) > 0 {
+		recordCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 5 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
+
+		// Calculate workflow duration
+		workflowDuration := workflow.Now(ctx).Sub(workflowStartTime).Milliseconds()
+
+		// Extract subtask descriptions
+		subtaskDescriptions := make([]string, len(decomp.Subtasks))
+		for i, st := range decomp.Subtasks {
+			subtaskDescriptions[i] = st.Description
+		}
+
+		// Fire and forget - don't wait for result
+		workflow.ExecuteActivity(recordCtx, "RecordDecomposition", activities.RecordDecompositionInput{
+			SessionID:  input.SessionID,
+			Query:      input.Query,
+			Subtasks:   subtaskDescriptions,
+			Strategy:   decomp.ExecutionStrategy,
+			Success:    true,
+			DurationMs: workflowDuration,
+			TokensUsed: synth.TokensUsed,
+		})
+
+		logger.Info("Recorded decomposition outcome",
+			"strategy", decomp.ExecutionStrategy,
+			"subtasks", len(decomp.Subtasks),
+			"duration_ms", workflowDuration)
 	}
 
 	// Emit workflow completed event for dashboards
