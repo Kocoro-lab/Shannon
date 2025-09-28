@@ -1,6 +1,7 @@
 package execution
 
 import (
+    "encoding/json"
     "fmt"
     "strconv"
     "strings"
@@ -245,6 +246,10 @@ func ExecuteSequential(
 			continue
 		}
 
+		// Persist agent execution (fire-and-forget)
+		workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+		persistAgentExecution(ctx, workflowID, fmt.Sprintf("agent-%s", task.ID), task.Description, result)
+
 		// Success
 		results = append(results, result)
 		totalTokens += result.TokensUsed
@@ -299,6 +304,79 @@ func ExecuteSequential(
 			"failed":      errorCount,
 		},
 	}, nil
+}
+
+// persistAgentExecution persists agent execution results (fire-and-forget)
+func persistAgentExecution(ctx workflow.Context, workflowID string, agentID string, input string, result activities.AgentExecutionResult) {
+	// Create a new context for persistence with no retries
+	persistCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+
+	// Determine state based on success
+	state := "COMPLETED"
+	if !result.Success {
+		state = "FAILED"
+	}
+
+	// Fire and forget - don't wait for result
+	workflow.ExecuteActivity(
+		persistCtx,
+		activities.PersistAgentExecutionStandalone,
+		activities.PersistAgentExecutionInput{
+			WorkflowID:   workflowID,
+			AgentID:      agentID,
+			Input:        input,
+			Output:       result.Response,
+			State:        state,
+			TokensUsed:   result.TokensUsed,
+			ModelUsed:    result.ModelUsed,
+			DurationMs:   result.DurationMs,
+			Error:        result.Error,
+			Metadata: map[string]interface{}{
+				"workflow": "sequential",
+				"strategy": "sequential",
+			},
+		},
+	)
+
+	// Persist tool executions if any
+	if len(result.ToolExecutions) > 0 {
+		for _, tool := range result.ToolExecutions {
+			// Convert tool output to string
+			outputStr := ""
+			if tool.Output != nil {
+				switch v := tool.Output.(type) {
+				case string:
+					outputStr = v
+				default:
+					// Properly serialize complex outputs to JSON
+					if jsonBytes, err := json.Marshal(v); err == nil {
+						outputStr = string(jsonBytes)
+					} else {
+						outputStr = "complex output"
+					}
+				}
+			}
+
+			workflow.ExecuteActivity(
+				persistCtx,
+				activities.PersistToolExecutionStandalone,
+				activities.PersistToolExecutionInput{
+					WorkflowID:     workflowID,
+					AgentID:        agentID,
+					ToolName:       tool.Tool,
+					InputParams:    nil,
+					Output:         outputStr,
+					Success:        tool.Success,
+					TokensConsumed: 0,
+					DurationMs:     0,
+					Error:          tool.Error,
+				},
+			)
+		}
+	}
 }
 
 // Helper function to parse numeric values from responses

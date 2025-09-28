@@ -77,6 +77,12 @@ async def create_collections():
             "description": "Document chunks for RAG",
             "vector_size": EMBEDDING_DIM,
             "distance": Distance.COSINE,
+        },
+        {
+            "name": "summaries",
+            "description": "Compressed historical context summaries",
+            "vector_size": EMBEDDING_DIM,
+            "distance": Distance.COSINE,
         }
     ]
     
@@ -110,6 +116,17 @@ async def create_collections():
             
             # Create indexes on payload fields
             if collection["name"] == "task_embeddings":
+                # Core filtering indexes
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="session_id",
+                    field_schema="keyword"
+                )
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="tenant_id",
+                    field_schema="keyword"
+                )
                 client.create_payload_index(
                     collection_name=collection["name"],
                     field_name="user_id",
@@ -117,8 +134,25 @@ async def create_collections():
                 )
                 client.create_payload_index(
                     collection_name=collection["name"],
-                    field_name="session_id",
+                    field_name="agent_id",
                     field_schema="keyword"
+                )
+                # Chunking-specific indexes
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="qa_id",
+                    field_schema="keyword"
+                )
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="is_chunked",
+                    field_schema="bool"
+                )
+                # Temporal index for recent retrieval
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="timestamp",
+                    field_schema="integer"
                 )
                 
             elif collection["name"] == "tool_results":
@@ -154,6 +188,28 @@ async def create_collections():
                 client.create_payload_index(
                     collection_name=collection["name"],
                     field_name="chunk_index",
+                    field_schema="integer"
+                )
+
+            elif collection["name"] == "summaries":
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="session_id",
+                    field_schema="keyword"
+                )
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="tenant_id",
+                    field_schema="keyword"
+                )
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="user_id",
+                    field_schema="keyword"
+                )
+                client.create_payload_index(
+                    collection_name=collection["name"],
+                    field_name="timestamp",
                     field_schema="integer"
                 )
             

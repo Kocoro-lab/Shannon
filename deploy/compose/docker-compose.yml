@@ -165,6 +165,11 @@ services:
       # Single-queue mode concurrency (used when PRIORITY_QUEUES is off)
       - WORKER_ACT=${WORKER_ACT:-10}
       - WORKER_WF=${WORKER_WF:-10}
+      # Human-in-the-loop approval settings
+      - APPROVAL_ENABLED=${APPROVAL_ENABLED:-false}
+      - APPROVAL_COMPLEXITY_THRESHOLD=${APPROVAL_COMPLEXITY_THRESHOLD:-0.5}
+      - APPROVAL_DANGEROUS_TOOLS=${APPROVAL_DANGEROUS_TOOLS:-file_system,code_execution}
+      - APPROVAL_TIMEOUT_SECONDS=${APPROVAL_TIMEOUT_SECONDS:-1800}
     depends_on:
       temporal:
         condition: service_started

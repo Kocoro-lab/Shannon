@@ -46,7 +46,12 @@ func CheckApprovalPolicyWith(policy activities.ApprovalPolicy, input TaskInput, 
 func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string) (*activities.HumanApprovalResult, error) {
     logger := workflow.GetLogger(ctx)
 
-	// Request approval via activity
+	// Request approval via activity with timeout
+	activityOptions := workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Minute, // Activity timeout for request
+	}
+	ctx = workflow.WithActivityOptions(ctx, activityOptions)
+
 	var approval activities.HumanApprovalResult
 	err := workflow.ExecuteActivity(ctx, constants.RequestApprovalActivity, activities.HumanApprovalInput{
 		SessionID:      input.SessionID,
@@ -78,7 +83,7 @@ func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string
 	ch := workflow.GetSignalChannel(ctx, sigName)
 	sel := workflow.NewSelector(ctx)
 
-	timeout := 30 * time.Minute
+	timeout := 60 * time.Minute // Default to 1 hour
 	if input.ApprovalTimeout > 0 {
 		timeout = time.Duration(input.ApprovalTimeout) * time.Second
 	}

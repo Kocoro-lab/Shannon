@@ -82,7 +82,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 	// 1.5) Budget preflight (estimate based on plan)
 	if input.UserID != "" { // Only check when we have a user scope
-		est := EstimateTokens(decomp)
+		est := EstimateTokensWithConfig(decomp, &cfg)
 		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
 			if !res.CanProceed {
 				return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil

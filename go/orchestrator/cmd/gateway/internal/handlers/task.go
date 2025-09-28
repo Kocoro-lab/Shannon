@@ -247,7 +247,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
         sid sql.NullString
         mode sql.NullString
     )
-    row := h.db.QueryRowxContext(ctx, `SELECT query, COALESCE(session_id::text,''), COALESCE(mode,'') FROM tasks WHERE workflow_id = $1 LIMIT 1`, taskID)
+    row := h.db.QueryRowxContext(ctx, `SELECT query, COALESCE(session_id,''), COALESCE(mode,'') FROM task_executions WHERE workflow_id = $1 LIMIT 1`, taskID)
     _ = row.Scan(&q, &sid, &mode)
     statusResp.Query = q.String
     statusResp.SessionID = sid.String

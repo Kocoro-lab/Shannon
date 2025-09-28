@@ -2,6 +2,8 @@ package activities
 
 import (
 	"context"
+
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 )
 
 // FetchAgentMemoryInput requests agent-scoped items within a session
@@ -17,29 +19,31 @@ type FetchAgentMemoryResult struct {
 	Items []map[string]interface{} `json:"items"`
 }
 
-// FetchAgentMemory filters existing session memory by agent_id.
-// This minimal shim builds on FetchSessionMemory without changing the vector DB API.
+// FetchAgentMemory retrieves agent-specific memory by filtering in Qdrant.
+// This now uses a dedicated vectordb method that filters by both session_id and agent_id.
 func FetchAgentMemory(ctx context.Context, in FetchAgentMemoryInput) (FetchAgentMemoryResult, error) {
 	if in.SessionID == "" || in.AgentID == "" {
 		return FetchAgentMemoryResult{Items: nil}, nil
 	}
-	// Reuse existing session memory retrieval
-	sm, err := FetchSessionMemory(ctx, FetchSessionMemoryInput{SessionID: in.SessionID, TenantID: in.TenantID, TopK: in.TopK})
+
+	// Get vectordb client
+	vdb := vectordb.Get()
+	if vdb == nil {
+		return FetchAgentMemoryResult{Items: nil}, nil
+	}
+
+	// Use dedicated agent context method that filters in Qdrant
+	items, err := vdb.GetAgentContext(ctx, in.SessionID, in.AgentID, in.TenantID, in.TopK)
 	if err != nil {
+		// Graceful degradation
 		return FetchAgentMemoryResult{Items: nil}, nil
 	}
-	if len(sm.Items) == 0 {
-		return FetchAgentMemoryResult{Items: nil}, nil
-	}
-	out := make([]map[string]interface{}, 0, len(sm.Items))
-	for _, it := range sm.Items {
-		if it == nil {
-			continue
-		}
-		if v, ok := it["agent_id"]; ok {
-			if sid, ok2 := v.(string); ok2 && sid == in.AgentID {
-				out = append(out, it)
-			}
+
+	// Convert to map format
+	out := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		if item.Payload != nil {
+			out = append(out, item.Payload)
 		}
 	}
 	return FetchAgentMemoryResult{Items: out}, nil
@@ -49,6 +53,7 @@ func FetchAgentMemory(ctx context.Context, in FetchAgentMemoryInput) (FetchAgent
 type RecordAgentMemoryInput struct {
 	SessionID string                 `json:"session_id"`
 	UserID    string                 `json:"user_id"`
+	TenantID  string                 `json:"tenant_id"`
 	AgentID   string                 `json:"agent_id"`
 	Role      string                 `json:"role"`
 	Query     string                 `json:"query"`
@@ -73,6 +78,7 @@ func RecordAgentMemory(ctx context.Context, in RecordAgentMemoryInput) (RecordQu
 	return recordQueryCore(ctx, RecordQueryInput{
 		SessionID: in.SessionID,
 		UserID:    in.UserID,
+		TenantID:  in.TenantID,
 		Query:     in.Query,
 		Answer:    in.Answer,
 		Model:     in.Model,

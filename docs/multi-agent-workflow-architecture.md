@@ -199,6 +199,22 @@ All workflows respect token budgets through:
 4. Add routing logic in `orchestrator_router.go`
 5. Create wrapper in `cognitive_wrappers.go` for test compatibility
 
+## Reflection Gating
+
+### Overview
+Shannon implements intelligent reflection gating to optimize quality while controlling costs. Reflection is automatically triggered based on task complexity.
+
+### Configuration
+- **Threshold**: Tasks with complexity > `ComplexityMediumThreshold` trigger reflection
+- **Default**: 0.5 (configurable in `config/shannon.yaml`)
+- **Implementation**: `shouldReflect()` function in strategy helpers
+
+### When Reflection Occurs
+- Complex queries requiring deep reasoning
+- Multi-step tasks with dependencies
+- Tasks with ambiguous requirements
+- Configurable per workflow strategy
+
 ## Monitoring and Observability
 
 ### Metrics
@@ -219,6 +235,43 @@ All workflows respect token budgets through:
 - Activity timings
 - Retry tracking
 - Error investigation
+
+## Human-in-the-Loop Approval
+
+### Overview
+Shannon includes a human approval workflow for high-risk operations that require oversight before execution.
+
+### Trigger Conditions
+- **Complexity Threshold**: Tasks with complexity score ≥ 0.7 (configurable via `APPROVAL_COMPLEXITY_THRESHOLD`)
+- **Dangerous Tools**: Tasks using sensitive tools like `file_system` or `code_execution` (configurable via `APPROVAL_DANGEROUS_TOOLS`)
+
+### Configuration
+```bash
+# .env configuration
+APPROVAL_ENABLED=true                                  # Enable approval workflow
+APPROVAL_COMPLEXITY_THRESHOLD=0.7                      # Complexity threshold (0.0-1.0)
+APPROVAL_DANGEROUS_TOOLS=file_system,code_execution   # Comma-separated list of tools
+APPROVAL_TIMEOUT_SECONDS=3600                         # Timeout in seconds (default: 1 hour)
+```
+
+### Approval Process
+1. When triggered, workflow pauses and generates an approval ID
+2. System waits for human decision via HTTP endpoint
+3. Approval/denial can include feedback message
+4. Workflow continues or terminates based on decision
+
+### API Endpoint
+```bash
+# Approve or deny a pending task
+curl -X POST "http://localhost:8081/approvals/decision" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "approval_id": "<approval-id>",
+    "workflow_id": "<workflow-id>",
+    "approved": true,
+    "feedback": "Approved for production deployment"
+  }'
+```
 
 ## Performance Considerations
 

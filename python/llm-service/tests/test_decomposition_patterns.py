@@ -1,12 +1,8 @@
-#!/usr/bin/env python3
 """Test the improved heuristic decomposition patterns."""
 
-import sys
-import os
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from llm_service.proto import agent_pb2
+import pytest
+import unittest.mock as mock
+from llm_service.grpc_gen import agent_pb2
 
 
 # Mock the missing modules
@@ -15,67 +11,125 @@ class MockRequest:
         self.state = {}
 
 
-import unittest.mock as mock
+def test_calculation_simple():
+    """Test single-step calculation decomposition."""
+    with mock.patch("llm_service.api.agent.APIRouter"), \
+         mock.patch("llm_service.api.agent.HTTPException"), \
+         mock.patch("llm_service.api.agent.Request"):
+        from llm_service.api.agent import DecomposeTask
 
-with mock.patch("llm_service.api.agent.APIRouter"):
-    with mock.patch("llm_service.api.agent.HTTPException"):
-        with mock.patch("llm_service.api.agent.Request"):
-            from llm_service.api.agent import DecomposeTask
-
-
-def test_decomposition(query: str, expected_type: str):
-    """Test decomposition for a given query."""
-    req = agent_pb2.DecomposeTaskRequest(
-        query=query, user_id="test-user", session_id="test-session"
-    )
-
-    # Mock context
-    context = MockRequest()
-
-    try:
+        req = agent_pb2.DecomposeTaskRequest(
+            query="Calculate 100 divided by 4",
+            user_id="test-user",
+            session_id="test-session"
+        )
+        context = MockRequest()
         result = DecomposeTask(req, context)
-        print(f"\n{expected_type} Query: '{query}'")
-        print(f"  Subtasks: {len(result.subtasks)}")
-        for i, st in enumerate(result.subtasks, 1):
-            tools = (
-                f" [Tools: {', '.join(st.suggested_tools)}]"
-                if st.suggested_tools
-                else ""
-            )
-            print(f"  {i}. {st.description}{tools}")
-        return result
-    except Exception as e:
-        print(f"Error: {e}")
-        return None
+
+        assert result is not None
+        assert len(result.subtasks) >= 1
+        # Should suggest calculator tool for simple calculation
+        assert any("calculator" in st.suggested_tools for st in result.subtasks)
 
 
-# Test different query types
-print("=" * 60)
-print("Testing Improved Heuristic Decomposition Patterns")
-print("=" * 60)
+def test_calculation_multi_step():
+    """Test multi-step calculation decomposition."""
+    with mock.patch("llm_service.api.agent.APIRouter"), \
+         mock.patch("llm_service.api.agent.HTTPException"), \
+         mock.patch("llm_service.api.agent.Request"):
+        from llm_service.api.agent import DecomposeTask
 
-# Single-step calculation
-test_decomposition("Calculate 100 divided by 4", "Calculation")
+        req = agent_pb2.DecomposeTaskRequest(
+            query="Calculate 500 + 300 - 200 and then multiply by 2",
+            user_id="test-user",
+            session_id="test-session"
+        )
+        context = MockRequest()
+        result = DecomposeTask(req, context)
 
-# Multi-step calculation
-test_decomposition(
-    "Calculate 500 + 300 - 200 and then multiply by 2", "Multi-step Calculation"
-)
+        assert result is not None
+        assert len(result.subtasks) >= 1
+        # Complex calculation might be broken down
+        assert any("calculator" in st.suggested_tools for st in result.subtasks)
 
-# Research task
-test_decomposition("Research the history of artificial intelligence", "Research")
 
-# Code generation
-test_decomposition("Write a Python function to sort a list", "Code Generation")
+def test_research_task():
+    """Test research task decomposition."""
+    with mock.patch("llm_service.api.agent.APIRouter"), \
+         mock.patch("llm_service.api.agent.HTTPException"), \
+         mock.patch("llm_service.api.agent.Request"):
+        from llm_service.api.agent import DecomposeTask
 
-# Analysis task
-test_decomposition("Analyze the performance of our database", "Analysis")
+        req = agent_pb2.DecomposeTaskRequest(
+            query="Research the history of artificial intelligence",
+            user_id="test-user",
+            session_id="test-session"
+        )
+        context = MockRequest()
+        result = DecomposeTask(req, context)
 
-# Summary task
-test_decomposition("Summarize the key points of machine learning", "Summary")
+        assert result is not None
+        assert len(result.subtasks) >= 1
+        # Research tasks should suggest web search
+        assert any("web_search" in st.suggested_tools for st in result.subtasks)
 
-# Comparison task
-test_decomposition("Compare Python and JavaScript for web development", "Comparison")
 
-# Generic question
-test_decomposition("What is the weather like today?", "Generic Question")
+def test_code_generation():
+    """Test code generation task decomposition."""
+    with mock.patch("llm_service.api.agent.APIRouter"), \
+         mock.patch("llm_service.api.agent.HTTPException"), \
+         mock.patch("llm_service.api.agent.Request"):
+        from llm_service.api.agent import DecomposeTask
+
+        req = agent_pb2.DecomposeTaskRequest(
+            query="Write a Python function to sort a list",
+            user_id="test-user",
+            session_id="test-session"
+        )
+        context = MockRequest()
+        result = DecomposeTask(req, context)
+
+        assert result is not None
+        assert len(result.subtasks) >= 1
+        # Code generation might suggest python execution
+        assert any("python_executor" in st.suggested_tools for st in result.subtasks)
+
+
+def test_analysis_task():
+    """Test analysis task decomposition."""
+    with mock.patch("llm_service.api.agent.APIRouter"), \
+         mock.patch("llm_service.api.agent.HTTPException"), \
+         mock.patch("llm_service.api.agent.Request"):
+        from llm_service.api.agent import DecomposeTask
+
+        req = agent_pb2.DecomposeTaskRequest(
+            query="Analyze the performance of our database",
+            user_id="test-user",
+            session_id="test-session"
+        )
+        context = MockRequest()
+        result = DecomposeTask(req, context)
+
+        assert result is not None
+        assert len(result.subtasks) >= 1
+
+
+def test_comparison_task():
+    """Test comparison task decomposition."""
+    with mock.patch("llm_service.api.agent.APIRouter"), \
+         mock.patch("llm_service.api.agent.HTTPException"), \
+         mock.patch("llm_service.api.agent.Request"):
+        from llm_service.api.agent import DecomposeTask
+
+        req = agent_pb2.DecomposeTaskRequest(
+            query="Compare Python and JavaScript for web development",
+            user_id="test-user",
+            session_id="test-session"
+        )
+        context = MockRequest()
+        result = DecomposeTask(req, context)
+
+        assert result is not None
+        assert len(result.subtasks) >= 1
+        # Comparison might involve research
+        assert any("web_search" in st.suggested_tools for st in result.subtasks)

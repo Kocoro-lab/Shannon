@@ -1,81 +1,105 @@
 # Shannon Platform - Model Configuration
 # GitHub: https://github.com/Kocoro-lab/Shannon
-# Updated: September 2025 with latest AI models
+# Updated: September 2025 with latest AI models and pricing
+#
+# NOTE: Model tier selection is driven by:
+#   1. Task complexity score (computed during decomposition)
+#   2. Explicit tier requests from callers
+#   3. Budget constraints and token limits
+#
+# The percentages below (50/40/10) are target distributions for reference,
+# NOT enforced quotas. Actual usage depends on workload characteristics.
+# Monitor real distribution via Prometheus metrics: llm_requests_total{tier="..."}
 
 model_tiers:
   small:
-    allocation: 50  # 50% of requests use small models
+    # Target allocation: 50% (not enforced - actual usage depends on complexity)
+    # Fast, cost-optimized models for basic tasks without reasoning capabilities
     providers:
       - provider: openai
-        model: gpt-4o-mini  # Latest efficient model
+        model: gpt-4o-mini
         priority: 1
+      - provider: google
+        model: gemini-2.0-flash-lite
+        priority: 2
       - provider: anthropic
         model: claude-3-5-haiku-20241022
-        priority: 2
-      - provider: google
-        model: gemini-1.5-flash-002
         priority: 3
-      - provider: google
-        model: gemma-3-7b  # New open-source model
-        priority: 4
       - provider: deepseek
         model: deepseek-chat
-        priority: 5
-      - provider: qwen
-        model: qwen2.5-7b
-        priority: 6
-    
-  medium:
-    allocation: 40  # 40% of requests use medium models
-    providers:
-      - provider: openai
-        model: gpt-4o  # Latest GPT-4 optimized model
-        priority: 1
-      - provider: anthropic
-        model: claude-3-5-sonnet-20241022  # Latest Sonnet
-        priority: 2
-      - provider: google
-        model: gemini-1.5-pro-002
-        priority: 3
-      - provider: meta
-        model: llama-4-scout  # New multimodal model
         priority: 4
-      - provider: deepseek
-        model: deepseek-v3
-        priority: 5
       - provider: qwen
-        model: qwen2.5-32b
+        model: qwen-flash
+        priority: 5
+      - provider: mistral
+        model: ministral-8b-2410
         priority: 6
       - provider: xai
-        model: grok-3  # New reasoning model
+        model: grok-4-fast-non-reasoning
         priority: 7
+      - provider: meta
+        model: llama-3.2-3b
+        priority: 8
     
-  large:
-    allocation: 10  # 10% of requests use large models
+  medium:
+    # Target allocation: 40% (not enforced - actual usage depends on complexity)
+    # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: openai
-        model: gpt-5  # Latest flagship model
+        model: gpt-5
         priority: 1
       - provider: anthropic
-        model: claude-4-opus  # Latest Opus model
+        model: claude-sonnet-4-20250514
         priority: 2
       - provider: google
-        model: gemini-2.5-pro  # Enhanced reasoning model
+        model: gemini-2.5-flash
         priority: 3
-      - provider: meta
-        model: llama-4-maverick  # Large multimodal model
+      - provider: xai
+        model: grok-4
         priority: 4
-      - provider: deepseek
-        model: deepseek-r1  # Latest reasoning model
+      - provider: meta
+        model: llama-4-scout
         priority: 5
-      - provider: qwen
-        model: qwen2.5-vl-32b  # Multimodal reasoning
+      - provider: deepseek
+        model: deepseek-v3.1-terminus
         priority: 6
       - provider: qwen
-        model: qwq-32b  # Specialized reasoning tasks
+        model: qwen-plus-latest
         priority: 7
-      - provider: minimax
-        model: minimax-m1  # Hybrid attention model
+      - provider: mistral
+        model: mistral-medium-2508
+        priority: 8
+      - provider: cohere
+        model: command-r-plus-08-2024
+        priority: 9
+    
+  large:
+    # Target allocation: 10% (not enforced - actual usage depends on complexity)
+    # Heavy thinking/reasoning models for complex tasks
+    providers:
+      - provider: openai
+        model: o3
+        priority: 1
+      - provider: anthropic
+        model: claude-opus-4-1-20250805
+        priority: 2
+      - provider: google
+        model: gemini-2.5-pro
+        priority: 3
+      - provider: deepseek
+        model: deepseek-r1
+        priority: 4
+      - provider: qwen
+        model: qwen3-max-preview
+        priority: 5
+      - provider: xai
+        model: grok-4-fast-reasoning
+        priority: 6
+      - provider: openai
+        model: o1
+        priority: 7
+      - provider: meta
+        model: llama-3.1-405b
         priority: 8
 
 # Model selection strategy
@@ -83,13 +107,13 @@ selection_strategy:
   mode: priority  # priority, round-robin, least-cost, random
   fallback_enabled: true
   max_retries: 3
-  timeout_seconds: 30
+  timeout_seconds: 60
 
 # Cost controls
 cost_controls:
-  max_cost_per_request: 0.10
-  max_tokens_per_request: 4000
-  daily_budget_usd: 100.0
+  max_cost_per_request: 1.00
+  max_tokens_per_request: 8000
+  daily_budget_usd: 500.0
   alert_threshold_percent: 80
 
 # Prompt caching configuration
@@ -97,7 +121,7 @@ prompt_cache:
   enabled: true
   similarity_threshold: 0.95
   ttl_seconds: 3600
-  max_cache_size_mb: 1024
+  max_cache_size_mb: 2048
 
 # Provider-specific settings
 provider_settings:
@@ -128,7 +152,7 @@ provider_settings:
     
   bedrock:
     region: us-east-1
-    timeout: 60
+    timeout: 90
     max_retries: 3
     
   ollama:
@@ -142,50 +166,236 @@ provider_settings:
     max_retries: 3
     
   meta:
-    base_url: https://api.llama-api.com/v1  # Meta's API endpoint
+    base_url: https://api.together.xyz/v1  # Together AI for Llama models
     timeout: 90
     max_retries: 3
     
-  minimax:
-    base_url: https://api.minimax.chat/v1
+  mistral:
+    base_url: https://api.mistral.ai/v1
+    timeout: 60
+    max_retries: 3
+
+  cohere:
+    base_url: https://api.cohere.ai/v1
     timeout: 60
     max_retries: 3
 
 # Centralized model pricing (USD per 1K tokens)
+# Updated: September 2025 with latest pricing
 # Used across Go/Rust/Python for consistent cost calculation.
-# Schema:
-# pricing:
-#   defaults:
-#     combined_per_1k: 0.002  # fallback when model unknown
-#   models:
-#     <provider>:
-#       <model_id>:
-#         input_per_1k: 0.0005
-#         output_per_1k: 0.0015
-#         # optional combined_per_1k: 0.0020  # if set, used when only total tokens are known
 pricing:
   defaults:
-    combined_per_1k: 0.002
+    combined_per_1k: 0.005
   models:
     openai:
       gpt-3.5-turbo:
         input_per_1k: 0.0005
-        output_per_1k: 0.0015
+        output_per_1k: 0.002
+      gpt-3.5-turbo-16k:
+        input_per_1k: 0.0015
+        output_per_1k: 0.002
       gpt-4-turbo:
-        input_per_1k: 0.0100
-        output_per_1k: 0.0300
+        input_per_1k: 0.01
+        output_per_1k: 0.03
+      gpt-4o-mini:
+        input_per_1k: 0.00015
+        output_per_1k: 0.0006
+      gpt-5:
+        input_per_1k: 0.00125
+        output_per_1k: 0.0100
+      gpt-5-mini:
+        input_per_1k: 0.00025
+        output_per_1k: 0.0020
+      o3:
+        input_per_1k: 0.0020
+        output_per_1k: 0.0080
+      o3-mini:
+        input_per_1k: 0.0011
+        output_per_1k: 0.0044
+      o1:
+        input_per_1k: 0.0150
+        output_per_1k: 0.0600
+      o1-mini:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0120
+      o1-pro:
+        input_per_1k: 0.1500
+        output_per_1k: 0.6000
+        
     anthropic:
+      claude-3-haiku:
+        input_per_1k: 0.0002
+        output_per_1k: 0.002
       claude-3-sonnet:
+        input_per_1k: 0.003
+        output_per_1k: 0.02
+      claude-3-5-haiku-20241022:
+        input_per_1k: 0.0008
+        output_per_1k: 0.0040
+      claude-sonnet-4-20250514:
         input_per_1k: 0.0030
         output_per_1k: 0.0150
-      claude-3-haiku:
-        input_per_1k: 0.00025
-        output_per_1k: 0.00125
+      claude-opus-4-1-20250805:
+        input_per_1k: 0.0150
+        output_per_1k: 0.0750
+      claude-3-5-sonnet-20241022:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0150
+        
+    google:
+      gemini-2.0-flash-lite:
+        input_per_1k: 0.000075
+        output_per_1k: 0.00030
+      gemini-2.5-flash:
+        input_per_1k: 0.00030
+        output_per_1k: 0.0025
+      gemini-2.5-pro:
+        input_per_1k: 0.00125
+        output_per_1k: 0.0100
+      gemini-2.0-flash:
+        input_per_1k: 0.00010
+        output_per_1k: 0.00040
+        
+    xai:
+      grok-4-fast-non-reasoning:
+        input_per_1k: 0.0002
+        output_per_1k: 0.0005
+      grok-4:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0150
+      grok-4-fast-reasoning:
+        input_per_1k: 0.0002
+        output_per_1k: 0.0010
+      grok-beta:
+        input_per_1k: 0.0380
+        output_per_1k: 0.1140
+        
+    meta:
+      llama-3.2-3b:
+        input_per_1k: 0.00006
+        output_per_1k: 0.00006
+      llama-4-scout:
+        input_per_1k: 0.00018
+        output_per_1k: 0.00059
+      llama-3.1-405b:
+        input_per_1k: 0.0035
+        output_per_1k: 0.0035
+      llama-3.3-70b:
+        input_per_1k: 0.00054
+        output_per_1k: 0.00088
+        
     deepseek:
       deepseek-chat:
-        input_per_1k: 0.0001
-        output_per_1k: 0.0002
+        input_per_1k: 0.00027
+        output_per_1k: 0.0011
+      deepseek-v3.1-terminus:
+        input_per_1k: 0.00027
+        output_per_1k: 0.0011
+      deepseek-r1:
+        input_per_1k: 0.00055
+        output_per_1k: 0.00219
+        
     qwen:
-      qwen-plus:
+      qwen-flash:
+        input_per_1k: 0.00005
+        output_per_1k: 0.0004
+      qwen-plus-latest:
+        input_per_1k: 0.0004
+        output_per_1k: 0.0012
+      qwen3-max-preview:
+        input_per_1k: 0.0012
+        output_per_1k: 0.0060
+      qwq-32b-preview:
         input_per_1k: 0.0008
+        output_per_1k: 0.0024
+        
+    mistral:
+      ministral-8b-2410:
+        input_per_1k: 0.0001
+        output_per_1k: 0.0001
+      mistral-medium-2508:
+        input_per_1k: 0.0004
         output_per_1k: 0.0020
+      mistral-large-2411:
+        input_per_1k: 0.0020
+        output_per_1k: 0.0060
+      codestral-2501:
+        input_per_1k: 0.0003
+        output_per_1k: 0.0009
+        
+    cohere:
+      command-r-plus-08-2024:
+        input_per_1k: 0.0025
+        output_per_1k: 0.0100
+      command-r-08-2024:
+        input_per_1k: 0.00015
+        output_per_1k: 0.0006
+
+# Feature flags for advanced capabilities
+feature_flags:
+  enable_thinking_mode: true
+  enable_computer_use: true
+  enable_multimodal: true
+  enable_function_calling: true
+  enable_batch_processing: true
+  enable_prompt_caching: true
+
+# Model capabilities matrix
+model_capabilities:
+  multimodal_models:
+    - gpt-4o-mini
+    - gpt-5
+    - claude-sonnet-4-20250514
+    - gemini-2.5-flash
+    - gemini-2.0-flash
+    
+  thinking_models:
+    - o3
+    - o3-mini
+    - o1
+    - o1-mini
+    - claude-opus-4-1-20250805
+    - gemini-2.5-pro
+    - deepseek-r1
+    - qwen3-max-preview
+    
+  coding_specialists:
+    - codestral-2501
+    - deepseek-v3.1-terminus
+    - claude-sonnet-4-20250514
+    - o1-mini
+    - qwen-plus-latest
+    
+  long_context_models:
+    - llama-4-scout  # 10M tokens
+    - gemini-2.5-flash  # 1M tokens
+    - qwen3-max-preview  # 262K tokens
+    - claude-opus-4-1-20250805  # 200K tokens
+
+# Rate limiting configuration
+rate_limits:
+  default_rpm: 60
+  default_tpm: 100000
+  tier_overrides:
+    small:
+      rpm: 120
+      tpm: 200000
+    medium:
+      rpm: 60
+      tpm: 100000
+    large:
+      rpm: 30
+      tpm: 50000
+
+# Monitoring and alerting
+monitoring:
+  enabled: true
+  metrics_export_interval: 30
+  cost_tracking: true
+  performance_tracking: true
+  error_tracking: true
+  
+alerts:
+  cost_threshold_usd: 400.0
+  error_rate_threshold: 0.05
+  latency_threshold_ms: 30000

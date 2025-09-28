@@ -130,9 +130,32 @@ impl ToolExecutor {
                     expression
                 );
 
+                // Convert Python-style ** to meval's ^ for exponentiation
+                let converted_expression = expression.replace("**", "^");
+                info!(
+                    "Converted expression for meval: {}",
+                    converted_expression
+                );
+
                 // Use meval for mathematical expression evaluation
-                match meval::eval_str(expression) {
+                match meval::eval_str(&converted_expression) {
                     Ok(result) => {
+                        // Check for infinity or NaN which indicate math errors
+                        if result.is_infinite() || result.is_nan() {
+                            let error_msg = if result.is_infinite() {
+                                "Math error: division by zero"
+                            } else {
+                                "Math error: invalid operation"
+                            };
+                            warn!("{}", error_msg);
+                            return Ok(ToolResult {
+                                tool: tool_call.tool_name.clone(),
+                                success: false,
+                                output: serde_json::Value::Null,
+                                error: Some(error_msg.to_string()),
+                            });
+                        }
+
                         info!("Calculator result: {}", result);
                         return Ok(ToolResult {
                             tool: tool_call.tool_name.clone(),

@@ -200,7 +200,7 @@ docker compose logs -f llm-service
 
 # Check database state
 docker compose exec postgres psql -U shannon -d shannon \
-  -c "SELECT workflow_id, status FROM tasks ORDER BY created_at DESC LIMIT 5;"
+  -c "SELECT workflow_id, status FROM task_executions ORDER BY created_at DESC LIMIT 5;"
 
 # Check Redis sessions
 docker compose exec redis redis-cli KEYS "session:*"

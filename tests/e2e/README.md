@@ -2,243 +2,194 @@
 
 ## Overview
 
-This directory contains end-to-end tests for the Shannon platform, providing comprehensive testing of workflows, tool execution, and multi-agent orchestration.
+This directory contains comprehensive end-to-end tests for the Shannon platform, covering workflows, tool execution, multi-agent orchestration, and memory systems.
 
-## Test Scripts
+## Test Organization
 
-### Core Test Scripts
+Tests are numbered by category for clear organization:
 
-1. **calculator_test.sh** - Tests calculator tool functionality
-   - Simple arithmetic (handled by LLM directly)
-   - Complex calculations (triggers calculator tool)
-   - Direct calculator tool API execution
-   - Tool registration verification
+### Core Utility Scripts
+- **`run.sh`** - Master test runner that executes all E2E tests in sequence
+- **`submit_and_get_response.sh`** - Helper script for task submission and response retrieval
+- **`verify_metrics.sh`** - Validates metrics increment correctly after workflow execution
 
-2. **python_execution_test.sh** - Tests Python code execution via WASI sandbox
-   - Direct WASM module compilation and execution
-   - Base64-encoded WASM payload testing
-   - Workflow integration with code_executor
-   - Fibonacci WASM module execution
+### Feature Tests (01-09)
+- **`01_basic_calculator_test.sh`** - Calculator tool functionality
+  - Simple arithmetic (handled by LLM directly)
+  - Complex calculations (triggers calculator tool)
+  - Direct calculator tool API execution
 
-3. **python_interpreter_test.sh** - Tests Python interpreter integration
-   - Checks for Python WASM interpreter (~20MB)
-   - Tests current architecture limitations
-   - Documents requirements for proper Python support
+- **`02_python_execution_test.sh`** - Python code execution via WASI sandbox
+  - Direct WASM module compilation and execution
+  - Base64-encoded WASM payload testing
+  - Workflow integration with code_executor
 
-4. **supervisor_workflow_test.sh** - Tests complex multi-agent orchestration
-   - Subtask decomposition
-   - Agent coordination
-   - Complex workflow execution
+- **`03_python_interpreter_test.sh`** - Python interpreter integration
+  - Checks for Python WASM interpreter (~20MB)
+  - Tests current architecture limitations
 
-5. **cognitive_patterns_test.sh** - Tests cognitive reasoning patterns
-   - Chain of Thought
-   - Tree of Thoughts
-   - Graph of Thoughts
-   - Reflexion patterns
+- **`04_web_search_test.sh`** - Web search and synthesis capabilities
+  - Search query execution
+  - Result synthesis
 
-6. **p2p_coordination_test.sh** - Tests P2P agent coordination
-   - Automatic dependency detection from natural language
-   - Sequential task coordination (Task B waits for Task A)
-   - Force P2P mode with `context: {"force_p2p": true}`
-   - Complex pipeline with multiple dependencies
-   - Verifies SupervisorWorkflow routing for dependent tasks
+- **`05_cognitive_patterns_test.sh`** - Cognitive reasoning patterns
+  - Chain of Thought
+  - Tree of Thoughts
+  - Graph of Thoughts
+  - Reflexion patterns
 
-### Helper Scripts
+### Workflow Tests (10-19)
+- **`10_supervisor_workflow_test.sh`** - Complex multi-agent orchestration
+  - Subtask decomposition
+  - Agent coordination
+  - Complex workflow execution
+  - Supervisor memory learning (merged from enhanced tests)
 
-- **submit_and_get_response.sh** - Helper for task submission and retrieval
-- **run.sh** - Master script to run all E2E tests
+### P2P Coordination Tests (20-29)
+- **`20_p2p_coordination_test.sh`** - Comprehensive P2P agent messaging
+  - Sequential dependency detection
+  - Force P2P mode with `context: {"force_p2p": true}`
+  - Complex pipeline dependencies
+  - Mailbox communication
+  - Workspace data exchange via Redis
+  - Parallel vs sequential detection
+
+- **`21_p2p_memory_test.sh`** - P2P with supervisor memory integration
+  - Memory retrieval for identical tasks
+  - Pattern recognition for similar tasks
+  - Combined P2P and memory functionality
+
+### Memory Tests (30-39)
+- **`30_memory_system_test.sh`** - Memory persistence and retrieval
+  - Session memory storage
+  - Hierarchical memory retrieval
+  - Vector similarity search in Qdrant
+
+- **`31_session_continuity_test.sh`** - Session context continuity
+  - Cross-query context retention
+  - Token budget tracking
+  - Session compression
 
 ## Running Tests
 
-### Prerequisites
-```bash
-# Start all services
-make dev
-
-# Verify services are healthy
-make smoke
-
-# Install required tools
-brew install wabt  # For wat2wasm
-```
-
-### Run Individual Tests
-```bash
-./tests/e2e/calculator_test.sh
-./tests/e2e/python_execution_test.sh
-./tests/e2e/supervisor_workflow_test.sh
-./tests/e2e/cognitive_patterns_test.sh
-./tests/e2e/p2p_coordination_test.sh
-```
-
 ### Run All Tests
 ```bash
-./tests/e2e/run.sh
+./run.sh
 ```
 
-## Workflow Types and Examples
-
-### 1. SimpleTaskWorkflow
-Used for straightforward queries with complexity scores < 0.3.
-
+### Run Specific Category
 ```bash
-# Simple calculations
-./scripts/submit_task.sh "What is 2+2?"
+# Feature tests only (01-09)
+./run.sh --feature
 
-# Basic definitions
-./scripts/submit_task.sh "Define recursion"
+# Workflow tests only (10-19)
+./run.sh --workflow
 
-# Direct calculations
-./scripts/submit_task.sh "Calculate 37 * 89 + 156"
+# P2P tests only (20-29)
+./run.sh --p2p
+
+# Memory tests only (30-39)
+./run.sh --memory
 ```
 
-### 2. SupervisorWorkflow
-Used for complex multi-agent orchestration with subtask decomposition.
-
+### Run Individual Test
 ```bash
-# System design
-./scripts/submit_task.sh "Design a distributed system with caching, load balancing, and fault tolerance"
+# Run specific test directly
+./01_basic_calculator_test.sh
 
-# Multi-step analysis
-./scripts/submit_task.sh "Perform a comprehensive analysis: \
-1) Research the top 3 programming languages in 2024. \
-2) Calculate growth rates over 5 years. \
-3) Create a feature comparison matrix. \
-4) Generate 2025 predictions. \
-5) Synthesize findings into recommendations."
+# With custom session ID
+SESSION_ID="test-$(date +%s)" ./10_supervisor_workflow_test.sh
 ```
 
-### 3. DAG Strategy Workflow
-Selected for tasks with explicit dependency graphs.
-
+### Verify Metrics
 ```bash
-# Sequential dependencies
-./scripts/submit_task.sh "First analyze data trends, then predict outcomes, finally generate recommendations"
-
-# Financial calculations with dependencies
-./scripts/submit_task.sh "Execute dependent calculations: \
-A: Calculate mortgage payment for $300K at 4.5% for 30 years. \
-B: Determine total interest from A. \
-C: Calculate investment break-even using B at 7% return."
+# Run test and verify metrics increments
+./verify_metrics.sh
 ```
 
-### 4. Research Workflow
-Optimized for research and information gathering.
+## Test Database
 
+All tests now use the `task_executions` table as the primary data store:
+- Tasks are persisted with full metrics
+- Session linkage supports non-UUID session IDs
+- Supervisor memory queries join with `task_executions`
+
+## Prerequisites
+
+1. Services must be running:
 ```bash
-./scripts/submit_task.sh "Research quantum computing: current state, major players, recent breakthroughs, and 5-year outlook"
+make dev
 ```
 
-### 5. React Workflow
-For tasks requiring iterative reasoning and action.
-
+2. Environment variables configured:
 ```bash
-./scripts/submit_task.sh "Debug why a web server returns 500 errors: check logs, analyze patterns, identify root cause"
+make setup-env
 ```
 
-## Cognitive Pattern Examples
-
-### Chain of Thought (Sequential Reasoning)
+3. Python WASI interpreter (for Python tests):
 ```bash
-./scripts/submit_task.sh "Solve step by step: Store offers 20% discount. \
-Buy 3 shirts at $30 each and 2 pants at $50 each. \
-Apply additional 10% loyalty discount. \
-Calculate final payment with 8% sales tax."
+./scripts/setup_python_wasi.sh
 ```
 
-### Tree of Thoughts (Exploration)
+## Common Test Patterns
+
+### Submit Task and Wait
 ```bash
-./scripts/submit_task.sh "Explore strategies to transport 100 people across a river. \
-You have: 1 boat (capacity: 10), 1 raft (capacity: 5), 1 bridge (under repair). \
-Consider safety, time, and resource constraints."
+TASK_ID=$(grpcurl -plaintext -d '{
+  "metadata": {"userId": "test", "sessionId": "test-session"},
+  "query": "Your query here"
+}' localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask | jq -r .taskId)
+
+# Poll for completion
+./submit_and_get_response.sh "$TASK_ID"
 ```
 
-### Graph of Thoughts (Non-linear)
+### Force P2P Coordination
 ```bash
-./scripts/submit_task.sh "Analyze the AI ecosystem: \
-Map relationships between LLMs, training data, compute resources, and applications. \
-Show how advances in one area impact others."
+grpcurl -plaintext -d '{
+  "metadata": {"userId": "test", "sessionId": "test-session"},
+  "query": "Your query",
+  "context": {"force_p2p": "true"}
+}' localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
 ```
 
-## Architecture Insights
-
-### Tool Execution Flow
-1. Task decomposition suggests required tools
-2. Rust agent-core handles certain tools directly (calculator, code_executor)
-3. Other tools forwarded to LLM service's `/tools/execute` endpoint
-4. WASI sandbox executes WASM modules with security restrictions
-
-### Current Limitations
-- No Python-to-WASM transpilation bridge
-- `python_wasi_runner` mentioned in docs but not implemented
-- WASI sandbox cannot pass command-line arguments to interpreters
-- Python interpreter requires special handling not yet supported
-
-### Key Findings
-- **Simple math**: Intentionally handled by LLM directly, not tools
-- **WASM execution**: System correctly processes WASM but lacks Python-to-WASM bridge
-- **Code executor**: Expects standalone WASM, not interpreters needing arguments
-- **Workflow routing**: Based on DecompositionResult at `orchestrator_router.go:41-143`
-
-## Debugging Failed Tests
-
-### Check Service Health
+### Check Database
 ```bash
-# Service status
-docker compose -f deploy/compose/docker-compose.yml ps
-
-# Service logs
-docker compose -f deploy/compose/docker-compose.yml logs orchestrator
-docker compose -f deploy/compose/docker-compose.yml logs agent-core
+# Check task_executions table
+docker compose -f deploy/compose/docker-compose.yml exec postgres \
+  psql -U shannon -d shannon -c "SELECT * FROM task_executions ORDER BY created_at DESC LIMIT 5;"
 ```
 
-### Verify Workflow Execution
+## Troubleshooting
+
+### Tests Failing
+1. Check services are healthy: `docker compose ps`
+2. View logs: `docker compose logs -f [service]`
+3. Verify database: `make psql`
+
+### Slow Performance
+1. Check token budgets in Redis
+2. Monitor metrics: `curl localhost:2112/metrics`
+3. Review Temporal UI: http://localhost:8088
+
+### P2P Not Triggering
+1. Ensure query contains dependency keywords ("then", "after", "based on")
+2. Or force with: `"context": {"force_p2p": "true"}`
+3. Check orchestrator logs for routing decisions
+
+## Test Maintenance
+
+When adding new tests:
+1. Follow the numbering convention (XX_test_name.sh)
+2. Update this README with test description
+3. Ensure test uses `task_executions` table
+4. Add to appropriate section in `run.sh`
+
+## CI Integration
+
+Tests are run in CI via:
 ```bash
-# Check Temporal workflows
-docker compose exec temporal temporal workflow list --namespace default
-
-# Check specific workflow
-docker compose exec temporal temporal workflow describe \
-  --workflow-id YOUR_WORKFLOW_ID --namespace default
+make test  # Runs unit tests
+make smoke # Runs smoke tests
+make e2e   # Runs full E2E suite
 ```
-
-### Database Verification
-```bash
-# Check task status
-docker compose exec postgres psql -U shannon -d shannon \
-  -c "SELECT workflow_id, status, result FROM tasks ORDER BY created_at DESC LIMIT 5;"
-```
-
-## Test Data Patterns
-
-Tests create data with identifiable patterns for easy cleanup:
-- Workflow IDs: `task-e2e-{test}-{timestamp}`
-- User IDs: `e2e-test-user-{timestamp}`
-- Session IDs: `e2e-test-session-{timestamp}`
-
-## Future Improvements
-
-1. **Implement python_wasi_runner tool**
-   - Handle Python interpreter invocation
-   - Pass code via stdin or arguments
-   - Manage interpreter lifecycle
-
-2. **Enhanced WASI Executor**
-   - Support command-line arguments
-   - File system mounting for scripts
-   - Better interpreter integration
-
-3. **Python Transpilation**
-   - Direct Python → WASM conversion
-   - Avoid interpreter overhead
-   - Better performance for simple scripts
-
-## Contributing
-
-When adding new E2E tests:
-1. Follow naming convention: `*_test.sh`
-2. Include comprehensive validation steps
-3. Add test description to this README
-4. Use consistent output formatting (PASS/FAIL/INFO)
-5. Include cleanup for test data
-6. Add to `run.sh` for inclusion in full suite

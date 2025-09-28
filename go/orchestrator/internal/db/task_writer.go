@@ -60,70 +60,74 @@ func buildTaskMetricsPayload(task *TaskExecution) JSONB {
 
 // SaveTaskExecution saves or updates a task execution record (idempotent by workflow_id)
 func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) error {
-	if task.ID == uuid.Nil {
-		task.ID = uuid.New()
-	}
-	if task.CreatedAt.IsZero() {
-		task.CreatedAt = time.Now()
-	}
+    if task.ID == uuid.Nil {
+        task.ID = uuid.New()
+    }
+    if task.CreatedAt.IsZero() {
+        task.CreatedAt = time.Now()
+    }
 
-	metricsPayload := buildTaskMetricsPayload(task)
+    // Insert or update canonical record in task_executions
+    var userID interface{}
+    if task.UserID != nil { userID = task.UserID } else { userID = nil }
+    sessionID := task.SessionID // VARCHAR in task_executions
 
-	query := `
-		INSERT INTO tasks (
-			id, workflow_id, user_id, session_id, query, mode, status,
-			started_at, completed_at, result, error, metrics,
-			created_at
-		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-		)
-		ON CONFLICT (workflow_id) DO UPDATE SET
-			status = EXCLUDED.status,
-			completed_at = EXCLUDED.completed_at,
-			result = EXCLUDED.result,
-			error = EXCLUDED.error,
-			metrics = CASE
-				WHEN EXCLUDED.metrics IS NULL OR EXCLUDED.metrics = '{}'::jsonb THEN tasks.metrics
-				ELSE EXCLUDED.metrics
-			END
-		RETURNING id`
+    // Ensure metadata JSONB is not nil
+    var metadata JSONB
+    if task.Metadata != nil { metadata = task.Metadata } else { metadata = JSONB{} }
 
-	// Handle empty UUID strings as NULL
-	var userID, sessionID interface{}
-	if task.UserID == nil {
-		userID = nil
-	} else {
-		userID = task.UserID
-	}
-	// Convert SessionID string to UUID for database
-	if task.SessionID == "" {
-		sessionID = nil
-	} else {
-		sid, err := uuid.Parse(task.SessionID)
-		if err != nil {
-			sessionID = nil // Invalid UUID, store as NULL
-		} else {
-			sessionID = sid
-		}
-	}
+    teQuery := `
+        INSERT INTO task_executions (
+            id, workflow_id, user_id, session_id,
+            query, mode, status,
+            started_at, completed_at,
+            result, error_message,
+            total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
+            duration_ms, agents_used, tools_invoked, cache_hits,
+            complexity_score, metadata, created_at
+        ) VALUES (
+            $1, $2, $3, $4,
+            $5, $6, $7,
+            $8, $9,
+            $10, $11,
+            $12, $13, $14, $15,
+            $16, $17, $18, $19,
+            $20, $21, $22
+        )
+        ON CONFLICT (workflow_id) DO UPDATE SET
+            status = EXCLUDED.status,
+            completed_at = EXCLUDED.completed_at,
+            result = EXCLUDED.result,
+            error_message = EXCLUDED.error_message,
+            total_tokens = EXCLUDED.total_tokens,
+            prompt_tokens = EXCLUDED.prompt_tokens,
+            completion_tokens = EXCLUDED.completion_tokens,
+            total_cost_usd = EXCLUDED.total_cost_usd,
+            duration_ms = EXCLUDED.duration_ms,
+            agents_used = EXCLUDED.agents_used,
+            tools_invoked = EXCLUDED.tools_invoked,
+            cache_hits = EXCLUDED.cache_hits,
+            complexity_score = EXCLUDED.complexity_score,
+            metadata = EXCLUDED.metadata
+        RETURNING id`
 
-	err := c.db.QueryRowContext(ctx, query,
-		task.ID, task.WorkflowID, userID, sessionID,
-		task.Query, task.Mode, task.Status,
-		task.StartedAt, task.CompletedAt, task.Result, task.ErrorMessage, metricsPayload,
-		task.CreatedAt,
-	).Scan(&task.ID)
+    err := c.db.QueryRowContext(ctx, teQuery,
+        task.ID, task.WorkflowID, userID, sessionID,
+        task.Query, task.Mode, task.Status,
+        task.StartedAt, task.CompletedAt,
+        task.Result, task.ErrorMessage,
+        task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
+        task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
+        task.ComplexityScore, metadata, task.CreatedAt,
+    ).Scan(&task.ID)
+    if err != nil {
+        return fmt.Errorf("failed to save task execution: %w", err)
+    }
 
-	if err != nil {
-		return fmt.Errorf("failed to save task execution: %w", err)
-	}
-
-	c.logger.Debug("Task execution saved",
-		zap.String("workflow_id", task.WorkflowID),
-		zap.String("status", task.Status),
-	)
-
-	return nil
+    c.logger.Debug("Task execution saved (task_executions)",
+        zap.String("workflow_id", task.WorkflowID),
+        zap.String("status", task.Status))
+    return nil
 }
 
 // BatchSaveTaskExecutions saves multiple task executions in a single transaction
@@ -132,31 +136,47 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 		return nil
 	}
 
-	return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
-		stmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO tasks (
-				id, workflow_id, user_id, session_id, query, mode, status,
-				started_at, completed_at, result, error, metrics,
-				created_at
-			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-			)
-			ON CONFLICT (workflow_id) DO UPDATE SET
-				status = EXCLUDED.status,
-				completed_at = EXCLUDED.completed_at,
-				result = EXCLUDED.result,
-				error = EXCLUDED.error,
-				metrics = CASE
-					WHEN EXCLUDED.metrics IS NULL OR EXCLUDED.metrics = '{}'::jsonb THEN tasks.metrics
-					ELSE EXCLUDED.metrics
-				END
-		`)
+    return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
+        stmt, err := tx.PrepareContext(ctx, `
+            INSERT INTO task_executions (
+                id, workflow_id, user_id, session_id,
+                query, mode, status,
+                started_at, completed_at,
+                result, error_message,
+                total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
+                duration_ms, agents_used, tools_invoked, cache_hits,
+                complexity_score, metadata, created_at
+            ) VALUES (
+                $1, $2, $3, $4,
+                $5, $6, $7,
+                $8, $9,
+                $10, $11,
+                $12, $13, $14, $15,
+                $16, $17, $18, $19,
+                $20, $21, $22
+            )
+            ON CONFLICT (workflow_id) DO UPDATE SET
+                status = EXCLUDED.status,
+                completed_at = EXCLUDED.completed_at,
+                result = EXCLUDED.result,
+                error_message = EXCLUDED.error_message,
+                total_tokens = EXCLUDED.total_tokens,
+                prompt_tokens = EXCLUDED.prompt_tokens,
+                completion_tokens = EXCLUDED.completion_tokens,
+                total_cost_usd = EXCLUDED.total_cost_usd,
+                duration_ms = EXCLUDED.duration_ms,
+                agents_used = EXCLUDED.agents_used,
+                tools_invoked = EXCLUDED.tools_invoked,
+                cache_hits = EXCLUDED.cache_hits,
+                complexity_score = EXCLUDED.complexity_score,
+                metadata = EXCLUDED.metadata
+        `)
 		if err != nil {
 			return err
 		}
 		defer stmt.Close()
 
-		for _, task := range tasks {
+        for _, task := range tasks {
 			if task.ID == uuid.Nil {
 				task.ID = uuid.New()
 			}
@@ -164,68 +184,60 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				task.CreatedAt = time.Now()
 			}
 
-			// Handle empty UUID strings as NULL
-			var userID, sessionID interface{}
-			if task.UserID == nil {
-				userID = nil
-			} else {
-				userID = task.UserID
-			}
-			// Convert SessionID string to UUID for database
-			if task.SessionID == "" {
-				sessionID = nil
-			} else {
-				sid, err := uuid.Parse(task.SessionID)
-				if err != nil {
-					sessionID = nil // Invalid UUID, store as NULL
-				} else {
-					sessionID = sid
-				}
-			}
+            // Prepare args for task_executions
+            var userID interface{}
+            if task.UserID != nil { userID = task.UserID } else { userID = nil }
+            sessionID := task.SessionID
+            var metadata JSONB
+            if task.Metadata != nil { metadata = task.Metadata } else { metadata = JSONB{} }
 
-			metricsPayload := buildTaskMetricsPayload(task)
+            _, err := stmt.ExecContext(ctx,
+                task.ID, task.WorkflowID, userID, sessionID,
+                task.Query, task.Mode, task.Status,
+                task.StartedAt, task.CompletedAt,
+                task.Result, task.ErrorMessage,
+                task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
+                task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
+                task.ComplexityScore, metadata, task.CreatedAt,
+            )
+            if err != nil {
+                return fmt.Errorf("failed to insert task %s: %w", task.WorkflowID, err)
+            }
+        }
 
-			_, err := stmt.ExecContext(ctx,
-				task.ID, task.WorkflowID, userID, sessionID,
-				task.Query, task.Mode, task.Status,
-				task.StartedAt, task.CompletedAt, task.Result, task.ErrorMessage, metricsPayload,
-				task.CreatedAt,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to insert task %s: %w", task.WorkflowID, err)
-			}
-		}
-
-		return nil
-	})
+        return nil
+    })
 }
 
 // SaveAgentExecution saves an agent execution record
 func (c *Client) SaveAgentExecution(ctx context.Context, agent *AgentExecution) error {
-	if agent.ID == uuid.Nil {
-		agent.ID = uuid.New()
+	if agent.ID == "" {
+		agent.ID = uuid.New().String()
 	}
 	if agent.CreatedAt.IsZero() {
 		agent.CreatedAt = time.Now()
 	}
+	if agent.UpdatedAt.IsZero() {
+		agent.UpdatedAt = time.Now()
+	}
 
 	query := `
 		INSERT INTO agent_executions (
-			id, task_execution_id, agent_id, execution_order,
-			input, output, mode, state,
-			tokens_used, cost_usd, model_used,
-			duration_ms, memory_used_mb,
-			created_at, completed_at
+			id, workflow_id, task_id, agent_id,
+			input, output, state, error_message,
+			tokens_used, model_used,
+			duration_ms, metadata,
+			created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
 		)`
 
 	_, err := c.db.ExecContext(ctx, query,
-		agent.ID, agent.TaskExecutionID, agent.AgentID, agent.ExecutionOrder,
-		agent.Input, agent.Output, agent.Mode, agent.State,
-		agent.TokensUsed, agent.CostUSD, agent.ModelUsed,
-		agent.DurationMs, agent.MemoryUsedMB,
-		agent.CreatedAt, agent.CompletedAt,
+		agent.ID, agent.WorkflowID, agent.TaskID, agent.AgentID,
+		agent.Input, agent.Output, agent.State, agent.ErrorMessage,
+		agent.TokensUsed, agent.ModelUsed,
+		agent.DurationMs, agent.Metadata,
+		agent.CreatedAt, agent.UpdatedAt,
 	)
 
 	if err != nil {
@@ -242,39 +254,42 @@ func (c *Client) BatchSaveAgentExecutions(ctx context.Context, agents []*AgentEx
 	}
 
 	valueStrings := make([]string, 0, len(agents))
-	valueArgs := make([]interface{}, 0, len(agents)*15)
+	valueArgs := make([]interface{}, 0, len(agents)*14)
 
 	for i, agent := range agents {
-		if agent.ID == uuid.Nil {
-			agent.ID = uuid.New()
+		if agent.ID == "" {
+			agent.ID = uuid.New().String()
 		}
 		if agent.CreatedAt.IsZero() {
 			agent.CreatedAt = time.Now()
 		}
+		if agent.UpdatedAt.IsZero() {
+			agent.UpdatedAt = time.Now()
+		}
 
 		valueStrings = append(valueStrings, fmt.Sprintf(
-			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
-			i*15+1, i*15+2, i*15+3, i*15+4, i*15+5,
-			i*15+6, i*15+7, i*15+8, i*15+9, i*15+10,
-			i*15+11, i*15+12, i*15+13, i*15+14, i*15+15,
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d)",
+			i*14+1, i*14+2, i*14+3, i*14+4, i*14+5,
+			i*14+6, i*14+7, i*14+8, i*14+9, i*14+10,
+			i*14+11, i*14+12, i*14+13, i*14+14,
 		))
 
 		valueArgs = append(valueArgs,
-			agent.ID, agent.TaskExecutionID, agent.AgentID, agent.ExecutionOrder,
-			agent.Input, agent.Output, agent.Mode, agent.State,
-			agent.TokensUsed, agent.CostUSD, agent.ModelUsed,
-			agent.DurationMs, agent.MemoryUsedMB,
-			agent.CreatedAt, agent.CompletedAt,
+			agent.ID, agent.WorkflowID, agent.TaskID, agent.AgentID,
+			agent.Input, agent.Output, agent.State, agent.ErrorMessage,
+			agent.TokensUsed, agent.ModelUsed,
+			agent.DurationMs, agent.Metadata,
+			agent.CreatedAt, agent.UpdatedAt,
 		)
 	}
 
 	query := fmt.Sprintf(`
 		INSERT INTO agent_executions (
-			id, task_execution_id, agent_id, execution_order,
-			input, output, mode, state,
-			tokens_used, cost_usd, model_used,
-			duration_ms, memory_used_mb,
-			created_at, completed_at
+			id, workflow_id, task_id, agent_id,
+			input, output, state, error_message,
+			tokens_used, model_used,
+			duration_ms, metadata,
+			created_at, updated_at
 		) VALUES %s`,
 		strings.Join(valueStrings, ","),
 	)
@@ -289,32 +304,32 @@ func (c *Client) BatchSaveAgentExecutions(ctx context.Context, agents []*AgentEx
 
 // SaveToolExecution saves a tool execution record
 func (c *Client) SaveToolExecution(ctx context.Context, tool *ToolExecution) error {
-	if tool.ID == uuid.Nil {
-		tool.ID = uuid.New()
+	if tool.ID == "" {
+		tool.ID = uuid.New().String()
 	}
-	if tool.ExecutedAt.IsZero() {
-		tool.ExecutedAt = time.Now()
+	if tool.CreatedAt.IsZero() {
+		tool.CreatedAt = time.Now()
 	}
 
 	query := `
 		INSERT INTO tool_executions (
-			id, agent_execution_id, task_execution_id,
-			tool_name, tool_version, category,
-			input_params, output, success, error_message,
+			id, workflow_id, agent_id, agent_execution_id,
+			tool_name,
+			input_params, output, success, error,
 			duration_ms, tokens_consumed,
-			sandboxed, memory_used_mb,
-			executed_at
+			metadata,
+			created_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 		)`
 
 	_, err := c.db.ExecContext(ctx, query,
-		tool.ID, tool.AgentExecutionID, tool.TaskExecutionID,
-		tool.ToolName, tool.ToolVersion, tool.Category,
-		tool.InputParams, tool.Output, tool.Success, tool.ErrorMessage,
+		tool.ID, tool.WorkflowID, tool.AgentID, tool.AgentExecutionID,
+		tool.ToolName,
+		tool.InputParams, tool.Output, tool.Success, tool.Error,
 		tool.DurationMs, tool.TokensConsumed,
-		tool.Sandboxed, tool.MemoryUsedMB,
-		tool.ExecutedAt,
+		tool.Metadata,
+		tool.CreatedAt,
 	)
 
 	if err != nil {
@@ -333,14 +348,14 @@ func (c *Client) BatchSaveToolExecutions(ctx context.Context, tools []*ToolExecu
 	return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
 		stmt, err := tx.PrepareContext(ctx, `
 			INSERT INTO tool_executions (
-				id, agent_execution_id, task_execution_id,
-				tool_name, tool_version, category,
-				input_params, output, success, error_message,
+				id, workflow_id, agent_id, agent_execution_id,
+				tool_name,
+				input_params, output, success, error,
 				duration_ms, tokens_consumed,
-				sandboxed, memory_used_mb,
-				executed_at
+				metadata,
+				created_at
 			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 			)`)
 		if err != nil {
 			return err
@@ -348,20 +363,20 @@ func (c *Client) BatchSaveToolExecutions(ctx context.Context, tools []*ToolExecu
 		defer stmt.Close()
 
 		for _, tool := range tools {
-			if tool.ID == uuid.Nil {
-				tool.ID = uuid.New()
+			if tool.ID == "" {
+				tool.ID = uuid.New().String()
 			}
-			if tool.ExecutedAt.IsZero() {
-				tool.ExecutedAt = time.Now()
+			if tool.CreatedAt.IsZero() {
+				tool.CreatedAt = time.Now()
 			}
 
 			_, err := stmt.ExecContext(ctx,
-				tool.ID, tool.AgentExecutionID, tool.TaskExecutionID,
-				tool.ToolName, tool.ToolVersion, tool.Category,
-				tool.InputParams, tool.Output, tool.Success, tool.ErrorMessage,
+				tool.ID, tool.WorkflowID, tool.AgentID, tool.AgentExecutionID,
+				tool.ToolName,
+				tool.InputParams, tool.Output, tool.Success, tool.Error,
 				tool.DurationMs, tool.TokensConsumed,
-				tool.Sandboxed, tool.MemoryUsedMB,
-				tool.ExecutedAt,
+				tool.Metadata,
+				tool.CreatedAt,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert tool %s: %w", tool.ToolName, err)
@@ -433,16 +448,22 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 		}
 	}
 
-	query := `
+    query := `
         INSERT INTO sessions (id, user_id, tenant_id, context, token_budget, tokens_used, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id) DO NOTHING
     `
 
-	sessionUUID, err := uuid.Parse(sessionID)
-	if err != nil {
-		return fmt.Errorf("invalid session ID: %w", err)
-	}
+    // Support non-UUID external session IDs by mapping them to an internal UUID
+    var sessionUUID uuid.UUID
+    var contextMap = map[string]interface{}{"created_from": "orchestrator"}
+    if parsed, err := uuid.Parse(sessionID); err == nil {
+        sessionUUID = parsed
+    } else {
+        // Generate an internal UUID and store external_id in context for lookup
+        sessionUUID = uuid.New()
+        contextMap["external_id"] = sessionID
+    }
 
 	// Parse tenant ID
 	var tid *uuid.UUID
@@ -453,13 +474,13 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 	}
 
 	now := time.Now()
-	_, err = c.db.ExecContext(ctx, query,
+	_, err := c.db.ExecContext(ctx, query,
 		sessionUUID,
 		uid,
 		tid,
-		JSONB(map[string]interface{}{"created_from": "orchestrator"}),
-		10000, // default token budget
-		0,     // tokens used
+		JSONB(contextMap),
+		10000,
+		0,
 		now,
 		now,
 	)
@@ -537,12 +558,12 @@ func (c *Client) SaveAuditLog(ctx context.Context, audit *AuditLog) error {
 func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*TaskExecution, error) {
 	var task TaskExecution
 
-	query := `
-		SELECT id, workflow_id, user_id, session_id, query, mode, status,
-			started_at, completed_at, result, error,
-			created_at
-		FROM tasks
-		WHERE workflow_id = $1`
+    query := `
+        SELECT id, workflow_id, user_id, session_id, query, mode, status,
+            started_at, completed_at, result, error_message,
+            created_at
+        FROM task_executions
+        WHERE workflow_id = $1`
 
 	row, err := c.db.QueryRowContextCB(ctx, query, workflowID)
 	if err != nil {

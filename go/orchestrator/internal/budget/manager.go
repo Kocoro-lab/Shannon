@@ -574,8 +574,27 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 		if err == nil {
 			taskUUID = &parsed
 		} else {
-			bm.logger.Warn("Invalid task_id UUID, will store as NULL",
-				zap.String("task_id", usage.TaskID))
+			// Option B: Attempt to resolve by workflow_id -> task_executions.id
+			if bm.db != nil {
+				var resolved uuid.UUID
+				err2 := bm.db.QueryRowContext(ctx,
+					"SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
+					usage.TaskID,
+				).Scan(&resolved)
+				if err2 == nil {
+					taskUUID = &resolved
+					bm.logger.Debug("Resolved task_id by workflow_id",
+						zap.String("workflow_id", usage.TaskID),
+						zap.String("task_id", resolved.String()))
+				} else {
+					bm.logger.Debug("Invalid task_id and no matching workflow_id; storing NULL",
+						zap.String("task_id", usage.TaskID),
+						zap.Error(err2))
+				}
+			} else {
+				bm.logger.Debug("Invalid task_id UUID and DB unavailable; storing NULL",
+					zap.String("task_id", usage.TaskID))
+			}
 		}
 	}
 

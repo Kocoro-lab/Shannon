@@ -26,11 +26,23 @@ func determineModelTier(context map[string]interface{}, defaultTier string) stri
 		return tier
 	}
 
+	// Get thresholds from config (with defaults)
+	simpleThreshold := 0.3
+	mediumThreshold := 0.5  // Changed default from 0.7 to 0.5
+	if cfg, ok := context["config"].(*activities.WorkflowConfig); ok && cfg != nil {
+		if cfg.ComplexitySimpleThreshold > 0 {
+			simpleThreshold = cfg.ComplexitySimpleThreshold
+		}
+		if cfg.ComplexityMediumThreshold > 0 {
+			mediumThreshold = cfg.ComplexityMediumThreshold
+		}
+	}
+
 	// Check for complexity score
 	if complexity, ok := context["complexity"].(float64); ok {
-		if complexity < 0.3 {
+		if complexity < simpleThreshold {
 			return "small"
-		} else if complexity < 0.7 {
+		} else if complexity < mediumThreshold {
 			return "medium"
 		}
 		return "large"
@@ -159,9 +171,14 @@ func parseNumericValue(response string) (float64, bool) {
 }
 
 // shouldReflect determines if reflection should be applied based on complexity
-func shouldReflect(complexity float64) bool {
+func shouldReflect(complexity float64, config *activities.WorkflowConfig) bool {
 	// Reflect on complex tasks to improve quality
-	return complexity > 0.7
+	// Use configurable threshold from config
+	threshold := 0.5 // Default fallback
+	if config != nil && config.ComplexityMediumThreshold > 0 {
+		threshold = config.ComplexityMediumThreshold
+	}
+	return complexity > threshold
 }
 
 // emitTaskUpdate sends a task update event (fire-and-forget with timeout)

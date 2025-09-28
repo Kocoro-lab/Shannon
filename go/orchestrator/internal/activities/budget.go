@@ -433,7 +433,10 @@ func (b *BudgetActivities) UpdateBudgetPolicy(ctx context.Context, input UpdateB
 	return nil
 }
 
-// Helper function to select model based on tier and token budget
+// selectModelForTier selects a model based on tier and token budget.
+// NOTE: Tier is determined by task complexity or explicit caller request,
+// NOT by quota-based allocation. The 50/40/10 distribution in configs
+// is a target guideline, not an enforced ratio.
 func selectModelForTier(tier string, maxTokens int) (string, string) {
 	// Model selection based on tier and token constraints
 	switch tier {

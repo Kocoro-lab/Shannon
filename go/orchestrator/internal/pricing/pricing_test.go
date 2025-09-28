@@ -17,9 +17,9 @@ func TestDefaultPerToken(t *testing.T) {
 		t.Errorf("DefaultPerToken returned non-positive price: %f", price)
 	}
 
-	// Should be 0.002/1000 based on config or fallback of 0.000002
-	expectedMin := 0.000001
-	expectedMax := 0.000003
+	// defaults.combined_per_1k: 0.005 = 0.000005 per token
+	expectedMin := 0.000004
+	expectedMax := 0.000006
 	if price < expectedMin || price > expectedMax {
 		t.Errorf("DefaultPerToken returned unexpected price: %f, expected between %f and %f", price, expectedMin, expectedMax)
 	}
@@ -38,11 +38,17 @@ func TestPricePerTokenForModel(t *testing.T) {
 		minPrice  float64
 		maxPrice  float64
 	}{
+		// Price ranges based on config/models.yaml (per token, not per 1k)
+		// gpt-3.5-turbo: 0.0005/0.002 per 1k = 0.0000005/0.000002 per token
 		{"gpt-3.5-turbo", true, 0.0000005, 0.000002},
+		// gpt-4-turbo: 0.01/0.03 per 1k = 0.00001/0.00003 per token
 		{"gpt-4-turbo", true, 0.00001, 0.00003},
+		// claude-3-sonnet: 0.003/0.02 per 1k = 0.000003/0.00002 per token
 		{"claude-3-sonnet", true, 0.000003, 0.00002},
+		// claude-3-haiku: 0.0002/0.002 per 1k = 0.0000002/0.000002 per token
 		{"claude-3-haiku", true, 0.0000002, 0.000002},
-		{"deepseek-chat", true, 0.0000001, 0.0000003},
+		// deepseek-chat: 0.00027/0.0011 per 1k = 0.00000027/0.0000011 per token
+		{"deepseek-chat", true, 0.00000027, 0.0000011},
 		{"unknown-model", false, 0, 0},
 		{"", false, 0, 0},
 	}
@@ -73,8 +79,9 @@ func TestCostForTokens(t *testing.T) {
 	}{
 		{"gpt-3.5-turbo", 1000, 0.0005, 0.002},
 		{"gpt-4-turbo", 1000, 0.01, 0.03},
-		{"unknown-model", 1000, 0.001, 0.003},
-		{"", 1000, 0.001, 0.003},
+		// Unknown models should use default: 0.005 per 1k
+		{"unknown-model", 1000, 0.005, 0.005},
+		{"", 1000, 0.005, 0.005},
 		{"gpt-3.5-turbo", 0, 0, 0},
 	}
 

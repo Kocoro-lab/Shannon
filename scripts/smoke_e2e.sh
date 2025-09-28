@@ -80,7 +80,7 @@ pass "Orchestrator reached terminal status"
 
 info "Verify tasks row persisted"
 docker compose -f "$COMPOSE_FILE" exec -T postgres \
-  psql -U shannon -d shannon -At -c "SELECT status FROM tasks WHERE workflow_id='${WORKFLOW_ID}' ORDER BY created_at DESC LIMIT 1;" \
+  psql -U shannon -d shannon -At -c "SELECT status FROM task_executions WHERE workflow_id='${WORKFLOW_ID}' ORDER BY created_at DESC LIMIT 1;" \
   | grep -Eiq "completed|failed|cancelled|timeout" || fail "tasks row not found or status not terminal"
 pass "Orchestrator persistence verified"
 

@@ -44,10 +44,10 @@ memories_limit: 4,             // Memory regions
 
 ```bash
 # Rebuild agent-core with the configuration changes
-docker compose -f deploy/compose/compose.yml build --no-cache agent-core
+docker compose -f deploy/compose/docker-compose.yml build --no-cache agent-core
 
 # Rebuild llm-service to include Python executor
-docker compose -f deploy/compose/compose.yml build llm-service
+docker compose -f deploy/compose/docker-compose.yml build llm-service
 
 # Start all services
 make dev

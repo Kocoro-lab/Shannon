@@ -46,8 +46,8 @@ SMOKE_RESULT=$?
 echo ""
 echo -e "${BLUE}[Test Suite 2] Calculator & Python Tests${NC}"
 echo "----------------------------------------"
-if [ -f "$SCRIPT_DIR/calculator_test.sh" ]; then
-    bash "$SCRIPT_DIR/calculator_test.sh"
+if [ -f "$SCRIPT_DIR/01_basic_calculator_test.sh" ]; then
+    bash "$SCRIPT_DIR/01_basic_calculator_test.sh"
     CALC_RESULT=$?
 else
     echo "Calculator test not found, skipping..."
@@ -57,8 +57,8 @@ fi
 echo ""
 echo -e "${BLUE}[Test Suite 3] Supervisor Workflow Tests${NC}"
 echo "----------------------------------------"
-if [ -f "$SCRIPT_DIR/supervisor_workflow_test.sh" ]; then
-    bash "$SCRIPT_DIR/supervisor_workflow_test.sh"
+if [ -f "$SCRIPT_DIR/10_supervisor_workflow_test.sh" ]; then
+    bash "$SCRIPT_DIR/10_supervisor_workflow_test.sh"
     SUPERVISOR_RESULT=$?
 else
     echo "Supervisor test not found, skipping..."
@@ -68,8 +68,8 @@ fi
 echo ""
 echo -e "${BLUE}[Test Suite 4] Cognitive Patterns Tests${NC}"
 echo "----------------------------------------"
-if [ -f "$SCRIPT_DIR/cognitive_patterns_test.sh" ]; then
-    bash "$SCRIPT_DIR/cognitive_patterns_test.sh"
+if [ -f "$SCRIPT_DIR/05_cognitive_patterns_test.sh" ]; then
+    bash "$SCRIPT_DIR/05_cognitive_patterns_test.sh"
     COGNITIVE_RESULT=$?
 else
     echo "Cognitive patterns test not found, skipping..."
@@ -90,8 +90,8 @@ fi
 echo ""
 echo -e "${BLUE}[Test Suite 6] P2P Coordination Tests${NC}"
 echo "----------------------------------------"
-if [ -f "$SCRIPT_DIR/p2p_coordination_test.sh" ]; then
-    bash "$SCRIPT_DIR/p2p_coordination_test.sh"
+if [ -f "$SCRIPT_DIR/20_p2p_coordination_test.sh" ]; then
+    bash "$SCRIPT_DIR/20_p2p_coordination_test.sh"
     P2P_RESULT=$?
 else
     echo "P2P coordination test not found, skipping..."
@@ -123,7 +123,7 @@ docker compose -f "$COMPOSE_FILE" exec -T postgres \
         AVG(EXTRACT(EPOCH FROM (completed_at - created_at))) as avg_duration_seconds,
         COUNT(CASE WHEN status = 'COMPLETED' THEN 1 END) as completed,
         COUNT(CASE WHEN status = 'FAILED' THEN 1 END) as failed
-    FROM tasks
+    FROM task_executions
     WHERE created_at > NOW() - INTERVAL '1 hour';" 2>/dev/null || echo "  Database stats not available"
 
 # Cleanup
@@ -179,4 +179,3 @@ else
     echo -e "${YELLOW}Some tests did not pass. Check logs for details.${NC}"
     exit 1
 fi
-

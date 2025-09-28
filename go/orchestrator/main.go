@@ -24,6 +24,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/registry"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/server"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/temporal"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/tracing"
@@ -108,6 +109,9 @@ func main() {
 	}
 	defer dbClient.Close()
 
+	// Set global dbClient for activities to use
+	activities.SetGlobalDBClient(dbClient)
+
 	// Register database health checker immediately
 	if dbClient != nil {
 		dbChecker := health.NewDatabaseHealthChecker(dbClient.GetDB(), dbClient.Wrapper(), logger)
@@ -169,20 +173,50 @@ func main() {
 
 				// Initialize embedding service and vectordb from Shannon config
 				{
-					// Embeddings
-					base := shCfg.Agents.LLMServiceEndpoint
-					if base == "" {
-						base = getEnvOrDefault("LLM_SERVICE_URL", "http://llm-service:8000")
+					// Embeddings - prefer new Embeddings config, fall back to Vector config
+					var ecfg embeddings.Config
+
+					// Check if new Embeddings section exists
+					if shCfg.Embeddings.BaseURL != "" {
+						// Use new embeddings configuration
+						ecfg = embeddings.Config{
+							BaseURL:      shCfg.Embeddings.BaseURL,
+							DefaultModel: shCfg.Embeddings.DefaultModel,
+							Timeout:      shCfg.Embeddings.Timeout,
+							CacheTTL:     shCfg.Embeddings.CacheTTL,
+							MaxLRU:       shCfg.Embeddings.MaxLRU,
+							EnableRedis:  shCfg.Vector.UseRedisCache, // Still use Vector config for Redis
+							RedisAddr:    shCfg.Vector.RedisAddr,
+							Chunking: embeddings.ChunkingConfig{
+								Enabled:       shCfg.Embeddings.Chunking.Enabled,
+								MaxTokens:     shCfg.Embeddings.Chunking.MaxTokens,
+								OverlapTokens: shCfg.Embeddings.Chunking.OverlapTokens,
+								TokenizerMode: "simple", // Default to simple tokenizer
+							},
+						}
+						logger.Info("Using new embeddings configuration with chunking",
+							zap.Bool("chunking_enabled", ecfg.Chunking.Enabled),
+							zap.Int("max_tokens", ecfg.Chunking.MaxTokens))
+					} else {
+						// Fall back to legacy configuration from Vector section
+						base := shCfg.Agents.LLMServiceEndpoint
+						if base == "" {
+							base = getEnvOrDefault("LLM_SERVICE_URL", "http://llm-service:8000")
+						}
+						ecfg = embeddings.Config{
+							BaseURL:      base,
+							DefaultModel: shCfg.Vector.DefaultModel,
+							Timeout:      5 * time.Second,
+							EnableRedis:  shCfg.Vector.UseRedisCache,
+							RedisAddr:    shCfg.Vector.RedisAddr,
+							CacheTTL:     shCfg.Vector.CacheTTL,
+							MaxLRU:       2048,
+							// Use default chunking config
+							Chunking: embeddings.DefaultChunkingConfig(),
+						}
+						logger.Info("Using legacy vector configuration for embeddings")
 					}
-					ecfg := embeddings.Config{
-						BaseURL:      base,
-						DefaultModel: shCfg.Vector.DefaultModel,
-						Timeout:      5 * time.Second,
-						EnableRedis:  shCfg.Vector.UseRedisCache,
-						RedisAddr:    shCfg.Vector.RedisAddr,
-						CacheTTL:     shCfg.Vector.CacheTTL,
-						MaxLRU:       2048,
-					}
+
 					var cache embeddings.EmbeddingCache
 					if ecfg.EnableRedis {
 						if c, err := embeddings.NewRedisCache(ecfg.RedisAddr); err == nil {
@@ -201,19 +235,28 @@ func main() {
 					}
 					if vectorEnabled && shCfg.Degradation.FallbackBehaviors["vector_search"] != "skip" {
 						vcfg := vectordb.Config{
-							Enabled:        true,
-							Host:           shCfg.Vector.Host,
-							Port:           shCfg.Vector.Port,
-							TaskEmbeddings: shCfg.Vector.TaskEmbeddings,
-							Summaries:      shCfg.Vector.Summaries,
-							ToolResults:    shCfg.Vector.ToolResults,
-							Cases:          shCfg.Vector.Cases,
-							DocumentChunks: shCfg.Vector.DocumentChunks,
-							TopK:           shCfg.Vector.TopK,
-							Threshold:      shCfg.Vector.Threshold,
-							Timeout:        shCfg.Vector.Timeout,
+							Enabled:              true,
+							Host:                 shCfg.Vector.Host,
+							Port:                 shCfg.Vector.Port,
+							TaskEmbeddings:       shCfg.Vector.TaskEmbeddings,
+							Summaries:            shCfg.Vector.Summaries,
+							ToolResults:          shCfg.Vector.ToolResults,
+							Cases:                shCfg.Vector.Cases,
+							DocumentChunks:       shCfg.Vector.DocumentChunks,
+							TopK:                 shCfg.Vector.TopK,
+							Threshold:            shCfg.Vector.Threshold,
+							Timeout:              shCfg.Vector.Timeout,
+							ExpectedEmbeddingDim: shCfg.Vector.ExpectedEmbeddingDim,
+						MMREnabled:        shCfg.Vector.MmrEnabled,
+						MMRLambda:         shCfg.Vector.MmrLambda,
+						MMRPoolMultiplier: shCfg.Vector.MmrPoolMultiplier,
 						}
-						vectordb.Initialize(vcfg)
+						if err := vectordb.ValidateAndInitialize(vcfg); err != nil {
+							logger.Warn("Vector DB initialization with validation failed",
+								zap.Error(err))
+							// Fall back to initialization without validation
+							vectordb.Initialize(vcfg)
+						}
 					} else {
 						logger.Info("Vector DB disabled or set to skip by fallback")
 					}
@@ -251,8 +294,23 @@ func main() {
 		}
 	}()
 
-	// Create orchestrator service first (Temporal client may not be ready yet)
-	orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger)
+	// Wait for config to be ready before creating service
+	<-cfgReady
+
+	// Get session config from Shannon config
+	var sessionCfg *session.ManagerConfig
+	if shannonCfgMgr != nil {
+		if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
+			sessionCfg = &session.ManagerConfig{
+				MaxHistory: shCfg.Session.MaxHistory,
+				TTL:        shCfg.Session.TTL,
+				CacheSize:  shCfg.Session.CacheSize,
+			}
+		}
+	}
+
+	// Create orchestrator service with session config
+	orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger, sessionCfg)
 	if err != nil {
 		logger.Fatal("Failed to create orchestrator service", zap.Error(err))
 	}

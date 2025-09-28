@@ -9,7 +9,6 @@ This directory contains comprehensive testing infrastructure for Shannon, includ
 - `fixtures/` – Optional seed data or sample payloads for test scenarios
 - `histories/` – Temporal workflow history files for deterministic replay testing
 - `utils/` – Utility tests for specific features and development tools
-- `config_hot_reload_test.md` – Dynamic configuration hot-reload test documentation
 
 ## Prerequisites
 

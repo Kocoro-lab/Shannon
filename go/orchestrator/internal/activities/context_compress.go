@@ -10,7 +10,9 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
 )
@@ -18,6 +20,7 @@ import (
 // CompressContextInput requests summary for long conversation history
 type CompressContextInput struct {
     SessionID string `json:"session_id"`
+    TenantID  string `json:"tenant_id,omitempty"`
     // History messages as pairs: {role, content}
     History      []map[string]string `json:"history"`
     TargetTokens int                 `json:"target_tokens"`
@@ -27,9 +30,11 @@ type CompressContextInput struct {
 
 // CompressContextResult returns the summary and persistence status
 type CompressContextResult struct {
-	Summary string `json:"summary"`
-	Stored  bool   `json:"stored"`
-	Error   string `json:"error,omitempty"`
+	Summary          string `json:"summary"`
+	Stored           bool   `json:"stored"`
+	Error            string `json:"error,omitempty"`
+	OriginalTokens   int    `json:"original_tokens,omitempty"`   // Token count before compression
+	CompressedTokens int    `json:"compressed_tokens,omitempty"` // Token count after compression
 }
 
 // CompressAndStoreContext summarizes history via llm-service and stores it in Qdrant
@@ -40,6 +45,17 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 	if len(in.History) == 0 {
 		return CompressContextResult{Summary: "", Stored: false}, nil
 	}
+
+	// Estimate original tokens from history
+	originalTokens := 0
+	for _, msg := range in.History {
+		if content, ok := msg["content"]; ok {
+			// Conservative estimate: ~4 chars per token
+			originalTokens += len(content) / 4
+		}
+	}
+	// Add overhead for formatting
+	originalTokens += len(in.History) * 5
 
 	// Call llm-service /context/compress
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
@@ -77,7 +93,21 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 
 	summary := out.Summary
 	if summary == "" {
-		return CompressContextResult{Summary: "", Stored: false}, nil
+		return CompressContextResult{Summary: "", Stored: false, OriginalTokens: originalTokens}, nil
+	}
+
+	// Estimate compressed tokens from summary
+	compressedTokens := len(summary)/4 + 10 // Conservative estimate + overhead
+
+	// Record compression ratio metric if we achieved compression
+	if originalTokens > 0 && compressedTokens > 0 {
+		ratio := float64(originalTokens) / float64(compressedTokens)
+		metrics.CompressionRatio.Observe(ratio)
+		logger.Info("Context compression completed",
+			zap.Int("original_tokens", originalTokens),
+			zap.Int("compressed_tokens", compressedTokens),
+			zap.Float64("compression_ratio", ratio),
+		)
 	}
 
 	// Generate embedding for summary and upsert to Qdrant
@@ -86,22 +116,48 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 			vec, err := svc.GenerateEmbedding(ctx, summary, "")
 			if err != nil {
 				logger.Warn("Embedding generation failed for summary", zap.Error(err))
-				return CompressContextResult{Summary: summary, Stored: false, Error: "embed_failed"}, nil
+				return CompressContextResult{
+					Summary:          summary,
+					Stored:           false,
+					Error:            "embed_failed",
+					OriginalTokens:   originalTokens,
+					CompressedTokens: compressedTokens,
+				}, nil
 			}
+			// Generate a deterministic summary ID for deduplication
+			summaryID := uuid.New().String()
 			payload := map[string]interface{}{
 				"session_id": in.SessionID,
+				"tenant_id":  in.TenantID,  // Add tenant_id for filtering
 				"type":       "summary",
 				"timestamp":  time.Now().Unix(),
-				"text":       summary,
+				"content":    summary,       // Changed from "text" to "content" for consistency
+				"summary_id": summaryID,     // Add summary_id for dedup
 			}
 			if _, err := vdb.UpsertSummaryEmbedding(ctx, vec, payload); err != nil {
 				logger.Warn("Qdrant upsert failed for summary", zap.Error(err))
-				return CompressContextResult{Summary: summary, Stored: false, Error: "upsert_failed"}, nil
+				return CompressContextResult{
+					Summary:          summary,
+					Stored:           false,
+					Error:            "upsert_failed",
+					OriginalTokens:   originalTokens,
+					CompressedTokens: compressedTokens,
+				}, nil
 			}
-			return CompressContextResult{Summary: summary, Stored: true}, nil
+			return CompressContextResult{
+				Summary:          summary,
+				Stored:           true,
+				OriginalTokens:   originalTokens,
+				CompressedTokens: compressedTokens,
+			}, nil
 		}
 	}
 
 	// If no vectordb/embeddings, return summary without storage
-	return CompressContextResult{Summary: summary, Stored: false}, nil
+	return CompressContextResult{
+		Summary:          summary,
+		Stored:           false,
+		OriginalTokens:   originalTokens,
+		CompressedTokens: compressedTokens,
+	}, nil
 }

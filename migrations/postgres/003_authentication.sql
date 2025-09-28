@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS auth.audit_logs (
 );
 
 -- Update existing tables to include tenant_id
-ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tenant_id UUID;
+ALTER TABLE task_executions ADD COLUMN IF NOT EXISTS tenant_id UUID;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS tenant_id UUID;
 
 -- Create indexes for performance
@@ -100,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON auth.audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_tenant_id ON auth.audit_logs(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_event_type ON auth.audit_logs(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON auth.audit_logs(created_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_tenant_id ON tasks(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_task_executions_tenant_id ON task_executions(tenant_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_tenant_id ON sessions(tenant_id);
 
 -- Default tenant for development

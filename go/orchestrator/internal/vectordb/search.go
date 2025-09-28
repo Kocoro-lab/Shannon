@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
@@ -64,8 +65,17 @@ func (c *Client) GetSessionContext(ctx context.Context, sessionID string, tenant
 	if tenantID != "" {
 		must = append(must, map[string]interface{}{"key": "tenant_id", "match": map[string]interface{}{"value": tenantID}})
 	}
+	// Fetch more than topK to allow for sorting/MMR reranking
+	poolMultiplier := c.cfg.MMRPoolMultiplier
+	if poolMultiplier <= 0 {
+		poolMultiplier = 3 // Default multiplier
+	}
+	limit := topK * poolMultiplier
+	if limit > 100 {
+		limit = 100 // Cap to prevent excessive data transfer
+	}
 	body := map[string]interface{}{
-		"limit":        topK,
+		"limit":        limit,
 		"with_payload": true,
 		"filter":       map[string]interface{}{"must": must},
 	}
@@ -99,5 +109,127 @@ func (c *Client) GetSessionContext(ctx context.Context, sessionID string, tenant
 	for _, p := range r.Result.Points {
 		out = append(out, ContextItem{SessionID: sessionID, Payload: p.Payload, Score: p.Score})
 	}
+
+	// Sort by timestamp descending (most recent first)
+	// This is done client-side as Qdrant Scroll doesn't support ordering
+	sort.Slice(out, func(i, j int) bool {
+		tsI, okI := out[i].Payload["timestamp"].(float64)
+		tsJ, okJ := out[j].Payload["timestamp"].(float64)
+		// If both have timestamps, sort descending
+		if okI && okJ {
+			return tsI > tsJ
+		}
+		// Items with timestamps come before items without
+		if okI && !okJ {
+			return true
+		}
+		if !okI && okJ {
+			return false
+		}
+		// Neither has timestamp, maintain original order
+		return false
+	})
+
+	// Limit to topK after sorting
+	if len(out) > topK {
+		out = out[:topK]
+	}
+
+	return out, nil
+}
+
+// GetAgentContext searches for recent points with the same session_id and agent_id
+func (c *Client) GetAgentContext(ctx context.Context, sessionID string, agentID string, tenantID string, topK int) ([]ContextItem, error) {
+	if topK <= 0 {
+		topK = c.cfg.TopK
+	}
+	// Use Qdrant Scroll API for filter-only retrieval
+	url := fmt.Sprintf("%s/collections/%s/points/scroll", c.base, c.cfg.TaskEmbeddings)
+
+	// Start tracing span for agent context retrieval
+	ctx, span := tracing.StartHTTPSpan(ctx, "POST", url)
+	defer span.End()
+
+	// Build filters for session_id AND agent_id
+	must := []map[string]interface{}{
+		{"key": "session_id", "match": map[string]interface{}{"value": sessionID}},
+		{"key": "agent_id", "match": map[string]interface{}{"value": agentID}},
+	}
+	if tenantID != "" {
+		must = append(must, map[string]interface{}{"key": "tenant_id", "match": map[string]interface{}{"value": tenantID}})
+	}
+
+	// Sort by timestamp descending to get most recent first
+	// Fetch more than topK to allow for sorting/MMR reranking
+	poolMultiplier := c.cfg.MMRPoolMultiplier
+	if poolMultiplier <= 0 {
+		poolMultiplier = 3 // Default multiplier
+	}
+	limit := topK * poolMultiplier
+	if limit > 100 {
+		limit = 100 // Cap to prevent excessive data transfer
+	}
+	body := map[string]interface{}{
+		"limit":        limit,
+		"with_payload": true,
+		"filter":       map[string]interface{}{"must": must},
+	}
+
+	buf, _ := json.Marshal(body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	tracing.InjectTraceparent(ctx, req)
+	resp, err := c.httpw.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("qdrant scroll status %d", resp.StatusCode)
+	}
+	var r struct {
+		Result struct {
+			Points []struct {
+				Payload map[string]interface{} `json:"payload"`
+				Score   float64                `json:"score,omitempty"`
+			} `json:"points"`
+		} `json:"result"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return nil, err
+	}
+	out := make([]ContextItem, 0, len(r.Result.Points))
+	for _, p := range r.Result.Points {
+		out = append(out, ContextItem{SessionID: sessionID, Payload: p.Payload, Score: p.Score})
+	}
+
+	// Sort by timestamp descending (most recent first)
+	// This is done client-side as Qdrant Scroll doesn't support ordering
+	sort.Slice(out, func(i, j int) bool {
+		tsI, okI := out[i].Payload["timestamp"].(float64)
+		tsJ, okJ := out[j].Payload["timestamp"].(float64)
+		// If both have timestamps, sort descending
+		if okI && okJ {
+			return tsI > tsJ
+		}
+		// Items with timestamps come before items without
+		if okI && !okJ {
+			return true
+		}
+		if !okI && okJ {
+			return false
+		}
+		// Neither has timestamp, maintain original order
+		return false
+	})
+
+	// Limit to topK after sorting
+	if len(out) > topK {
+		out = out[:topK]
+	}
+
 	return out, nil
 }

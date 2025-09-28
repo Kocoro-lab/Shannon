@@ -6,6 +6,27 @@ set -euo pipefail
 
 source "$(dirname "$0")/submit_and_get_response.sh"
 
+# Define submit_task function for this test
+submit_task() {
+    local query="$1"
+    local session_id="${2:-supervisor-test-$(date +%s)}"
+
+    # Submit task using grpcurl and return JSON response
+    grpcurl -plaintext -d '{
+      "metadata": {"userId":"dev","sessionId":"'"$session_id"'"},
+      "query": "'"$query"'",
+      "context": {}
+    }' localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask 2>/dev/null
+}
+
+# Define get_task_status function
+get_task_status() {
+    local task_id="$1"
+    grpcurl -plaintext -d '{"taskId":"'"$task_id"'"}' \
+        localhost:50052 shannon.orchestrator.OrchestratorService/GetTaskStatus 2>/dev/null | \
+        grep -o '"status": *"[^"]*"' | cut -d'"' -f4 | sed 's/TASK_STATUS_//'
+}
+
 echo "=========================================="
 echo "Supervisor Workflow E2E Test"
 echo "=========================================="
@@ -78,7 +99,7 @@ echo ""
 echo "Checking execution mode in database..."
 MODE=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
     psql -U shannon -d shannon -t -c \
-    "SELECT mode FROM tasks WHERE workflow_id='$WORKFLOW_ID';" 2>/dev/null | xargs)
+    "SELECT mode FROM task_executions WHERE workflow_id='$WORKFLOW_ID';" 2>/dev/null | xargs)
 
 echo "Execution mode: $MODE"
 
@@ -170,3 +191,26 @@ echo "- DAG workflow with dependencies tested"
 echo ""
 echo "Check logs for detailed execution patterns:"
 echo "  docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail 200 | grep -i supervisor"
+
+# ===== Enhanced Supervisor Memory Tests =====
+# Tests merged from test_enhanced_supervisor.sh
+
+test_supervisor_memory_learning() {
+    echo -e "\n${YELLOW}Test: Supervisor Memory Learning${NC}"
+
+    # Submit similar tasks to test learning
+    SESSION_ID="memory-learning-$(date +%s)"
+
+    # First task
+    RESPONSE1=$(submit_task "Analyze market data and create investment report")
+    TASK1_ID=$(extract_task_id "$RESPONSE1")
+    wait_for_completion "$TASK1_ID" 30
+
+    # Second similar task - should use learned patterns
+    RESPONSE2=$(submit_task "Analyze sales data and create revenue report")
+    TASK2_ID=$(extract_task_id "$RESPONSE2")
+
+    # Check if supervisor memory was used
+    check_supervisor_memory_usage "$TASK2_ID"
+}
+

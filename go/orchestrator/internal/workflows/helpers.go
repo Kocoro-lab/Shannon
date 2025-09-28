@@ -4,6 +4,10 @@ import (
     "fmt"
     "strconv"
     "strings"
+
+    "go.temporal.io/sdk/workflow"
+    "go.temporal.io/sdk/log"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 )
 
 // convertHistoryForAgent formats session history into a simple string slice for agents
@@ -53,4 +57,51 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// convertHistoryMapForCompression converts Message history to map format for compression
+func convertHistoryMapForCompression(messages []Message) []map[string]string {
+	result := make([]map[string]string, len(messages))
+	for i, msg := range messages {
+		result[i] = map[string]string{
+			"role":    msg.Role,
+			"content": msg.Content,
+		}
+	}
+	return result
+}
+
+// fallbackToBasicMemory loads basic hierarchical memory for supervisor workflow
+func fallbackToBasicMemory(ctx workflow.Context, input *TaskInput, logger log.Logger) {
+	var memoryResult activities.FetchHierarchicalMemoryResult
+	memoryInput := activities.FetchHierarchicalMemoryInput{
+		Query:         input.Query,
+		SessionID:     input.SessionID,
+		TenantID:      input.TenantID,
+		RecentTopK:    5,
+		SemanticTopK:  3,
+		SummaryTopK:   2,
+		Threshold:     0.7,
+	}
+
+	if err := workflow.ExecuteActivity(ctx, "FetchHierarchicalMemory", memoryInput).Get(ctx, &memoryResult); err == nil {
+		if len(memoryResult.Items) > 0 {
+			if input.Context == nil {
+				input.Context = make(map[string]interface{})
+			}
+			input.Context["agent_memory"] = memoryResult.Items
+			logger.Info("Injected basic memory into supervisor context",
+				"session_id", input.SessionID,
+				"memory_items", len(memoryResult.Items))
+		}
+	}
+}
+
+// extractSubtaskDescriptions extracts descriptions from subtasks
+func extractSubtaskDescriptions(subtasks []activities.Subtask) []string {
+	descriptions := make([]string, len(subtasks))
+	for i, st := range subtasks {
+		descriptions[i] = st.Description
+	}
+	return descriptions
 }

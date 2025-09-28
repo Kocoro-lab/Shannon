@@ -333,7 +333,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	qualityScore := 0.5
 	reflectionTokens := 0
 
-	if config.ReflectionEnabled && shouldReflect(decomp.ComplexityScore) && !hasSynthesisSubtask {
+	if config.ReflectionEnabled && shouldReflect(decomp.ComplexityScore, &config) && !hasSynthesisSubtask {
 		// Only reflect if we didn't detect a synthesis subtask
 		// This preserves user-specified output formats (e.g., Chinese text)
 		reflectionConfig := patterns.ReflectionConfig{
@@ -400,7 +400,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		WorkflowType: "dag",
 	}).Get(ctx, nil)
 
-	if shouldReflect(decomp.ComplexityScore) && qualityScore > 0.5 {
+	if shouldReflect(decomp.ComplexityScore, &config) && qualityScore > 0.5 {
 		_ = workflow.ExecuteActivity(metricsCtx, "RecordPatternMetrics", activities.PatternMetricsInput{
 			Pattern:    "reflection",
 			Version:    "v2",
@@ -419,7 +419,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			"quality_score":  qualityScore,
 			"agent_count":    len(agentResults),
 			"execution_mode": execStrategy,
-			"had_reflection": shouldReflect(decomp.ComplexityScore),
+			"had_reflection": shouldReflect(decomp.ComplexityScore, &config),
 		},
 	}, nil
 }

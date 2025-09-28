@@ -22,14 +22,27 @@ type Manager struct {
 	client      *circuitbreaker.RedisWrapper
 	logger      *zap.Logger
 	ttl         time.Duration
+	maxHistory  int                  // Maximum messages to keep per session
 	mu          sync.RWMutex
 	localCache  map[string]*Session  // Local cache for performance
 	cacheAccess map[string]time.Time // Track last access time for LRU
 	maxSessions int
 }
 
+// ManagerConfig contains configuration for session manager
+type ManagerConfig struct {
+	MaxHistory int           // Maximum messages to keep per session (default: 500)
+	TTL        time.Duration // Session expiry time (default: 30 days)
+	CacheSize  int           // Max sessions to keep in local cache (default: 10000)
+}
+
 // NewManager creates a new session manager
 func NewManager(redisAddr string, logger *zap.Logger) (*Manager, error) {
+	return NewManagerWithConfig(redisAddr, logger, nil)
+}
+
+// NewManagerWithConfig creates a new session manager with specific config
+func NewManagerWithConfig(redisAddr string, logger *zap.Logger, config *ManagerConfig) (*Manager, error) {
 	// Get Redis password from environment variable
 	redisPassword := os.Getenv("REDIS_PASSWORD")
 
@@ -53,13 +66,31 @@ func NewManager(redisAddr string, logger *zap.Logger) (*Manager, error) {
 		return nil, fmt.Errorf("failed to connect to Redis: %w", err)
 	}
 
+	// Apply defaults if no config provided
+	maxHistory := 500
+	ttl := 720 * time.Hour  // 30 days default
+	cacheSize := 10000
+
+	if config != nil {
+		if config.MaxHistory > 0 {
+			maxHistory = config.MaxHistory
+		}
+		if config.TTL > 0 {
+			ttl = config.TTL
+		}
+		if config.CacheSize > 0 {
+			cacheSize = config.CacheSize
+		}
+	}
+
 	return &Manager{
 		client:      client,
 		logger:      logger,
-		ttl:         24 * time.Hour, // Default session TTL
+		ttl:         ttl,
+		maxHistory:  maxHistory,
 		localCache:  make(map[string]*Session),
 		cacheAccess: make(map[string]time.Time),
-		maxSessions: 10000, // Max sessions to keep in local cache
+		maxSessions: cacheSize,
 	}, nil
 }
 
@@ -272,9 +303,8 @@ func (m *Manager) AddMessage(ctx context.Context, sessionID string, msg Message)
 	session.History = append(session.History, msg)
 
 	// Limit history size
-	maxHistory := 100
-	if len(session.History) > maxHistory {
-		session.History = session.History[len(session.History)-maxHistory:]
+	if len(session.History) > m.maxHistory {
+		session.History = session.History[len(session.History)-m.maxHistory:]
 	}
 
 	return m.UpdateSession(ctx, session)

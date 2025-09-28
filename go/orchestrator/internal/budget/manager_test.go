@@ -47,10 +47,27 @@ func TestRecordUsage_ExecInsertsTokenUsage(t *testing.T) {
 		Model: "gpt-3.5-turbo", Provider: "openai", InputTokens: 10, OutputTokens: 20,
 	}
 
+	// Expect user lookup
+	mock.ExpectQuery("SELECT id FROM users WHERE external_id").
+		WithArgs("u1").
+		WillReturnError(sql.ErrNoRows)
+
+	// Expect user creation
+	userID := "12345678-1234-5678-1234-567812345678"
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs(sqlmock.AnyArg(), "u1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
+
+	// Expect task lookup
+	taskID := "87654321-4321-8765-4321-876543218765"
+	mock.ExpectQuery("SELECT id FROM task_executions WHERE workflow_id").
+		WithArgs("t1").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(taskID))
+
 	mock.ExpectExec(regexp.QuoteMeta(
-		"INSERT INTO token_usage (\n\t\tuser_id, task_id, provider, model,\n\t\tprompt_tokens, completion_tokens, total_tokens, cost_usd\n\t\t) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+		"INSERT INTO token_usage",
 	)).WithArgs(
-		usage.UserID, usage.TaskID, usage.Provider, usage.Model,
+		sqlmock.AnyArg(), sqlmock.AnyArg(), usage.Provider, usage.Model,
 		sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 	).WillReturnResult(sqlmock.NewResult(1, 1))
 

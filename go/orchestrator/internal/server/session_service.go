@@ -67,7 +67,7 @@ func (s *SessionServiceImpl) CreateSession(ctx context.Context, req *pb.CreateSe
 	}
 
 	// Calculate expiration time
-	expiresAt := time.Now().Add(24 * time.Hour) // Default 24 hours
+	expiresAt := time.Now().Add(720 * time.Hour) // Default 30 days
 	if req.TtlSeconds > 0 {
 		expiresAt = time.Now().Add(time.Duration(req.TtlSeconds) * time.Second)
 	}
@@ -334,7 +334,7 @@ func (s *SessionServiceImpl) sessionToProto(sess *session.Session, includeHistor
 		UserId:     sess.UserID,
 		CreatedAt:  timestamppb.New(sess.CreatedAt),
 		LastActive: timestamppb.New(sess.UpdatedAt),
-		ExpiresAt:  timestamppb.New(sess.CreatedAt.Add(24 * time.Hour)), // Default 24h
+		ExpiresAt:  timestamppb.New(sess.CreatedAt.Add(720 * time.Hour)), // Default 30 days
 	}
 
 	// Convert context to protobuf struct

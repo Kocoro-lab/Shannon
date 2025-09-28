@@ -53,6 +53,16 @@ func Initialize(cfg Config) {
 
 func Get() *Client { return global }
 
+// GetConfig returns the current configuration
+func (c *Client) GetConfig() Config {
+	if c == nil {
+		return Config{
+			TaskEmbeddings: "task_embeddings",
+		}
+	}
+	return c.cfg
+}
+
 // qdrant search request/response (simplified)
 type qdrantQueryRequest struct {
 	Query          []float32              `json:"query"`
@@ -60,17 +70,27 @@ type qdrantQueryRequest struct {
 	ScoreThreshold *float64               `json:"score_threshold,omitempty"`
 	WithPayload    bool                   `json:"with_payload"`
 	Filter         map[string]interface{} `json:"filter,omitempty"`
+    WithVector     bool                   `json:"with_vector,omitempty"`
 }
 
 type qdrantPoint struct {
 	ID      interface{}            `json:"id"`
 	Score   float64                `json:"score"`
 	Payload map[string]interface{} `json:"payload"`
+    Vector  []float64              `json:"vector,omitempty"`
 }
 
 type qdrantSearchResponse struct {
 	Result []qdrantPoint `json:"result"`
 	Status string        `json:"status"`
+}
+
+// qdrantQueryResponse for the /points/query endpoint which has nested structure
+type qdrantQueryResponse struct {
+	Result struct {
+		Points []qdrantPoint `json:"points"`
+	} `json:"result"`
+	Status string `json:"status"`
 }
 
 func (c *Client) search(ctx context.Context, collection string, vec []float32, limit int, threshold float64, filter map[string]interface{}) ([]qdrantPoint, error) {
@@ -88,7 +108,7 @@ func (c *Client) search(ctx context.Context, collection string, vec []float32, l
 	if threshold > 0 {
 		thr = &threshold
 	}
-	reqBody := qdrantQueryRequest{Query: vec, Limit: limit, ScoreThreshold: thr, WithPayload: true, Filter: filter}
+	reqBody := qdrantQueryRequest{Query: vec, Limit: limit, ScoreThreshold: thr, WithPayload: true, Filter: filter, WithVector: c.cfg.MMREnabled}
 	buf, _ := json.Marshal(reqBody)
 
 	call := func(url string, body []byte) (*http.Response, error) {
@@ -112,7 +132,7 @@ func (c *Client) search(ctx context.Context, collection string, vec []float32, l
 		// fallback to /points/search
 		urlSearch := fmt.Sprintf("%s/collections/%s/points/search", c.base, collection)
 		// map to search payload {vector: ...}
-		legacy := map[string]interface{}{"vector": vec, "limit": limit, "with_payload": true}
+		legacy := map[string]interface{}{"vector": vec, "limit": limit, "with_payload": true, "with_vector": c.cfg.MMREnabled}
 		if threshold > 0 {
 			legacy["score_threshold"] = threshold
 		}
@@ -138,13 +158,14 @@ func (c *Client) search(ctx context.Context, collection string, vec []float32, l
 		ometrics.RecordVectorSearchMetrics(collection, "ok", time.Since(start).Seconds())
 		return qr.Result, nil
 	}
-	var qr qdrantSearchResponse
+	// Try to decode as query response first (nested structure)
+	var qr qdrantQueryResponse
 	if err := json.NewDecoder(resp.Body).Decode(&qr); err != nil {
 		ometrics.RecordVectorSearchMetrics(collection, "error", time.Since(start).Seconds())
 		return nil, err
 	}
 	ometrics.RecordVectorSearchMetrics(collection, "ok", time.Since(start).Seconds())
-	return qr.Result, nil
+	return qr.Result.Points, nil
 }
 
 // Upsert inserts or updates one or more points into a collection
@@ -206,4 +227,211 @@ func (c *Client) UpsertSummaryEmbedding(ctx context.Context, vec []float32, payl
 		Payload: payload,
 	}
 	return c.Upsert(ctx, collection, []UpsertItem{p})
+}
+
+// GetSessionContextSemanticByEmbedding performs semantic search filtered by session ID
+// This method accepts a pre-computed embedding to keep the vectordb layer independent of embeddings service
+func (c *Client) GetSessionContextSemanticByEmbedding(ctx context.Context, embedding []float32, sessionID string, tenantID string, limit int, threshold float64) ([]ContextItem, error) {
+	if c == nil || !c.cfg.Enabled {
+		return nil, nil
+	}
+
+	// Build Qdrant-compliant filter with "must" clauses
+	mustClauses := []map[string]interface{}{
+		{
+			"key": "session_id",
+			"match": map[string]interface{}{
+				"value": sessionID,
+			},
+		},
+	}
+
+	// Add tenant filter if provided (for future multi-tenancy)
+	if tenantID != "" {
+		mustClauses = append(mustClauses, map[string]interface{}{
+			"key": "tenant_id",
+			"match": map[string]interface{}{
+				"value": tenantID,
+			},
+		})
+	}
+
+	// Create proper Qdrant filter structure
+	filter := map[string]interface{}{
+		"must": mustClauses,
+	}
+
+	// Use provided limit or fall back to config
+	topK := limit
+	if topK <= 0 {
+		topK = c.cfg.TopK
+	}
+
+	// Search with embedding and filter
+	points, err := c.search(ctx, c.cfg.TaskEmbeddings, embedding, topK, threshold, filter)
+	if err != nil {
+		return nil, err
+	}
+
+
+	// Convert to ContextItem format
+	items := make([]ContextItem, 0, len(points))
+	for _, point := range points {
+		// Add point ID to payload for deduplication
+		payload := point.Payload
+		if payload == nil {
+			payload = make(map[string]interface{})
+		}
+		// Include Qdrant point ID for strong deduplication
+		if point.ID != nil {
+			payload["_point_id"] = fmt.Sprintf("%v", point.ID)
+		}
+
+		item := ContextItem{
+			Score:   point.Score,
+			Payload: payload,
+		}
+		if len(point.Vector) > 0 {
+			v := make([]float32, len(point.Vector))
+			for i, f := range point.Vector {
+				v[i] = float32(f)
+			}
+			item.Vector = v
+		}
+		items = append(items, item)
+	}
+
+	return items, nil
+}
+
+// SearchSummaries performs semantic search in the summaries collection
+func (c *Client) SearchSummaries(ctx context.Context, embedding []float32, sessionID string, tenantID string, limit int, threshold float64) ([]ContextItem, error) {
+	if c == nil || !c.cfg.Enabled || c.cfg.Summaries == "" {
+		return nil, nil
+	}
+
+	// Build Qdrant-compliant filter with "must" clauses
+	mustClauses := []map[string]interface{}{
+		{
+			"key": "session_id",
+			"match": map[string]interface{}{
+				"value": sessionID,
+			},
+		},
+	}
+
+	// Add tenant filter if provided
+	if tenantID != "" {
+		mustClauses = append(mustClauses, map[string]interface{}{
+			"key": "tenant_id",
+			"match": map[string]interface{}{
+				"value": tenantID,
+			},
+		})
+	}
+
+	// Create proper Qdrant filter structure
+	filter := map[string]interface{}{
+		"must": mustClauses,
+	}
+
+	// Use provided limit or fall back to config
+	topK := limit
+	if topK <= 0 {
+		topK = 3 // Default to 3 summaries
+	}
+
+	// Search with embedding and filter
+	points, err := c.search(ctx, c.cfg.Summaries, embedding, topK, threshold, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to ContextItem format
+	items := make([]ContextItem, 0, len(points))
+	for _, point := range points {
+		// Add point ID to payload for deduplication
+		payload := point.Payload
+		if payload == nil {
+			payload = make(map[string]interface{})
+		}
+		// Include Qdrant point ID for strong deduplication
+		if point.ID != nil {
+			payload["_point_id"] = fmt.Sprintf("%v", point.ID)
+		}
+
+		item := ContextItem{
+			Score:   point.Score,
+			Payload: payload,
+		}
+		if len(point.Vector) > 0 {
+			v := make([]float32, len(point.Vector))
+			for i, f := range point.Vector {
+				v[i] = float32(f)
+			}
+			item.Vector = v
+		}
+		items = append(items, item)
+	}
+
+	return items, nil
+}
+
+// SearchDecompositionPatterns performs semantic search in the decomposition_patterns collection filtered by session
+func (c *Client) SearchDecompositionPatterns(ctx context.Context, embedding []float32, sessionID string, tenantID string, limit int, threshold float64) ([]ContextItem, error) {
+    if c == nil || !c.cfg.Enabled {
+        return nil, nil
+    }
+
+    // Build Qdrant filter for session (and optional tenant)
+    mustClauses := []map[string]interface{}{
+        {
+            "key": "session_id",
+            "match": map[string]interface{}{
+                "value": sessionID,
+            },
+        },
+    }
+    if tenantID != "" {
+        mustClauses = append(mustClauses, map[string]interface{}{
+            "key": "tenant_id",
+            "match": map[string]interface{}{
+                "value": tenantID,
+            },
+        })
+    }
+    filter := map[string]interface{}{
+        "must": mustClauses,
+    }
+
+    topK := limit
+    if topK <= 0 {
+        topK = c.cfg.TopK
+    }
+
+    // Hardcode collection name for now to keep API simple
+    const collection = "decomposition_patterns"
+    points, err := c.search(ctx, collection, embedding, topK, threshold, filter)
+    if err != nil {
+        return nil, err
+    }
+
+    items := make([]ContextItem, 0, len(points))
+    for _, point := range points {
+        payload := point.Payload
+        if payload == nil {
+            payload = make(map[string]interface{})
+        }
+        if point.ID != nil {
+            payload["_point_id"] = fmt.Sprintf("%v", point.ID)
+        }
+        item := ContextItem{Score: point.Score, Payload: payload}
+        if len(point.Vector) > 0 {
+            v := make([]float32, len(point.Vector))
+            for i, f := range point.Vector { v[i] = float32(f) }
+            item.Vector = v
+        }
+        items = append(items, item)
+    }
+    return items, nil
 }
