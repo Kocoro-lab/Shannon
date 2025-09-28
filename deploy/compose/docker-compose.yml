@@ -4,6 +4,9 @@ networks:
   shannon-net:
     driver: bridge
 
+include:
+  - ./grafana/docker-compose-grafana-prometheus.yml
+
 volumes:
   postgres_data: {}
   qdrant_data: {}
@@ -299,9 +302,9 @@ services:
       orchestrator:
         condition: service_started
     ports:
-      - "3000:3000"
+      - "2111:2111"
     healthcheck:
-      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:3000/api/health']
+      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:2111/api/health']
       interval: 30s
       timeout: 5s
       retries: 3

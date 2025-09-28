@@ -201,6 +201,7 @@ log/
 # Observability
 observability/prometheus/data/
 observability/grafana/data/
+deploy/compose/grafana/data/
 
 # Testing
 coverage/
