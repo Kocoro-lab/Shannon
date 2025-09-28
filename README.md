@@ -1,24 +1,5 @@
 # Shannon — Production AI Agents That Actually Work
 
-<div align="center">
-
-![Shannon Dashboard](docs/images/dashboard-demo.gif)
-
-*Real-time observability dashboard showing agent traffic control, metrics, and event streams*
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│     Real-time metrics, event tracking, and system health monitoring.         │
-│     Access at http://localhost:2111 after running 'make dev'                 │
-│                                                                              │
-│     Please ⭐ star this repo to show your support and stay updated!          │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-</div>
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
