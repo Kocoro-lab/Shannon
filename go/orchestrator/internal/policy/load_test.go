@@ -1,3 +1,5 @@
+// +build loadtest
+
 package policy
 
 import (

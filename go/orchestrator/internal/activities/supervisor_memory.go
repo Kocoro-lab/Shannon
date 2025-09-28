@@ -124,11 +124,33 @@ type FetchSupervisorMemoryInput struct {
 	Query     string `json:"query"`
 }
 
+// getLoggerSafe returns a logger that works in both activity and regular contexts
+func getLoggerSafe(ctx context.Context) (logger log.Logger) {
+	// Try to get activity logger, catch panic if not in activity context
+	defer func() {
+		if r := recover(); r != nil {
+			// Panic caught, return fallback logger
+			logger = &fallbackLogger{}
+		}
+	}()
+
+	// This will panic if not in an activity context
+	return activity.GetLogger(ctx)
+}
+
+// fallbackLogger implements log.Logger for non-activity contexts
+type fallbackLogger struct{}
+
+func (f *fallbackLogger) Debug(msg string, keyvals ...interface{}) {}
+func (f *fallbackLogger) Info(msg string, keyvals ...interface{}) {}
+func (f *fallbackLogger) Warn(msg string, keyvals ...interface{}) {}
+func (f *fallbackLogger) Error(msg string, keyvals ...interface{}) {}
+
 // FetchSupervisorMemory fetches and enriches memory for strategic decisions
 // FetchSupervisorMemory fetches enhanced supervisor memory with strategic insights.
 // Implements TTL-based cleanup for strategy performance cache to prevent memory leaks.
 func FetchSupervisorMemory(ctx context.Context, input FetchSupervisorMemoryInput) (*SupervisorMemoryContext, error) {
-	logger := activity.GetLogger(ctx)
+	logger := getLoggerSafe(ctx)
 	logger.Info("Fetching enhanced supervisor memory",
 		"session_id", input.SessionID,
 		"query", input.Query)
@@ -253,7 +275,7 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
 }
 
 func fetchStrategyPerformance(ctx context.Context, memory *SupervisorMemoryContext, sessionID, userID string) error {
-	logger := activity.GetLogger(ctx)
+	logger := getLoggerSafe(ctx)
 
 	// Wrap database operation in circuit breaker
 	return WithCircuitBreaker(ctx, func(ctx context.Context) error {
@@ -617,7 +639,7 @@ type RecordDecompositionInput struct {
 
 // RecordDecomposition stores decomposition results for future reference
 func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) error {
-	logger := activity.GetLogger(ctx)
+	logger := getLoggerSafe(ctx)
 
 	// Generate embedding for the query pattern
 	svc := embeddings.Get()

@@ -394,7 +394,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		s.logger.Info("Starting OrchestratorWorkflow (router)",
 			zap.String("workflow_id", workflowID),
 			zap.String("initial_mode", modeStr))
-	workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+		workflowExecution, err = s.temporalClient.ExecuteWorkflow(
 			ctx,
 			workflowOptions,
 			workflows.OrchestratorWorkflow,
@@ -469,7 +469,10 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		TaskId:     workflowExecution.GetID(),
 		Status:     common.StatusCode_STATUS_CODE_OK,
 		Message:    fmt.Sprintf("Task submitted successfully. Session: %s", sessionID),
-		// Decomposition: nil - will be available via GetTaskStatus after workflow completes analysis
+		Decomposition: &pb.TaskDecomposition{
+			Mode:            mode,
+			ComplexityScore: 0.5, // Default/estimated score - actual will be determined during workflow execution
+		},
 		// Session ID is tracked internally, not returned in response for now
 	}
 
