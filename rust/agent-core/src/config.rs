@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Duration;
 
@@ -367,6 +367,8 @@ impl Config {
 
     /// Override configuration with environment variables
     pub fn from_env(mut config: Config) -> Self {
+        config = apply_feature_defaults(config);
+
         // WASI overrides
         if let Ok(v) = env::var("WASI_MEMORY_LIMIT_MB") {
             if let Ok(mb) = v.parse::<usize>() {
@@ -513,6 +515,147 @@ impl Config {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct FeatureOverrides {
+    workflows: Option<FeatureWorkflows>,
+    enforcement: Option<FeatureEnforcement>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureWorkflows {
+    #[serde(default)]
+    synthesis: Option<FeatureSynthesis>,
+    #[serde(default)]
+    tool_execution: Option<FeatureToolExecution>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureSynthesis {
+    #[serde(default)]
+    bypass_single_result: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureToolExecution {
+    #[serde(default)]
+    parallelism: Option<usize>,
+    #[serde(default)]
+    auto_selection: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureEnforcement {
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
+    #[serde(default)]
+    max_tokens: Option<usize>,
+    #[serde(default)]
+    rate_limiting: Option<FeatureRateLimiting>,
+    #[serde(default)]
+    circuit_breaker: Option<FeatureCircuitBreaker>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureRateLimiting {
+    #[serde(default)]
+    rps: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FeatureCircuitBreaker {
+    #[serde(default)]
+    error_threshold: Option<f64>,
+    #[serde(default)]
+    min_requests: Option<u32>,
+    #[serde(default)]
+    window_seconds: Option<u64>,
+}
+
+fn apply_feature_defaults(mut config: Config) -> Config {
+    if let Some(features) = load_feature_overrides() {
+        if let Some(workflows) = features.workflows {
+            if let Some(tool_exec) = workflows.tool_execution {
+                if let Some(parallelism) = tool_exec.parallelism {
+                    if parallelism > 0 {
+                        config.tools.max_concurrent_executions = parallelism;
+                    }
+                }
+            }
+        }
+
+        if let Some(enforcement) = features.enforcement {
+            if let Some(timeout) = enforcement.timeout_seconds {
+                if timeout > 0 {
+                    config.enforcement.per_request_timeout_secs = timeout;
+                }
+            }
+            if let Some(max_tokens) = enforcement.max_tokens {
+                if max_tokens > 0 {
+                    config.enforcement.per_request_max_tokens = max_tokens;
+                }
+            }
+            if let Some(rate) = enforcement.rate_limiting {
+                if let Some(rps) = rate.rps {
+                    if rps > 0 {
+                        config.enforcement.rate_limit_per_key_rps = rps;
+                    }
+                }
+            }
+            if let Some(cb) = enforcement.circuit_breaker {
+                if let Some(threshold) = cb.error_threshold {
+                    if threshold >= 0.0 {
+                        config.enforcement.circuit_breaker_error_threshold = threshold;
+                    }
+                }
+                if let Some(min_requests) = cb.min_requests {
+                    if min_requests > 0 {
+                        config.enforcement.circuit_breaker_min_requests = min_requests;
+                    }
+                }
+                if let Some(window) = cb.window_seconds {
+                    if window > 0 {
+                        config.enforcement.circuit_breaker_rolling_window_secs = window;
+                    }
+                }
+            }
+        }
+    }
+
+    config
+}
+
+fn load_feature_overrides() -> Option<FeatureOverrides> {
+    let path = features_path()?;
+    let content = fs::read_to_string(&path).ok()?;
+    serde_yaml::from_str::<FeatureOverrides>(&content).ok()
+}
+
+fn features_path() -> Option<String> {
+    if let Ok(env_path) = env::var("CONFIG_PATH") {
+        if !env_path.trim().is_empty() {
+            let candidate = PathBuf::from(&env_path);
+            if candidate.is_dir() {
+                let file = candidate.join("features.yaml");
+                if file.exists() {
+                    return Some(file.to_string_lossy().to_string());
+                }
+            } else if candidate.exists() {
+                return Some(env_path);
+            }
+        }
+    }
+
+    let defaults = ["/app/config/features.yaml", "config/features.yaml"];
+
+    for path in defaults.iter() {
+        if Path::new(path).exists() {
+            return Some(path.to_string());
+        }
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +719,9 @@ mod tests {
         // The global config should now have the updated value
         // Note: Config::global() uses the static CONFIG if it's already initialized,
         // so our update should be reflected
-        assert_eq!(updated.metrics.port, 9999, "Updated config should have port 9999");
+        assert_eq!(
+            updated.metrics.port, 9999,
+            "Updated config should have port 9999"
+        );
     }
 }

@@ -342,7 +342,7 @@ shannon/
 │   ├── tools/          # MCP tool implementations
 │   └── tests/          # Python tests
 ├── go/gateway/         # REST API gateway (port 8080)
-├── dashboard/          # Real-time UI (port 3000)
+├── dashboard/          # Real-time UI (port 2111)
 ├── protos/             # Protocol buffer definitions
 ├── config/             # Configuration files
 │   ├── models.yaml     # Centralized model pricing
@@ -447,7 +447,7 @@ redis-cli GET session:SESSION_ID | jq '.total_tokens_used'
 
 ### Performance Optimization
 1. Check metrics at `http://localhost:9090` (Prometheus)
-2. Review dashboard at `http://localhost:3000`
+2. Review dashboard at `http://localhost:2111` (Shannon Dashboard)
 3. Use `make replay` for deterministic testing
 4. Profile with service-specific tools
 

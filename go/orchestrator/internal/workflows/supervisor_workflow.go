@@ -349,6 +349,18 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	taskRetries := make(map[string]int)       // Track retry count per task ID (prevents infinite retries)
 	maxRetriesPerTask := 3                    // Max 3 retries per individual task (handles transient failures)
 
+	// Build a set of topics actually produced by this plan to avoid waiting
+	// on dependencies that will never be satisfied.
+	producesSet := make(map[string]struct{})
+	for _, s := range decomp.Subtasks {
+		for _, t := range s.Produces {
+			if t == "" {
+				continue
+			}
+			producesSet[t] = struct{}{}
+		}
+	}
+
 	for i, st := range decomp.Subtasks {
 		// Emit progress event for this subtask
 		progressMessage := fmt.Sprintf("Starting subtask %d of %d: %s", i+1, len(decomp.Subtasks), st.Description)
@@ -409,99 +421,119 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			p2pConfig.P2PCoordinationEnabled = false
 		}
 
-		if p2pConfig.P2PCoordinationEnabled &&
-			workflow.GetVersion(ctx, "p2p_sync_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion &&
-			workflow.GetVersion(ctx, "team_workspace_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-			if i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Consumes) > 0 {
+		// Check version gates first for determinism, but only execute P2P if enabled
+		p2pSyncVersion := workflow.GetVersion(ctx, "p2p_sync_v1", workflow.DefaultVersion, 1)
+		teamWorkspaceVersion := workflow.GetVersion(ctx, "team_workspace_v1", workflow.DefaultVersion, 1)
+
+		// Only proceed with P2P coordination if:
+		// 1. P2P is enabled in config AND
+		// 2. Version gates indicate P2P code exists
+			if p2pConfig.P2PCoordinationEnabled &&
+				p2pSyncVersion != workflow.DefaultVersion &&
+				teamWorkspaceVersion != workflow.DefaultVersion &&
+				i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Consumes) > 0 {
+				logger.Debug("P2P coordination enabled, checking dependencies",
+					"subtask_id", decomp.Subtasks[i].ID,
+					"consumes", decomp.Subtasks[i].Consumes)
 				for _, topic := range decomp.Subtasks[i].Consumes {
+					// Skip waiting if no subtask produces this topic
+					if _, ok := producesSet[topic]; !ok {
+						logger.Info("Skipping P2P wait: no producer in plan", "topic", topic, "subtask_id", st.ID)
+						continue
+					}
 					// Use configured timeout or default
 					maxWaitTime := time.Duration(p2pConfig.P2PTimeoutSeconds) * time.Second
 					if maxWaitTime == 0 {
 						maxWaitTime = 6 * time.Minute
 					}
-					startTime := workflow.Now(ctx)
-					backoff := 1 * time.Second
-					maxBackoff := 30 * time.Second
-					attempts := 0
+				startTime := workflow.Now(ctx)
+				backoff := 1 * time.Second
+				maxBackoff := 30 * time.Second
+				attempts := 0
 
-					for workflow.Now(ctx).Sub(startTime) < maxWaitTime {
-						// Emit waiting event on first attempt
-						if attempts == 0 {
-							waitMessage := fmt.Sprintf("Waiting for dependency: %s", topic)
-							emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-								StartToCloseTimeout: 30 * time.Second,
-								RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-							})
-							if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-								WorkflowID: workflowID,
-								EventType:  activities.StreamEventWaiting,
-								AgentID:    fmt.Sprintf("agent-%s", st.ID),
-								Message:    waitMessage,
-								Timestamp:  workflow.Now(ctx),
-							}).Get(ctx, nil); err != nil {
-								logger.Warn("Failed to emit waiting event", "error", err)
-							}
-						}
-
-						// Check if entries already exist
-						var entries []activities.WorkspaceEntry
-						if err := workflow.ExecuteActivity(ctx, constants.WorkspaceListActivity, activities.WorkspaceListInput{
+				for workflow.Now(ctx).Sub(startTime) < maxWaitTime {
+					// Emit waiting event on first attempt
+					if attempts == 0 {
+						waitMessage := fmt.Sprintf("Waiting for dependency: %s", topic)
+						emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+							StartToCloseTimeout: 30 * time.Second,
+							RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+						})
+						if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 							WorkflowID: workflowID,
-							Topic:      topic,
-							SinceSeq:   0,
-							Limit:      1,
-						}).Get(ctx, &entries); err != nil {
-							logger.Warn("Failed to check workspace", "topic", topic, "error", err)
-							break
-						}
-						if len(entries) > 0 {
-							break
-						}
-
-						// Check if we've exceeded the time limit before waiting
-						if workflow.Now(ctx).Sub(startTime) >= maxWaitTime {
-							break
-						}
-
-						// Setup selector wait using a topic channel + exponential backoff timer
-						ch, ok := topicChans[topic]
-						if !ok {
-							ch = workflow.NewChannel(ctx)
-							topicChans[topic] = ch
-						}
-						sel := workflow.NewSelector(ctx)
-						sel.AddReceive(ch, func(c workflow.ReceiveChannel, more bool) {})
-						// Exponential backoff to reduce polling frequency
-						timer := workflow.NewTimer(ctx, backoff)
-						sel.AddFuture(timer, func(f workflow.Future) {})
-						sel.Select(ctx)
-						attempts++
-
-						// Increase backoff up to max
-						backoff = backoff * 2
-						if backoff > maxBackoff {
-							backoff = maxBackoff
+							EventType:  activities.StreamEventWaiting,
+							AgentID:    fmt.Sprintf("agent-%s", st.ID),
+							Message:    waitMessage,
+							Timestamp:  workflow.Now(ctx),
+						}).Get(ctx, nil); err != nil {
+							logger.Warn("Failed to emit waiting event", "error", err)
 						}
 					}
-					if workflow.Now(ctx).Sub(startTime) >= maxWaitTime {
-						logger.Warn("Dependency wait timeout", "topic", topic, "wait_time", maxWaitTime, "attempts", attempts)
-					}
-					// Stream dependency satisfied
-					emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-						StartToCloseTimeout: 30 * time.Second,
-						RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-					})
-					if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+
+					// Check if entries already exist
+					var entries []activities.WorkspaceEntry
+					if err := workflow.ExecuteActivity(ctx, constants.WorkspaceListActivity, activities.WorkspaceListInput{
 						WorkflowID: workflowID,
-						EventType:  activities.StreamEventDependencySatisfied,
-						AgentID:    fmt.Sprintf("agent-%s", st.ID),
-						Message:    topic,
-						Timestamp:  workflow.Now(ctx),
-					}).Get(ctx, nil); err != nil {
-						logger.Warn("Failed to emit dependency satisfied event", "error", err)
+						Topic:      topic,
+						SinceSeq:   0,
+						Limit:      1,
+					}).Get(ctx, &entries); err != nil {
+						logger.Warn("Failed to check workspace", "topic", topic, "error", err)
+						break
+					}
+					if len(entries) > 0 {
+						break
+					}
+
+					// Check if we've exceeded the time limit before waiting
+					if workflow.Now(ctx).Sub(startTime) >= maxWaitTime {
+						break
+					}
+
+					// Setup selector wait using a topic channel + exponential backoff timer
+					ch, ok := topicChans[topic]
+					if !ok {
+						ch = workflow.NewChannel(ctx)
+						topicChans[topic] = ch
+					}
+					sel := workflow.NewSelector(ctx)
+					sel.AddReceive(ch, func(c workflow.ReceiveChannel, more bool) {})
+					// Exponential backoff to reduce polling frequency
+					timer := workflow.NewTimer(ctx, backoff)
+					sel.AddFuture(timer, func(f workflow.Future) {})
+					sel.Select(ctx)
+					attempts++
+
+					// Increase backoff up to max
+					backoff = backoff * 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
 					}
 				}
+				if workflow.Now(ctx).Sub(startTime) >= maxWaitTime {
+					logger.Warn("Dependency wait timeout", "topic", topic, "wait_time", maxWaitTime, "attempts", attempts)
+				}
+				// Stream dependency satisfied
+				emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+					StartToCloseTimeout: 30 * time.Second,
+					RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+				})
+				if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+					WorkflowID: workflowID,
+					EventType:  activities.StreamEventDependencySatisfied,
+					AgentID:    fmt.Sprintf("agent-%s", st.ID),
+					Message:    topic,
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil); err != nil {
+					logger.Warn("Failed to emit dependency satisfied event", "error", err)
+				}
 			}
+		} else if i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Consumes) > 0 {
+			// Log when P2P dependencies exist but P2P is disabled
+			logger.Debug("Skipping P2P dependency wait (P2P disabled)",
+				"p2p_enabled", p2pConfig.P2PCoordinationEnabled,
+				"subtask_id", decomp.Subtasks[i].ID,
+				"would_consume", decomp.Subtasks[i].Consumes)
 		}
 
 		// P2P demo code removed - use P2PCoordinationEnabled config instead
@@ -638,31 +670,30 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		// Capture agent result for synthesis directly
 		childResults = append(childResults, res)
 
-		// Produce outputs to workspace per plan
-		if workflow.GetVersion(ctx, "team_workspace_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-			if i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Produces) > 0 {
-				for _, topic := range decomp.Subtasks[i].Produces {
-					var wr activities.WorkspaceAppendResult
-					if err := workflow.ExecuteActivity(ctx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
-						WorkflowID: workflowID,
-						Topic:      topic,
-						Entry:      map[string]interface{}{"subtask_id": st.ID, "summary": res.Response},
-						Timestamp:  workflow.Now(ctx),
-					}).Get(ctx, &wr); err != nil {
-						logger.Warn("Failed to append to workspace", "topic", topic, "error", err)
-						continue
-					}
-					lastWSSeq = wr.Seq
-					_ = lastWSSeq
-					// Notify any selector waiting on this topic (non-blocking)
-					if ch, ok := topicChans[topic]; ok {
-						sel := workflow.NewSelector(ctx)
-						sel.AddSend(ch, true, func() {})
-						sel.AddDefault(func() {
-							logger.Debug("Channel send would block, skipping notification", "topic", topic)
-						})
-						sel.Select(ctx)
-					}
+			// Produce outputs to workspace per plan
+			if teamWorkspaceVersion != workflow.DefaultVersion &&
+				i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Produces) > 0 {
+			for _, topic := range decomp.Subtasks[i].Produces {
+				var wr activities.WorkspaceAppendResult
+				if err := workflow.ExecuteActivity(ctx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
+					WorkflowID: workflowID,
+					Topic:      topic,
+					Entry:      map[string]interface{}{"subtask_id": st.ID, "summary": res.Response},
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, &wr); err != nil {
+					logger.Warn("Failed to append to workspace", "topic", topic, "error", err)
+					continue
+				}
+				lastWSSeq = wr.Seq
+				_ = lastWSSeq
+				// Notify any selector waiting on this topic (non-blocking)
+				if ch, ok := topicChans[topic]; ok {
+					sel := workflow.NewSelector(ctx)
+					sel.AddSend(ch, true, func() {})
+					sel.AddDefault(func() {
+						logger.Debug("Channel send would block, skipping notification", "topic", topic)
+					})
+					sel.Select(ctx)
 				}
 			}
 		}

@@ -3,6 +3,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -22,19 +25,30 @@ type ObservabilityConfig struct {
 type Features struct {
 	Observability ObservabilityConfig `mapstructure:"observability"`
 	Budget        BudgetConfig        `mapstructure:"budget"`
+	Workflows     WorkflowsConfig     `mapstructure:"workflows"`
+	Enforcement   EnforcementConfig   `mapstructure:"enforcement"`
+	Gateway       GatewayConfig       `mapstructure:"gateway"`
 }
 
 // Load loads features.yaml from CONFIG_PATH or /app/config/features.yaml
 func Load() (*Features, error) {
 	cfgPath := os.Getenv("CONFIG_PATH")
 	if cfgPath == "" {
-		cfgPath = "/app/config/features.yaml"
+		if _, err := os.Stat("/app/config/features.yaml"); err == nil {
+			cfgPath = "/app/config/features.yaml"
+		} else {
+			cfgPath = "config/features.yaml"
+		}
+	}
+
+	if info, err := os.Stat(cfgPath); err == nil && info.IsDir() {
+		cfgPath = filepath.Join(cfgPath, "features.yaml")
 	}
 
 	v := viper.New()
 	v.SetConfigFile(cfgPath)
 	if err := v.ReadInConfig(); err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, fmt.Errorf("read config %s: %w", cfgPath, err)
 	}
 	var f Features
 	if err := v.Unmarshal(&f); err != nil {
@@ -75,6 +89,38 @@ type BudgetConfig struct {
 		Requests   int `mapstructure:"requests"`
 		IntervalMs int `mapstructure:"interval_ms"`
 	} `mapstructure:"rate_limit"`
+}
+
+// WorkflowsConfig captures workflow-related knobs defined in features.yaml
+type WorkflowsConfig struct {
+	Synthesis struct {
+		BypassSingleResult *bool `mapstructure:"bypass_single_result"`
+	} `mapstructure:"synthesis"`
+	ToolExecution struct {
+		Parallelism   int   `mapstructure:"parallelism"`
+		AutoSelection *bool `mapstructure:"auto_selection"`
+	} `mapstructure:"tool_execution"`
+}
+
+// EnforcementConfig captures enforcement defaults coming from features.yaml
+type EnforcementConfig struct {
+	TimeoutSeconds int `mapstructure:"timeout_seconds"`
+	MaxTokens      int `mapstructure:"max_tokens"`
+
+	RateLimiting struct {
+		RPS int `mapstructure:"rps"`
+	} `mapstructure:"rate_limiting"`
+
+	CircuitBreaker struct {
+		ErrorThreshold float64 `mapstructure:"error_threshold"`
+		MinRequests    int     `mapstructure:"min_requests"`
+		WindowSeconds  int     `mapstructure:"window_seconds"`
+	} `mapstructure:"circuit_breaker"`
+}
+
+// GatewayConfig represents gateway-specific toggles
+type GatewayConfig struct {
+	SkipAuth *bool `mapstructure:"skip_auth"`
 }
 
 // BudgetFromEnvOrDefaults returns merged budget config using env overrides first, then config file, with sensible defaults.
@@ -165,4 +211,67 @@ func BudgetFromEnvOrDefaults(f *Features) BudgetConfig {
 	}
 
 	return bc
+}
+
+// WorkflowRuntimeConfig represents resolved workflow-related runtime settings.
+type WorkflowRuntimeConfig struct {
+	BypassSingleResult     bool
+	BypassFromEnv          bool
+	ToolParallelism        int
+	ToolParallelismFromEnv bool
+	AutoToolSelection      bool
+	AutoSelectionFromEnv   bool
+}
+
+// ResolveWorkflowRuntime merges features.yaml defaults with environment overrides.
+func ResolveWorkflowRuntime(f *Features) WorkflowRuntimeConfig {
+	cfg := WorkflowRuntimeConfig{
+		BypassSingleResult: true,
+		ToolParallelism:    1,
+		AutoToolSelection:  true,
+	}
+
+	if f != nil {
+		if f.Workflows.Synthesis.BypassSingleResult != nil {
+			cfg.BypassSingleResult = *f.Workflows.Synthesis.BypassSingleResult
+		}
+		if f.Workflows.ToolExecution.Parallelism > 0 {
+			cfg.ToolParallelism = f.Workflows.ToolExecution.Parallelism
+		}
+		if f.Workflows.ToolExecution.AutoSelection != nil {
+			cfg.AutoToolSelection = *f.Workflows.ToolExecution.AutoSelection
+		}
+	}
+
+	if v := os.Getenv("WORKFLOW_SYNTH_BYPASS_SINGLE"); v != "" {
+		cfg.BypassSingleResult = ParseBool(v)
+		cfg.BypassFromEnv = true
+	}
+	if v := os.Getenv("TOOL_PARALLELISM"); v != "" {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			cfg.ToolParallelism = n
+			cfg.ToolParallelismFromEnv = true
+		}
+	}
+	if v := os.Getenv("ENABLE_TOOL_SELECTION"); v != "" {
+		cfg.AutoToolSelection = ParseBool(v)
+		cfg.AutoSelectionFromEnv = true
+	}
+
+	return cfg
+}
+
+// ParseBool converts common string representations to bool.
+func ParseBool(val string) bool {
+	switch strings.ToLower(strings.TrimSpace(val)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil {
+			return n != 0
+		}
+	}
+	return false
 }

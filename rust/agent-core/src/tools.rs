@@ -132,10 +132,7 @@ impl ToolExecutor {
 
                 // Convert Python-style ** to meval's ^ for exponentiation
                 let converted_expression = expression.replace("**", "^");
-                info!(
-                    "Converted expression for meval: {}",
-                    converted_expression
-                );
+                info!("Converted expression for meval: {}", converted_expression);
 
                 // Use meval for mathematical expression evaluation
                 match meval::eval_str(&converted_expression) {
@@ -209,7 +206,11 @@ impl ToolExecutor {
                             .collect::<Vec<String>>()
                     });
 
-                debug!("code_executor: stdin length={}, argv={:?}", stdin.len(), argv);
+                debug!(
+                    "code_executor: stdin length={}, argv={:?}",
+                    stdin.len(),
+                    argv
+                );
 
                 // Prefer base64 payload if provided
                 let wasm_bytes_res: Result<Vec<u8>> = if let Some(b64) = tool_call
@@ -323,5 +324,4 @@ impl ToolExecutor {
 
         Ok(tools)
     }
-
 }

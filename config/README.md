@@ -2,6 +2,13 @@
 
 This directory contains all configuration files for the Shannon AI platform. Each YAML file serves a specific purpose in configuring different aspects of the system.
 
+## 🔀 Configuration Precedence
+
+Settings can be supplied from several sources. When the same key appears in more than one place, Shannon resolves it using this order (highest priority first):
+1. Environment variables (including `.env` files or runtime exports)
+2. Docker Compose defaults
+3. YAML configuration files in this directory, such as `features.yaml` or `shannon.yaml`
+
 ## 📁 Configuration Files Overview
 
 | File | Purpose | Usage | Environment |

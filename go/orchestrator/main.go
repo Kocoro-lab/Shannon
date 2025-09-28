@@ -54,6 +54,39 @@ func main() {
 	}
 	defer logger.Sync()
 
+	// Load feature defaults (non-fatal if missing) and resolve workflow runtime knobs
+	workflowRuntime := cfg.ResolveWorkflowRuntime(nil)
+	if featuresCfg, err := cfg.Load(); err != nil {
+		logger.Warn("Failed to load feature configuration", zap.Error(err))
+	} else {
+		workflowRuntime = cfg.ResolveWorkflowRuntime(featuresCfg)
+	}
+	if workflowRuntime.BypassFromEnv {
+		logger.Warn("Environment variable overrides workflow synthesis bypass",
+			zap.String("env", "WORKFLOW_SYNTH_BYPASS_SINGLE"),
+			zap.String("config_key", "workflows.synthesis.bypass_single_result"))
+	}
+	if workflowRuntime.ToolParallelismFromEnv {
+		logger.Warn("Environment variable overrides tool parallelism",
+			zap.String("env", "TOOL_PARALLELISM"),
+			zap.String("config_key", "workflows.tool_execution.parallelism"))
+	} else if os.Getenv("TOOL_PARALLELISM") == "" && workflowRuntime.ToolParallelism > 0 {
+		_ = os.Setenv("TOOL_PARALLELISM", strconv.Itoa(workflowRuntime.ToolParallelism))
+	}
+	if workflowRuntime.AutoSelectionFromEnv {
+		logger.Warn("Environment variable overrides automatic tool selection",
+			zap.String("env", "ENABLE_TOOL_SELECTION"),
+			zap.String("config_key", "workflows.tool_execution.auto_selection"))
+	} else {
+		defaultSelection := "0"
+		if workflowRuntime.AutoToolSelection {
+			defaultSelection = "1"
+		}
+		if os.Getenv("ENABLE_TOOL_SELECTION") == "" {
+			_ = os.Setenv("ENABLE_TOOL_SELECTION", defaultSelection)
+		}
+	}
+
 	// Start circuit breaker metrics collection
 	circuitbreaker.StartMetricsCollection()
 
@@ -74,8 +107,8 @@ func main() {
 			streaming.Configure(n)
 		}
 	}
-    // Register streaming SSE/WS on the shared admin HTTP mux (community-ready)
-    httpapi.NewStreamingHandler(streaming.Get(), logger).RegisterRoutes(httpMux)
+	// Register streaming SSE/WS on the shared admin HTTP mux (community-ready)
+	httpapi.NewStreamingHandler(streaming.Get(), logger).RegisterRoutes(httpMux)
 
 	// Start background checks and shared HTTP server
 	go func() {
@@ -116,8 +149,8 @@ func main() {
 	if dbClient != nil {
 		dbChecker := health.NewDatabaseHealthChecker(dbClient.GetDB(), dbClient.Wrapper(), logger)
 		_ = hm.RegisterChecker(dbChecker)
-        // Initialize persistent event store for streaming logs
-        streaming.InitializeEventStore(dbClient, logger)
+		// Initialize persistent event store for streaming logs
+		streaming.InitializeEventStore(dbClient, logger)
 	}
 
 	// Start configuration manager (hot-reload) - ASYNC to prevent deadlock
@@ -247,9 +280,9 @@ func main() {
 							Threshold:            shCfg.Vector.Threshold,
 							Timeout:              shCfg.Vector.Timeout,
 							ExpectedEmbeddingDim: shCfg.Vector.ExpectedEmbeddingDim,
-						MMREnabled:        shCfg.Vector.MmrEnabled,
-						MMRLambda:         shCfg.Vector.MmrLambda,
-						MMRPoolMultiplier: shCfg.Vector.MmrPoolMultiplier,
+							MMREnabled:           shCfg.Vector.MmrEnabled,
+							MMRLambda:            shCfg.Vector.MmrLambda,
+							MMRPoolMultiplier:    shCfg.Vector.MmrPoolMultiplier,
 						}
 						if err := vectordb.ValidateAndInitialize(vcfg); err != nil {
 							logger.Warn("Vector DB initialization with validation failed",
@@ -317,17 +350,16 @@ func main() {
 
 	// Provide workflow defaults from Shannon config/env at submission time
 	orchestratorService.SetWorkflowDefaultsProvider(func() bool {
-		// Default
-		bypass := true
+		bypass := workflowRuntime.BypassSingleResult
 		// Try Shannon config if available
 		if shannonCfgMgr != nil {
 			if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
 				bypass = shCfg.Workflow.BypassSingleResult
 			}
 		}
-		// Env override
+		// Environment overrides take highest precedence
 		if v := os.Getenv("WORKFLOW_SYNTH_BYPASS_SINGLE"); v != "" {
-			bypass = strings.EqualFold(v, "true") || v == "1"
+			bypass = cfg.ParseBool(v)
 		}
 		return bypass
 	})

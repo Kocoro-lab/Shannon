@@ -73,6 +73,13 @@ workflows:
       - relevance     # Is the answer relevant to the query?
     timeout_ms: 5000  # Timeout for reflection evaluation
 
+  synthesis:
+    bypass_single_result: true  # Skip extra synthesis when only one answer is produced
+
+  tool_execution:
+    parallelism: 3              # Maximum concurrent tool executions
+    auto_selection: true        # Allow automatic tool selection
+
   # Complexity thresholds for model tier selection
   complexity:
     simple_threshold: 0.3         # < 0.3 = small model tier
@@ -95,6 +102,19 @@ workflows:
   p2p:
     enabled: false  # Set to true to enable P2P coordination between agents
     timeout_seconds: 360  # Maximum wait time for dependencies (6 minutes default)
+
+# Enforcement defaults (applies to rate limiting and circuit breaking)
+enforcement:
+  timeout_seconds: 30
+  max_tokens: 4096
+
+  rate_limiting:
+    rps: 10
+
+  circuit_breaker:
+    error_threshold: 0.5
+    min_requests: 20
+    window_seconds: 30
 
 # Learning system
 continuous_learning:
@@ -144,6 +164,10 @@ security:
     enabled: true
     requests_per_minute: 100
     burst_size: 20
+
+# Gateway defaults
+gateway:
+  skip_auth: false
 
 # Storage configuration
 storage:
