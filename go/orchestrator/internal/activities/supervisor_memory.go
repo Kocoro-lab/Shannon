@@ -17,23 +17,44 @@ import (
 	"go.temporal.io/sdk/log"
 )
 
+func getFloatEnv(key string, defaultValue float64) float64 {
+	if val := os.Getenv(key); val != "" {
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f
+		}
+	}
+	return defaultValue
+}
+
+// getFloatEnvWithRange gets a float environment variable within a specified range
+func getFloatEnvWithRange(key string, defaultValue, min, max float64) float64 {
+	val := getFloatEnv(key, defaultValue)
+	if val < min {
+		return min
+	}
+	if val > max {
+		return max
+	}
+	return val
+}
+
 // Configuration constants for supervisor memory
 var (
 	// Similarity threshold for matching decomposition patterns (0.0 to 1.0)
-	DecompositionSimilarityThreshold = getFloatEnv("DECOMPOSITION_SIMILARITY_THRESHOLD", 0.8)
+	DecompositionSimilarityThreshold = getFloatEnvWithRange("DECOMPOSITION_SIMILARITY_THRESHOLD", 0.8, 0.0, 1.0)
 
 	// Success rate threshold for considering a pattern successful (0.0 to 1.0)
-	PatternSuccessThreshold = getFloatEnv("PATTERN_SUCCESS_THRESHOLD", 0.7)
+	PatternSuccessThreshold = getFloatEnvWithRange("PATTERN_SUCCESS_THRESHOLD", 0.7, 0.0, 1.0)
 
 	// Exploration rate for epsilon-greedy strategy selection (0.0 to 1.0)
-	StrategyExplorationRate = getFloatEnv("STRATEGY_EXPLORATION_RATE", 0.1)
+	StrategyExplorationRate = getFloatEnvWithRange("STRATEGY_EXPLORATION_RATE", 0.1, 0.0, 1.0)
 
 	// Speed vs accuracy thresholds
-	SpeedPriorityThreshold = getFloatEnv("SPEED_PRIORITY_THRESHOLD", 0.3)
-	AccuracyPriorityThreshold = getFloatEnv("ACCURACY_PRIORITY_THRESHOLD", 0.8)
+	SpeedPriorityThreshold = getFloatEnvWithRange("SPEED_PRIORITY_THRESHOLD", 0.3, 0.0, 1.0)
+	AccuracyPriorityThreshold = getFloatEnvWithRange("ACCURACY_PRIORITY_THRESHOLD", 0.8, 0.0, 1.0)
 
 	// Default speed vs accuracy balance
-	DefaultSpeedVsAccuracy = getFloatEnv("DEFAULT_SPEED_VS_ACCURACY", 0.7)
+	DefaultSpeedVsAccuracy = getFloatEnvWithRange("DEFAULT_SPEED_VS_ACCURACY", 0.7, 0.0, 1.0)
 
 	// Maximum duration baseline for speed scoring (milliseconds)
 	MaxDurationBaseline = getFloatEnv("MAX_DURATION_BASELINE_MS", 30000)
@@ -44,15 +65,6 @@ var (
 	// Maximum number of strategy performance entries to keep
 	MaxStrategyPerformanceEntries = 100
 )
-
-func getFloatEnv(key string, defaultValue float64) float64 {
-	if val := os.Getenv(key); val != "" {
-		if f, err := strconv.ParseFloat(val, 64); err == nil {
-			return f
-		}
-	}
-	return defaultValue
-}
 
 // SupervisorMemoryContext enriches raw memory with strategic insights
 type SupervisorMemoryContext struct {
@@ -156,7 +168,11 @@ func FetchSupervisorMemory(ctx context.Context, input FetchSupervisorMemoryInput
 		"query", input.Query)
 
 	memory := &SupervisorMemoryContext{
-		StrategyPerformance: make(map[string]StrategyStats),
+		StrategyPerformance:  make(map[string]StrategyStats),
+		DecompositionHistory: []DecompositionMemory{},
+		TeamCompositions:     []TeamMemory{},
+		FailurePatterns:      []FailurePattern{},
+		ConversationHistory:  []map[string]interface{}{},
 	}
 
 	// 1. Get conversation history (existing implementation)
@@ -227,7 +243,10 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
     // Search for similar decompositions recorded for this session
     results, err := vdb.SearchDecompositionPatterns(ctx, queryEmbedding, sessionID, "", 5, 0.7)
     if err != nil {
-        // Collection might not exist yet
+        // Collection might not exist yet, log but don't fail
+        logger := getLoggerSafe(ctx)
+        logger.Info("Decomposition patterns collection not found or search failed",
+            "error", err, "session_id", sessionID)
         return nil
     }
 
@@ -318,7 +337,10 @@ func fetchStrategyPerformance(ctx context.Context, memory *SupervisorMemoryConte
 			err := rows.Scan(&strategy, &stats.TotalRuns, &stats.SuccessRate,
 				&stats.AvgDuration, &stats.AvgTokenCost)
 			if err != nil {
-				logger.Warn("Failed to scan strategy performance row", "error", err, "strategy", strategy)
+				logger.Error("Failed to scan strategy performance row",
+					"error", err, "strategy", strategy,
+					"session_id", sessionID, "user_id", userID)
+				// TODO: Add metrics.DatabaseErrors when available
 				continue
 			}
 
@@ -679,10 +701,19 @@ func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) er
 	}
 
     if _, err := vdb.Upsert(ctx, collection, []vectordb.UpsertItem{point}); err != nil {
-        logger.Error("Failed to store decomposition pattern", "error", err)
+        logger.Error("Failed to store decomposition pattern",
+            "error", err, "collection", collection,
+            "session_id", input.SessionID, "strategy", input.Strategy)
+        // TODO: Add metrics.VectorDBErrors when available
+
         // Fallback: try storing in generic task_embeddings so retrieval still has signal
         if _, fbErr := vdb.UpsertTaskEmbedding(ctx, embedding, payload); fbErr != nil {
-            logger.Error("Fallback store to task_embeddings failed", "error", fbErr)
+            logger.Error("Fallback store to task_embeddings also failed",
+                "error", fbErr, "session_id", input.SessionID)
+            // TODO: Add metrics.VectorDBErrors when available
+        } else {
+            logger.Info("Successfully stored decomposition pattern in fallback collection",
+                "session_id", input.SessionID)
         }
         // Non-critical error, don't fail the activity
         return nil

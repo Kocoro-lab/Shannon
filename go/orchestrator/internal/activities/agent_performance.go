@@ -5,8 +5,27 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 )
+
+// rngGuard protects the shared RNG to keep epsilon-greedy selection goroutine-safe.
+var (
+	rngGuard sync.Mutex
+	rng      = rand.New(rand.NewSource(time.Now().UnixNano()))
+)
+
+func randFloat64() float64 {
+	rngGuard.Lock()
+	defer rngGuard.Unlock()
+	return rng.Float64()
+}
+
+func randIntn(n int) int {
+	rngGuard.Lock()
+	defer rngGuard.Unlock()
+	return rng.Intn(n)
+}
 
 // AgentPerformanceInput requests performance metrics for agent selection
 type AgentPerformanceInput struct {
@@ -38,8 +57,10 @@ func GetAgentPerformanceMetrics(ctx context.Context, db *sql.DB, in AgentPerform
 		return AgentPerformanceResult{}, nil
 	}
 
-    // Join with task_executions to filter by mode and time window
-    query := `
+	const defaultAgentLimit = 50
+
+	// Join with task_executions to filter by mode and time window
+	query := `
         SELECT
             ae.agent_id,
             AVG(CASE WHEN ae.state = 'COMPLETED' THEN 1.0 ELSE 0.0 END) AS success_rate,
@@ -53,6 +74,7 @@ func GetAgentPerformanceMetrics(ctx context.Context, db *sql.DB, in AgentPerform
         GROUP BY ae.agent_id
         HAVING COUNT(*) >= $3
         ORDER BY success_rate DESC
+        LIMIT $4
     `
 
 	lookbackTime := time.Now().Add(-in.LookbackPeriod)
@@ -61,7 +83,7 @@ func GetAgentPerformanceMetrics(ctx context.Context, db *sql.DB, in AgentPerform
 		minSamples = 5 // Default minimum samples
 	}
 
-	rows, err := db.QueryContext(ctx, query, lookbackTime, in.Mode, minSamples)
+	rows, err := db.QueryContext(ctx, query, lookbackTime, in.Mode, minSamples, defaultAgentLimit)
 	if err != nil {
 		return AgentPerformanceResult{}, fmt.Errorf("query agent performance: %w", err)
 	}
@@ -110,8 +132,8 @@ func GetAgentPerformanceMetrics(ctx context.Context, db *sql.DB, in AgentPerform
 // With probability 1-epsilon, exploit (best performer)
 type SelectAgentEpsilonGreedyInput struct {
 	Performances      []AgentPerformance `json:"performances"`
-	Epsilon           float64            `json:"epsilon"`           // Exploration rate (0.0 to 1.0)
-	DefaultAgentID    string             `json:"default_agent_id"`  // Fallback if no performance data
+	Epsilon           float64            `json:"epsilon"`             // Exploration rate (0.0 to 1.0)
+	DefaultAgentID    string             `json:"default_agent_id"`    // Fallback if no performance data
 	AvailableAgentIDs []string           `json:"available_agent_ids"` // Pool of available agents
 }
 
@@ -130,20 +152,20 @@ func SelectAgentEpsilonGreedy(ctx context.Context, in SelectAgentEpsilonGreedyIn
 		}, nil
 	}
 
-	// Epsilon-greedy selection
-	r := rand.Float64()
+	// Epsilon-greedy selection using shared RNG guarded by mutex
+	r := randFloat64()
 
 	if r < in.Epsilon {
 		// Exploration: random selection from available agents
 		if len(in.AvailableAgentIDs) > 0 {
-			idx := rand.Intn(len(in.AvailableAgentIDs))
+			idx := randIntn(len(in.AvailableAgentIDs))
 			return SelectAgentEpsilonGreedyResult{
 				SelectedAgentID: in.AvailableAgentIDs[idx],
 				IsExploration:   true,
 			}, nil
 		}
 		// Fallback to random from performances
-		idx := rand.Intn(len(in.Performances))
+		idx := randIntn(len(in.Performances))
 		return SelectAgentEpsilonGreedyResult{
 			SelectedAgentID: in.Performances[idx].AgentID,
 			IsExploration:   true,
@@ -159,9 +181,9 @@ func SelectAgentEpsilonGreedy(ctx context.Context, in SelectAgentEpsilonGreedyIn
 
 // Alternative: UCB1 (Upper Confidence Bound) selection for better exploration
 type SelectAgentUCB1Input struct {
-	Performances   []AgentPerformance `json:"performances"`
-	TotalSelections int               `json:"total_selections"` // Total times any agent has been selected
-	DefaultAgentID  string            `json:"default_agent_id"`
+	Performances    []AgentPerformance `json:"performances"`
+	TotalSelections int                `json:"total_selections"` // Total times any agent has been selected
+	DefaultAgentID  string             `json:"default_agent_id"`
 }
 
 type SelectAgentUCB1Result struct {
