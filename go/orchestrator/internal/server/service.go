@@ -772,13 +772,11 @@ func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRe
             ai++
         }
     }
-    // Filter by session_id if provided
+    // Filter by session_id if provided (task_executions.session_id is VARCHAR)
     if req.SessionId != "" {
-        if sid, err := uuid.Parse(req.SessionId); err == nil {
-            where = append(where, fmt.Sprintf("session_id = $%d", ai))
-            args = append(args, sid)
-            ai++
-        }
+        where = append(where, fmt.Sprintf("session_id = $%d", ai))
+        args = append(args, req.SessionId)
+        ai++
     }
     // Filter by status if provided
     if req.FilterStatus != pb.TaskStatus_TASK_STATUS_UNSPECIFIED {
@@ -801,7 +799,7 @@ func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRe
     }
 
     // Total count query
-    countQuery := fmt.Sprintf("SELECT COUNT(*) FROM tasks WHERE %s", strings.Join(where, " AND "))
+    countQuery := fmt.Sprintf("SELECT COUNT(*) FROM task_executions WHERE %s", strings.Join(where, " AND "))
     var total int32
     if err := s.dbClient.Wrapper().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
         s.logger.Warn("ListTasks count failed", zap.Error(err))
@@ -812,9 +810,9 @@ func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRe
     dataQuery := fmt.Sprintf(`
         SELECT workflow_id, query, status, mode,
                started_at, completed_at, created_at,
-               NULLIF(metrics->>'total_tokens', '')::bigint AS total_tokens,
-               NULLIF(metrics->>'total_cost_usd', '')::double precision AS total_cost_usd
-        FROM tasks
+               total_tokens,
+               total_cost_usd
+        FROM task_executions
         WHERE %s
         ORDER BY COALESCE(started_at, created_at) DESC
         LIMIT %d OFFSET %d`, strings.Join(where, " AND "), limit, offset)
@@ -935,22 +933,16 @@ func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessio
 		return nil, nil
 	}
 
-	sessionUUID, err := uuid.Parse(sessionID)
-	if err != nil {
-		return nil, nil
-	}
+    query := `
+        SELECT workflow_id, query, status, mode,
+               started_at, completed_at, created_at,
+               total_tokens, total_cost_usd
+        FROM task_executions
+        WHERE session_id = $1
+        ORDER BY COALESCE(started_at, created_at) DESC
+        LIMIT $2`
 
-	query := `
-		SELECT workflow_id, query, status, mode,
-		       started_at, completed_at, created_at,
-		       NULLIF(metrics->>'total_tokens', '')::bigint AS total_tokens,
-		       NULLIF(metrics->>'total_cost_usd', '')::double precision AS total_cost_usd
-		FROM tasks
-		WHERE session_id = $1
-		ORDER BY COALESCE(started_at, created_at) DESC
-		LIMIT $2`
-
-	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, sessionUUID, limit)
+    rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, sessionID, limit)
 	if err != nil {
 		return nil, err
 	}

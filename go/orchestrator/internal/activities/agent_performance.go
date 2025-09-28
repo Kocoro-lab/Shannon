@@ -38,23 +38,22 @@ func GetAgentPerformanceMetrics(ctx context.Context, db *sql.DB, in AgentPerform
 		return AgentPerformanceResult{}, nil
 	}
 
-	// NOTE: task_execution_id was dropped in migration 005
-	// Using workflow_id and joining with tasks table instead
-	query := `
-		SELECT
-			ae.agent_id,
-			AVG(CASE WHEN ae.state = 'COMPLETED' THEN 1.0 ELSE 0.0 END) AS success_rate,
-			COUNT(*) as total_runs,
-			AVG(ae.tokens_used) as avg_tokens,
-			AVG(ae.duration_ms) as avg_duration_ms
-		FROM agent_executions ae
-		LEFT JOIN tasks t ON ae.workflow_id = t.workflow_id
-		WHERE ae.created_at > $1
-			AND ($2 = '' OR t.metadata->>'mode' = $2)
-		GROUP BY ae.agent_id
-		HAVING COUNT(*) >= $3
-		ORDER BY success_rate DESC
-	`
+    // Join with task_executions to filter by mode and time window
+    query := `
+        SELECT
+            ae.agent_id,
+            AVG(CASE WHEN ae.state = 'COMPLETED' THEN 1.0 ELSE 0.0 END) AS success_rate,
+            COUNT(*) as total_runs,
+            AVG(ae.tokens_used) as avg_tokens,
+            AVG(ae.duration_ms) as avg_duration_ms
+        FROM agent_executions ae
+        LEFT JOIN task_executions te ON ae.workflow_id = te.workflow_id
+        WHERE ae.created_at > $1
+            AND ($2 = '' OR te.mode = $2)
+        GROUP BY ae.agent_id
+        HAVING COUNT(*) >= $3
+        ORDER BY success_rate DESC
+    `
 
 	lookbackTime := time.Now().Add(-in.LookbackPeriod)
 	minSamples := in.MinSamples

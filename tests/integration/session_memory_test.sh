@@ -141,7 +141,7 @@ fi
 info "Test 5: Verifying session was updated after each task"
 
 TASK_COUNT=$(docker compose -f "$COMPOSE_FILE" exec -T postgres \
-  psql -U shannon -d shannon -At -c "SELECT COUNT(*) FROM tasks WHERE workflow_id IN ('$WORKFLOW1_ID', '$(grep -o '"workflowId"[[:space:]]*:[[:space:]]*"[^"]*"' /tmp/session_task2.json | sed 's/.*"\([^"]*\)".*/\1/')');" 2>/dev/null || echo "0")
+  psql -U shannon -d shannon -At -c "SELECT COUNT(*) FROM task_executions WHERE workflow_id IN ('$WORKFLOW1_ID', '$(grep -o '"workflowId"[[:space:]]*:[[:space:]]*"[^"]*"' /tmp/session_task2.json | sed 's/.*"\([^"]*\)".*/\1/')');" 2>/dev/null || echo "0")
 
 [ "$TASK_COUNT" -ge "2" ] || fail "Expected at least 2 tasks in database, found: $TASK_COUNT"
 pass "Multiple tasks tracked in session"
@@ -187,7 +187,7 @@ sleep 3
 info "Test 8: Validating complete session history"
 
 FINAL_TASK_COUNT=$(docker compose -f "$COMPOSE_FILE" exec -T postgres \
-  psql -U shannon -d shannon -At -c "SELECT COUNT(*) FROM tasks WHERE workflow_id LIKE 'task-dev-%' AND created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null || echo "0")
+  psql -U shannon -d shannon -At -c "SELECT COUNT(*) FROM task_executions WHERE workflow_id LIKE 'task-dev-%' AND created_at > NOW() - INTERVAL '5 minutes';" 2>/dev/null || echo "0")
 
 info "Total recent tasks in database: $FINAL_TASK_COUNT"
 

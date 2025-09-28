@@ -191,14 +191,12 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
 		return err
 	}
 
-	// Search for similar decompositions using GetSessionContextSemanticByEmbedding
-	// Since we don't have a generic Search method, we'll reuse existing search
-	// This searches in task_embeddings collection which stores Q&A pairs
-	results, err := vdb.GetSessionContextSemanticByEmbedding(ctx, queryEmbedding, sessionID, "", 5, 0.7)
-	if err != nil {
-		// Collection might not exist yet
-		return nil
-	}
+    // Search for similar decompositions recorded for this session
+    results, err := vdb.SearchDecompositionPatterns(ctx, queryEmbedding, sessionID, "", 5, 0.7)
+    if err != nil {
+        // Collection might not exist yet
+        return nil
+    }
 
 	for _, result := range results {
 		if pattern, ok := result.Payload["pattern"].(string); ok {
@@ -220,13 +218,21 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
 				dm.Strategy = strategy
 			}
 
-			// Extract performance metrics
-			if sr, ok := result.Payload["success_rate"].(float64); ok {
-				dm.SuccessRate = sr
-			}
-			if dur, ok := result.Payload["avg_duration_ms"].(float64); ok {
-				dm.AvgDuration = int64(dur)
-			}
+            // Extract performance indicators (support both aggregated and raw keys)
+            if sr, ok := result.Payload["success_rate"].(float64); ok {
+                dm.SuccessRate = sr
+            } else if s, ok := result.Payload["success"].(bool); ok {
+                if s {
+                    dm.SuccessRate = 1.0
+                } else {
+                    dm.SuccessRate = 0.0
+                }
+            }
+            if dur, ok := result.Payload["avg_duration_ms"].(float64); ok {
+                dm.AvgDuration = int64(dur)
+            } else if d2, ok := result.Payload["duration_ms"].(float64); ok {
+                dm.AvgDuration = int64(d2)
+            }
 
 			memory.DecompositionHistory = append(memory.DecompositionHistory, dm)
 		}
@@ -250,20 +256,21 @@ func fetchStrategyPerformance(ctx context.Context, memory *SupervisorMemoryConte
 			return fmt.Errorf("database connection unavailable")
 		}
 
-		// Query agent_executions table for strategy performance
-		// Note: GROUP BY naturally limits results to number of unique strategies (typically <10)
-		query := `
-			SELECT
-				strategy,
-				COUNT(*) as total_runs,
-				AVG(CASE WHEN status = 'COMPLETED' THEN 1.0 ELSE 0.0 END) as success_rate,
-				AVG(duration_ms) as avg_duration_ms,
-				AVG(tokens_used) as avg_token_cost
-			FROM agent_executions
-			WHERE session_id = $1 OR user_id = $2
-			GROUP BY strategy
-			LIMIT 20
-		`
+				// Query agent_executions joined with task_executions for session/user filtering
+				query := `
+					SELECT
+						COALESCE(ae.strategy, ae.metadata->>'strategy') AS strategy,
+						COUNT(*) AS total_runs,
+						AVG(CASE WHEN ae.state = 'COMPLETED' THEN 1.0 ELSE 0.0 END) AS success_rate,
+						AVG(ae.duration_ms)::bigint AS avg_duration_ms,
+						AVG(ae.tokens_used)::int AS avg_token_cost
+					FROM agent_executions ae
+					LEFT JOIN task_executions te ON te.workflow_id = ae.workflow_id
+					WHERE (te.session_id = $1 OR te.user_id::text = $2)
+						AND COALESCE(ae.strategy, ae.metadata->>'strategy') IS NOT NULL
+					GROUP BY 1
+					LIMIT 20
+				`
 
 		rows, err := db.QueryContext(ctx, query, sessionID, userID)
 		if err != nil {
@@ -341,12 +348,12 @@ func loadUserPreferences(ctx context.Context, memory *SupervisorMemoryContext, s
 
 	// Get average response length preference
 	var avgResponseLength float64
-	err := db.QueryRowContext(ctx, `
-		SELECT AVG(LENGTH(response))
-		FROM tasks
-		WHERE session_id = $1 OR user_id = $2
-		LIMIT 100
-	`, sessionID, userID).Scan(&avgResponseLength)
+    err := db.QueryRowContext(ctx, `
+        SELECT AVG(LENGTH(result))
+        FROM task_executions
+        WHERE session_id = $1 OR user_id::text = $2
+        LIMIT 100
+    `, sessionID, userID).Scan(&avgResponseLength)
 
 	if err == nil {
 		if avgResponseLength < 500 {
@@ -360,12 +367,12 @@ func loadUserPreferences(ctx context.Context, memory *SupervisorMemoryContext, s
 
 	// Infer expertise level from query complexity
 	var avgComplexity float64
-	err = db.QueryRowContext(ctx, `
-		SELECT AVG(estimated_complexity)
-		FROM tasks
-		WHERE session_id = $1 OR user_id = $2
-		LIMIT 100
-	`, sessionID, userID).Scan(&avgComplexity)
+    err = db.QueryRowContext(ctx, `
+        SELECT AVG(complexity_score)
+        FROM task_executions
+        WHERE session_id = $1 OR user_id::text = $2
+        LIMIT 100
+    `, sessionID, userID).Scan(&avgComplexity)
 
 	if err == nil {
 		if avgComplexity < 3 {
@@ -634,11 +641,15 @@ func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) er
 		Payload: payload,
 	}
 
-	if _, err := vdb.Upsert(ctx, collection, []vectordb.UpsertItem{point}); err != nil {
-		logger.Error("Failed to store decomposition pattern", "error", err)
-		// Non-critical error, don't fail the activity
-		return nil
-	}
+    if _, err := vdb.Upsert(ctx, collection, []vectordb.UpsertItem{point}); err != nil {
+        logger.Error("Failed to store decomposition pattern", "error", err)
+        // Fallback: try storing in generic task_embeddings so retrieval still has signal
+        if _, fbErr := vdb.UpsertTaskEmbedding(ctx, embedding, payload); fbErr != nil {
+            logger.Error("Fallback store to task_embeddings failed", "error", fbErr)
+        }
+        // Non-critical error, don't fail the activity
+        return nil
+    }
 
 	logger.Info("Recorded decomposition pattern",
 		"strategy", input.Strategy,

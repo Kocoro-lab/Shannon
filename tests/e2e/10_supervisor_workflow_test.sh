@@ -78,7 +78,7 @@ echo ""
 echo "Checking execution mode in database..."
 MODE=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
     psql -U shannon -d shannon -t -c \
-    "SELECT mode FROM tasks WHERE workflow_id='$WORKFLOW_ID';" 2>/dev/null | xargs)
+    "SELECT mode FROM task_executions WHERE workflow_id='$WORKFLOW_ID';" 2>/dev/null | xargs)
 
 echo "Execution mode: $MODE"
 
@@ -170,3 +170,26 @@ echo "- DAG workflow with dependencies tested"
 echo ""
 echo "Check logs for detailed execution patterns:"
 echo "  docker compose -f deploy/compose/docker-compose.yml logs orchestrator --tail 200 | grep -i supervisor"
+
+# ===== Enhanced Supervisor Memory Tests =====
+# Tests merged from test_enhanced_supervisor.sh
+
+test_supervisor_memory_learning() {
+    echo -e "\n${YELLOW}Test: Supervisor Memory Learning${NC}"
+
+    # Submit similar tasks to test learning
+    SESSION_ID="memory-learning-$(date +%s)"
+
+    # First task
+    RESPONSE1=$(submit_task "Analyze market data and create investment report")
+    TASK1_ID=$(extract_task_id "$RESPONSE1")
+    wait_for_completion "$TASK1_ID" 30
+
+    # Second similar task - should use learned patterns
+    RESPONSE2=$(submit_task "Analyze sales data and create revenue report")
+    TASK2_ID=$(extract_task_id "$RESPONSE2")
+
+    # Check if supervisor memory was used
+    check_supervisor_memory_usage "$TASK2_ID"
+}
+

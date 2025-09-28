@@ -25,4 +25,4 @@ done
 
 # Get the actual response from the database
 docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-  psql -U shannon -d shannon -At -c "SELECT response FROM tasks WHERE workflow_id='${WORKFLOW_ID}' LIMIT 1;" 2>/dev/null
+  psql -U shannon -d shannon -At -c "SELECT result FROM task_executions WHERE workflow_id='${WORKFLOW_ID}' LIMIT 1;" 2>/dev/null

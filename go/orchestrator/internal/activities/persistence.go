@@ -1,12 +1,13 @@
 package activities
 
 import (
-	"context"
-	"time"
+    "context"
+    "database/sql"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+    "github.com/google/uuid"
+    "go.uber.org/zap"
 )
 
 // PersistenceActivities handles database persistence for agent and tool executions
@@ -85,22 +86,48 @@ func (p *PersistenceActivities) PersistAgentExecution(ctx context.Context, input
 		zap.String("agent_id", input.AgentID),
 	)
 
-	agentExec := &db.AgentExecution{
-		ID:           uuid.New().String(),
-		WorkflowID:   input.WorkflowID,
-		TaskID:       input.WorkflowID, // Use workflow ID as task ID
-		AgentID:      input.AgentID,
-		Input:        input.Input,
-		Output:       input.Output,
-		State:        input.State,
-		TokensUsed:   input.TokensUsed,
-		ModelUsed:    input.ModelUsed,
-		DurationMs:   input.DurationMs,
-		ErrorMessage: input.Error,
-		Metadata:     input.Metadata,
-		CreatedAt:    time.Now(),
-		UpdatedAt:    time.Now(),
-	}
+    // Ensure metadata map exists and enrich with session/user if available via DB
+    if input.Metadata == nil {
+        input.Metadata = make(map[string]interface{})
+    }
+
+    // Attempt to look up session_id and user_id via task_executions for this workflow
+    if p.dbClient != nil {
+        if sqlDB := p.dbClient.GetDB(); sqlDB != nil {
+            var sessID, userUUID sql.NullString
+            _ = sqlDB.QueryRowContext(ctx,
+                "SELECT session_id::text, user_id::text FROM task_executions WHERE workflow_id = $1 ORDER BY created_at DESC LIMIT 1",
+                input.WorkflowID,
+            ).Scan(&sessID, &userUUID)
+            if sessID.Valid && sessID.String != "" {
+                if _, ok := input.Metadata["session_id"]; !ok {
+                    input.Metadata["session_id"] = sessID.String
+                }
+            }
+            if userUUID.Valid && userUUID.String != "" {
+                if _, ok := input.Metadata["user_id"]; !ok {
+                    input.Metadata["user_id"] = userUUID.String
+                }
+            }
+        }
+    }
+
+    agentExec := &db.AgentExecution{
+        ID:           uuid.New().String(),
+        WorkflowID:   input.WorkflowID,
+        TaskID:       input.WorkflowID, // Use workflow ID as task ID
+        AgentID:      input.AgentID,
+        Input:        input.Input,
+        Output:       input.Output,
+        State:        input.State,
+        TokensUsed:   input.TokensUsed,
+        ModelUsed:    input.ModelUsed,
+        DurationMs:   input.DurationMs,
+        ErrorMessage: input.Error,
+        Metadata:     input.Metadata,
+        CreatedAt:    time.Now(),
+        UpdatedAt:    time.Now(),
+    }
 
 	// Queue the write
 	err := p.dbClient.QueueWrite(db.WriteTypeAgentExecution, agentExec, func(writeErr error) {

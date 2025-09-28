@@ -97,7 +97,7 @@ fi
 info "Test 4: Verifying task persistence in database"
 
 DB_STATUS=$(docker compose -f "$COMPOSE_FILE" exec -T postgres \
-  psql -U shannon -d shannon -At -c "SELECT status FROM tasks WHERE workflow_id='$WORKFLOW_ID' LIMIT 1;" 2>/dev/null || echo "")
+  psql -U shannon -d shannon -At -c "SELECT status FROM task_executions WHERE workflow_id='$WORKFLOW_ID' LIMIT 1;" 2>/dev/null || echo "")
 
 [ -n "$DB_STATUS" ] || fail "Task not found in database"
 echo "$DB_STATUS" | grep -Eiq "completed|failed|cancelled|timeout" || fail "Task status not terminal in database"
