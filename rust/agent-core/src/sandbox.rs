@@ -71,9 +71,12 @@ impl ModuleCache {
             return Ok(Arc::clone(module));
         }
 
-        debug!("Compiling WASM module for {} ({}MB)", path, wasm_bytes.len() / 1024 / 1024);
-        let module = Module::new(engine, wasm_bytes)
-            .context("Failed to compile WASM module")?;
+        debug!(
+            "Compiling WASM module for {} ({}MB)",
+            path,
+            wasm_bytes.len() / 1024 / 1024
+        );
+        let module = Module::new(engine, wasm_bytes).context("Failed to compile WASM module")?;
         let module = Arc::new(module);
         self.modules.insert(path.to_string(), Arc::clone(&module));
         info!("Cached compiled WASM module for {}", path);
@@ -87,7 +90,8 @@ impl ModuleCache {
 }
 
 // Use tokio::sync::OnceCell for async-safe static initialization
-static MODULE_CACHE: std::sync::OnceLock<Arc<TokioRwLock<ModuleCache>>> = std::sync::OnceLock::new();
+static MODULE_CACHE: std::sync::OnceLock<Arc<TokioRwLock<ModuleCache>>> =
+    std::sync::OnceLock::new();
 
 fn get_module_cache() -> Arc<TokioRwLock<ModuleCache>> {
     MODULE_CACHE

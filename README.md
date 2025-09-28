@@ -136,6 +136,9 @@ echo "OPENAI_API_KEY=your-key-here" >> .env
 # Start all services and verify
 make dev
 make smoke
+
+# (Optional) Start Grafana & Prometheus monitoring
+cd deploy/compose/grafana && docker compose -f docker-compose-grafana-prometheus.yml up -d
 ```
 
 ### Your First Agent
@@ -285,6 +288,8 @@ open http://localhost:8088
 The visual tools provide comprehensive monitoring:
 - **Shannon Dashboard** (http://localhost:2111) - Real-time agent traffic control, metrics, and events
 - **Temporal UI** (http://localhost:8088) - Workflow debugging and state inspection
+- **Grafana** (http://localhost:3000) - System metrics visualization with Prometheus (optional, see [monitoring setup](deploy/compose/grafana/README.md))
+- **Prometheus** (http://localhost:9090) - Metrics collection and querying (optional)
 - **Combined view** - Full visibility into your AI agents' behavior and system performance
 
 </details>
@@ -703,6 +708,20 @@ teams:
     tools: ["code_*", "test_*", "deploy_*"]
 ```
 
+### Configuration
+
+Shannon uses a layered configuration system with clear precedence:
+
+1. **Environment Variables** (`.env`) - Highest priority, for secrets and deployment-specific settings
+2. **Docker Compose** - Service configurations and port mappings
+3. **YAML Files** (`config/features.yaml`) - Feature flags and default settings
+
+Key configuration files:
+- `config/features.yaml` - Feature toggles, workflow settings, enforcement policies
+- `config/models.yaml` - LLM provider configuration and pricing
+- `.env` - API keys and runtime overrides (see `.env.example`)
+
+For detailed configuration documentation, see [config/README.md](config/README.md).
 
 ### Architecture
 - [Platform Architecture Overview](docs/shannon-platform-architecture.md)
@@ -751,7 +770,6 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - ✅ **OPA policy enforcement** - Fine-grained security and governance rules
 - ✅ **WebSocket streaming** - Real-time agent communication with event filtering and replay
 - ✅ **SSE streaming** - Server-sent events for browser-native streaming
-- ✅ **MCP integration** - Model Context Protocol for standardized tool interfaces
 - ✅ **WASI sandbox** - Secure code execution environment with resource limits
 - ✅ **Multi-agent orchestration** - DAG workflows with parallel execution
 - ✅ **Vector memory** - Qdrant-based semantic search and context retrieval
@@ -759,33 +777,34 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - ✅ **Multi-provider LLM support** - OpenAI, Anthropic, Google, DeepSeek, and more
 - ✅ **Token budget management** - Hard limits with real-time tracking
 - ✅ **Session management** - Durable state with Redis/PostgreSQL persistence
-- 🚧 **LangGraph adapter** - Bridge to LangChain ecosystem (integration framework complete)
-- 🚧 **AutoGen adapter** - Bridge to Microsoft AutoGen multi-agent conversations
+- ✅ **Agent Coordination** - Direct agent-to-agent messaging, dynamic team formation, collaborative planning
+- 🚧 **Provider abstraction layer** - Unified interface for adding new LLM providers with automatic fallback 
+- 🚧 **Advanced Task Decomposition** - Recursive decomposition with ADaPT patterns, chain-of-thought planning, task template library
 
 **v0.2**
-- [ ] **Enterprise SSO** - SAML/OAuth integration with existing identity providers
-- [ ] **Natural language policies** - Human-readable policy definitions with AI assistance
-- [ ] **Enhanced monitoring** - Custom dashboards and alerting rules
-- [ ] **Advanced caching** - Multi-level caching with semantic deduplication
-- [ ] **Real-time collaboration** - Multi-user agent sessions with shared context
-- [ ] **Plugin ecosystem** - Third-party tool and integration marketplace
-- [ ] **Workflow marketplace** - Community-contributed agent templates and patterns
-- [ ] **Edge deployment** - WASM execution in browser environments
+- [ ] **Composable workflows** - Composable YAML-based workflow templates with declarative orchestration patterns
+- [ ] **Native tool expansion** - Additional Rust-native tools for file operations and system interactions
+- [ ] **MCP integration** - Model Context Protocol support for standardized tool interfaces
+- [ ] **Unified Gateway & SDKs** - REST API gateway, Python/TypeScript SDKs, CLI tool for easy adoption
+- [ ] **Enhanced Memory System** - Hierarchical memory with MMR diversity, near-duplicate detection, performance-based agent selection
+- [ ] **Agent Collaboration Foundation** - Agent roles/personas, agent-specific memory, supervisor hierarchies via child workflows
+- [ ] **RAG System** - Document chunking service, knowledge base integration, context injection with source attribution
+- [ ] **Developer Experience** - Quick start in <5 minutes, live streaming visibility, declarative workflow specs
 
 **v0.3**
-- [ ] **Autonomous agent swarms** - Self-organizing multi-agent systems
-- [ ] **Cross-organization federation** - Secure agent communication across tenants
-- [ ] **Predictive scaling** - ML-based resource allocation and optimization
-- [ ] **Blockchain integration** - Proof-of-execution and decentralized governance
-- [ ] **Advanced personalization** - User-specific LoRA adapters and preferences
+- [ ] **Advanced Memory** - Episodic rollups, entity/temporal knowledge graphs (neural network?), consensus memory persistence
+- [ ] **Intelligent Tool Selection** - Semantic tool result caching, agent experience learning, performance-based routing
+- [ ] **Production Observability** - Distributed tracing, custom Grafana dashboards, SLO monitoring
+- [ ] **Enterprise Features** - SSO integration, multi-tenant isolation, approval workflows
+- [ ] **Edge Deployment** - WASM execution in browser, offline-first capabilities
 
 **v0.4**
-- [ ] **Continuous learning** - Automated prompt and strategy optimization
-- [ ] **Multi-agent marketplaces** - Economic incentives and reputation systems
-- [ ] **Advanced reasoning** - Hybrid symbolic + neural approaches
-- [ ] **Global deployment** - Multi-region, multi-cloud architecture
-- [ ] **Regulatory compliance** - SOC 2, GDPR, HIPAA automation
-- [ ] **AI safety frameworks** - Constitutional AI and alignment mechanisms
+- [ ] **Autonomous Intelligence** - Self-organizing agent swarms, critic/reflection loops, group chat coordination
+- [ ] **Advanced Learning** - Pattern recognition from successful workflows, contextual bandits for agent selection
+- [ ] **Cross-Organization Federation** - Secure agent communication across tenants, capability negotiation protocols
+- [ ] **Semantic Code Intelligence** - AST-based code understanding, context-aware refactoring, autonomous debugging
+- [ ] **Regulatory & Compliance** - SOC 2, GDPR, HIPAA automation with audit trails
+- [ ] **AI Safety Frameworks** - Constitutional AI, alignment mechanisms, adversarial testing
 
 ## 📚 Documentation
 

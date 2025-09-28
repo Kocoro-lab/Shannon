@@ -64,7 +64,7 @@ impl WasiSandbox {
             fuel_limit: app_config.wasi.max_fuel,
             execution_timeout: app_config.wasi_timeout(),
             // Python WASM requires larger table limits (5413+ elements)
-            table_elements_limit: 10000,  // Increased for Python WASM
+            table_elements_limit: 10000, // Increased for Python WASM
             instances_limit: 10,
             tables_limit: 10,
             memories_limit: 4,
@@ -313,11 +313,10 @@ impl WasiSandbox {
             }
 
             // Compile module
-            let module = Module::new(&engine, &wasm_bytes)
-                .map_err(|e| {
-                    warn!("WASI: Failed to compile WASM module: {}", e);
-                    anyhow::anyhow!("Failed to compile WASM module: {}", e)
-                })?;
+            let module = Module::new(&engine, &wasm_bytes).map_err(|e| {
+                warn!("WASI: Failed to compile WASM module: {}", e);
+                anyhow::anyhow!("Failed to compile WASM module: {}", e)
+            })?;
 
             // Create store with WASI context and resource limits
             let mut store = Store::new(
@@ -352,12 +351,10 @@ impl WasiSandbox {
                 .context("Failed to add WASI to linker")?;
 
             // Execute the module
-            let instance = linker
-                .instantiate(&mut store, &module)
-                .map_err(|e| {
-                    warn!("WASI: Failed to instantiate WASM module: {}", e);
-                    anyhow::anyhow!("Failed to instantiate WASM module: {}", e)
-                })?;
+            let instance = linker.instantiate(&mut store, &module).map_err(|e| {
+                warn!("WASI: Failed to instantiate WASM module: {}", e);
+                anyhow::anyhow!("Failed to instantiate WASM module: {}", e)
+            })?;
 
             // Try to call _start (WASI main entry point)
             let execution_result = if let Some(start_func) = instance.get_func(&mut store, "_start")
