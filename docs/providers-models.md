@@ -58,9 +58,9 @@ Response (shape):
 ```
 
 Notes:
-- OpenAI models include both seeded entries and dynamically discovered IDs from `models.list()` at startup (requires `OPENAI_API_KEY`).  
-- Anthropic models use known modern IDs (Claude 3.5 family).  
-- Costs are placeholders unless explicitly updated.  
+- OpenAI models include both seeded entries and dynamically discovered IDs from `models.list()` at startup (requires `OPENAI_API_KEY`).
+- Anthropic models use known modern IDs (Claude 3.5 family).
+- **Pricing**: All model costs are centralized in `config/models.yaml`. The LLM service loads pricing from this file for consistent cost tracking across all services.  
 
 ## Model Overrides (Per‑Stage)
 
@@ -80,6 +80,26 @@ DECOMPOSITION_MODEL_ID=gpt-4o
 - `DECOMPOSITION_MODEL_ID`: used by `/agent/decompose`  
 
 If unset, the service selects models by tier.  
+
+## Centralized Pricing Configuration
+
+All model pricing is defined in `config/models.yaml` under the `pricing` section:
+
+```yaml
+pricing:
+  models:
+    openai:
+      gpt-4o-mini:
+        input_per_1k: 0.00015
+        output_per_1k: 0.0006
+```
+
+This single source of truth is used by:
+- **Go Orchestrator**: Budget management and cost tracking
+- **Rust Agent Core**: Token cost calculation
+- **Python LLM Service**: Provider cost reporting
+
+See [Centralized Pricing Documentation](centralized-pricing.md) for details.
 
 ## Requirements
 

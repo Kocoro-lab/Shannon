@@ -143,17 +143,22 @@ Memory features protected by Temporal workflow version gates:
 ## Performance Optimizations
 
 ### Intelligent Chunking
-- **50% storage reduction**: Only stores chunk text
+- **Character-based tokenization**: Uses 4 characters ≈ 1 token approximation for consistent chunking
+- **50% storage reduction**: Only stores chunk text, not full embeddings
 - **Deduplication**: qa_id and chunk_index for idempotency
 - **Efficient reconstruction**: Ordered chunk aggregation
+- **Configurable parameters**: MaxTokens (2000) and OverlapTokens (200) via config
+
+### MMR (Maximal Marginal Relevance) Diversity
+- **Diversity-aware reranking**: Balances relevance with information diversity
+- **Lambda parameter**: Configurable trade-off between relevance (λ→1) and diversity (λ→0)
+- **Default λ=0.7**: Optimized for relevant yet diverse context selection
+- **Pool multiplier**: Fetches 3x requested items, then reranks for diversity
 
 ### Batch Processing
 - **5x faster**: Single API call for multiple chunks
 - **Smart caching**: LRU (2048 entries) + Redis
 - **Reduced costs**: N chunks → 1 API call
-
-### MMR Diversity (Optional)
-- **Configurable diversity**: Balance relevance vs diversity
 - **Pool expansion**: Fetch 3x candidates, re-rank
 - **Better coverage**: Prevents redundant results
 

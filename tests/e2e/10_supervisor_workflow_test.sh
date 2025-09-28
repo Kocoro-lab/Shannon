@@ -6,6 +6,27 @@ set -euo pipefail
 
 source "$(dirname "$0")/submit_and_get_response.sh"
 
+# Define submit_task function for this test
+submit_task() {
+    local query="$1"
+    local session_id="${2:-supervisor-test-$(date +%s)}"
+
+    # Submit task using grpcurl and return JSON response
+    grpcurl -plaintext -d '{
+      "metadata": {"userId":"dev","sessionId":"'"$session_id"'"},
+      "query": "'"$query"'",
+      "context": {}
+    }' localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask 2>/dev/null
+}
+
+# Define get_task_status function
+get_task_status() {
+    local task_id="$1"
+    grpcurl -plaintext -d '{"taskId":"'"$task_id"'"}' \
+        localhost:50052 shannon.orchestrator.OrchestratorService/GetTaskStatus 2>/dev/null | \
+        grep -o '"status": *"[^"]*"' | cut -d'"' -f4 | sed 's/TASK_STATUS_//'
+}
+
 echo "=========================================="
 echo "Supervisor Workflow E2E Test"
 echo "=========================================="

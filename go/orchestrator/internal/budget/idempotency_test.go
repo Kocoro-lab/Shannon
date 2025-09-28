@@ -2,9 +2,11 @@ package budget
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
@@ -46,10 +48,26 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		UserMonthlyUsed:   0,
 	}
 
+	// Expect user lookup/creation first
+	userID := uuid.New()
+	mock.ExpectQuery("SELECT id FROM users WHERE external_id").
+		WithArgs("user-123").
+		WillReturnError(sql.ErrNoRows) // User doesn't exist
+
+	mock.ExpectQuery("INSERT INTO users").
+		WithArgs(sqlmock.AnyArg(), "user-123").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
+
+	// Expect task lookup
+	taskID := uuid.New()
+	mock.ExpectQuery("SELECT id FROM task_executions WHERE workflow_id").
+		WithArgs("task-789").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(taskID))
+
 	// Expect the first insert to succeed
 	mock.ExpectExec("INSERT INTO token_usage").WithArgs(
-		"user-123",       // user_id
-		"task-789",       // task_id
+		userID,           // user_id (UUID)
+		taskID,           // task_id (UUID)
 		"openai",         // provider
 		"gpt-3.5-turbo",  // model
 		100,              // prompt_tokens (InputTokens)
@@ -145,8 +163,33 @@ func TestRecordUsage_DifferentIdempotencyKeys(t *testing.T) {
 		IdempotencyKey: "workflow-123-activity-789-1", // Different key
 	}
 
-	// Expect both inserts to succeed
+	// For first usage - expect user and task lookups
+	userID := uuid.New()
+	taskID := uuid.New()
+
+	// First usage - user lookup
+	mock.ExpectQuery("SELECT id FROM users WHERE external_id").
+		WithArgs("user-123").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
+
+	// First usage - task lookup
+	mock.ExpectQuery("SELECT id FROM task_executions WHERE workflow_id").
+		WithArgs("task-789").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(taskID))
+
+	// First insert
 	mock.ExpectExec("INSERT INTO token_usage").WillReturnResult(sqlmock.NewResult(1, 1))
+
+	// Second usage - same user and task lookups
+	mock.ExpectQuery("SELECT id FROM users WHERE external_id").
+		WithArgs("user-123").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(userID))
+
+	mock.ExpectQuery("SELECT id FROM task_executions WHERE workflow_id").
+		WithArgs("task-789").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(taskID))
+
+	// Second insert
 	mock.ExpectExec("INSERT INTO token_usage").WillReturnResult(sqlmock.NewResult(2, 1))
 
 	// Both calls should succeed and record usage

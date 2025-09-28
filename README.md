@@ -1,24 +1,5 @@
 # Shannon — Production AI Agents That Actually Work
 
-<div align="center">
-
-![Shannon Dashboard](docs/images/dashboard-demo.gif)
-
-*Real-time observability dashboard showing agent traffic control, metrics, and event streams*
-
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                                                                              │
-│     Real-time metrics, event tracking, and system health monitoring.         │
-│     Access at http://localhost:3000 after running 'make dev'                 │
-│                                                                              │
-│     Please ⭐ star this repo to show your support and stay updated!          │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-</div>
-
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
@@ -29,14 +10,20 @@
 
 Shannon is battle-tested infrastructure for AI agents that solves the problems you'll hit at scale: runaway costs, non-deterministic failures, and security nightmares. Built on Temporal workflows and WASI sandboxing, it's the platform we wished existed when our LLM bills hit $50k/month.
 
-## 🔥 The Problems We Solve
+<div align="center">
 
-- **"Our AI costs are out of control"** → 70% token reduction via intelligent caching
-- **"We can't debug production issues"** → Deterministic replay of any workflow
-- **"Agents keep breaking randomly"** → Time-travel debugging with full state history
-- **"We're worried about prompt injection"** → WASI sandbox + OPA policies for bulletproof security
-- **"Different teams need different models"** → Hot-swap between 15+ LLM providers
-- **"We need audit trails for compliance"** → Every decision logged and traceable
+![Shannon Dashboard](docs/images/dashboard-demo.gif)
+
+*Real-time observability dashboard showing agent traffic control, metrics, and event streams*
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                                                                              │
+│     Please ⭐ star this repo to show your support and stay updated! ⭐        │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+</div>
 
 ## ⚡ What Makes Shannon Different
 
@@ -51,6 +38,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - **Token Budget Control** - Hard limits per user/session with real-time tracking
 - **Policy Engine (OPA)** - Define who can use which tools, models, and data
 - **Multi-Tenancy** - Complete isolation between users, sessions, and organizations
+- **Human-in-the-Loop** - Approval workflow for high-risk operations (complexity >0.7 or dangerous tools)
 
 ### 📈 Scale Without Breaking
 - **70% Cost Reduction** - Smart caching, session management, and token optimization
@@ -66,7 +54,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 |---------|---------|-----------|---------|---------|
 | **Multi-Agent Orchestration** | ✅ DAG/Graph workflows | ✅ Stateful graphs | ✅ Group chat | ✅ Crew/roles |
 | **Agent Communication** | ✅ Message passing | ✅ Tool calling | ✅ Conversations | ✅ Delegation |
-| **Memory & Context** | ✅ Chunked storage, MMR diversity | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
+| **Memory & Context** | ✅ Chunked storage (character-based), MMR diversity | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
 | **Debugging Production Issues** | ✅ Replay any workflow | ❌ Limited debugging | ❌ Basic logging | ❌ |
 | **Token Cost Control** | ✅ Hard budget limits | ❌ | ❌ | ❌ |
 | **Security Sandbox** | ✅ WASI isolation | ❌ | ❌ | ❌ |
@@ -148,10 +136,7 @@ echo "OPENAI_API_KEY=your-key-here" >> .env
 # Start all services and verify
 make dev
 make smoke
-
-> **Note:** The setup process handles environment configuration and protobuf generation automatically. This is required for first-time setup since generated files are not checked into the repository. If `make` is not available on your system, use the provided shell scripts instead.
->
-> **Important:** Shannon requires protobuf version 5.x (specifically 5.29.2). The setup scripts ensure the correct version is installed automatically.
+```
 
 ### Your First Agent
 
@@ -306,7 +291,11 @@ The visual tools provide comprehensive monitoring:
 
 ## 📚 Examples That Actually Matter
 
-### Example 1: Cost-Controlled Customer Support
+*Click each example below to expand. These showcase Shannon's unique features that set it apart from other frameworks.*
+
+<details>
+<summary><b>Example 1: Cost-Controlled Customer Support</b></summary>
+
 ```bash
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
@@ -321,7 +310,11 @@ Key features:
 - **Policy control** - Apply OPA policies for allowed actions (see Example 3)
 - **Result**: 70% cost reduction through smart caching and session management
 
-### Example 2: Debugging Production Failures
+</details>
+
+<details>
+<summary><b>Example 2: Debugging Production Failures</b></summary>
+
 ```bash
 # Production agent failed at 3am? No problem.
 # Export and replay the workflow in one command
@@ -334,7 +327,11 @@ Key features:
 # Fix the issue, add a test case, never see it again
 ```
 
-### Example 3: Multi-Team Model Governance
+</details>
+
+<details>
+<summary><b>Example 3: Multi-Team Model Governance</b></summary>
+
 ```rego
 # config/opa/policies/data-science.rego
 package shannon.teams.datascience
@@ -369,7 +366,11 @@ deny_tool["database_write"] {
 }
 ```
 
-### Example 4: Security-First Code Execution
+</details>
+
+<details>
+<summary><b>Example 4: Security-First Code Execution</b></summary>
+
 ```bash
 # Python code runs in isolated WASI sandbox with full standard library
 ./scripts/submit_task.sh "Execute Python: print('Hello from secure WASI!')"
@@ -384,6 +385,159 @@ deny_tool["database_write"] {
 # Output: 15
 ```
 [→ Full Python Execution Guide](docs/python-code-execution.md)
+
+</details>
+
+<details>
+<summary><b>Example 5: Human-in-the-Loop Approval</b></summary>
+
+```bash
+# Configure approval for high-complexity or dangerous operations
+cat > config/features.yaml << 'EOF'
+workflows:
+  approval:
+    enabled: true
+    complexity_threshold: 0.7  # Require approval for complex tasks
+    dangerous_tools: ["file_delete", "database_write", "api_call"]
+EOF
+
+# Submit a complex task that triggers approval
+./scripts/submit_task.sh "Delete all temporary files older than 30 days from /tmp"
+
+# Workflow pauses and waits for human approval
+# Check Temporal UI: http://localhost:8088
+# Approve via signal: temporal workflow signal --workflow-id <ID> --name approval --input '{"approved":true}'
+```
+**Unique to Shannon**: Configurable approval workflows based on complexity scoring and tool usage.
+
+</details>
+
+<details>
+<summary><b>Example 6: Multi-Agent Memory & Learning</b></summary>
+
+```bash
+# Agent learns from conversation and applies knowledge
+SESSION="learning-session-$(date +%s)"
+
+# Agent learns your preferences
+./scripts/submit_task.sh "I prefer Python over Java for data science" "$SESSION"
+./scripts/submit_task.sh "I like using pandas and numpy for analysis" "$SESSION"
+./scripts/submit_task.sh "My projects usually involve machine learning" "$SESSION"
+
+# Later, agent recalls and applies this knowledge
+./scripts/submit_task.sh "What language and tools should I use for my new data project?" "$SESSION"
+# Response includes personalized recommendations based on learned preferences
+
+# Check memory storage (character-based chunking with MMR diversity)
+grpcurl -plaintext -d "{\"sessionId\":\"$SESSION\"}" \
+  localhost:50052 shannon.orchestrator.OrchestratorService/GetSessionContext
+```
+**Unique to Shannon**: Persistent memory with intelligent chunking (4 chars ≈ 1 token) and MMR diversity ranking.
+
+</details>
+
+<details>
+<summary><b>Example 7: Supervisor Workflow with Dynamic Strategy</b></summary>
+
+```bash
+# Complex task automatically delegates to multiple specialized agents
+./scripts/submit_task.sh "Analyze our website performance, identify bottlenecks, and create an optimization plan with specific recommendations"
+
+# Watch the orchestration in real-time
+curl -N "http://localhost:8081/stream/sse?workflow_id=<WORKFLOW_ID>"
+
+# Events show:
+# - Complexity analysis (score: 0.85)
+# - Strategy selection (supervisor pattern chosen)
+# - Dynamic agent spawning (analyzer, investigator, planner)
+# - Parallel execution with coordination
+# - Synthesis and quality reflection
+```
+**Unique to Shannon**: Automatic workflow pattern selection based on task complexity.
+
+</details>
+
+<details>
+<summary><b>Example 8: Time-Travel Debugging with State Inspection</b></summary>
+
+```bash
+# Production issue at 3am? Debug it step-by-step
+FAILED_WORKFLOW="task-prod-failure-20250928-0300"
+
+# Export with full state history
+./scripts/replay_workflow.sh export $FAILED_WORKFLOW debug.json
+
+# Inspect specific decision points
+go run ./tools/replay -history debug.json -inspect-step 5
+
+# Modify and test fix locally
+go run ./tools/replay -history debug.json -override-activity GetLLMResponse
+
+# Validate fix passes all historical workflows
+make ci-replay
+```
+**Unique to Shannon**: Complete workflow state inspection and modification for debugging.
+
+</details>
+
+<details>
+<summary><b>Example 9: Token Budget with Circuit Breakers</b></summary>
+
+```bash
+# Set strict budget with automatic fallbacks
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: sk_test_123456" \
+  -d '{
+    "query": "Generate a comprehensive market analysis report",
+    "session_id": "budget-test",
+    "config": {
+      "budget": {
+        "max_tokens": 5000,
+        "fallback_model": "gpt-4o-mini",
+        "circuit_breaker": {
+          "threshold": 0.8,
+          "cooldown_seconds": 60
+        }
+      }
+    }
+  }'
+
+# System automatically:
+# - Switches to cheaper model when 80% budget consumed
+# - Implements cooldown period to prevent runaway costs
+# - Returns partial results if budget exhausted
+```
+**Unique to Shannon**: Real-time budget enforcement with automatic degradation.
+
+</details>
+
+<details>
+<summary><b>Example 10: Multi-Tenant Agent Isolation</b></summary>
+
+```bash
+# Each tenant gets isolated agents with separate policies
+# Tenant A: Data Science team
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "X-API-Key: sk_tenant_a_key" \
+  -H "X-Tenant-ID: data-science" \
+  -d '{"query": "Train a model on our dataset"}'
+
+# Tenant B: Customer Support
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "X-API-Key: sk_tenant_b_key" \
+  -H "X-Tenant-ID: support" \
+  -d '{"query": "Access customer database"}'  # Denied by OPA policy
+
+# Complete isolation:
+# - Separate memory/vector stores per tenant
+# - Independent token budgets
+# - Custom model access
+# - Isolated session management
+```
+**Unique to Shannon**: Enterprise-grade multi-tenancy with OPA policy enforcement.
+
+</details>
 
 <details>
 <summary><b>More Production Examples</b> (click to expand)</summary>
@@ -562,21 +716,6 @@ teams:
 - [Providers & Models](docs/providers-models.md)
 - [Python WASI Setup](docs/python-wasi-setup.md)
 
-### Embeddings & Vector Memory
-
-- **How vectors are generated**: The Go orchestrator calls the Python LLM Service at `/embeddings/`, which by default uses OpenAI (model `text-embedding-3-small`).
-- **Advanced features**:
-  - **Intelligent chunking**: Long answers (>2000 tokens) automatically split with overlap for better retrieval
-  - **Batch embeddings**: Multiple chunks processed in one API call (5x faster)
-  - **MMR diversity**: Optional re-ranking for diverse results (configure `mmr_enabled`, `mmr_lambda` in `config/shannon.yaml`)
-  - **Storage optimized**: 50% reduction via chunk-only storage + payload indexes
-- **Graceful degradation**: If no embedding provider is configured (e.g., no `OPENAI_API_KEY`) or the endpoint is unavailable, workflows still run. Vector features degrade gracefully:
-  - No vectors are stored (vector upserts are skipped)
-  - Session memory retrieval returns an empty list
-  - Similar-query enrichment is skipped
-- **Enable vectors**: Set `OPENAI_API_KEY` in `.env`, keep `vector.enabled: true` in `config/shannon.yaml`, and run Qdrant (port 6333)
-- **Disable vectors**: Set `vector.enabled: false` in `config/shannon.yaml` (or set `degradation.fallback_behaviors.vector_search: skip`)
-
 ## 🔧 Development
 
 ### Local Development
@@ -595,23 +734,6 @@ make logs
 # Check service status
 make ps
 ```
-
-### Testing
-
-```bash
-# Run integration tests
-make integration-tests
-
-# Run specific integration test
-make integration-single
-
-# Test session management
-make integration-session
-
-# Run coverage reports
-make coverage
-```
-
 ## 🤝 Contributing
 
 We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.

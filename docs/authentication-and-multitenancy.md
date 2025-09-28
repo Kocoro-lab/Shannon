@@ -190,10 +190,11 @@ CREATE TABLE sessions (
     metadata JSONB
 );
 
--- Tasks with tenant isolation
-CREATE TABLE tasks (
-    workflow_id VARCHAR(255) PRIMARY KEY,
-    user_id VARCHAR(255),
+-- Task executions with tenant isolation
+CREATE TABLE task_executions (
+    id UUID PRIMARY KEY,
+    workflow_id VARCHAR(255) UNIQUE NOT NULL,
+    user_id UUID,
     tenant_id UUID,
     status VARCHAR(50),
     created_at TIMESTAMP

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -42,6 +44,10 @@ type WorkflowConfig struct {
 	// Router/DAG config
 	SimpleThreshold   float64 `json:"simple_threshold"`
 	MaxParallelAgents int     `json:"max_parallel_agents"`
+
+	// Complexity thresholds for model tier selection
+	ComplexitySimpleThreshold float64 `json:"complexity_simple_threshold"` // < this = small model
+	ComplexityMediumThreshold float64 `json:"complexity_medium_threshold"` // < this = medium model, >= this = large model
 
 	// Approval config
 	ApprovalEnabled             bool     `json:"approval_enabled"`
@@ -114,6 +120,10 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 		// Router/DAG
 		SimpleThreshold:   v.GetFloat64("workflows.dag.simple_threshold"),
 		MaxParallelAgents: v.GetInt("workflows.dag.max_parallel_agents"),
+
+		// Complexity thresholds
+		ComplexitySimpleThreshold: v.GetFloat64("workflows.complexity.simple_threshold"),
+		ComplexityMediumThreshold: v.GetFloat64("workflows.complexity.medium_threshold"),
 
 		// Approval
 		ApprovalEnabled:             v.GetBool("workflows.approval.enabled"),
@@ -196,8 +206,29 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 		config.MaxParallelAgents = 5
 	}
 
-	// Approval defaults
-	// Disabled by default unless explicitly enabled
+	// Complexity thresholds defaults
+	if config.ComplexitySimpleThreshold == 0 {
+		config.ComplexitySimpleThreshold = 0.3
+	}
+	if config.ComplexityMediumThreshold == 0 {
+		config.ComplexityMediumThreshold = 0.5  // Changed from hardcoded 0.7
+	}
+
+	// Approval defaults - check environment variables first
+	// Override with environment variables if set
+	if envEnabled := os.Getenv("APPROVAL_ENABLED"); envEnabled != "" {
+		config.ApprovalEnabled = envEnabled == "true" || envEnabled == "1"
+	}
+	if envThreshold := os.Getenv("APPROVAL_COMPLEXITY_THRESHOLD"); envThreshold != "" {
+		if threshold, err := strconv.ParseFloat(envThreshold, 64); err == nil {
+			config.ApprovalComplexityThreshold = threshold
+		}
+	}
+	if envTools := os.Getenv("APPROVAL_DANGEROUS_TOOLS"); envTools != "" {
+		config.ApprovalDangerousTools = strings.Split(envTools, ",")
+	}
+
+	// Apply defaults if not set
 	if config.ApprovalComplexityThreshold == 0 {
 		config.ApprovalComplexityThreshold = 0.8
 	}

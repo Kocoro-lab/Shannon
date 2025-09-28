@@ -14,6 +14,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/log"
 )
 
 // Configuration constants for supervisor memory
@@ -36,6 +37,12 @@ var (
 
 	// Maximum duration baseline for speed scoring (milliseconds)
 	MaxDurationBaseline = getFloatEnv("MAX_DURATION_BASELINE_MS", 30000)
+
+	// TTL for strategy performance cache entries (24 hours)
+	StrategyPerformanceTTL = 24 * time.Hour
+
+	// Maximum number of strategy performance entries to keep
+	MaxStrategyPerformanceEntries = 100
 )
 
 func getFloatEnv(key string, defaultValue float64) float64 {
@@ -70,10 +77,11 @@ type DecompositionMemory struct {
 }
 
 type StrategyStats struct {
-	TotalRuns    int     `json:"total_runs"`
-	SuccessRate  float64 `json:"success_rate"`
-	AvgDuration  int64   `json:"avg_duration_ms"`
-	AvgTokenCost int     `json:"avg_token_cost"`
+	TotalRuns    int       `json:"total_runs"`
+	SuccessRate  float64   `json:"success_rate"`
+	AvgDuration  int64     `json:"avg_duration_ms"`
+	AvgTokenCost int       `json:"avg_token_cost"`
+	LastAccessed time.Time `json:"last_accessed"`
 }
 
 type TeamMemory struct {
@@ -117,8 +125,8 @@ type FetchSupervisorMemoryInput struct {
 }
 
 // FetchSupervisorMemory fetches and enriches memory for strategic decisions
-// TODO: Implement cache layer for frequently accessed decomposition patterns
-// TODO: Add TTL/cleanup for old decomposition patterns to prevent unbounded growth
+// FetchSupervisorMemory fetches enhanced supervisor memory with strategic insights.
+// Implements TTL-based cleanup for strategy performance cache to prevent memory leaks.
 func FetchSupervisorMemory(ctx context.Context, input FetchSupervisorMemoryInput) (*SupervisorMemoryContext, error) {
 	logger := activity.GetLogger(ctx)
 	logger.Info("Fetching enhanced supervisor memory",
@@ -154,6 +162,9 @@ func FetchSupervisorMemory(ctx context.Context, input FetchSupervisorMemoryInput
 	if err := fetchStrategyPerformance(ctx, memory, input.SessionID, input.UserID); err != nil {
 		logger.Warn("Failed to fetch strategy performance", "error", err)
 	}
+
+	// Clean up expired entries after fetching to prevent memory leak
+	cleanupStrategyPerformance(memory, logger)
 
 	// 4. Identify relevant failure patterns
 	if err := identifyFailurePatterns(ctx, memory, input.Query); err != nil {
@@ -289,6 +300,8 @@ func fetchStrategyPerformance(ctx context.Context, memory *SupervisorMemoryConte
 				continue
 			}
 
+			// Set last accessed time for TTL tracking
+			stats.LastAccessed = time.Now()
 			memory.StrategyPerformance[strategy] = stats
 		}
 
@@ -661,4 +674,58 @@ func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) er
 	metrics.DecompositionPatternsRecorded.Inc()
 
 	return nil
+}
+
+// cleanupStrategyPerformance removes expired entries from the strategy performance cache
+// to prevent unbounded memory growth. Uses both TTL and size limits.
+func cleanupStrategyPerformance(memory *SupervisorMemoryContext, logger log.Logger) {
+	if memory == nil || memory.StrategyPerformance == nil {
+		return
+	}
+
+	now := time.Now()
+	expiredCount := 0
+
+	// Remove entries older than TTL
+	for strategy, stats := range memory.StrategyPerformance {
+		if now.Sub(stats.LastAccessed) > StrategyPerformanceTTL {
+			delete(memory.StrategyPerformance, strategy)
+			expiredCount++
+		}
+	}
+
+	// If still over limit, remove least recently accessed
+	if len(memory.StrategyPerformance) > MaxStrategyPerformanceEntries {
+		// Create a slice for sorting by LastAccessed
+		type strategyEntry struct {
+			strategy string
+			stats    StrategyStats
+		}
+		entries := make([]strategyEntry, 0, len(memory.StrategyPerformance))
+		for k, v := range memory.StrategyPerformance {
+			entries = append(entries, strategyEntry{k, v})
+		}
+
+		// Sort by LastAccessed (oldest first)
+		for i := 0; i < len(entries)-1; i++ {
+			for j := i + 1; j < len(entries); j++ {
+				if entries[i].stats.LastAccessed.After(entries[j].stats.LastAccessed) {
+					entries[i], entries[j] = entries[j], entries[i]
+				}
+			}
+		}
+
+		// Remove oldest entries to stay within limit
+		toRemove := len(entries) - MaxStrategyPerformanceEntries
+		for i := 0; i < toRemove; i++ {
+			delete(memory.StrategyPerformance, entries[i].strategy)
+			expiredCount++
+		}
+	}
+
+	if expiredCount > 0 {
+		logger.Debug("Cleaned up strategy performance cache",
+			"removed_count", expiredCount,
+			"remaining_count", len(memory.StrategyPerformance))
+	}
 }

@@ -50,9 +50,21 @@ func WithAgentBudget(ctx workflow.Context, maxTokens int) workflow.Context {
 // EstimateTokens provides a coarse estimate of tokens needed for executing the plan.
 // It mirrors the logic used by the previous budgeted workflow and keeps it central.
 func EstimateTokens(decomp activities.DecompositionResult) int {
+	return EstimateTokensWithConfig(decomp, nil)
+}
+
+// EstimateTokensWithConfig provides a coarse estimate with configurable thresholds
+func EstimateTokensWithConfig(decomp activities.DecompositionResult, cfg *activities.WorkflowConfig) int {
 	base := 2000
 	mul := 1.0
-	if decomp.ComplexityScore > 0.7 {
+
+	// Use configurable thresholds with defaults
+	mediumThreshold := 0.5
+	if cfg != nil && cfg.ComplexityMediumThreshold > 0 {
+		mediumThreshold = cfg.ComplexityMediumThreshold
+	}
+
+	if decomp.ComplexityScore > mediumThreshold {
 		mul = 2.5
 	} else if decomp.ComplexityScore > 0.4 {
 		mul = 1.5

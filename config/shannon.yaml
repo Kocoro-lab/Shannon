@@ -257,6 +257,26 @@ streaming:
 workflow:
   bypass_single_result: true  # Skip synthesis for single successful results
 
+# Workflow configurations
+workflows:
+  # DAG workflow configuration
+  dag:
+    simple_threshold: 0.3         # Complexity < this = simple task (single agent)
+    max_parallel_agents: 5        # Maximum concurrent agents in DAG execution
+
+  # Complexity thresholds for model tier selection
+  complexity:
+    simple_threshold: 0.3         # < 0.3 = small model tier
+    medium_threshold: 0.5         # 0.3-0.5 = medium model tier, > 0.5 = large model tier
+
+  # Approval workflow configuration
+  approval:
+    enabled: false                # Enable human-in-the-loop approval
+    complexity_threshold: 0.5     # Complexity >= this triggers approval
+    dangerous_tools:              # Tools requiring approval
+      - file_system
+      - code_execution
+
 # Cognitive workflow configurations
 cognitive_workflows:
   exploratory:

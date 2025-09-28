@@ -9,17 +9,41 @@ logger = logging.getLogger(__name__)
 
 class AnthropicProvider(LLMProvider):
     """Anthropic (Claude) LLM provider — modern models only"""
-    
+
     MODELS = {
-        # 3.5 family (2024/2025)
+        # Claude 3.5 family
+        "claude-3-5-haiku-20241022": ModelInfo(
+            id="claude-3-5-haiku-20241022",
+            name="Claude 3.5 Haiku",
+            provider=None,
+            tier=ModelTier.SMALL,
+            context_window=200000,
+            cost_per_1k_prompt_tokens=0.0008,
+            cost_per_1k_completion_tokens=0.004,
+            supports_tools=True,
+            supports_streaming=True,
+            available=True,
+        ),
         "claude-3-5-haiku-latest": ModelInfo(
             id="claude-3-5-haiku-latest",
             name="Claude 3.5 Haiku",
             provider=None,
             tier=ModelTier.SMALL,
             context_window=200000,
-            cost_per_1k_prompt_tokens=0.0,  # TODO: update with actual pricing
-            cost_per_1k_completion_tokens=0.0,
+            cost_per_1k_prompt_tokens=0.0008,
+            cost_per_1k_completion_tokens=0.004,
+            supports_tools=True,
+            supports_streaming=True,
+            available=True,
+        ),
+        "claude-3-5-sonnet-20241022": ModelInfo(
+            id="claude-3-5-sonnet-20241022",
+            name="Claude 3.5 Sonnet",
+            provider=None,
+            tier=ModelTier.MEDIUM,
+            context_window=200000,
+            cost_per_1k_prompt_tokens=0.003,
+            cost_per_1k_completion_tokens=0.015,
             supports_tools=True,
             supports_streaming=True,
             available=True,
@@ -28,10 +52,35 @@ class AnthropicProvider(LLMProvider):
             id="claude-3-5-sonnet-latest",
             name="Claude 3.5 Sonnet",
             provider=None,
+            tier=ModelTier.MEDIUM,
+            context_window=200000,
+            cost_per_1k_prompt_tokens=0.003,
+            cost_per_1k_completion_tokens=0.015,
+            supports_tools=True,
+            supports_streaming=True,
+            available=True,
+        ),
+        # Claude 4 family
+        "claude-sonnet-4-20250514": ModelInfo(
+            id="claude-sonnet-4-20250514",
+            name="Claude Sonnet 4",
+            provider=None,
+            tier=ModelTier.MEDIUM,
+            context_window=200000,
+            cost_per_1k_prompt_tokens=0.003,
+            cost_per_1k_completion_tokens=0.015,
+            supports_tools=True,
+            supports_streaming=True,
+            available=True,
+        ),
+        "claude-opus-4-1-20250805": ModelInfo(
+            id="claude-opus-4-1-20250805",
+            name="Claude Opus 4.1",
+            provider=None,
             tier=ModelTier.LARGE,
             context_window=200000,
-            cost_per_1k_prompt_tokens=0.0,  # TODO: update with actual pricing
-            cost_per_1k_completion_tokens=0.0,
+            cost_per_1k_prompt_tokens=0.015,
+            cost_per_1k_completion_tokens=0.075,
             supports_tools=True,
             supports_streaming=True,
             available=True,

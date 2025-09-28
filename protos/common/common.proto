@@ -27,9 +27,9 @@ enum ExecutionMode {
 // Model tier for LLM selection
 enum ModelTier {
   MODEL_TIER_UNSPECIFIED = 0;
-  MODEL_TIER_SMALL = 1;    // GPT-3.5, Haiku, etc. (50% allocation)
-  MODEL_TIER_MEDIUM = 2;   // GPT-4, Sonnet, etc. (40% allocation)
-  MODEL_TIER_LARGE = 3;    // GPT-4-turbo, Opus, etc. (10% allocation)
+  MODEL_TIER_SMALL = 1;    // GPT-3.5, Haiku, etc. (target: 50% - not enforced)
+  MODEL_TIER_MEDIUM = 2;   // GPT-4, Sonnet, etc. (target: 40% - not enforced)
+  MODEL_TIER_LARGE = 3;    // GPT-4-turbo, Opus, etc. (target: 10% - not enforced)
 }
 
 // Cognitive strategy for intelligent task routing

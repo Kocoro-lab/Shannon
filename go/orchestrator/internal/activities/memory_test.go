@@ -1,10 +1,15 @@
+// +build integration
+
 package activities
 
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
@@ -12,6 +17,65 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain sets up the test environment
+func TestMain(m *testing.M) {
+	// Skip if not running integration tests
+	if os.Getenv("RUN_INTEGRATION_TESTS") != "true" {
+		os.Exit(0)
+	}
+
+	// Initialize services for tests
+	initializeTestServices()
+
+	// Run tests
+	code := m.Run()
+	os.Exit(code)
+}
+
+func initializeTestServices() {
+	// Initialize embeddings service
+	embConfig := embeddings.Config{
+		BaseURL:      getEnvOrDefault("LLM_SERVICE_URL", "http://localhost:8000"),
+		DefaultModel: "text-embedding-3-small",
+		Timeout:      5 * time.Second,
+		CacheTTL:     time.Hour,
+		Chunking: embeddings.ChunkingConfig{
+			Enabled:       true,
+			MaxTokens:     2000,
+			OverlapTokens: 200,
+			TokenizerMode: "simple",
+		},
+	}
+	embeddings.Initialize(embConfig, nil)
+
+	// Initialize vector database
+	qdrantURL := getEnvOrDefault("QDRANT_URL", "http://localhost:6333")
+	// Parse host and port from URL
+	host := "localhost"
+	port := 6333
+	if strings.Contains(qdrantURL, "://") {
+		parts := strings.Split(qdrantURL, "://")
+		if len(parts) > 1 {
+			hostPort := strings.Split(parts[1], ":")
+			host = hostPort[0]
+			if len(hostPort) > 1 {
+				port, _ = strconv.Atoi(hostPort[1])
+			}
+		}
+	}
+
+	vdbConfig := vectordb.Config{
+		Enabled:        true,
+		Host:           host,
+		Port:           port,
+		TaskEmbeddings: "task_embeddings",
+		DocumentChunks: "agent_embeddings",
+		Timeout:        5 * time.Second,
+	}
+	vectordb.Initialize(vdbConfig)
+}
+
 
 // TestChunkingPipeline tests the full chunking pipeline from write to retrieval
 func TestChunkingPipeline(t *testing.T) {

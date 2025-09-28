@@ -24,16 +24,16 @@ CREATE INDEX IF NOT EXISTS idx_event_logs_ts ON event_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_event_logs_seq ON event_logs(workflow_id, seq);
 CREATE INDEX IF NOT EXISTS idx_event_logs_workflow_ts ON event_logs(workflow_id, timestamp DESC);
 
--- Add response column to tasks table if it doesn't exist
+-- Add response column to task_executions table if it doesn't exist
 -- This stores the final task response for easy retrieval
 DO $$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'tasks' AND column_name = 'response'
+        WHERE table_name = 'task_executions' AND column_name = 'response'
     ) THEN
-        ALTER TABLE tasks ADD COLUMN response JSONB DEFAULT '{}';
-        CREATE INDEX idx_tasks_response ON tasks USING GIN (response);
+        ALTER TABLE task_executions ADD COLUMN response JSONB DEFAULT '{}';
+        CREATE INDEX idx_task_executions_response ON task_executions USING GIN (response);
     END IF;
 END $$;
 

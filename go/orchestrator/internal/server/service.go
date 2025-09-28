@@ -41,6 +41,7 @@ type OrchestratorService struct {
 	dbClient        *db.Client
 	logger          *zap.Logger
 	degradeMgr      *degradation.Manager
+	workflowConfig  *activities.WorkflowConfig
 
 	// Provider for per-request default workflow flags
 	getWorkflowDefaults func() (bypassSingle bool)
@@ -116,6 +117,18 @@ func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, l
 		dbWrapper = dbClient.Wrapper()
 	}
 
+	// Load workflow configuration
+	ctx := context.Background()
+	workflowCfg, err := activities.GetWorkflowConfig(ctx)
+	if err != nil {
+		logger.Warn("Failed to load workflow config, using defaults", zap.Error(err))
+		// Use default config with standard thresholds
+		workflowCfg = &activities.WorkflowConfig{
+			ComplexitySimpleThreshold: 0.3,
+			ComplexityMediumThreshold:  0.5,
+		}
+	}
+
 	service := &OrchestratorService{
 		temporalClient:  temporalClient,
 		sessionManager:  sessionMgr,
@@ -123,6 +136,7 @@ func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, l
 		dbClient:        dbClient,
 		logger:          logger,
 		degradeMgr:      degradation.NewManager(redisWrapper, dbWrapper, logger),
+		workflowConfig:  workflowCfg,
 	}
 
 	// Start degradation manager background monitoring
@@ -406,7 +420,8 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		return nil, status.Error(codes.Internal, "failed to start workflow")
 	}
 
-	// Write-on-submit: persist initial RUNNING record to tasks table (idempotent by workflow_id)
+	// Write-on-submit: persist initial RUNNING record to task_executions table (idempotent by workflow_id)
+	// Using synchronous save to ensure task exists before any token usage recording
 	if s.dbClient != nil {
 		var uidPtr *uuid.UUID
 		if userID != "" {
@@ -415,7 +430,11 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			}
 		}
 		started := time.Now()
+
+		// Generate task ID to ensure it exists for foreign key references
+		taskID := uuid.New()
 		initial := &db.TaskExecution{
+			ID:         taskID,
 			WorkflowID: workflowExecution.GetID(),
 			UserID:     uidPtr,
 			SessionID:  sessionID,
@@ -423,12 +442,22 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			Mode:       modeStr,
 			Status:     "RUNNING",
 			StartedAt:  started,
+			CreatedAt:  started,
 		}
-		_ = s.dbClient.QueueWrite(db.WriteTypeTaskExecution, initial, func(err error) {
-			if err != nil {
-				s.logger.Warn("Initial task persist failed", zap.String("workflow_id", workflowExecution.GetID()), zap.Error(err))
-			}
-		})
+
+		// Synchronous save to task_executions to ensure it exists before workflow activities execute
+		// This prevents foreign key violations when token_usage tries to reference the task
+		if err := s.dbClient.SaveTaskExecution(ctx, initial); err != nil {
+			// Log the error but don't fail the workflow - task will be saved again on completion
+			s.logger.Warn("Initial task persist failed, will retry on completion",
+				zap.String("workflow_id", workflowExecution.GetID()),
+				zap.String("task_id", taskID.String()),
+				zap.Error(err))
+		} else {
+			s.logger.Debug("Initial task persisted successfully",
+				zap.String("workflow_id", workflowExecution.GetID()),
+				zap.String("task_id", taskID.String()))
+		}
 
 		// Start async finalizer to persist terminal state regardless of status polling
 		go s.watchAndPersist(workflowExecution.GetID(), workflowExecution.GetRunID())
@@ -545,43 +574,44 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		}
 	}
 
-	// Persist to database if terminal state
-	if isTerminal && s.dbClient != nil {
-		// Extract user data from memo if available
-		var userID *uuid.UUID
-		var sessionID string
-		var query string
-		var mode string
+	// Extract session ID and other data for persistence and unified response
+	var sessionID string
+	var userID *uuid.UUID
+	var query string
+	var mode string
 
-		// Extract from workflow memo using data converter
-		if desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.Memo != nil {
-			dataConverter := converter.GetDefaultDataConverter()
+	// Extract from workflow memo using data converter
+	if desc.WorkflowExecutionInfo != nil && desc.WorkflowExecutionInfo.Memo != nil {
+		dataConverter := converter.GetDefaultDataConverter()
 
-			// Extract user_id from memo
-			if userField, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && userField != nil {
-				var userIDStr string
-				if err := dataConverter.FromPayload(userField, &userIDStr); err == nil && userIDStr != "" {
-					if uid, err := uuid.Parse(userIDStr); err == nil {
-						userID = &uid
-					}
+		// Extract user_id from memo
+		if userField, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && userField != nil {
+			var userIDStr string
+			if err := dataConverter.FromPayload(userField, &userIDStr); err == nil && userIDStr != "" {
+				if uid, err := uuid.Parse(userIDStr); err == nil {
+					userID = &uid
 				}
 			}
-
-			// Extract session_id from memo
-			if sessionField, ok := desc.WorkflowExecutionInfo.Memo.Fields["session_id"]; ok && sessionField != nil {
-				_ = dataConverter.FromPayload(sessionField, &sessionID)
-			}
-
-			// Extract query from memo
-			if queryField, ok := desc.WorkflowExecutionInfo.Memo.Fields["query"]; ok && queryField != nil {
-				_ = dataConverter.FromPayload(queryField, &query)
-			}
-
-			// Extract mode from memo
-			if modeField, ok := desc.WorkflowExecutionInfo.Memo.Fields["mode"]; ok && modeField != nil {
-				_ = dataConverter.FromPayload(modeField, &mode)
-			}
 		}
+
+		// Extract session_id from memo
+		if sessionField, ok := desc.WorkflowExecutionInfo.Memo.Fields["session_id"]; ok && sessionField != nil {
+			_ = dataConverter.FromPayload(sessionField, &sessionID)
+		}
+
+		// Extract query from memo
+		if queryField, ok := desc.WorkflowExecutionInfo.Memo.Fields["query"]; ok && queryField != nil {
+			_ = dataConverter.FromPayload(queryField, &query)
+		}
+
+		// Extract mode from memo
+		if modeField, ok := desc.WorkflowExecutionInfo.Memo.Fields["mode"]; ok && modeField != nil {
+			_ = dataConverter.FromPayload(modeField, &mode)
+		}
+	}
+
+	// Persist to database if terminal state
+	if isTerminal && s.dbClient != nil {
 
 		// Extract from result metadata if not in memo
 		if result.Metadata != nil {
@@ -665,11 +695,22 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 
 		// Extract metadata values if available
 		if result.Metadata != nil {
-			// Get execution mode
+			// Get execution mode (using configurable thresholds)
 			if complexity, ok := result.Metadata["complexity_score"].(float64); ok {
-				if complexity < 0.3 {
+				simpleThreshold := 0.3  // default
+				mediumThreshold := 0.5  // default
+				if s.workflowConfig != nil {
+					if s.workflowConfig.ComplexitySimpleThreshold > 0 {
+						simpleThreshold = s.workflowConfig.ComplexitySimpleThreshold
+					}
+					if s.workflowConfig.ComplexityMediumThreshold > 0 {
+						mediumThreshold = s.workflowConfig.ComplexityMediumThreshold
+					}
+				}
+
+				if complexity < simpleThreshold {
 					metrics.Mode = common.ExecutionMode_EXECUTION_MODE_SIMPLE
-				} else if complexity < 0.7 {
+				} else if complexity < mediumThreshold {
 					metrics.Mode = common.ExecutionMode_EXECUTION_MODE_STANDARD
 				} else {
 					metrics.Mode = common.ExecutionMode_EXECUTION_MODE_COMPLEX
@@ -693,6 +734,13 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		}
 	}
 
+	// Compute duration for metrics and unified response
+	durationSeconds := 0.0
+	if isTerminal && workflowStartTime != nil {
+		endTime := getWorkflowEndTime(desc)
+		durationSeconds = endTime.Sub(workflowStartTime.AsTime()).Seconds()
+	}
+
 	// Record completed workflow metrics if terminal
 	if isTerminal {
 		// Derive mode string for labels
@@ -707,18 +755,27 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 				modeStr = "standard"
 			}
 		}
-		// Compute duration seconds (prefer Temporal CloseTime)
-		durationSeconds := 0.0
-		if workflowStartTime != nil {
-			endTime := getWorkflowEndTime(desc)
-			durationSeconds = endTime.Sub(workflowStartTime.AsTime()).Seconds()
-		}
 		// Cost
 		cost := 0.0
 		if metrics != nil && metrics.TokenUsage != nil {
 			cost = metrics.TokenUsage.CostUsd
 		}
 		ometrics.RecordWorkflowMetrics("AgentDAGWorkflow", modeStr, statusStr, durationSeconds, result.TokensUsed, cost)
+	}
+
+	// Add unified response to metadata if we have a result
+	if isTerminal && result.Result != "" {
+		// Calculate execution time in ms
+		executionTimeMs := int64(durationSeconds * 1000)
+
+		// Transform to unified response format
+		unifiedResp := TransformToUnifiedResponse(result, sessionID, executionTimeMs)
+
+		// Store unified response in result metadata for clients that want it
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]interface{})
+		}
+		result.Metadata["unified_response"] = unifiedResp
 	}
 
 	response := &pb.GetTaskStatusResponse{

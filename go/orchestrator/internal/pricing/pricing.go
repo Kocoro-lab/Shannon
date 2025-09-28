@@ -1,15 +1,16 @@
 package pricing
 
 import (
-	"errors"
-	"log"
-	"os"
-	"sync"
-	"time"
+    "errors"
+    "log"
+    "os"
+    "path/filepath"
+    "sync"
+    "time"
 
-	"gopkg.in/yaml.v3"
+    "gopkg.in/yaml.v3"
 
-	pmetrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+    pmetrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 )
 
 // Config structure for pricing section in config/models.yaml
@@ -34,34 +35,67 @@ var (
 
 // default locations inside containers / local dev
 var defaultPaths = []string{
-	os.Getenv("MODELS_CONFIG_PATH"),
-	"/app/config/models.yaml",
-	"./config/models.yaml",
+    os.Getenv("MODELS_CONFIG_PATH"),
+    "/app/config/models.yaml",
+    "./config/models.yaml",
+    "../../config/models.yaml",   // from go/orchestrator
+    "../../../config/models.yaml", // from go/orchestrator/internal/*
+}
+
+// findUpConfig searches parent directories for config/models.yaml starting at CWD.
+func findUpConfig() (string, bool) {
+    wd, err := os.Getwd()
+    if err != nil {
+        return "", false
+    }
+    // Walk upwards up to 6 levels to be safe in test/package paths
+    for i := 0; i < 6; i++ {
+        cand := filepath.Join(wd, "config", "models.yaml")
+        if _, err := os.Stat(cand); err == nil {
+            return cand, true
+        }
+        // Also try repo root style: look for a sibling "config/models.yaml" while we traverse up
+        wd = filepath.Dir(wd)
+    }
+    return "", false
 }
 
 // loadLocked loads the configuration - must be called while holding mu.Lock()
 func loadLocked() {
-	var cfg config
-	for _, p := range defaultPaths {
-		if p == "" {
-			continue
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var tmp config
-		if err := yaml.Unmarshal(data, &tmp); err != nil {
-			log.Printf("WARNING: Failed to unmarshal pricing config from %s: %v", p, err)
-			continue
-		}
-		cfg = tmp
-		log.Printf("Loaded pricing configuration from %s", p)
-		break
-	}
-	// No locking needed - caller must hold the lock
-	loaded = &cfg
-	initialized = true
+    var cfg config
+    // 1) Try explicit and common defaults
+    for _, p := range defaultPaths {
+        if p == "" {
+            continue
+        }
+        data, err := os.ReadFile(p)
+        if err != nil {
+            continue
+        }
+        var tmp config
+        if err := yaml.Unmarshal(data, &tmp); err != nil {
+            log.Printf("WARNING: Failed to unmarshal pricing config from %s: %v", p, err)
+            continue
+        }
+        cfg = tmp
+        log.Printf("Loaded pricing configuration from %s", p)
+        break
+    }
+    // 2) If not loaded yet, search upwards from current working directory
+    if cfg.Pricing.Defaults.CombinedPer1K == 0 && len(cfg.Pricing.Models) == 0 {
+        if path, ok := findUpConfig(); ok {
+            if data, err := os.ReadFile(path); err == nil {
+                var tmp config
+                if err := yaml.Unmarshal(data, &tmp); err == nil {
+                    cfg = tmp
+                    log.Printf("Loaded pricing configuration from %s", path)
+                }
+            }
+        }
+    }
+    // No locking needed - caller must hold the lock
+    loaded = &cfg
+    initialized = true
 }
 
 func get() *config {

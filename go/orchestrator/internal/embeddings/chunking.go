@@ -128,26 +128,31 @@ func (c *Chunker) detokenize(tokens []string) string {
 	case "tiktoken":
 		// TODO: Implement proper tiktoken detokenization
 		// For now, fall back to simple
-		return strings.Join(tokens, " ")
+		return strings.Join(tokens, "")
 	default:
-		return strings.Join(tokens, " ")
+		// For character-based tokens, join without spaces
+		return strings.Join(tokens, "")
 	}
 }
 
-// simpleTokenize provides word-based tokenization
-// Approximation: ~1.3 tokens per word for English text
+// simpleTokenize provides character-based tokenization
+// Approximation: ~1 token = 4 characters (standard GPT estimation)
 func (c *Chunker) simpleTokenize(text string) []string {
-	// Split on whitespace to get words
-	words := strings.Fields(text)
+	// For simple tokenization, we estimate tokens based on characters
+	// Standard approximation: 1 token ≈ 4 characters
+	const charsPerToken = 4
 
-	// For simple estimation, we treat each word as roughly 1.3 tokens
-	// This means we should actually return more granular units
-	// For now, we'll use words directly and adjust maxTokens accordingly
 	tokens := []string{}
-	for _, word := range words {
-		// For longer words, we might want to split them
-		// But for simplicity, treat each word as a token
-		tokens = append(tokens, word)
+	runes := []rune(text)
+
+	for i := 0; i < len(runes); i += charsPerToken {
+		end := i + charsPerToken
+		if end > len(runes) {
+			end = len(runes)
+		}
+		if i < len(runes) {
+			tokens = append(tokens, string(runes[i:end]))
+		}
 	}
 
 	return tokens

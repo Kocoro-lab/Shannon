@@ -558,6 +558,11 @@ mod tests {
 
     #[test]
     fn test_global_config() {
+        // Clear any existing environment variables that might interfere
+        env::remove_var("AGENT_CORE_METRICS_PORT");
+        env::remove_var("METRICS_PORT");
+        env::remove_var("AGENT_CONFIG_PATH");
+
         let config = Config::global().expect("Should load global config");
         assert!(config.wasi.memory_limit_bytes > 0);
 
@@ -567,18 +572,10 @@ mod tests {
         Config::update(new_config.clone()).expect("Should update config");
 
         let updated = Config::global().expect("Should get updated config");
-        // If AGENT_CORE_METRICS_PORT or METRICS_PORT env var is set, it will override
-        // So we check that either the config was updated or env var is present
-        if std::env::var("AGENT_CORE_METRICS_PORT").is_ok() || std::env::var("METRICS_PORT").is_ok()
-        {
-            // Environment variable takes precedence - this is expected behavior
-            assert!(
-                updated.metrics.port > 0,
-                "Port should be a valid positive number"
-            );
-        } else {
-            // Should reflect the updated value we just set
-            assert_eq!(updated.metrics.port, 9999);
-        }
+
+        // The global config should now have the updated value
+        // Note: Config::global() uses the static CONFIG if it's already initialized,
+        // so our update should be reflected
+        assert_eq!(updated.metrics.port, 9999, "Updated config should have port 9999");
     }
 }

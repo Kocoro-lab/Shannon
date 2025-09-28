@@ -242,3 +242,15 @@ ALTER TABLE tool_calls
 
 CREATE INDEX idx_tool_calls_agent_execution_id ON tool_calls(agent_execution_id);
 DROP INDEX IF EXISTS idx_tool_calls_task_id;
+
+-- Add task_id foreign key to token_usage table (referencing task_executions)
+ALTER TABLE token_usage
+    ADD COLUMN task_id UUID REFERENCES task_executions(id) ON DELETE CASCADE;
+
+CREATE INDEX idx_token_usage_task_id ON token_usage(task_id);
+
+-- Add task_id foreign key to learning_cases table (referencing task_executions)
+ALTER TABLE learning_cases
+    ADD COLUMN task_id UUID REFERENCES task_executions(id) ON DELETE SET NULL;
+
+CREATE INDEX idx_learning_cases_task_id ON learning_cases(task_id);

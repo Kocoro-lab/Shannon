@@ -104,12 +104,12 @@ CREATE INDEX IF NOT EXISTS idx_tool_executions_tool_success_created
 COMMENT ON TABLE agent_executions IS 'Stores individual agent execution records for observability and analytics';
 COMMENT ON TABLE tool_executions IS 'Stores tool invocation records for tracking tool usage and performance';
 
-COMMENT ON COLUMN agent_executions.workflow_id IS 'Temporal workflow ID from tasks table';
-COMMENT ON COLUMN agent_executions.task_id IS 'Reference to tasks.id (often same as workflow_id)';
+COMMENT ON COLUMN agent_executions.workflow_id IS 'Temporal workflow ID from task_executions table';
+COMMENT ON COLUMN agent_executions.task_id IS 'Reference to task_executions.id (often same as workflow_id)';
 COMMENT ON COLUMN agent_executions.metadata IS 'Additional execution metadata as JSON';
 COMMENT ON COLUMN agent_executions.updated_at IS 'Last update timestamp';
 
-COMMENT ON COLUMN tool_executions.workflow_id IS 'Temporal workflow ID from tasks table';
+COMMENT ON COLUMN tool_executions.workflow_id IS 'Temporal workflow ID from task_executions table';
 COMMENT ON COLUMN tool_executions.agent_id IS 'Agent that executed the tool';
 COMMENT ON COLUMN tool_executions.metadata IS 'Additional tool execution metadata as JSON';
 COMMENT ON COLUMN tool_executions.error IS 'Error message if tool execution failed';

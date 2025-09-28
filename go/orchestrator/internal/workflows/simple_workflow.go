@@ -375,6 +375,30 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// Record token usage for SimpleTaskWorkflow (best-effort)
+	// Use a simple 60/40 split when detailed counts are unavailable
+	if input.UserID != "" && totalTokens > 0 {
+		recOpts := workflow.ActivityOptions{
+			StartToCloseTimeout: 10 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		}
+		recCtx := workflow.WithActivityOptions(ctx, recOpts)
+		inTok := totalTokens * 6 / 10
+		outTok := totalTokens - inTok
+		provider := detectProviderFromModel(result.ModelUsed)
+		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       input.UserID,
+			SessionID:    input.SessionID,
+			TaskID:       workflowID, // may not be UUID; DB layer resolves via workflow_id when possible
+			AgentID:      "simple-agent",
+			Model:        result.ModelUsed,
+			Provider:     provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata:     map[string]interface{}{"workflow": "simple"},
+		}).Get(ctx, nil)
+	}
+
 	logger.Info("SimpleTaskWorkflow completed successfully",
 		"tokens_used", totalTokens,
 	)
@@ -406,4 +430,25 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"num_agents": 1,
 		},
 	}, nil
+}
+
+// detectProviderFromModel determines the provider based on the model name
+func detectProviderFromModel(model string) string {
+    ml := strings.ToLower(model)
+    switch {
+    case strings.Contains(ml, "gpt-4"), strings.Contains(ml, "gpt-3"), strings.Contains(ml, "davinci"), strings.Contains(ml, "turbo"), strings.Contains(ml, "o1"):
+        return "openai"
+    case strings.Contains(ml, "claude"), strings.Contains(ml, "opus"), strings.Contains(ml, "sonnet"), strings.Contains(ml, "haiku"):
+        return "anthropic"
+    case strings.Contains(ml, "gemini"), strings.Contains(ml, "palm"), strings.Contains(ml, "bard"):
+        return "google"
+    case strings.Contains(ml, "llama"), strings.Contains(ml, "codellama"):
+        return "meta"
+    case strings.Contains(ml, "mistral"), strings.Contains(ml, "mixtral"):
+        return "mistral"
+    case strings.Contains(ml, "command"), strings.Contains(ml, "cohere"):
+        return "cohere"
+    default:
+        return "unknown"
+    }
 }

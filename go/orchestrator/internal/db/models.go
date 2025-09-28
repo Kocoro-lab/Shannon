@@ -72,8 +72,8 @@ type TaskExecution struct {
 // AgentExecution represents an individual agent execution
 type AgentExecution struct {
 	ID         string    `db:"id"`
-	WorkflowID string    `db:"workflow_id"`  // References tasks.workflow_id
-	TaskID     string    `db:"task_id"`      // Optional reference to tasks.id
+	WorkflowID string    `db:"workflow_id"`  // References task_executions.workflow_id
+	TaskID     string    `db:"task_id"`      // Optional reference to task_executions.id
 	AgentID    string    `db:"agent_id"`
 
 	// Execution details
@@ -98,7 +98,7 @@ type AgentExecution struct {
 // ToolExecution represents a tool execution record
 type ToolExecution struct {
 	ID               string     `db:"id"`
-	WorkflowID       string     `db:"workflow_id"`       // References tasks.workflow_id
+	WorkflowID       string     `db:"workflow_id"`       // References task_executions.workflow_id
 	AgentID          string     `db:"agent_id"`          // Agent that executed the tool
 	AgentExecutionID *string    `db:"agent_execution_id"` // Optional reference to agent_executions.id
 

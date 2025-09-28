@@ -17,11 +17,30 @@ There are many ways to contribute to Shannon:
 
 ### Prerequisites
 
-- Go 1.24+ for orchestrator development
+- Go 1.22+ for orchestrator development
 - Rust (stable) for agent core development
 - Python 3.11+ for LLM service development
 - Docker and Docker Compose
+- Make, curl, grpcurl
 - protoc (Protocol Buffers compiler)
+- Node.js 18+ and npm (for dashboard development)
+- An API key for at least one supported LLM provider
+
+### Quick Reference - Service Ports
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Agent Core (Rust) | 50051 | gRPC service for agent operations |
+| Orchestrator (Go) | 50052 | gRPC service for workflow orchestration |
+| LLM Service (Python) | 8000 | HTTP service for LLM providers |
+| Gateway | 8080 | REST API gateway |
+| Dashboard | 3000 | Real-time observability UI |
+| PostgreSQL | 5432 | Primary database |
+| Redis | 6379 | Session cache and pub/sub |
+| Qdrant | 6333 | Vector database |
+| Temporal | 7233 | Workflow engine (UI on 8088) |
+| Prometheus | 9090 | Metrics collection |
+| Grafana | 3001 | Metrics visualization |
 
 ### Development Setup
 
@@ -33,31 +52,46 @@ There are many ways to contribute to Shannon:
 
 2. **Set Up Development Environment**
    ```bash
-   # Install dependencies
-   make setup-dev
+   # One-stop setup: creates .env, generates protobuf files
+   make setup
 
-   # Copy and configure environment
-   make setup-env
-   vim .env  # Add your API keys
+   # Add your LLM API key to .env
+   echo "OPENAI_API_KEY=your-key-here" >> .env
+   # Or edit manually: vim .env
+
+   # Download Python WASI interpreter for secure code execution (20MB)
+   ./scripts/setup_python_wasi.sh
    ```
 
 3. **Start Services for Development**
    ```bash
-   # Start all dependencies (DB, Redis, etc.)
+   # Option 1: Start all services with Docker (recommended)
+   make dev
+   make smoke  # Verify everything is working
+
+   # Option 2: Run services locally for development
+   # Start dependencies first
    docker compose -f deploy/compose/docker-compose.yml up -d postgres redis qdrant temporal
 
-   # Run services locally for development
-   # Terminal 1: Orchestrator
+   # Terminal 1: Orchestrator (Go service on port 50052)
    cd go/orchestrator
    go run ./cmd/server
 
-   # Terminal 2: Agent Core
+   # Terminal 2: Agent Core (Rust service on port 50051)
    cd rust/agent-core
    cargo run
 
-   # Terminal 3: LLM Service
+   # Terminal 3: LLM Service (Python service on port 8000)
    cd python/llm-service
    python -m uvicorn main:app --reload
+
+   # Terminal 4: Gateway (REST API on port 8080)
+   cd go/gateway
+   go run ./cmd/server
+
+   # Terminal 5: Dashboard (UI on port 3000)
+   cd dashboard
+   npm install && npm run dev
    ```
 
 ## 🔨 Development Workflow
@@ -96,6 +130,8 @@ git checkout -b fix/issue-description
 - After modifying `.proto` files:
   ```bash
   make proto
+  docker compose build  # Rebuild services if running in Docker
+  docker compose up -d  # Restart with new proto definitions
   ```
 
 ### 3. Write Tests
@@ -195,13 +231,22 @@ Then open a Pull Request on GitHub with:
 ### Running Specific Tests
 
 ```bash
-# Test a specific workflow
-./scripts/submit_task.sh "test query" | jq .workflow_id
-make replay-export WORKFLOW_ID=<id> OUT=test.json
-make replay HISTORY=test.json
-
 # Run E2E smoke tests
 make smoke
+
+# Test a specific workflow (time-travel debugging)
+./scripts/submit_task.sh "test query"
+# Note the workflow_id from output, then:
+make replay-export WORKFLOW_ID=task-dev-1234567890 OUT=test.json
+make replay HISTORY=test.json
+
+# Run integration tests
+export RUN_INTEGRATION_TESTS=true
+go test -tags integration ./internal/activities
+
+# Test with specific model config
+export MODELS_CONFIG_PATH=$PWD/config/models.yaml
+go test ./internal/pricing -v
 ```
 
 ## 🐛 Reporting Issues
@@ -243,28 +288,86 @@ Relevant log output
 ```
 ```
 
-## 🏗️ Project Structure
+## 🏗️ Architecture Overview
+
+### Key Components
+
+1. **Orchestrator (Go)** - Brain of the system
+   - Temporal workflow orchestration
+   - Complexity analysis and task decomposition
+   - Budget management and token tracking
+   - Session and memory management (character-based chunking with MMR diversity)
+   - Centralized pricing from `config/models.yaml`
+
+2. **Agent Core (Rust)** - Secure execution layer
+   - WASI sandbox for Python code execution
+   - Tool execution and caching
+   - gRPC service for agent operations
+   - Circuit breakers and rate limiting
+
+3. **LLM Service (Python)** - AI provider interface
+   - Multi-provider support (OpenAI, Anthropic, Google, etc.)
+   - MCP tool implementations
+   - Prompt management and optimization
+
+4. **Gateway (Go)** - REST API layer
+   - HTTP/REST interface for clients
+   - Authentication and authorization
+   - Request routing and load balancing
+
+5. **Dashboard (React)** - Real-time UI
+   - Task submission and monitoring
+   - Event streaming visualization
+   - Metrics and system health
+
+### Project Structure
 
 Understanding the codebase:
 
 ```
 shannon/
-├── go/orchestrator/      # Temporal workflows and orchestration
+├── go/orchestrator/      # Temporal workflows and orchestration (port 50052)
 │   ├── internal/        # Core orchestrator logic
-│   ├── cmd/            # Entry points
-│   └── tests/          # Go tests
-├── rust/agent-core/     # WASI runtime and tool execution
+│   │   ├── workflows/  # Workflow patterns (DAG, supervisor, streaming)
+│   │   ├── activities/ # Memory, budget, complexity analysis
+│   │   └── pricing/    # Model pricing from config/models.yaml
+│   └── cmd/            # Entry points
+├── rust/agent-core/     # WASI runtime and tool execution (port 50051)
 │   ├── src/            # Rust source code
+│   │   ├── wasi_sandbox.rs  # Secure Python execution
+│   │   └── tools.rs         # Built-in tool implementations
 │   └── tests/          # Rust tests
-├── python/llm-service/  # LLM providers and MCP tools
+├── python/llm-service/  # LLM providers and MCP tools (port 8000)
 │   ├── providers/      # LLM provider implementations
 │   ├── tools/          # MCP tool implementations
 │   └── tests/          # Python tests
+├── go/gateway/         # REST API gateway (port 8080)
+├── dashboard/          # Real-time UI (port 3000)
 ├── protos/             # Protocol buffer definitions
 ├── config/             # Configuration files
+│   ├── models.yaml     # Centralized model pricing
+│   └── shannon.yaml    # System configuration
 ├── scripts/            # Utility scripts
 └── docs/               # Documentation
 ```
+
+## ⚙️ Important Configuration
+
+### Model Pricing
+All model pricing is centralized in `config/models.yaml`. When adding new models:
+1. Add pricing under the `pricing.models` section
+2. Specify `input_per_1k` and `output_per_1k` in USD
+3. Update tier assignments in `model_tiers` if needed
+
+### Memory System
+- Character-based chunking (4 chars ≈ 1 token)
+- MMR (Maximal Marginal Relevance) for diversity
+- Configurable thresholds in `config/shannon.yaml`
+
+### Reflection Gating
+- Uses configurable complexity thresholds
+- Default: >0.5 triggers reflection
+- Configured via `ComplexityMediumThreshold`
 
 ## 🔧 Debugging Tips
 
@@ -292,13 +395,61 @@ docker compose up -d
 
 **Temporal workflow issues:**
 ```bash
+# Check workflow status
 temporal workflow describe --workflow-id <id> --address localhost:7233
+
+# Or via Docker
+docker compose exec temporal temporal workflow describe --workflow-id <id> --address temporal:7233
+
+# View Temporal UI
+open http://localhost:8088
 ```
 
 **Database queries:**
 ```bash
+# Connect to database
 docker compose exec postgres psql -U shannon -d shannon
+
+# Common queries
+SELECT workflow_id, status, created_at FROM task_executions ORDER BY created_at DESC LIMIT 5;
+SELECT id, user_id, created_at FROM sessions WHERE id = 'session-id';
+
+# Check Redis session data
+redis-cli GET session:SESSION_ID | jq '.total_tokens_used'
 ```
+
+## 🛠️ Common Development Tasks
+
+### Adding a New LLM Provider
+1. Implement provider in `python/llm-service/providers/`
+2. Add pricing to `config/models.yaml`
+3. Update tier assignments if needed
+4. Add tests for the provider
+
+### Adding a New Tool
+1. Define tool in `python/llm-service/tools/`
+2. Register with MCP if external
+3. Add tool description for LLM
+4. Include `print()` statements for Python tools (WASI requirement)
+5. Write integration tests
+
+### Adding a New Workflow Pattern
+1. Create pattern in `go/orchestrator/internal/workflows/strategies/`
+2. Register in workflow router
+3. Add complexity analysis logic
+4. Test with replay functionality
+
+### Updating Protocol Buffers
+1. Modify `.proto` files in `protos/`
+2. Run `make proto` to regenerate
+3. Update all three services if interfaces changed
+4. Rebuild and test: `docker compose build && docker compose up -d`
+
+### Performance Optimization
+1. Check metrics at `http://localhost:9090` (Prometheus)
+2. Review dashboard at `http://localhost:3000`
+3. Use `make replay` for deterministic testing
+4. Profile with service-specific tools
 
 ## 💬 Communication
 
@@ -313,6 +464,8 @@ docker compose exec postgres psql -U shannon -d shannon
 - [Pattern Guide](docs/pattern-usage-guide.md)
 - [API Documentation](docs/agent-core-api.md)
 - [Testing Guide](docs/testing.md)
+- [Python Code Execution Guide](docs/python-code-execution.md)
+- [Streaming API Guide](docs/streaming-api.md)
 
 ## 📜 Code of Conduct
 
