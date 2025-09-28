@@ -485,7 +485,9 @@ func (da *DecompositionAdvisor) selectOptimalStrategy() string {
 	// Use epsilon-greedy selection based on performance history
 	epsilon := StrategyExplorationRate
 
-	if rand.Float64() < epsilon {
+	// Create per-goroutine random source for thread safety
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if r.Float64() < epsilon {
 		// Explore: try less-used strategies
 		return da.selectLeastUsedStrategy()
 	}

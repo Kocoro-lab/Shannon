@@ -164,16 +164,38 @@ func FetchSemanticMemoryChunked(ctx context.Context, in FetchSemanticMemoryInput
 	// Process chunked groups
 	aggregationStart := time.Now()
 	for _, group := range qaGroups {
-		// Sort chunks by chunk_index
+		// Sort chunks by chunk_index with defensive type checking
 		sort.Slice(group.Chunks, func(i, j int) bool {
 			idxI := 0
 			idxJ := 0
-			if val, ok := group.Chunks[i].Payload["chunk_index"].(float64); ok {
-				idxI = int(val)
+
+			// Safely extract chunk_index from payload with multiple type checks
+			if group.Chunks[i].Payload != nil {
+				if val, ok := group.Chunks[i].Payload["chunk_index"]; ok && val != nil {
+					switch v := val.(type) {
+					case float64:
+						idxI = int(v)
+					case int:
+						idxI = v
+					case int64:
+						idxI = int(v)
+					}
+				}
 			}
-			if val, ok := group.Chunks[j].Payload["chunk_index"].(float64); ok {
-				idxJ = int(val)
+
+			if group.Chunks[j].Payload != nil {
+				if val, ok := group.Chunks[j].Payload["chunk_index"]; ok && val != nil {
+					switch v := val.(type) {
+					case float64:
+						idxJ = int(v)
+					case int:
+						idxJ = v
+					case int64:
+						idxJ = int(v)
+					}
+				}
 			}
+
 			return idxI < idxJ
 		})
 
