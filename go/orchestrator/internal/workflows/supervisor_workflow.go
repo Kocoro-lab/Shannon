@@ -343,6 +343,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// Execute each subtask as a child SimpleTaskWorkflow sequentially (deterministic)
 	var lastWSSeq uint64
 
+	// Track running budget usage across agents if a task-level budget is present
+	totalUsed := 0
+	taskBudget := 0
+	if v, ok := input.Context["budget_remaining"].(int); ok && v > 0 {
+		taskBudget = v
+	}
+	if v, ok := input.Context["budget_remaining"].(float64); ok && v > 0 {
+		taskBudget = int(v)
+	}
+
 	// INTELLIGENT RETRY STRATEGY: Prevents infinite loops while supporting complex tasks
 	failedTasks := 0
 	maxFailures := len(decomp.Subtasks)/2 + 1 // Allow up to 50%+1 tasks to fail before aborting
@@ -361,7 +371,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-	for i, st := range decomp.Subtasks {
+    // Version gate for context compression determinism
+    compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
+
+    for i, st := range decomp.Subtasks {
 		// Emit progress event for this subtask
 		progressMessage := fmt.Sprintf("Starting subtask %d of %d: %s", i+1, len(decomp.Subtasks), st.Description)
 		if len(st.Description) > 50 {
@@ -410,6 +423,56 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil); err != nil {
 				logger.Warn("Failed to emit role assigned event", "error", err)
+			}
+		}
+
+		// Budget hinting: set token_budget for policy + agent if per-agent budget is present
+		agentMax := 0
+		if v, ok := childCtx["budget_agent_max"].(int); ok {
+			agentMax = v
+		}
+		if v, ok := childCtx["budget_agent_max"].(float64); ok && v > 0 {
+			agentMax = int(v)
+		}
+        if agentMax > 0 && compressionVersion >= 1 {
+			childCtx["token_budget"] = agentMax
+		}
+
+		// Sliding-window shaping with optional middle summary when nearing per-agent budget
+		historyForAgent := convertHistoryForAgent(input.History)
+        if agentMax > 0 {
+            est := activities.EstimateTokens(historyForAgent)
+            trig, tgt := getCompressionRatios(childCtx, 0.75, 0.375)
+            if est >= int(float64(agentMax)*trig) {
+                var compressResult activities.CompressContextResult
+                _ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext, activities.CompressContextInput{
+                    SessionID:    input.SessionID,
+                    History:      convertHistoryMapForCompression(input.History),
+                    TargetTokens: int(float64(agentMax) * tgt),
+                    ParentWorkflowID: workflowID,
+                }).Get(ctx, &compressResult)
+                if compressResult.Summary != "" {
+                    childCtx["context_summary"] = fmt.Sprintf("Previous context summary: %s", compressResult.Summary)
+                    prim, rec := getPrimersRecents(childCtx, 3, 20)
+                    shaped := shapeHistory(input.History, prim, rec)
+                    historyForAgent = convertHistoryForAgent(shaped)
+                    // Emit compression applied event
+                    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+                        WorkflowID: workflowID,
+                        EventType:  activities.StreamEventDataProcessing,
+                        AgentID:    fmt.Sprintf("agent-%s", st.ID),
+                        Message:    activities.MsgCompressionApplied(),
+                        Timestamp:  workflow.Now(ctx),
+                    }).Get(ctx, nil)
+                    // Emit summary injected event
+                    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+                        WorkflowID: workflowID,
+                        EventType:  activities.StreamEventDataProcessing,
+                        AgentID:    fmt.Sprintf("agent-%s", st.ID),
+                        Message:    activities.MsgSummaryAdded(),
+                        Timestamp:  workflow.Now(ctx),
+                    }).Get(ctx, nil)
+                }
 			}
 		}
 
@@ -576,21 +639,19 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			if v, ok := childCtx["budget_agent_max"].(int); ok {
 				agentMax = v
 			}
-			if v, ok := childCtx["budget_agent_max"].(float64); ok {
-				if v > 0 {
-					agentMax = int(v)
-				}
+			if v, ok := childCtx["budget_agent_max"].(float64); ok && v > 0 {
+				agentMax = int(v)
 			}
 			if agentMax > 0 {
 				wid := workflowID
-					execErr = workflow.ExecuteActivity(ctx, constants.ExecuteAgentWithBudgetActivity, activities.BudgetedAgentInput{
+				execErr = workflow.ExecuteActivity(ctx, constants.ExecuteAgentWithBudgetActivity, activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
 						Query:          st.Description,
 						AgentID:        fmt.Sprintf("agent-%s", st.ID),
 						Context:        childCtx,
 						Mode:           input.Mode,
 						SessionID:      input.SessionID,
-						History:        convertHistoryForAgent(input.History),
+						History:        historyForAgent,
 						SuggestedTools: st.SuggestedTools,
 						ToolParameters: st.ToolParameters,
 						ParentWorkflowID: workflowID,
@@ -607,13 +668,34 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					Context:        childCtx,
 					Mode:           input.Mode,
 					SessionID:      input.SessionID,
-					History:        convertHistoryForAgent(input.History),
+					History:        historyForAgent,
 					SuggestedTools: st.SuggestedTools,
 					ToolParameters: st.ToolParameters,
 					ParentWorkflowID: workflowID,
 				}).Get(ctx, &res)
 			}
 			if execErr == nil {
+				// Emit budget usage progress if available
+				if agentMax > 0 {
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventProgress,
+						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						Message:    activities.MsgBudget(res.TokensUsed, agentMax),
+						Timestamp:  workflow.Now(ctx),
+					}).Get(ctx, nil)
+				}
+				// Update and emit running total if task budget is known
+				totalUsed += res.TokensUsed
+				if taskBudget > 0 {
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventProgress,
+						AgentID:    "supervisor",
+						Message:    activities.MsgBudget(totalUsed, taskBudget),
+						Timestamp:  workflow.Now(ctx),
+					}).Get(ctx, nil)
+				}
 				// Persist agent execution (fire-and-forget)
 				persistCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 					StartToCloseTimeout: 5 * time.Second,

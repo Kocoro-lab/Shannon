@@ -46,6 +46,12 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - **Observable by Default** - Real-time dashboard, Prometheus metrics, OpenTelemetry tracing
 - **Distributed by Design** - Horizontal scaling with Temporal workflow orchestration
 
+### 🧠 Context Window Management
+- Sliding-window shaping: primers + previous summary + recents
+- Token-aware budgets (per-agent / per-task) with live progress events
+- Metadata-only streaming for context prep, memory recall, compression
+- Details: see docs/context-window-management.md
+
 *Model pricing is centralized in `config/models.yaml` - all services load from this single source for consistent cost tracking.*
 
 ## 🎯 Why Shannon vs. Others?

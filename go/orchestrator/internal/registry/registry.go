@@ -172,11 +172,16 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivity(activities.PersistToolExecutionStandalone)
 
 	// Budget activities
-	if r.config.EnableBudgetedWorkflows {
-		budgetActivities := activities.NewBudgetActivities(r.db, r.logger)
-		w.RegisterActivityWithOptions(budgetActivities.CheckTokenBudget, activity.RegisterOptions{
-			Name: constants.CheckTokenBudgetActivity,
-		})
+    if r.config.EnableBudgetedWorkflows {
+        var budgetActivities *activities.BudgetActivities
+        if r.config.DefaultTaskBudget > 0 || r.config.DefaultSessionBudget > 0 {
+            budgetActivities = activities.NewBudgetActivitiesWithDefaults(r.db, r.logger, r.config.DefaultTaskBudget, r.config.DefaultSessionBudget)
+        } else {
+            budgetActivities = activities.NewBudgetActivities(r.db, r.logger)
+        }
+        w.RegisterActivityWithOptions(budgetActivities.CheckTokenBudget, activity.RegisterOptions{
+            Name: constants.CheckTokenBudgetActivity,
+        })
 		w.RegisterActivityWithOptions(budgetActivities.CheckTokenBudgetWithBackpressure, activity.RegisterOptions{
 			Name: constants.CheckTokenBudgetWithBackpressureActivity,
 		})

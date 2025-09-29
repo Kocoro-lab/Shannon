@@ -164,20 +164,29 @@ func NewBudgetManager(db *sql.DB, logger *zap.Logger) *BudgetManager {
 
 // Options allow configuring budget manager behavior from config/env
 type Options struct {
-	BackpressureThreshold  float64
-	MaxBackpressureDelayMs int
+    BackpressureThreshold  float64
+    MaxBackpressureDelayMs int
+    // Default task/session budgets (tokens); 0 = use built-in defaults
+    DefaultTaskBudget      int
+    DefaultSessionBudget   int
 }
 
 // NewBudgetManagerWithOptions creates a budget manager and applies options
 func NewBudgetManagerWithOptions(db *sql.DB, logger *zap.Logger, opts Options) *BudgetManager {
-	bm := NewBudgetManager(db, logger)
-	if opts.BackpressureThreshold > 0 {
-		bm.backpressureThreshold = opts.BackpressureThreshold
-	}
-	if opts.MaxBackpressureDelayMs > 0 {
-		bm.maxBackpressureDelay = opts.MaxBackpressureDelayMs
-	}
-	return bm
+    bm := NewBudgetManager(db, logger)
+    if opts.BackpressureThreshold > 0 {
+        bm.backpressureThreshold = opts.BackpressureThreshold
+    }
+    if opts.MaxBackpressureDelayMs > 0 {
+        bm.maxBackpressureDelay = opts.MaxBackpressureDelayMs
+    }
+    if opts.DefaultTaskBudget > 0 {
+        bm.defaultTaskBudget = opts.DefaultTaskBudget
+    }
+    if opts.DefaultSessionBudget > 0 {
+        bm.defaultSessionBudget = opts.DefaultSessionBudget
+    }
+    return bm
 }
 
 // initializeModelPricing sets up pricing for different models

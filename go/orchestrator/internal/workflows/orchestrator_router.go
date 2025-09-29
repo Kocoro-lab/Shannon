@@ -1,9 +1,11 @@
 package workflows
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "os"
+    "strconv"
+    "strings"
+    "time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -96,24 +98,37 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	)
 
 	// 1.5) Budget preflight (estimate based on plan)
-	if input.UserID != "" { // Only check when we have a user scope
-		est := EstimateTokensWithConfig(decomp, &cfg)
-		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
-			if !res.CanProceed {
-				return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
-			}
-			// Pass budget info to child workflows via context
-			if input.Context == nil {
-				input.Context = map[string]interface{}{}
-			}
-			input.Context["budget_remaining"] = res.RemainingTaskBudget
-			n := len(decomp.Subtasks)
-			if n == 0 {
-				n = 1
-			}
-			input.Context["budget_agent_max"] = res.RemainingTaskBudget / n
-		}
-	}
+    if input.UserID != "" { // Only check when we have a user scope
+        est := EstimateTokensWithConfig(decomp, &cfg)
+        if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
+            if !res.CanProceed {
+                return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
+            }
+            // Pass budget info to child workflows via context
+            if input.Context == nil {
+                input.Context = map[string]interface{}{}
+            }
+            input.Context["budget_remaining"] = res.RemainingTaskBudget
+            n := len(decomp.Subtasks)
+            if n == 0 {
+                n = 1
+            }
+            agentMax := res.RemainingTaskBudget / n
+            // Optional clamp: environment or request context can cap per-agent budget
+            if v := os.Getenv("TOKEN_BUDGET_PER_AGENT"); v != "" {
+                if n, err := strconv.Atoi(v); err == nil && n > 0 && n < agentMax {
+                    agentMax = n
+                }
+            }
+            if capv, ok := input.Context["token_budget_per_agent"].(int); ok && capv > 0 && capv < agentMax {
+                agentMax = capv
+            }
+            if capv, ok := input.Context["token_budget_per_agent"].(float64); ok && capv > 0 && int(capv) < agentMax {
+                agentMax = int(capv)
+            }
+            input.Context["budget_agent_max"] = agentMax
+        }
+    }
 
 	// 1.6) Approval gate (optional, config-driven or explicit request)
 	if cfg.ApprovalEnabled {

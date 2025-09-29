@@ -27,15 +27,34 @@ func NewBudgetActivities(db *sql.DB, logger *zap.Logger) *BudgetActivities {
 		features = f
 	}
 	bcfg := cfg.BudgetFromEnvOrDefaults(features)
-	opts := budget.Options{
-		BackpressureThreshold:  bcfg.Backpressure.Threshold,
-		MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
-		// Circuit breaker and rate limit are configured per-user at runtime
-	}
-	return &BudgetActivities{
-		budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
-		logger:        logger,
-	}
+    opts := budget.Options{
+        BackpressureThreshold:  bcfg.Backpressure.Threshold,
+        MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
+        // Circuit breaker and rate limit are configured per-user at runtime
+    }
+    return &BudgetActivities{
+        budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
+        logger:        logger,
+    }
+}
+
+// NewBudgetActivitiesWithDefaults allows setting default task/session budgets from typed config.
+func NewBudgetActivitiesWithDefaults(db *sql.DB, logger *zap.Logger, defaultTaskBudget, defaultSessionBudget int) *BudgetActivities {
+    var features *cfg.Features
+    if f, err := cfg.Load(); err == nil {
+        features = f
+    }
+    bcfg := cfg.BudgetFromEnvOrDefaults(features)
+    opts := budget.Options{
+        BackpressureThreshold:  bcfg.Backpressure.Threshold,
+        MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
+        DefaultTaskBudget:      defaultTaskBudget,
+        DefaultSessionBudget:   defaultSessionBudget,
+    }
+    return &BudgetActivities{
+        budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
+        logger:        logger,
+    }
 }
 
 // NewBudgetActivitiesWithManager allows injecting a custom BudgetManager (useful for tests)
