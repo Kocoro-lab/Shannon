@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -56,10 +57,24 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	// 1) Decompose the task (planning + complexity)
+	// Add history to context for decomposition to be context-aware
+	decompContext := make(map[string]interface{})
+	if input.Context != nil {
+		for k, v := range input.Context {
+			decompContext[k] = v
+		}
+	}
+	// Add history for context awareness in decomposition
+	if len(input.History) > 0 {
+		// Convert history to a single string for the decompose endpoint
+		historyLines := convertHistoryForAgent(input.History)
+		decompContext["history"] = strings.Join(historyLines, "\n")
+	}
+
 	var decomp activities.DecompositionResult
 	if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
 		Query:          input.Query,
-		Context:        input.Context,
+		Context:        decompContext,
 		AvailableTools: []string{},
 	}).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)

@@ -88,27 +88,22 @@ func validateContext(ctx map[string]interface{}, logger *zap.Logger) map[string]
 		return make(map[string]interface{})
 	}
 
-	validated := make(map[string]interface{})
-	allowedKeys := map[string]bool{
-		"role":             true,
-		"agent_type":       true,
-		"tool_parameters":  true,
-		"tool_calls":       true,
-		"agent_memory":     true,
-		"previous_results": true,
-		"persona_id":       true,
-	}
+	validated := make(map[string]interface{}, len(ctx))
 
 	for key, value := range ctx {
-		// Only allow known safe keys
-		if !allowedKeys[key] {
-			logger.Warn("Filtering out unknown context key", zap.String("key", key))
+		if key == "" {
+			continue
+		}
+		if len(key) > 100 {
+			logger.Warn("Skipping context key exceeding length", zap.String("key", key[:100]))
 			continue
 		}
 
-		// Validate and sanitize values
+		// Validate and sanitize values while preserving arbitrary keys
 		if sanitizedValue := sanitizeContextValue(value, key, logger); sanitizedValue != nil {
 			validated[key] = sanitizedValue
+		} else {
+			logger.Debug("Dropping context key due to unsupported value", zap.String("key", key))
 		}
 	}
 
@@ -933,11 +928,15 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 		if out != "" {
 			chunk := getenvInt("PARTIAL_CHUNK_CHARS", 512)
-			if chunk <= 0 { chunk = 512 }
+			if chunk <= 0 {
+				chunk = 512
+			}
 			if getenvInt("ENABLE_LLM_PARTIALS", 1) == 1 {
 				for i := 0; i < len(out); i += chunk {
 					j := i + chunk
-					if j > len(out) { j = len(out) }
+					if j > len(out) {
+						j = len(out)
+					}
 					streaming.Get().Publish(wfID, streaming.Event{
 						WorkflowID: wfID,
 						Type:       string(StreamEventLLMPartial),
@@ -1038,7 +1037,9 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				case string:
 					obs = v
 				default:
-					if b, err := json.Marshal(v); err == nil { obs = string(b) }
+					if b, err := json.Marshal(v); err == nil {
+						obs = string(b)
+					}
 				}
 				streaming.Get().Publish(info.WorkflowExecution.ID, streaming.Event{
 					WorkflowID: info.WorkflowExecution.ID,

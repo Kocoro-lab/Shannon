@@ -145,14 +145,42 @@ async def agent_query(request: Request, query: AgentQuery):
                 temperature = query.temperature
 
             messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query.query}
+                {"role": "system", "content": system_prompt}
             ]
-            
-            # Add context if provided
-            if query.context:
-                context_str = "\n".join([f"{k}: {v}" for k, v in query.context.items()])
+
+            # Rehydrate history from context if present
+            history_rehydrated = False
+            logger.info(f"Context keys: {list(query.context.keys()) if query.context else 'No context'}")
+            if query.context and "history" in query.context:
+                history_str = str(query.context.get("history", ""))
+                logger.info(f"History string length: {len(history_str)}, preview: {history_str[:100] if history_str else 'Empty'}")
+                if history_str:
+                    # Parse the history string format: "role: content\n"
+                    for line in history_str.strip().split("\n"):
+                        if ": " in line:
+                            role, content = line.split(": ", 1)
+                            # Only add user and assistant messages to maintain conversation flow
+                            if role.lower() in ["user", "assistant"]:
+                                messages.append({"role": role.lower(), "content": content})
+                                history_rehydrated = True
+
+                    # Remove history from context to avoid duplication
+                    context_without_history = {k: v for k, v in query.context.items() if k != "history"}
+                else:
+                    context_without_history = query.context
+            else:
+                context_without_history = query.context if query.context else {}
+
+            # Add current query as the final user message
+            messages.append({"role": "user", "content": query.query})
+
+            # Add remaining context to system prompt if there's any
+            if context_without_history:
+                context_str = "\n".join([f"{k}: {v}" for k, v in context_without_history.items()])
                 messages[0]["content"] += f"\n\nContext:\n{context_str}"
+
+            # Log for debugging
+            logger.info(f"Prepared {len(messages)} messages for LLM (history_rehydrated={history_rehydrated})")
 
             # Get the appropriate model tier
             from ..providers.base import ModelTier
@@ -635,13 +663,34 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- Let the semantic meaning of the query guide tool selection\n"
         )
 
+        # Build messages with history rehydration for context awareness
+        messages = [{"role": "system", "content": sys}]
+
+        # Rehydrate history from context if present (same as agent_query endpoint)
+        history_rehydrated = False
+        if query.context and "history" in query.context:
+            history_str = str(query.context.get("history", ""))
+            if history_str:
+                # Parse the history string format: "role: content\n"
+                for line in history_str.strip().split("\n"):
+                    if ": " in line:
+                        role, content = line.split(": ", 1)
+                        # Only add user and assistant messages to maintain conversation flow
+                        if role.lower() in ["user", "assistant"]:
+                            messages.append({"role": role.lower(), "content": content})
+                            history_rehydrated = True
+
+        # Add the current query
         ctx_keys = list((query.context or {}).keys())[:5]
         tools = ",".join(query.tools or [])
         user = f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"
+        messages.append({"role": "user", "content": user})
+
+        logger.info(f"Decompose: Prepared {len(messages)} messages (history_rehydrated={history_rehydrated})")
 
         try:
             result = await providers.generate_completion(
-                messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                messages=messages,
                 tier=ModelTier.SMALL,
                 max_tokens=4096,  # Increased from 400 to handle complex multi-subtask decompositions
                 temperature=0.1,
