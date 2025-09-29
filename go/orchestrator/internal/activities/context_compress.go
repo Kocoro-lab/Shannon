@@ -174,14 +174,37 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 	}, nil
 }
 
-// redactPII performs simple best-effort redaction of common PII patterns in summaries.
+// redactPII performs comprehensive PII redaction on summaries
 func redactPII(s string) string {
     if s == "" { return s }
+
     // Email addresses
     emailRe := regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
     s = emailRe.ReplaceAllString(s, "[REDACTED_EMAIL]")
-    // Phone numbers (sequences of 10+ digits, allowing separators)
+
+    // Phone numbers (various formats)
     phoneRe := regexp.MustCompile(`(?i)(\+?\d[\d\s\-()]{8,}\d)`)
     s = phoneRe.ReplaceAllString(s, "[REDACTED_PHONE]")
+
+    // SSN (US Social Security Numbers)
+    ssnRe := regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
+    s = ssnRe.ReplaceAllString(s, "[REDACTED_SSN]")
+
+    // Credit card numbers (basic pattern)
+    ccRe := regexp.MustCompile(`\b(?:\d{4}[-\s]?){3}\d{4}\b`)
+    s = ccRe.ReplaceAllString(s, "[REDACTED_CC]")
+
+    // IP addresses (IPv4)
+    ipRe := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+    s = ipRe.ReplaceAllString(s, "[REDACTED_IP]")
+
+    // API keys and tokens (common patterns)
+    apiKeyRe := regexp.MustCompile(`(?i)\b(api[_-]?key|apikey|access[_-]?token|bearer|token)[\s:=]+[\w-]{20,}\b`)
+    s = apiKeyRe.ReplaceAllString(s, "[REDACTED_API_KEY]")
+
+    // Passwords and secrets (when explicitly mentioned)
+    secretRe := regexp.MustCompile(`(?i)\b(password|secret|pwd|passwd)[\s:=]+\S{8,}\b`)
+    s = secretRe.ReplaceAllString(s, "[REDACTED_SECRET]")
+
     return s
 }
