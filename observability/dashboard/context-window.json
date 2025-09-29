@@ -1,0 +1,30 @@
+{
+  "title": "Context Window Management",
+  "panels": [
+    {
+      "type": "graph",
+      "title": "Compression Events",
+      "targets": [
+        {"expr": "sum(rate(shannon_compression_events_total{status=\"triggered\"}[5m]))"},
+        {"expr": "sum(rate(shannon_compression_events_total{status=\"skipped\"}[5m]))"},
+        {"expr": "sum(rate(shannon_compression_events_total{status=\"failed\"}[5m]))"}
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Compression Tokens Saved (est)",
+      "targets": [
+        {"expr": "rate(shannon_compression_tokens_saved_sum[5m]) / rate(shannon_compression_tokens_saved_count[5m])"}
+      ]
+    },
+    {
+      "type": "graph",
+      "title": "Compression Ratio",
+      "targets": [
+        {"expr": "histogram_quantile(0.5, sum(rate(shannon_compression_ratio_bucket[5m])) by (le))"},
+        {"expr": "histogram_quantile(0.9, sum(rate(shannon_compression_ratio_bucket[5m])) by (le))"}
+      ]
+    }
+  ]
+}
+

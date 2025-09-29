@@ -1,47 +1,53 @@
 package server
 
 import (
-	"context"
-	"database/sql"
-	"fmt"
-	"os"
-	"strings"
-	"time"
+    "context"
+    "database/sql"
+    "fmt"
+    "os"
+    "strings"
+    "time"
 
-	"github.com/google/uuid"
-	enumspb "go.temporal.io/api/enums/v1"
-	workflowservice "go.temporal.io/api/workflowservice/v1"
-	"go.temporal.io/sdk/client"
-	"go.temporal.io/sdk/converter"
-	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/structpb"
-	"google.golang.org/protobuf/types/known/timestamppb"
+    "github.com/google/uuid"
+    enumspb "go.temporal.io/api/enums/v1"
+    workflowservice "go.temporal.io/api/workflowservice/v1"
+    "go.temporal.io/sdk/client"
+    "go.temporal.io/sdk/converter"
+    "go.uber.org/zap"
+    "strconv"
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/codes"
+    "google.golang.org/grpc/status"
+    "google.golang.org/protobuf/types/known/structpb"
+    "google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
-	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
-	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
-	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+    cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
+    ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+    common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
+    pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 )
 
 // OrchestratorService implements the Orchestrator gRPC service
 type OrchestratorService struct {
-	pb.UnimplementedOrchestratorServiceServer
-	temporalClient  client.Client
-	sessionManager  *session.Manager
-	humanActivities *activities.HumanInterventionActivities
-	dbClient        *db.Client
-	logger          *zap.Logger
-	degradeMgr      *degradation.Manager
-	workflowConfig  *activities.WorkflowConfig
+    pb.UnimplementedOrchestratorServiceServer
+    temporalClient  client.Client
+    sessionManager  *session.Manager
+    humanActivities *activities.HumanInterventionActivities
+    dbClient        *db.Client
+    logger          *zap.Logger
+    degradeMgr      *degradation.Manager
+    workflowConfig  *activities.WorkflowConfig
+
+    // Optional typed configuration snapshot for defaults
+    shCfg *cfg.ShannonConfig
 
 	// Provider for per-request default workflow flags
 	getWorkflowDefaults func() (bypassSingle bool)
@@ -62,6 +68,11 @@ func (s *OrchestratorService) Shutdown() error {
 		}
 	}
 	return nil
+}
+
+// SetShannonConfig provides a snapshot of typed configuration (optional).
+func (s *OrchestratorService) SetShannonConfig(c *cfg.ShannonConfig) {
+    s.shCfg = c
 }
 
 // SetTemporalClient sets or replaces the Temporal client after service construction.
@@ -263,8 +274,101 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	// Create workflow ID
 	workflowID := fmt.Sprintf("task-%s-%d", userID, time.Now().Unix())
 
-	// Build session context for workflow
-	history := sess.GetRecentHistory(10) // Last 10 messages
+    // Build session context for workflow
+    // Determine desired window size with priority:
+    // 1) Request override (context.history_window_size)
+    // 2) Preset (context.use_case_preset == "debugging")
+    // 3) Env var HISTORY_WINDOW_MESSAGES
+    // 4) Default (50)
+
+    clamp := func(n, lo, hi int) int {
+        if n < lo { return lo }
+        if n > hi { return hi }
+        return n
+    }
+
+    // Request context as map (may be nil)
+    desiredWindow := 0
+    if req.Context != nil {
+        ctxMap := req.Context.AsMap()
+        if v, ok := ctxMap["history_window_size"]; ok {
+            switch t := v.(type) {
+            case float64:
+                desiredWindow = int(t)
+            case int:
+                desiredWindow = t
+            case string:
+                if n, err := strconv.Atoi(t); err == nil { desiredWindow = n }
+            }
+        } else if preset, ok := ctxMap["use_case_preset"].(string); ok && strings.EqualFold(preset, "debugging") {
+            // Debugging preset uses a larger default
+            if v := os.Getenv("HISTORY_WINDOW_DEBUG_MESSAGES"); v != "" {
+                if n, err := strconv.Atoi(v); err == nil { desiredWindow = n }
+            }
+            if desiredWindow == 0 {
+                if s.shCfg != nil && s.shCfg.Session.ContextWindowDebugging > 0 {
+                    desiredWindow = s.shCfg.Session.ContextWindowDebugging
+                } else {
+                    desiredWindow = 75
+                }
+            }
+        }
+    }
+    if desiredWindow == 0 {
+        if v := os.Getenv("HISTORY_WINDOW_MESSAGES"); v != "" {
+            if n, err := strconv.Atoi(v); err == nil { desiredWindow = n }
+        }
+    }
+    if desiredWindow == 0 {
+        if s.shCfg != nil && s.shCfg.Session.ContextWindowDefault > 0 {
+            desiredWindow = s.shCfg.Session.ContextWindowDefault
+        } else {
+            desiredWindow = 50
+        }
+    }
+    historySize := clamp(desiredWindow, 5, 200)
+
+    history := sess.GetRecentHistory(historySize)
+
+    // Inject primers/recents defaults into context for deterministic shaping
+    if req.Context != nil {
+        ctxMap := req.Context.AsMap()
+        if _, ok := ctxMap["primers_count"]; !ok {
+            if s.shCfg != nil && s.shCfg.Session.PrimersCount >= 0 {
+                ctxMap["primers_count"] = s.shCfg.Session.PrimersCount
+            }
+        }
+        if _, ok := ctxMap["recents_count"]; !ok {
+            if s.shCfg != nil && s.shCfg.Session.RecentsCount >= 0 {
+                ctxMap["recents_count"] = s.shCfg.Session.RecentsCount
+            }
+        }
+        // Rebuild structpb context with injected values
+        // Also inject optional compression ratios from env if not provided
+        if _, ok := ctxMap["compression_trigger_ratio"]; !ok {
+            if v := os.Getenv("COMPRESSION_TRIGGER_RATIO"); v != "" {
+                if f, err := strconv.ParseFloat(v, 64); err == nil { ctxMap["compression_trigger_ratio"] = f }
+            }
+        }
+        if _, ok := ctxMap["compression_target_ratio"]; !ok {
+            if v := os.Getenv("COMPRESSION_TARGET_RATIO"); v != "" {
+                if f, err := strconv.ParseFloat(v, 64); err == nil { ctxMap["compression_target_ratio"] = f }
+            }
+        }
+        st, _ := structpb.NewStruct(ctxMap)
+        req.Context = st
+    }
+
+    // Emit a compact context-prep event (metadata only)
+    estTokens := activities.EstimateTokensFromHistory(history)
+    msg := activities.MsgContextPreparing(len(history), estTokens)
+    streaming.Get().Publish(workflowID, streaming.Event{
+        WorkflowID: workflowID,
+        Type:       string(activities.StreamEventDataProcessing),
+        AgentID:    "",
+        Message:    msg,
+        Timestamp:  time.Now(),
+    })
 
 	// Prepare workflow input with session context
 	input := workflows.TaskInput{

@@ -273,9 +273,21 @@ type StreamingConfig struct {
 
 // SessionConfig contains session management settings
 type SessionConfig struct {
-	MaxHistory int           `json:"max_history" yaml:"max_history"` // Maximum messages to keep in Redis per session
-	TTL        time.Duration `json:"ttl" yaml:"ttl"`                 // Session expiry time
-	CacheSize  int           `json:"cache_size" yaml:"cache_size"`   // Max sessions to keep in local cache
+    MaxHistory int           `json:"max_history" yaml:"max_history"` // Maximum messages to keep in Redis per session
+    TTL        time.Duration `json:"ttl" yaml:"ttl"`                 // Session expiry time
+    CacheSize  int           `json:"cache_size" yaml:"cache_size"`   // Max sessions to keep in local cache
+
+    // Context window presets for server-side history retrieval
+    ContextWindowDefault   int `json:"context_window_default" yaml:"context_window_default"`
+    ContextWindowDebugging int `json:"context_window_debugging" yaml:"context_window_debugging"`
+
+    // Token budgets (guidance for planning/enforcement)
+    TokenBudgetPerAgent int `json:"token_budget_per_agent" yaml:"token_budget_per_agent"`
+    TokenBudgetPerTask  int `json:"token_budget_per_task" yaml:"token_budget_per_task"`
+
+    // Sliding-window shaping parameters
+    PrimersCount int `json:"primers_count" yaml:"primers_count"`
+    RecentsCount int `json:"recents_count" yaml:"recents_count"`
 }
 
 // WorkflowConfig controls workflow behavior
@@ -304,7 +316,7 @@ type PolicyAuditConfig struct {
 
 // DefaultShannonConfig returns the default configuration
 func DefaultShannonConfig() *ShannonConfig {
-	return &ShannonConfig{
+    return &ShannonConfig{
 		Auth: AuthConfig{
 			Enabled:                  false,
 			SkipAuth:                 true,
@@ -531,10 +543,21 @@ func DefaultShannonConfig() *ShannonConfig {
 		Streaming: StreamingConfig{
 			RingCapacity: 256,
 		},
-		Workflow: WorkflowConfig{
-			BypassSingleResult: true,
-		},
-	}
+        Workflow: WorkflowConfig{
+            BypassSingleResult: true,
+        },
+        Session: SessionConfig{
+            MaxHistory:            500,
+            TTL:                   30 * 24 * time.Hour,
+            CacheSize:             1024,
+            ContextWindowDefault:  50,
+            ContextWindowDebugging: 75,
+            TokenBudgetPerAgent:   50000,
+            TokenBudgetPerTask:    200000,
+            PrimersCount:          3,
+            RecentsCount:          20,
+        },
+    }
 }
 
 // ValidateShannonConfig validates the Shannon configuration
@@ -572,16 +595,49 @@ func ValidateShannonConfig(config map[string]interface{}) error {
 		}
 	}
 
-	if agents, ok := config["agents"].(map[string]interface{}); ok {
-		if maxConcurrent, ok := agents["max_concurrent"].(float64); ok && maxConcurrent < 1 {
-			return fmt.Errorf("max concurrent agents must be at least 1, got %v", maxConcurrent)
-		}
-		if retryCount, ok := agents["retry_count"].(float64); ok && retryCount < 0 {
-			return fmt.Errorf("retry count cannot be negative, got %v", retryCount)
-		}
-	}
+    if agents, ok := config["agents"].(map[string]interface{}); ok {
+        if maxConcurrent, ok := agents["max_concurrent"].(float64); ok && maxConcurrent < 1 {
+            return fmt.Errorf("max concurrent agents must be at least 1, got %v", maxConcurrent)
+        }
+        if retryCount, ok := agents["retry_count"].(float64); ok && retryCount < 0 {
+            return fmt.Errorf("retry count cannot be negative, got %v", retryCount)
+        }
+    }
 
-	return nil
+    // Validate session-related context windows and token budgets
+    if session, ok := config["session"].(map[string]interface{}); ok {
+        // Context windows must be [5, 200]
+        inWindow := func(v float64) bool { return v >= 5 && v <= 200 }
+        if v, ok := session["context_window_default"].(float64); ok {
+            if !inWindow(v) { return fmt.Errorf("context_window_default must be between 5 and 200, got %v", v) }
+        }
+        if v, ok := session["context_window_debugging"].(float64); ok {
+            if !inWindow(v) { return fmt.Errorf("context_window_debugging must be between 5 and 200, got %v", v) }
+        }
+        // Primers/recents must be non-negative and bounded
+        if v, ok := session["primers_count"].(float64); ok {
+            if v < 0 || v > 1000 { return fmt.Errorf("primers_count must be between 0 and 1000, got %v", v) }
+        }
+        if v, ok := session["recents_count"].(float64); ok {
+            if v < 0 || v > 1000 { return fmt.Errorf("recents_count must be between 0 and 1000, got %v", v) }
+        }
+        // Token budgets must be [1000, 200000] and per-task >= per-agent
+        inBudget := func(v float64) bool { return v >= 1000 && v <= 200000 }
+        var perAgent, perTask float64
+        if v, ok := session["token_budget_per_agent"].(float64); ok {
+            if !inBudget(v) { return fmt.Errorf("token_budget_per_agent must be between 1000 and 200000, got %v", v) }
+            perAgent = v
+        }
+        if v, ok := session["token_budget_per_task"].(float64); ok {
+            if !inBudget(v) { return fmt.Errorf("token_budget_per_task must be between 1000 and 200000, got %v", v) }
+            perTask = v
+        }
+        if perAgent > 0 && perTask > 0 && perTask < perAgent {
+            return fmt.Errorf("token_budget_per_task (%v) must be >= token_budget_per_agent (%v)", perTask, perAgent)
+        }
+    }
+
+    return nil
 }
 
 // ConfigurationCallback is called when significant configuration changes occur
@@ -738,20 +794,38 @@ func (scm *ShannonConfigManager) updateConfigFromMap(configMap map[string]interf
 		}
 	}
 
-	// Update session config
-	if session, ok := configMap["session"].(map[string]interface{}); ok {
-		if v, ok := session["max_history"].(float64); ok {
-			newConfig.Session.MaxHistory = int(v)
-		}
-		if v, ok := session["ttl"].(string); ok {
-			if d, err := time.ParseDuration(v); err == nil {
-				newConfig.Session.TTL = d
-			}
-		}
-		if v, ok := session["cache_size"].(float64); ok {
-			newConfig.Session.CacheSize = int(v)
-		}
-	}
+    // Update session config
+    if session, ok := configMap["session"].(map[string]interface{}); ok {
+        if v, ok := session["max_history"].(float64); ok {
+            newConfig.Session.MaxHistory = int(v)
+        }
+        if v, ok := session["ttl"].(string); ok {
+            if d, err := time.ParseDuration(v); err == nil {
+                newConfig.Session.TTL = d
+            }
+        }
+        if v, ok := session["cache_size"].(float64); ok {
+            newConfig.Session.CacheSize = int(v)
+        }
+        if v, ok := session["context_window_default"].(float64); ok {
+            newConfig.Session.ContextWindowDefault = int(v)
+        }
+        if v, ok := session["context_window_debugging"].(float64); ok {
+            newConfig.Session.ContextWindowDebugging = int(v)
+        }
+        if v, ok := session["token_budget_per_agent"].(float64); ok {
+            newConfig.Session.TokenBudgetPerAgent = int(v)
+        }
+        if v, ok := session["token_budget_per_task"].(float64); ok {
+            newConfig.Session.TokenBudgetPerTask = int(v)
+        }
+        if v, ok := session["primers_count"].(float64); ok {
+            newConfig.Session.PrimersCount = int(v)
+        }
+        if v, ok := session["recents_count"].(float64); ok {
+            newConfig.Session.RecentsCount = int(v)
+        }
+    }
 
 	// Update vector config
 	if vector, ok := configMap["vector"].(map[string]interface{}); ok {

@@ -126,6 +126,14 @@ var (
 		[]string{"status"}, // status: triggered/skipped/failed
 	)
 
+	CompressionTokensSaved = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "shannon_compression_tokens_saved",
+			Help:    "Estimated tokens saved by compression per event",
+			Buckets: []float64{100, 500, 1000, 2000, 5000, 10000, 20000},
+		},
+	)
+
 	CompressionRatio = promauto.NewHistogram(
 		prometheus.HistogramOpts{
 			Name:    "shannon_compression_ratio",

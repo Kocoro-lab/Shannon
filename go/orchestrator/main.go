@@ -343,10 +343,16 @@ func main() {
 	}
 
 	// Create orchestrator service with session config
-	orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger, sessionCfg)
-	if err != nil {
-		logger.Fatal("Failed to create orchestrator service", zap.Error(err))
-	}
+    orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger, sessionCfg)
+    if err != nil {
+        logger.Fatal("Failed to create orchestrator service", zap.Error(err))
+    }
+    // Provide typed Shannon config snapshot to server for defaults
+    if shannonCfgMgr != nil {
+        if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
+            orchestratorService.SetShannonConfig(shCfg)
+        }
+    }
 
 	// Provide workflow defaults from Shannon config/env at submission time
 	orchestratorService.SetWorkflowDefaultsProvider(func() bool {
@@ -615,11 +621,23 @@ func main() {
 		priorityQueues := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") || os.Getenv("PRIORITY_QUEUES") == "1" || strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "true")
 
 		// Create and configure registry once
-		registryConfig := &registry.RegistryConfig{
-			EnableBudgetedWorkflows:  true,
-			EnableStreamingWorkflows: true,
-			EnableApprovalWorkflows:  true,
-		}
+        registryConfig := &registry.RegistryConfig{
+            EnableBudgetedWorkflows:  true,
+            EnableStreamingWorkflows: true,
+            EnableApprovalWorkflows:  true,
+        }
+        // Wire typed budget defaults if available
+        if shannonCfgMgr != nil {
+            if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
+                if shCfg.Session.TokenBudgetPerTask > 0 {
+                    registryConfig.DefaultTaskBudget = shCfg.Session.TokenBudgetPerTask
+                }
+                // Optional: set a session budget heuristic
+                if shCfg.Session.TokenBudgetPerTask > 0 {
+                    registryConfig.DefaultSessionBudget = shCfg.Session.TokenBudgetPerTask * 4
+                }
+            }
+        }
 		orchestratorRegistry := registry.NewOrchestratorRegistry(
 			registryConfig,
 			logger,

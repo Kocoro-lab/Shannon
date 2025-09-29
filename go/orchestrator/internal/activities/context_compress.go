@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+    "regexp"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
@@ -46,8 +47,11 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 		return CompressContextResult{Summary: "", Stored: false}, nil
 	}
 
-	// Estimate original tokens from history
-	originalTokens := 0
+    // Mark compression triggered
+    metrics.CompressionEvents.WithLabelValues("triggered").Inc()
+
+    // Estimate original tokens from history
+    originalTokens := 0
 	for _, msg := range in.History {
 		if content, ok := msg["content"]; ok {
 			// Conservative estimate: ~4 chars per token
@@ -80,35 +84,43 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 		return CompressContextResult{Summary: "", Stored: false, Error: err.Error()}, nil
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		logger.Warn("Context compress non-2xx", zap.Int("status", resp.StatusCode))
-		return CompressContextResult{Summary: "", Stored: false, Error: fmt.Sprintf("status_%d", resp.StatusCode)}, nil
-	}
+    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+        logger.Warn("Context compress non-2xx", zap.Int("status", resp.StatusCode))
+        metrics.CompressionEvents.WithLabelValues("failed").Inc()
+        return CompressContextResult{Summary: "", Stored: false, Error: fmt.Sprintf("status_%d", resp.StatusCode)}, nil
+    }
 	var out struct {
 		Summary string `json:"summary"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return CompressContextResult{Summary: "", Stored: false, Error: err.Error()}, nil
-	}
+    if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+        metrics.CompressionEvents.WithLabelValues("failed").Inc()
+        return CompressContextResult{Summary: "", Stored: false, Error: err.Error()}, nil
+    }
 
-	summary := out.Summary
-	if summary == "" {
-		return CompressContextResult{Summary: "", Stored: false, OriginalTokens: originalTokens}, nil
-	}
+    summary := out.Summary
+    // Basic PII redaction for safety (best-effort)
+    summary = redactPII(summary)
+    if summary == "" {
+        // No summary produced; count as skipped
+        metrics.CompressionEvents.WithLabelValues("skipped").Inc()
+        return CompressContextResult{Summary: "", Stored: false, OriginalTokens: originalTokens}, nil
+    }
 
 	// Estimate compressed tokens from summary
 	compressedTokens := len(summary)/4 + 10 // Conservative estimate + overhead
 
 	// Record compression ratio metric if we achieved compression
-	if originalTokens > 0 && compressedTokens > 0 {
-		ratio := float64(originalTokens) / float64(compressedTokens)
-		metrics.CompressionRatio.Observe(ratio)
-		logger.Info("Context compression completed",
-			zap.Int("original_tokens", originalTokens),
-			zap.Int("compressed_tokens", compressedTokens),
-			zap.Float64("compression_ratio", ratio),
-		)
-	}
+    if originalTokens > 0 && compressedTokens > 0 {
+        ratio := float64(originalTokens) / float64(compressedTokens)
+        metrics.CompressionRatio.Observe(ratio)
+        saved := originalTokens - compressedTokens
+        if saved > 0 { metrics.CompressionTokensSaved.Observe(float64(saved)) }
+        logger.Info("Context compression completed",
+            zap.Int("original_tokens", originalTokens),
+            zap.Int("compressed_tokens", compressedTokens),
+            zap.Float64("compression_ratio", ratio),
+        )
+    }
 
 	// Generate embedding for summary and upsert to Qdrant
 	if svc := embeddings.Get(); svc != nil {
@@ -160,4 +172,39 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 		OriginalTokens:   originalTokens,
 		CompressedTokens: compressedTokens,
 	}, nil
+}
+
+// redactPII performs comprehensive PII redaction on summaries
+func redactPII(s string) string {
+    if s == "" { return s }
+
+    // Email addresses
+    emailRe := regexp.MustCompile(`(?i)[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}`)
+    s = emailRe.ReplaceAllString(s, "[REDACTED_EMAIL]")
+
+    // Phone numbers (various formats)
+    phoneRe := regexp.MustCompile(`(?i)(\+?\d[\d\s\-()]{8,}\d)`)
+    s = phoneRe.ReplaceAllString(s, "[REDACTED_PHONE]")
+
+    // SSN (US Social Security Numbers)
+    ssnRe := regexp.MustCompile(`\b\d{3}-\d{2}-\d{4}\b`)
+    s = ssnRe.ReplaceAllString(s, "[REDACTED_SSN]")
+
+    // Credit card numbers (basic pattern)
+    ccRe := regexp.MustCompile(`\b(?:\d{4}[-\s]?){3}\d{4}\b`)
+    s = ccRe.ReplaceAllString(s, "[REDACTED_CC]")
+
+    // IP addresses (IPv4)
+    ipRe := regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+    s = ipRe.ReplaceAllString(s, "[REDACTED_IP]")
+
+    // API keys and tokens (common patterns)
+    apiKeyRe := regexp.MustCompile(`(?i)\b(api[_-]?key|apikey|access[_-]?token|bearer|token)[\s:=]+[\w-]{20,}\b`)
+    s = apiKeyRe.ReplaceAllString(s, "[REDACTED_API_KEY]")
+
+    // Passwords and secrets (when explicitly mentioned)
+    secretRe := regexp.MustCompile(`(?i)\b(password|secret|pwd|passwd)[\s:=]+\S{8,}\b`)
+    s = secretRe.ReplaceAllString(s, "[REDACTED_SECRET]")
+
+    return s
 }
