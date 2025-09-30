@@ -49,7 +49,7 @@ model_tiers:
         model: gpt-5
         priority: 1
       - provider: anthropic
-        model: claude-sonnet-4-20250514
+        model: claude-sonnet-4-5-20250929
         priority: 2
       - provider: google
         model: gemini-2.5-flash
@@ -235,6 +235,9 @@ pricing:
       claude-sonnet-4-20250514:
         input_per_1k: 0.0030
         output_per_1k: 0.0150
+      claude-sonnet-4-5-20250929:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0150
       claude-opus-4-1-20250805:
         input_per_1k: 0.0150
         output_per_1k: 0.0750
@@ -346,6 +349,7 @@ model_capabilities:
     - gpt-4o-mini
     - gpt-5
     - claude-sonnet-4-20250514
+    - claude-sonnet-4-5-20250929
     - gemini-2.5-flash
     - gemini-2.0-flash
     
@@ -363,6 +367,7 @@ model_capabilities:
     - codestral-2501
     - deepseek-v3.1-terminus
     - claude-sonnet-4-20250514
+    - claude-sonnet-4-5-20250929
     - o1-mini
     - qwen-plus-latest
     

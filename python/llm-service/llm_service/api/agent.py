@@ -71,6 +71,7 @@ class AgentQuery(BaseModel):
     max_tokens: Optional[int] = Field(default=2048, description="Maximum tokens for response")
     temperature: Optional[float] = Field(default=0.7, description="Temperature for generation")
     model_tier: Optional[str] = Field(default="small", description="Model tier: small, medium, or large")
+    model_override: Optional[str] = Field(default=None, description="Override the default model selection with a specific model ID")
 
 
 class AgentResponse(BaseModel):
@@ -190,8 +191,17 @@ async def agent_query(request: Request, query: AgentQuery):
                 "large": ModelTier.LARGE
             }
             tier = tier_map.get(query.model_tier, ModelTier.SMALL)
-            
+
+            # Check for model override (from query field or context)
+            model_override = query.model_override or (query.context.get("model_override") if query.context else None)
+            if model_override:
+                logger.info(f"Using model override: {model_override}")
+            else:
+                logger.info(f"Using tier-based selection: {query.model_tier} -> {tier}")
+
             # Generate completion with tools if specified
+            if query.tools:
+                logger.info(f"Tools specified for query: {query.tools}")
             tools_param = None
             if query.tools:
                 # Convert tool names to OpenAI-style tool definitions
@@ -285,6 +295,7 @@ async def agent_query(request: Request, query: AgentQuery):
             result_data = await request.app.state.providers.generate_completion(
                 messages=messages,
                 tier=tier,
+                specific_model=model_override,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 tools=tools_param,
@@ -303,7 +314,10 @@ async def agent_query(request: Request, query: AgentQuery):
                         name = item.get("name")
                         args = item.get("arguments") or {}
                         tool_calls_from_output.append({"name": name, "arguments": args})
-            except Exception:
+                if tool_calls_from_output:
+                    logger.info(f"Parsed {len(tool_calls_from_output)} tool calls: {[tc['name'] for tc in tool_calls_from_output]}")
+            except Exception as e:
+                logger.warning(f"Failed to parse tool calls: {e}")
                 tool_calls_from_output = []
 
             # Execute tools if requested
@@ -329,9 +343,11 @@ async def agent_query(request: Request, query: AgentQuery):
                     })
 
                     # Call LLM again to interpret the tool results
+                    logger.info(f"Tool execution completed, re-engaging LLM for interpretation")
                     interpretation_result = await request.app.state.providers.generate_completion(
                         messages=messages,
                         tier=tier,
+                        specific_model=model_override,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         tools=None,  # No tools for interpretation pass
