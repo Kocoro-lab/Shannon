@@ -47,6 +47,7 @@ cd protos
 # Generate Go files (Go is flexible with protoc versions)
 if command -v protoc &> /dev/null; then
     echo "Generating Go protobuf files with system protoc..."
+    mkdir -p ../go/orchestrator/internal/pb
     for proto in $(find . -name "*.proto" -type f); do
         protoc \
             --go_out=../go/orchestrator/internal/pb \
