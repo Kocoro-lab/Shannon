@@ -343,7 +343,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     })
 
                     # Call LLM again to interpret the tool results
-                    logger.info(f"Tool execution completed, re-engaging LLM for interpretation")
+                    logger.info("Tool execution completed, re-engaging LLM for interpretation")
                     interpretation_result = await request.app.state.providers.generate_completion(
                         messages=messages,
                         tier=tier,
