@@ -26,19 +26,19 @@ execution_modes:
 # Agent configuration
 agent:
   max_concurrent: 10
-  memory_limit_mb: 512
-  timeout_seconds: 30
+  memory_limit_mb: 1024
+  timeout_seconds: 120
   sandbox_enabled: true
   wasm_runtime: wasmtime
-  
+
   fsm:
-    max_iterations: 10
+    max_iterations: 15
     state_persistence: true
     retry_on_failure: true
-    
+
   tools:
-    max_per_agent: 10
-    execution_timeout: 10
+    max_per_agent: 20
+    execution_timeout: 30
     sandbox_required: true
 
 # Orchestration settings
@@ -58,8 +58,8 @@ orchestration:
 
   session:
     enabled: true
-    ttl_minutes: 60
-    context_size_kb: 100
+    ttl_minutes: 120
+    context_size_kb: 200
 
 # Workflow enhancements
 workflows:
@@ -77,7 +77,7 @@ workflows:
     bypass_single_result: true  # Skip extra synthesis when only one answer is produced
 
   tool_execution:
-    parallelism: 3              # Maximum concurrent tool executions
+    parallelism: 5              # Maximum concurrent tool executions
     auto_selection: true        # Allow automatic tool selection
 
   # Complexity thresholds for model tier selection
@@ -101,15 +101,15 @@ workflows:
   # P2P Coordination for task dependencies
   p2p:
     enabled: false  # Set to true to enable P2P coordination between agents
-    timeout_seconds: 360  # Maximum wait time for dependencies (6 minutes default)
+    timeout_seconds: 600  # Maximum wait time for dependencies (10 minutes default)
 
 # Enforcement defaults (applies to rate limiting and circuit breaking)
 enforcement:
-  timeout_seconds: 30
-  max_tokens: 4096
+  timeout_seconds: 90
+  max_tokens: 32768
 
   rate_limiting:
-    rps: 10
+    rps: 20
 
   circuit_breaker:
     error_threshold: 0.5

@@ -107,14 +107,14 @@ selection_strategy:
   mode: priority  # priority, round-robin, least-cost, random
   fallback_enabled: true
   max_retries: 3
-  timeout_seconds: 60
+  timeout_seconds: 120
 
 # Cost controls
 cost_controls:
-  max_cost_per_request: 1.00
-  max_tokens_per_request: 8000
-  daily_budget_usd: 500.0
-  alert_threshold_percent: 80
+  max_cost_per_request: 2.00
+  max_tokens_per_request: 100000
+  daily_budget_usd: 1000.0
+  alert_threshold_percent: 90
 
 # Prompt caching configuration
 prompt_cache:
