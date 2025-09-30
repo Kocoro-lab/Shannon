@@ -73,6 +73,18 @@ class AnthropicProvider(LLMProvider):
             supports_streaming=True,
             available=True,
         ),
+        "claude-sonnet-4-5-20250929": ModelInfo(
+            id="claude-sonnet-4-5-20250929",
+            name="Claude Sonnet 4.5",
+            provider=None,
+            tier=ModelTier.MEDIUM,
+            context_window=200000,
+            cost_per_1k_prompt_tokens=0.003,
+            cost_per_1k_completion_tokens=0.015,
+            supports_tools=True,
+            supports_streaming=True,
+            available=True,
+        ),
         "claude-opus-4-1-20250805": ModelInfo(
             id="claude-opus-4-1-20250805",
             name="Claude Opus 4.1",

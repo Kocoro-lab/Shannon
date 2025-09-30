@@ -4,10 +4,10 @@
 service:
   port: 50052
   health_port: 8081
-  graceful_timeout: "30s"
-  read_timeout: "10s"
-  write_timeout: "10s"
-  max_header_bytes: 1048576
+  graceful_timeout: "60s"
+  read_timeout: "30s"
+  write_timeout: "30s"
+  max_header_bytes: 2097152
 
 auth:
   enabled: true  # Set to true to enable authentication
@@ -21,9 +21,9 @@ auth:
   require_email_verification: false
 
 session:
-  max_history: 500  # Maximum messages to keep in Redis per session
-  ttl: "720h"       # Session expiry time (30 days)
-  cache_size: 10000 # Max sessions to keep in local cache
+  max_history: 1000  # Maximum messages to keep in Redis per session
+  ttl: "720h"        # Session expiry time (30 days)
+  cache_size: 20000  # Max sessions to keep in local cache
 
 circuit_breakers:
   redis:
@@ -167,8 +167,8 @@ health:
       interval: "60s"
 
 agents:
-  max_concurrent: 5
-  default_timeout: "30s"
+  max_concurrent: 10
+  default_timeout: "120s"
   health_check_port: 2113
   retry_count: 3
   retry_backoff: "2s"
@@ -192,7 +192,7 @@ temporal:
   host_port: "localhost:7233"
   namespace: "default"
   task_queue: "shannon-task-queue"
-  timeout: "30s"
+  timeout: "120s"
   retry_policy:
     initial_interval: "1s"
     backoff_coefficient: 2.0
@@ -217,9 +217,9 @@ vector:
   cases: "cases"
   document_chunks: "document_chunks"
   summaries: "summaries"
-  top_k: 5
+  top_k: 10
   threshold: 0.5
-  timeout: "3s"
+  timeout: "10s"
   default_model: "text-embedding-3-small"
   cache_ttl: "1h"
   use_redis_cache: true
@@ -234,15 +234,15 @@ vector:
 embeddings:
   base_url: "http://llm-service:8000"
   default_model: "text-embedding-3-small"
-  timeout: "5s"
+  timeout: "10s"
   cache_ttl: "1h"
-  max_lru: 2048
+  max_lru: 4096
   # Chunking configuration for long texts
   chunking:
     enabled: true
-    max_tokens: 2000       # Target chunk size in tokens
-    overlap_tokens: 200    # Overlap between chunks (10% of max_tokens)
-    min_chunk_tokens: 100  # Minimum size for a chunk
+    max_tokens: 4000       # Target chunk size in tokens
+    overlap_tokens: 400    # Overlap between chunks (10% of max_tokens)
+    min_chunk_tokens: 200  # Minimum size for a chunk
 
 tracing:
   enabled: false  # Enable for development/staging environments
@@ -251,7 +251,7 @@ tracing:
 
 # Streaming configuration
 streaming:
-  ring_capacity: 256  # Number of recent events to retain per workflow for replay
+  ring_capacity: 512  # Number of recent events to retain per workflow for replay
 
 # Workflow orchestration behavior
 workflow:
@@ -280,20 +280,20 @@ workflows:
 # Cognitive workflow configurations
 cognitive_workflows:
   exploratory:
-    max_iterations: 5
+    max_iterations: 10
     confidence_threshold: 0.85
     branch_factor: 3
-    max_concurrent_agents: 3
+    max_concurrent_agents: 5
   react:
-    max_iterations: 10
-    observation_window: 3
+    max_iterations: 15
+    observation_window: 5
   research:
-    research_depth: 3
-    sources_per_round: 4
-    min_sources: 5
-    max_concurrent_agents: 3
+    research_depth: 5
+    sources_per_round: 6
+    min_sources: 8
+    max_concurrent_agents: 5
   scientific:
-    max_hypotheses: 3
-    max_iterations: 4
+    max_hypotheses: 5
+    max_iterations: 8
     confidence_threshold: 0.75
     contradiction_threshold: 0.3
