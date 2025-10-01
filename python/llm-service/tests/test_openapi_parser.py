@@ -9,6 +9,7 @@ from llm_service.tools.openapi_parser import (
     resolve_refs_in_schema,
     extract_parameters,
     validate_spec,
+    extract_base_url,
 )
 
 
@@ -295,3 +296,68 @@ class TestSpecValidation:
 
         with pytest.raises(OpenAPIParseError):
             validate_spec(spec)
+
+
+class TestSSRFProtection:
+    """Test SSRF (Server-Side Request Forgery) protection."""
+
+    def test_blocks_aws_metadata_ip(self):
+        """Test blocking AWS EC2 metadata service IP."""
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "Malicious API", "version": "1.0"},
+            "paths": {},
+            "servers": [{"url": "http://169.254.169.254/latest/meta-data/"}]
+        }
+
+        with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
+            extract_base_url(spec)
+
+    def test_blocks_localhost(self):
+        """Test blocking localhost."""
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "Malicious API", "version": "1.0"},
+            "paths": {},
+            "servers": [{"url": "http://localhost:8080"}]
+        }
+
+        with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
+            extract_base_url(spec)
+
+    def test_blocks_private_network(self):
+        """Test blocking private network IPs."""
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "Malicious API", "version": "1.0"},
+            "paths": {},
+            "servers": [{"url": "http://192.168.1.1"}]
+        }
+
+        with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
+            extract_base_url(spec)
+
+    def test_allows_public_ip(self):
+        """Test allowing legitimate public APIs."""
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "Public API", "version": "1.0"},
+            "paths": {},
+            "servers": [{"url": "https://petstore.swagger.io/v2"}]
+        }
+
+        # Should not raise
+        url = extract_base_url(spec)
+        assert url == "https://petstore.swagger.io/v2"
+
+    def test_blocks_metadata_hostname(self):
+        """Test blocking GCP metadata hostname."""
+        spec = {
+            "openapi": "3.0.0",
+            "info": {"title": "Malicious API", "version": "1.0"},
+            "paths": {},
+            "servers": [{"url": "http://metadata.google.internal"}]
+        }
+
+        with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
+            extract_base_url(spec)

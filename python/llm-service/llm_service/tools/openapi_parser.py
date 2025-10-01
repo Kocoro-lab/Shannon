@@ -6,11 +6,45 @@ Supports OpenAPI 3.0 and 3.1 with MVP feature set.
 from typing import Any, Dict, List, Optional, Tuple
 import re
 import copy
+import ipaddress
+import socket
 
 
 class OpenAPIParseError(Exception):
     """Raised when OpenAPI spec is invalid or unsupported."""
     pass
+
+
+def _is_private_ip(hostname: str) -> bool:
+    """
+    Check if hostname resolves to a private/internal IP address.
+
+    Blocks:
+    - Private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+    - Loopback (127.0.0.0/8, ::1)
+    - Link-local (169.254.0.0/16, fe80::/10)
+    - Cloud metadata (169.254.169.254, metadata.google.internal)
+    """
+    # Block known metadata hostnames
+    if hostname.lower() in ["metadata.google.internal", "metadata", "169.254.169.254"]:
+        return True
+
+    try:
+        # Try to resolve hostname to IP
+        ip_str = socket.gethostbyname(hostname)
+        ip = ipaddress.ip_address(ip_str)
+
+        # Check if private/reserved
+        return (
+            ip.is_private or
+            ip.is_loopback or
+            ip.is_link_local or
+            ip.is_reserved or
+            ip.is_multicast
+        )
+    except (socket.gaierror, ValueError):
+        # Can't resolve or invalid IP - allow (will fail later with proper error)
+        return False
 
 
 def resolve_ref(spec: Dict[str, Any], ref_path: str) -> Any:
@@ -181,6 +215,17 @@ def extract_base_url(spec: Dict[str, Any], override_base_url: Optional[str] = No
             raise OpenAPIParseError(
                 f"Server URL '{url}' is relative but no spec_url provided to resolve it"
             )
+
+    # SSRF protection: Block private/internal IPs after resolution
+    from urllib.parse import urlparse
+    parsed_url = urlparse(url)
+    hostname = parsed_url.hostname
+    if hostname and _is_private_ip(hostname):
+        raise OpenAPIParseError(
+            f"Server URL '{url}' resolves to private/internal IP address. "
+            "This is blocked for security (SSRF protection). "
+            "Public APIs only."
+        )
 
     return url.rstrip("/")
 
