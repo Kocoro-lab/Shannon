@@ -29,6 +29,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 
 ### 🚀 Ship Faster
 - **Zero Configuration Multi-Agent** - Just describe what you want: "Analyze data, then create report" → Shannon handles dependencies automatically
+- **Plug-and-Play Tools** - Add any REST API in minutes: MCP tools, OpenAPI specs, or Python extensions - no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md))
 - **Multiple AI Patterns** - ReAct, Tree-of-Thoughts, Chain-of-Thought, Debate, and Reflection (configurable via `cognitive_strategy`)
 - **Time-Travel Debugging** - Export and replay any workflow to reproduce exact agent behavior
 - **Hot Configuration** - Change models, prompts, and policies without restarts
@@ -820,6 +821,10 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - [**Pattern Usage Guide**](docs/pattern-usage-guide.md) - ReAct, Tree-of-Thoughts, Debate patterns
 - [**Streaming APIs**](docs/streaming-api.md) - Real-time agent output streaming
 - [**Authentication & Access Control**](docs/authentication-and-multitenancy.md) - Multi-tenancy and OPA policies
+
+### Extending Shannon
+- [**Adding Custom Tools**](docs/adding-custom-tools.md) - Complete guide for MCP, OpenAPI, and built-in tools
+- [**Tools Implementation Guide**](docs/tools-implementation-guide.md) - Architecture deep-dive and internals
 
 ### API References
 - [Agent Core API](docs/agent-core-api.md) - Rust service endpoints
