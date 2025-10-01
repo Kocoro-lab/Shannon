@@ -28,29 +28,28 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 ## ⚡ What Makes Shannon Different
 
 ### 🚀 Ship Faster
-- **Zero Configuration Multi-Agent** - Just describe what you want: "Analyze data, then create report" → Shannon handles dependencies automatically
-- **Plug-and-Play Tools** - Add any REST API in minutes: MCP tools, OpenAPI specs, or Python extensions - no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md))
-- **Multiple AI Patterns** - ReAct, Tree-of-Thoughts, Chain-of-Thought, Debate, and Reflection (configurable via `cognitive_strategy`)
-- **Time-Travel Debugging** - Export and replay any workflow to reproduce exact agent behavior
-- **Hot Configuration** - Change models, prompts, and policies without restarts
+- Automatic multi‑agent orchestration — Describe the goal; Shannon decomposes into subtasks and schedules DAG execution with dependencies resolved.
+- Plug‑and‑play tools — Add REST APIs via MCP or OpenAPI, or write Python tools; no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md)).
+- Multiple AI patterns — ReAct, Chain‑of‑Thought, Tree‑of‑Thoughts, Debate, Reflection (selectable via `cognitive_strategy`).
+- Time‑travel debugging — Export and replay any workflow to reproduce exact agent behavior.
+- Hot configuration — Live reload for model pricing and OPA policies (config/models.yaml, config/opa/policies).
 
 ### 🔒 Production Ready
-- **WASI Sandbox** - Full Python 3.11 support with bulletproof security ([→ Guide](docs/python-code-execution.md))
-- **Token Budget Control** - Hard limits per user/session with real-time tracking
-- **Policy Engine (OPA)** - Define who can use which tools, models, and data
-- **Multi-Tenancy** - Complete isolation between users, sessions, and organizations
-- **Human-in-the-Loop** - Approval workflow for high-risk operations (complexity >0.7 or dangerous tools)
+- WASI sandbox for code — CPython 3.11 in a WASI sandbox (stdlib, no network, read‑only FS). See [Python Code Execution](docs/python-code-execution.md).
+- Token budget control — Hard per‑agent/per‑task budgets with live usage tracking and enforcement.
+- Policy engine (OPA) — Fine‑grained rules for tools, models, and data; hot‑reload policies; approvals at `/approvals/decision`.
+- Multi‑tenancy — Tenant‑scoped auth, sessions, memory, and workflows with isolation guarantees.
 
 ### 📈 Scale Without Breaking
-- **70% Cost Reduction** - Smart caching, session management, and token optimization
-- **Provider Agnostic** - OpenAI, Anthropic, Google, Azure, Bedrock, DeepSeek, Groq, and more
-- **Observable by Default** - Real-time dashboard, Prometheus metrics, OpenTelemetry tracing
-- **Distributed by Design** - Horizontal scaling with Temporal workflow orchestration
+- Cost optimization — Caching, session persistence, context shaping, and budget‑aware routing.
+- Provider support — OpenAI, Anthropic, Google (Gemini), Groq, plus OpenAI‑compatible endpoints (e.g., DeepSeek, Qwen, Ollama). Centralized pricing via `config/models.yaml`.
+- Observable by default — Real‑time dashboard, Prometheus metrics, OpenTelemetry tracing.
+- Distributed by design — Temporal‑backed workflows with horizontal scaling.
 
-### 🧠 Context Window Management
-- Sliding-window shaping: primers + previous summary + recents
-- Token-aware budgets (per-agent / per-task) with live progress events
-- Metadata-only streaming for context prep, memory recall, compression
+### 🧠 Memory & Context Management
+- Comprehensive memory — Session memory in Redis + vector memory in Qdrant with MMR‑based diversity; optional hierarchical recall in workflows.
+- Continuous learning — Records decomposition and failure patterns for future planning and mitigation; learns across sessions to improve strategy selection.
+- Sliding‑window shaping — Primers + previous summary + recents, with token‑aware budgets and live progress events.
 - Details: see docs/context-window-management.md
 
 *Model pricing is centralized in `config/models.yaml` - all services load from this single source for consistent cost tracking.*
@@ -61,7 +60,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 |---------|---------|-----------|---------|---------|
 | **Multi-Agent Orchestration** | ✅ DAG/Graph workflows | ✅ Stateful graphs | ✅ Group chat | ✅ Crew/roles |
 | **Agent Communication** | ✅ Message passing | ✅ Tool calling | ✅ Conversations | ✅ Delegation |
-| **Memory & Context** | ✅ Chunked storage (character-based), MMR diversity | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
+| **Memory & Context** | ✅ Chunked storage (character-based), MMR diversity, decomposition/failure pattern learning | ✅ Multiple types | ✅ Conversation history | ✅ Shared memory |
 | **Debugging Production Issues** | ✅ Replay any workflow | ❌ Limited debugging | ❌ Basic logging | ❌ |
 | **Token Cost Control** | ✅ Hard budget limits | ❌ | ❌ | ❌ |
 | **Security Sandbox** | ✅ WASI isolation | ❌ | ❌ | ❌ |
@@ -731,7 +730,6 @@ Key configuration files:
 For detailed configuration documentation, see [config/README.md](config/README.md).
 
 ### Architecture
-- [Platform Architecture Overview](docs/shannon-platform-architecture.md)
 - [Multi-Agent Workflow Architecture](docs/multi-agent-workflow-architecture.md)
 - [Agent Core Architecture](docs/agent-core-architecture.md)
 - [Pattern Selection Guide](docs/pattern-usage-guide.md)
@@ -821,10 +819,10 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - [**Pattern Usage Guide**](docs/pattern-usage-guide.md) - ReAct, Tree-of-Thoughts, Debate patterns
 - [**Streaming APIs**](docs/streaming-api.md) - Real-time agent output streaming
 - [**Authentication & Access Control**](docs/authentication-and-multitenancy.md) - Multi-tenancy and OPA policies
+- [**Memory System**](docs/memory-system-architecture.md) - Session + vector memory (Qdrant), MMR diversity, pattern learning
 
 ### Extending Shannon
 - [**Adding Custom Tools**](docs/adding-custom-tools.md) - Complete guide for MCP, OpenAPI, and built-in tools
-- [**Tools Implementation Guide**](docs/tools-implementation-guide.md) - Architecture deep-dive and internals
 
 ### API References
 - [Agent Core API](docs/agent-core-api.md) - Rust service endpoints
