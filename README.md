@@ -783,13 +783,14 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - ✅ **Token budget management** - Hard limits with real-time tracking
 - ✅ **Session management** - Durable state with Redis/PostgreSQL persistence
 - ✅ **Agent Coordination** - Direct agent-to-agent messaging, dynamic team formation, collaborative planning
-- 🚧 **Provider abstraction layer** - Unified interface for adding new LLM providers with automatic fallback 
+- ✅ **MCP integration** - Model Context Protocol support for standardized tool interfaces
+- ✅ **OpenAPI integration** - REST API tools with retry logic, circuit breaker, and ~70% API coverage
+- 🚧 **Provider abstraction layer** - Unified interface for adding new LLM providers with automatic fallback
 - 🚧 **Advanced Task Decomposition** - Recursive decomposition with ADaPT patterns, chain-of-thought planning, task template library
 
 **v0.2**
 - [ ] **Composable workflows** - Composable YAML-based workflow templates with declarative orchestration patterns
 - [ ] **Native tool expansion** - Additional Rust-native tools for file operations and system interactions
-- [ ] **MCP integration** - Model Context Protocol support for standardized tool interfaces
 - [ ] **Unified Gateway & SDKs** - REST API gateway, Python/TypeScript SDKs, CLI tool for easy adoption
 - [ ] **Enhanced Memory System** - Hierarchical memory with MMR diversity, near-duplicate detection, performance-based agent selection
 - [ ] **Agent Collaboration Foundation** - Agent roles/personas, agent-specific memory, supervisor hierarchies via child workflows
