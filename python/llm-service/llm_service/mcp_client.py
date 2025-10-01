@@ -89,6 +89,9 @@ class HttpStatelessClient:
 
     def _validate_url(self) -> None:
         host = urlparse(self.url).hostname or ""
+        # Wildcard "*" bypasses domain validation (use cautiously in development)
+        if "*" in self.allowed_domains:
+            return
         # Allow exact match or suffix match (subdomains)
         if not any(host == d or host.endswith("." + d) for d in self.allowed_domains):
             raise ValueError(

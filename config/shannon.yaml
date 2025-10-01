@@ -49,6 +49,8 @@ circuit_breakers:
     enabled: true
 
 # MCP Tool Definitions (loaded at startup by llm-service)
+# IMPORTANT: Tool domains must be in MCP_ALLOWED_DOMAINS env var
+# Use MCP_ALLOWED_DOMAINS="*" to allow all domains (development only!)
 mcp_tools:
   # Test tool for development (uses the mock endpoint)
   test_config_tool:
@@ -83,6 +85,71 @@ mcp_tools:
   #       description: "City for context"
   #   headers:  # Optional, use env refs for secrets
   #     X-API-Key: "${GAODE_API_KEY}"
+
+# OpenAPI Tool Definitions (loaded at startup by llm-service)
+# IMPORTANT: Tool domains must be in OPENAPI_ALLOWED_DOMAINS env var
+# Use OPENAPI_ALLOWED_DOMAINS="*" to allow all domains (development only!)
+openapi_tools:
+  # Example: Swagger PetStore API (uncomment to use)
+  # petstore:
+  #   enabled: true
+  #   spec_url: "https://petstore3.swagger.io/api/v3/openapi.json"
+  #   # OR use inline spec:
+  #   # spec_inline: |
+  #   #   <paste OpenAPI JSON/YAML here>
+  #   auth_type: "none"  # none|api_key|bearer|basic
+  #   # auth_config:
+  #   #   api_key_name: "X-API-Key"           # Header name or query param name
+  #   #   api_key_location: "header"          # header|query
+  #   #   api_key_value: "$PETSTORE_API_KEY"  # Use $ prefix for env vars
+  #   category: "data"
+  #   base_cost_per_use: 0.001
+  #   rate_limit: 30  # Requests per minute (default: 30, enforceable)
+  #   timeout_seconds: 30  # Request timeout (default: 30)
+  #   max_response_bytes: 10485760  # Max response size in bytes (default: 10MB)
+  #   # Filter to specific operations (optional):
+  #   # operations:
+  #   #   - "getPetById"
+  #   #   - "addPet"
+  #   # Filter by tags (optional):
+  #   # tags:
+  #   #   - "pet"
+  #   # Override base URL from spec (optional):
+  #   # base_url: "https://custom-petstore.example.com"
+
+  # Example: Bearer token authentication
+  # github:
+  #   enabled: true
+  #   spec_url: "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json"
+  #   auth_type: "bearer"
+  #   auth_config:
+  #     token: "$GITHUB_TOKEN"  # Use $ prefix for env vars
+  #   category: "development"
+  #   base_cost_per_use: 0.001
+  #   operations:
+  #     - "repos/get"
+  #     - "repos/list-for-user"
+
+  # Example: API key in query parameter
+  # weather:
+  #   enabled: true
+  #   spec_url: "https://api.openweathermap.org/data/3.0/openapi.json"
+  #   auth_type: "api_key"
+  #   auth_config:
+  #     api_key_name: "appid"
+  #     api_key_location: "query"
+  #     api_key_value: "$OPENWEATHER_API_KEY"
+  #   category: "data"
+
+  # Example: Basic authentication
+  # custom_api:
+  #   enabled: true
+  #   spec_url: "https://api.example.com/openapi.json"
+  #   auth_type: "basic"
+  #   auth_config:
+  #     username: "$API_USERNAME"
+  #     password: "$API_PASSWORD"
+  #   category: "api"
 
 degradation:
   enabled: true

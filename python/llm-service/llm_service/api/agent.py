@@ -588,6 +588,51 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             )
 
         from ..providers.base import ModelTier
+        from ..tools import get_registry
+
+        # Load actual tool schemas from registry for precise parameter guidance
+        registry = get_registry()
+        available_tools = query.tools or []
+        tool_schemas_text = ""
+
+        # Auto-load all tools from registry when no specific tools provided
+        # This ensures MCP and OpenAPI tools appear in decomposition even when
+        # orchestrator doesn't pass AvailableTools (current limitation)
+        if not available_tools:
+            all_tool_names = registry.list_tools()
+            # Filter out dangerous tools for safety
+            available_tools = []
+            for name in all_tool_names:
+                tool = registry.get_tool(name)
+                if tool and not getattr(tool.metadata, 'dangerous', False):
+                    available_tools.append(name)
+            logger.info(f"Decompose: Auto-loaded {len(available_tools)} tools from registry (orchestrator provided none)")
+
+        if available_tools:
+            tool_schemas_text = "\n\nAVAILABLE TOOLS WITH EXACT PARAMETER SCHEMAS:\n"
+            for tool_name in available_tools:
+                tool = registry.get_tool(tool_name)
+                if tool:
+                    metadata = tool.metadata
+                    params = tool.parameters
+                    param_details = []
+                    required_params = []
+
+                    for p in params:
+                        param_str = f'"{p.name}": {p.type.value}'
+                        if p.description:
+                            param_str += f' - {p.description}'
+                        param_details.append(param_str)
+                        if p.required:
+                            required_params.append(p.name)
+
+                    tool_schemas_text += f"\n{tool_name}:\n"
+                    tool_schemas_text += f"  Description: {metadata.description}\n"
+                    tool_schemas_text += f"  Parameters: {', '.join(param_details)}\n"
+                    if required_params:
+                        tool_schemas_text += f"  Required: {', '.join(required_params)}\n"
+        else:
+            tool_schemas_text = "\n\nDefault tools: web_search, calculator, python_executor, file_read\n"
 
         # System prompt for pure LLM-driven decomposition
         sys = (
@@ -639,24 +684,21 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "  \"total_estimated_tokens\": 500\n"
             "}\n\n"
 
-            "Available tools:\n"
-            "- python_executor: Execute Python code in sandbox (params: tool, code) - IMPORTANT: code MUST include print() to show output\n"
-            "- code_executor: Execute WASM bytecode (NOTE: Do NOT suggest this - it's for pre-compiled WASM only)\n"
-            "- calculator: Perform calculations (params: tool, expression)\n"
-            "- web_search: Search the web (params: tool, query)\n"
-            "- file_reader: Read files (params: tool, path)\n\n"
+            "CRITICAL: Tool parameters MUST use EXACT parameter names from schemas. See available tools below.\n\n"
 
             "IMPORTANT: Use python_executor for Python code execution tasks. Never suggest code_executor unless user\n"
             "explicitly provides WASM bytecode. For general code writing (without execution), handle directly.\n\n"
 
-            "Example for Chinese stock query '分析苹果股票走势':\n"
+            f"{tool_schemas_text}\n\n"
+
+            "Example for a stock query 'Analyze Apple stock trend':\n"
             "{\n"
             "  \"mode\": \"standard\",\n"
             "  \"complexity_score\": 0.5,\n"
             "  \"subtasks\": [\n"
             "    {\n"
             "      \"id\": \"task-1\",\n"
-            "      \"description\": \"Search for Apple stock trend analysis\",\n"
+            "      \"description\": \"Search for Apple stock trend analysis forecast\",\n"
             "      \"dependencies\": [],\n"
             "      \"estimated_tokens\": 800,\n"
             "      \"suggested_tools\": [\"web_search\"],\n"

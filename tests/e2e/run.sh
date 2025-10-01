@@ -98,6 +98,17 @@ else
     P2P_RESULT=0
 fi
 
+echo ""
+echo -e "${BLUE}[Test Suite 7] OpenAPI Integration Tests${NC}"
+echo "----------------------------------------"
+if [ -f "$SCRIPT_DIR/06_openapi_petstore_test.sh" ]; then
+    bash "$SCRIPT_DIR/06_openapi_petstore_test.sh"
+    OPENAPI_RESULT=$?
+else
+    echo "OpenAPI test not found, skipping..."
+    OPENAPI_RESULT=0
+fi
+
 # Performance metrics check
 echo ""
 echo -e "${BLUE}[Metrics] Checking Performance Metrics${NC}"
@@ -146,7 +157,7 @@ echo "E2E Test Summary"
 echo "=========================================="
 echo -e "${NC}"
 
-TOTAL_TESTS=6
+TOTAL_TESTS=7
 PASSED_TESTS=0
 
 [ $SMOKE_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
@@ -155,6 +166,7 @@ PASSED_TESTS=0
 [ $COGNITIVE_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
 [ $SESSION_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
 [ $P2P_RESULT -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
+[ ${OPENAPI_RESULT:-1} -eq 0 ] && PASSED_TESTS=$((PASSED_TESTS + 1))
 
 echo "Test Results: $PASSED_TESTS/$TOTAL_TESTS passed"
 echo ""
@@ -164,6 +176,7 @@ echo -e "3. Supervisor Tests:      $([ $SUPERVISOR_RESULT -eq 0 ] && echo -e "${
 echo -e "4. Cognitive Tests:       $([ $COGNITIVE_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
 echo -e "5. Session Memory Tests:  $([ $SESSION_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
 echo -e "6. P2P Coordination:      $([ $P2P_RESULT -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
+echo -e "7. OpenAPI Integration:   $([ ${OPENAPI_RESULT:-1} -eq 0 ] && echo -e "${GREEN}✅ PASSED${NC}" || echo -e "${RED}❌ FAILED${NC}")"
 
 echo ""
 echo "For detailed logs, run:"

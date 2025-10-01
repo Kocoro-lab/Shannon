@@ -11,6 +11,7 @@ import logging
 
 from ..tools import ToolRegistry, get_registry
 from ..tools.mcp import create_mcp_tool_class
+from ..tools.openapi_tool import load_openapi_tools_from_config
 from ..mcp_client import HttpStatelessClient
 from ..tools.builtin import (
     WebSearchTool,
@@ -103,6 +104,46 @@ class MCPRegisterResponse(BaseModel):
     message: Optional[str] = None
 
 
+class OpenAPIRegisterRequest(BaseModel):
+    name: str = Field(..., description="Name to register the tool collection as")
+    spec_url: Optional[str] = Field(default=None, description="URL to OpenAPI spec (JSON or YAML)")
+    spec_inline: Optional[str] = Field(default=None, description="Inline OpenAPI spec (JSON or YAML)")
+    auth_type: str = Field(default="none", description="Auth type: none|api_key|bearer|basic")
+    auth_config: Optional[Dict[str, str]] = Field(default=None, description="Auth configuration")
+    category: Optional[str] = Field(default="api", description="Tool category")
+    base_cost_per_use: Optional[float] = Field(default=0.001, description="Cost per operation")
+    operations: Optional[List[str]] = Field(default=None, description="Filter to specific operationIds")
+    tags: Optional[List[str]] = Field(default=None, description="Filter by tags")
+    base_url: Optional[str] = Field(default=None, description="Override base URL from spec")
+    rate_limit: Optional[int] = Field(default=30, description="Requests per minute")
+    timeout_seconds: Optional[float] = Field(default=30.0, description="Request timeout in seconds")
+    max_response_bytes: Optional[int] = Field(default=10 * 1024 * 1024, description="Maximum response size in bytes")
+
+
+class OpenAPIRegisterResponse(BaseModel):
+    success: bool
+    collection_name: str
+    operations_registered: List[str] = Field(default_factory=list)
+    message: Optional[str] = None
+    # Echo back selected config values for verification
+    rate_limit: Optional[int] = None
+    timeout_seconds: Optional[float] = None
+    max_response_bytes: Optional[int] = None
+
+
+class OpenAPIValidateRequest(BaseModel):
+    spec_url: Optional[str] = Field(default=None, description="URL to OpenAPI spec")
+    spec_inline: Optional[str] = Field(default=None, description="Inline OpenAPI spec")
+
+
+class OpenAPIValidateResponse(BaseModel):
+    valid: bool
+    operations_count: int
+    operations: List[Dict[str, str]] = Field(default_factory=list)
+    base_url: Optional[str] = None
+    errors: List[str] = Field(default_factory=list)
+
+
 def _load_mcp_tools_from_config():
     """Load MCP tool definitions from config file"""
     config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
@@ -151,6 +192,33 @@ def _load_mcp_tools_from_config():
         logger.error(f"Failed to load MCP tools from config: {e}")
 
 
+def _load_openapi_tools_from_config():
+    """Load OpenAPI tool definitions from config file"""
+    config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
+    if not os.path.exists(config_path):
+        logger.debug(f"Config file not found at {config_path}, skipping OpenAPI config load")
+        return
+
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        tool_classes = load_openapi_tools_from_config(config)
+        registry = get_registry()
+
+        for tool_class in tool_classes:
+            try:
+                registry.register(tool_class, override=True)
+            except Exception as e:
+                logger.error(f"Failed to register OpenAPI tool {tool_class.__name__}: {e}")
+
+        if tool_classes:
+            logger.info(f"Loaded {len(tool_classes)} OpenAPI tools from config")
+
+    except Exception as e:
+        logger.error(f"Failed to load OpenAPI tools from config: {e}")
+
+
 @router.on_event("startup")
 async def startup_event():
     """Initialize and register built-in tools on startup"""
@@ -174,6 +242,9 @@ async def startup_event():
 
     # Load MCP tools from config
     _load_mcp_tools_from_config()
+
+    # Load OpenAPI tools from config
+    _load_openapi_tools_from_config()
 
     logger.info(f"Tool registry initialized with {len(registry.list_tools())} tools")
 
@@ -295,8 +366,7 @@ async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPReg
         header_ok = (x_token == admin_token)
         if not (bearer_ok or header_ok):
             raise HTTPException(status_code=401, detail="Unauthorized")
-        
-    registry = get_registry()
+
     registry = get_registry()
 
     # Convert parameter defs (if provided) to plain dicts for tool class factory
@@ -320,6 +390,178 @@ async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPReg
         return MCPRegisterResponse(success=False, tool_name=req.name, message=str(e))
 
     return MCPRegisterResponse(success=True, tool_name=req.name, message="Registered")
+
+
+@router.post("/openapi/validate", response_model=OpenAPIValidateResponse)
+async def validate_openapi_spec(req: OpenAPIValidateRequest) -> OpenAPIValidateResponse:
+    """
+    Validate an OpenAPI spec and preview operations without registering.
+
+    Args:
+        req: Validation request with spec URL or inline spec
+
+    Returns:
+        Validation response with operations list and errors
+    """
+    from ..tools.openapi_tool import _fetch_spec_from_url, OpenAPILoader
+    from ..tools.openapi_parser import OpenAPIParseError
+
+    errors = []
+
+    try:
+        # Get spec
+        spec_url_for_loader = None
+        if req.spec_url:
+            spec = _fetch_spec_from_url(req.spec_url)
+            spec_url_for_loader = req.spec_url
+        elif req.spec_inline:
+            import yaml
+            spec = yaml.safe_load(req.spec_inline)
+        else:
+            return OpenAPIValidateResponse(
+                valid=False,
+                operations_count=0,
+                errors=["Must provide either spec_url or spec_inline"]
+            )
+
+        # Create temporary loader to validate
+        loader = OpenAPILoader(
+            name="__validate__",
+            spec=spec,
+            auth_type="none",
+            auth_config={},
+            spec_url=spec_url_for_loader,
+        )
+
+        # Extract operations
+        operations = []
+        for op_data in loader.operations:
+            operations.append({
+                "operation_id": op_data["operation_id"],
+                "method": op_data["method"],
+                "path": op_data["path"],
+                "description": op_data["operation"].get("summary", "")
+            })
+
+        return OpenAPIValidateResponse(
+            valid=True,
+            operations_count=len(operations),
+            operations=operations,
+            base_url=loader.base_url,
+            errors=[]
+        )
+
+    except OpenAPIParseError as e:
+        return OpenAPIValidateResponse(
+            valid=False,
+            operations_count=0,
+            errors=[f"Parse error: {str(e)}"]
+        )
+    except Exception as e:
+        return OpenAPIValidateResponse(
+            valid=False,
+            operations_count=0,
+            errors=[f"Validation error: {str(e)}"]
+        )
+
+
+@router.post("/openapi/register", response_model=OpenAPIRegisterResponse)
+async def register_openapi_tools(req: OpenAPIRegisterRequest, request: Request) -> OpenAPIRegisterResponse:
+    """
+    Register OpenAPI spec as Shannon tools dynamically.
+
+    After registration, each operation is accessible via /tools/execute with its operationId.
+    Requires admin token if MCP_REGISTER_TOKEN is set (same security model as MCP).
+
+    Args:
+        req: Registration request with spec and configuration
+        request: FastAPI request for auth header access
+
+    Returns:
+        Registration response with list of registered operations
+    """
+    from ..tools.openapi_tool import _fetch_spec_from_url, OpenAPILoader
+    from ..tools.openapi_parser import OpenAPIParseError
+
+    # Admin token gate (reuse MCP_REGISTER_TOKEN)
+    admin_token = os.getenv("MCP_REGISTER_TOKEN", "").strip()
+    if admin_token:
+        auth = request.headers.get("Authorization", "")
+        x_token = request.headers.get("X-Admin-Token", "")
+        bearer_ok = auth.startswith("Bearer ") and auth.split(" ", 1)[1] == admin_token
+        header_ok = (x_token == admin_token)
+        if not (bearer_ok or header_ok):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        # Get spec
+        spec_url_for_loader = None
+        if req.spec_url:
+            spec = _fetch_spec_from_url(req.spec_url)
+            spec_url_for_loader = req.spec_url
+        elif req.spec_inline:
+            import yaml
+            spec = yaml.safe_load(req.spec_inline)
+        else:
+            return OpenAPIRegisterResponse(
+                success=False,
+                collection_name=req.name,
+                message="Must provide either spec_url or spec_inline"
+            )
+
+        # Create loader
+        loader = OpenAPILoader(
+            name=req.name,
+            spec=spec,
+            auth_type=req.auth_type,
+            auth_config=req.auth_config or {},
+            category=req.category or "api",
+            base_cost_per_use=req.base_cost_per_use or 0.001,
+            operations_filter=req.operations,
+            tags_filter=req.tags,
+            base_url_override=req.base_url,
+            rate_limit=req.rate_limit or 30,
+            timeout_seconds=req.timeout_seconds or 30.0,
+            max_response_bytes=req.max_response_bytes or (10 * 1024 * 1024),
+            spec_url=spec_url_for_loader,
+        )
+
+        # Generate and register tools
+        tool_classes = loader.generate_tools()
+        registry = get_registry()
+
+        registered_ops = []
+        for tool_class in tool_classes:
+            try:
+                registry.register(tool_class, override=True)
+                # Extract operation_id from class name
+                temp_instance = tool_class()
+                registered_ops.append(temp_instance.metadata.name)
+            except Exception as e:
+                logger.error(f"Failed to register OpenAPI tool {tool_class.__name__}: {e}")
+
+        return OpenAPIRegisterResponse(
+            success=True,
+            collection_name=req.name,
+            operations_registered=registered_ops,
+            message=f"Registered {len(registered_ops)} operations",
+            rate_limit=loader.rate_limit,
+            timeout_seconds=loader.timeout_seconds,
+            max_response_bytes=loader.max_response_bytes,
+        )
+
+    except OpenAPIParseError as e:
+        return OpenAPIRegisterResponse(
+            success=False,
+            collection_name=req.name,
+            message=f"Parse error: {str(e)}"
+        )
+    except Exception as e:
+        return OpenAPIRegisterResponse(
+            success=False,
+            collection_name=req.name,
+            message=f"Registration error: {str(e)}"
+        )
 
 
 @router.post("/execute", response_model=ToolExecuteResponse)
