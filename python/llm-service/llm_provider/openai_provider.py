@@ -8,14 +8,7 @@ import openai
 from openai import AsyncOpenAI
 import tiktoken
 
-from .base import (
-    LLMProvider,
-    ModelConfig,
-    ModelTier,
-    CompletionRequest,
-    CompletionResponse,
-    TokenUsage,
-)
+from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage
 
 
 class OpenAIProvider(LLMProvider):
@@ -38,70 +31,9 @@ class OpenAIProvider(LLMProvider):
         super().__init__(config)
 
     def _initialize_models(self):
-        """Initialize OpenAI model configurations"""
+        """Load OpenAI model configurations from YAML-driven config."""
 
-        # GPT-4 models
-        self.models["gpt-4-turbo"] = ModelConfig(
-            provider="openai",
-            model_id="gpt-4-turbo-preview",
-            tier=ModelTier.LARGE,
-            max_tokens=4096,
-            context_window=128000,
-            input_price_per_1k=0.01,
-            output_price_per_1k=0.03,
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=True,
-        )
-
-        self.models["gpt-4"] = ModelConfig(
-            provider="openai",
-            model_id="gpt-4",
-            tier=ModelTier.LARGE,
-            max_tokens=8192,
-            context_window=8192,
-            input_price_per_1k=0.03,
-            output_price_per_1k=0.06,
-            supports_functions=True,
-            supports_streaming=True,
-        )
-
-        self.models["gpt-4-32k"] = ModelConfig(
-            provider="openai",
-            model_id="gpt-4-32k",
-            tier=ModelTier.LARGE,
-            max_tokens=32768,
-            context_window=32768,
-            input_price_per_1k=0.06,
-            output_price_per_1k=0.12,
-            supports_functions=True,
-            supports_streaming=True,
-        )
-
-        # GPT-3.5 models
-        self.models["gpt-3.5-turbo"] = ModelConfig(
-            provider="openai",
-            model_id="gpt-3.5-turbo",
-            tier=ModelTier.SMALL,
-            max_tokens=4096,
-            context_window=16385,
-            input_price_per_1k=0.0005,
-            output_price_per_1k=0.0015,
-            supports_functions=True,
-            supports_streaming=True,
-        )
-
-        self.models["gpt-3.5-turbo-16k"] = ModelConfig(
-            provider="openai",
-            model_id="gpt-3.5-turbo-16k",
-            tier=ModelTier.SMALL,
-            max_tokens=16384,
-            context_window=16384,
-            input_price_per_1k=0.003,
-            output_price_per_1k=0.004,
-            supports_functions=True,
-            supports_streaming=True,
-        )
+        self._load_models_from_config()
 
     def _get_encoder(self, model: str):
         """Get or create token encoder for a model"""
@@ -138,10 +70,8 @@ class OpenAIProvider(LLMProvider):
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using OpenAI API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Count input tokens
@@ -222,10 +152,8 @@ class OpenAIProvider(LLMProvider):
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Stream a completion using OpenAI API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Prepare API request
@@ -249,3 +177,14 @@ class OpenAIProvider(LLMProvider):
 
         except openai.APIError as e:
             raise Exception(f"OpenAI API error: {e}")
+
+    async def generate_embedding(
+        self, text: str, model: str = "text-embedding-3-small"
+    ) -> List[float]:
+        """Generate embeddings using OpenAI API."""
+
+        try:
+            response = await self.client.embeddings.create(model=model, input=text)
+            return response.data[0].embedding
+        except openai.APIError as e:
+            raise Exception(f"OpenAI embedding error: {e}")

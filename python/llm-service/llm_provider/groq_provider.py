@@ -45,112 +45,16 @@ class GroqProvider(LLMProvider):
         super().__init__(config)
 
     def _initialize_models(self):
-        """Initialize available Groq models"""
+        """Initialize available Groq models from configuration."""
 
-        # Mixtral 8x7B - Fast, efficient mixture of experts model
-        self.models["mixtral-8x7b-32768"] = ModelConfig(
-            provider="groq",
-            model_id="mixtral-8x7b-32768",
-            tier=ModelTier.MEDIUM,
-            max_tokens=32768,
-            context_window=32768,
-            input_price_per_1k=0.00027,  # $0.27 per 1M tokens
-            output_price_per_1k=0.00027,  # $0.27 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Llama 3 70B - Large, highly capable model
-        self.models["llama3-70b-8192"] = ModelConfig(
-            provider="groq",
-            model_id="llama3-70b-8192",
-            tier=ModelTier.LARGE,
-            max_tokens=8192,
-            context_window=8192,
-            input_price_per_1k=0.00059,  # $0.59 per 1M tokens
-            output_price_per_1k=0.00079,  # $0.79 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Llama 3 8B - Small, fast model
-        self.models["llama3-8b-8192"] = ModelConfig(
-            provider="groq",
-            model_id="llama3-8b-8192",
-            tier=ModelTier.SMALL,
-            max_tokens=8192,
-            context_window=8192,
-            input_price_per_1k=0.00005,  # $0.05 per 1M tokens
-            output_price_per_1k=0.00010,  # $0.10 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Llama 3.1 70B - Updated version with improvements
-        self.models["llama-3.1-70b-versatile"] = ModelConfig(
-            provider="groq",
-            model_id="llama-3.1-70b-versatile",
-            tier=ModelTier.LARGE,
-            max_tokens=8192,
-            context_window=131072,  # 128K context window
-            input_price_per_1k=0.00059,  # $0.59 per 1M tokens
-            output_price_per_1k=0.00079,  # $0.79 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Llama 3.1 8B - Small model with large context
-        self.models["llama-3.1-8b-instant"] = ModelConfig(
-            provider="groq",
-            model_id="llama-3.1-8b-instant",
-            tier=ModelTier.SMALL,
-            max_tokens=8192,
-            context_window=131072,  # 128K context window
-            input_price_per_1k=0.00005,  # $0.05 per 1M tokens
-            output_price_per_1k=0.00010,  # $0.10 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Gemma 7B - Google's open model
-        self.models["gemma-7b-it"] = ModelConfig(
-            provider="groq",
-            model_id="gemma-7b-it",
-            tier=ModelTier.SMALL,
-            max_tokens=8192,
-            context_window=8192,
-            input_price_per_1k=0.00010,  # $0.10 per 1M tokens
-            output_price_per_1k=0.00010,  # $0.10 per 1M tokens
-            supports_functions=False,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Gemma 2 9B - Newer version with improvements
-        self.models["gemma2-9b-it"] = ModelConfig(
-            provider="groq",
-            model_id="gemma2-9b-it",
-            tier=ModelTier.SMALL,
-            max_tokens=8192,
-            context_window=8192,
-            input_price_per_1k=0.00020,  # $0.20 per 1M tokens
-            output_price_per_1k=0.00020,  # $0.20 per 1M tokens
-            supports_functions=False,
-            supports_streaming=True,
-            supports_vision=False,
-        )
+        self._load_models_from_config()
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Execute a completion request using Groq"""
 
-        # Select model based on tier
-        model_id = self._select_model_for_tier(request.model_tier)
-        model_config = self.models[model_id]
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
+        model_id = model_config.model_id
 
         # Prepare OpenAI-compatible request
         completion_params = {
@@ -228,9 +132,9 @@ class GroqProvider(LLMProvider):
     ) -> AsyncIterator[CompletionResponse]:
         """Stream a completion response from Groq"""
 
-        # Select model based on tier
-        model_id = self._select_model_for_tier(request.model_tier)
-        model_config = self.models[model_id]
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
+        model_id = model_config.model_id
 
         # Prepare request
         completion_params = {
@@ -338,3 +242,12 @@ class GroqProvider(LLMProvider):
         # Groq uses similar tokenization to Llama models
         # Rough estimation: 1 token per 4 characters
         return len(text) // 4
+
+    async def stream_complete(
+        self, request: CompletionRequest
+    ) -> AsyncIterator[CompletionResponse]:
+        """Stream completion responses"""
+        # Groq supports streaming through the complete method with stream=True
+        # For now, return the full response as a single chunk
+        response = await self.complete(request)
+        yield response

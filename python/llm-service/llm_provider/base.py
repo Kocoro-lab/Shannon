@@ -67,6 +67,7 @@ class CompletionRequest:
 
     messages: List[Dict[str, Any]]
     model_tier: ModelTier = ModelTier.SMALL
+    model: Optional[str] = None
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     top_p: float = 1.0
@@ -86,6 +87,7 @@ class CompletionRequest:
     agent_id: Optional[str] = None
     cache_key: Optional[str] = None
     cache_ttl: int = 3600  # 1 hour default
+    max_tokens_budget: Optional[int] = None
 
     def generate_cache_key(self) -> str:
         """Generate a cache key for this request"""
@@ -96,6 +98,7 @@ class CompletionRequest:
         key_data = {
             "messages": self.messages,
             "model_tier": self.model_tier.value,
+            "model": self.model,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "functions": self.functions,
@@ -185,6 +188,89 @@ class LLMProvider(ABC):
         input_cost = (input_tokens / 1000) * model_config.input_price_per_1k
         output_cost = (output_tokens / 1000) * model_config.output_price_per_1k
         return input_cost + output_cost
+
+    def _load_models_from_config(self, allow_empty: bool = False) -> None:
+        """Populate provider models from configuration dictionary."""
+
+        models_cfg = self.config.get("models") or {}
+
+        if not models_cfg:
+            if allow_empty:
+                return
+            raise ValueError(
+                f"{self.__class__.__name__} requires model definitions in configuration"
+            )
+
+        provider_name = (
+            self.config.get("provider_name")
+            or self.config.get("name")
+            or self.config.get("type")
+            or self.__class__.__name__.replace("Provider", "").lower()
+        )
+
+        for alias, raw_meta in models_cfg.items():
+            meta = raw_meta or {}
+            self.models[alias] = self._make_model_config(provider_name, alias, meta)
+
+    def _make_model_config(
+        self, provider_name: str, alias: str, meta: Dict[str, Any]
+    ) -> ModelConfig:
+        """Create a ModelConfig object from raw metadata."""
+
+        tier_value = meta.get("tier", "medium")
+        if isinstance(tier_value, ModelTier):
+            tier_enum = tier_value
+        else:
+            tier_enum = ModelTier(str(tier_value).lower())
+
+        model_id = meta.get("model_id") or alias
+        context_window = int(meta.get("context_window", meta.get("max_context", 8192)))
+        max_tokens = int(meta.get("max_tokens", meta.get("max_output_tokens", context_window)))
+
+        input_price = meta.get("input_price_per_1k")
+        output_price = meta.get("output_price_per_1k")
+
+        input_price = float(input_price) if input_price is not None else 0.0
+        output_price = float(output_price) if output_price is not None else 0.0
+
+        return ModelConfig(
+            provider=str(meta.get("provider") or provider_name),
+            model_id=model_id,
+            tier=tier_enum,
+            max_tokens=max_tokens,
+            context_window=context_window,
+            input_price_per_1k=input_price,
+            output_price_per_1k=output_price,
+            supports_functions=bool(meta.get("supports_functions", True)),
+            supports_streaming=bool(meta.get("supports_streaming", True)),
+            supports_vision=bool(meta.get("supports_vision", False)),
+            timeout=int(meta.get("timeout", 60)),
+        )
+
+    def resolve_model_config(self, request: CompletionRequest) -> ModelConfig:
+        """Resolve the model configuration for a request, honoring overrides."""
+
+        if request.model:
+            requested = request.model
+
+            # Allow provider:model syntax
+            if ":" in requested:
+                _, requested = requested.split(":", 1)
+
+            # Direct key lookup (alias)
+            if requested in self.models:
+                return self.models[requested]
+
+            # Match by vendor model_id
+            for config in self.models.values():
+                if config.model_id == request.model or config.model_id == requested:
+                    return config
+
+            raise ValueError(
+                f"Model '{request.model}' not available for provider {self.__class__.__name__}"
+            )
+
+        return self.select_model_for_tier(request.model_tier, request.max_tokens)
 
 
 class LLMProviderRegistry:

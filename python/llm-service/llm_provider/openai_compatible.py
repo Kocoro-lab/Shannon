@@ -30,36 +30,14 @@ class OpenAICompatibleProvider(LLMProvider):
         # Initialize OpenAI client with custom base URL
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        # Store model configurations from config
-        self.model_configs = config.get("models", {})
-
         super().__init__(config)
 
     def _initialize_models(self):
         """Initialize models from configuration"""
 
-        # Parse model configurations
-        for model_id, model_config in self.model_configs.items():
-            tier_str = model_config.get("tier", "medium")
-            tier = (
-                ModelTier[tier_str.upper()] if isinstance(tier_str, str) else tier_str
-            )
+        self._load_models_from_config(allow_empty=True)
 
-            self.models[model_id] = ModelConfig(
-                provider=self.config.get("name", "openai_compatible"),
-                model_id=model_id,
-                tier=tier,
-                max_tokens=model_config.get("max_tokens", 4096),
-                context_window=model_config.get("context_window", 8192),
-                input_price_per_1k=model_config.get("input_price_per_1k", 0.001),
-                output_price_per_1k=model_config.get("output_price_per_1k", 0.002),
-                supports_functions=model_config.get("supports_functions", True),
-                supports_streaming=model_config.get("supports_streaming", True),
-                supports_vision=model_config.get("supports_vision", False),
-                timeout=model_config.get("timeout", 60),
-            )
-
-        # If no models configured, add some defaults
+        # If no models configured, add some defaults for developer convenience
         if not self.models:
             self._add_default_models()
 
@@ -205,10 +183,8 @@ class OpenAICompatibleProvider(LLMProvider):
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using the OpenAI-compatible API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Count input tokens (estimation)
@@ -298,10 +274,8 @@ class OpenAICompatibleProvider(LLMProvider):
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Stream a completion using the OpenAI-compatible API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Prepare API request

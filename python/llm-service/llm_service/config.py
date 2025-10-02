@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     google_api_key: Optional[str] = Field(default=None, env="GOOGLE_API_KEY")
     deepseek_api_key: Optional[str] = Field(default=None, env="DEEPSEEK_API_KEY")
     qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
+    mistral_api_key: Optional[str] = Field(default=None, env="MISTRAL_API_KEY")
     aws_access_key: Optional[str] = Field(default=None, env="AWS_ACCESS_KEY_ID")
     aws_secret_key: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
     aws_region: str = Field(default="us-east-1", env="AWS_REGION")

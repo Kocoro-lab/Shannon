@@ -7,15 +7,7 @@ from typing import Dict, List, Any, AsyncIterator
 import anthropic
 from anthropic import AsyncAnthropic
 
-from .base import (
-    LLMProvider,
-    ModelConfig,
-    ModelTier,
-    CompletionRequest,
-    CompletionResponse,
-    TokenUsage,
-    TokenCounter,
-)
+from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage, TokenCounter
 
 
 class AnthropicProvider(LLMProvider):
@@ -32,61 +24,9 @@ class AnthropicProvider(LLMProvider):
         super().__init__(config)
 
     def _initialize_models(self):
-        """Initialize Anthropic model configurations"""
+        """Load Anthropic model configurations from YAML-driven config."""
 
-        # Claude 3 models
-        self.models["claude-3-opus"] = ModelConfig(
-            provider="anthropic",
-            model_id="claude-3-opus-20240229",
-            tier=ModelTier.LARGE,
-            max_tokens=4096,
-            context_window=200000,
-            input_price_per_1k=0.015,
-            output_price_per_1k=0.075,
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=True,
-        )
-
-        self.models["claude-3-sonnet"] = ModelConfig(
-            provider="anthropic",
-            model_id="claude-3-sonnet-20240229",
-            tier=ModelTier.MEDIUM,
-            max_tokens=4096,
-            context_window=200000,
-            input_price_per_1k=0.003,
-            output_price_per_1k=0.015,
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=True,
-        )
-
-        self.models["claude-3-haiku"] = ModelConfig(
-            provider="anthropic",
-            model_id="claude-3-haiku-20240307",
-            tier=ModelTier.SMALL,
-            max_tokens=4096,
-            context_window=200000,
-            input_price_per_1k=0.00025,
-            output_price_per_1k=0.00125,
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=True,
-        )
-
-        # Claude 2 models (legacy)
-        self.models["claude-2.1"] = ModelConfig(
-            provider="anthropic",
-            model_id="claude-2.1",
-            tier=ModelTier.MEDIUM,
-            max_tokens=4096,
-            context_window=200000,
-            input_price_per_1k=0.008,
-            output_price_per_1k=0.024,
-            supports_functions=False,
-            supports_streaming=True,
-            supports_vision=False,
-        )
+        self._load_models_from_config()
 
     def count_tokens(self, messages: List[Dict[str, Any]], model: str) -> int:
         """
@@ -141,10 +81,8 @@ class AnthropicProvider(LLMProvider):
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using Anthropic API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Count input tokens (estimation)
@@ -240,10 +178,8 @@ class AnthropicProvider(LLMProvider):
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Stream a completion using Anthropic API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Convert messages to Claude format

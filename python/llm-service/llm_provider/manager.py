@@ -42,6 +42,7 @@ class LLMManager:
         self.cache = CacheManager(max_size=1000)
         self.rate_limiters: Dict[str, RateLimiter] = {}
         self._pricing_overrides: Optional[Dict[str, Any]] = None
+        self._config_path: Optional[str] = None
 
         # Token budget tracking
         self.session_usage: Dict[str, TokenUsage] = {}
@@ -51,7 +52,17 @@ class LLMManager:
         if config_path:
             self.load_config(config_path)
         else:
-            self.load_default_config()
+            # Try unified config first (MODELS_CONFIG_PATH → /app/config/models.yaml → ./config/models.yaml)
+            auto_paths = [
+                os.getenv("MODELS_CONFIG_PATH", "").strip(),
+                "/app/config/models.yaml",
+                "./config/models.yaml",
+            ]
+            cfg_path = next((p for p in auto_paths if p and os.path.exists(p)), None)
+            if cfg_path:
+                self.load_config(cfg_path)
+            else:
+                self.load_default_config()
         # Apply centralized pricing overrides after providers are loaded
         try:
             self._load_and_apply_pricing_overrides()
@@ -59,13 +70,22 @@ class LLMManager:
             self.logger.warning(f"Pricing overrides not applied: {e}")
 
     def load_config(self, config_path: str):
-        """Load configuration from YAML file"""
+        """Load configuration from YAML file. Supports both unified and legacy formats."""
+        self._config_path = config_path
         with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+            config = yaml.safe_load(f) or {}
 
-        self._initialize_providers(config.get("providers", {}))
-        self._configure_routing(config.get("routing", {}))
-        self._configure_caching(config.get("caching", {}))
+        if "model_catalog" in config or "model_tiers" in config:
+            # Unified config format (config/models.yaml)
+            providers_cfg, routing_cfg, caching_cfg = self._translate_unified_config(config)
+            self._initialize_providers(providers_cfg)
+            self._configure_routing(routing_cfg)
+            self._configure_caching(caching_cfg)
+        else:
+            # Legacy format
+            self._initialize_providers(config.get("providers", {}))
+            self._configure_routing(config.get("routing", {}))
+            self._configure_caching(config.get("caching", {}))
 
     def load_default_config(self):
         """Load default configuration from environment variables"""
@@ -165,6 +185,9 @@ class LLMManager:
 
     def _initialize_providers(self, providers_config: Dict):
         """Initialize all configured providers"""
+        # Reset registry and limiters when re-initializing
+        self.registry = LLMProviderRegistry()
+        self.rate_limiters = {}
         for name, config in providers_config.items():
             provider_type = config.get("type")
 
@@ -202,6 +225,78 @@ class LLMManager:
 
             except Exception as e:
                 self.logger.error(f"Failed to initialize provider {name}: {e}")
+
+    def _translate_unified_config(self, cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """Translate unified config (model_catalog/model_tiers/selection_strategy) to internal structures."""
+        model_catalog = cfg.get("model_catalog", {}) or {}
+        provider_settings = cfg.get("provider_settings", {}) or {}
+        model_tiers = cfg.get("model_tiers", {}) or {}
+        selection = cfg.get("selection_strategy", {}) or {}
+        prompt_cache = cfg.get("prompt_cache", {}) or {}
+
+        # Provider type + env var mapping
+        type_map = {
+            "openai": ("openai", "OPENAI_API_KEY"),
+            "anthropic": ("anthropic", "ANTHROPIC_API_KEY"),
+            "google": ("google", "GOOGLE_API_KEY"),
+            "groq": ("groq", "GROQ_API_KEY"),
+            # OpenAI-compatible providers we support
+            "deepseek": ("openai_compatible", "DEEPSEEK_API_KEY"),
+            "qwen": ("openai_compatible", "QWEN_API_KEY"),
+            # Others exist in config but not yet implemented here: mistral/xai/meta/cohere/bedrock/ollama
+        }
+
+        providers_cfg: Dict[str, Any] = {}
+        for prov_name, models in model_catalog.items():
+            if prov_name not in type_map:
+                # Skip providers without a concrete implementation in this service
+                continue
+            ptype, env_key = type_map[prov_name]
+            p_cfg: Dict[str, Any] = {"type": ptype, "models": {}}
+
+            # API key from env if present
+            api_key = os.getenv(env_key)
+            if api_key:
+                p_cfg["api_key"] = api_key
+
+            # Base URL from provider_settings for OpenAI-compatible providers
+            if ptype == "openai_compatible":
+                base_url = (provider_settings.get(prov_name, {}) or {}).get("base_url")
+                if base_url:
+                    p_cfg["base_url"] = base_url
+
+            # Copy over model metadata
+            for alias, meta in (models or {}).items():
+                p_cfg["models"][alias] = dict(meta or {})
+
+            providers_cfg[prov_name] = p_cfg
+
+        # Build routing preferences from model_tiers (ordered by priority)
+        tier_prefs: Dict[str, List[str]] = {}
+        for tier_name, tier_cfg in model_tiers.items():
+            items = tier_cfg.get("providers", []) or []
+            # Sort by 'priority' (lower is higher priority); if absent, keep order
+            try:
+                items = sorted(items, key=lambda x: int(x.get("priority", 9999)))
+            except Exception:
+                pass
+            tier_prefs[tier_name] = [
+                f"{it.get('provider')}:{it.get('model')}" for it in items if it.get("provider") and it.get("model")
+            ]
+
+        routing_cfg = {
+            "default_provider": selection.get("default_provider", "openai"),
+            "tier_preferences": tier_prefs,
+        }
+
+        caching_cfg = {
+            "enabled": bool(prompt_cache.get("enabled", True)),
+            "default_ttl": int(prompt_cache.get("ttl_seconds", 3600) or 3600),
+            # Keep default size; unified file tracks size in MB for a different cache
+            "max_size": 1000,
+        }
+
+        return providers_cfg, routing_cfg, caching_cfg
 
     def _configure_routing(self, routing_config: Dict):
         """Configure routing preferences"""
@@ -443,6 +538,49 @@ class LLMManager:
             }
 
         return status
+
+    async def reload(self) -> None:
+        """Hot-reload configuration if a config path was provided or discovered."""
+        try:
+            if self._config_path and os.path.exists(self._config_path):
+                self.load_config(self._config_path)
+            else:
+                # Fall back to auto-detection or env defaults
+                auto_paths = [
+                    os.getenv("MODELS_CONFIG_PATH", "").strip(),
+                    "/app/config/models.yaml",
+                    "./config/models.yaml",
+                ]
+                cfg_path = next((p for p in auto_paths if p and os.path.exists(p)), None)
+                if cfg_path:
+                    self.load_config(cfg_path)
+                else:
+                    self.load_default_config()
+
+            # Re-apply centralized pricing if available
+            try:
+                self._load_and_apply_pricing_overrides()
+            except Exception as e:
+                self.logger.warning(f"Pricing overrides not applied on reload: {e}")
+        except Exception as e:
+            self.logger.error(f"Reload failed: {e}")
+
+    async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
+        """Generate embeddings via the first capable provider (prefers OpenAI)."""
+        # Prefer OpenAI if available
+        if "openai" in self.registry.providers:
+            provider = self.registry.providers["openai"]
+            gen = getattr(provider, "generate_embedding", None)
+            if gen:
+                return await gen(text, model or "text-embedding-3-small")
+
+        # Fallback to any provider exposing generate_embedding
+        for provider in self.registry.providers.values():
+            gen = getattr(provider, "generate_embedding", None)
+            if gen:
+                return await gen(text, model)
+
+        raise ValueError("No embedding-capable providers are configured")
 
 
 # Singleton instance
