@@ -17,68 +17,74 @@ model_tiers:
     # Fast, cost-optimized models for basic tasks without reasoning capabilities
     providers:
       - provider: openai
-        model: gpt-4o-mini
+        model: gpt-4.1-nano
         priority: 1
-      - provider: google
-        model: gemini-2.0-flash-lite
-        priority: 2
       - provider: anthropic
         model: claude-3-5-haiku-20241022
-        priority: 3
-      - provider: deepseek
-        model: deepseek-chat
-        priority: 4
-      - provider: qwen
-        model: qwen-flash
-        priority: 5
-      - provider: mistral
-        model: ministral-8b-2410
-        priority: 6
+        priority: 2
       - provider: xai
         model: grok-4-fast-non-reasoning
+        priority: 3
+      - provider: google
+        model: gemini-2.5-flash-lite
+        priority: 4
+      - provider: deepseek
+        model: deepseek-chat
+        priority: 5
+      - provider: qwen
+        model: qwen3-4b-instruct-2507
+        priority: 6
+      - provider: mistral
+        model: ministral-8b-instruct-2410
         priority: 7
       - provider: meta
         model: llama-3.2-3b
         priority: 8
-    
+      - provider: zai
+        model: glm-4.5-flash
+        priority: 9
+
   medium:
     # Target allocation: 40% (not enforced - actual usage depends on complexity)
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: openai
-        model: gpt-5
+        model: gpt-4.1-mini
         priority: 1
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
         priority: 2
-      - provider: google
-        model: gemini-2.5-flash
-        priority: 3
       - provider: xai
         model: grok-4
+        priority: 3
+      - provider: google
+        model: gemini-2.5-flash
         priority: 4
       - provider: meta
         model: llama-4-scout
         priority: 5
       - provider: deepseek
-        model: deepseek-v3.1-terminus
+        model: 'deepseek-v3.2'
         priority: 6
       - provider: qwen
-        model: qwen-plus-latest
+        model: qwen3-8b
         priority: 7
       - provider: mistral
-        model: mistral-medium-2508
+        model: mistral-small-3.2-24b-instruct-2506
         priority: 8
       - provider: cohere
         model: command-r-plus-08-2024
         priority: 9
-    
+      - provider: zai
+        model: glm-4.5-air
+        priority: 10
+
   large:
     # Target allocation: 10% (not enforced - actual usage depends on complexity)
     # Heavy thinking/reasoning models for complex tasks
     providers:
       - provider: openai
-        model: o3
+        model: gpt-4.1
         priority: 1
       - provider: anthropic
         model: claude-opus-4-1-20250805
@@ -90,17 +96,20 @@ model_tiers:
         model: deepseek-r1
         priority: 4
       - provider: qwen
-        model: qwen3-max-preview
+        model: qwen3-omni-30b-a3b-instruct
         priority: 5
       - provider: xai
         model: grok-4-fast-reasoning
         priority: 6
-      - provider: openai
-        model: o1
+      - provider: mistral
+        model: mistral-nemo-instruct-2407
         priority: 7
       - provider: meta
         model: llama-3.1-405b
         priority: 8
+      - provider: zai
+        model: glm-4.6
+        priority: 9
 
 # Model selection strategy
 selection_strategy:
@@ -165,6 +174,11 @@ provider_settings:
     timeout: 60
     max_retries: 3
     
+  zai:
+    base_url: https://api.z.ai/api/paas/v4
+    timeout: 60
+    max_retries: 3
+    
   meta:
     base_url: https://api.together.xyz/v1  # Together AI for Llama models
     timeout: 90
@@ -180,6 +194,370 @@ provider_settings:
     timeout: 60
     max_retries: 3
 
+model_catalog:
+  openai:
+    gpt-4.1:
+      model_id: gpt-4.1
+      tier: large
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gpt-4.1-mini:
+      model_id: gpt-4.1-mini
+      tier: medium
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gpt-4.1-nano:
+      model_id: gpt-4.1-nano
+      tier: small
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: false
+    gpt-4o:
+      model_id: gpt-4o
+      tier: large
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gpt-4o-mini:
+      model_id: gpt-4o-mini
+      tier: small
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    o3:
+      model_id: o3
+      tier: large
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    o1:
+      model_id: o1
+      tier: large
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: false
+    o1-mini:
+      model_id: o1-mini
+      tier: medium
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: false
+    gpt-3.5-turbo:
+      model_id: gpt-3.5-turbo
+      tier: small
+      context_window: 16384
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: false
+
+  anthropic:
+    claude-sonnet-4-20250514:
+      model_id: claude-sonnet-4-20250514
+      tier: large
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    claude-sonnet-4-5-20250929:
+      model_id: claude-sonnet-4-5-20250929
+      tier: medium
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    claude-3-5-sonnet-20241022:
+      model_id: claude-3-5-sonnet-20241022
+      tier: medium
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    claude-3-5-haiku-20241022:
+      model_id: claude-3-5-haiku-20241022
+      tier: small
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    claude-opus-4-1-20250805:
+      model_id: claude-opus-4-1-20250805
+      tier: large
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+
+  google:
+    gemini-2.5-pro:
+      model_id: gemini-2.5-pro
+      tier: large
+      context_window: 2000000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gemini-2.5-flash:
+      model_id: gemini-2.5-flash
+      tier: medium
+      context_window: 1000000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gemini-2.5-flash-lite:
+      model_id: gemini-2.5-flash-lite
+      tier: small
+      context_window: 1000000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gemini-2.0-flash:
+      model_id: gemini-2.0-flash
+      tier: medium
+      context_window: 1000000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gemini-2.0-flash-lite:
+      model_id: gemini-2.0-flash-lite
+      tier: small
+      context_window: 1000000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+
+  xai:
+    grok-4-fast-non-reasoning:
+      model_id: grok-4-fast-non-reasoning
+      tier: small
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
+    grok-4:
+      model_id: grok-4
+      tier: medium
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+    grok-4-fast-reasoning:
+      model_id: grok-4-fast-reasoning
+      tier: large
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+    grok-beta:
+      model_id: grok-beta
+      tier: large
+      context_window: 65536
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
+
+  zai:
+    glm-4.5-flash:
+      model_id: glm-4.5-flash
+      tier: small
+      context_window: 128000
+      max_tokens: 96000
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
+    glm-4.5-air:
+      model_id: glm-4.5-air
+      tier: medium
+      context_window: 128000
+      max_tokens: 96000
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+    glm-4.6:
+      model_id: glm-4.6
+      tier: large
+      context_window: 200000
+      max_tokens: 128000
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+
+  deepseek:
+    deepseek-chat:
+      model_id: deepseek-chat
+      tier: small
+      context_window: 32768
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+    deepseek-v3:
+      model_id: deepseek-v3
+      tier: medium
+      context_window: 65536
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    'deepseek-v3.2':
+      model_id: 'deepseek-v3.2'
+      tier: medium
+      context_window: 65536
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    deepseek-r1:
+      model_id: deepseek-r1
+      tier: large
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    deepseek-r1-lite:
+      model_id: deepseek-r1-lite
+      tier: medium
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+
+  qwen:
+    qwen3-4b-instruct-2507:
+      model_id: qwen3-4b-instruct-2507
+      tier: small
+      context_window: 32768
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+    qwen3-8b:
+      model_id: qwen3-8b
+      tier: medium
+      context_window: 32768
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    qwen3-omni-30b-a3b-instruct:
+      model_id: qwen3-omni-30b-a3b-instruct
+      tier: large
+      context_window: 32768
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    qwen3-next-80b-a3b-instruct:
+      model_id: qwen3-next-80b-a3b-instruct
+      tier: large
+      context_window: 32768
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    qwen3-vl-235b-a22b-instruct:
+      model_id: qwen3-vl-235b-a22b-instruct
+      tier: large
+      context_window: 32768
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+      enabled: false  # disabled pending provider availability
+
+  mistral:
+    ministral-8b-instruct-2410:
+      model_id: mistralai/Ministral-8B-Instruct-2410
+      tier: small
+      context_window: 32768
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+    mistral-small-3.2-24b-instruct-2506:
+      model_id: mistralai/Mistral-Small-3.2-24B-Instruct-2506
+      tier: medium
+      context_window: 65536
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    mistral-nemo-instruct-2407:
+      model_id: mistralai/Mistral-Nemo-Instruct-2407
+      tier: large
+      context_window: 81920
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    codestral-22b-v0.1:
+      model_id: mistralai/Codestral-22B-v0.1
+      tier: medium
+      context_window: 32768
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+
+  groq:
+    llama-3.3-70b-versatile:
+      model_id: llama-3.3-70b-versatile
+      tier: large
+      context_window: 128000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    llama-3.1-8b-instant:
+      model_id: llama-3.1-8b-instant
+      tier: small
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+    llama-4-scout-17b-16e-instruct:
+      model_id: llama-4-scout-17b-16e-instruct
+      tier: medium
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      enabled: false  # disabled pending validation
+    llama-4-maverick-17b-128e-instruct:
+      model_id: llama-4-maverick-17b-128e-instruct
+      tier: large
+      context_window: 200000
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      enabled: false  # disabled pending validation
+    llama-guard-4-12b:
+      model_id: llama-guard-4-12b
+      tier: medium
+      context_window: 8192
+      max_tokens: 2048
+      supports_functions: false
+      supports_streaming: true
+
 # Centralized model pricing (USD per 1K tokens)
 # Updated: September 2025 with latest pricing
 # Used across Go/Rust/Python for consistent cost calculation.
@@ -190,74 +568,65 @@ pricing:
     openai:
       gpt-3.5-turbo:
         input_per_1k: 0.0005
-        output_per_1k: 0.002
-      gpt-3.5-turbo-16k:
-        input_per_1k: 0.0015
-        output_per_1k: 0.002
-      gpt-4-turbo:
-        input_per_1k: 0.01
-        output_per_1k: 0.03
+        output_per_1k: 0.0020
       gpt-4o-mini:
         input_per_1k: 0.00015
-        output_per_1k: 0.0006
-      gpt-5:
-        input_per_1k: 0.00125
-        output_per_1k: 0.0100
-      gpt-5-mini:
-        input_per_1k: 0.00025
-        output_per_1k: 0.0020
+        output_per_1k: 0.00060
+      gpt-4o:
+        input_per_1k: 0.0050
+        output_per_1k: 0.0150
+      gpt-4.1:
+        input_per_1k: 0.0050
+        output_per_1k: 0.0150
+      gpt-4.1-mini:
+        input_per_1k: 0.0025
+        output_per_1k: 0.0075
+      gpt-4.1-nano:
+        input_per_1k: 0.0010
+        output_per_1k: 0.0030
       o3:
         input_per_1k: 0.0020
         output_per_1k: 0.0080
-      o3-mini:
-        input_per_1k: 0.0011
-        output_per_1k: 0.0044
       o1:
         input_per_1k: 0.0150
         output_per_1k: 0.0600
       o1-mini:
         input_per_1k: 0.0030
         output_per_1k: 0.0120
-      o1-pro:
-        input_per_1k: 0.1500
-        output_per_1k: 0.6000
         
     anthropic:
-      claude-3-haiku:
-        input_per_1k: 0.0002
-        output_per_1k: 0.002
-      claude-3-sonnet:
-        input_per_1k: 0.003
-        output_per_1k: 0.02
       claude-3-5-haiku-20241022:
         input_per_1k: 0.0008
         output_per_1k: 0.0040
-      claude-sonnet-4-20250514:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0150
-      claude-sonnet-4-5-20250929:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0150
-      claude-opus-4-1-20250805:
-        input_per_1k: 0.0150
-        output_per_1k: 0.0750
       claude-3-5-sonnet-20241022:
         input_per_1k: 0.0030
         output_per_1k: 0.0150
+      claude-sonnet-4-20250514:
+        input_per_1k: 0.0040
+        output_per_1k: 0.0180
+      claude-sonnet-4-5-20250929:
+        input_per_1k: 0.0045
+        output_per_1k: 0.0190
+      claude-opus-4-1-20250805:
+        input_per_1k: 0.0150
+        output_per_1k: 0.0750
         
     google:
-      gemini-2.0-flash-lite:
-        input_per_1k: 0.000075
-        output_per_1k: 0.00030
-      gemini-2.5-flash:
-        input_per_1k: 0.00030
-        output_per_1k: 0.0025
       gemini-2.5-pro:
         input_per_1k: 0.00125
         output_per_1k: 0.0100
+      gemini-2.5-flash:
+        input_per_1k: 0.00030
+        output_per_1k: 0.0025
+      gemini-2.5-flash-lite:
+        input_per_1k: 0.00010
+        output_per_1k: 0.00040
       gemini-2.0-flash:
         input_per_1k: 0.00010
         output_per_1k: 0.00040
+      gemini-2.0-flash-lite:
+        input_per_1k: 0.000075
+        output_per_1k: 0.00030
         
     xai:
       grok-4-fast-non-reasoning:
@@ -272,6 +641,17 @@ pricing:
       grok-beta:
         input_per_1k: 0.0380
         output_per_1k: 0.1140
+        
+    zai:
+      glm-4.5-flash:
+        input_per_1k: 0.0
+        output_per_1k: 0.0
+      glm-4.5-air:
+        input_per_1k: 0.0002
+        output_per_1k: 0.0011
+      glm-4.6:
+        input_per_1k: 0.0006
+        output_per_1k: 0.0022
         
     meta:
       llama-3.2-3b:
@@ -291,38 +671,64 @@ pricing:
       deepseek-chat:
         input_per_1k: 0.00027
         output_per_1k: 0.0011
-      deepseek-v3.1-terminus:
+      deepseek-v3:
         input_per_1k: 0.00027
         output_per_1k: 0.0011
+      'deepseek-v3.2':
+        input_per_1k: 0.00030
+        output_per_1k: 0.0012
       deepseek-r1:
         input_per_1k: 0.00055
         output_per_1k: 0.00219
+      deepseek-r1-lite:
+        input_per_1k: 0.00035
+        output_per_1k: 0.0014
         
     qwen:
-      qwen-flash:
-        input_per_1k: 0.00005
-        output_per_1k: 0.0004
-      qwen-plus-latest:
+      qwen3-4b-instruct-2507:
+        input_per_1k: 0.0001
+        output_per_1k: 0.0003
+      qwen3-8b:
         input_per_1k: 0.0004
         output_per_1k: 0.0012
-      qwen3-max-preview:
-        input_per_1k: 0.0012
-        output_per_1k: 0.0060
-      qwq-32b-preview:
+      qwen3-omni-30b-a3b-instruct:
         input_per_1k: 0.0008
         output_per_1k: 0.0024
+      qwen3-next-80b-a3b-instruct:
+        input_per_1k: 0.0012
+        output_per_1k: 0.0036
+      qwen3-vl-235b-a22b-instruct:
+        input_per_1k: 0.0015
+        output_per_1k: 0.0045
+
+    groq:
+      llama-3.3-70b-versatile:
+        input_per_1k: 0.00059
+        output_per_1k: 0.00079
+      llama-3.1-8b-instant:
+        input_per_1k: 0.00005
+        output_per_1k: 0.00010
+      llama-4-scout-17b-16e-instruct:
+        input_per_1k: 0.00040
+        output_per_1k: 0.00120
+      llama-4-maverick-17b-128e-instruct:
+        input_per_1k: 0.00060
+        output_per_1k: 0.00180
+      llama-guard-4-12b:
+        input_per_1k: 0.00005
+        output_per_1k: 0.00005
         
     mistral:
-      ministral-8b-2410:
+      ministral-8b-instruct-2410:
         input_per_1k: 0.0001
-        output_per_1k: 0.0001
-      mistral-medium-2508:
+        output_per_1k: 0.0003
+      mistral-small-3.2-24b-instruct-2506:
         input_per_1k: 0.0004
         output_per_1k: 0.0020
-      mistral-large-2411:
-        input_per_1k: 0.0020
-        output_per_1k: 0.0060
-      codestral-2501:
+      mistral-nemo-instruct-2407:
+        input_per_1k: 0.0008
+        output_per_1k: 0.0024
+      codestral-22b-v0.1:
         input_per_1k: 0.0003
         output_per_1k: 0.0009
         
@@ -346,36 +752,36 @@ feature_flags:
 # Model capabilities matrix
 model_capabilities:
   multimodal_models:
-    - gpt-4o-mini
-    - gpt-5
-    - claude-sonnet-4-20250514
+    - gpt-4.1
+    - gpt-4o
+    - claude-sonnet-4-5-20250929
     - claude-sonnet-4-5-20250929
     - gemini-2.5-flash
     - gemini-2.0-flash
     
   thinking_models:
+    - gpt-4.1
     - o3
-    - o3-mini
     - o1
     - o1-mini
     - claude-opus-4-1-20250805
     - gemini-2.5-pro
     - deepseek-r1
-    - qwen3-max-preview
+    - qwen3-omni-30b-a3b-instruct
     
   coding_specialists:
-    - codestral-2501
-    - deepseek-v3.1-terminus
-    - claude-sonnet-4-20250514
+    - codestral-22b-v0.1
+    - 'deepseek-v3.2'
     - claude-sonnet-4-5-20250929
-    - o1-mini
-    - qwen-plus-latest
-    
+    - claude-sonnet-4-20250514
+    - o1
+    - qwen3-omni-30b-a3b-instruct
+
   long_context_models:
-    - llama-4-scout  # 10M tokens
+    - llama-4-scout-17b-16e-instruct  # 10M tokens
     - gemini-2.5-flash  # 1M tokens
-    - qwen3-max-preview  # 262K tokens
-    - claude-opus-4-1-20250805  # 200K tokens
+    - qwen3-omni-30b-a3b-instruct  # 262K tokens
+    - claude-sonnet-4-5-20250929  # 200K tokens
 
 # Rate limiting configuration
 rate_limits:

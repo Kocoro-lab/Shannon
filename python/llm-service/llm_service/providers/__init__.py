@@ -2,11 +2,13 @@ from typing import Dict, List, Optional, Any
 import logging
 from enum import Enum
 
-from .openai_provider import OpenAIProvider
-from .anthropic_provider import AnthropicProvider
-from .base import LLMProvider, ModelInfo, ModelTier
+from llm_provider.manager import get_llm_manager, LLMManager
+from llm_provider.base import ModelTier as CoreModelTier, CompletionResponse, TokenUsage as CoreTokenUsage
+
+from .base import ModelInfo, ModelTier as LegacyModelTier
 
 logger = logging.getLogger(__name__)
+
 
 class ProviderType(Enum):
     OPENAI = "openai"
@@ -16,208 +18,346 @@ class ProviderType(Enum):
     QWEN = "qwen"
     BEDROCK = "bedrock"
     OLLAMA = "ollama"
+    GROQ = "groq"
+    MISTRAL = "mistral"
+
+
+_PROVIDER_NAME_MAP: Dict[str, ProviderType] = {
+    "openai": ProviderType.OPENAI,
+    "anthropic": ProviderType.ANTHROPIC,
+    "google": ProviderType.GOOGLE,
+    "deepseek": ProviderType.DEEPSEEK,
+    "qwen": ProviderType.QWEN,
+    "bedrock": ProviderType.BEDROCK,
+    "ollama": ProviderType.OLLAMA,
+    "groq": ProviderType.GROQ,
+    "mistral": ProviderType.MISTRAL,
+}
+
+
+class _ProviderAdapter:
+    """Thin adapter that exposes list_models while delegating other attributes."""
+
+    def __init__(self, provider_type: ProviderType, provider: Any, models: List[ModelInfo]):
+        self._provider_type = provider_type
+        self._provider = provider
+        self._models = models
+
+    def list_models(self) -> List[ModelInfo]:
+        return list(self._models)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._provider, item)
+
 
 class ProviderManager:
-    """Manages multiple LLM providers with intelligent routing"""
-    
+    """Facade that keeps legacy API surface while delegating to LLMManager."""
+
     def __init__(self, settings):
         self.settings = settings
-        self.providers: Dict[ProviderType, LLMProvider] = {}
+        self._manager: LLMManager = get_llm_manager()
+        self.providers: Dict[ProviderType, _ProviderAdapter] = {}
         self.model_registry: Dict[str, ModelInfo] = {}
-        self.tier_models: Dict[ModelTier, List[str]] = {
-            ModelTier.SMALL: [],
-            ModelTier.MEDIUM: [],
-            ModelTier.LARGE: []
+        self.tier_models: Dict[LegacyModelTier, List[str]] = {
+            LegacyModelTier.SMALL: [],
+            LegacyModelTier.MEDIUM: [],
+            LegacyModelTier.LARGE: [],
         }
-        # Token budget tracking per session
         self.session_tokens: Dict[str, int] = {}
-        self.max_tokens_per_session = 100000  # Default limit
+        self.max_tokens_per_session = 100000
         self._emitter = None
-        
-    async def initialize(self):
-        """Initialize available providers"""
-        # Initialize OpenAI
-        if self.settings.openai_api_key:
-            provider = OpenAIProvider(self.settings.openai_api_key)
-            await provider.initialize()
-            self.providers[ProviderType.OPENAI] = provider
-            self._register_models(provider)
-            logger.info("OpenAI provider initialized")
-        
-        # Initialize Anthropic
-        if self.settings.anthropic_api_key:
-            provider = AnthropicProvider(self.settings.anthropic_api_key)
-            await provider.initialize()
-            self.providers[ProviderType.ANTHROPIC] = provider
-            self._register_models(provider)
-            logger.info("Anthropic provider initialized")
-        
-        # Additional providers would be initialized here
-        
-        if not self.providers:
-            logger.warning("No LLM providers configured - using mock provider")
-            # Could add a mock provider for testing
-    
-    def _register_models(self, provider: LLMProvider):
-        """Register models from a provider"""
-        models = provider.list_models()
-        for model in models:
-            self.model_registry[model.id] = model
-            self.tier_models[model.tier].append(model.id)
-    
-    async def close(self):
-        """Close all providers"""
-        for provider in self.providers.values():
-            await provider.close()
 
-    def set_emitter(self, emitter):
-        """Inject shared event emitter (optional)."""
+    async def initialize(self) -> None:
+        """Load provider metadata from the unified manager."""
+        self._refresh_registry()
+
+    async def reload(self) -> None:
+        """Hot-reload provider configuration from the unified manager."""
+
+        await self._manager.reload()
+        self._refresh_registry()
+
+    def _refresh_registry(self) -> None:
+        self.providers.clear()
+        self.model_registry.clear()
+        for tier in self.tier_models:
+            self.tier_models[tier] = []
+
+        for name, provider in self._manager.registry.providers.items():
+            provider_type = _PROVIDER_NAME_MAP.get(name)
+            models = self._collect_models(provider_type, provider)
+            if provider_type:
+                self.providers[provider_type] = _ProviderAdapter(provider_type, provider, models)
+
+    def _collect_models(self, provider_type: Optional[ProviderType], provider: Any) -> List[ModelInfo]:
+        models: List[ModelInfo] = []
+
+        for alias, config in provider.models.items():
+            info = self._build_model_info(provider_type, alias, config)
+            models.append(info)
+            self.model_registry[alias] = info
+            if config.model_id != alias:
+                self.model_registry[config.model_id] = info
+            if info.tier not in self.tier_models:
+                self.tier_models[info.tier] = []
+            if alias not in self.tier_models[info.tier]:
+                self.tier_models[info.tier].append(alias)
+
+        return models
+
+    @staticmethod
+    def _build_model_info(
+        provider_type: Optional[ProviderType], alias: str, config: Any
+    ) -> ModelInfo:
+        legacy_tier = LegacyModelTier(config.tier.value)
+        provider_value: Any = provider_type if provider_type else (config.provider or "unknown")
+
+        return ModelInfo(
+            id=alias,
+            name=alias,
+            provider=provider_value,
+            tier=legacy_tier,
+            context_window=config.context_window,
+            cost_per_1k_prompt_tokens=config.input_price_per_1k,
+            cost_per_1k_completion_tokens=config.output_price_per_1k,
+            supports_tools=getattr(config, "supports_functions", True),
+            supports_streaming=getattr(config, "supports_streaming", True),
+            available=True,
+        )
+
+    async def close(self) -> None:
+        """Close adapters if underlying providers expose close hooks."""
+        for adapter in self.providers.values():
+            close = getattr(adapter, "close", None)
+            if close:
+                await close()
+
+    def set_emitter(self, emitter) -> None:
         self._emitter = emitter
-    
-    def select_model(self, tier: ModelTier = None, specific_model: str = None) -> Optional[str]:
-        """Select a model based on tier or specific request"""
-        if specific_model:
-            if specific_model in self.model_registry:
-                return specific_model
-            # If specific model not found, log warning and fall back to tier
-            logger.warning(f"Requested model '{specific_model}' not available, falling back to tier selection")
-        
-        tier = tier or ModelTier.SMALL
-        available_models = self.tier_models.get(tier, [])
-        
-        if not available_models:
-            # Fall back to next tier
-            if tier == ModelTier.SMALL and self.tier_models[ModelTier.MEDIUM]:
-                return self.tier_models[ModelTier.MEDIUM][0]
-            elif tier == ModelTier.MEDIUM and self.tier_models[ModelTier.LARGE]:
-                return self.tier_models[ModelTier.LARGE][0]
-            # Last resort: any available model
-            for models in self.tier_models.values():
-                if models:
-                    return models[0]
-        
-        return available_models[0] if available_models else None
-    
+
+    def select_model(
+        self, tier: LegacyModelTier = None, specific_model: str = None
+    ) -> Optional[str]:
+        if specific_model and specific_model in self.model_registry:
+            return specific_model
+
+        tier = tier or LegacyModelTier.SMALL
+
+        preferred = self.tier_models.get(tier, [])
+        if preferred:
+            return preferred[0]
+
+        # Fallback to any available tier in order
+        for fallback_tier in (LegacyModelTier.SMALL, LegacyModelTier.MEDIUM, LegacyModelTier.LARGE):
+            candidates = self.tier_models.get(fallback_tier, [])
+            if candidates:
+                return candidates[0]
+
+        return None
+
     async def generate_completion(
         self,
         messages: List[dict],
-        tier: ModelTier = None,
+        tier: LegacyModelTier = None,
         specific_model: str = None,
-        **kwargs
+        **kwargs,
     ) -> dict:
-        """Generate completion using appropriate provider and model with unified event emission."""
-        # Check token budget if session_id provided
-        session_id = kwargs.get('session_id')
-        if session_id:
-            current_usage = self.session_tokens.get(session_id, 0)
-            max_tokens = kwargs.get('max_tokens_budget', self.max_tokens_per_session)
-            
-            if current_usage >= max_tokens:
-                raise ValueError(
-                    f"Session {session_id} exceeded token budget: "
-                    f"{current_usage}/{max_tokens} tokens used"
-                )
-        
-        model_id = self.select_model(tier, specific_model)
-        if not model_id:
-            raise ValueError("No models available")
-        
-        model_info = self.model_registry[model_id]
-        provider = self.providers.get(model_info.provider)
-        
-        if not provider:
-            raise ValueError(f"Provider {model_info.provider} not available")
-        
-        # Unified event emission (extract + remove tracking keys so they don't reach vendor SDKs)
-        wf_id = kwargs.pop('workflow_id', None) or kwargs.pop('workflowId', None) or kwargs.pop('WORKFLOW_ID', None)
-        agent_id = kwargs.pop('agent_id', None) or kwargs.pop('agentId', None) or kwargs.pop('AGENT_ID', None)
+        params = dict(kwargs)
 
-        if self.settings.enable_llm_events and self._emitter and wf_id:
-            # Emit sanitized prompt (use last user message)
-            try:
-                last_user = next((m.get('content','') for m in reversed(messages) if m.get('role')=='user'), '')
-                payload = {
-                    "provider": provider.__class__.__name__.replace('Provider','').lower(),
-                    "model": model_id,
-                }
-                self._emitter.emit(wf_id, 'LLM_PROMPT', agent_id=agent_id, message=(last_user[:2000] if last_user else ''), payload=payload)
-            except Exception:
-                pass
-
-        result = await provider.generate_completion(
-            messages=messages,
-            model=model_id,
-            **kwargs
+        session_id = params.get("session_id")
+        workflow_id = (
+            params.pop("workflow_id", None)
+            or params.pop("workflowId", None)
+            or params.pop("WORKFLOW_ID", None)
         )
-        
-        # Track token usage for session (Responses usage has input_tokens/output_tokens)
-        if session_id and 'usage' in result:
-            usage = result['usage'] or {}
-            total_tokens = usage.get('total_tokens')
-            if total_tokens is None:
-                it = usage.get('input_tokens', 0)
-                ot = usage.get('output_tokens', 0)
-                total_tokens = it + ot
-            self.session_tokens[session_id] = self.session_tokens.get(session_id, 0) + total_tokens
-            logger.info(f"Session {session_id} token usage: {self.session_tokens[session_id]}")
-        
-        # Ensure provider tag present for observability; model should already be included by provider
-        result["provider"] = result.get("provider", model_info.provider.value)
-        
-        # Emit partials + output (normalize for non-streaming)
-        if self.settings.enable_llm_events and self._emitter and wf_id:
-            try:
-                text = result.get('output_text') or ''
-                if text:
-                    if self.settings.enable_llm_partials:
-                        n = max(int(self.settings.partial_chunk_chars), 1)
-                        total = (len(text) + n - 1) // n
-                        for ix, i in enumerate(range(0, len(text), n)):
-                            self._emitter.emit(wf_id, 'LLM_PARTIAL', agent_id=agent_id, message=text[i:i+n], payload={"chunk_index": ix, "total_chunks": total})
-                    usage = result.get('usage') or {}
-                    payload = {
-                        "provider": provider.__class__.__name__.replace('Provider','').lower(),
-                        "model": result.get('model', model_id),
-                        "usage": usage,
-                    }
-                    self._emitter.emit(wf_id, 'LLM_OUTPUT', agent_id=agent_id, message=text[:4000], payload=payload)
-            except Exception:
-                pass
+        agent_id = (
+            params.get("agent_id")
+            or params.pop("agentId", None)
+            or params.pop("AGENT_ID", None)
+        )
+
+        tier = tier or LegacyModelTier.SMALL
+        try:
+            core_tier = CoreModelTier(tier.value)
+        except ValueError:
+            core_tier = CoreModelTier.SMALL
+
+        manager_kwargs: Dict[str, Any] = {}
+
+        # Recognized request fields passed through to CompletionRequest
+        passthrough_fields = {
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "stop",
+            "response_format",
+            "seed",
+            "user",
+            "function_call",
+            "stream",
+            "cache_key",
+            "cache_ttl",
+            "session_id",
+            "task_id",
+            "agent_id",
+            "max_tokens_budget",
+        }
+
+        for field in list(params.keys()):
+            if field in passthrough_fields and params[field] is not None:
+                manager_kwargs[field] = params.pop(field)
+
+        if "temperature" not in manager_kwargs or manager_kwargs["temperature"] is None:
+            manager_kwargs["temperature"] = self.settings.temperature
+
+        if agent_id and "agent_id" not in manager_kwargs:
+            manager_kwargs["agent_id"] = agent_id
+
+        tools = params.pop("tools", None)
+        if tools:
+            manager_kwargs["functions"] = tools
+
+        if specific_model:
+            manager_kwargs["model"] = specific_model
+
+        response: CompletionResponse = await self._manager.complete(
+            messages=messages,
+            model_tier=core_tier,
+            **manager_kwargs,
+        )
+
+        result = self._serialize_completion(response)
+
+        if session_id and result.get("usage"):
+            total_tokens = result["usage"].get("total_tokens")
+            if total_tokens is not None:
+                self.session_tokens[session_id] = self.session_tokens.get(session_id, 0) + total_tokens
+                logger.info(
+                    "Session %s token usage: %s",
+                    session_id,
+                    self.session_tokens[session_id],
+                )
+
+        if self.settings.enable_llm_events and self._emitter and workflow_id:
+            self._emit_events(
+                workflow_id=workflow_id,
+                agent_id=agent_id,
+                messages=messages,
+                response=result,
+            )
 
         return result
-    
+
+    def _serialize_completion(self, response: CompletionResponse) -> Dict[str, Any]:
+        usage = self._serialize_usage(response.usage)
+
+        return {
+            "provider": response.provider,
+            "model": response.model,
+            "output_text": response.content,
+            "usage": usage,
+            "finish_reason": response.finish_reason,
+            "function_call": response.function_call,
+            "request_id": response.request_id,
+            "latency_ms": response.latency_ms,
+            "cached": response.cached,
+        }
+
+    @staticmethod
+    def _serialize_usage(usage: Optional[CoreTokenUsage]) -> Dict[str, Any]:
+        if not usage:
+            return {}
+        return {
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "total_tokens": usage.total_tokens,
+            "cost_usd": usage.estimated_cost,
+        }
+
+    def _emit_events(
+        self,
+        workflow_id: str,
+        agent_id: Optional[str],
+        messages: List[dict],
+        response: Dict[str, Any],
+    ) -> None:
+        try:
+            last_user = next(
+                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                "",
+            )
+        except Exception:
+            last_user = ""
+
+        if last_user:
+            payload = {
+                "provider": response.get("provider"),
+                "model": response.get("model"),
+            }
+            try:
+                self._emitter.emit(
+                    workflow_id,
+                    "LLM_PROMPT",
+                    agent_id=agent_id,
+                    message=last_user[:2000],
+                    payload=payload,
+                )
+            except Exception:
+                logger.debug("Failed to emit LLM_PROMPT", exc_info=True)
+
+        output_text = response.get("output_text") or ""
+        if not output_text:
+            return
+
+        if self.settings.enable_llm_partials:
+            chunk = max(int(self.settings.partial_chunk_chars), 1)
+            total = (len(output_text) + chunk - 1) // chunk
+            for idx, start in enumerate(range(0, len(output_text), chunk)):
+                try:
+                    self._emitter.emit(
+                        workflow_id,
+                        "LLM_PARTIAL",
+                        agent_id=agent_id,
+                        message=output_text[start : start + chunk],
+                        payload={"chunk_index": idx, "total_chunks": total},
+                    )
+                except Exception:
+                    logger.debug("Failed to emit LLM_PARTIAL", exc_info=True)
+
+        usage_payload = response.get("usage") or {}
+        try:
+            self._emitter.emit(
+                workflow_id,
+                "LLM_OUTPUT",
+                agent_id=agent_id,
+                message=output_text[:4000],
+                payload={
+                    "provider": response.get("provider"),
+                    "model": response.get("model"),
+                    "usage": usage_payload,
+                },
+            )
+        except Exception:
+            logger.debug("Failed to emit LLM_OUTPUT", exc_info=True)
+
     async def generate_embedding(self, text: str, model: str = None) -> List[float]:
-        """Generate text embedding"""
-        # Default to OpenAI for embeddings if available
-        if ProviderType.OPENAI in self.providers:
-            provider = self.providers[ProviderType.OPENAI]
-            return await provider.generate_embedding(text, model)
-        
-        # Fall back to first available provider with embedding support
-        for provider in self.providers.values():
-            if hasattr(provider, 'generate_embedding'):
-                return await provider.generate_embedding(text, model)
-        
-        raise ValueError("No embedding providers available")
-    
+        return await self._manager.generate_embedding(text, model)
+
     def is_configured(self) -> bool:
-        """Check if any providers are configured"""
-        return len(self.providers) > 0
-    
+        return bool(self._manager.registry.providers)
+
     def get_provider(self, tier: str = "small") -> Any:
-        """Get a provider for the specified tier"""
-        # This is a simplified version - in production would select based on tier
         if self.providers:
-            return list(self.providers.values())[0]
+            return next(iter(self.providers.values()))
         return None
-    
+
     def get_model_info(self, model_id: str) -> Optional[ModelInfo]:
-        """Get information about a specific model"""
         return self.model_registry.get(model_id)
-    
-    def list_available_models(self, tier: ModelTier = None) -> List[ModelInfo]:
-        """List available models, optionally filtered by tier"""
+
+    def list_available_models(self, tier: LegacyModelTier = None) -> List[ModelInfo]:
         if tier:
-            model_ids = self.tier_models.get(tier, [])
-            return [self.model_registry[id] for id in model_ids]
+            ids = self.tier_models.get(tier, [])
+            return [self.model_registry[mid] for mid in ids]
         return list(self.model_registry.values())

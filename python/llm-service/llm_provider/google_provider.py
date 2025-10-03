@@ -4,25 +4,21 @@ Provides access to Google's Gemini models via the Google AI Python SDK
 """
 
 import asyncio
+import logging
 import os
 from typing import Dict, List, Any, Optional, AsyncIterator
+from tenacity import retry, stop_after_attempt, wait_exponential
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-from .base import (
-    LLMProvider,
-    ModelConfig,
-    ModelTier,
-    CompletionRequest,
-    CompletionResponse,
-    TokenUsage,
-)
+from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage, ModelTier, ModelConfig
 
 
 class GoogleProvider(LLMProvider):
     """Provider for Google Gemini models"""
 
     def __init__(self, config: Dict[str, Any]):
+        self.logger = logging.getLogger(__name__)
         # Get API key from config or environment
         self.api_key = config.get("api_key") or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
@@ -34,10 +30,7 @@ class GoogleProvider(LLMProvider):
         if not self.api_key.startswith(
             ("AIza", "sk-", "test-")
         ):  # AIza for Google, sk-/test- for testing
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.warning("Google API key does not match expected format")
+            self.logger.warning("Google API key does not match expected format")
 
         # Configure the Google AI SDK
         genai.configure(api_key=self.api_key)
@@ -59,70 +52,16 @@ class GoogleProvider(LLMProvider):
         super().__init__(config)
 
     def _initialize_models(self):
-        """Initialize available Google Gemini models"""
+        """Initialize available Google Gemini models from configuration."""
 
-        # Gemini Pro (balanced model)
-        self.models["gemini-pro"] = ModelConfig(
-            provider="google",
-            model_id="gemini-pro",
-            tier=ModelTier.MEDIUM,
-            max_tokens=2048,
-            context_window=32768,
-            input_price_per_1k=0.0005,  # $0.50 per 1M tokens
-            output_price_per_1k=0.0015,  # $1.50 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=False,
-        )
-
-        # Gemini Pro Vision (multimodal)
-        self.models["gemini-pro-vision"] = ModelConfig(
-            provider="google",
-            model_id="gemini-pro-vision",
-            tier=ModelTier.MEDIUM,
-            max_tokens=2048,
-            context_window=16384,
-            input_price_per_1k=0.0005,
-            output_price_per_1k=0.0015,
-            supports_functions=False,
-            supports_streaming=True,
-            supports_vision=True,
-        )
-
-        # Gemini 1.5 Flash (fast, efficient)
-        self.models["gemini-1.5-flash"] = ModelConfig(
-            provider="google",
-            model_id="gemini-1.5-flash",
-            tier=ModelTier.SMALL,
-            max_tokens=8192,
-            context_window=1048576,  # 1M token context window
-            input_price_per_1k=0.00035,  # $0.35 per 1M tokens
-            output_price_per_1k=0.00105,  # $1.05 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=True,
-        )
-
-        # Gemini 1.5 Pro (most capable)
-        self.models["gemini-1.5-pro"] = ModelConfig(
-            provider="google",
-            model_id="gemini-1.5-pro",
-            tier=ModelTier.LARGE,
-            max_tokens=8192,
-            context_window=1048576,  # 1M token context window
-            input_price_per_1k=0.00125,  # $1.25 per 1M tokens
-            output_price_per_1k=0.00375,  # $3.75 per 1M tokens
-            supports_functions=True,
-            supports_streaming=True,
-            supports_vision=True,
-        )
+        self._load_models_from_config()
 
         # Initialize model instances
-        for model_id in self.models:
+        for alias, model_config in self.models.items():
             try:
-                self.model_instances[model_id] = genai.GenerativeModel(model_id)
+                self.model_instances[alias] = genai.GenerativeModel(model_config.model_id)
             except Exception as e:
-                self.logger.warning(f"Failed to initialize model {model_id}: {e}")
+                self.logger.warning(f"Failed to initialize model {model_config.model_id}: {e}")
 
     def _convert_messages_to_gemini_format(
         self, messages: List[Dict[str, Any]]
@@ -162,12 +101,13 @@ class GoogleProvider(LLMProvider):
 
         return config
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Execute a completion request"""
 
-        # Select model based on tier
-        model_id = self._select_model_for_tier(request.model_tier)
-        model_config = self.models[model_id]
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
+        model_id = model_config.model_id
 
         if model_id not in self.model_instances:
             raise ValueError(f"Model {model_id} not initialized")
@@ -236,10 +176,11 @@ class GoogleProvider(LLMProvider):
     async def complete_stream(
         self, request: CompletionRequest
     ) -> AsyncIterator[CompletionResponse]:
-        """Stream a completion response"""
+        """Stream a completion response (returns CompletionResponse chunks)."""
 
-        # Select model based on tier
-        model_id = self._select_model_for_tier(request.model_tier)
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
+        model_id = model_config.model_id
 
         if model_id not in self.model_instances:
             raise ValueError(f"Model {model_id} not initialized")
@@ -361,3 +302,12 @@ class GoogleProvider(LLMProvider):
 
         # Fallback to estimation
         return self._estimate_tokens(text)
+
+    async def stream_complete(
+        self, request: CompletionRequest
+    ) -> AsyncIterator[str]:
+        """Stream text chunks only (normalized streaming)."""
+        # Use complete_stream and yield only text portions
+        async for chunk in self.complete_stream(request):
+            if chunk and isinstance(chunk.content, str) and chunk.content:
+                yield chunk.content

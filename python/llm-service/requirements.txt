@@ -14,9 +14,7 @@ openai==1.108.0
 anthropic==0.40.0
 google-generativeai==0.8.3
 boto3==1.35.77  # For Bedrock
-
-# Vector database
-qdrant-client==1.12.2
+tiktoken==0.8.0  # For OpenAI token counting
 
 # Redis caching
 redis==5.2.1

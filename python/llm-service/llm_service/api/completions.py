@@ -19,9 +19,8 @@ class CompletionRequest(BaseModel):
 @router.post("/")
 async def generate_completion(request: Request, body: CompletionRequest):
     """Generate a completion using the LLM service"""
-    cache = request.app.state.cache
     providers = request.app.state.providers
-    
+
     # If no providers are configured, return a simple mock response to keep local dev flows working
     try:
         if not providers or not providers.is_configured():
@@ -56,32 +55,6 @@ async def generate_completion(request: Request, body: CompletionRequest):
         # If provider check fails unexpectedly, fall through to normal path which will error gracefully
         pass
     
-    # Check cache first
-    cache_result = await cache.get(
-        messages=body.messages,
-        model=body.specific_model or body.model_tier,
-        temperature=body.temperature,
-        max_tokens=body.max_tokens
-    )
-    
-    if cache_result:
-        cache_result["cache_hit"] = True
-        # Record cache hit metrics
-        usage = cache_result.get("usage", {}) or {}
-        prompt_tokens = usage.get("input_tokens", usage.get("prompt_tokens", 0))
-        completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
-        metrics.record_llm_request(
-            provider=cache_result.get("provider", "unknown"),
-            model=cache_result.get("model", "unknown"),
-            tier=body.model_tier or "unknown",
-            cache_hit=True,
-            duration=0.0,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost=0.0,
-        )
-        return cache_result
-    
     # Convert tier string to enum
     tier = None
     if body.model_tier:
@@ -115,23 +88,18 @@ async def generate_completion(request: Request, body: CompletionRequest):
     completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
     cost = usage.get("cost_usd", usage.get("cost", 0.0))
 
+    # Check if response was cached (manager sets this flag)
+    cache_hit = result.get("cached", False)
+
     metrics.record_llm_request(
         provider=result.get("provider", "unknown"),
         model=result.get("model", "unknown"),
         tier=body.model_tier or "unknown",
-        cache_hit=False,
+        cache_hit=cache_hit,
         duration=timer.duration or 0.0,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         cost=cost
     )
 
-    # Cache the result
-    await cache.set(
-        messages=body.messages,
-        model=result.get("model", body.specific_model or body.model_tier or "unknown"),
-        response=result,
-        temperature=body.temperature,
-        max_tokens=body.max_tokens
-    )
     return result

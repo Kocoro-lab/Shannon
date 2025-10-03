@@ -17,11 +17,9 @@ async def health_check(request: Request):
 @router.get("/ready")
 async def readiness_check(request: Request):
     """Readiness check - verifies all dependencies are accessible"""
-    cache = request.app.state.cache
     providers = request.app.state.providers
 
     checks = {
-        "cache": cache.enabled,
         "providers": len(providers.providers) > 0,
         "models": len(providers.model_registry) > 0,
     }

@@ -5,6 +5,7 @@ For providers that implement OpenAI's API (DeepSeek, Qwen, local models, etc.)
 
 from typing import Dict, List, Any, AsyncIterator
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .base import (
     LLMProvider,
@@ -30,36 +31,14 @@ class OpenAICompatibleProvider(LLMProvider):
         # Initialize OpenAI client with custom base URL
         self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        # Store model configurations from config
-        self.model_configs = config.get("models", {})
-
         super().__init__(config)
 
     def _initialize_models(self):
         """Initialize models from configuration"""
 
-        # Parse model configurations
-        for model_id, model_config in self.model_configs.items():
-            tier_str = model_config.get("tier", "medium")
-            tier = (
-                ModelTier[tier_str.upper()] if isinstance(tier_str, str) else tier_str
-            )
+        self._load_models_from_config(allow_empty=True)
 
-            self.models[model_id] = ModelConfig(
-                provider=self.config.get("name", "openai_compatible"),
-                model_id=model_id,
-                tier=tier,
-                max_tokens=model_config.get("max_tokens", 4096),
-                context_window=model_config.get("context_window", 8192),
-                input_price_per_1k=model_config.get("input_price_per_1k", 0.001),
-                output_price_per_1k=model_config.get("output_price_per_1k", 0.002),
-                supports_functions=model_config.get("supports_functions", True),
-                supports_streaming=model_config.get("supports_streaming", True),
-                supports_vision=model_config.get("supports_vision", False),
-                timeout=model_config.get("timeout", 60),
-            )
-
-        # If no models configured, add some defaults
+        # If no models configured, add some defaults for developer convenience
         if not self.models:
             self._add_default_models()
 
@@ -202,17 +181,13 @@ class OpenAICompatibleProvider(LLMProvider):
         """
         return TokenCounter.count_messages_tokens(messages, model)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using the OpenAI-compatible API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
-
-        # Count input tokens (estimation)
-        input_tokens = self.count_tokens(request.messages, model)
 
         # Prepare API request
         api_request = {
@@ -261,18 +236,28 @@ class OpenAICompatibleProvider(LLMProvider):
         message = choice.message
 
         # Handle token usage (some providers might not return this)
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
         if hasattr(response, "usage") and response.usage:
-            output_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
-        else:
+            try:
+                prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0))
+                completion_tokens = int(getattr(response.usage, "completion_tokens", 0))
+                total_tokens = int(getattr(response.usage, "total_tokens", prompt_tokens + completion_tokens))
+            except Exception:
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
+        if total_tokens == 0:
             # Estimate if not provided
-            output_tokens = self.count_tokens(
-                [{"role": "assistant", "content": message.content}], model
+            prompt_tokens = self.count_tokens(request.messages, model)
+            completion_tokens = self.count_tokens(
+                [{"role": "assistant", "content": message.content or ""}], model
             )
-            total_tokens = input_tokens + output_tokens
+            total_tokens = prompt_tokens + completion_tokens
 
         # Calculate cost
-        cost = self.estimate_cost(input_tokens, output_tokens, model)
+        cost = self.estimate_cost(prompt_tokens, completion_tokens, model)
 
         # Build response
         return CompletionResponse(
@@ -280,8 +265,8 @@ class OpenAICompatibleProvider(LLMProvider):
             model=model,
             provider=self.config.get("name", "openai_compatible"),
             usage=TokenUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 estimated_cost=cost,
             ),
@@ -298,10 +283,8 @@ class OpenAICompatibleProvider(LLMProvider):
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Stream a completion using the OpenAI-compatible API"""
 
-        # Select model based on tier
-        model_config = self.select_model_for_tier(
-            request.model_tier, request.max_tokens
-        )
+        # Select model based on tier or explicit override
+        model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
         # Prepare API request

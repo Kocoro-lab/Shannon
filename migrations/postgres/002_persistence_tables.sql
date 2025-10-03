@@ -237,11 +237,9 @@ COMMENT ON COLUMN tool_executions.sandboxed IS 'Whether tool was executed in WAS
 -- Update tool_calls table from 001 to properly reference agent_executions
 -- Now that agent_executions table exists with the correct schema
 ALTER TABLE tool_calls
-    ADD COLUMN agent_execution_id UUID REFERENCES agent_executions(id) ON DELETE CASCADE,
-    DROP COLUMN task_id;
+    ADD COLUMN agent_execution_id UUID REFERENCES agent_executions(id) ON DELETE CASCADE;
 
 CREATE INDEX idx_tool_calls_agent_execution_id ON tool_calls(agent_execution_id);
-DROP INDEX IF EXISTS idx_tool_calls_task_id;
 
 -- Add task_id foreign key to token_usage table (referencing task_executions)
 ALTER TABLE token_usage

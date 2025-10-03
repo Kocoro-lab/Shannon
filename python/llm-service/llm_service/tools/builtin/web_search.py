@@ -498,7 +498,7 @@ class WebSearchTool(Tool):
         providers_config = {
             SearchProvider.GOOGLE.value: {
                 "class": GoogleSearchProvider,
-                "api_key_env": "GOOGLE_API_KEY",
+                "api_key_env": "GOOGLE_SEARCH_API_KEY",
                 "requires_extra": "GOOGLE_SEARCH_ENGINE_ID",
             },
             SearchProvider.SERPER.value: {
@@ -570,7 +570,7 @@ class WebSearchTool(Tool):
 
         logger.error(
             "No web search provider configured. Please set one of:\n"
-            "- GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
+            "- GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
             "- SERPER_API_KEY for Serper search\n"
             "- BING_API_KEY for Bing search\n"
             "- EXA_API_KEY for Exa search\n"
@@ -630,7 +630,7 @@ class WebSearchTool(Tool):
                 output=None,
                 error=(
                     "No web search provider configured. Please set one of:\n"
-                    "- GOOGLE_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
+                    "- GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
                     "- SERPER_API_KEY for Serper search\n"
                     "- BING_API_KEY for Bing search\n"
                     "- EXA_API_KEY for Exa search\n"

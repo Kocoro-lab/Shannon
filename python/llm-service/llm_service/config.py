@@ -23,19 +23,13 @@ class Settings(BaseSettings):
     postgres_user: str = Field(default="shannon", env="POSTGRES_USER")
     postgres_password: str = Field(default="shannon", env="POSTGRES_PASSWORD")
 
-    # Qdrant configuration
-    qdrant_host: str = Field(default="qdrant", env="QDRANT_HOST")
-    qdrant_port: int = Field(default=6333, env="QDRANT_PORT")
-    qdrant_collection: str = Field(
-        default="shannon_embeddings", env="QDRANT_COLLECTION"
-    )
-
     # LLM Provider API keys (optional, can be configured at runtime)
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
     anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")
     google_api_key: Optional[str] = Field(default=None, env="GOOGLE_API_KEY")
     deepseek_api_key: Optional[str] = Field(default=None, env="DEEPSEEK_API_KEY")
     qwen_api_key: Optional[str] = Field(default=None, env="QWEN_API_KEY")
+    mistral_api_key: Optional[str] = Field(default=None, env="MISTRAL_API_KEY")
     aws_access_key: Optional[str] = Field(default=None, env="AWS_ACCESS_KEY_ID")
     aws_secret_key: Optional[str] = Field(default=None, env="AWS_SECRET_ACCESS_KEY")
     aws_region: str = Field(default="us-east-1", env="AWS_REGION")

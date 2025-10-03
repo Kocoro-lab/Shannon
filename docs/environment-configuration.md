@@ -60,28 +60,42 @@ docker compose -f deploy/compose/docker-compose.yml exec llm-service env | grep 
 ### Essential API Keys
 
 ```bash
-# LLM Provider Keys (at least one required)
+# LLM provider (set at least one)
 OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
+# ANTHROPIC_API_KEY=...
+# XAI_API_KEY=...
+# ZAI_API_KEY=...
 
-# Web Search (optional but recommended)
-EXA_API_KEY=your-exa-key-here
-FIRECRAWL_API_KEY=your-firecrawl-key-here
+# Web search provider (optional but recommended)
+WEB_SEARCH_PROVIDER=google
+GOOGLE_SEARCH_API_KEY=...
+GOOGLE_SEARCH_ENGINE_ID=...
+# SERPER_API_KEY=...
+# EXA_API_KEY=...
+# FIRECRAWL_API_KEY=...
 
-# Model Selection (optional)
+# Model routing overrides (optional)
 COMPLEXITY_MODEL_ID=gpt-4o-mini
-DECOMPOSITION_MODEL_ID=gpt-4o
+DECOMPOSITION_MODEL_ID=claude-sonnet-4-20250514
 ```
 
-### Service Configuration
+### Core Service Endpoints
 
 ```bash
-# Token Budget (optional)
-WORKFLOW_SYNTH_BYPASS_SINGLE=true
+TEMPORAL_HOST=temporal:7233
+AGENT_CORE_ADDR=agent-core:50051
+LLM_SERVICE_URL=http://llm-service:8000
+ADMIN_SERVER=http://orchestrator:8081
+```
 
-# Rate Limiting (optional)
+### Optional Runtime Limits
+
+```bash
+WORKFLOW_SYNTH_BYPASS_SINGLE=true
+ENFORCE_TIMEOUT_SECONDS=90
+ENFORCE_MAX_TOKENS=32768
 RATE_LIMIT_REQUESTS=100
-RATE_LIMIT_INTERVAL_MS=60000
+RATE_LIMIT_WINDOW=60
 ```
 
 ## Common Issues and Solutions
@@ -120,6 +134,21 @@ These warnings appear during the build phase when Docker Compose evaluates the d
 1. Check the rate limit configuration in your tools
 2. Ensure you're using the latest code version
 
+### Issue: WASI interpreter path is invalid
+
+**Symptom**: Python tool execution fails with `No such file or directory` for the WASI runtime.
+
+**Solution**: The containers mount interpreters at `/opt/wasm-interpreters`, while local runs usually use `./wasm-interpreters/...`.
+Set `PYTHON_WASI_WASM_PATH` to the path that exists in your environment:
+
+```bash
+# Inside Docker (default)
+PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
+
+# Local host run
+PYTHON_WASI_WASM_PATH=./wasm-interpreters/python-3.11.4.wasm
+```
+
 ## Best Practices
 
 ### 1. Never Commit Secrets
@@ -131,9 +160,8 @@ These warnings appear during the build phase when Docker Compose evaluates the d
 - Use UPPER_CASE_WITH_UNDERSCORES for environment variables
 - Prefix service-specific variables (e.g., `LLM_SERVICE_URL`)
 
-### 3. Document Required Variables
-- Maintain `.env.example` with all required variables
-- Include descriptions as comments
+- Maintain `.env.example` with all required variables grouped by section
+- Include short comments describing defaults/usage so contributors know what to change
 - Specify which variables are optional vs required
 
 ### 4. Validate on Startup
@@ -200,6 +228,9 @@ ls -la .env deploy/compose/.env
 
 # View current environment in container
 docker compose -f deploy/compose/docker-compose.yml exec llm-service env | sort
+
+# Confirm WASI interpreter path inside the agent-core container
+docker compose -f deploy/compose/docker-compose.yml exec agent-core ls /opt/wasm-interpreters
 
 # Test with explicit env file
 docker compose --env-file .env -f deploy/compose/docker-compose.yml up -d
