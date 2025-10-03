@@ -200,8 +200,6 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - QDRANT_HOST=qdrant
-      - QDRANT_PORT=6333
       - POSTGRES_HOST=postgres
       - POSTGRES_USER=shannon
       - POSTGRES_PASSWORD=shannon

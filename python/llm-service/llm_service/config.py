@@ -23,13 +23,6 @@ class Settings(BaseSettings):
     postgres_user: str = Field(default="shannon", env="POSTGRES_USER")
     postgres_password: str = Field(default="shannon", env="POSTGRES_PASSWORD")
 
-    # Qdrant configuration
-    qdrant_host: str = Field(default="qdrant", env="QDRANT_HOST")
-    qdrant_port: int = Field(default=6333, env="QDRANT_PORT")
-    qdrant_collection: str = Field(
-        default="shannon_embeddings", env="QDRANT_COLLECTION"
-    )
-
     # LLM Provider API keys (optional, can be configured at runtime)
     openai_api_key: Optional[str] = Field(default=None, env="OPENAI_API_KEY")
     anthropic_api_key: Optional[str] = Field(default=None, env="ANTHROPIC_API_KEY")

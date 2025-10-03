@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 from typing import Dict, List, Any, Optional, AsyncIterator
+from tenacity import retry, stop_after_attempt, wait_exponential
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
@@ -100,6 +101,7 @@ class GoogleProvider(LLMProvider):
 
         return config
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Execute a completion request"""
 
@@ -174,7 +176,7 @@ class GoogleProvider(LLMProvider):
     async def complete_stream(
         self, request: CompletionRequest
     ) -> AsyncIterator[CompletionResponse]:
-        """Stream a completion response"""
+        """Stream a completion response (returns CompletionResponse chunks)."""
 
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
@@ -303,9 +305,9 @@ class GoogleProvider(LLMProvider):
 
     async def stream_complete(
         self, request: CompletionRequest
-    ) -> AsyncIterator[CompletionResponse]:
-        """Stream completion responses"""
-        # Google Gemini doesn't have native streaming like OpenAI
-        # We'll return the full response as a single chunk
-        response = await self.complete(request)
-        yield response
+    ) -> AsyncIterator[str]:
+        """Stream text chunks only (normalized streaming)."""
+        # Use complete_stream and yield only text portions
+        async for chunk in self.complete_stream(request):
+            if chunk and isinstance(chunk.content, str) and chunk.content:
+                yield chunk.content

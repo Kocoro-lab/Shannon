@@ -2,45 +2,6 @@
 
 import time
 from prometheus_client import Counter, Histogram, Gauge, Info
-from typing import Optional
-
-# Cache metrics
-CACHE_REQUESTS_TOTAL = Counter(
-    "llm_cache_requests_total",
-    "Total number of cache requests",
-    ["operation", "status"],  # operation: get/set, status: hit/miss/error
-)
-
-CACHE_REQUEST_DURATION = Histogram(
-    "llm_cache_request_duration_seconds",
-    "Time spent on cache operations",
-    ["operation"],  # operation: get/set/delete
-    buckets=[
-        0.001,
-        0.005,
-        0.01,
-        0.025,
-        0.05,
-        0.075,
-        0.1,
-        0.25,
-        0.5,
-        0.75,
-        1.0,
-        2.5,
-        5.0,
-        7.5,
-        10.0,
-    ],
-)
-
-CACHE_SIZE_ESTIMATE = Gauge(
-    "llm_cache_size_estimate_bytes", "Estimated cache size in bytes"
-)
-
-CACHE_KEYS_COUNT = Gauge("llm_cache_keys_total", "Total number of cache keys")
-
-CACHE_HIT_RATE = Gauge("llm_cache_hit_rate", "Cache hit rate percentage")
 
 # LLM completion metrics
 LLM_REQUESTS_TOTAL = Counter(
@@ -114,18 +75,10 @@ class MetricsCollector:
         SERVICE_INFO.info({"service_name": service_name, "version": version})
 
     def record_cache_request(self, operation: str, status: str, duration: float):
-        """Record cache request metrics"""
-        CACHE_REQUESTS_TOTAL.labels(operation=operation, status=status).inc()
-        CACHE_REQUEST_DURATION.labels(operation=operation).observe(duration)
+        """No-op: API-layer cache metrics removed (single cache strategy)."""
+        return
 
-    def record_cache_stats(
-        self, keys_count: int, hit_rate: float, size_estimate: Optional[int] = None
-    ):
-        """Update cache statistics"""
-        CACHE_KEYS_COUNT.set(keys_count)
-        CACHE_HIT_RATE.set(hit_rate * 100)  # Convert to percentage
-        if size_estimate is not None:
-            CACHE_SIZE_ESTIMATE.set(size_estimate)
+    # API-layer cache stats removed (single cache strategy)
 
     def record_llm_request(
         self,

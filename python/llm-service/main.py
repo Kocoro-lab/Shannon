@@ -18,7 +18,6 @@ from llm_service.api import (
     providers as providers_api,
 )
 from llm_service.api import mcp_mock
-from llm_service.cache import CacheManager
 from llm_service.config import Settings
 from llm_service.providers import ProviderManager
 from llm_service.events import EventEmitter, build_default_emitter_from_env
@@ -42,7 +41,6 @@ logger = logging.getLogger(__name__)
 
 # Global instances
 settings = Settings()
-cache_manager = None
 provider_manager = None
 
 
@@ -72,13 +70,9 @@ def setup_tracing(app: FastAPI):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
-    global cache_manager, provider_manager
+    global provider_manager
 
     logger.info("Starting Shannon LLM Service")
-
-    # Initialize cache
-    cache_manager = CacheManager(settings)
-    await cache_manager.initialize()
 
     # Initialize LLM providers and event emitter
     # Prefer Settings-derived URL; fall back to ADMIN_SERVER or default helper
@@ -104,7 +98,6 @@ async def lifespan(app: FastAPI):
     await provider_manager.initialize()
 
     # Store in app state
-    app.state.cache = cache_manager
     app.state.providers = provider_manager
     app.state.settings = settings
 
@@ -112,7 +105,6 @@ async def lifespan(app: FastAPI):
 
     # Cleanup
     logger.info("Shutting down Shannon LLM Service")
-    await cache_manager.close()
     await provider_manager.close()
     await emitter.close()
 

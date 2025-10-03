@@ -19,27 +19,30 @@ model_tiers:
       - provider: openai
         model: gpt-4.1-nano
         priority: 1
-      - provider: google
-        model: gemini-2.5-flash-lite
-        priority: 2
       - provider: anthropic
         model: claude-3-5-haiku-20241022
-        priority: 3
-      - provider: deepseek
-        model: deepseek-chat
-        priority: 4
-      - provider: qwen
-        model: qwen3-4b-instruct-2507
-        priority: 5
-      - provider: mistral
-        model: ministral-8b-instruct-2410
-        priority: 6
+        priority: 2
       - provider: xai
         model: grok-4-fast-non-reasoning
+        priority: 3
+      - provider: google
+        model: gemini-2.5-flash-lite
+        priority: 4
+      - provider: deepseek
+        model: deepseek-chat
+        priority: 5
+      - provider: qwen
+        model: qwen3-4b-instruct-2507
+        priority: 6
+      - provider: mistral
+        model: ministral-8b-instruct-2410
         priority: 7
       - provider: meta
         model: llama-3.2-3b
         priority: 8
+      - provider: zai
+        model: glm-4.5-flash
+        priority: 9
 
   medium:
     # Target allocation: 40% (not enforced - actual usage depends on complexity)
@@ -51,11 +54,11 @@ model_tiers:
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
         priority: 2
-      - provider: google
-        model: gemini-2.5-flash
-        priority: 3
       - provider: xai
         model: grok-4
+        priority: 3
+      - provider: google
+        model: gemini-2.5-flash
         priority: 4
       - provider: meta
         model: llama-4-scout
@@ -72,6 +75,9 @@ model_tiers:
       - provider: cohere
         model: command-r-plus-08-2024
         priority: 9
+      - provider: zai
+        model: glm-4.5-air
+        priority: 10
 
   large:
     # Target allocation: 10% (not enforced - actual usage depends on complexity)
@@ -101,6 +107,9 @@ model_tiers:
       - provider: meta
         model: llama-3.1-405b
         priority: 8
+      - provider: zai
+        model: glm-4.6
+        priority: 9
 
 # Model selection strategy
 selection_strategy:
@@ -162,6 +171,11 @@ provider_settings:
     
   xai:
     base_url: https://api.x.ai/v1
+    timeout: 60
+    max_retries: 3
+    
+  zai:
+    base_url: https://api.z.ai/api/paas/v4
     timeout: 60
     max_retries: 3
     
@@ -339,6 +353,66 @@ model_catalog:
       supports_streaming: true
       supports_vision: true
 
+  xai:
+    grok-4-fast-non-reasoning:
+      model_id: grok-4-fast-non-reasoning
+      tier: small
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
+    grok-4:
+      model_id: grok-4
+      tier: medium
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+    grok-4-fast-reasoning:
+      model_id: grok-4-fast-reasoning
+      tier: large
+      context_window: 131072
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+    grok-beta:
+      model_id: grok-beta
+      tier: large
+      context_window: 65536
+      max_tokens: 8192
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
+
+  zai:
+    glm-4.5-flash:
+      model_id: glm-4.5-flash
+      tier: small
+      context_window: 128000
+      max_tokens: 96000
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
+    glm-4.5-air:
+      model_id: glm-4.5-air
+      tier: medium
+      context_window: 128000
+      max_tokens: 96000
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+    glm-4.6:
+      model_id: glm-4.6
+      tier: large
+      context_window: 200000
+      max_tokens: 128000
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: true
+
   deepseek:
     deepseek-chat:
       model_id: deepseek-chat
@@ -413,6 +487,7 @@ model_catalog:
       supports_functions: true
       supports_streaming: true
       supports_vision: true
+      enabled: false  # disabled pending provider availability
 
   mistral:
     ministral-8b-instruct-2410:
@@ -466,6 +541,7 @@ model_catalog:
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
+      enabled: false  # disabled pending validation
     llama-4-maverick-17b-128e-instruct:
       model_id: llama-4-maverick-17b-128e-instruct
       tier: large
@@ -473,6 +549,7 @@ model_catalog:
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
+      enabled: false  # disabled pending validation
     llama-guard-4-12b:
       model_id: llama-guard-4-12b
       tier: medium
@@ -564,6 +641,17 @@ pricing:
       grok-beta:
         input_per_1k: 0.0380
         output_per_1k: 0.1140
+        
+    zai:
+      glm-4.5-flash:
+        input_per_1k: 0.0
+        output_per_1k: 0.0
+      glm-4.5-air:
+        input_per_1k: 0.0002
+        output_per_1k: 0.0011
+      glm-4.6:
+        input_per_1k: 0.0006
+        output_per_1k: 0.0022
         
     meta:
       llama-3.2-3b:

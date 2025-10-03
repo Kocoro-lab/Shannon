@@ -101,6 +101,17 @@ This single source of truth is used by:
 
 See [Centralized Pricing Documentation](centralized-pricing.md) for details.
 
+## Response Caching (Overview)
+
+The Python LLM service implements client‑side response caching for non‑streaming completions.
+
+- Default: in‑memory LRU with TTL from `config/models.yaml` → `prompt_cache.ttl_seconds`.
+- Distributed: enable Redis by setting `REDIS_URL` (or `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`).
+- Keying: deterministic hash of messages plus key parameters (tier/model/temperature/max_tokens/functions/seed).
+- Not KV‑cache: this does not modify provider‑side attention caches.
+
+Details: see [LLM Service Response Caching](llm-service-caching.md).
+
 ## Requirements
 
 - Run the Python service:
@@ -119,4 +130,3 @@ uvicorn main:app --reload
 - Empty `openai` results: likely missing/invalid `OPENAI_API_KEY`, or network egress blocked.  
 - Only seed models shown: dynamic discovery failed; check logs for `OpenAI dynamic model discovery skipped`.  
 - Anthropic missing: set `ANTHROPIC_API_KEY`.  
-

@@ -24,6 +24,18 @@ class ModelTier(Enum):
 
 
 @dataclass
+class ModelCapabilities:
+    """Capabilities for a specific model (for dynamic API selection)."""
+
+    supports_tools: bool = True
+    supports_json_mode: bool = True
+    supports_reasoning: bool = False
+    supports_vision: bool = False
+    supports_streaming: bool = True
+    max_parallel_tools: int = 1
+
+
+@dataclass
 class ModelConfig:
     """Configuration for a specific model"""
 
@@ -38,6 +50,7 @@ class ModelConfig:
     supports_streaming: bool = True
     supports_vision: bool = False
     timeout: int = 60
+    capabilities: ModelCapabilities = None
 
     @property
     def full_name(self) -> str:
@@ -89,6 +102,7 @@ class CompletionRequest:
     cache_key: Optional[str] = None
     cache_ttl: int = 3600  # 1 hour default
     max_tokens_budget: Optional[int] = None
+    complexity_score: Optional[float] = None  # Optional signal for dynamic API selection
 
     def generate_cache_key(self) -> str:
         """Generate a cache key for this request"""
@@ -234,6 +248,16 @@ class LLMProvider(ABC):
         input_price = float(input_price) if input_price is not None else 0.0
         output_price = float(output_price) if output_price is not None else 0.0
 
+        # Build capabilities
+        capabilities = ModelCapabilities(
+            supports_tools=bool(meta.get("supports_functions", True)),
+            supports_json_mode=bool(meta.get("supports_json_mode", True)),
+            supports_reasoning=bool(meta.get("supports_reasoning", False)),
+            supports_vision=bool(meta.get("supports_vision", False)),
+            supports_streaming=bool(meta.get("supports_streaming", True)),
+            max_parallel_tools=int(meta.get("max_parallel_tools", 1)),
+        )
+
         return ModelConfig(
             provider=str(meta.get("provider") or provider_name),
             model_id=model_id,
@@ -246,6 +270,7 @@ class LLMProvider(ABC):
             supports_streaming=bool(meta.get("supports_streaming", True)),
             supports_vision=bool(meta.get("supports_vision", False)),
             timeout=int(meta.get("timeout", 60)),
+            capabilities=capabilities,
         )
 
     def resolve_model_config(self, request: CompletionRequest) -> ModelConfig:

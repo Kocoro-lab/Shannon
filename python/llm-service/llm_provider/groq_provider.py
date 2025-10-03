@@ -5,6 +5,8 @@ High-performance LLM inference using Groq's LPU (Language Processing Unit)
 
 import os
 from typing import Dict, Any, Optional, AsyncIterator
+from tenacity import retry, stop_after_attempt, wait_exponential
+import logging
 from openai import AsyncOpenAI
 
 from .base import (
@@ -21,6 +23,7 @@ class GroqProvider(LLMProvider):
     """Provider for Groq's high-performance LLM inference"""
 
     def __init__(self, config: Dict[str, Any]):
+        self.logger = logging.getLogger(__name__)
         # Get API key from config or environment
         self.api_key = config.get("api_key") or os.getenv("GROQ_API_KEY")
         if not self.api_key:
@@ -32,10 +35,7 @@ class GroqProvider(LLMProvider):
         if not self.api_key.startswith(
             ("gsk_", "sk-", "test-")
         ):  # gsk_ for Groq, sk-/test- for testing
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.warning("Groq API key does not match expected format")
+            self.logger.warning("Groq API key does not match expected format")
 
         # Initialize OpenAI-compatible client with Groq's base URL
         self.client = AsyncOpenAI(
@@ -49,6 +49,7 @@ class GroqProvider(LLMProvider):
 
         self._load_models_from_config()
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Execute a completion request using Groq"""
 
@@ -130,7 +131,7 @@ class GroqProvider(LLMProvider):
     async def complete_stream(
         self, request: CompletionRequest
     ) -> AsyncIterator[CompletionResponse]:
-        """Stream a completion response from Groq"""
+        """Stream a completion response from Groq (provider-specific chunks)."""
 
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
@@ -245,9 +246,8 @@ class GroqProvider(LLMProvider):
 
     async def stream_complete(
         self, request: CompletionRequest
-    ) -> AsyncIterator[CompletionResponse]:
-        """Stream completion responses"""
-        # Groq supports streaming through the complete method with stream=True
-        # For now, return the full response as a single chunk
-        response = await self.complete(request)
-        yield response
+    ) -> AsyncIterator[str]:
+        """Normalized streaming: yield text chunks only."""
+        async for chunk in self.complete_stream(request):
+            if chunk and isinstance(chunk.content, str) and chunk.content:
+                yield chunk.content

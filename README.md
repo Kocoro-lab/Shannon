@@ -47,10 +47,11 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - Distributed by design — Temporal‑backed workflows with horizontal scaling.
 
 ### 🧠 Memory & Context Management
-- Comprehensive memory — Session memory in Redis + vector memory in Qdrant with MMR‑based diversity; optional hierarchical recall in workflows.
+- **Clean State-Compute Separation** — Go Orchestrator owns all persistent state (Qdrant vector store, session memory); Python LLM Service is stateless compute (provider abstraction with exact-match caching only).
+- Comprehensive memory — Session memory in Redis + vector memory in Qdrant with MMR‑based diversity; optional hierarchical recall in workflows (all managed by Go).
 - Continuous learning — Records decomposition and failure patterns for future planning and mitigation; learns across sessions to improve strategy selection.
 - Sliding‑window shaping — Primers + previous summary + recents, with token‑aware budgets and live progress events.
-- Details: see docs/context-window-management.md
+- Details: see docs/context-window-management.md and docs/llm-service-caching.md
 
 *Model pricing is centralized in `config/models.yaml` - all services load from this single source for consistent cost tracking.*
 
@@ -726,6 +727,15 @@ Key configuration files:
 - `config/features.yaml` - Feature toggles, workflow settings, enforcement policies
 - `config/models.yaml` - LLM provider configuration and pricing
 - `.env` - API keys and runtime overrides (see `.env.example`)
+
+#### LLM Response Caching
+- What: Client-side response cache in the Python LLM service.
+- Defaults: In‑memory LRU with TTL from `config/models.yaml` → `prompt_cache.ttl_seconds` (fallback 3600s).
+- Distributed: Set `REDIS_URL` (or `REDIS_HOST`/`REDIS_PORT`/`REDIS_PASSWORD`) to enable Redis‑backed cache across instances.
+- Keying: Deterministic hash of messages + key params (tier, model override, temperature, max_tokens, functions, seed).
+- Behavior: Non‑streaming calls are cacheable; streaming uses cache to return the full result as a single chunk when available.
+
+See: docs/llm-service-caching.md
 
 For detailed configuration documentation, see [config/README.md](config/README.md).
 

@@ -1,4 +1,4 @@
-.PHONY: dev down logs ps proto fmt lint seed smoke clean replay replay-export ci-replay coverage coverage-go coverage-python coverage-gate integration-tests integration-single integration-session integration-qdrant
+.PHONY: dev down logs ps proto fmt lint seed smoke clean replay replay-export ci-replay coverage coverage-go coverage-python coverage-gate integration-tests integration-single integration-session
 
 COMPOSE_BASE=deploy/compose
 
@@ -86,7 +86,6 @@ test:
 # Seed fixtures (scripts are placeholders)
 seed:
 	@./scripts/seed_postgres.sh || true
-	@./scripts/bootstrap_qdrant.sh || true
 
 smoke:
 	@./scripts/smoke_e2e.sh
@@ -188,10 +187,6 @@ integration-single:
 integration-session:
 	@echo "[Integration] Running session memory test..."
 	@./tests/integration/session_memory_test.sh
-
-integration-qdrant:
-	@echo "[Integration] Running Qdrant vector database test..."
-	@./tests/integration/qdrant_upsert_test.sh
 
 # --- V2 Workflow Testing ---
 # Generate test histories for v2 workflows

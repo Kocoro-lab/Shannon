@@ -5,6 +5,7 @@ For providers that implement OpenAI's API (DeepSeek, Qwen, local models, etc.)
 
 from typing import Dict, List, Any, AsyncIterator
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .base import (
     LLMProvider,
@@ -180,15 +181,13 @@ class OpenAICompatibleProvider(LLMProvider):
         """
         return TokenCounter.count_messages_tokens(messages, model)
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using the OpenAI-compatible API"""
 
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
         model = model_config.model_id
-
-        # Count input tokens (estimation)
-        input_tokens = self.count_tokens(request.messages, model)
 
         # Prepare API request
         api_request = {
@@ -237,18 +236,28 @@ class OpenAICompatibleProvider(LLMProvider):
         message = choice.message
 
         # Handle token usage (some providers might not return this)
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
         if hasattr(response, "usage") and response.usage:
-            output_tokens = response.usage.completion_tokens
-            total_tokens = response.usage.total_tokens
-        else:
+            try:
+                prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0))
+                completion_tokens = int(getattr(response.usage, "completion_tokens", 0))
+                total_tokens = int(getattr(response.usage, "total_tokens", prompt_tokens + completion_tokens))
+            except Exception:
+                prompt_tokens = 0
+                completion_tokens = 0
+                total_tokens = 0
+        if total_tokens == 0:
             # Estimate if not provided
-            output_tokens = self.count_tokens(
-                [{"role": "assistant", "content": message.content}], model
+            prompt_tokens = self.count_tokens(request.messages, model)
+            completion_tokens = self.count_tokens(
+                [{"role": "assistant", "content": message.content or ""}], model
             )
-            total_tokens = input_tokens + output_tokens
+            total_tokens = prompt_tokens + completion_tokens
 
         # Calculate cost
-        cost = self.estimate_cost(input_tokens, output_tokens, model)
+        cost = self.estimate_cost(prompt_tokens, completion_tokens, model)
 
         # Build response
         return CompletionResponse(
@@ -256,8 +265,8 @@ class OpenAICompatibleProvider(LLMProvider):
             model=model,
             provider=self.config.get("name", "openai_compatible"),
             usage=TokenUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
                 total_tokens=total_tokens,
                 estimated_cost=cost,
             ),
