@@ -659,6 +659,7 @@ fn features_path() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_default_config() {
@@ -672,7 +673,14 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_env_overrides() {
+        // Clean up first to ensure no interference from other tests
+        env::remove_var("WASI_MEMORY_LIMIT_MB");
+        env::remove_var("LLM_SERVICE_URL");
+        env::remove_var("METRICS_PORT");
+
+        // Set test values
         env::set_var("WASI_MEMORY_LIMIT_MB", "512");
         env::set_var("LLM_SERVICE_URL", "http://custom:9000");
         env::set_var("METRICS_PORT", "3000");
@@ -700,6 +708,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_global_config() {
         // Clear any existing environment variables that might interfere
         env::remove_var("AGENT_CORE_METRICS_PORT");
