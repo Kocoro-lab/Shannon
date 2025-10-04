@@ -3,7 +3,11 @@ import logging
 from enum import Enum
 
 from llm_provider.manager import get_llm_manager, LLMManager
-from llm_provider.base import ModelTier as CoreModelTier, CompletionResponse, TokenUsage as CoreTokenUsage
+from llm_provider.base import (
+    ModelTier as CoreModelTier,
+    CompletionResponse,
+    TokenUsage as CoreTokenUsage,
+)
 
 from .base import ModelInfo, ModelTier as LegacyModelTier
 
@@ -38,7 +42,9 @@ _PROVIDER_NAME_MAP: Dict[str, ProviderType] = {
 class _ProviderAdapter:
     """Thin adapter that exposes list_models while delegating other attributes."""
 
-    def __init__(self, provider_type: ProviderType, provider: Any, models: List[ModelInfo]):
+    def __init__(
+        self, provider_type: ProviderType, provider: Any, models: List[ModelInfo]
+    ):
         self._provider_type = provider_type
         self._provider = provider
         self._models = models
@@ -87,9 +93,13 @@ class ProviderManager:
             provider_type = _PROVIDER_NAME_MAP.get(name)
             models = self._collect_models(provider_type, provider)
             if provider_type:
-                self.providers[provider_type] = _ProviderAdapter(provider_type, provider, models)
+                self.providers[provider_type] = _ProviderAdapter(
+                    provider_type, provider, models
+                )
 
-    def _collect_models(self, provider_type: Optional[ProviderType], provider: Any) -> List[ModelInfo]:
+    def _collect_models(
+        self, provider_type: Optional[ProviderType], provider: Any
+    ) -> List[ModelInfo]:
         models: List[ModelInfo] = []
 
         for alias, config in provider.models.items():
@@ -110,7 +120,9 @@ class ProviderManager:
         provider_type: Optional[ProviderType], alias: str, config: Any
     ) -> ModelInfo:
         legacy_tier = LegacyModelTier(config.tier.value)
-        provider_value: Any = provider_type if provider_type else (config.provider or "unknown")
+        provider_value: Any = (
+            provider_type if provider_type else (config.provider or "unknown")
+        )
 
         return ModelInfo(
             id=alias,
@@ -148,7 +160,11 @@ class ProviderManager:
             return preferred[0]
 
         # Fallback to any available tier in order
-        for fallback_tier in (LegacyModelTier.SMALL, LegacyModelTier.MEDIUM, LegacyModelTier.LARGE):
+        for fallback_tier in (
+            LegacyModelTier.SMALL,
+            LegacyModelTier.MEDIUM,
+            LegacyModelTier.LARGE,
+        ):
             candidates = self.tier_models.get(fallback_tier, [])
             if candidates:
                 return candidates[0]
@@ -233,7 +249,9 @@ class ProviderManager:
         if session_id and result.get("usage"):
             total_tokens = result["usage"].get("total_tokens")
             if total_tokens is not None:
-                self.session_tokens[session_id] = self.session_tokens.get(session_id, 0) + total_tokens
+                self.session_tokens[session_id] = (
+                    self.session_tokens.get(session_id, 0) + total_tokens
+                )
                 logger.info(
                     "Session %s token usage: %s",
                     session_id,
@@ -285,7 +303,11 @@ class ProviderManager:
     ) -> None:
         try:
             last_user = next(
-                (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+                (
+                    m.get("content", "")
+                    for m in reversed(messages)
+                    if m.get("role") == "user"
+                ),
                 "",
             )
         except Exception:

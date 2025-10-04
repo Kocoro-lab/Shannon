@@ -11,6 +11,10 @@ type TaskInput struct {
 	Context   map[string]interface{}
 	Mode      string
 
+	TemplateName    string
+	TemplateVersion string
+	DisableAI       bool
+
 	// Session context for multi-turn conversations
 	History    []Message              // Recent conversation history
 	SessionCtx map[string]interface{} // Persistent session context

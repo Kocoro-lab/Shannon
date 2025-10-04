@@ -10,6 +10,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/activity"
 )
 
 // RecordQueryInput carries information to store a query and its result
@@ -70,9 +71,13 @@ func containsError(text string) bool {
 // This is used by both RecordQuery and RecordAgentMemory activities to avoid
 // activities calling other activities directly
 func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResult, error) {
+	logger := activity.GetLogger(ctx)
 	svc := embeddings.Get()
 	vdb := vectordb.Get()
 	if svc == nil || vdb == nil {
+		logger.Warn("Vector services unavailable for RecordQuery",
+			"session_id", in.SessionID,
+			"user_id", in.UserID)
 		return RecordQueryResult{Stored: false, Error: "vector services unavailable"}, nil
 	}
 	q := in.Query
@@ -91,6 +96,9 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 	// Generate embedding for the query to check for duplicates
 	queryEmbedding, err := svc.GenerateEmbedding(ctx, q, "")
 	if err != nil {
+		logger.Warn("Failed to generate query embedding",
+			"session_id", in.SessionID,
+			"error", err)
 		return RecordQueryResult{Stored: false, Error: err.Error()}, nil
 	}
 
@@ -132,6 +140,10 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 			// Generate embeddings in batch
 			embeddings, err := svc.GenerateBatchEmbeddings(ctx, chunkTexts, "")
 			if err != nil {
+				logger.Warn("Failed to generate batch embeddings for chunks",
+					"session_id", in.SessionID,
+					"chunk_count", len(chunkTexts),
+					"error", err)
 				return RecordQueryResult{Stored: false, Error: err.Error()}, nil
 			}
 
@@ -142,17 +154,17 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 			for i, chunk := range chunks {
 				// Build payload with chunk metadata
 				payload := map[string]interface{}{
-					"query":        q,                  // Original query
-					"chunk_text":   chunk.Text,         // The actual chunk (no full answer stored)
-					"qa_id":        chunk.QAID,         // UUID for this Q&A pair
-					"chunk_index":  chunk.Index,        // 0-based chunk position
-					"chunk_count":  chunk.TotalCount,   // Total chunks for this Q&A
-					"is_chunked":   true,               // Flag for retrieval
-					"session_id":   in.SessionID,
-					"user_id":      in.UserID,
-					"tenant_id":    in.TenantID,
-					"model":        in.Model,
-					"timestamp":    timestamp,
+					"query":       q,                // Original query
+					"chunk_text":  chunk.Text,       // The actual chunk (no full answer stored)
+					"qa_id":       chunk.QAID,       // UUID for this Q&A pair
+					"chunk_index": chunk.Index,      // 0-based chunk position
+					"chunk_count": chunk.TotalCount, // Total chunks for this Q&A
+					"is_chunked":  true,             // Flag for retrieval
+					"session_id":  in.SessionID,
+					"user_id":     in.UserID,
+					"tenant_id":   in.TenantID,
+					"model":       in.Model,
+					"timestamp":   timestamp,
 				}
 
 				// Add any additional metadata
@@ -172,6 +184,10 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 
 			// Batch upsert all chunks
 			if _, err := vdb.Upsert(ctx, vdb.GetConfig().TaskEmbeddings, points); err != nil {
+				logger.Warn("Failed to batch upsert chunks to vector store",
+					"session_id", in.SessionID,
+					"chunk_count", len(points),
+					"error", err)
 				return RecordQueryResult{Stored: false, Error: err.Error()}, nil
 			}
 
@@ -194,6 +210,9 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 	// Embed the answer for consistency with chunked path
 	vec, err := svc.GenerateEmbedding(ctx, a, "")
 	if err != nil {
+		logger.Warn("Failed to generate answer embedding",
+			"session_id", in.SessionID,
+			"error", err)
 		return RecordQueryResult{Stored: false, Error: err.Error()}, nil
 	}
 
@@ -201,7 +220,7 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 	payload := map[string]interface{}{
 		"query":      q,
 		"answer":     a,
-		"is_chunked": false,  // Flag for retrieval
+		"is_chunked": false, // Flag for retrieval
 		"session_id": in.SessionID,
 		"user_id":    in.UserID,
 		"tenant_id":  in.TenantID,
@@ -214,6 +233,9 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 
 	// Upsert point
 	if _, err := vdb.UpsertTaskEmbedding(ctx, vec, payload); err != nil {
+		logger.Warn("Failed to upsert task embedding to vector store",
+			"session_id", in.SessionID,
+			"error", err)
 		return RecordQueryResult{Stored: false, Error: err.Error()}, nil
 	}
 	return RecordQueryResult{Stored: true}, nil

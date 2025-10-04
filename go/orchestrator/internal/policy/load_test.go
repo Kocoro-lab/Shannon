@@ -1,3 +1,4 @@
+//go:build loadtest
 // +build loadtest
 
 package policy

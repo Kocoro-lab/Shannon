@@ -99,15 +99,15 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
-    req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
-    if err != nil {
-        logger.Warn("LLM synthesis: request build failed, falling back", zap.Error(err))
-        return simpleSynthesis(ctx, input)
-    }
-    req.Header.Set("Content-Type", "application/json")
-    if input.ParentWorkflowID != "" {
-        req.Header.Set("X-Parent-Workflow-ID", input.ParentWorkflowID)
-    }
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(buf))
+	if err != nil {
+		logger.Warn("LLM synthesis: request build failed, falling back", zap.Error(err))
+		return simpleSynthesis(ctx, input)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if input.ParentWorkflowID != "" {
+		req.Header.Set("X-Parent-Workflow-ID", input.ParentWorkflowID)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -125,7 +125,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		OutputText string                 `json:"output_text"` // OpenAI uses output_text
 		Usage      map[string]interface{} `json:"usage"`
 		ModelUsed  string                 `json:"model_used"`
-		Model      string                 `json:"model"`      // Some providers use "model" instead of "model_used"
+		Model      string                 `json:"model"` // Some providers use "model" instead of "model_used"
 		Provider   string                 `json:"provider"`
 		CacheHit   bool                   `json:"cache_hit"`
 	}

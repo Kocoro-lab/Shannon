@@ -1,0 +1,76 @@
+name: market_analysis
+version: "1.0.0"
+description: "Comprehensive market analysis with parallel DAG research and supervisor coordination"
+defaults:
+  model_tier: large
+  budget_agent_max: 15000
+  require_approval: false
+
+nodes:
+  # Initial understanding
+  - id: understand
+    type: simple
+    strategy: react
+    budget_max: 1000
+    tools_allowlist: []
+
+  # Parallel competitor DAG
+  - id: competitors_dag
+    type: dag
+    depends_on: [understand]
+    budget_max: 6000
+    metadata:
+      parallel_tasks: 3
+      description: "Analyze top competitors in parallel"
+
+  # Market trends (parallel branch)
+  - id: trends
+    type: cognitive
+    strategy: chain_of_thought
+    depends_on: [understand]
+    budget_max: 3000
+    tools_allowlist: [web_search, calculator]
+
+  # Customer analysis (parallel branch)
+  - id: customers
+    type: simple
+    strategy: react
+    depends_on: [understand]
+    budget_max: 2000
+    tools_allowlist: [web_search]
+
+  # Supervisor synthesis
+  - id: synthesize
+    type: supervisor
+    strategy: reflection
+    depends_on: [competitors_dag, trends, customers]
+    budget_max: 5000
+    metadata:
+      coordination: "multi_agent"
+      sub_agents: ["aggregator", "analyzer", "reporter"]
+
+  # Final report
+  - id: report
+    type: cognitive
+    strategy: reflection
+    depends_on: [synthesize]
+    budget_max: 2000
+    on_fail:
+      degrade_to: chain_of_thought
+      retry: 1
+
+edges:
+  - from: understand
+    to: competitors_dag
+  - from: understand
+    to: trends
+  - from: understand
+    to: customers
+  - from: competitors_dag
+    to: synthesize
+  - from: trends
+    to: synthesize
+  - from: customers
+    to: synthesize
+  - from: synthesize
+    to: report

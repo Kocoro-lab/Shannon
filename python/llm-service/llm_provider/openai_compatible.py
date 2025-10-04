@@ -181,7 +181,9 @@ class OpenAICompatibleProvider(LLMProvider):
         """
         return TokenCounter.count_messages_tokens(messages, model)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8)
+    )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using the OpenAI-compatible API"""
 
@@ -243,7 +245,13 @@ class OpenAICompatibleProvider(LLMProvider):
             try:
                 prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0))
                 completion_tokens = int(getattr(response.usage, "completion_tokens", 0))
-                total_tokens = int(getattr(response.usage, "total_tokens", prompt_tokens + completion_tokens))
+                total_tokens = int(
+                    getattr(
+                        response.usage,
+                        "total_tokens",
+                        prompt_tokens + completion_tokens,
+                    )
+                )
             except Exception:
                 prompt_tokens = 0
                 completion_tokens = 0

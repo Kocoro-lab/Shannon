@@ -49,7 +49,9 @@ class GroqProvider(LLMProvider):
 
         self._load_models_from_config()
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8)
+    )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Execute a completion request using Groq"""
 
@@ -244,9 +246,7 @@ class GroqProvider(LLMProvider):
         # Rough estimation: 1 token per 4 characters
         return len(text) // 4
 
-    async def stream_complete(
-        self, request: CompletionRequest
-    ) -> AsyncIterator[str]:
+    async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Normalized streaming: yield text chunks only."""
         async for chunk in self.complete_stream(request):
             if chunk and isinstance(chunk.content, str) and chunk.content:

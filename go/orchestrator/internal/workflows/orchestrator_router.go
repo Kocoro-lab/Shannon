@@ -1,11 +1,11 @@
 package workflows
 
 import (
-    "fmt"
-    "os"
-    "strconv"
-    "strings"
-    "time"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
@@ -58,6 +59,113 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		simpleThreshold = 0.3
 	}
 
+	templateVersionGate := workflow.GetVersion(ctx, "template_router_v1", workflow.DefaultVersion, 1)
+	var templateEntry templates.Entry
+	templateFound := false
+	templateRequested := false
+	var requestedTemplateName, requestedTemplateVersion string
+	if templateVersionGate >= 1 {
+		requestedTemplateName, requestedTemplateVersion = extractTemplateRequest(input)
+		if requestedTemplateName != "" {
+			templateRequested = true
+			if entry, ok := TemplateRegistry().Find(requestedTemplateName, requestedTemplateVersion); ok {
+				templateEntry = entry
+				templateFound = true
+				if input.Context == nil {
+					input.Context = map[string]interface{}{}
+				}
+				input.Context["template_resolved"] = entry.Key
+				input.Context["template_content_hash"] = entry.ContentHash
+			}
+		}
+		if input.DisableAI && !templateFound {
+			msg := fmt.Sprintf("requested template '%s' not found", requestedTemplateName)
+			if requestedTemplateName == "" {
+				msg = "template execution required but no template specified"
+			}
+			logger.Error("Template requirement cannot be satisfied",
+				"template", requestedTemplateName,
+				"version", requestedTemplateVersion,
+			)
+			return TaskResult{
+				Success:      false,
+				ErrorMessage: msg,
+				Metadata: map[string]interface{}{
+					"template_requested": requestedTemplateName,
+					"template_version":   requestedTemplateVersion,
+				},
+			}, nil
+		}
+		if templateRequested && !templateFound {
+			logger.Warn("Requested template not found; continuing with heuristic routing",
+				"template", requestedTemplateName,
+				"version", requestedTemplateVersion,
+			)
+		}
+	}
+
+	learningVersionGate := workflow.GetVersion(ctx, "learning_router_v1", workflow.DefaultVersion, 1)
+	if learningVersionGate >= 1 && !templateFound {
+		if rec, err := recommendStrategy(ctx, input); err == nil && rec != nil && rec.Strategy != "" {
+			if input.Context == nil {
+				input.Context = map[string]interface{}{}
+			}
+			input.Context["learning_strategy"] = rec.Strategy
+			input.Context["learning_confidence"] = rec.Confidence
+			if rec.Source != "" {
+				input.Context["learning_source"] = rec.Source
+			}
+			if result, handled, err := routeStrategyWorkflow(ctx, input, rec.Strategy, "learning", emitCtx); handled {
+				return result, err
+			}
+			logger.Warn("Learning router returned unknown strategy", "strategy", rec.Strategy)
+		}
+	}
+
+	// 1) Decompose the task (planning + complexity)
+	if templateFound {
+		input.TemplateName = templateEntry.Template.Name
+		input.TemplateVersion = templateEntry.Template.Version
+
+		templateInput := TemplateWorkflowInput{
+			Task:         input,
+			TemplateKey:  templateEntry.Key,
+			TemplateHash: templateEntry.ContentHash,
+		}
+
+		ometrics.WorkflowsStarted.WithLabelValues("TemplateWorkflow", "template").Inc()
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDelegation,
+			Message:    fmt.Sprintf("Routing to TemplateWorkflow (%s)", templateEntry.Template.Name),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+
+		var result TaskResult
+		if err := workflow.ExecuteChildWorkflow(ctx, TemplateWorkflow, templateInput).Get(ctx, &result); err != nil {
+			if cfg.TemplateFallbackEnabled {
+				logger.Warn("Template workflow failed; falling back to AI decomposition", "error", err)
+				ometrics.TemplateFallbackTriggered.WithLabelValues("error").Inc()
+				ometrics.TemplateFallbackSuccess.WithLabelValues("error").Inc()
+				// Allow router to proceed to decomposition path below
+				templateFound = false
+			} else {
+				return result, err
+			}
+		} else if !result.Success {
+			if cfg.TemplateFallbackEnabled {
+				logger.Warn("Template workflow returned unsuccessful result; falling back to AI decomposition")
+				ometrics.TemplateFallbackTriggered.WithLabelValues("unsuccessful").Inc()
+				ometrics.TemplateFallbackSuccess.WithLabelValues("unsuccessful").Inc()
+				templateFound = false
+			} else {
+				return result, nil
+			}
+		} else {
+			return result, nil
+		}
+	}
+
 	// 1) Decompose the task (planning + complexity)
 	// Add history to context for decomposition to be context-aware
 	decompContext := make(map[string]interface{})
@@ -98,37 +206,37 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	)
 
 	// 1.5) Budget preflight (estimate based on plan)
-    if input.UserID != "" { // Only check when we have a user scope
-        est := EstimateTokensWithConfig(decomp, &cfg)
-        if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
-            if !res.CanProceed {
-                return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
-            }
-            // Pass budget info to child workflows via context
-            if input.Context == nil {
-                input.Context = map[string]interface{}{}
-            }
-            input.Context["budget_remaining"] = res.RemainingTaskBudget
-            n := len(decomp.Subtasks)
-            if n == 0 {
-                n = 1
-            }
-            agentMax := res.RemainingTaskBudget / n
-            // Optional clamp: environment or request context can cap per-agent budget
-            if v := os.Getenv("TOKEN_BUDGET_PER_AGENT"); v != "" {
-                if n, err := strconv.Atoi(v); err == nil && n > 0 && n < agentMax {
-                    agentMax = n
-                }
-            }
-            if capv, ok := input.Context["token_budget_per_agent"].(int); ok && capv > 0 && capv < agentMax {
-                agentMax = capv
-            }
-            if capv, ok := input.Context["token_budget_per_agent"].(float64); ok && capv > 0 && int(capv) < agentMax {
-                agentMax = int(capv)
-            }
-            input.Context["budget_agent_max"] = agentMax
-        }
-    }
+	if input.UserID != "" { // Only check when we have a user scope
+		est := EstimateTokensWithConfig(decomp, &cfg)
+		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
+			if !res.CanProceed {
+				return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
+			}
+			// Pass budget info to child workflows via context
+			if input.Context == nil {
+				input.Context = map[string]interface{}{}
+			}
+			input.Context["budget_remaining"] = res.RemainingTaskBudget
+			n := len(decomp.Subtasks)
+			if n == 0 {
+				n = 1
+			}
+			agentMax := res.RemainingTaskBudget / n
+			// Optional clamp: environment or request context can cap per-agent budget
+			if v := os.Getenv("TOKEN_BUDGET_PER_AGENT"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 && n < agentMax {
+					agentMax = n
+				}
+			}
+			if capv, ok := input.Context["token_budget_per_agent"].(int); ok && capv > 0 && capv < agentMax {
+				agentMax = capv
+			}
+			if capv, ok := input.Context["token_budget_per_agent"].(float64); ok && capv > 0 && int(capv) < agentMax {
+				agentMax = int(capv)
+			}
+			input.Context["budget_agent_max"] = agentMax
+		}
+	}
 
 	// 1.6) Approval gate (optional, config-driven or explicit request)
 	if cfg.ApprovalEnabled {
@@ -161,43 +269,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 	// Cognitive program takes precedence if specified
 	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
-		var result TaskResult
-		switch decomp.CognitiveStrategy {
-		case "exploratory":
-			ometrics.WorkflowsStarted.WithLabelValues("ExploratoryWorkflow", decomp.Mode).Inc()
-			strategiesInput := convertToStrategiesInput(input)
-			var strategiesResult strategies.TaskResult
-			if err := workflow.ExecuteChildWorkflow(ctx, strategies.ExploratoryWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
-				return result, err
-			}
-			return convertFromStrategiesResult(strategiesResult), nil
-		case "react":
-			ometrics.WorkflowsStarted.WithLabelValues("ReactWorkflow", decomp.Mode).Inc()
-			strategiesInput := convertToStrategiesInput(input)
-			var strategiesResult strategies.TaskResult
-			if err := workflow.ExecuteChildWorkflow(ctx, strategies.ReactWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
-				return result, err
-			}
-			return convertFromStrategiesResult(strategiesResult), nil
-		case "research":
-			ometrics.WorkflowsStarted.WithLabelValues("ResearchWorkflow", decomp.Mode).Inc()
-			strategiesInput := convertToStrategiesInput(input)
-			var strategiesResult strategies.TaskResult
-			if err := workflow.ExecuteChildWorkflow(ctx, strategies.ResearchWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
-				return result, err
-			}
-			return convertFromStrategiesResult(strategiesResult), nil
-		case "scientific":
-			ometrics.WorkflowsStarted.WithLabelValues("ScientificWorkflow", decomp.Mode).Inc()
-			strategiesInput := convertToStrategiesInput(input)
-			var strategiesResult strategies.TaskResult
-			if err := workflow.ExecuteChildWorkflow(ctx, strategies.ScientificWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
-				return result, err
-			}
-			return convertFromStrategiesResult(strategiesResult), nil
-		default:
-			logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
+		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx); handled {
+			return result, err
 		}
+		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
 	}
 
 	// Check if P2P is forced via context
@@ -306,6 +381,9 @@ func convertToStrategiesInput(input TaskInput) strategies.TaskInput {
 		SessionID:          input.SessionID,
 		Context:            input.Context,
 		Mode:               input.Mode,
+		TemplateName:       input.TemplateName,
+		TemplateVersion:    input.TemplateVersion,
+		DisableAI:          input.DisableAI,
 		History:            history,
 		SessionCtx:         input.SessionCtx,
 		RequireApproval:    input.RequireApproval,
@@ -324,4 +402,132 @@ func convertFromStrategiesResult(result strategies.TaskResult) TaskResult {
 		ErrorMessage: result.ErrorMessage,
 		Metadata:     result.Metadata,
 	}
+}
+
+func extractTemplateRequest(input TaskInput) (string, string) {
+	name := strings.TrimSpace(input.TemplateName)
+	version := strings.TrimSpace(input.TemplateVersion)
+
+	if name == "" && input.Context != nil {
+		if v, ok := input.Context["template"].(string); ok {
+			name = strings.TrimSpace(v)
+		}
+	}
+	if version == "" && input.Context != nil {
+		if v, ok := input.Context["template_version"].(string); ok {
+			version = strings.TrimSpace(v)
+		}
+	}
+	return name, version
+}
+
+func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy string, mode string, emitCtx workflow.Context) (TaskResult, bool, error) {
+	strategyLower := strings.ToLower(strings.TrimSpace(strategy))
+	if strategyLower == "" {
+		return TaskResult{}, false, nil
+	}
+
+	switch strategyLower {
+	case "simple":
+		var result TaskResult
+		ometrics.WorkflowsStarted.WithLabelValues("SimpleTaskWorkflow", mode).Inc()
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDelegation,
+			Message:    "Routing to SimpleTaskWorkflow (learning)",
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+		if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, input).Get(ctx, &result); err != nil {
+			return result, true, err
+		}
+		return result, true, nil
+	case "react", "exploratory", "research", "scientific":
+		var wfName string
+		var wfFunc interface{}
+		switch strategyLower {
+		case "react":
+			wfName = "ReactWorkflow"
+			wfFunc = strategies.ReactWorkflow
+		case "exploratory":
+			wfName = "ExploratoryWorkflow"
+			wfFunc = strategies.ExploratoryWorkflow
+		case "research":
+			wfName = "ResearchWorkflow"
+			wfFunc = strategies.ResearchWorkflow
+		case "scientific":
+			wfName = "ScientificWorkflow"
+			wfFunc = strategies.ScientificWorkflow
+		}
+
+		strategiesInput := convertToStrategiesInput(input)
+		var strategiesResult strategies.TaskResult
+		ometrics.WorkflowsStarted.WithLabelValues(wfName, mode).Inc()
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventDelegation,
+			Message:    fmt.Sprintf("Routing to %s (%s)", wfName, mode),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+		if err := workflow.ExecuteChildWorkflow(ctx, wfFunc, strategiesInput).Get(ctx, &strategiesResult); err != nil {
+			return TaskResult{}, true, err
+		}
+		return convertFromStrategiesResult(strategiesResult), true, nil
+	default:
+		return TaskResult{}, false, nil
+	}
+}
+
+func recommendStrategy(ctx workflow.Context, input TaskInput) (*activities.RecommendStrategyOutput, error) {
+	startTime := workflow.Now(ctx)
+
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	})
+
+	var rec activities.RecommendStrategyOutput
+	err := workflow.ExecuteActivity(actx, activities.RecommendWorkflowStrategy, activities.RecommendStrategyInput{
+		SessionID: input.SessionID,
+		UserID:    input.UserID,
+		TenantID:  input.TenantID,
+		Query:     input.Query,
+	}).Get(ctx, &rec)
+
+	// Record metrics (fire-and-forget)
+	metricsCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 2 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+
+	latency := workflow.Now(ctx).Sub(startTime).Seconds()
+	strategy := "none"
+	source := "none"
+	confidence := 0.0
+	success := false
+
+	if err == nil && rec.Strategy != "" {
+		strategy = rec.Strategy
+		source = rec.Source
+		confidence = rec.Confidence
+		success = true
+	}
+
+	workflow.ExecuteActivity(
+		metricsCtx,
+		"RecordLearningRouterMetrics",
+		map[string]interface{}{
+			"latency_seconds": latency,
+			"strategy":        strategy,
+			"source":          source,
+			"confidence":      confidence,
+			"success":         success,
+		},
+	)
+
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
 }

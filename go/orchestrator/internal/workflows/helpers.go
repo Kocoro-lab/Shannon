@@ -1,13 +1,13 @@
 package workflows
 
 import (
-    "fmt"
-    "strconv"
-    "strings"
+	"fmt"
+	"strconv"
+	"strings"
 
-    "go.temporal.io/sdk/workflow"
-    "go.temporal.io/sdk/log"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/workflow"
 )
 
 // convertHistoryForAgent formats session history into a simple string slice for agents
@@ -21,34 +21,34 @@ func convertHistoryForAgent(messages []Message) []string {
 
 // parseNumericValue attempts to extract a numeric value from a response string
 func parseNumericValue(response string) (float64, bool) {
-    response = strings.TrimSpace(response)
-    // Direct parse of whole string
-    if val, err := strconv.ParseFloat(response, 64); err == nil {
-        return val, true
-    }
+	response = strings.TrimSpace(response)
+	// Direct parse of whole string
+	if val, err := strconv.ParseFloat(response, 64); err == nil {
+		return val, true
+	}
 
-    // Tokenize and collect all numeric tokens (handle punctuation)
-    fields := strings.Fields(response)
-    var numbers []float64
-    for i := 0; i < len(fields); i++ {
-        token := strings.Trim(fields[i], ".,!?:;")
-        if v, err := strconv.ParseFloat(token, 64); err == nil {
-            numbers = append(numbers, v)
-        }
-        // Prefer patterns like "equals N" or "is N"
-        if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
-            next := strings.Trim(fields[i+1], ".,!?:;")
-            if v, err := strconv.ParseFloat(next, 64); err == nil {
-                return v, true
-            }
-        }
-    }
+	// Tokenize and collect all numeric tokens (handle punctuation)
+	fields := strings.Fields(response)
+	var numbers []float64
+	for i := 0; i < len(fields); i++ {
+		token := strings.Trim(fields[i], ".,!?:;")
+		if v, err := strconv.ParseFloat(token, 64); err == nil {
+			numbers = append(numbers, v)
+		}
+		// Prefer patterns like "equals N" or "is N"
+		if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
+			next := strings.Trim(fields[i+1], ".,!?:;")
+			if v, err := strconv.ParseFloat(next, 64); err == nil {
+				return v, true
+			}
+		}
+	}
 
-    // Fallback: return the last number found (often the final answer)
-    if len(numbers) > 0 {
-        return numbers[len(numbers)-1], true
-    }
-    return 0, false
+	// Fallback: return the last number found (often the final answer)
+	if len(numbers) > 0 {
+		return numbers[len(numbers)-1], true
+	}
+	return 0, false
 }
 
 // truncateString truncates a string to the specified length
@@ -73,69 +73,107 @@ func convertHistoryMapForCompression(messages []Message) []map[string]string {
 
 // getPrimersRecents extracts primers/recents counts from context with defaults.
 func getPrimersRecents(ctx map[string]interface{}, defPrimers, defRecents int) (int, int) {
-    p, r := defPrimers, defRecents
-    if ctx == nil { return p, r }
-    if v, ok := ctx["primers_count"].(int); ok { if v >= 0 { p = v } }
-    if v, ok := ctx["primers_count"].(float64); ok { if v >= 0 { p = int(v) } }
-    if v, ok := ctx["recents_count"].(int); ok { if v >= 0 { r = v } }
-    if v, ok := ctx["recents_count"].(float64); ok { if v >= 0 { r = int(v) } }
-    return p, r
+	p, r := defPrimers, defRecents
+	if ctx == nil {
+		return p, r
+	}
+	if v, ok := ctx["primers_count"].(int); ok {
+		if v >= 0 {
+			p = v
+		}
+	}
+	if v, ok := ctx["primers_count"].(float64); ok {
+		if v >= 0 {
+			p = int(v)
+		}
+	}
+	if v, ok := ctx["recents_count"].(int); ok {
+		if v >= 0 {
+			r = v
+		}
+	}
+	if v, ok := ctx["recents_count"].(float64); ok {
+		if v >= 0 {
+			r = int(v)
+		}
+	}
+	return p, r
 }
 
 // getCompressionRatios reads compression trigger/target ratios from context
 // falling back to provided defaults. Values are clamped to sane bounds.
 func getCompressionRatios(ctx map[string]interface{}, defTrigger, defTarget float64) (float64, float64) {
-    tr, tg := defTrigger, defTarget
-    clamp := func(v float64, lo, hi float64) float64 {
-        if v < lo { return lo }
-        if v > hi { return hi }
-        return v
-    }
-    if ctx != nil {
-        if v, ok := ctx["compression_trigger_ratio"].(float64); ok { tr = v }
-        if v, ok := ctx["compression_trigger_ratio"].(int); ok { tr = float64(v) }
-        if v, ok := ctx["compression_target_ratio"].(float64); ok { tg = v }
-        if v, ok := ctx["compression_target_ratio"].(int); ok { tg = float64(v) }
-    }
-    // Sane bounds to avoid extremes
-    tr = clamp(tr, 0.1, 0.95)
-    tg = clamp(tg, 0.1, 0.9)
-    return tr, tg
+	tr, tg := defTrigger, defTarget
+	clamp := func(v float64, lo, hi float64) float64 {
+		if v < lo {
+			return lo
+		}
+		if v > hi {
+			return hi
+		}
+		return v
+	}
+	if ctx != nil {
+		if v, ok := ctx["compression_trigger_ratio"].(float64); ok {
+			tr = v
+		}
+		if v, ok := ctx["compression_trigger_ratio"].(int); ok {
+			tr = float64(v)
+		}
+		if v, ok := ctx["compression_target_ratio"].(float64); ok {
+			tg = v
+		}
+		if v, ok := ctx["compression_target_ratio"].(int); ok {
+			tg = float64(v)
+		}
+	}
+	// Sane bounds to avoid extremes
+	tr = clamp(tr, 0.1, 0.95)
+	tg = clamp(tg, 0.1, 0.9)
+	return tr, tg
 }
 
 // shapeHistory returns a sliced history keeping the first nPrimers and last nRecents messages
 // when there are enough messages to have a middle section. Otherwise it returns the original.
 func shapeHistory(messages []Message, nPrimers, nRecents int) []Message {
-    m := len(messages)
-    if m == 0 {
-        return messages
-    }
-    if nPrimers < 0 { nPrimers = 0 }
-    if nRecents < 0 { nRecents = 0 }
-    if nPrimers+nRecents >= m {
-        return messages
-    }
-    primersEnd := nPrimers
-    if primersEnd > m { primersEnd = m }
-    recentsStart := m - nRecents
-    if recentsStart < primersEnd { recentsStart = primersEnd }
-    shaped := make([]Message, 0, primersEnd+(m-recentsStart))
-    shaped = append(shaped, messages[:primersEnd]...)
-    shaped = append(shaped, messages[recentsStart:]...)
-    return shaped
+	m := len(messages)
+	if m == 0 {
+		return messages
+	}
+	if nPrimers < 0 {
+		nPrimers = 0
+	}
+	if nRecents < 0 {
+		nRecents = 0
+	}
+	if nPrimers+nRecents >= m {
+		return messages
+	}
+	primersEnd := nPrimers
+	if primersEnd > m {
+		primersEnd = m
+	}
+	recentsStart := m - nRecents
+	if recentsStart < primersEnd {
+		recentsStart = primersEnd
+	}
+	shaped := make([]Message, 0, primersEnd+(m-recentsStart))
+	shaped = append(shaped, messages[:primersEnd]...)
+	shaped = append(shaped, messages[recentsStart:]...)
+	return shaped
 }
 
 // fallbackToBasicMemory loads basic hierarchical memory for supervisor workflow
 func fallbackToBasicMemory(ctx workflow.Context, input *TaskInput, logger log.Logger) {
 	var memoryResult activities.FetchHierarchicalMemoryResult
 	memoryInput := activities.FetchHierarchicalMemoryInput{
-		Query:         input.Query,
-		SessionID:     input.SessionID,
-		TenantID:      input.TenantID,
-		RecentTopK:    5,
-		SemanticTopK:  3,
-		SummaryTopK:   2,
-		Threshold:     0.7,
+		Query:        input.Query,
+		SessionID:    input.SessionID,
+		TenantID:     input.TenantID,
+		RecentTopK:   5,
+		SemanticTopK: 3,
+		SummaryTopK:  2,
+		Threshold:    0.7,
 	}
 
 	if err := workflow.ExecuteActivity(ctx, "FetchHierarchicalMemory", memoryInput).Get(ctx, &memoryResult); err == nil {

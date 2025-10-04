@@ -29,11 +29,11 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 	config := getWorkflowConfig(ctx)
 
 	// Prepare pattern options
-    opts := patterns.Options{
-        UserID:         input.UserID,
-        BudgetAgentMax: getBudgetMax(input.Context),
-        ModelTier:      determineModelTier(input.Context, "medium"),
-    }
+	opts := patterns.Options{
+		UserID:         input.UserID,
+		BudgetAgentMax: getBudgetMax(input.Context),
+		ModelTier:      determineModelTier(input.Context, "medium"),
+	}
 
 	// Phase 1: Use Tree-of-Thoughts for systematic exploration
 	totConfig := patterns.TreeOfThoughtsConfig{
@@ -51,10 +51,14 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"branching_factor", totConfig.BranchingFactor,
 	)
 
-    // Ensure parent workflow ID is available in context passed to patterns
-    ctxMap := make(map[string]interface{})
-    for k, v := range input.Context { ctxMap[k] = v }
-    if input.ParentWorkflowID != "" { ctxMap["parent_workflow_id"] = input.ParentWorkflowID }
+	// Ensure parent workflow ID is available in context passed to patterns
+	ctxMap := make(map[string]interface{})
+	for k, v := range input.Context {
+		ctxMap[k] = v
+	}
+	if input.ParentWorkflowID != "" {
+		ctxMap["parent_workflow_id"] = input.ParentWorkflowID
+	}
 
 	// Memory retrieval with gate precedence (hierarchical > simple session)
 	hierarchicalVersion := workflow.GetVersion(ctx, "memory_retrieval_v1", workflow.DefaultVersion, 1)
@@ -69,8 +73,8 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 				Query:        input.Query,
 				SessionID:    input.SessionID,
 				TenantID:     input.TenantID,
-				RecentTopK:   5,   // Fixed for determinism
-				SemanticTopK: 5,   // Fixed for determinism
+				RecentTopK:   5,    // Fixed for determinism
+				SemanticTopK: 5,    // Fixed for determinism
 				Threshold:    0.75, // Fixed semantic threshold
 			}).Get(ctx, &hierMemory)
 
@@ -129,9 +133,9 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 			var compressResult activities.CompressContextResult
 			err = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
 				activities.CompressContextInput{
-					SessionID:    input.SessionID,
-					History:      convertHistoryMapForCompression(input.History),
-					TargetTokens: int(float64(activities.GetModelWindowSize(opts.ModelTier)) * 0.375),
+					SessionID:        input.SessionID,
+					History:          convertHistoryMapForCompression(input.History),
+					TargetTokens:     int(float64(activities.GetModelWindowSize(opts.ModelTier)) * 0.375),
 					ParentWorkflowID: input.ParentWorkflowID,
 				}).Get(ctx, &compressResult)
 
@@ -152,15 +156,15 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		}
 	}
 
-    totResult, err := patterns.TreeOfThoughts(
-        ctx,
-        input.Query,
-        ctxMap,
-        input.SessionID,
-        convertHistoryForAgent(input.History),
-        totConfig,
-        opts,
-    )
+	totResult, err := patterns.TreeOfThoughts(
+		ctx,
+		input.Query,
+		ctxMap,
+		input.SessionID,
+		convertHistoryForAgent(input.History),
+		totConfig,
+		opts,
+	)
 
 	if err != nil {
 		logger.Error("Tree-of-Thoughts exploration failed", "error", err)
@@ -203,12 +207,14 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		}
 
 		// Prepare debate context with exploration findings
-        debateContext := make(map[string]interface{})
-        for k, v := range input.Context {
-            debateContext[k] = v
-        }
-        if input.ParentWorkflowID != "" { debateContext["parent_workflow_id"] = input.ParentWorkflowID }
-        debateContext["exploration_findings"] = totResult.BestPath
+		debateContext := make(map[string]interface{})
+		for k, v := range input.Context {
+			debateContext[k] = v
+		}
+		if input.ParentWorkflowID != "" {
+			debateContext["parent_workflow_id"] = input.ParentWorkflowID
+		}
+		debateContext["exploration_findings"] = totResult.BestPath
 
 		// Inject memory into debate context (reuse from earlier fetch)
 		if len(memoryItems) > 0 {

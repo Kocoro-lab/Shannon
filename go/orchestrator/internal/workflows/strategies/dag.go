@@ -53,17 +53,17 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	}
 
 	// Prepare base context
-    baseContext := make(map[string]interface{})
-    for k, v := range input.Context {
-        baseContext[k] = v
-    }
-    for k, v := range input.SessionCtx {
-        baseContext[k] = v
-    }
-    // Propagate parent workflow ID to downstream activities (pattern helpers)
-    if input.ParentWorkflowID != "" {
-        baseContext["parent_workflow_id"] = input.ParentWorkflowID
-    }
+	baseContext := make(map[string]interface{})
+	for k, v := range input.Context {
+		baseContext[k] = v
+	}
+	for k, v := range input.SessionCtx {
+		baseContext[k] = v
+	}
+	// Propagate parent workflow ID to downstream activities (pattern helpers)
+	if input.ParentWorkflowID != "" {
+		baseContext["parent_workflow_id"] = input.ParentWorkflowID
+	}
 
 	// Step 1: Decompose the task
 	var decomp activities.DecompositionResult
@@ -107,11 +107,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		err = workflow.ExecuteActivity(ctx,
 			activities.ExecuteSimpleTask,
 			activities.ExecuteSimpleTaskInput{
-				Query:      input.Query,
-				SessionID:  input.SessionID,
-				UserID:     input.UserID,
-				Context:    baseContext,
-				SessionCtx: input.SessionCtx,
+				Query:            input.Query,
+				SessionID:        input.SessionID,
+				UserID:           input.UserID,
+				Context:          baseContext,
+				SessionCtx:       input.SessionCtx,
 				ParentWorkflowID: input.ParentWorkflowID,
 			}).Get(ctx, &simpleResult)
 
@@ -241,62 +241,62 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-    if input.BypassSingleResult && successfulCount == 1 {
-        // Heuristic guard: if the single result likely needs synthesis (e.g., web_search JSON),
-        // do not bypass — proceed to standard LLM synthesis for a user‑ready answer.
-        shouldBypass := true
-        // 1) If tools used include web_search, prefer synthesis for natural language output
-        if len(singleSuccessResult.ToolsUsed) > 0 {
-            for _, t := range singleSuccessResult.ToolsUsed {
-                if strings.EqualFold(t, "web_search") {
-                    shouldBypass = false
-                    break
-                }
-            }
-        }
-        // 2) If response looks like raw JSON, avoid bypass
-        if shouldBypass {
-            trimmed := strings.TrimSpace(singleSuccessResult.Response)
-            if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-                shouldBypass = false
-            }
-        }
+	if input.BypassSingleResult && successfulCount == 1 {
+		// Heuristic guard: if the single result likely needs synthesis (e.g., web_search JSON),
+		// do not bypass — proceed to standard LLM synthesis for a user‑ready answer.
+		shouldBypass := true
+		// 1) If tools used include web_search, prefer synthesis for natural language output
+		if len(singleSuccessResult.ToolsUsed) > 0 {
+			for _, t := range singleSuccessResult.ToolsUsed {
+				if strings.EqualFold(t, "web_search") {
+					shouldBypass = false
+					break
+				}
+			}
+		}
+		// 2) If response looks like raw JSON, avoid bypass
+		if shouldBypass {
+			trimmed := strings.TrimSpace(singleSuccessResult.Response)
+			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+				shouldBypass = false
+			}
+		}
 
-        if shouldBypass {
-            // Single success bypass - skip synthesis entirely for efficiency
-            // Works for both sequential (1 result) and parallel (1 success among N) modes
-            synthesis = activities.SynthesisResult{
-                FinalResult: singleSuccessResult.Response,
-                TokensUsed:  0, // No synthesis performed here
-            }
-            logger.Info("Bypassing synthesis for single successful result",
-                "agent_id", singleSuccessResult.AgentID,
-                "total_agents", len(agentResults),
-                "successful", successfulCount,
-            )
-        } else {
-            // Fall through to standard synthesis below
-            logger.Info("Single result requires synthesis (web_search/JSON detected)")
-        err = workflow.ExecuteActivity(ctx,
-            activities.SynthesizeResultsLLM,
-            activities.SynthesisInput{
-                Query:        input.Query,
-                AgentResults: agentResults,
-                Context:      baseContext,
-                ParentWorkflowID: input.ParentWorkflowID,
-            },
-        ).Get(ctx, &synthesis)
+		if shouldBypass {
+			// Single success bypass - skip synthesis entirely for efficiency
+			// Works for both sequential (1 result) and parallel (1 success among N) modes
+			synthesis = activities.SynthesisResult{
+				FinalResult: singleSuccessResult.Response,
+				TokensUsed:  0, // No synthesis performed here
+			}
+			logger.Info("Bypassing synthesis for single successful result",
+				"agent_id", singleSuccessResult.AgentID,
+				"total_agents", len(agentResults),
+				"successful", successfulCount,
+			)
+		} else {
+			// Fall through to standard synthesis below
+			logger.Info("Single result requires synthesis (web_search/JSON detected)")
+			err = workflow.ExecuteActivity(ctx,
+				activities.SynthesizeResultsLLM,
+				activities.SynthesisInput{
+					Query:            input.Query,
+					AgentResults:     agentResults,
+					Context:          baseContext,
+					ParentWorkflowID: input.ParentWorkflowID,
+				},
+			).Get(ctx, &synthesis)
 
-            if err != nil {
-                logger.Error("Synthesis failed", "error", err)
-                return TaskResult{
-                    Success:      false,
-                    ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
-                }, err
-            }
-            totalTokens += synthesis.TokensUsed
-        }
-    } else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
+			if err != nil {
+				logger.Error("Synthesis failed", "error", err)
+				return TaskResult{
+					Success:      false,
+					ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
+				}, err
+			}
+			totalTokens += synthesis.TokensUsed
+		}
+	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
 		// Use the synthesis subtask's result as final output
 		synthesisResult := agentResults[synthesisTaskIdx]
 		synthesis = activities.SynthesisResult{
@@ -409,18 +409,40 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}).Get(ctx, nil)
 	}
 
+	// Aggregate tool errors across agent results
+	var toolErrors []map[string]string
+	for _, ar := range agentResults {
+		if len(ar.ToolExecutions) == 0 {
+			continue
+		}
+		for _, te := range ar.ToolExecutions {
+			if !te.Success || (te.Error != "") {
+				toolErrors = append(toolErrors, map[string]string{
+					"agent_id": ar.AgentID,
+					"tool":     te.Tool,
+					"error":    te.Error,
+				})
+			}
+		}
+	}
+
+	meta := map[string]interface{}{
+		"version":        "v2",
+		"complexity":     decomp.ComplexityScore,
+		"quality_score":  qualityScore,
+		"agent_count":    len(agentResults),
+		"execution_mode": execStrategy,
+		"had_reflection": shouldReflect(decomp.ComplexityScore, &config),
+	}
+	if len(toolErrors) > 0 {
+		meta["tool_errors"] = toolErrors
+	}
+
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
 		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"version":        "v2",
-			"complexity":     decomp.ComplexityScore,
-			"quality_score":  qualityScore,
-			"agent_count":    len(agentResults),
-			"execution_mode": execStrategy,
-			"had_reflection": shouldReflect(decomp.ComplexityScore, &config),
-		},
+		Metadata:   meta,
 	}, nil
 }
 
@@ -452,8 +474,14 @@ func executeParallelPattern(
 		}
 	}
 
+	// Honor plan_schema_v2 concurrency_limit if specified
+	maxConcurrency := config.ParallelMaxConcurrency
+	if decomp.ConcurrencyLimit > 0 {
+		maxConcurrency = decomp.ConcurrencyLimit
+	}
+
 	parallelConfig := execution.ParallelConfig{
-		MaxConcurrency: config.ParallelMaxConcurrency,
+		MaxConcurrency: maxConcurrency,
 		EmitEvents:     true,
 		Context:        baseContext,
 	}
@@ -562,8 +590,14 @@ func executeHybridPattern(
 		}
 	}
 
+	// Honor plan_schema_v2 concurrency_limit if specified
+	maxConcurrency := config.ParallelMaxConcurrency
+	if decomp.ConcurrencyLimit > 0 {
+		maxConcurrency = decomp.ConcurrencyLimit
+	}
+
 	hybridConfig := execution.HybridConfig{
-		MaxConcurrency:           config.ParallelMaxConcurrency,
+		MaxConcurrency:           maxConcurrency,
 		EmitEvents:               true,
 		Context:                  baseContext,
 		DependencyWaitTimeout:    time.Duration(config.HybridDependencyTimeout) * time.Second,

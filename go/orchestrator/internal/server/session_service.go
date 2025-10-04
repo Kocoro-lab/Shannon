@@ -356,11 +356,11 @@ func (s *SessionServiceImpl) sessionToProto(sess *session.Session, includeHistor
 		}
 	}
 
-	// Add metrics
+	// Add metrics (from session totals)
 	pbSession.Metrics = &pb.SessionMetrics{
 		TotalMessages: int32(len(sess.History)),
-		TotalTokens:   0,   // TODO: aggregate from session context
-		TotalCostUsd:  0.0, // TODO: aggregate from session context
+		TotalTokens:   int32(sess.TotalTokensUsed),
+		TotalCostUsd:  sess.TotalCostUSD,
 	}
 
 	return pbSession

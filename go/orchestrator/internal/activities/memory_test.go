@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package activities
@@ -75,7 +76,6 @@ func initializeTestServices() {
 	}
 	vectordb.Initialize(vdbConfig)
 }
-
 
 // TestChunkingPipeline tests the full chunking pipeline from write to retrieval
 func TestChunkingPipeline(t *testing.T) {

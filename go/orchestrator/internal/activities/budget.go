@@ -27,34 +27,34 @@ func NewBudgetActivities(db *sql.DB, logger *zap.Logger) *BudgetActivities {
 		features = f
 	}
 	bcfg := cfg.BudgetFromEnvOrDefaults(features)
-    opts := budget.Options{
-        BackpressureThreshold:  bcfg.Backpressure.Threshold,
-        MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
-        // Circuit breaker and rate limit are configured per-user at runtime
-    }
-    return &BudgetActivities{
-        budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
-        logger:        logger,
-    }
+	opts := budget.Options{
+		BackpressureThreshold:  bcfg.Backpressure.Threshold,
+		MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
+		// Circuit breaker and rate limit are configured per-user at runtime
+	}
+	return &BudgetActivities{
+		budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
+		logger:        logger,
+	}
 }
 
 // NewBudgetActivitiesWithDefaults allows setting default task/session budgets from typed config.
 func NewBudgetActivitiesWithDefaults(db *sql.DB, logger *zap.Logger, defaultTaskBudget, defaultSessionBudget int) *BudgetActivities {
-    var features *cfg.Features
-    if f, err := cfg.Load(); err == nil {
-        features = f
-    }
-    bcfg := cfg.BudgetFromEnvOrDefaults(features)
-    opts := budget.Options{
-        BackpressureThreshold:  bcfg.Backpressure.Threshold,
-        MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
-        DefaultTaskBudget:      defaultTaskBudget,
-        DefaultSessionBudget:   defaultSessionBudget,
-    }
-    return &BudgetActivities{
-        budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
-        logger:        logger,
-    }
+	var features *cfg.Features
+	if f, err := cfg.Load(); err == nil {
+		features = f
+	}
+	bcfg := cfg.BudgetFromEnvOrDefaults(features)
+	opts := budget.Options{
+		BackpressureThreshold:  bcfg.Backpressure.Threshold,
+		MaxBackpressureDelayMs: bcfg.Backpressure.MaxDelayMs,
+		DefaultTaskBudget:      defaultTaskBudget,
+		DefaultSessionBudget:   defaultSessionBudget,
+	}
+	return &BudgetActivities{
+		budgetManager: budget.NewBudgetManagerWithOptions(db, logger, opts),
+		logger:        logger,
+	}
 }
 
 // NewBudgetActivitiesWithManager allows injecting a custom BudgetManager (useful for tests)
@@ -252,16 +252,16 @@ type BudgetedAgentInput struct {
 func detectProviderFromModel(model string) string {
 	modelLower := strings.ToLower(model)
 
-	// OpenAI models
-	if strings.Contains(modelLower, "gpt-4") || strings.Contains(modelLower, "gpt-3") ||
-		strings.Contains(modelLower, "davinci") || strings.Contains(modelLower, "turbo") ||
-		strings.Contains(modelLower, "o1") {
+	// OpenAI models (including o1-preview, o1-mini, gpt-4o, gpt-4-turbo, text-*)
+	if strings.Contains(modelLower, "gpt-") || strings.Contains(modelLower, "o1-") ||
+		strings.Contains(modelLower, "davinci") || strings.Contains(modelLower, "text-") ||
+		strings.HasPrefix(modelLower, "o1") {
 		return "openai"
 	}
 
-	// Anthropic models
-	if strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "opus") ||
-		strings.Contains(modelLower, "sonnet") || strings.Contains(modelLower, "haiku") {
+	// Anthropic models (including opus-4, sonnet-4.5, claude-3.x, haiku-3.5)
+	if strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "opus-") ||
+		strings.Contains(modelLower, "sonnet-") || strings.Contains(modelLower, "haiku-") {
 		return "anthropic"
 	}
 

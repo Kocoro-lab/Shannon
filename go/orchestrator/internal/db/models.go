@@ -71,16 +71,16 @@ type TaskExecution struct {
 
 // AgentExecution represents an individual agent execution
 type AgentExecution struct {
-	ID         string    `db:"id"`
-	WorkflowID string    `db:"workflow_id"`  // References task_executions.workflow_id
-	TaskID     string    `db:"task_id"`      // Optional reference to task_executions.id
-	AgentID    string    `db:"agent_id"`
+	ID         string `db:"id"`
+	WorkflowID string `db:"workflow_id"` // References task_executions.workflow_id
+	TaskID     string `db:"task_id"`     // Optional reference to task_executions.id
+	AgentID    string `db:"agent_id"`
 
 	// Execution details
-	Input        string  `db:"input"`
-	Output       string  `db:"output"`
-	State        string  `db:"state"`
-	ErrorMessage string  `db:"error_message"`
+	Input        string `db:"input"`
+	Output       string `db:"output"`
+	State        string `db:"state"`
+	ErrorMessage string `db:"error_message"`
 
 	// Token usage
 	TokensUsed int    `db:"tokens_used"`
@@ -97,18 +97,18 @@ type AgentExecution struct {
 
 // ToolExecution represents a tool execution record
 type ToolExecution struct {
-	ID               string     `db:"id"`
-	WorkflowID       string     `db:"workflow_id"`       // References task_executions.workflow_id
-	AgentID          string     `db:"agent_id"`          // Agent that executed the tool
-	AgentExecutionID *string    `db:"agent_execution_id"` // Optional reference to agent_executions.id
+	ID               string  `db:"id"`
+	WorkflowID       string  `db:"workflow_id"`        // References task_executions.workflow_id
+	AgentID          string  `db:"agent_id"`           // Agent that executed the tool
+	AgentExecutionID *string `db:"agent_execution_id"` // Optional reference to agent_executions.id
 
 	ToolName string `db:"tool_name"`
 
 	// Execution details
-	InputParams    JSONB  `db:"input_params"`
-	Output         string `db:"output"`
-	Success        bool   `db:"success"`
-	Error          string `db:"error"`
+	InputParams JSONB  `db:"input_params"`
+	Output      string `db:"output"`
+	Success     bool   `db:"success"`
+	Error       string `db:"error"`
 
 	// Performance
 	DurationMs     int64 `db:"duration_ms"`

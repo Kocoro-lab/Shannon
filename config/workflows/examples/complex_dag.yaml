@@ -1,0 +1,51 @@
+name: complex_dag_pipeline
+description: Example of a multi-branch DAG workflow with fallbacks
+defaults:
+  model_tier: large
+  budget_agent_max: 12000
+nodes:
+  - id: intake
+    type: simple
+    strategy: react
+    budget_max: 1500
+  - id: classify
+    type: cognitive
+    strategy: chain_of_thought
+    depends_on: [intake]
+    budget_max: 2000
+  - id: analyze_branch
+    type: dag
+    depends_on: [classify]
+  - id: analyze_tot
+    type: cognitive
+    strategy: tree_of_thoughts
+    depends_on: [analyze_branch]
+    budget_max: 3500
+    on_fail:
+      degrade_to: chain_of_thought
+      retry: 1
+  - id: analyze_debate
+    type: cognitive
+    strategy: debate
+    depends_on: [analyze_branch]
+    budget_max: 3200
+    on_fail:
+      degrade_to: reflection
+  - id: synthesize
+    type: cognitive
+    strategy: reflection
+    depends_on: [analyze_tot, analyze_debate]
+    budget_max: 2000
+edges:
+  - from: intake
+    to: classify
+  - from: classify
+    to: analyze_branch
+  - from: analyze_branch
+    to: analyze_tot
+  - from: analyze_branch
+    to: analyze_debate
+  - from: analyze_tot
+    to: synthesize
+  - from: analyze_debate
+    to: synthesize

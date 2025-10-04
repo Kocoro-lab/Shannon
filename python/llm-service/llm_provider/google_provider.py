@@ -11,7 +11,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 
-from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage, ModelTier, ModelConfig
+from .base import (
+    LLMProvider,
+    CompletionRequest,
+    CompletionResponse,
+    TokenUsage,
+    ModelTier,
+    ModelConfig,
+)
 
 
 class GoogleProvider(LLMProvider):
@@ -59,9 +66,13 @@ class GoogleProvider(LLMProvider):
         # Initialize model instances
         for alias, model_config in self.models.items():
             try:
-                self.model_instances[alias] = genai.GenerativeModel(model_config.model_id)
+                self.model_instances[alias] = genai.GenerativeModel(
+                    model_config.model_id
+                )
             except Exception as e:
-                self.logger.warning(f"Failed to initialize model {model_config.model_id}: {e}")
+                self.logger.warning(
+                    f"Failed to initialize model {model_config.model_id}: {e}"
+                )
 
     def _convert_messages_to_gemini_format(
         self, messages: List[Dict[str, Any]]
@@ -101,7 +112,9 @@ class GoogleProvider(LLMProvider):
 
         return config
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8)
+    )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Execute a completion request"""
 
@@ -303,9 +316,7 @@ class GoogleProvider(LLMProvider):
         # Fallback to estimation
         return self._estimate_tokens(text)
 
-    async def stream_complete(
-        self, request: CompletionRequest
-    ) -> AsyncIterator[str]:
+    async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Stream text chunks only (normalized streaming)."""
         # Use complete_stream and yield only text portions
         async for chunk in self.complete_stream(request):

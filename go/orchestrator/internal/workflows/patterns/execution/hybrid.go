@@ -40,6 +40,24 @@ type HybridResult struct {
 // ExecuteHybrid runs tasks with dependency management.
 // Tasks without dependencies run in parallel up to MaxConcurrency.
 // Tasks with dependencies wait for their dependencies to complete first.
+//
+// ## Concurrency Model
+//
+// This function uses workflow.Go to launch concurrent coroutines. However, Temporal
+// workflows execute in a **single-threaded, deterministic** event loop. The "concurrency"
+// is cooperative, not preemptive:
+//
+//   - All workflow.Go coroutines run on the same thread
+//   - Coroutines yield control at blocking operations (channel reads, activity calls, workflow.Sleep)
+//   - Shared state (completedTasks, taskResults) is safe to access without mutexes
+//   - The workflow scheduler ensures deterministic replay from event history
+//
+// This means:
+//   - No race conditions between goroutines accessing shared maps
+//   - No need for sync.Mutex on completedTasks or taskResults
+//   - Execution is fully deterministic and replayable
+//
+// For more details, see: https://docs.temporal.io/develop/go/foundations#workflows
 func ExecuteHybrid(
 	ctx workflow.Context,
 	tasks []HybridTask,
@@ -61,7 +79,7 @@ func ExecuteHybrid(
 	semaphore := workflow.NewSemaphore(ctx, int64(config.MaxConcurrency))
 	resultsChan := workflow.NewChannel(ctx)
 
-	// Track task completion status
+	// Track task completion status (safe without mutex due to Temporal's single-threaded model)
 	completedTasks := make(map[string]bool)
 	taskResults := make(map[string]activities.AgentExecutionResult)
 	totalTokens := 0

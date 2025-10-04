@@ -2,7 +2,7 @@
 #![cfg(feature = "wasi")]
 #[cfg(test)]
 mod tests {
-    use shannon_agent_core::sandbox::{ResourceLimits, WasmSandbox};
+    use shannon_agent_core::sandbox::WasmSandbox;
     use std::path::Path;
     use std::time::Instant;
 

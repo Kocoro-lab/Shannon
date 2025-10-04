@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ExecutionSession:
     """Represents a persistent Python execution session"""
+
     session_id: str
     variables: Dict[str, Any] = field(default_factory=dict)
     imports: List[str] = field(default_factory=list)
@@ -65,15 +66,16 @@ class PythonWasiExecutorTool(Tool):
     _sessions: Dict[str, ExecutionSession] = {}
     _session_lock: asyncio.Lock = asyncio.Lock()  # Thread-safe session access
     _max_sessions: int = 100
-    _session_timeout: int = int(os.getenv("PYTHON_WASI_SESSION_TIMEOUT", "3600"))  # Default 1 hour
+    _session_timeout: int = int(
+        os.getenv("PYTHON_WASI_SESSION_TIMEOUT", "3600")
+    )  # Default 1 hour
 
     def __init__(self):
         # Initialize settings before calling super().__init__()
         # because _get_metadata() needs it
         self.settings = Settings()
         self.interpreter_path = os.getenv(
-            "PYTHON_WASI_WASM_PATH",
-            "/opt/wasm-interpreters/python-3.11.4.wasm"
+            "PYTHON_WASI_WASM_PATH", "/opt/wasm-interpreters/python-3.11.4.wasm"
         )
         self.agent_core_addr = os.getenv("AGENT_CORE_ADDR", "agent-core:50051")
         super().__init__()
@@ -130,7 +132,9 @@ class PythonWasiExecutorTool(Tool):
         try:
             # Check if interpreter exists
             if not os.path.exists(self.interpreter_path):
-                logger.warning(f"Python WASI interpreter not found at {self.interpreter_path}")
+                logger.warning(
+                    f"Python WASI interpreter not found at {self.interpreter_path}"
+                )
                 return
 
             # Calculate hash to detect changes
@@ -146,7 +150,9 @@ class PythonWasiExecutorTool(Tool):
         except Exception as e:
             logger.error(f"Failed to cache interpreter: {e}")
 
-    async def _get_or_create_session(self, session_id: Optional[str]) -> Optional[ExecutionSession]:
+    async def _get_or_create_session(
+        self, session_id: Optional[str]
+    ) -> Optional[ExecutionSession]:
         """Get or create a persistent execution session (thread-safe)"""
         if not session_id:
             return None
@@ -155,7 +161,8 @@ class PythonWasiExecutorTool(Tool):
             # Clean expired sessions
             current_time = time.time()
             expired = [
-                sid for sid, sess in self._sessions.items()
+                sid
+                for sid, sess in self._sessions.items()
                 if current_time - sess.last_accessed > self._session_timeout
             ]
             for sid in expired:
@@ -165,7 +172,9 @@ class PythonWasiExecutorTool(Tool):
             if session_id not in self._sessions:
                 if len(self._sessions) >= self._max_sessions:
                     # Remove oldest session
-                    oldest = min(self._sessions.items(), key=lambda x: x[1].last_accessed)
+                    oldest = min(
+                        self._sessions.items(), key=lambda x: x[1].last_accessed
+                    )
                     del self._sessions[oldest[0]]
 
                 self._sessions[session_id] = ExecutionSession(session_id=session_id)
@@ -176,7 +185,9 @@ class PythonWasiExecutorTool(Tool):
 
             return session
 
-    def _prepare_code_with_session(self, code: str, session: Optional[ExecutionSession]) -> str:
+    def _prepare_code_with_session(
+        self, code: str, session: Optional[ExecutionSession]
+    ) -> str:
         """Prepare code with session context if available"""
         if not session:
             return code
@@ -216,7 +227,9 @@ print("__SESSION_STATE__", json.dumps({
 
         return full_code + "\n" + capture_code
 
-    async def _extract_session_state(self, output: str, session: Optional[ExecutionSession]) -> str:
+    async def _extract_session_state(
+        self, output: str, session: Optional[ExecutionSession]
+    ) -> str:
         """Extract and store session state from output (thread-safe).
 
         Note: Session state persistence is limited to Python literals that can be
@@ -247,7 +260,9 @@ print("__SESSION_STATE__", json.dumps({
                         except (ValueError, SyntaxError):
                             # For complex objects, store string representation
                             session.variables[name] = repr_value
-                            logger.debug(f"Session variable '{name}' stored as string (not a Python literal)")
+                            logger.debug(
+                                f"Session variable '{name}' stored as string (not a Python literal)"
+                            )
 
                 return clean_output
         except Exception as e:
@@ -256,9 +271,7 @@ print("__SESSION_STATE__", json.dumps({
         return output
 
     async def _execute_impl(
-        self,
-        session_context: Optional[Dict] = None,
-        **kwargs
+        self, session_context: Optional[Dict] = None, **kwargs
     ) -> ToolResult:
         """Execute Python code in WASI sandbox"""
 
@@ -281,7 +294,9 @@ print("__SESSION_STATE__", json.dumps({
             # Prepare code with session context
             if session:
                 code = self._prepare_code_with_session(code, session)
-                logger.debug(f"Executing in session {session_id} (run #{session.execution_count})")
+                logger.debug(
+                    f"Executing in session {session_id} (run #{session.execution_count})"
+                )
 
             # Prepare execution request with proper structure for agent-core
             # Note: Using file path instead of base64 due to gRPC 4MB message limit
@@ -290,7 +305,11 @@ print("__SESSION_STATE__", json.dumps({
                 "tool": "code_executor",  # Required field for agent-core
                 "wasm_path": self.interpreter_path,  # Use file path (Python.wasm is 20MB)
                 "stdin": code,  # Pass Python code as stdin
-                "argv": ["python", "-c", "import sys; exec(sys.stdin.read())"],  # Python argv format
+                "argv": [
+                    "python",
+                    "-c",
+                    "import sys; exec(sys.stdin.read())",
+                ],  # Python argv format
             }
 
             # Build gRPC request - agent-core expects tool_parameters directly in context
@@ -315,15 +334,14 @@ print("__SESSION_STATE__", json.dumps({
                 # Use asyncio timeout for better control
                 try:
                     resp = await asyncio.wait_for(
-                        stub.ExecuteTask(req),
-                        timeout=timeout
+                        stub.ExecuteTask(req), timeout=timeout
                     )
                 except asyncio.TimeoutError:
                     return ToolResult(
                         success=False,
                         output=None,
                         error=f"Execution timeout after {timeout} seconds",
-                        metadata={"timeout": True, "session_id": session_id}
+                        metadata={"timeout": True, "session_id": session_id},
                     )
 
             execution_time = time.time() - start_time
@@ -344,15 +362,19 @@ print("__SESSION_STATE__", json.dumps({
                         "session_id": session_id,
                         "execution_count": session.execution_count if session else 1,
                         "interpreter": "CPython 3.11.4 (WASI)",
-                    }
+                    },
                 )
             else:
-                error_msg = resp.error_message if hasattr(resp, "error_message") else "Unknown error"
+                error_msg = (
+                    resp.error_message
+                    if hasattr(resp, "error_message")
+                    else "Unknown error"
+                )
                 return ToolResult(
                     success=False,
                     output=None,
                     error=f"Execution failed: {error_msg}",
-                    metadata={"session_id": session_id}
+                    metadata={"session_id": session_id},
                 )
 
         except grpc.RpcError as e:

@@ -102,7 +102,9 @@ class CompletionRequest:
     cache_key: Optional[str] = None
     cache_ttl: int = 3600  # 1 hour default
     max_tokens_budget: Optional[int] = None
-    complexity_score: Optional[float] = None  # Optional signal for dynamic API selection
+    complexity_score: Optional[float] = (
+        None  # Optional signal for dynamic API selection
+    )
 
     def generate_cache_key(self) -> str:
         """Generate a cache key for this request"""
@@ -240,7 +242,9 @@ class LLMProvider(ABC):
 
         model_id = meta.get("model_id") or alias
         context_window = int(meta.get("context_window", meta.get("max_context", 8192)))
-        max_tokens = int(meta.get("max_tokens", meta.get("max_output_tokens", context_window)))
+        max_tokens = int(
+            meta.get("max_tokens", meta.get("max_output_tokens", context_window))
+        )
 
         input_price = meta.get("input_price_per_1k")
         output_price = meta.get("output_price_per_1k")

@@ -45,6 +45,7 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 	w.RegisterWorkflow(workflows.OrchestratorWorkflow)
 	w.RegisterWorkflow(workflows.SimpleTaskWorkflow)
 	w.RegisterWorkflow(workflows.SupervisorWorkflow)
+	w.RegisterWorkflow(workflows.TemplateWorkflow)
 
 	// Cognitive workflows that need pattern migration
 	w.RegisterWorkflow(workflows.ExploratoryWorkflow)
@@ -104,6 +105,11 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	// Enhanced supervisor memory activities
 	w.RegisterActivity(activities.FetchSupervisorMemory)
 	w.RegisterActivity(activities.RecordDecomposition)
+	w.RegisterActivity(activities.RecommendWorkflowStrategy)
+	w.RegisterActivity(activities.RecordLearningRouterMetrics)
+	// Consensus memory for debate pattern
+	w.RegisterActivity(activities.PersistDebateConsensus)
+	w.RegisterActivity(activities.FetchConsensusMemory)
 
 	// Dynamic team authorization
 	w.RegisterActivity(activities.AuthorizeTeamAction)
@@ -166,22 +172,28 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 		Name: "RecordPatternMetrics",
 	})
 
+	// Agent selection activities (performance-based)
+	w.RegisterActivity(activities.FetchAgentPerformances)
+	w.RegisterActivity(activities.SelectAgentEpsilonGreedy)
+	w.RegisterActivity(activities.SelectAgentUCB1)
+	w.RegisterActivity(activities.RecordAgentPerformance)
+
 	// Persistence activities for agent and tool executions
 	// These use a global dbClient that must be set during initialization
 	w.RegisterActivity(activities.PersistAgentExecutionStandalone)
 	w.RegisterActivity(activities.PersistToolExecutionStandalone)
 
 	// Budget activities
-    if r.config.EnableBudgetedWorkflows {
-        var budgetActivities *activities.BudgetActivities
-        if r.config.DefaultTaskBudget > 0 || r.config.DefaultSessionBudget > 0 {
-            budgetActivities = activities.NewBudgetActivitiesWithDefaults(r.db, r.logger, r.config.DefaultTaskBudget, r.config.DefaultSessionBudget)
-        } else {
-            budgetActivities = activities.NewBudgetActivities(r.db, r.logger)
-        }
-        w.RegisterActivityWithOptions(budgetActivities.CheckTokenBudget, activity.RegisterOptions{
-            Name: constants.CheckTokenBudgetActivity,
-        })
+	if r.config.EnableBudgetedWorkflows {
+		var budgetActivities *activities.BudgetActivities
+		if r.config.DefaultTaskBudget > 0 || r.config.DefaultSessionBudget > 0 {
+			budgetActivities = activities.NewBudgetActivitiesWithDefaults(r.db, r.logger, r.config.DefaultTaskBudget, r.config.DefaultSessionBudget)
+		} else {
+			budgetActivities = activities.NewBudgetActivities(r.db, r.logger)
+		}
+		w.RegisterActivityWithOptions(budgetActivities.CheckTokenBudget, activity.RegisterOptions{
+			Name: constants.CheckTokenBudgetActivity,
+		})
 		w.RegisterActivityWithOptions(budgetActivities.CheckTokenBudgetWithBackpressure, activity.RegisterOptions{
 			Name: constants.CheckTokenBudgetWithBackpressureActivity,
 		})

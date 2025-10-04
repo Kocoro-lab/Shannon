@@ -26,7 +26,7 @@ func (h *OpenAPIHandler) ServeSpec(w http.ResponseWriter, r *http.Request) {
 
 // generateOpenAPISpec creates the OpenAPI 3.0 specification
 func generateOpenAPISpec() map[string]interface{} {
-    return map[string]interface{}{
+	return map[string]interface{}{
 		"openapi": "3.0.0",
 		"info": map[string]interface{}{
 			"title":       "Shannon Gateway API",
@@ -66,8 +66,8 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 			},
-            "/api/v1/tasks": map[string]interface{}{
-                "post": map[string]interface{}{
+			"/api/v1/tasks": map[string]interface{}{
+				"post": map[string]interface{}{
 					"summary":     "Submit a task",
 					"description": "Submit a new task for processing",
 					"parameters": []map[string]interface{}{
@@ -78,30 +78,30 @@ func generateOpenAPISpec() map[string]interface{} {
 							"required":    false,
 							"schema": map[string]interface{}{
 								"type": "string",
-                },
-                "get": map[string]interface{}{
-                    "summary":     "List tasks",
-                    "description": "List tasks for the authenticated user (optionally filter by session/status)",
-                    "parameters": []map[string]interface{}{
-                        {"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 20, "minimum": 1, "maximum": 100}},
-                        {"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
-                        {"name": "status", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"QUEUED","RUNNING","COMPLETED","FAILED","CANCELLED","TIMEOUT"}}},
-                        {"name": "session_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-                    },
-                    "responses": map[string]interface{}{
-                        "200": map[string]interface{}{
-                            "description": "List of tasks",
-                            "content": map[string]interface{}{
-                                "application/json": map[string]interface{}{
-                                    "schema": map[string]interface{}{
-                                        "$ref": "#/components/schemas/ListTasksResponse",
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            },
+							},
+							"get": map[string]interface{}{
+								"summary":     "List tasks",
+								"description": "List tasks for the authenticated user (optionally filter by session/status)",
+								"parameters": []map[string]interface{}{
+									{"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 20, "minimum": 1, "maximum": 100}},
+									{"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
+									{"name": "status", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}}},
+									{"name": "session_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
+								},
+								"responses": map[string]interface{}{
+									"200": map[string]interface{}{
+										"description": "List of tasks",
+										"content": map[string]interface{}{
+											"application/json": map[string]interface{}{
+												"schema": map[string]interface{}{
+													"$ref": "#/components/schemas/ListTasksResponse",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
 					},
 					"requestBody": map[string]interface{}{
 						"required": true,
@@ -141,17 +141,17 @@ func generateOpenAPISpec() map[string]interface{} {
 					"summary":     "Get task status",
 					"description": "Get the status of a submitted task",
 					"parameters": []map[string]interface{}{
-                        {
-                            "name":        "id",
-                            "in":          "path",
-                            "description": "Task ID",
-                            "required":    true,
-                            "schema": map[string]interface{}{
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 128,
-                            },
-                        },
+						{
+							"name":        "id",
+							"in":          "path",
+							"description": "Task ID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":      "string",
+								"minLength": 1,
+								"maxLength": 128,
+							},
+						},
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
@@ -170,22 +170,22 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 			},
-            "/api/v1/tasks/{id}/stream": map[string]interface{}{
+			"/api/v1/tasks/{id}/stream": map[string]interface{}{
 				"get": map[string]interface{}{
 					"summary":     "Stream task events",
 					"description": "Stream real-time events for a task via Server-Sent Events",
 					"parameters": []map[string]interface{}{
-                        {
-                            "name":        "id",
-                            "in":          "path",
-                            "description": "Task ID",
-                            "required":    true,
-                            "schema": map[string]interface{}{
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": 128,
-                            },
-                        },
+						{
+							"name":        "id",
+							"in":          "path",
+							"description": "Task ID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":      "string",
+								"minLength": 1,
+								"maxLength": 128,
+							},
+						},
 						{
 							"name":        "types",
 							"in":          "query",
@@ -221,7 +221,7 @@ func generateOpenAPISpec() map[string]interface{} {
 							"description": "Workflow ID to stream events for",
 							"required":    true,
 							"schema": map[string]interface{}{
-								"type": "string",
+								"type":      "string",
 								"minLength": 1,
 								"maxLength": 128,
 							},
@@ -233,53 +233,53 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
-            },
-            "/api/v1/tasks/{id}/events": map[string]interface{}{
-                "get": map[string]interface{}{
-                    "summary":     "Get task events",
-                    "description": "Get historical events for a task",
-                    "parameters": []map[string]interface{}{
-                        {"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 128}},
-                        {"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 50, "minimum": 1, "maximum": 200}},
-                        {"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
-                    },
-                    "responses": map[string]interface{}{
-                        "200": map[string]interface{}{
-                            "description": "Task events",
-                            "content": map[string]interface{}{
-                                "application/json": map[string]interface{}{
-                                    "schema": map[string]interface{}{
-                                        "type": "object",
-                                        "properties": map[string]interface{}{
-                                            "events": map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskEvent"}},
-                                            "count":  map[string]interface{}{"type": "integer"},
-                                        },
-                                    },
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-            "/api/v1/tasks/{id}/timeline": map[string]interface{}{
-                "get": map[string]interface{}{
-                    "summary":     "Build timeline from Temporal history",
-                    "description": "Derive a human-readable timeline from Temporal history; optionally persist asynchronously",
-                    "parameters": []map[string]interface{}{
-                        {"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
-                        {"name": "run_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-                        {"name": "mode", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"summary","full"}, "default": "summary"}},
-                        {"name": "include_payloads", "in": "query", "schema": map[string]interface{}{"type": "boolean", "default": false}},
-                        {"name": "persist", "in": "query", "schema": map[string]interface{}{"type": "boolean", "default": true}},
-                    },
-                    "responses": map[string]interface{}{
-                        "200": map[string]interface{}{"description": "Timeline returned inline"},
-                        "202": map[string]interface{}{"description": "Accepted for async persistence"},
-                    },
-                },
-            },
-        },
-        "components": map[string]interface{}{
+			},
+			"/api/v1/tasks/{id}/events": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Get task events",
+					"description": "Get historical events for a task",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 128}},
+						{"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 50, "minimum": 1, "maximum": 200}},
+						{"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Task events",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"events": map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskEvent"}},
+											"count":  map[string]interface{}{"type": "integer"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"/api/v1/tasks/{id}/timeline": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Build timeline from Temporal history",
+					"description": "Derive a human-readable timeline from Temporal history; optionally persist asynchronously",
+					"parameters": []map[string]interface{}{
+						{"name": "id", "in": "path", "required": true, "schema": map[string]interface{}{"type": "string"}},
+						{"name": "run_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
+						{"name": "mode", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"summary", "full"}, "default": "summary"}},
+						{"name": "include_payloads", "in": "query", "schema": map[string]interface{}{"type": "boolean", "default": false}},
+						{"name": "persist", "in": "query", "schema": map[string]interface{}{"type": "boolean", "default": true}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{"description": "Timeline returned inline"},
+						"202": map[string]interface{}{"description": "Accepted for async persistence"},
+					},
+				},
+			},
+		},
+		"components": map[string]interface{}{
 			"securitySchemes": map[string]interface{}{
 				"apiKey": map[string]interface{}{
 					"type":        "apiKey",
@@ -352,72 +352,72 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
-                "TaskStatusResponse": map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "task_id": map[string]interface{}{
-                            "type": "string",
-                        },
-                        "status": map[string]interface{}{
-                            "type": "string",
-                        },
-                        "response": map[string]interface{}{
-                            "type": "object",
-                        },
-                        "error": map[string]interface{}{
-                            "type": "string",
-                        },
-                        "query": map[string]interface{}{
-                            "type": "string",
-                        },
-                        "session_id": map[string]interface{}{
-                            "type": "string",
-                        },
-                        "mode": map[string]interface{}{
-                            "type": "string",
-                        },
-                        "created_at": map[string]interface{}{
-                            "type":   "string",
-                            "format": "date-time",
-                        },
-                        "updated_at": map[string]interface{}{
-                            "type":   "string",
-                            "format": "date-time",
-                        },
-                    },
-                },
-                "TaskSummary": map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "task_id": map[string]interface{}{"type": "string"},
-                        "query": map[string]interface{}{"type": "string"},
-                        "status": map[string]interface{}{"type": "string"},
-                        "mode": map[string]interface{}{"type": "string"},
-                        "created_at": map[string]interface{}{"type": "string", "format": "date-time"},
-                        "completed_at": map[string]interface{}{"type": "string", "format": "date-time"},
-                        "total_token_usage": map[string]interface{}{"type": "object"},
-                    },
-                },
-                "ListTasksResponse": map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "tasks": map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskSummary"}},
-                        "total_count": map[string]interface{}{"type": "integer"},
-                    },
-                },
-                "TaskEvent": map[string]interface{}{
-                    "type": "object",
-                    "properties": map[string]interface{}{
-                        "workflow_id": map[string]interface{}{"type": "string"},
-                        "type":        map[string]interface{}{"type": "string"},
-                        "agent_id":    map[string]interface{}{"type": "string"},
-                        "message":     map[string]interface{}{"type": "string"},
-                        "timestamp":   map[string]interface{}{"type": "string", "format": "date-time"},
-                        "seq":         map[string]interface{}{"type": "integer"},
-                        "stream_id":   map[string]interface{}{"type": "string"},
-                    },
-                },
-            },
-        },
-    }
+				"TaskStatusResponse": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"task_id": map[string]interface{}{
+							"type": "string",
+						},
+						"status": map[string]interface{}{
+							"type": "string",
+						},
+						"response": map[string]interface{}{
+							"type": "object",
+						},
+						"error": map[string]interface{}{
+							"type": "string",
+						},
+						"query": map[string]interface{}{
+							"type": "string",
+						},
+						"session_id": map[string]interface{}{
+							"type": "string",
+						},
+						"mode": map[string]interface{}{
+							"type": "string",
+						},
+						"created_at": map[string]interface{}{
+							"type":   "string",
+							"format": "date-time",
+						},
+						"updated_at": map[string]interface{}{
+							"type":   "string",
+							"format": "date-time",
+						},
+					},
+				},
+				"TaskSummary": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"task_id":           map[string]interface{}{"type": "string"},
+						"query":             map[string]interface{}{"type": "string"},
+						"status":            map[string]interface{}{"type": "string"},
+						"mode":              map[string]interface{}{"type": "string"},
+						"created_at":        map[string]interface{}{"type": "string", "format": "date-time"},
+						"completed_at":      map[string]interface{}{"type": "string", "format": "date-time"},
+						"total_token_usage": map[string]interface{}{"type": "object"},
+					},
+				},
+				"ListTasksResponse": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"tasks":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskSummary"}},
+						"total_count": map[string]interface{}{"type": "integer"},
+					},
+				},
+				"TaskEvent": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"workflow_id": map[string]interface{}{"type": "string"},
+						"type":        map[string]interface{}{"type": "string"},
+						"agent_id":    map[string]interface{}{"type": "string"},
+						"message":     map[string]interface{}{"type": "string"},
+						"timestamp":   map[string]interface{}{"type": "string", "format": "date-time"},
+						"seq":         map[string]interface{}{"type": "integer"},
+						"stream_id":   map[string]interface{}{"type": "string"},
+					},
+				},
+			},
+		},
+	}
 }

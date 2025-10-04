@@ -3,9 +3,11 @@ package patterns
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -303,6 +305,46 @@ func Debate(
 		"consensus", result.ConsensusReached,
 		"total_tokens", result.TotalTokens,
 	)
+
+	// Persist debate consensus for learning (fire-and-forget)
+	consensusVersion := workflow.GetVersion(ctx, "persist_debate_consensus_v1", workflow.DefaultVersion, 1)
+	if consensusVersion >= 1 {
+		persistCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 5 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
+
+		// Extract all position texts for storage
+		positionTexts := make([]string, len(result.Positions))
+		for i, pos := range result.Positions {
+			positionTexts[i] = pos.Position
+		}
+
+		// Calculate consensus confidence
+		consensusConfidence := bestConfidence
+		if result.ConsensusReached {
+			consensusConfidence = 0.9 // High confidence when consensus reached
+		}
+
+		workflow.ExecuteActivity(
+			persistCtx,
+			activities.PersistDebateConsensus,
+			activities.PersistDebateConsensusInput{
+				SessionID:        sessionID,
+				Topic:            query,
+				WinningPosition:  result.FinalPosition,
+				ConsensusReached: result.ConsensusReached,
+				Confidence:       consensusConfidence,
+				Positions:        positionTexts,
+				Metadata: map[string]interface{}{
+					"rounds":       result.Rounds,
+					"total_tokens": result.TotalTokens,
+					"num_debaters": config.NumDebaters,
+					"voting":       config.VotingEnabled,
+				},
+			},
+		)
+	}
 
 	return result, nil
 }

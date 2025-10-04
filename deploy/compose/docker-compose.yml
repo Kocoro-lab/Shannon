@@ -170,6 +170,8 @@ services:
       - APPROVAL_COMPLEXITY_THRESHOLD=${APPROVAL_COMPLEXITY_THRESHOLD:-0.5}
       - APPROVAL_DANGEROUS_TOOLS=${APPROVAL_DANGEROUS_TOOLS:-file_system,code_execution}
       - APPROVAL_TIMEOUT_SECONDS=${APPROVAL_TIMEOUT_SECONDS:-1800}
+      # Template configuration
+      - TEMPLATES_PATH=/app/config/workflows/examples:/app/config/workflows/user
     depends_on:
       temporal:
         condition: service_started

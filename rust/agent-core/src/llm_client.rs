@@ -182,6 +182,9 @@ fn calculate_cost(model: &str, tokens: u32) -> f64 {
         0.06
     } else if model.contains("gpt-3.5") {
         0.002
+    } else if model.contains("claude-4") || model.contains("claude-opus-4") {
+        // Claude 4 series (expected to be premium tier)
+        0.10
     } else if model.contains("claude-3-opus") {
         0.075
     } else if model.contains("claude-3-sonnet") {
@@ -189,6 +192,7 @@ fn calculate_cost(model: &str, tokens: u32) -> f64 {
     } else if model.contains("claude-3-haiku") {
         0.001
     } else {
+        // Default for unknown models
         0.001
     };
     (tokens as f64 / 1000.0) * fallback_per_1k

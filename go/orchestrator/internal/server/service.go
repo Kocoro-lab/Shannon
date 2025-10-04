@@ -1,53 +1,53 @@
 package server
 
 import (
-    "context"
-    "database/sql"
-    "fmt"
-    "os"
-    "strings"
-    "time"
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"strings"
+	"time"
 
-    "github.com/google/uuid"
-    enumspb "go.temporal.io/api/enums/v1"
-    workflowservice "go.temporal.io/api/workflowservice/v1"
-    "go.temporal.io/sdk/client"
-    "go.temporal.io/sdk/converter"
-    "go.uber.org/zap"
-    "strconv"
-    "google.golang.org/grpc"
-    "google.golang.org/grpc/codes"
-    "google.golang.org/grpc/status"
-    "google.golang.org/protobuf/types/known/structpb"
-    "google.golang.org/protobuf/types/known/timestamppb"
+	"github.com/google/uuid"
+	enumspb "go.temporal.io/api/enums/v1"
+	workflowservice "go.temporal.io/api/workflowservice/v1"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"strconv"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
-    cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
-    ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
-    common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
-    pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
+	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
+	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
 )
 
 // OrchestratorService implements the Orchestrator gRPC service
 type OrchestratorService struct {
-    pb.UnimplementedOrchestratorServiceServer
-    temporalClient  client.Client
-    sessionManager  *session.Manager
-    humanActivities *activities.HumanInterventionActivities
-    dbClient        *db.Client
-    logger          *zap.Logger
-    degradeMgr      *degradation.Manager
-    workflowConfig  *activities.WorkflowConfig
+	pb.UnimplementedOrchestratorServiceServer
+	temporalClient  client.Client
+	sessionManager  *session.Manager
+	humanActivities *activities.HumanInterventionActivities
+	dbClient        *db.Client
+	logger          *zap.Logger
+	degradeMgr      *degradation.Manager
+	workflowConfig  *activities.WorkflowConfig
 
-    // Optional typed configuration snapshot for defaults
-    shCfg *cfg.ShannonConfig
+	// Optional typed configuration snapshot for defaults
+	shCfg *cfg.ShannonConfig
 
 	// Provider for per-request default workflow flags
 	getWorkflowDefaults func() (bypassSingle bool)
@@ -72,7 +72,7 @@ func (s *OrchestratorService) Shutdown() error {
 
 // SetShannonConfig provides a snapshot of typed configuration (optional).
 func (s *OrchestratorService) SetShannonConfig(c *cfg.ShannonConfig) {
-    s.shCfg = c
+	s.shCfg = c
 }
 
 // SetTemporalClient sets or replaces the Temporal client after service construction.
@@ -83,6 +83,22 @@ func (s *OrchestratorService) SetTemporalClient(c client.Client) {
 // SetWorkflowDefaultsProvider sets a provider for BypassSingleResult default
 func (s *OrchestratorService) SetWorkflowDefaultsProvider(f func() bool) {
 	s.getWorkflowDefaults = f
+}
+
+// ListTemplates returns summaries of loaded templates from the registry
+func (s *OrchestratorService) ListTemplates(ctx context.Context, _ *pb.ListTemplatesRequest) (*pb.ListTemplatesResponse, error) {
+	reg := workflows.TemplateRegistry()
+	summaries := reg.List()
+	out := make([]*pb.TemplateSummary, 0, len(summaries))
+	for _, ts := range summaries {
+		out = append(out, &pb.TemplateSummary{
+			Name:        ts.Name,
+			Version:     ts.Version,
+			Key:         ts.Key,
+			ContentHash: ts.ContentHash,
+		})
+	}
+	return &pb.ListTemplatesResponse{Templates: out}, nil
 }
 
 // NewOrchestratorService creates a new orchestrator service
@@ -136,7 +152,7 @@ func NewOrchestratorService(temporalClient client.Client, dbClient *db.Client, l
 		// Use default config with standard thresholds
 		workflowCfg = &activities.WorkflowConfig{
 			ComplexitySimpleThreshold: 0.3,
-			ComplexityMediumThreshold:  0.5,
+			ComplexityMediumThreshold: 0.5,
 		}
 	}
 
@@ -274,101 +290,178 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	// Create workflow ID
 	workflowID := fmt.Sprintf("task-%s-%d", userID, time.Now().Unix())
 
-    // Build session context for workflow
-    // Determine desired window size with priority:
-    // 1) Request override (context.history_window_size)
-    // 2) Preset (context.use_case_preset == "debugging")
-    // 3) Env var HISTORY_WINDOW_MESSAGES
-    // 4) Default (50)
+	// Build session context for workflow
+	// Determine desired window size with priority:
+	// 1) Request override (context.history_window_size)
+	// 2) Preset (context.use_case_preset == "debugging")
+	// 3) Env var HISTORY_WINDOW_MESSAGES
+	// 4) Default (50)
 
-    clamp := func(n, lo, hi int) int {
-        if n < lo { return lo }
-        if n > hi { return hi }
-        return n
-    }
+	clamp := func(n, lo, hi int) int {
+		if n < lo {
+			return lo
+		}
+		if n > hi {
+			return hi
+		}
+		return n
+	}
 
-    // Request context as map (may be nil)
-    desiredWindow := 0
-    if req.Context != nil {
-        ctxMap := req.Context.AsMap()
-        if v, ok := ctxMap["history_window_size"]; ok {
-            switch t := v.(type) {
-            case float64:
-                desiredWindow = int(t)
-            case int:
-                desiredWindow = t
-            case string:
-                if n, err := strconv.Atoi(t); err == nil { desiredWindow = n }
-            }
-        } else if preset, ok := ctxMap["use_case_preset"].(string); ok && strings.EqualFold(preset, "debugging") {
-            // Debugging preset uses a larger default
-            if v := os.Getenv("HISTORY_WINDOW_DEBUG_MESSAGES"); v != "" {
-                if n, err := strconv.Atoi(v); err == nil { desiredWindow = n }
-            }
-            if desiredWindow == 0 {
-                if s.shCfg != nil && s.shCfg.Session.ContextWindowDebugging > 0 {
-                    desiredWindow = s.shCfg.Session.ContextWindowDebugging
-                } else {
-                    desiredWindow = 75
-                }
-            }
-        }
-    }
-    if desiredWindow == 0 {
-        if v := os.Getenv("HISTORY_WINDOW_MESSAGES"); v != "" {
-            if n, err := strconv.Atoi(v); err == nil { desiredWindow = n }
-        }
-    }
-    if desiredWindow == 0 {
-        if s.shCfg != nil && s.shCfg.Session.ContextWindowDefault > 0 {
-            desiredWindow = s.shCfg.Session.ContextWindowDefault
-        } else {
-            desiredWindow = 50
-        }
-    }
-    historySize := clamp(desiredWindow, 5, 200)
+	parseBoolish := func(v interface{}) bool {
+		switch val := v.(type) {
+		case bool:
+			return val
+		case string:
+			trimmed := strings.TrimSpace(val)
+			if trimmed == "" {
+				return false
+			}
+			if b, err := strconv.ParseBool(trimmed); err == nil {
+				return b
+			}
+			lower := strings.ToLower(trimmed)
+			return lower == "1" || lower == "yes" || lower == "y"
+		case float64:
+			return val != 0
+		case int:
+			return val != 0
+		default:
+			return false
+		}
+	}
 
-    history := sess.GetRecentHistory(historySize)
+	ctxMap := map[string]interface{}{}
+	if req.Context != nil {
+		ctxMap = req.Context.AsMap()
+	}
 
-    // Inject primers/recents defaults into context for deterministic shaping
-    if req.Context != nil {
-        ctxMap := req.Context.AsMap()
-        if _, ok := ctxMap["primers_count"]; !ok {
-            if s.shCfg != nil && s.shCfg.Session.PrimersCount >= 0 {
-                ctxMap["primers_count"] = s.shCfg.Session.PrimersCount
-            }
-        }
-        if _, ok := ctxMap["recents_count"]; !ok {
-            if s.shCfg != nil && s.shCfg.Session.RecentsCount >= 0 {
-                ctxMap["recents_count"] = s.shCfg.Session.RecentsCount
-            }
-        }
-        // Rebuild structpb context with injected values
-        // Also inject optional compression ratios from env if not provided
-        if _, ok := ctxMap["compression_trigger_ratio"]; !ok {
-            if v := os.Getenv("COMPRESSION_TRIGGER_RATIO"); v != "" {
-                if f, err := strconv.ParseFloat(v, 64); err == nil { ctxMap["compression_trigger_ratio"] = f }
-            }
-        }
-        if _, ok := ctxMap["compression_target_ratio"]; !ok {
-            if v := os.Getenv("COMPRESSION_TARGET_RATIO"); v != "" {
-                if f, err := strconv.ParseFloat(v, 64); err == nil { ctxMap["compression_target_ratio"] = f }
-            }
-        }
-        st, _ := structpb.NewStruct(ctxMap)
-        req.Context = st
-    }
+	templateName := ""
+	templateVersion := ""
+	disableAI := false
 
-    // Emit a compact context-prep event (metadata only)
-    estTokens := activities.EstimateTokensFromHistory(history)
-    msg := activities.MsgContextPreparing(len(history), estTokens)
-    streaming.Get().Publish(workflowID, streaming.Event{
-        WorkflowID: workflowID,
-        Type:       string(activities.StreamEventDataProcessing),
-        AgentID:    "",
-        Message:    msg,
-        Timestamp:  time.Now(),
-    })
+	if req.Metadata != nil {
+		if labels := req.Metadata.GetLabels(); labels != nil {
+			if v, ok := labels["template"]; ok {
+				templateName = strings.TrimSpace(v)
+			}
+			if v, ok := labels["template_version"]; ok {
+				templateVersion = strings.TrimSpace(v)
+			}
+			if v, ok := labels["disable_ai"]; ok {
+				disableAI = parseBoolish(v)
+			}
+		}
+	}
+
+	if templateName == "" {
+		if v, ok := ctxMap["template"].(string); ok {
+			templateName = strings.TrimSpace(v)
+		}
+	}
+	if templateVersion == "" {
+		if v, ok := ctxMap["template_version"].(string); ok {
+			templateVersion = strings.TrimSpace(v)
+		}
+	}
+	if !disableAI {
+		if v, ok := ctxMap["disable_ai"]; ok {
+			disableAI = parseBoolish(v)
+		}
+	}
+
+	if templateName != "" {
+		ctxMap["template"] = templateName
+	}
+	if templateVersion != "" {
+		ctxMap["template_version"] = templateVersion
+	}
+	if disableAI {
+		ctxMap["disable_ai"] = disableAI
+	}
+
+	desiredWindow := 0
+	if v, ok := ctxMap["history_window_size"]; ok {
+		switch t := v.(type) {
+		case float64:
+			desiredWindow = int(t)
+		case int:
+			desiredWindow = t
+		case string:
+			if n, err := strconv.Atoi(strings.TrimSpace(t)); err == nil {
+				desiredWindow = n
+			}
+		}
+	} else if preset, ok := ctxMap["use_case_preset"].(string); ok && strings.EqualFold(preset, "debugging") {
+		// Debugging preset uses a larger default
+		if v := os.Getenv("HISTORY_WINDOW_DEBUG_MESSAGES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				desiredWindow = n
+			}
+		}
+		if desiredWindow == 0 {
+			if s.shCfg != nil && s.shCfg.Session.ContextWindowDebugging > 0 {
+				desiredWindow = s.shCfg.Session.ContextWindowDebugging
+			} else {
+				desiredWindow = 75
+			}
+		}
+	}
+	if desiredWindow == 0 {
+		if v := os.Getenv("HISTORY_WINDOW_MESSAGES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				desiredWindow = n
+			}
+		}
+	}
+	if desiredWindow == 0 {
+		if s.shCfg != nil && s.shCfg.Session.ContextWindowDefault > 0 {
+			desiredWindow = s.shCfg.Session.ContextWindowDefault
+		} else {
+			desiredWindow = 50
+		}
+	}
+	historySize := clamp(desiredWindow, 5, 200)
+
+	history := sess.GetRecentHistory(historySize)
+
+	if _, ok := ctxMap["primers_count"]; !ok {
+		if s.shCfg != nil && s.shCfg.Session.PrimersCount >= 0 {
+			ctxMap["primers_count"] = s.shCfg.Session.PrimersCount
+		}
+	}
+	if _, ok := ctxMap["recents_count"]; !ok {
+		if s.shCfg != nil && s.shCfg.Session.RecentsCount >= 0 {
+			ctxMap["recents_count"] = s.shCfg.Session.RecentsCount
+		}
+	}
+	if _, ok := ctxMap["compression_trigger_ratio"]; !ok {
+		if v := os.Getenv("COMPRESSION_TRIGGER_RATIO"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				ctxMap["compression_trigger_ratio"] = f
+			}
+		}
+	}
+	if _, ok := ctxMap["compression_target_ratio"]; !ok {
+		if v := os.Getenv("COMPRESSION_TARGET_RATIO"); v != "" {
+			if f, err := strconv.ParseFloat(v, 64); err == nil {
+				ctxMap["compression_target_ratio"] = f
+			}
+		}
+	}
+
+	st, _ := structpb.NewStruct(ctxMap)
+	req.Context = st
+
+	// Emit a compact context-prep event (metadata only)
+	estTokens := activities.EstimateTokensFromHistory(history)
+	msg := activities.MsgContextPreparing(len(history), estTokens)
+	streaming.Get().Publish(workflowID, streaming.Event{
+		WorkflowID: workflowID,
+		Type:       string(activities.StreamEventDataProcessing),
+		AgentID:    "",
+		Message:    msg,
+		Timestamp:  time.Now(),
+	})
 
 	// Prepare workflow input with session context
 	input := workflows.TaskInput{
@@ -376,12 +469,15 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		UserID:          userID,
 		TenantID:        tenantID,
 		SessionID:       sessionID,
-		Context:         req.Context.AsMap(),
+		Context:         ctxMap,
 		Mode:            "",
+		TemplateName:    templateName,
+		TemplateVersion: templateVersion,
+		DisableAI:       disableAI,
 		History:         convertHistoryForWorkflow(history),
 		SessionCtx:      sess.Context,
-		RequireApproval: false, // TODO: Add to proto request
-		ApprovalTimeout: 1800,  // Default 30 minutes
+		RequireApproval: req.RequireApproval,
+		ApprovalTimeout: 1800, // Default 30 minutes
 	}
 
 	// Apply deterministic workflow behavior flags from provider/env
@@ -415,6 +511,15 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		"session_id": sessionID,
 		"tenant_id":  tenantID,
 		"query":      req.Query,
+	}
+	if templateName != "" {
+		memo["template"] = templateName
+		if templateVersion != "" {
+			memo["template_version"] = templateVersion
+		}
+	}
+	if disableAI {
+		memo["disable_ai"] = disableAI
 	}
 
 	// Determine priority from metadata labels (optional)
@@ -804,8 +909,8 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		if result.Metadata != nil {
 			// Get execution mode (using configurable thresholds)
 			if complexity, ok := result.Metadata["complexity_score"].(float64); ok {
-				simpleThreshold := 0.3  // default
-				mediumThreshold := 0.5  // default
+				simpleThreshold := 0.3 // default
+				mediumThreshold := 0.5 // default
 				if s.workflowConfig != nil {
 					if s.workflowConfig.ComplexitySimpleThreshold > 0 {
 						simpleThreshold = s.workflowConfig.ComplexitySimpleThreshold
@@ -919,59 +1024,59 @@ func (s *OrchestratorService) CancelTask(ctx context.Context, req *pb.CancelTask
 
 // ListTasks lists tasks for a user/session
 func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRequest) (*pb.ListTasksResponse, error) {
-    if s.dbClient == nil {
-        return &pb.ListTasksResponse{Tasks: []*pb.TaskSummary{}, TotalCount: 0}, nil
-    }
+	if s.dbClient == nil {
+		return &pb.ListTasksResponse{Tasks: []*pb.TaskSummary{}, TotalCount: 0}, nil
+	}
 
-    // Build filters
-    where := []string{"1=1"}
-    args := []interface{}{}
-    ai := 1
+	// Build filters
+	where := []string{"1=1"}
+	args := []interface{}{}
+	ai := 1
 
-    // Filter by user_id if provided
-    if req.UserId != "" {
-        if uid, err := uuid.Parse(req.UserId); err == nil {
-            where = append(where, fmt.Sprintf("(user_id = $%d OR user_id IS NULL)", ai))
-            args = append(args, uid)
-            ai++
-        }
-    }
-    // Filter by session_id if provided (task_executions.session_id is VARCHAR)
-    if req.SessionId != "" {
-        where = append(where, fmt.Sprintf("session_id = $%d", ai))
-        args = append(args, req.SessionId)
-        ai++
-    }
-    // Filter by status if provided
-    if req.FilterStatus != pb.TaskStatus_TASK_STATUS_UNSPECIFIED {
-        statusStr := mapProtoStatusToDB(req.FilterStatus)
-        if statusStr != "" {
-            where = append(where, fmt.Sprintf("UPPER(status) = UPPER($%d)", ai))
-            args = append(args, statusStr)
-            ai++
-        }
-    }
+	// Filter by user_id if provided
+	if req.UserId != "" {
+		if uid, err := uuid.Parse(req.UserId); err == nil {
+			where = append(where, fmt.Sprintf("(user_id = $%d OR user_id IS NULL)", ai))
+			args = append(args, uid)
+			ai++
+		}
+	}
+	// Filter by session_id if provided (task_executions.session_id is VARCHAR)
+	if req.SessionId != "" {
+		where = append(where, fmt.Sprintf("session_id = $%d", ai))
+		args = append(args, req.SessionId)
+		ai++
+	}
+	// Filter by status if provided
+	if req.FilterStatus != pb.TaskStatus_TASK_STATUS_UNSPECIFIED {
+		statusStr := mapProtoStatusToDB(req.FilterStatus)
+		if statusStr != "" {
+			where = append(where, fmt.Sprintf("UPPER(status) = UPPER($%d)", ai))
+			args = append(args, statusStr)
+			ai++
+		}
+	}
 
-    // Pagination
-    limit := int(req.Limit)
-    if limit <= 0 || limit > 100 {
-        limit = 20
-    }
-    offset := int(req.Offset)
-    if offset < 0 {
-        offset = 0
-    }
+	// Pagination
+	limit := int(req.Limit)
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	offset := int(req.Offset)
+	if offset < 0 {
+		offset = 0
+	}
 
-    // Total count query
-    countQuery := fmt.Sprintf("SELECT COUNT(*) FROM task_executions WHERE %s", strings.Join(where, " AND "))
-    var total int32
-    if err := s.dbClient.Wrapper().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
-        s.logger.Warn("ListTasks count failed", zap.Error(err))
-        total = 0
-    }
+	// Total count query
+	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM task_executions WHERE %s", strings.Join(where, " AND "))
+	var total int32
+	if err := s.dbClient.Wrapper().QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		s.logger.Warn("ListTasks count failed", zap.Error(err))
+		total = 0
+	}
 
-    // Data query
-    dataQuery := fmt.Sprintf(`
+	// Data query
+	dataQuery := fmt.Sprintf(`
         SELECT workflow_id, query, status, mode,
                started_at, completed_at, created_at,
                total_tokens,
@@ -981,64 +1086,64 @@ func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRe
         ORDER BY COALESCE(started_at, created_at) DESC
         LIMIT %d OFFSET %d`, strings.Join(where, " AND "), limit, offset)
 
-    rows, err := s.dbClient.Wrapper().QueryContext(ctx, dataQuery, args...)
-    if err != nil {
-        return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list tasks: %v", err))
-    }
-    defer rows.Close()
+	rows, err := s.dbClient.Wrapper().QueryContext(ctx, dataQuery, args...)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to list tasks: %v", err))
+	}
+	defer rows.Close()
 
-    summaries := make([]*pb.TaskSummary, 0, limit)
-    for rows.Next() {
-        var (
-            workflowID string
-            queryText  sql.NullString
-            statusStr  sql.NullString
-            modeStr    sql.NullString
-            started    sql.NullTime
-            completed  sql.NullTime
-            created    sql.NullTime
-            tokens     sql.NullInt64
-            costUSD    sql.NullFloat64
-        )
+	summaries := make([]*pb.TaskSummary, 0, limit)
+	for rows.Next() {
+		var (
+			workflowID string
+			queryText  sql.NullString
+			statusStr  sql.NullString
+			modeStr    sql.NullString
+			started    sql.NullTime
+			completed  sql.NullTime
+			created    sql.NullTime
+			tokens     sql.NullInt64
+			costUSD    sql.NullFloat64
+		)
 
-        if err := rows.Scan(&workflowID, &queryText, &statusStr, &modeStr, &started, &completed, &created, &tokens, &costUSD); err != nil {
-            return nil, status.Error(codes.Internal, fmt.Sprintf("failed to scan row: %v", err))
-        }
+		if err := rows.Scan(&workflowID, &queryText, &statusStr, &modeStr, &started, &completed, &created, &tokens, &costUSD); err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to scan row: %v", err))
+		}
 
-        summary := &pb.TaskSummary{
-            TaskId: workflowID,
-            Query:  queryText.String,
-            Status: mapDBStatusToProto(statusStr.String),
-            Mode:   mapDBModeToProto(modeStr.String),
-        }
-        if started.Valid {
-            summary.CreatedAt = timestamppb.New(started.Time)
-        } else if created.Valid {
-            summary.CreatedAt = timestamppb.New(created.Time)
-        }
-        if completed.Valid {
-            summary.CompletedAt = timestamppb.New(completed.Time)
-        }
-        if tokens.Valid || costUSD.Valid {
-            tokenUsage := &common.TokenUsage{}
-            if tokens.Valid {
-                tokenUsage.TotalTokens = int32(tokens.Int64)
-            }
-            if costUSD.Valid {
-                tokenUsage.CostUsd = costUSD.Float64
-            }
-            summary.TotalTokenUsage = tokenUsage
-        }
-        summaries = append(summaries, summary)
-    }
-    if err := rows.Err(); err != nil {
-        return nil, status.Error(codes.Internal, fmt.Sprintf("failed to iterate rows: %v", err))
-    }
+		summary := &pb.TaskSummary{
+			TaskId: workflowID,
+			Query:  queryText.String,
+			Status: mapDBStatusToProto(statusStr.String),
+			Mode:   mapDBModeToProto(modeStr.String),
+		}
+		if started.Valid {
+			summary.CreatedAt = timestamppb.New(started.Time)
+		} else if created.Valid {
+			summary.CreatedAt = timestamppb.New(created.Time)
+		}
+		if completed.Valid {
+			summary.CompletedAt = timestamppb.New(completed.Time)
+		}
+		if tokens.Valid || costUSD.Valid {
+			tokenUsage := &common.TokenUsage{}
+			if tokens.Valid {
+				tokenUsage.TotalTokens = int32(tokens.Int64)
+			}
+			if costUSD.Valid {
+				tokenUsage.CostUsd = costUSD.Float64
+			}
+			summary.TotalTokenUsage = tokenUsage
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to iterate rows: %v", err))
+	}
 
-    return &pb.ListTasksResponse{
-        Tasks:      summaries,
-        TotalCount: total,
-    }, nil
+	return &pb.ListTasksResponse{
+		Tasks:      summaries,
+		TotalCount: total,
+	}, nil
 }
 
 // GetSessionContext gets session context
@@ -1097,7 +1202,7 @@ func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessio
 		return nil, nil
 	}
 
-    query := `
+	query := `
         SELECT workflow_id, query, status, mode,
                started_at, completed_at, created_at,
                total_tokens, total_cost_usd
@@ -1106,7 +1211,7 @@ func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessio
         ORDER BY COALESCE(started_at, created_at) DESC
         LIMIT $2`
 
-    rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, sessionID, limit)
+	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, sessionID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1214,100 +1319,100 @@ func mapDBModeToProto(mode string) common.ExecutionMode {
 }
 
 func mapProtoStatusToDB(st pb.TaskStatus) string {
-    switch st {
-    case pb.TaskStatus_TASK_STATUS_QUEUED:
-        return "QUEUED"
-    case pb.TaskStatus_TASK_STATUS_RUNNING:
-        return "RUNNING"
-    case pb.TaskStatus_TASK_STATUS_COMPLETED:
-        return "COMPLETED"
-    case pb.TaskStatus_TASK_STATUS_FAILED:
-        return "FAILED"
-    case pb.TaskStatus_TASK_STATUS_CANCELLED:
-        return "CANCELLED"
-    case pb.TaskStatus_TASK_STATUS_TIMEOUT:
-        return "TIMEOUT"
-    default:
-        return ""
-    }
+	switch st {
+	case pb.TaskStatus_TASK_STATUS_QUEUED:
+		return "QUEUED"
+	case pb.TaskStatus_TASK_STATUS_RUNNING:
+		return "RUNNING"
+	case pb.TaskStatus_TASK_STATUS_COMPLETED:
+		return "COMPLETED"
+	case pb.TaskStatus_TASK_STATUS_FAILED:
+		return "FAILED"
+	case pb.TaskStatus_TASK_STATUS_CANCELLED:
+		return "CANCELLED"
+	case pb.TaskStatus_TASK_STATUS_TIMEOUT:
+		return "TIMEOUT"
+	default:
+		return ""
+	}
 }
 
 // watchAndPersist waits for workflow completion and persists terminal state to DB.
 func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
-    if s.temporalClient == nil || s.dbClient == nil {
-        return
-    }
-    ctx := context.Background()
-    // Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
-    we := s.temporalClient.GetWorkflow(ctx, workflowID, runID)
-    var tmp interface{}
-    _ = we.Get(ctx, &tmp)
+	if s.temporalClient == nil || s.dbClient == nil {
+		return
+	}
+	ctx := context.Background()
+	// Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
+	we := s.temporalClient.GetWorkflow(ctx, workflowID, runID)
+	var tmp interface{}
+	_ = we.Get(ctx, &tmp)
 
-    // Describe to fetch status and times
-    desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, workflowID, runID)
-    if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-        s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(err))
-        return
-    }
+	// Describe to fetch status and times
+	desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, workflowID, runID)
+	if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(err))
+		return
+	}
 
-    st := desc.WorkflowExecutionInfo.GetStatus()
-    statusStr := "RUNNING"
-    switch st {
-    case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
-        statusStr = "COMPLETED"
-    case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
-        statusStr = "FAILED"
-    case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
-        statusStr = "TIMEOUT"
-    case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
-        statusStr = "CANCELLED"
-    case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
-        statusStr = "FAILED"
-    default:
-        statusStr = "RUNNING"
-    }
+	st := desc.WorkflowExecutionInfo.GetStatus()
+	statusStr := "RUNNING"
+	switch st {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		statusStr = "COMPLETED"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		statusStr = "FAILED"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		statusStr = "TIMEOUT"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		statusStr = "CANCELLED"
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+		statusStr = "FAILED"
+	default:
+		statusStr = "RUNNING"
+	}
 
-    start := time.Now()
-    if desc.WorkflowExecutionInfo.GetStartTime() != nil {
-        start = desc.WorkflowExecutionInfo.GetStartTime().AsTime()
-    }
-    end := getWorkflowEndTime(desc)
+	start := time.Now()
+	if desc.WorkflowExecutionInfo.GetStartTime() != nil {
+		start = desc.WorkflowExecutionInfo.GetStartTime().AsTime()
+	}
+	end := getWorkflowEndTime(desc)
 
-    te := &db.TaskExecution{
-        WorkflowID:  workflowID,
-        Status:      statusStr,
-        StartedAt:   start,
-        CompletedAt: &end,
-    }
-    // Best-effort: copy memo fields (user_id/session_id/query/mode)
-    if m := desc.WorkflowExecutionInfo.Memo; m != nil {
-        dc := converter.GetDefaultDataConverter()
-        if f, ok := m.Fields["user_id"]; ok && f != nil {
-            var uidStr string
-            if err := dc.FromPayload(f, &uidStr); err == nil {
-                if u, err := uuid.Parse(uidStr); err == nil {
-                    te.UserID = &u
-                }
-            }
-        }
-        if f, ok := m.Fields["session_id"]; ok && f != nil {
-            _ = dc.FromPayload(f, &te.SessionID)
-        }
-        if f, ok := m.Fields["query"]; ok && f != nil {
-            _ = dc.FromPayload(f, &te.Query)
-        }
-        if f, ok := m.Fields["mode"]; ok && f != nil {
-            _ = dc.FromPayload(f, &te.Mode)
-        }
-    }
+	te := &db.TaskExecution{
+		WorkflowID:  workflowID,
+		Status:      statusStr,
+		StartedAt:   start,
+		CompletedAt: &end,
+	}
+	// Best-effort: copy memo fields (user_id/session_id/query/mode)
+	if m := desc.WorkflowExecutionInfo.Memo; m != nil {
+		dc := converter.GetDefaultDataConverter()
+		if f, ok := m.Fields["user_id"]; ok && f != nil {
+			var uidStr string
+			if err := dc.FromPayload(f, &uidStr); err == nil {
+				if u, err := uuid.Parse(uidStr); err == nil {
+					te.UserID = &u
+				}
+			}
+		}
+		if f, ok := m.Fields["session_id"]; ok && f != nil {
+			_ = dc.FromPayload(f, &te.SessionID)
+		}
+		if f, ok := m.Fields["query"]; ok && f != nil {
+			_ = dc.FromPayload(f, &te.Query)
+		}
+		if f, ok := m.Fields["mode"]; ok && f != nil {
+			_ = dc.FromPayload(f, &te.Mode)
+		}
+	}
 
-    _ = s.dbClient.QueueWrite(db.WriteTypeTaskExecution, te, func(err error) {
-        if err != nil {
-            s.logger.Warn("watchAndPersist: final write failed", zap.String("workflow_id", workflowID), zap.Error(err))
-        } else {
-            s.logger.Debug("watchAndPersist: final write ok", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
-        }
-    })
+	_ = s.dbClient.QueueWrite(db.WriteTypeTaskExecution, te, func(err error) {
+		if err != nil {
+			s.logger.Warn("watchAndPersist: final write failed", zap.String("workflow_id", workflowID), zap.Error(err))
+		} else {
+			s.logger.Debug("watchAndPersist: final write ok", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
+		}
+	})
 }
 
 // getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.

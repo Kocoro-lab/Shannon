@@ -4,7 +4,6 @@ Orchestrates multiple providers with caching, routing, and token management
 """
 
 import os
-import uuid
 import random
 import asyncio
 import time
@@ -106,12 +105,20 @@ class LLMManager:
         self.rate_limiters: Dict[str, RateLimiter] = {}
         self._pricing_overrides: Optional[Dict[str, Any]] = None
         self._config_path: Optional[str] = None
-        self._cache_cfg: Dict[str, Any] = {"enabled": True, "default_ttl": 3600, "max_size": 1000}
+        self._cache_cfg: Dict[str, Any] = {
+            "enabled": True,
+            "default_ttl": 3600,
+            "max_size": 1000,
+        }
         self._resilience_cfg: Dict[str, Any] = {
-            "circuit_breakers": {"enabled": False, "failure_threshold": 5, "recovery_seconds": 60},
+            "circuit_breakers": {
+                "enabled": False,
+                "failure_threshold": 5,
+                "recovery_seconds": 60,
+            },
             "hedged_requests": {"enabled": False, "delay_ms": 500},
         }
-        self._breakers: Dict[str, '_CircuitBreaker'] = {}
+        self._breakers: Dict[str, "_CircuitBreaker"] = {}
 
         # Token budget tracking
         self.session_usage: Dict[str, TokenUsage] = {}
@@ -155,10 +162,14 @@ class LLMManager:
 
         if "model_catalog" in config or "model_tiers" in config:
             # Unified config format (config/models.yaml)
-            providers_cfg, routing_cfg, caching_cfg = self._translate_unified_config(config)
+            providers_cfg, routing_cfg, caching_cfg = self._translate_unified_config(
+                config
+            )
             # Resilience configuration (optional)
             try:
-                self._resilience_cfg = dict(config.get("resilience", {}) or self._resilience_cfg)
+                self._resilience_cfg = dict(
+                    config.get("resilience", {}) or self._resilience_cfg
+                )
             except Exception:
                 pass
             self._initialize_providers(providers_cfg)
@@ -331,7 +342,11 @@ class LLMManager:
 
                 self.logger.info(f"Initialized provider: {name}")
                 # Initialize circuit breaker for provider
-                cb_cfg = (self._resilience_cfg.get("circuit_breakers") or {}) if hasattr(self, "_resilience_cfg") else {}
+                cb_cfg = (
+                    (self._resilience_cfg.get("circuit_breakers") or {})
+                    if hasattr(self, "_resilience_cfg")
+                    else {}
+                )
                 self._breakers[name] = _CircuitBreaker(
                     name,
                     failure_threshold=int(cb_cfg.get("failure_threshold", 5) or 5),
@@ -349,7 +364,9 @@ class LLMManager:
             except Exception as e:
                 self.logger.error(f"Failed to initialize provider {name}: {e}")
 
-    def _translate_unified_config(self, cfg: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    def _translate_unified_config(
+        self, cfg: Dict[str, Any]
+    ) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
         """Translate unified config (model_catalog/model_tiers/selection_strategy) to internal structures."""
         model_catalog = cfg.get("model_catalog", {}) or {}
         provider_settings = cfg.get("provider_settings", {}) or {}
@@ -412,7 +429,13 @@ class LLMManager:
                     if alias in (capabilities_cfg.get("thinking_models", []) or []):
                         meta["supports_reasoning"] = True
                     # JSON mode support defaults per provider type
-                    if ptype in ("openai", "openai_compatible", "groq", "google", "xai"):
+                    if ptype in (
+                        "openai",
+                        "openai_compatible",
+                        "groq",
+                        "google",
+                        "xai",
+                    ):
                         meta.setdefault("supports_json_mode", True)
                     else:
                         meta.setdefault("supports_json_mode", False)
@@ -434,7 +457,9 @@ class LLMManager:
             except Exception:
                 pass
             tier_prefs[tier_name] = [
-                f"{it.get('provider')}:{it.get('model')}" for it in items if it.get("provider") and it.get("model")
+                f"{it.get('provider')}:{it.get('model')}"
+                for it in items
+                if it.get("provider") and it.get("model")
             ]
 
         routing_cfg = {
@@ -485,8 +510,12 @@ class LLMManager:
                 self.cache = _RedisCacheManager(redis_url)
                 self.logger.info("Using Redis cache backend for LLM responses")
             except Exception as e:
-                self.logger.warning(f"Redis cache unavailable, falling back to memory: {e}")
-                self.cache = CacheManager(max_size=self._cache_cfg.get("max_size", 1000))
+                self.logger.warning(
+                    f"Redis cache unavailable, falling back to memory: {e}"
+                )
+                self.cache = CacheManager(
+                    max_size=self._cache_cfg.get("max_size", 1000)
+                )
         else:
             max_size = int(self._cache_cfg.get("max_size", 1000))
             self.cache = CacheManager(max_size=max_size)
@@ -565,19 +594,29 @@ class LLMManager:
 
         # Make the actual API call (supports hedging when enabled)
         hedge_cfg = self._resilience_cfg.get("hedged_requests") or {}
-        allow_hedge = bool(hedge_cfg.get("enabled", False)) and self._is_hedge_candidate(request)
+        allow_hedge = bool(
+            hedge_cfg.get("enabled", False)
+        ) and self._is_hedge_candidate(request)
         try:
             if allow_hedge:
                 fb = self._get_fallback_provider(provider_name, request.model_tier)
                 if fb:
                     delay_ms = int(hedge_cfg.get("delay_ms", 500) or 500)
-                    response, winner = await self._hedged_complete(request, (provider_name, provider), fb, delay_ms)
+                    response, winner = await self._hedged_complete(
+                        request, (provider_name, provider), fb, delay_ms
+                    )
                     if _METRICS_ENABLED:
-                        LLM_MANAGER_HEDGED_WINS.labels("primary" if winner == provider_name else "fallback").inc()
+                        LLM_MANAGER_HEDGED_WINS.labels(
+                            "primary" if winner == provider_name else "fallback"
+                        ).inc()
                 else:
-                    response = await self._call_provider_with_cb(provider_name, provider, request)
+                    response = await self._call_provider_with_cb(
+                        provider_name, provider, request
+                    )
             else:
-                response = await self._call_provider_with_cb(provider_name, provider, request)
+                response = await self._call_provider_with_cb(
+                    provider_name, provider, request
+                )
 
             # Update usage tracking
             self._update_usage_tracking(request, response)
@@ -589,12 +628,22 @@ class LLMManager:
 
             # Instrumentation
             if _METRICS_ENABLED:
-                LLM_MANAGER_REQUESTS.labels(response.provider, response.model, "ok").inc()
-                LLM_MANAGER_TOKENS.labels(response.provider, response.model, "prompt").inc(response.usage.input_tokens)
-                LLM_MANAGER_TOKENS.labels(response.provider, response.model, "completion").inc(response.usage.output_tokens)
-                LLM_MANAGER_COST.labels(response.provider, response.model).inc(max(0.0, float(response.usage.estimated_cost)))
+                LLM_MANAGER_REQUESTS.labels(
+                    response.provider, response.model, "ok"
+                ).inc()
+                LLM_MANAGER_TOKENS.labels(
+                    response.provider, response.model, "prompt"
+                ).inc(response.usage.input_tokens)
+                LLM_MANAGER_TOKENS.labels(
+                    response.provider, response.model, "completion"
+                ).inc(response.usage.output_tokens)
+                LLM_MANAGER_COST.labels(response.provider, response.model).inc(
+                    max(0.0, float(response.usage.estimated_cost))
+                )
                 if response.latency_ms is not None:
-                    LLM_MANAGER_LATENCY.labels(response.provider, response.model).observe(max(0, int(response.latency_ms)))
+                    LLM_MANAGER_LATENCY.labels(
+                        response.provider, response.model
+                    ).observe(max(0, int(response.latency_ms)))
 
             return response
 
@@ -610,7 +659,9 @@ class LLMManager:
             fallback = self._get_fallback_provider(provider_name, request.model_tier)
             if fallback:
                 self.logger.info(f"Trying fallback provider: {fallback[0]}")
-                return await self._call_provider_with_cb(fallback[0], fallback[1], request)
+                return await self._call_provider_with_cb(
+                    fallback[0], fallback[1], request
+                )
 
             raise
 
@@ -626,7 +677,9 @@ class LLMManager:
         response formats, protobuf contracts, or event emission.
         """
         # Build request (mark stream=True for clarity to providers)
-        request = CompletionRequest(messages=messages, model_tier=model_tier, stream=True, **kwargs)
+        request = CompletionRequest(
+            messages=messages, model_tier=model_tier, stream=True, **kwargs
+        )
 
         # If a cached response exists and caller requested streaming, emit as a single chunk
         cache_key = None
@@ -771,7 +824,9 @@ class LLMManager:
         t1 = asyncio.create_task(run_one(p_name, p))
         t2 = asyncio.create_task(delayed_run(f_name, f, delay_ms))
 
-        done, pending = await asyncio.wait({t1, t2}, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(
+            {t1, t2}, return_when=asyncio.FIRST_COMPLETED
+        )
         for task in pending:
             task.cancel()
         first = done.pop()
@@ -782,7 +837,9 @@ class LLMManager:
         except Exception:
             # If first failed immediately, wait for the other
             if pending:
-                rest_done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                rest_done, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
                 r = rest_done.pop().result()
                 winner = f_name if first is t1 else p_name
                 return r, winner
@@ -795,7 +852,11 @@ class LLMManager:
         # Override by setting LLM_DISABLE_BUDGETS=0 (or false) if you explicitly want
         # the LLM service to enforce its own per-session budget.
         try:
-            if str(os.getenv("LLM_DISABLE_BUDGETS", "1")).lower() in ("1", "true", "yes"):  # default disabled
+            if str(os.getenv("LLM_DISABLE_BUDGETS", "1")).lower() in (
+                "1",
+                "true",
+                "yes",
+            ):  # default disabled
                 return
         except Exception:
             # If env parsing fails, fail open (do not enforce here)
@@ -848,7 +909,9 @@ class LLMManager:
 
         report = {
             "timestamp": datetime.utcnow().isoformat(),
-            "cache_hit_rate": (getattr(self.cache, "hit_rate", 0.0) if self.cache else 0.0),
+            "cache_hit_rate": (
+                getattr(self.cache, "hit_rate", 0.0) if self.cache else 0.0
+            ),
         }
 
         if session_id and session_id in self.session_usage:
@@ -902,7 +965,9 @@ class LLMManager:
                     "/app/config/models.yaml",
                     "./config/models.yaml",
                 ]
-                cfg_path = next((p for p in auto_paths if p and os.path.exists(p)), None)
+                cfg_path = next(
+                    (p for p in auto_paths if p and os.path.exists(p)), None
+                )
                 if cfg_path:
                     self.load_config(cfg_path)
                 else:
@@ -916,7 +981,9 @@ class LLMManager:
         except Exception as e:
             self.logger.error(f"Reload failed: {e}")
 
-    async def generate_embedding(self, text: str, model: Optional[str] = None) -> List[float]:
+    async def generate_embedding(
+        self, text: str, model: Optional[str] = None
+    ) -> List[float]:
         """Generate embeddings via the first capable provider (prefers OpenAI)."""
         # Prefer OpenAI if available
         if "openai" in self.registry.providers:
@@ -946,6 +1013,7 @@ def get_llm_manager(config_path: Optional[str] = None) -> LLMManager:
         _manager_instance = LLMManager(config_path)
 
     return _manager_instance
+
 
 # Expose aliases at module level for tests/importers
 MODEL_NAME_ALIASES = LLMManager.MODEL_NAME_ALIASES
@@ -999,7 +1067,9 @@ def _serialize_response(resp: CompletionResponse) -> Dict[str, Any]:
         "request_id": resp.request_id,
         "latency_ms": resp.latency_ms,
         "cached": True,
-        "created_at": resp.created_at.isoformat() if getattr(resp, "created_at", None) else None,
+        "created_at": resp.created_at.isoformat()
+        if getattr(resp, "created_at", None)
+        else None,
     }
 
 
@@ -1018,7 +1088,9 @@ def _deserialize_response(data: Dict[str, Any]) -> CompletionResponse:
         finish_reason=str(data.get("finish_reason", "stop")),
         function_call=data.get("function_call"),
         request_id=data.get("request_id"),
-        latency_ms=int(data.get("latency_ms")) if data.get("latency_ms") is not None else None,
+        latency_ms=int(data.get("latency_ms"))
+        if data.get("latency_ms") is not None
+        else None,
     )
     resp.cached = True
     return resp
@@ -1052,7 +1124,13 @@ def _is_transient_error(err: Exception) -> bool:
 
 
 class _CircuitBreaker:
-    def __init__(self, name: str, failure_threshold: int, recovery_timeout: float, metrics_enabled: bool = False):
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int,
+        recovery_timeout: float,
+        metrics_enabled: bool = False,
+    ):
         self.name = name
         self.failure_threshold = max(1, int(failure_threshold))
         self.recovery_timeout = float(recovery_timeout)

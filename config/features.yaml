@@ -98,6 +98,11 @@ workflows:
       - file_system
       - code_execution
 
+  # Template configuration
+  templates:
+    # When true, if a template workflow fails at runtime, fall back to AI decomposition
+    fallback_to_ai: false
+
   # P2P Coordination for task dependencies
   p2p:
     enabled: false  # Set to true to enable P2P coordination between agents

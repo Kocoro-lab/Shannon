@@ -70,7 +70,9 @@ class OpenAIProvider(LLMProvider):
         num_tokens += 3  # Every reply is primed with <im_start>assistant<im_sep>
         return num_tokens
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8)
+    )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using OpenAI API (Responses API preferred)."""
 
@@ -81,7 +83,9 @@ class OpenAIProvider(LLMProvider):
         # Choose API route based on model capabilities and request intent
         route = self._choose_api_route(request, model_config)
         if route == "responses":
-            if hasattr(self.client, "responses") and hasattr(self.client.responses, "create"):
+            if hasattr(self.client, "responses") and hasattr(
+                self.client.responses, "create"
+            ):
                 return await self._complete_responses_api(request, model)
             # If Responses not available, fall through to chat
 
@@ -126,13 +130,17 @@ class OpenAIProvider(LLMProvider):
         try:
             prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0))
             completion_tokens = int(getattr(response.usage, "completion_tokens", 0))
-            total_tokens = int(getattr(response.usage, "total_tokens", prompt_tokens + completion_tokens))
+            total_tokens = int(
+                getattr(
+                    response.usage, "total_tokens", prompt_tokens + completion_tokens
+                )
+            )
         except Exception:
             # Fallback to estimation only if needed
             prompt_tokens = self.count_tokens(request.messages, model)
-            completion_tokens = self.count_tokens([
-                {"role": "assistant", "content": message.content or ""}
-            ], model)
+            completion_tokens = self.count_tokens(
+                [{"role": "assistant", "content": message.content or ""}], model
+            )
             total_tokens = prompt_tokens + completion_tokens
 
         cost = self.estimate_cost(prompt_tokens, completion_tokens, model)
@@ -201,7 +209,10 @@ class OpenAIProvider(LLMProvider):
         """
         caps = getattr(model_config, "capabilities", None)
         has_tools = bool(request.functions)
-        wants_json = bool(request.response_format and request.response_format.get("type") == "json_object")
+        wants_json = bool(
+            request.response_format
+            and request.response_format.get("type") == "json_object"
+        )
         high_complexity = (request.complexity_score or 0.0) >= 0.7
 
         if has_tools and getattr(caps, "supports_tools", True):
@@ -213,7 +224,9 @@ class OpenAIProvider(LLMProvider):
         # Default preference: Responses if available
         return "responses"
 
-    async def _complete_responses_api(self, request: CompletionRequest, model: str) -> CompletionResponse:
+    async def _complete_responses_api(
+        self, request: CompletionRequest, model: str
+    ) -> CompletionResponse:
         """Call OpenAI Responses API and normalize to CompletionResponse."""
         import time
 
@@ -247,12 +260,14 @@ class OpenAIProvider(LLMProvider):
                 name = fn.get("name")
                 if not name:
                     continue
-                tools.append({
-                    "type": "function",
-                    "name": name,
-                    "description": fn.get("description"),
-                    "parameters": fn.get("parameters", {}),
-                })
+                tools.append(
+                    {
+                        "type": "function",
+                        "name": name,
+                        "description": fn.get("description"),
+                        "parameters": fn.get("parameters", {}),
+                    }
+                )
             if tools:
                 params["tools"] = tools
 
@@ -281,7 +296,10 @@ class OpenAIProvider(LLMProvider):
                             text_parts.append(val.strip())
                     elif item.get("type") == "message":
                         for block in item.get("content", []) or []:
-                            if isinstance(block, dict) and block.get("type") in ("output_text", "text"):
+                            if isinstance(block, dict) and block.get("type") in (
+                                "output_text",
+                                "text",
+                            ):
                                 val = block.get("text")
                                 if isinstance(val, str) and val.strip():
                                     text_parts.append(val.strip())
@@ -296,7 +314,9 @@ class OpenAIProvider(LLMProvider):
         except Exception:
             # Fallback to estimation
             input_tokens = self.count_tokens(request.messages, model)
-            output_tokens = self.count_tokens([{ "role": "assistant", "content": content }], model)
+            output_tokens = self.count_tokens(
+                [{"role": "assistant", "content": content}], model
+            )
             total_tokens = input_tokens + output_tokens
 
         latency_ms = int((time.time() - start_time) * 1000)

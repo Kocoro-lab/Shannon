@@ -1,0 +1,19 @@
+name: simple_analysis
+description: Quick summarization workflow for short briefs
+defaults:
+  model_tier: medium
+  budget_agent_max: 3000
+  require_approval: false
+nodes:
+  - id: intake
+    type: simple
+    strategy: react
+    budget_max: 1000
+  - id: summarize
+    type: cognitive
+    strategy: chain_of_thought
+    depends_on: [intake]
+    budget_max: 1200
+edges:
+  - from: intake
+    to: summarize

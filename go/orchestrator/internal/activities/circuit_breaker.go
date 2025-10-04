@@ -34,9 +34,9 @@ type CircuitBreaker struct {
 func NewCircuitBreaker() *CircuitBreaker {
 	return &CircuitBreaker{
 		state:           StateClosed,
-		maxFailures:     5,           // Open circuit after 5 consecutive failures
+		maxFailures:     5,                // Open circuit after 5 consecutive failures
 		resetTimeout:    30 * time.Second, // Try to reset after 30 seconds
-		halfOpenSuccess: 2,            // Need 2 successful calls to fully close circuit
+		halfOpenSuccess: 2,                // Need 2 successful calls to fully close circuit
 	}
 }
 

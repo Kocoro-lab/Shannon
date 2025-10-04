@@ -107,7 +107,6 @@ class HttpStatelessClient:
         status = "error"
         start = time.time()
         try:
-            last_exc: Optional[Exception] = None
             async with self._client() as client:
                 # Circuit breaker per URL
                 br = _breakers.setdefault(

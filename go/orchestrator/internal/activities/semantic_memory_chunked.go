@@ -2,10 +2,10 @@ package activities
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strings"
 	"time"
-	"math"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
@@ -82,21 +82,19 @@ func FetchSemanticMemoryChunked(ctx context.Context, in FetchSemanticMemoryInput
 		return FetchSemanticMemoryResult{Items: nil}, nil
 	}
 
-
-
-    // Optional MMR re-ranking (diversity) of candidate pool
-    if cfg := vectordb.Get().GetConfig(); cfg.MMREnabled {
-        allHaveVec := true
-        for i := range items {
-            if len(items[i].Vector) == 0 {
-                allHaveVec = false
-                break
-            }
-        }
-        if allHaveVec && len(items) > 1 {
-            items = mmrReorder(vec, items, cfg.MMRLambda)
-        }
-    }
+	// Optional MMR re-ranking (diversity) of candidate pool
+	if cfg := vectordb.Get().GetConfig(); cfg.MMREnabled {
+		allHaveVec := true
+		for i := range items {
+			if len(items[i].Vector) == 0 {
+				allHaveVec = false
+				break
+			}
+		}
+		if allHaveVec && len(items) > 1 {
+			items = mmrReorder(vec, items, cfg.MMRLambda)
+		}
+	}
 
 	// Group results by qa_id for chunked content
 	type QAGroup struct {
@@ -279,49 +277,74 @@ func FetchSemanticMemoryChunked(ctx context.Context, in FetchSemanticMemoryInput
 
 // cosineSim computes cosine similarity between two float32 vectors
 func cosineSim(a, b []float32) float64 {
-    var dot, na, nb float64
-    n := len(a)
-    if len(b) < n { n = len(b) }
-    for i := 0; i < n; i++ {
-        da := float64(a[i])
-        db := float64(b[i])
-        dot += da * db
-        na += da * da
-        nb += db * db
-    }
-    if na == 0 || nb == 0 { return 0 }
-    return dot / (math.Sqrt(na) * math.Sqrt(nb))
+	var dot, na, nb float64
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		da := float64(a[i])
+		db := float64(b[i])
+		dot += da * db
+		na += da * da
+		nb += db * db
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
 // mmrReorder reorders candidates by MMR (greedy) with relevance-diversity trade-off lambda
 func mmrReorder(query []float32, items []vectordb.ContextItem, lambda float64) []vectordb.ContextItem {
-    if lambda < 0 { lambda = 0 }
-    if lambda > 1 { lambda = 1 }
-    n := len(items)
-    if n <= 1 { return items }
-    qd := make([]float64, n)
-    for i := 0; i < n; i++ { qd[i] = cosineSim(query, items[i].Vector) }
-    selected := make([]int, 0, n)
-    remaining := make([]bool, n)
-    for i := 0; i < n; i++ { remaining[i] = true }
-    for len(selected) < n {
-        bestIdx := -1
-        bestScore := -1e9
-        for i := 0; i < n; i++ {
-            if !remaining[i] { continue }
-            maxDiv := 0.0
-            for _, s := range selected {
-                sim := cosineSim(items[i].Vector, items[s].Vector)
-                if sim > maxDiv { maxDiv = sim }
-            }
-            score := lambda*qd[i] - (1.0-lambda)*maxDiv
-            if score > bestScore { bestScore = score; bestIdx = i }
-        }
-        if bestIdx == -1 { break }
-        selected = append(selected, bestIdx)
-        remaining[bestIdx] = false
-    }
-    out := make([]vectordb.ContextItem, 0, n)
-    for _, idx := range selected { out = append(out, items[idx]) }
-    return out
+	if lambda < 0 {
+		lambda = 0
+	}
+	if lambda > 1 {
+		lambda = 1
+	}
+	n := len(items)
+	if n <= 1 {
+		return items
+	}
+	qd := make([]float64, n)
+	for i := 0; i < n; i++ {
+		qd[i] = cosineSim(query, items[i].Vector)
+	}
+	selected := make([]int, 0, n)
+	remaining := make([]bool, n)
+	for i := 0; i < n; i++ {
+		remaining[i] = true
+	}
+	for len(selected) < n {
+		bestIdx := -1
+		bestScore := -1e9
+		for i := 0; i < n; i++ {
+			if !remaining[i] {
+				continue
+			}
+			maxDiv := 0.0
+			for _, s := range selected {
+				sim := cosineSim(items[i].Vector, items[s].Vector)
+				if sim > maxDiv {
+					maxDiv = sim
+				}
+			}
+			score := lambda*qd[i] - (1.0-lambda)*maxDiv
+			if score > bestScore {
+				bestScore = score
+				bestIdx = i
+			}
+		}
+		if bestIdx == -1 {
+			break
+		}
+		selected = append(selected, bestIdx)
+		remaining[bestIdx] = false
+	}
+	out := make([]vectordb.ContextItem, 0, n)
+	for _, idx := range selected {
+		out = append(out, items[idx])
+	}
+	return out
 }

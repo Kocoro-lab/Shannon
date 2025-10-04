@@ -29,6 +29,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/temporal"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/tracing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
 
 	"context"
 
@@ -84,6 +85,26 @@ func main() {
 		}
 		if os.Getenv("ENABLE_TOOL_SELECTION") == "" {
 			_ = os.Setenv("ENABLE_TOOL_SELECTION", defaultSelection)
+		}
+	}
+
+	templateDirs := []string{"config/workflows"}
+	if envDirs := os.Getenv("TEMPLATES_PATH"); envDirs != "" {
+		templateDirs = splitSearchPaths(envDirs)
+	} else {
+		containerTemplates := "/app/config/workflows"
+		if info, err := os.Stat(containerTemplates); err == nil && info.IsDir() {
+			templateDirs = append(templateDirs, containerTemplates)
+		}
+	}
+	if reg, err := workflows.InitTemplateRegistry(logger, templateDirs...); err != nil {
+		logger.Warn("Template registry initialized with warnings", zap.Strings("paths", templateDirs), zap.Error(err))
+	} else {
+		templateCount := len(reg.List())
+		if templateCount == 0 {
+			logger.Warn("Template registry contains no templates", zap.Strings("paths", templateDirs))
+		} else {
+			logger.Info("Template registry ready", zap.Int("templates", templateCount), zap.Strings("paths", templateDirs))
 		}
 	}
 
@@ -343,16 +364,16 @@ func main() {
 	}
 
 	// Create orchestrator service with session config
-    orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger, sessionCfg)
-    if err != nil {
-        logger.Fatal("Failed to create orchestrator service", zap.Error(err))
-    }
-    // Provide typed Shannon config snapshot to server for defaults
-    if shannonCfgMgr != nil {
-        if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
-            orchestratorService.SetShannonConfig(shCfg)
-        }
-    }
+	orchestratorService, err := server.NewOrchestratorService(nil, dbClient, logger, sessionCfg)
+	if err != nil {
+		logger.Fatal("Failed to create orchestrator service", zap.Error(err))
+	}
+	// Provide typed Shannon config snapshot to server for defaults
+	if shannonCfgMgr != nil {
+		if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
+			orchestratorService.SetShannonConfig(shCfg)
+		}
+	}
 
 	// Provide workflow defaults from Shannon config/env at submission time
 	orchestratorService.SetWorkflowDefaultsProvider(func() bool {
@@ -621,23 +642,23 @@ func main() {
 		priorityQueues := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") || os.Getenv("PRIORITY_QUEUES") == "1" || strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "true")
 
 		// Create and configure registry once
-        registryConfig := &registry.RegistryConfig{
-            EnableBudgetedWorkflows:  true,
-            EnableStreamingWorkflows: true,
-            EnableApprovalWorkflows:  true,
-        }
-        // Wire typed budget defaults if available
-        if shannonCfgMgr != nil {
-            if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
-                if shCfg.Session.TokenBudgetPerTask > 0 {
-                    registryConfig.DefaultTaskBudget = shCfg.Session.TokenBudgetPerTask
-                }
-                // Optional: set a session budget heuristic
-                if shCfg.Session.TokenBudgetPerTask > 0 {
-                    registryConfig.DefaultSessionBudget = shCfg.Session.TokenBudgetPerTask * 4
-                }
-            }
-        }
+		registryConfig := &registry.RegistryConfig{
+			EnableBudgetedWorkflows:  true,
+			EnableStreamingWorkflows: true,
+			EnableApprovalWorkflows:  true,
+		}
+		// Wire typed budget defaults if available
+		if shannonCfgMgr != nil {
+			if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
+				if shCfg.Session.TokenBudgetPerTask > 0 {
+					registryConfig.DefaultTaskBudget = shCfg.Session.TokenBudgetPerTask
+				}
+				// Optional: set a session budget heuristic
+				if shCfg.Session.TokenBudgetPerTask > 0 {
+					registryConfig.DefaultSessionBudget = shCfg.Session.TokenBudgetPerTask * 4
+				}
+			}
+		}
 		orchestratorRegistry := registry.NewOrchestratorRegistry(
 			registryConfig,
 			logger,
@@ -746,4 +767,16 @@ func getEnvOrDefaultInt(key string, defaultValue int) int {
 		}
 	}
 	return defaultValue
+}
+
+func splitSearchPaths(value string) []string {
+	parts := strings.Split(value, string(os.PathListSeparator))
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return paths
 }

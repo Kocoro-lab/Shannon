@@ -1,11 +1,11 @@
 package execution
 
 import (
-    "encoding/json"
-    "fmt"
-    "strconv"
-    "strings"
-    "time"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -325,15 +325,15 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 		persistCtx,
 		activities.PersistAgentExecutionStandalone,
 		activities.PersistAgentExecutionInput{
-			WorkflowID:   workflowID,
-			AgentID:      agentID,
-			Input:        input,
-			Output:       result.Response,
-			State:        state,
-			TokensUsed:   result.TokensUsed,
-			ModelUsed:    result.ModelUsed,
-			DurationMs:   result.DurationMs,
-			Error:        result.Error,
+			WorkflowID: workflowID,
+			AgentID:    agentID,
+			Input:      input,
+			Output:     result.Response,
+			State:      state,
+			TokensUsed: result.TokensUsed,
+			ModelUsed:  result.ModelUsed,
+			DurationMs: result.DurationMs,
+			Error:      result.Error,
 			Metadata: map[string]interface{}{
 				"workflow": "sequential",
 				"strategy": "sequential",
@@ -381,33 +381,33 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 
 // Helper function to parse numeric values from responses
 func parseNumericValue(response string) (float64, bool) {
-    // Prefer patterns like "equals N" or "is N"; otherwise take the last number.
-    response = strings.TrimSpace(response)
+	// Prefer patterns like "equals N" or "is N"; otherwise take the last number.
+	response = strings.TrimSpace(response)
 
-    // Direct parse
-    var direct float64
-    if _, err := fmt.Sscanf(response, "%f", &direct); err == nil {
-        return direct, true
-    }
+	// Direct parse
+	var direct float64
+	if _, err := fmt.Sscanf(response, "%f", &direct); err == nil {
+		return direct, true
+	}
 
-    // Token scanning with preferences
-    fields := strings.Fields(response)
-    var numbers []float64
-    for i := 0; i < len(fields); i++ {
-        token := strings.Trim(fields[i], ".,!?:;")
-        // Prefer "equals X" or "is X"
-        if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
-            next := strings.Trim(fields[i+1], ".,!?:;")
-            if val, err := strconv.ParseFloat(next, 64); err == nil {
-                return val, true
-            }
-        }
-        if val, err := strconv.ParseFloat(token, 64); err == nil {
-            numbers = append(numbers, val)
-        }
-    }
-    if len(numbers) > 0 {
-        return numbers[len(numbers)-1], true
-    }
-    return 0, false
+	// Token scanning with preferences
+	fields := strings.Fields(response)
+	var numbers []float64
+	for i := 0; i < len(fields); i++ {
+		token := strings.Trim(fields[i], ".,!?:;")
+		// Prefer "equals X" or "is X"
+		if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
+			next := strings.Trim(fields[i+1], ".,!?:;")
+			if val, err := strconv.ParseFloat(next, 64); err == nil {
+				return val, true
+			}
+		}
+		if val, err := strconv.ParseFloat(token, 64); err == nil {
+			numbers = append(numbers, val)
+		}
+	}
+	if len(numbers) > 0 {
+		return numbers[len(numbers)-1], true
+	}
+	return 0, false
 }

@@ -1,0 +1,36 @@
+name: research_summary
+defaults:
+  model_tier: medium
+  budget_agent_max: 6000
+  require_approval: false
+nodes:
+  - id: discover
+    type: simple
+    strategy: react
+    tools_allowlist: [web_search]
+    budget_max: 1500
+  - id: reason
+    type: cognitive
+    strategy: chain_of_thought
+    depends_on: [discover]
+    budget_max: 1500
+  - id: explore
+    type: cognitive
+    strategy: tree_of_thoughts
+    depends_on: [reason]
+    budget_max: 2500
+    on_fail:
+      degrade_to: chain_of_thought
+      retry: 1
+  - id: finalize
+    type: cognitive
+    strategy: reflection
+    depends_on: [explore]
+    budget_max: 1000
+edges:
+  - from: discover
+    to: reason
+  - from: reason
+    to: explore
+  - from: explore
+    to: finalize

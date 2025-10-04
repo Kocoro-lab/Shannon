@@ -60,23 +60,31 @@ func buildTaskMetricsPayload(task *TaskExecution) JSONB {
 
 // SaveTaskExecution saves or updates a task execution record (idempotent by workflow_id)
 func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) error {
-    if task.ID == uuid.Nil {
-        task.ID = uuid.New()
-    }
-    if task.CreatedAt.IsZero() {
-        task.CreatedAt = time.Now()
-    }
+	if task.ID == uuid.Nil {
+		task.ID = uuid.New()
+	}
+	if task.CreatedAt.IsZero() {
+		task.CreatedAt = time.Now()
+	}
 
-    // Insert or update canonical record in task_executions
-    var userID interface{}
-    if task.UserID != nil { userID = task.UserID } else { userID = nil }
-    sessionID := task.SessionID // VARCHAR in task_executions
+	// Insert or update canonical record in task_executions
+	var userID interface{}
+	if task.UserID != nil {
+		userID = task.UserID
+	} else {
+		userID = nil
+	}
+	sessionID := task.SessionID // VARCHAR in task_executions
 
-    // Ensure metadata JSONB is not nil
-    var metadata JSONB
-    if task.Metadata != nil { metadata = task.Metadata } else { metadata = JSONB{} }
+	// Ensure metadata JSONB is not nil
+	var metadata JSONB
+	if task.Metadata != nil {
+		metadata = task.Metadata
+	} else {
+		metadata = JSONB{}
+	}
 
-    teQuery := `
+	teQuery := `
         INSERT INTO task_executions (
             id, workflow_id, user_id, session_id,
             query, mode, status,
@@ -111,23 +119,23 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             metadata = EXCLUDED.metadata
         RETURNING id`
 
-    err := c.db.QueryRowContext(ctx, teQuery,
-        task.ID, task.WorkflowID, userID, sessionID,
-        task.Query, task.Mode, task.Status,
-        task.StartedAt, task.CompletedAt,
-        task.Result, task.ErrorMessage,
-        task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
-        task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
-        task.ComplexityScore, metadata, task.CreatedAt,
-    ).Scan(&task.ID)
-    if err != nil {
-        return fmt.Errorf("failed to save task execution: %w", err)
-    }
+	err := c.db.QueryRowContext(ctx, teQuery,
+		task.ID, task.WorkflowID, userID, sessionID,
+		task.Query, task.Mode, task.Status,
+		task.StartedAt, task.CompletedAt,
+		task.Result, task.ErrorMessage,
+		task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
+		task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
+		task.ComplexityScore, metadata, task.CreatedAt,
+	).Scan(&task.ID)
+	if err != nil {
+		return fmt.Errorf("failed to save task execution: %w", err)
+	}
 
-    c.logger.Debug("Task execution saved (task_executions)",
-        zap.String("workflow_id", task.WorkflowID),
-        zap.String("status", task.Status))
-    return nil
+	c.logger.Debug("Task execution saved (task_executions)",
+		zap.String("workflow_id", task.WorkflowID),
+		zap.String("status", task.Status))
+	return nil
 }
 
 // BatchSaveTaskExecutions saves multiple task executions in a single transaction
@@ -136,8 +144,8 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 		return nil
 	}
 
-    return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
-        stmt, err := tx.PrepareContext(ctx, `
+	return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
+		stmt, err := tx.PrepareContext(ctx, `
             INSERT INTO task_executions (
                 id, workflow_id, user_id, session_id,
                 query, mode, status,
@@ -176,7 +184,7 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 		}
 		defer stmt.Close()
 
-        for _, task := range tasks {
+		for _, task := range tasks {
 			if task.ID == uuid.Nil {
 				task.ID = uuid.New()
 			}
@@ -184,29 +192,37 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				task.CreatedAt = time.Now()
 			}
 
-            // Prepare args for task_executions
-            var userID interface{}
-            if task.UserID != nil { userID = task.UserID } else { userID = nil }
-            sessionID := task.SessionID
-            var metadata JSONB
-            if task.Metadata != nil { metadata = task.Metadata } else { metadata = JSONB{} }
+			// Prepare args for task_executions
+			var userID interface{}
+			if task.UserID != nil {
+				userID = task.UserID
+			} else {
+				userID = nil
+			}
+			sessionID := task.SessionID
+			var metadata JSONB
+			if task.Metadata != nil {
+				metadata = task.Metadata
+			} else {
+				metadata = JSONB{}
+			}
 
-            _, err := stmt.ExecContext(ctx,
-                task.ID, task.WorkflowID, userID, sessionID,
-                task.Query, task.Mode, task.Status,
-                task.StartedAt, task.CompletedAt,
-                task.Result, task.ErrorMessage,
-                task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
-                task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
-                task.ComplexityScore, metadata, task.CreatedAt,
-            )
-            if err != nil {
-                return fmt.Errorf("failed to insert task %s: %w", task.WorkflowID, err)
-            }
-        }
+			_, err := stmt.ExecContext(ctx,
+				task.ID, task.WorkflowID, userID, sessionID,
+				task.Query, task.Mode, task.Status,
+				task.StartedAt, task.CompletedAt,
+				task.Result, task.ErrorMessage,
+				task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
+				task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
+				task.ComplexityScore, metadata, task.CreatedAt,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to insert task %s: %w", task.WorkflowID, err)
+			}
+		}
 
-        return nil
-    })
+		return nil
+	})
 }
 
 // SaveAgentExecution saves an agent execution record
@@ -448,22 +464,22 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 		}
 	}
 
-    query := `
+	query := `
         INSERT INTO sessions (id, user_id, tenant_id, context, token_budget, tokens_used, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         ON CONFLICT (id) DO NOTHING
     `
 
-    // Support non-UUID external session IDs by mapping them to an internal UUID
-    var sessionUUID uuid.UUID
-    var contextMap = map[string]interface{}{"created_from": "orchestrator"}
-    if parsed, err := uuid.Parse(sessionID); err == nil {
-        sessionUUID = parsed
-    } else {
-        // Generate an internal UUID and store external_id in context for lookup
-        sessionUUID = uuid.New()
-        contextMap["external_id"] = sessionID
-    }
+	// Support non-UUID external session IDs by mapping them to an internal UUID
+	var sessionUUID uuid.UUID
+	var contextMap = map[string]interface{}{"created_from": "orchestrator"}
+	if parsed, err := uuid.Parse(sessionID); err == nil {
+		sessionUUID = parsed
+	} else {
+		// Generate an internal UUID and store external_id in context for lookup
+		sessionUUID = uuid.New()
+		contextMap["external_id"] = sessionID
+	}
 
 	// Parse tenant ID
 	var tid *uuid.UUID
@@ -558,7 +574,7 @@ func (c *Client) SaveAuditLog(ctx context.Context, audit *AuditLog) error {
 func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*TaskExecution, error) {
 	var task TaskExecution
 
-    query := `
+	query := `
         SELECT id, workflow_id, user_id, session_id, query, mode, status,
             started_at, completed_at, result, error_message,
             created_at

@@ -96,7 +96,9 @@ class XAIProvider(LLMProvider):
         caps = getattr(config, "capabilities", None)
         return bool(getattr(caps, "supports_reasoning", False))
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8))
+    @retry(
+        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8)
+    )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model_config = self.resolve_model_config(request)
         model_id = model_config.model_id
@@ -186,7 +188,9 @@ class XAIProvider(LLMProvider):
 
         created_ts = getattr(response, "created", None)
         created_at = (
-            datetime.utcfromtimestamp(created_ts) if isinstance(created_ts, (int, float)) else None
+            datetime.utcfromtimestamp(created_ts)
+            if isinstance(created_ts, (int, float))
+            else None
         )
 
         usage_payload = TokenUsage(

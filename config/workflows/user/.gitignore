@@ -1,0 +1,8 @@
+# Ignore all user-defined templates
+*.yaml
+*.yml
+
+# Keep documentation and placeholder
+!.gitkeep
+!README.md
+!.gitignore

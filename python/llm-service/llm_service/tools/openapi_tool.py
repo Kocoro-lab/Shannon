@@ -147,7 +147,9 @@ class OpenAPILoader:
         # Validate domain
         allowed_domains = [
             d.strip()
-            for d in os.getenv("OPENAPI_ALLOWED_DOMAINS", "localhost,127.0.0.1").split(",")
+            for d in os.getenv("OPENAPI_ALLOWED_DOMAINS", "localhost,127.0.0.1").split(
+                ","
+            )
             if d.strip()
         ]
         _validate_domain(self.base_url, allowed_domains)
@@ -200,7 +202,9 @@ class OpenAPILoader:
         tool_params = []
         for p in params:
             param_type_str = p["type"]
-            param_type = getattr(ToolParameterType, param_type_str.upper(), ToolParameterType.STRING)
+            param_type = getattr(
+                ToolParameterType, param_type_str.upper(), ToolParameterType.STRING
+            )
 
             tool_params.append(
                 ToolParameter(
@@ -269,7 +273,7 @@ class OpenAPILoader:
                     return ToolResult(
                         success=False,
                         output=None,
-                        error=f"Circuit breaker open for {base_url} (too many failures)"
+                        error=f"Circuit breaker open for {base_url} (too many failures)",
                     )
 
                 # Build URL with path parameters (URL-encoded)
@@ -278,7 +282,7 @@ class OpenAPILoader:
                     if param["location"] == "path" and param["name"] in kwargs:
                         placeholder = "{" + param["name"] + "}"
                         # URL-encode path parameter value
-                        encoded_value = quote(str(kwargs[param["name"]]), safe='')
+                        encoded_value = quote(str(kwargs[param["name"]]), safe="")
                         url = url.replace(placeholder, encoded_value)
 
                 # Build query parameters
@@ -297,7 +301,10 @@ class OpenAPILoader:
                 # Add Accept header to prefer JSON responses
                 request_headers["Accept"] = "application/json"
 
-                if auth_type == "api_key" and auth_config.get("api_key_location") == "query":
+                if (
+                    auth_type == "api_key"
+                    and auth_config.get("api_key_location") == "query"
+                ):
                     api_key_name = auth_config.get("api_key_name", "api_key")
                     api_key_value = auth_config.get("api_key_value", "")
                     # Resolve from env if starts with $
@@ -331,7 +338,7 @@ class OpenAPILoader:
                                 return ToolResult(
                                     success=False,
                                     output=None,
-                                    error=f"Response too large: {content_length} bytes (max {max_response_bytes})"
+                                    error=f"Response too large: {content_length} bytes (max {max_response_bytes})",
                                 )
 
                             # Parse response
@@ -379,7 +386,7 @@ class OpenAPILoader:
                 return ToolResult(
                     success=False,
                     output=None,
-                    error=f"Request failed after {retries} retries: {str(last_exception)}"
+                    error=f"Request failed after {retries} retries: {str(last_exception)}",
                 )
 
         _OpenAPITool.__name__ = f"OpenAPITool_{operation_id}"
@@ -425,6 +432,7 @@ class OpenAPILoader:
                 password = os.getenv(password[1:], "")
             if username and password:
                 import base64
+
                 creds = f"{username}:{password}"
                 encoded = base64.b64encode(creds.encode()).decode()
                 headers["Authorization"] = f"Basic {encoded}"
@@ -465,9 +473,12 @@ def load_openapi_tools_from_config(config: Dict[str, Any]) -> List[Type[Tool]]:
                 spec_url_for_loader = spec_url
             elif spec_inline:
                 import yaml
+
                 spec = yaml.safe_load(spec_inline)
             else:
-                logger.error(f"OpenAPI tool '{tool_name}': must provide spec_url or spec_inline")
+                logger.error(
+                    f"OpenAPI tool '{tool_name}': must provide spec_url or spec_inline"
+                )
                 continue
 
             # Create loader
@@ -484,7 +495,9 @@ def load_openapi_tools_from_config(config: Dict[str, Any]) -> List[Type[Tool]]:
                 # Default to 30 so Tool base rate limiting is enforced
                 rate_limit=tool_config.get("rate_limit", 30),
                 timeout_seconds=tool_config.get("timeout_seconds", 30.0),
-                max_response_bytes=tool_config.get("max_response_bytes", 10 * 1024 * 1024),
+                max_response_bytes=tool_config.get(
+                    "max_response_bytes", 10 * 1024 * 1024
+                ),
                 spec_url=spec_url_for_loader,
             )
 
@@ -492,7 +505,9 @@ def load_openapi_tools_from_config(config: Dict[str, Any]) -> List[Type[Tool]]:
             tools = loader.generate_tools()
             tool_classes.extend(tools)
 
-            logger.info(f"Loaded {len(tools)} tools from OpenAPI collection '{tool_name}'")
+            logger.info(
+                f"Loaded {len(tools)} tools from OpenAPI collection '{tool_name}'"
+            )
 
         except OpenAPIParseError as e:
             logger.error(f"Failed to parse OpenAPI spec for '{tool_name}': {e}")
@@ -524,7 +539,9 @@ def _fetch_spec_from_url(url: str) -> Dict[str, Any]:
     _validate_domain(url, allowed_domains)
 
     # Fetch with size limit
-    max_size = int(os.getenv("OPENAPI_MAX_SPEC_SIZE", str(5 * 1024 * 1024)))  # 5MB default
+    max_size = int(
+        os.getenv("OPENAPI_MAX_SPEC_SIZE", str(5 * 1024 * 1024))
+    )  # 5MB default
     timeout = float(os.getenv("OPENAPI_FETCH_TIMEOUT", "30"))
 
     try:

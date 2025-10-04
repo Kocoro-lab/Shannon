@@ -58,7 +58,9 @@ class Settings(BaseSettings):
     # Tool-specific rate limits (per minute)
     web_search_rate_limit: int = Field(default=60, env="WEB_SEARCH_RATE_LIMIT")
     calculator_rate_limit: int = Field(default=1000, env="CALCULATOR_RATE_LIMIT")
-    python_executor_rate_limit: int = Field(default=30, env="PYTHON_EXECUTOR_RATE_LIMIT")
+    python_executor_rate_limit: int = Field(
+        default=30, env="PYTHON_EXECUTOR_RATE_LIMIT"
+    )
 
     # Token budget management
     max_tokens_per_request: int = Field(default=4000, env="MAX_TOKENS_PER_REQUEST")
@@ -68,7 +70,9 @@ class Settings(BaseSettings):
     enable_llm_events: bool = Field(default=True, env="ENABLE_LLM_EVENTS")
     enable_llm_partials: bool = Field(default=True, env="ENABLE_LLM_PARTIALS")
     partial_chunk_chars: int = Field(default=512, env="PARTIAL_CHUNK_CHARS")
-    events_ingest_url: str = Field(default="http://orchestrator:8081/events", env="EVENTS_INGEST_URL")
+    events_ingest_url: str = Field(
+        default="http://orchestrator:8081/events", env="EVENTS_INGEST_URL"
+    )
     events_auth_token: Optional[str] = Field(default=None, env="EVENTS_AUTH_TOKEN")
 
     class Config:

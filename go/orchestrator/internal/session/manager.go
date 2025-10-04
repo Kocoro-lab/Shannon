@@ -22,7 +22,7 @@ type Manager struct {
 	client      *circuitbreaker.RedisWrapper
 	logger      *zap.Logger
 	ttl         time.Duration
-	maxHistory  int                  // Maximum messages to keep per session
+	maxHistory  int // Maximum messages to keep per session
 	mu          sync.RWMutex
 	localCache  map[string]*Session  // Local cache for performance
 	cacheAccess map[string]time.Time // Track last access time for LRU
@@ -68,7 +68,7 @@ func NewManagerWithConfig(redisAddr string, logger *zap.Logger, config *ManagerC
 
 	// Apply defaults if no config provided
 	maxHistory := 500
-	ttl := 720 * time.Hour  // 30 days default
+	ttl := 720 * time.Hour // 30 days default
 	cacheSize := 10000
 
 	if config != nil {

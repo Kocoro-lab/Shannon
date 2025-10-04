@@ -1,20 +1,26 @@
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 
 from ..providers.base import ModelTier
 from ..metrics import metrics, TimedOperation
 
 router = APIRouter()
 
+
 class CompletionRequest(BaseModel):
     messages: List[Dict[str, str]]
-    model_tier: Optional[str] = Field(default="small", description="Model tier: small, medium, large")
-    specific_model: Optional[str] = Field(default=None, description="Specific model to use")
+    model_tier: Optional[str] = Field(
+        default="small", description="Model tier: small, medium, large"
+    )
+    specific_model: Optional[str] = Field(
+        default=None, description="Specific model to use"
+    )
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: Optional[int] = Field(default=2000, ge=1, le=32000)
     tools: Optional[List[dict]] = None
     cache_key: Optional[str] = None
+
 
 @router.post("/")
 async def generate_completion(request: Request, body: CompletionRequest):
@@ -54,19 +60,27 @@ async def generate_completion(request: Request, body: CompletionRequest):
     except Exception:
         # If provider check fails unexpectedly, fall through to normal path which will error gracefully
         pass
-    
+
     # Convert tier string to enum
     tier = None
     if body.model_tier:
         try:
             tier = ModelTier(body.model_tier.lower())
         except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid model tier: {body.model_tier}")
-    
+            raise HTTPException(
+                status_code=400, detail=f"Invalid model tier: {body.model_tier}"
+            )
+
     with TimedOperation("llm_completion", "llm") as timer:
         try:
-            wf_id = request.headers.get('X-Parent-Workflow-ID') or request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id')
-            ag_id = request.headers.get('X-Agent-ID') or request.headers.get('x-agent-id')
+            wf_id = (
+                request.headers.get("X-Parent-Workflow-ID")
+                or request.headers.get("X-Workflow-ID")
+                or request.headers.get("x-workflow-id")
+            )
+            ag_id = request.headers.get("X-Agent-ID") or request.headers.get(
+                "x-agent-id"
+            )
             # Generate completion
             result = await providers.generate_completion(
                 messages=body.messages,
@@ -76,7 +90,7 @@ async def generate_completion(request: Request, body: CompletionRequest):
                 max_tokens=body.max_tokens,
                 tools=body.tools,
                 workflow_id=wf_id,
-                agent_id=ag_id
+                agent_id=ag_id,
             )
         except Exception as e:
             metrics.record_error("CompletionError", "llm")
@@ -99,7 +113,7 @@ async def generate_completion(request: Request, body: CompletionRequest):
         duration=timer.duration or 0.0,
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
-        cost=cost
+        cost=cost,
     )
 
     return result

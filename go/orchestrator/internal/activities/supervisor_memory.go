@@ -3,6 +3,7 @@ package activities
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"strconv"
@@ -50,7 +51,7 @@ var (
 	StrategyExplorationRate = getFloatEnvWithRange("STRATEGY_EXPLORATION_RATE", 0.1, 0.0, 1.0)
 
 	// Speed vs accuracy thresholds
-	SpeedPriorityThreshold = getFloatEnvWithRange("SPEED_PRIORITY_THRESHOLD", 0.3, 0.0, 1.0)
+	SpeedPriorityThreshold    = getFloatEnvWithRange("SPEED_PRIORITY_THRESHOLD", 0.3, 0.0, 1.0)
 	AccuracyPriorityThreshold = getFloatEnvWithRange("ACCURACY_PRIORITY_THRESHOLD", 0.8, 0.0, 1.0)
 
 	// Default speed vs accuracy balance
@@ -82,7 +83,7 @@ type SupervisorMemoryContext struct {
 type DecompositionMemory struct {
 	QueryPattern string    `json:"query_pattern"` // "optimize API endpoint"
 	Subtasks     []string  `json:"subtasks"`
-	Strategy     string    `json:"strategy"`    // "parallel", "sequential"
+	Strategy     string    `json:"strategy"` // "parallel", "sequential"
 	SuccessRate  float64   `json:"success_rate"`
 	AvgDuration  int64     `json:"avg_duration_ms"`
 	LastUsed     time.Time `json:"last_used"`
@@ -94,6 +95,15 @@ type StrategyStats struct {
 	AvgDuration  int64     `json:"avg_duration_ms"`
 	AvgTokenCost int       `json:"avg_token_cost"`
 	LastAccessed time.Time `json:"last_accessed"`
+}
+
+type strategyCandidate struct {
+	name      string
+	success   float64
+	duration  int64
+	tokenCost int
+	totalRuns int
+	score     float64
 }
 
 type TeamMemory struct {
@@ -128,6 +138,21 @@ type DecompositionSuggestion struct {
 	AddExplanations     bool
 }
 
+// RecommendStrategyInput captures the request for a strategy recommendation.
+type RecommendStrategyInput struct {
+	SessionID string `json:"session_id"`
+	UserID    string `json:"user_id"`
+	TenantID  string `json:"tenant_id"`
+	Query     string `json:"query"`
+}
+
+// RecommendStrategyOutput returns the suggested strategy (if any).
+type RecommendStrategyOutput struct {
+	Strategy   string  `json:"strategy"`
+	Confidence float64 `json:"confidence"`
+	Source     string  `json:"source"`
+}
+
 // FetchSupervisorMemoryInput for the enhanced activity
 type FetchSupervisorMemoryInput struct {
 	SessionID string `json:"session_id"`
@@ -154,8 +179,8 @@ func getLoggerSafe(ctx context.Context) (logger log.Logger) {
 type fallbackLogger struct{}
 
 func (f *fallbackLogger) Debug(msg string, keyvals ...interface{}) {}
-func (f *fallbackLogger) Info(msg string, keyvals ...interface{}) {}
-func (f *fallbackLogger) Warn(msg string, keyvals ...interface{}) {}
+func (f *fallbackLogger) Info(msg string, keyvals ...interface{})  {}
+func (f *fallbackLogger) Warn(msg string, keyvals ...interface{})  {}
 func (f *fallbackLogger) Error(msg string, keyvals ...interface{}) {}
 
 // FetchSupervisorMemory fetches and enriches memory for strategic decisions
@@ -240,15 +265,15 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
 		return err
 	}
 
-    // Search for similar decompositions recorded for this session
-    results, err := vdb.SearchDecompositionPatterns(ctx, queryEmbedding, sessionID, "", 5, 0.7)
-    if err != nil {
-        // Collection might not exist yet, log but don't fail
-        logger := getLoggerSafe(ctx)
-        logger.Info("Decomposition patterns collection not found or search failed",
-            "error", err, "session_id", sessionID)
-        return nil
-    }
+	// Search for similar decompositions recorded for this session
+	results, err := vdb.SearchDecompositionPatterns(ctx, queryEmbedding, sessionID, "", 5, 0.7)
+	if err != nil {
+		// Collection might not exist yet, log but don't fail
+		logger := getLoggerSafe(ctx)
+		logger.Info("Decomposition patterns collection not found or search failed",
+			"error", err, "session_id", sessionID)
+		return nil
+	}
 
 	for _, result := range results {
 		if pattern, ok := result.Payload["pattern"].(string); ok {
@@ -270,21 +295,21 @@ func fetchDecompositionPatterns(ctx context.Context, memory *SupervisorMemoryCon
 				dm.Strategy = strategy
 			}
 
-            // Extract performance indicators (support both aggregated and raw keys)
-            if sr, ok := result.Payload["success_rate"].(float64); ok {
-                dm.SuccessRate = sr
-            } else if s, ok := result.Payload["success"].(bool); ok {
-                if s {
-                    dm.SuccessRate = 1.0
-                } else {
-                    dm.SuccessRate = 0.0
-                }
-            }
-            if dur, ok := result.Payload["avg_duration_ms"].(float64); ok {
-                dm.AvgDuration = int64(dur)
-            } else if d2, ok := result.Payload["duration_ms"].(float64); ok {
-                dm.AvgDuration = int64(d2)
-            }
+			// Extract performance indicators (support both aggregated and raw keys)
+			if sr, ok := result.Payload["success_rate"].(float64); ok {
+				dm.SuccessRate = sr
+			} else if s, ok := result.Payload["success"].(bool); ok {
+				if s {
+					dm.SuccessRate = 1.0
+				} else {
+					dm.SuccessRate = 0.0
+				}
+			}
+			if dur, ok := result.Payload["avg_duration_ms"].(float64); ok {
+				dm.AvgDuration = int64(dur)
+			} else if d2, ok := result.Payload["duration_ms"].(float64); ok {
+				dm.AvgDuration = int64(d2)
+			}
 
 			memory.DecompositionHistory = append(memory.DecompositionHistory, dm)
 		}
@@ -308,8 +333,8 @@ func fetchStrategyPerformance(ctx context.Context, memory *SupervisorMemoryConte
 			return fmt.Errorf("database connection unavailable")
 		}
 
-				// Query agent_executions joined with task_executions for session/user filtering
-				query := `
+		// Query agent_executions joined with task_executions for session/user filtering
+		query := `
 					SELECT
 						COALESCE(ae.strategy, ae.metadata->>'strategy') AS strategy,
 						COUNT(*) AS total_runs,
@@ -405,7 +430,7 @@ func loadUserPreferences(ctx context.Context, memory *SupervisorMemoryContext, s
 
 	// Get average response length preference
 	var avgResponseLength float64
-    err := db.QueryRowContext(ctx, `
+	err := db.QueryRowContext(ctx, `
         SELECT AVG(LENGTH(result))
         FROM task_executions
         WHERE session_id = $1 OR user_id::text = $2
@@ -424,7 +449,7 @@ func loadUserPreferences(ctx context.Context, memory *SupervisorMemoryContext, s
 
 	// Infer expertise level from query complexity
 	var avgComplexity float64
-    err = db.QueryRowContext(ctx, `
+	err = db.QueryRowContext(ctx, `
         SELECT AVG(complexity_score)
         FROM task_executions
         WHERE session_id = $1 OR user_id::text = $2
@@ -456,6 +481,130 @@ func loadUserPreferences(ctx context.Context, memory *SupervisorMemoryContext, s
 	// metrics.UserPreferenceInferenceAccuracy.Set(calculatedAccuracy)
 
 	return nil
+}
+
+// RecommendWorkflowStrategy provides a suggested workflow strategy using supervisor memory.
+func RecommendWorkflowStrategy(ctx context.Context, input RecommendStrategyInput) (RecommendStrategyOutput, error) {
+	memory, err := FetchSupervisorMemory(ctx, FetchSupervisorMemoryInput{
+		SessionID: input.SessionID,
+		UserID:    input.UserID,
+		TenantID:  input.TenantID,
+		Query:     input.Query,
+	})
+	if err != nil {
+		return RecommendStrategyOutput{}, err
+	}
+
+	if memory == nil || len(memory.StrategyPerformance) == 0 {
+		return RecommendStrategyOutput{Source: "memory_empty"}, nil
+	}
+
+	candidates := make([]strategyCandidate, 0, len(memory.StrategyPerformance))
+	for name, stats := range memory.StrategyPerformance {
+		if stats.TotalRuns == 0 {
+			continue
+		}
+		candidates = append(candidates, strategyCandidate{
+			name:      strings.ToLower(strings.TrimSpace(name)),
+			success:   stats.SuccessRate,
+			duration:  stats.AvgDuration,
+			tokenCost: stats.AvgTokenCost,
+			totalRuns: stats.TotalRuns,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return RecommendStrategyOutput{Source: "insufficient_data"}, nil
+	}
+
+	totalRuns := 0
+	for _, cand := range candidates {
+		totalRuns += cand.totalRuns
+	}
+
+	best := candidates[0]
+	best.score = scoreCandidate(best, totalRuns, input.Query)
+	for i := 1; i < len(candidates); i++ {
+		cand := candidates[i]
+		cand.score = scoreCandidate(cand, totalRuns, input.Query)
+		if cand.score > best.score {
+			best = cand
+		}
+	}
+
+	if StrategyExplorationRate > 0 {
+		if rand.Float64() < StrategyExplorationRate {
+			return RecommendStrategyOutput{Source: "explore"}, nil
+		}
+	}
+
+	return RecommendStrategyOutput{
+		Strategy:   best.name,
+		Confidence: clamp01(best.score),
+		Source:     "memory",
+	}, nil
+}
+
+func scoreCandidate(c strategyCandidate, totalRuns int, query string) float64 {
+	if c.totalRuns == 0 {
+		return 1.0 + keywordBoostForStrategy(query, c.name)
+	}
+	denominator := float64(c.totalRuns)
+	if denominator <= 0 {
+		denominator = 1
+	}
+	logComponent := math.Log(float64(totalRuns) + 1)
+	if logComponent < 1 {
+		logComponent = 1
+	}
+	exploration := math.Sqrt((2 * logComponent) / denominator)
+	durationPenalty := 0.0
+	if c.duration > 0 {
+		durationPenalty = float64(c.duration) / 60000.0
+	}
+	tokenPenalty := 0.0
+	if c.tokenCost > 0 {
+		tokenPenalty = float64(c.tokenCost) / 50000.0
+	}
+	boost := keywordBoostForStrategy(query, c.name)
+	score := c.success + exploration + boost - 0.05*durationPenalty - 0.02*tokenPenalty
+	if score < 0 {
+		score = 0
+	}
+	return score
+}
+
+var strategyKeywords = map[string][]string{
+	"react":            {"quick", "fast", "simple", "lookup", "immediately"},
+	"exploratory":      {"brainstorm", "ideas", "explore", "options"},
+	"research":         {"research", "market", "study", "analysis"},
+	"scientific":       {"experiment", "hypothesis", "evidence", "data"},
+	"simple":           {"summary", "brief", "short", "concise"},
+	"chain_of_thought": {"reason", "explain", "steps", "detailed"},
+}
+
+func keywordBoostForStrategy(query, strategy string) float64 {
+	keywords := strategyKeywords[strategy]
+	if len(keywords) == 0 {
+		return 0
+	}
+	lower := strings.ToLower(query)
+	for _, kw := range keywords {
+		if strings.Contains(lower, kw) {
+			return 0.05
+		}
+	}
+	return 0
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // DecompositionAdvisor suggests decomposition based on memory
@@ -678,14 +827,14 @@ func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) er
 
 	// Prepare payload
 	payload := map[string]interface{}{
-		"pattern":       input.Query,
-		"subtasks":      input.Subtasks,
-		"strategy":      input.Strategy,
-		"success":       input.Success,
-		"duration_ms":   input.DurationMs,
-		"tokens_used":   input.TokensUsed,
-		"session_id":    input.SessionID,
-		"timestamp":     time.Now().Unix(),
+		"pattern":     input.Query,
+		"subtasks":    input.Subtasks,
+		"strategy":    input.Strategy,
+		"success":     input.Success,
+		"duration_ms": input.DurationMs,
+		"tokens_used": input.TokensUsed,
+		"session_id":  input.SessionID,
+		"timestamp":   time.Now().Unix(),
 	}
 
 	if input.ErrorMessage != "" {
@@ -700,24 +849,24 @@ func RecordDecomposition(ctx context.Context, input RecordDecompositionInput) er
 		Payload: payload,
 	}
 
-    if _, err := vdb.Upsert(ctx, collection, []vectordb.UpsertItem{point}); err != nil {
-        logger.Error("Failed to store decomposition pattern",
-            "error", err, "collection", collection,
-            "session_id", input.SessionID, "strategy", input.Strategy)
-        // TODO: Add metrics.VectorDBErrors when available
+	if _, err := vdb.Upsert(ctx, collection, []vectordb.UpsertItem{point}); err != nil {
+		logger.Error("Failed to store decomposition pattern",
+			"error", err, "collection", collection,
+			"session_id", input.SessionID, "strategy", input.Strategy)
+		// TODO: Add metrics.VectorDBErrors when available
 
-        // Fallback: try storing in generic task_embeddings so retrieval still has signal
-        if _, fbErr := vdb.UpsertTaskEmbedding(ctx, embedding, payload); fbErr != nil {
-            logger.Error("Fallback store to task_embeddings also failed",
-                "error", fbErr, "session_id", input.SessionID)
-            // TODO: Add metrics.VectorDBErrors when available
-        } else {
-            logger.Info("Successfully stored decomposition pattern in fallback collection",
-                "session_id", input.SessionID)
-        }
-        // Non-critical error, don't fail the activity
-        return nil
-    }
+		// Fallback: try storing in generic task_embeddings so retrieval still has signal
+		if _, fbErr := vdb.UpsertTaskEmbedding(ctx, embedding, payload); fbErr != nil {
+			logger.Error("Fallback store to task_embeddings also failed",
+				"error", fbErr, "session_id", input.SessionID)
+			// TODO: Add metrics.VectorDBErrors when available
+		} else {
+			logger.Info("Successfully stored decomposition pattern in fallback collection",
+				"session_id", input.SessionID)
+		}
+		// Non-critical error, don't fail the activity
+		return nil
+	}
 
 	logger.Info("Recorded decomposition pattern",
 		"strategy", input.Strategy,
@@ -781,4 +930,27 @@ func cleanupStrategyPerformance(memory *SupervisorMemoryContext, logger log.Logg
 			"removed_count", expiredCount,
 			"remaining_count", len(memory.StrategyPerformance))
 	}
+}
+
+// RecordLearningRouterMetrics records metrics for learning router recommendations
+func RecordLearningRouterMetrics(ctx context.Context, input map[string]interface{}) error {
+	latency, _ := input["latency_seconds"].(float64)
+	strategy, _ := input["strategy"].(string)
+	source, _ := input["source"].(string)
+	confidence, _ := input["confidence"].(float64)
+	success, _ := input["success"].(bool)
+
+	successStr := "false"
+	if success {
+		successStr = "true"
+	}
+
+	// Record metrics using global metrics package
+	metrics.LearningRouterLatency.Observe(latency)
+	metrics.LearningRouterRecommendations.WithLabelValues(strategy, source, successStr).Inc()
+	if success && strategy != "none" {
+		metrics.LearningRouterConfidence.WithLabelValues(strategy).Observe(confidence)
+	}
+
+	return nil
 }

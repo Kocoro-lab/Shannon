@@ -12,11 +12,11 @@ import (
 // PersistDebateConsensusInput stores the outcome of a debate
 type PersistDebateConsensusInput struct {
 	SessionID        string                 `json:"session_id"`
-	Topic            string                 `json:"topic"`           // Original query/topic
+	Topic            string                 `json:"topic"`            // Original query/topic
 	WinningPosition  string                 `json:"winning_position"` // The consensus or winning argument
 	ConsensusReached bool                   `json:"consensus_reached"`
 	Confidence       float64                `json:"confidence"`
-	Positions        []string               `json:"positions"`       // All debate positions
+	Positions        []string               `json:"positions"` // All debate positions
 	Metadata         map[string]interface{} `json:"metadata"`
 }
 
@@ -47,7 +47,7 @@ func PersistDebateConsensus(ctx context.Context, in PersistDebateConsensusInput)
 
 	// Build payload with consensus metadata
 	payload := map[string]interface{}{
-		"type":              "consensus",  // IMPORTANT: Identifies this as consensus memory
+		"type":              "consensus", // IMPORTANT: Identifies this as consensus memory
 		"session_id":        in.SessionID,
 		"topic":             in.Topic,
 		"winning_position":  in.WinningPosition,

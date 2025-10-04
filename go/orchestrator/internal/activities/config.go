@@ -63,6 +63,9 @@ type WorkflowConfig struct {
 	// P2P Coordination config
 	P2PCoordinationEnabled bool `json:"p2p_coordination_enabled"`
 	P2PTimeoutSeconds      int  `json:"p2p_timeout_seconds"`
+
+	// Templates
+	TemplateFallbackEnabled bool `json:"template_fallback_enabled"`
 }
 
 // GetWorkflowConfig is an activity that returns workflow configuration
@@ -211,7 +214,7 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 		config.ComplexitySimpleThreshold = 0.3
 	}
 	if config.ComplexityMediumThreshold == 0 {
-		config.ComplexityMediumThreshold = 0.5  // Changed from hardcoded 0.7
+		config.ComplexityMediumThreshold = 0.5 // Changed from hardcoded 0.7
 	}
 
 	// Approval defaults - check environment variables first
@@ -259,6 +262,13 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 		if config.P2PTimeoutSeconds == 0 {
 			config.P2PTimeoutSeconds = 360 // 6 minutes default
 		}
+	}
+
+	// Template fallback (prefer env override; default false)
+	if env := os.Getenv("TEMPLATE_FALLBACK_ENABLED"); env != "" {
+		config.TemplateFallbackEnabled = env == "true" || env == "1"
+	} else {
+		config.TemplateFallbackEnabled = v.GetBool("workflows.templates.fallback_to_ai")
 	}
 
 	return config, nil

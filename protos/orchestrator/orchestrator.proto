@@ -13,6 +13,8 @@ service OrchestratorService {
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
   rpc ListTasks(ListTasksRequest) returns (ListTasksResponse);
   rpc GetSessionContext(GetSessionContextRequest) returns (GetSessionContextResponse);
+  // Template catalog
+  rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
   
   // Human intervention endpoints
   rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
@@ -51,6 +53,7 @@ message SubmitTaskRequest {
   bool auto_decompose = 4;
   TaskDecomposition manual_decomposition = 5;
   SessionContext session_context = 6;  // Session continuity support
+  bool require_approval = 10; // Require human approval before executing
 }
 
 // Session context for multi-turn conversations
@@ -126,6 +129,20 @@ message GetSessionContextResponse {
   shannon.common.TokenUsage session_token_usage = 4;
 }
 
+// Template catalog messages
+message TemplateSummary {
+  string name = 1;
+  string version = 2;
+  string key = 3;
+  string content_hash = 4;
+}
+
+message ListTemplatesRequest {}
+
+message ListTemplatesResponse {
+  repeated TemplateSummary templates = 1;
+}
+
 // Human intervention messages
 message ApproveTaskRequest {
   string approval_id = 1;
@@ -160,4 +177,3 @@ message PendingApproval {
   google.protobuf.Timestamp requested_at = 6;
   google.protobuf.Struct metadata = 7;
 }
-
