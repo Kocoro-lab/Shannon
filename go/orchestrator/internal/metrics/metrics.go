@@ -32,6 +32,45 @@ var (
 		[]string{"workflow_type", "mode"},
 	)
 
+	// Template metrics
+	TemplatesLoaded = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_template_loaded_total",
+			Help: "Total number of templates successfully loaded",
+		},
+		[]string{"name"},
+	)
+
+	TemplateValidationErrors = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_template_validation_errors_total",
+			Help: "Total number of template validation failures",
+		},
+		[]string{"reason"},
+	)
+
+	// Note: Template compilation cache not implemented yet
+	// Templates are compiled on-demand; compilation is fast enough
+	// that caching provides minimal benefit. May add in future if needed.
+
+	PatternDegraded = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_pattern_degraded_total",
+			Help: "Number of times a pattern degraded to a simpler strategy",
+		},
+		[]string{"from", "to", "template", "node"},
+	)
+
+	// Rate control metrics
+	RateLimitDelay = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "shannon_rate_limit_delay_seconds",
+			Help:    "Rate limit delay applied per provider and tier",
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
+		},
+		[]string{"provider", "tier"},
+	)
+
 	// Task metrics
 	TasksSubmitted = promauto.NewCounter(
 		prometheus.CounterOpts{
