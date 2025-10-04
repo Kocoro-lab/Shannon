@@ -57,15 +57,8 @@ from functools import lru_cache
 try:
     # These imports will fail until langchain is added to requirements.txt
     from langchain.tools import load_tools, Tool
-    from langchain_community.tools import (
-        # Popular integrations that Shannon could expose
-        NotionDBLoader,
-        SlackSendMessage,
-        GmailSendMessage,
-        GoogleDriveSearchTool,
-        ZapierNLARunAction,
-        # Add more as needed
-    )
+    # Note: Additional integrations (Notion, Slack, Gmail, Drive, Zapier) available
+    # in langchain_community.tools but not imported until needed
 
     LANGCHAIN_AVAILABLE = True
 except ImportError:
