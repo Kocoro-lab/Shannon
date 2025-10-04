@@ -177,118 +177,118 @@ func ExecuteParallel(
 		})
 	}
 
-    // Collect results
-    results := make([]activities.AgentExecutionResult, len(tasks))
-    totalTokens := 0
-    successCount := 0
-    errorCount := 0
+	// Collect results
+	results := make([]activities.AgentExecutionResult, len(tasks))
+	totalTokens := 0
+	successCount := 0
+	errorCount := 0
 
-    // Use a selector to receive futures and process completions in completion order
-    sel := workflow.NewSelector(ctx)
-    received := 0
-    skippedNil := 0
-    processed := 0
+	// Use a selector to receive futures and process completions in completion order
+	sel := workflow.NewSelector(ctx)
+	received := 0
+	skippedNil := 0
+	processed := 0
 
-    var registerReceive func()
-    registerReceive = func() {
-        sel.AddReceive(futuresChan, func(c workflow.ReceiveChannel, more bool) {
-            var fwi futureWithIndex
-            c.Receive(ctx, &fwi)
-            received++
-            if fwi.Future == nil {
-                // Failed to acquire or schedule; count as error and skip
-                errorCount++
-                skippedNil++
-            } else {
-                fwi := fwi // capture for closure
-                sel.AddFuture(fwi.Future, func(f workflow.Future) {
-                    var result activities.AgentExecutionResult
-                    err := f.Get(ctx, &result)
-                    if err != nil {
-                        logger.Error("Agent execution failed",
-                            "task_id", tasks[fwi.Index].ID,
-                            "error", err,
-                        )
-                        errorCount++
-                        // Emit error event
-                        if config.EmitEvents {
-                            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-                            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-                                activities.EmitTaskUpdateInput{
-                                    WorkflowID: wid,
-                                    EventType:  activities.StreamEventErrorOccurred,
-                                    AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
-                                    Message:    err.Error(),
-                                    Timestamp:  workflow.Now(ctx),
-                                }).Get(ctx, nil)
-                        }
-                    } else {
-                        results[fwi.Index] = result
-                        totalTokens += result.TokensUsed
-                        successCount++
+	var registerReceive func()
+	registerReceive = func() {
+		sel.AddReceive(futuresChan, func(c workflow.ReceiveChannel, more bool) {
+			var fwi futureWithIndex
+			c.Receive(ctx, &fwi)
+			received++
+			if fwi.Future == nil {
+				// Failed to acquire or schedule; count as error and skip
+				errorCount++
+				skippedNil++
+			} else {
+				fwi := fwi // capture for closure
+				sel.AddFuture(fwi.Future, func(f workflow.Future) {
+					var result activities.AgentExecutionResult
+					err := f.Get(ctx, &result)
+					if err != nil {
+						logger.Error("Agent execution failed",
+							"task_id", tasks[fwi.Index].ID,
+							"error", err,
+						)
+						errorCount++
+						// Emit error event
+						if config.EmitEvents {
+							wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+								activities.EmitTaskUpdateInput{
+									WorkflowID: wid,
+									EventType:  activities.StreamEventErrorOccurred,
+									AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
+									Message:    err.Error(),
+									Timestamp:  workflow.Now(ctx),
+								}).Get(ctx, nil)
+						}
+					} else {
+						results[fwi.Index] = result
+						totalTokens += result.TokensUsed
+						successCount++
 
-                        // Persist agent execution (fire-and-forget)
-                        workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-                        persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
+						// Persist agent execution (fire-and-forget)
+						workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+						persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
 
-                        // Emit completion event
-                        if config.EmitEvents {
-                            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-                            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-                                activities.EmitTaskUpdateInput{
-                                    WorkflowID: wid,
-                                    EventType:  activities.StreamEventAgentCompleted,
-                                    AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
-                                    Timestamp:  workflow.Now(ctx),
-                                }).Get(ctx, nil)
-                        }
+						// Emit completion event
+						if config.EmitEvents {
+							wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+								activities.EmitTaskUpdateInput{
+									WorkflowID: wid,
+									EventType:  activities.StreamEventAgentCompleted,
+									AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
+									Timestamp:  workflow.Now(ctx),
+								}).Get(ctx, nil)
+						}
 
-                        // Record agent memory if session exists
-                        if sessionID != "" {
-                            detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
-                            workflow.ExecuteActivity(detachedCtx,
-                                activities.RecordAgentMemory,
-                                activities.RecordAgentMemoryInput{
-                                    SessionID: sessionID,
-                                    UserID:    userID,
-                                    AgentID:   result.AgentID,
-                                    Role:      tasks[fwi.Index].Role,
-                                    Query:     tasks[fwi.Index].Description,
-                                    Answer:    result.Response,
-                                    Model:     result.ModelUsed,
-                                    RedactPII: true,
-                                    Extra: map[string]interface{}{
-                                        "task_id": tasks[fwi.Index].ID,
-                                    },
-                                })
-                        }
-                    }
+						// Record agent memory if session exists
+						if sessionID != "" {
+							detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
+							workflow.ExecuteActivity(detachedCtx,
+								activities.RecordAgentMemory,
+								activities.RecordAgentMemoryInput{
+									SessionID: sessionID,
+									UserID:    userID,
+									AgentID:   result.AgentID,
+									Role:      tasks[fwi.Index].Role,
+									Query:     tasks[fwi.Index].Description,
+									Answer:    result.Response,
+									Model:     result.ModelUsed,
+									RedactPII: true,
+									Extra: map[string]interface{}{
+										"task_id": tasks[fwi.Index].ID,
+									},
+								})
+						}
+					}
 
-                    // Signal producer that we're done with this future (release semaphore)
-                    if fwi.Release != nil {
-                        var sig struct{}
-                        fwi.Release.Send(ctx, sig)
-                    }
-                    processed++
-                })
-            }
+					// Signal producer that we're done with this future (release semaphore)
+					if fwi.Release != nil {
+						var sig struct{}
+						fwi.Release.Send(ctx, sig)
+					}
+					processed++
+				})
+			}
 
-            // Continue receiving until we've seen all producer messages
-            if received < len(tasks) {
-                registerReceive()
-            }
-        })
-    }
+			// Continue receiving until we've seen all producer messages
+			if received < len(tasks) {
+				registerReceive()
+			}
+		})
+	}
 
-    // Prime the selector to start receiving
-    if len(tasks) > 0 {
-        registerReceive()
-    }
+	// Prime the selector to start receiving
+	if len(tasks) > 0 {
+		registerReceive()
+	}
 
-    // Event loop: select until all non-nil futures are processed
-    for processed < (len(tasks) - skippedNil) {
-        sel.Select(ctx)
-    }
+	// Event loop: select until all non-nil futures are processed
+	for processed < (len(tasks) - skippedNil) {
+		sel.Select(ctx)
+	}
 
 	logger.Info("Parallel execution completed",
 		"total_tasks", len(tasks),

@@ -1,0 +1,23 @@
+name: research_summary_enterprise
+description: Executive-ready research workflow with additional validation
+extends:
+  - research_summary
+defaults:
+  model_tier: large
+  budget_agent_max: 18000
+  require_approval: true
+metadata:
+  audience: executive
+  output_format: "pdf"
+nodes:
+  - id: discover
+    metadata:
+      sources: curated
+  - id: explore
+    budget_max: 4000
+    metadata:
+      exploration_depth: "deep"
+  - id: finalize
+    metadata:
+      summary_style: "executive_brief"
+      include_risks: true

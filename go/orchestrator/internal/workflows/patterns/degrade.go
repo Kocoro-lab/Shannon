@@ -4,10 +4,10 @@ package patterns
 // Updated for modern LLMs with 128K+ context windows (2025).
 // Previous thresholds were designed for GPT-3.5 era (4K-8K context).
 var defaultDegradeThresholds = map[PatternType]int{
-	PatternTreeOfThoughts: 8000,  // Was 2000
-	PatternChainOfThought: 4000,  // Was 1000
-	PatternDebate:         6000,  // Was 1500
-	PatternReflection:     3000,  // Was 800
+	PatternTreeOfThoughts: 8000, // Was 2000
+	PatternChainOfThought: 4000, // Was 1000
+	PatternDebate:         6000, // Was 1500
+	PatternReflection:     3000, // Was 800
 }
 
 // degradeChain defines the next strategy when degrading from a given pattern.

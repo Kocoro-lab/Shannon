@@ -70,14 +70,14 @@ type qdrantQueryRequest struct {
 	ScoreThreshold *float64               `json:"score_threshold,omitempty"`
 	WithPayload    bool                   `json:"with_payload"`
 	Filter         map[string]interface{} `json:"filter,omitempty"`
-    WithVector     bool                   `json:"with_vector,omitempty"`
+	WithVector     bool                   `json:"with_vector,omitempty"`
 }
 
 type qdrantPoint struct {
 	ID      interface{}            `json:"id"`
 	Score   float64                `json:"score"`
 	Payload map[string]interface{} `json:"payload"`
-    Vector  []float64              `json:"vector,omitempty"`
+	Vector  []float64              `json:"vector,omitempty"`
 }
 
 type qdrantSearchResponse struct {
@@ -273,7 +273,6 @@ func (c *Client) GetSessionContextSemanticByEmbedding(ctx context.Context, embed
 		return nil, err
 	}
 
-
 	// Convert to ContextItem format
 	items := make([]ContextItem, 0, len(points))
 	for _, point := range points {
@@ -379,59 +378,61 @@ func (c *Client) SearchSummaries(ctx context.Context, embedding []float32, sessi
 
 // SearchDecompositionPatterns performs semantic search in the decomposition_patterns collection filtered by session
 func (c *Client) SearchDecompositionPatterns(ctx context.Context, embedding []float32, sessionID string, tenantID string, limit int, threshold float64) ([]ContextItem, error) {
-    if c == nil || !c.cfg.Enabled {
-        return nil, nil
-    }
+	if c == nil || !c.cfg.Enabled {
+		return nil, nil
+	}
 
-    // Build Qdrant filter for session (and optional tenant)
-    mustClauses := []map[string]interface{}{
-        {
-            "key": "session_id",
-            "match": map[string]interface{}{
-                "value": sessionID,
-            },
-        },
-    }
-    if tenantID != "" {
-        mustClauses = append(mustClauses, map[string]interface{}{
-            "key": "tenant_id",
-            "match": map[string]interface{}{
-                "value": tenantID,
-            },
-        })
-    }
-    filter := map[string]interface{}{
-        "must": mustClauses,
-    }
+	// Build Qdrant filter for session (and optional tenant)
+	mustClauses := []map[string]interface{}{
+		{
+			"key": "session_id",
+			"match": map[string]interface{}{
+				"value": sessionID,
+			},
+		},
+	}
+	if tenantID != "" {
+		mustClauses = append(mustClauses, map[string]interface{}{
+			"key": "tenant_id",
+			"match": map[string]interface{}{
+				"value": tenantID,
+			},
+		})
+	}
+	filter := map[string]interface{}{
+		"must": mustClauses,
+	}
 
-    topK := limit
-    if topK <= 0 {
-        topK = c.cfg.TopK
-    }
+	topK := limit
+	if topK <= 0 {
+		topK = c.cfg.TopK
+	}
 
-    // Hardcode collection name for now to keep API simple
-    const collection = "decomposition_patterns"
-    points, err := c.search(ctx, collection, embedding, topK, threshold, filter)
-    if err != nil {
-        return nil, err
-    }
+	// Hardcode collection name for now to keep API simple
+	const collection = "decomposition_patterns"
+	points, err := c.search(ctx, collection, embedding, topK, threshold, filter)
+	if err != nil {
+		return nil, err
+	}
 
-    items := make([]ContextItem, 0, len(points))
-    for _, point := range points {
-        payload := point.Payload
-        if payload == nil {
-            payload = make(map[string]interface{})
-        }
-        if point.ID != nil {
-            payload["_point_id"] = fmt.Sprintf("%v", point.ID)
-        }
-        item := ContextItem{Score: point.Score, Payload: payload}
-        if len(point.Vector) > 0 {
-            v := make([]float32, len(point.Vector))
-            for i, f := range point.Vector { v[i] = float32(f) }
-            item.Vector = v
-        }
-        items = append(items, item)
-    }
-    return items, nil
+	items := make([]ContextItem, 0, len(points))
+	for _, point := range points {
+		payload := point.Payload
+		if payload == nil {
+			payload = make(map[string]interface{})
+		}
+		if point.ID != nil {
+			payload["_point_id"] = fmt.Sprintf("%v", point.ID)
+		}
+		item := ContextItem{Score: point.Score, Payload: payload}
+		if len(point.Vector) > 0 {
+			v := make([]float32, len(point.Vector))
+			for i, f := range point.Vector {
+				v[i] = float32(f)
+			}
+			item.Vector = v
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }

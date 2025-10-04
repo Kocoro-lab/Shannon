@@ -1,16 +1,16 @@
 package workflows
 
 import (
-    "fmt"
-    "time"
-    "strings"
+	"fmt"
+	"strings"
+	"time"
 
-    "go.temporal.io/sdk/temporal"
-    "go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
 )
 
 // StreamingWorkflow executes tasks with streaming output and typed state management
@@ -261,42 +261,42 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	agentResults := make([]activities.AgentExecutionResult, len(results))
 	copy(agentResults, results)
 
-    if input.BypassSingleResult && len(agentResults) == 1 && agentResults[0].Success {
-        // Avoid bypass if the single result looks like raw JSON or comes from web_search
-        shouldBypass := true
-        if len(agentResults[0].ToolsUsed) > 0 {
-            for _, t := range agentResults[0].ToolsUsed {
-                if strings.EqualFold(t, "web_search") {
-                    shouldBypass = false
-                    break
-                }
-            }
-        }
-        if shouldBypass {
-            trimmed := strings.TrimSpace(agentResults[0].Response)
-            if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-                shouldBypass = false
-            }
-        }
+	if input.BypassSingleResult && len(agentResults) == 1 && agentResults[0].Success {
+		// Avoid bypass if the single result looks like raw JSON or comes from web_search
+		shouldBypass := true
+		if len(agentResults[0].ToolsUsed) > 0 {
+			for _, t := range agentResults[0].ToolsUsed {
+				if strings.EqualFold(t, "web_search") {
+					shouldBypass = false
+					break
+				}
+			}
+		}
+		if shouldBypass {
+			trimmed := strings.TrimSpace(agentResults[0].Response)
+			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+				shouldBypass = false
+			}
+		}
 
-        if shouldBypass {
-            synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
-        } else {
-            var err error
-            err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: agentResults}).Get(ctx, &synthesis)
-            if err != nil {
-                logger.Error("Result synthesis failed", "error", err)
-                return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-            }
-        }
-    } else {
-        var err error
-        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: agentResults}).Get(ctx, &synthesis)
-        if err != nil {
-            logger.Error("Result synthesis failed", "error", err)
-            return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-        }
-    }
+		if shouldBypass {
+			synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
+		} else {
+			var err error
+			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: agentResults}).Get(ctx, &synthesis)
+			if err != nil {
+				logger.Error("Result synthesis failed", "error", err)
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
+		}
+	} else {
+		var err error
+		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: agentResults}).Get(ctx, &synthesis)
+		if err != nil {
+			logger.Error("Result synthesis failed", "error", err)
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
+	}
 
 	logger.Info("ParallelStreamingWorkflow completed",
 		"num_streams", len(results),

@@ -379,7 +379,7 @@ nodes:
 		t.Fatalf("expected cycle detection error")
 	}
 	if err.Error() != "template inheritance cycle detected for 'template_a@v1'" &&
-	   err.Error() != "template inheritance cycle detected for 'template_b@v1'" {
+		err.Error() != "template inheritance cycle detected for 'template_b@v1'" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

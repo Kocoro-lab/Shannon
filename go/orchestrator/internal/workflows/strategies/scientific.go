@@ -61,10 +61,14 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		input.Query,
 	)
 
-    // Ensure parent workflow ID is included in context for downstream activities
-    cotCtx := make(map[string]interface{})
-    for k, v := range input.Context { cotCtx[k] = v }
-    if input.ParentWorkflowID != "" { cotCtx["parent_workflow_id"] = input.ParentWorkflowID }
+	// Ensure parent workflow ID is included in context for downstream activities
+	cotCtx := make(map[string]interface{})
+	for k, v := range input.Context {
+		cotCtx[k] = v
+	}
+	if input.ParentWorkflowID != "" {
+		cotCtx["parent_workflow_id"] = input.ParentWorkflowID
+	}
 
 	// Memory retrieval with gate precedence (hierarchical > simple session)
 	hierarchicalVersion := workflow.GetVersion(ctx, "memory_retrieval_v1", workflow.DefaultVersion, 1)
@@ -79,8 +83,8 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 				Query:        input.Query,
 				SessionID:    input.SessionID,
 				TenantID:     input.TenantID,
-				RecentTopK:   5,   // Fixed for determinism
-				SemanticTopK: 5,   // Fixed for determinism
+				RecentTopK:   5,    // Fixed for determinism
+				SemanticTopK: 5,    // Fixed for determinism
 				Threshold:    0.75, // Fixed semantic threshold
 			}).Get(ctx, &hierMemory)
 
@@ -113,15 +117,15 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		}
 	}
 
-    cotResult, err := patterns.ChainOfThought(
-        ctx,
-        hypothesisQuery,
-        cotCtx,
-        input.SessionID,
-        convertHistoryForAgent(input.History),
-        cotConfig,
-        opts,
-    )
+	cotResult, err := patterns.ChainOfThought(
+		ctx,
+		hypothesisQuery,
+		cotCtx,
+		input.SessionID,
+		convertHistoryForAgent(input.History),
+		cotConfig,
+		opts,
+	)
 
 	if err != nil {
 		logger.Error("Hypothesis generation failed", "error", err)
@@ -161,12 +165,14 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	}
 
 	// Prepare debate context with hypotheses
-    debateContext := make(map[string]interface{})
-    for k, v := range input.Context {
-        debateContext[k] = v
-    }
-    if input.ParentWorkflowID != "" { debateContext["parent_workflow_id"] = input.ParentWorkflowID }
-    debateContext["hypotheses"] = hypotheses
+	debateContext := make(map[string]interface{})
+	for k, v := range input.Context {
+		debateContext[k] = v
+	}
+	if input.ParentWorkflowID != "" {
+		debateContext["parent_workflow_id"] = input.ParentWorkflowID
+	}
+	debateContext["hypotheses"] = hypotheses
 	debateContext["original_query"] = input.Query
 	debateContext["confidence_threshold"] = config.ScientificConfidenceThreshold
 
@@ -226,10 +232,14 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		input.Query,
 	)
 
-    totContext := make(map[string]interface{})
-    for k, v := range input.Context { totContext[k] = v }
-    if input.ParentWorkflowID != "" { totContext["parent_workflow_id"] = input.ParentWorkflowID }
-    totContext["winning_hypothesis"] = debateResult.WinningArgument
+	totContext := make(map[string]interface{})
+	for k, v := range input.Context {
+		totContext[k] = v
+	}
+	if input.ParentWorkflowID != "" {
+		totContext["parent_workflow_id"] = input.ParentWorkflowID
+	}
+	totContext["winning_hypothesis"] = debateResult.WinningArgument
 	totContext["debate_positions"] = debateResult.Positions
 	totContext["consensus_reached"] = debateResult.ConsensusReached
 
@@ -264,9 +274,9 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 			var compressResult activities.CompressContextResult
 			err = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
 				activities.CompressContextInput{
-					SessionID:    input.SessionID,
-					History:      convertHistoryMapForCompression(input.History),
-					TargetTokens: int(float64(activities.GetModelWindowSize(opts.ModelTier)) * 0.375),
+					SessionID:        input.SessionID,
+					History:          convertHistoryMapForCompression(input.History),
+					TargetTokens:     int(float64(activities.GetModelWindowSize(opts.ModelTier)) * 0.375),
 					ParentWorkflowID: input.ParentWorkflowID,
 				}).Get(ctx, &compressResult)
 

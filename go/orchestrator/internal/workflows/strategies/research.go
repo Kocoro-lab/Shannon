@@ -33,16 +33,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
 
 	// Prepare base context (merge input.Context + SessionCtx)
-    baseContext := make(map[string]interface{})
-    for k, v := range input.Context {
-        baseContext[k] = v
-    }
-    for k, v := range input.SessionCtx {
-        baseContext[k] = v
-    }
-    if input.ParentWorkflowID != "" {
-        baseContext["parent_workflow_id"] = input.ParentWorkflowID
-    }
+	baseContext := make(map[string]interface{})
+	for k, v := range input.Context {
+		baseContext[k] = v
+	}
+	for k, v := range input.SessionCtx {
+		baseContext[k] = v
+	}
+	if input.ParentWorkflowID != "" {
+		baseContext["parent_workflow_id"] = input.ParentWorkflowID
+	}
 
 	// Memory retrieval with gate precedence (hierarchical > simple session)
 	hierarchicalVersion := workflow.GetVersion(ctx, "memory_retrieval_v1", workflow.DefaultVersion, 1)
@@ -56,8 +56,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				Query:        input.Query,
 				SessionID:    input.SessionID,
 				TenantID:     input.TenantID,
-				RecentTopK:   5,   // Fixed for determinism
-				SemanticTopK: 5,   // Fixed for determinism
+				RecentTopK:   5,    // Fixed for determinism
+				SemanticTopK: 5,    // Fixed for determinism
 				Threshold:    0.75, // Fixed semantic threshold
 			}).Get(ctx, &hierMemory)
 
@@ -115,9 +115,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			var compressResult activities.CompressContextResult
 			err = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
 				activities.CompressContextInput{
-					SessionID:    input.SessionID,
-					History:      convertHistoryMapForCompression(input.History),
-					TargetTokens: int(float64(activities.GetModelWindowSize(modelTier)) * 0.375),
+					SessionID:        input.SessionID,
+					History:          convertHistoryMapForCompression(input.History),
+					TargetTokens:     int(float64(activities.GetModelWindowSize(modelTier)) * 0.375),
 					ParentWorkflowID: input.ParentWorkflowID,
 				}).Get(ctx, &compressResult)
 
@@ -441,34 +441,38 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		"agent_count", len(agentResults),
 	)
 
-    // Aggregate tool errors across agent results
-    var toolErrors []map[string]string
-    for _, ar := range agentResults {
-        if len(ar.ToolExecutions) == 0 { continue }
-        for _, te := range ar.ToolExecutions {
-            if !te.Success || (te.Error != "") {
-                toolErrors = append(toolErrors, map[string]string{
-                    "agent_id": ar.AgentID,
-                    "tool":     te.Tool,
-                    "error":    te.Error,
-                })
-            }
-        }
-    }
+	// Aggregate tool errors across agent results
+	var toolErrors []map[string]string
+	for _, ar := range agentResults {
+		if len(ar.ToolExecutions) == 0 {
+			continue
+		}
+		for _, te := range ar.ToolExecutions {
+			if !te.Success || (te.Error != "") {
+				toolErrors = append(toolErrors, map[string]string{
+					"agent_id": ar.AgentID,
+					"tool":     te.Tool,
+					"error":    te.Error,
+				})
+			}
+		}
+	}
 
-    meta := map[string]interface{}{
-        "version":       "v2",
-        "complexity":    decomp.ComplexityScore,
-        "quality_score": qualityScore,
-        "agent_count":   len(agentResults),
-        "patterns_used": []string{"react", "parallel", "reflection"},
-    }
-    if len(toolErrors) > 0 { meta["tool_errors"] = toolErrors }
+	meta := map[string]interface{}{
+		"version":       "v2",
+		"complexity":    decomp.ComplexityScore,
+		"quality_score": qualityScore,
+		"agent_count":   len(agentResults),
+		"patterns_used": []string{"react", "parallel", "reflection"},
+	}
+	if len(toolErrors) > 0 {
+		meta["tool_errors"] = toolErrors
+	}
 
-    return TaskResult{
-        Result:     finalResult,
-        Success:    true,
-        TokensUsed: totalTokens,
-        Metadata:   meta,
-    }, nil
+	return TaskResult{
+		Result:     finalResult,
+		Success:    true,
+		TokensUsed: totalTokens,
+		Metadata:   meta,
+	}, nil
 }

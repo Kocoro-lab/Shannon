@@ -93,10 +93,10 @@ func TestTemplateCompilation_DAGNode(t *testing.T) {
 				Metadata: map[string]any{
 					"tasks": []interface{}{
 						map[string]interface{}{
-							"id":          "task1",
-							"query":       "First task",
-							"tools":       []interface{}{"web_search"},
-							"depends_on":  []interface{}{},
+							"id":         "task1",
+							"query":      "First task",
+							"tools":      []interface{}{"web_search"},
+							"depends_on": []interface{}{},
 						},
 						map[string]interface{}{
 							"id":         "task2",

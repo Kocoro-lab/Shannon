@@ -11,10 +11,10 @@ import (
 
 // DimensionMismatchError is returned when embedding dimensions don't match collection dimensions
 type DimensionMismatchError struct {
-	Collection         string
-	ExpectedDimension  int
-	ReceivedDimension  int
-	SuggestedAction    string
+	Collection        string
+	ExpectedDimension int
+	ReceivedDimension int
+	SuggestedAction   string
 }
 
 func (e DimensionMismatchError) Error() string {
@@ -89,11 +89,11 @@ func (c *Client) getCollectionInfo(ctx context.Context, collection string) (*Col
 
 	var result struct {
 		Result struct {
-			Status         string `json:"status"`
-			PointsCount    int64  `json:"points_count"`
-			VectorsCount   int64  `json:"vectors_count"`
-			SegmentsCount  int    `json:"segments_count"`
-			Config         struct {
+			Status        string `json:"status"`
+			PointsCount   int64  `json:"points_count"`
+			VectorsCount  int64  `json:"vectors_count"`
+			SegmentsCount int    `json:"segments_count"`
+			Config        struct {
 				Params struct {
 					Vectors struct {
 						Size     int    `json:"size"`

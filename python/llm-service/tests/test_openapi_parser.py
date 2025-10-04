@@ -23,9 +23,7 @@ class TestRefResolution:
                 "schemas": {
                     "Pet": {
                         "type": "object",
-                        "properties": {
-                            "name": {"type": "string"}
-                        }
+                        "properties": {"name": {"type": "string"}},
                     }
                 }
             }
@@ -42,17 +40,15 @@ class TestRefResolution:
                 "schemas": {
                     "Address": {
                         "type": "object",
-                        "properties": {
-                            "street": {"type": "string"}
-                        }
+                        "properties": {"street": {"type": "string"}},
                     },
                     "Person": {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
-                            "address": {"$ref": "#/components/schemas/Address"}
-                        }
-                    }
+                            "address": {"$ref": "#/components/schemas/Address"},
+                        },
+                    },
                 }
             }
         }
@@ -75,8 +71,8 @@ class TestRefResolution:
                         "type": "object",
                         "properties": {
                             "value": {"type": "string"},
-                            "next": {"$ref": "#/components/schemas/Node"}
-                        }
+                            "next": {"$ref": "#/components/schemas/Node"},
+                        },
                     }
                 }
             }
@@ -108,7 +104,7 @@ class TestRefResolution:
             "components": {
                 "schemas": {
                     "Foo~Bar": {"type": "string"},
-                    "Foo/Bar": {"type": "number"}
+                    "Foo/Bar": {"type": "number"},
                 }
             }
         }
@@ -128,9 +124,7 @@ class TestRefResolution:
                 "schemas": {
                     "Pet": {
                         "type": "object",
-                        "properties": {
-                            "name": {"type": "string"}
-                        }
+                        "properties": {"name": {"type": "string"}},
                     }
                 }
             }
@@ -138,7 +132,7 @@ class TestRefResolution:
 
         schema = {
             "$ref": "#/components/schemas/Pet",
-            "description": "A pet with custom description"
+            "description": "A pet with custom description",
         }
 
         result = resolve_refs_in_schema(schema, spec)
@@ -154,18 +148,13 @@ class TestRefResolution:
                 "schemas": {
                     "Tag": {
                         "type": "object",
-                        "properties": {
-                            "name": {"type": "string"}
-                        }
+                        "properties": {"name": {"type": "string"}},
                     }
                 }
             }
         }
 
-        schema = {
-            "type": "array",
-            "items": {"$ref": "#/components/schemas/Tag"}
-        }
+        schema = {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}}
 
         result = resolve_refs_in_schema(schema, spec)
 
@@ -185,17 +174,13 @@ class TestParameterExtraction:
                     "PageParam": {
                         "name": "page",
                         "in": "query",
-                        "schema": {"type": "integer", "minimum": 1}
+                        "schema": {"type": "integer", "minimum": 1},
                     }
                 }
             }
         }
 
-        operation = {
-            "parameters": [
-                {"$ref": "#/components/parameters/PageParam"}
-            ]
-        }
+        operation = {"parameters": [{"$ref": "#/components/parameters/PageParam"}]}
 
         params = extract_parameters(operation, spec)
 
@@ -209,10 +194,7 @@ class TestParameterExtraction:
         spec = {
             "components": {
                 "schemas": {
-                    "Status": {
-                        "type": "string",
-                        "enum": ["active", "inactive"]
-                    }
+                    "Status": {"type": "string", "enum": ["active", "inactive"]}
                 }
             }
         }
@@ -222,7 +204,7 @@ class TestParameterExtraction:
                 {
                     "name": "status",
                     "in": "query",
-                    "schema": {"$ref": "#/components/schemas/Status"}
+                    "schema": {"$ref": "#/components/schemas/Status"},
                 }
             ]
         }
@@ -240,7 +222,7 @@ class TestParameterExtraction:
         operation = {
             "parameters": [
                 {"$ref": "#/components/parameters/NonExistent"},
-                {"name": "valid", "in": "query", "schema": {"type": "string"}}
+                {"name": "valid", "in": "query", "schema": {"type": "string"}},
             ]
         }
 
@@ -259,9 +241,7 @@ class TestSpecValidation:
         spec = {
             "openapi": "3.0.0",
             "info": {"title": "Test API", "version": "1.0.0"},
-            "paths": {
-                "/test": {"get": {"summary": "Test endpoint"}}
-            }
+            "paths": {"/test": {"get": {"summary": "Test endpoint"}}},
         }
 
         # Should not raise
@@ -272,9 +252,7 @@ class TestSpecValidation:
         spec = {
             "openapi": "3.1.0",
             "info": {"title": "Test API", "version": "1.0.0"},
-            "paths": {
-                "/test": {"get": {"summary": "Test endpoint"}}
-            }
+            "paths": {"/test": {"get": {"summary": "Test endpoint"}}},
         }
 
         # Should not raise
@@ -282,12 +260,11 @@ class TestSpecValidation:
 
     def test_invalid_version(self):
         """Test rejection of unsupported OpenAPI version."""
-        spec = {
-            "openapi": "2.0",
-            "info": {"title": "Test API", "version": "1.0.0"}
-        }
+        spec = {"openapi": "2.0", "info": {"title": "Test API", "version": "1.0.0"}}
 
-        with pytest.raises(OpenAPIParseError, match="Unsupported OpenAPI version.*Only 3"):
+        with pytest.raises(
+            OpenAPIParseError, match="Unsupported OpenAPI version.*Only 3"
+        ):
             validate_spec(spec)
 
     def test_missing_required_fields(self):
@@ -307,7 +284,7 @@ class TestSSRFProtection:
             "openapi": "3.0.0",
             "info": {"title": "Malicious API", "version": "1.0"},
             "paths": {},
-            "servers": [{"url": "http://169.254.169.254/latest/meta-data/"}]
+            "servers": [{"url": "http://169.254.169.254/latest/meta-data/"}],
         }
 
         with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
@@ -319,7 +296,7 @@ class TestSSRFProtection:
             "openapi": "3.0.0",
             "info": {"title": "Malicious API", "version": "1.0"},
             "paths": {},
-            "servers": [{"url": "http://localhost:8080"}]
+            "servers": [{"url": "http://localhost:8080"}],
         }
 
         with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
@@ -331,7 +308,7 @@ class TestSSRFProtection:
             "openapi": "3.0.0",
             "info": {"title": "Malicious API", "version": "1.0"},
             "paths": {},
-            "servers": [{"url": "http://192.168.1.1"}]
+            "servers": [{"url": "http://192.168.1.1"}],
         }
 
         with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):
@@ -343,7 +320,7 @@ class TestSSRFProtection:
             "openapi": "3.0.0",
             "info": {"title": "Public API", "version": "1.0"},
             "paths": {},
-            "servers": [{"url": "https://petstore.swagger.io/v2"}]
+            "servers": [{"url": "https://petstore.swagger.io/v2"}],
         }
 
         # Should not raise
@@ -356,7 +333,7 @@ class TestSSRFProtection:
             "openapi": "3.0.0",
             "info": {"title": "Malicious API", "version": "1.0"},
             "paths": {},
-            "servers": [{"url": "http://metadata.google.internal"}]
+            "servers": [{"url": "http://metadata.google.internal"}],
         }
 
         with pytest.raises(OpenAPIParseError, match="private/internal IP.*SSRF"):

@@ -70,6 +70,11 @@ execution_modes:
 agent:
   max_concurrent: 20  # Allow more concurrent agents
   memory_limit_mb: 1024  # Increase memory per agent
+
+# Enable fallback from template execution to AI decomposition
+workflows:
+  templates:
+    fallback_to_ai: true
 ```
 
 ### `models.yaml`

@@ -32,26 +32,26 @@ func FetchSemanticMemory(ctx context.Context, in FetchSemanticMemoryInput) (Fetc
 
 // FetchHierarchicalMemoryInput combines recent and semantic retrieval
 type FetchHierarchicalMemoryInput struct {
-	Query        string  `json:"query"`         // For semantic search
-	SessionID    string  `json:"session_id"`    // Session identifier
-	TenantID     string  `json:"tenant_id"`     // Tenant ID
-	RecentTopK   int     `json:"recent_top_k"`  // Recent items from session
+	Query        string  `json:"query"`          // For semantic search
+	SessionID    string  `json:"session_id"`     // Session identifier
+	TenantID     string  `json:"tenant_id"`      // Tenant ID
+	RecentTopK   int     `json:"recent_top_k"`   // Recent items from session
 	SemanticTopK int     `json:"semantic_top_k"` // Semantic items
-	SummaryTopK  int     `json:"summary_top_k"` // Summary items (default: 3)
-	Threshold    float64 `json:"threshold"`     // Semantic similarity threshold
+	SummaryTopK  int     `json:"summary_top_k"`  // Summary items (default: 3)
+	Threshold    float64 `json:"threshold"`      // Semantic similarity threshold
 }
 
 // FetchHierarchicalMemoryResult contains deduplicated memory items
 type FetchHierarchicalMemoryResult struct {
-	Items []map[string]interface{} `json:"items"`
-	Sources map[string]int `json:"sources"` // Count by source type
+	Items   []map[string]interface{} `json:"items"`
+	Sources map[string]int           `json:"sources"` // Count by source type
 }
 
 // FetchHierarchicalMemory combines recent session memory with semantic search
 // This provides both temporal relevance (recent) and semantic relevance
 func FetchHierarchicalMemory(ctx context.Context, in FetchHierarchicalMemoryInput) (FetchHierarchicalMemoryResult, error) {
 	result := FetchHierarchicalMemoryResult{
-		Items: make([]map[string]interface{}, 0),
+		Items:   make([]map[string]interface{}, 0),
 		Sources: make(map[string]int),
 	}
 

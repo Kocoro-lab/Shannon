@@ -114,8 +114,12 @@ async def evaluate_results(
     try:
         from ..providers.base import ModelTier
 
-        wf_id = request.headers.get('X-Parent-Workflow-ID') or request.headers.get('X-Workflow-ID') or request.headers.get('x-workflow-id')
-        ag_id = request.headers.get('X-Agent-ID') or request.headers.get('x-agent-id')
+        wf_id = (
+            request.headers.get("X-Parent-Workflow-ID")
+            or request.headers.get("X-Workflow-ID")
+            or request.headers.get("x-workflow-id")
+        )
+        ag_id = request.headers.get("X-Agent-ID") or request.headers.get("x-agent-id")
 
         result = await providers.generate_completion(
             messages=[

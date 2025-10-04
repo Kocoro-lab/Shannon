@@ -154,17 +154,17 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 			for i, chunk := range chunks {
 				// Build payload with chunk metadata
 				payload := map[string]interface{}{
-					"query":        q,                  // Original query
-					"chunk_text":   chunk.Text,         // The actual chunk (no full answer stored)
-					"qa_id":        chunk.QAID,         // UUID for this Q&A pair
-					"chunk_index":  chunk.Index,        // 0-based chunk position
-					"chunk_count":  chunk.TotalCount,   // Total chunks for this Q&A
-					"is_chunked":   true,               // Flag for retrieval
-					"session_id":   in.SessionID,
-					"user_id":      in.UserID,
-					"tenant_id":    in.TenantID,
-					"model":        in.Model,
-					"timestamp":    timestamp,
+					"query":       q,                // Original query
+					"chunk_text":  chunk.Text,       // The actual chunk (no full answer stored)
+					"qa_id":       chunk.QAID,       // UUID for this Q&A pair
+					"chunk_index": chunk.Index,      // 0-based chunk position
+					"chunk_count": chunk.TotalCount, // Total chunks for this Q&A
+					"is_chunked":  true,             // Flag for retrieval
+					"session_id":  in.SessionID,
+					"user_id":     in.UserID,
+					"tenant_id":   in.TenantID,
+					"model":       in.Model,
+					"timestamp":   timestamp,
 				}
 
 				// Add any additional metadata
@@ -220,7 +220,7 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 	payload := map[string]interface{}{
 		"query":      q,
 		"answer":     a,
-		"is_chunked": false,  // Flag for retrieval
+		"is_chunked": false, // Flag for retrieval
 		"session_id": in.SessionID,
 		"user_id":    in.UserID,
 		"tenant_id":  in.TenantID,

@@ -1,0 +1,42 @@
+name: market_analysis_playbook
+description: Market analysis with compliance review and templated reporting
+extends:
+  - market_analysis
+defaults:
+  require_approval: true
+metadata:
+  audience: strategic_planning
+nodes:
+  - id: synthesize
+    metadata:
+      coordination: "multi_agent"
+      handoff_template: "market_playbook"
+  - id: compliance_review
+    type: simple
+    strategy: react
+    depends_on: [synthesize]
+    budget_max: 1200
+    tools_allowlist: [policy_checker]
+    metadata:
+      ensure_regulatory_alignment: true
+  - id: report
+    metadata:
+      report_template: "playbook_v1"
+      include_appendix: true
+edges:
+  - from: understand
+    to: competitors_dag
+  - from: understand
+    to: trends
+  - from: understand
+    to: customers
+  - from: competitors_dag
+    to: synthesize
+  - from: trends
+    to: synthesize
+  - from: customers
+    to: synthesize
+  - from: synthesize
+    to: compliance_review
+  - from: compliance_review
+    to: report

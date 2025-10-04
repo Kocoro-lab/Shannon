@@ -28,6 +28,13 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 ## ⚡ What Makes Shannon Different
 
 ### 🚀 Ship Faster
+- **Zero-Token Templates** — YAML workflows eliminate LLM calls for common patterns ([→ Template Guide](docs/template-workflows.md), [→ Getting Started](docs/template-user-guide.md))
+  - DAG nodes for parallel execution with dependency resolution
+  - Supervisor nodes for hierarchical multi-agent coordination
+  - Template inheritance for reusable workflow composition
+  - Automatic pattern degradation when budget constrained
+- **Learning Router** — UCB algorithm selects optimal strategies, 85-95% token savings ([→ Details](docs/learning-router-enhancements.md))
+- **Rate-Aware Execution** — Provider-specific RPM/TPM limits prevent throttling ([→ Rate Control](docs/rate-aware-budgeting.md))
 - Automatic multi‑agent orchestration — Describe the goal; Shannon decomposes into subtasks and schedules DAG execution with dependencies resolved.
 - Plug‑and‑play tools — Add REST APIs via MCP or OpenAPI, or write Python tools; no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md)).
 - Multiple AI patterns — ReAct, Chain‑of‑Thought, Tree‑of‑Thoughts, Debate, Reflection (selectable via `cognitive_strategy`).
@@ -799,11 +806,11 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - ✅ **MCP integration** - Model Context Protocol support for standardized tool interfaces
 - ✅ **OpenAPI integration** - REST API tools with retry logic, circuit breaker, and ~70% API coverage
 - ✅ **Provider abstraction layer** - Unified interface for adding new LLM providers with automatic fallback
-- 🚧 **Advanced Task Decomposition** - Recursive decomposition with ADaPT patterns, chain-of-thought planning, task template library
+- ✅ **Advanced Task Decomposition** - Recursive decomposition with ADaPT patterns, chain-of-thought planning, task template library
+- ✅ **Composable workflows** - YAML-based workflow templates with declarative orchestration patterns
 - 🚧 **Unified Gateway & SDKs** - REST API gateway, Python/TypeScript SDKs, CLI tool for easy adoption
 
 **v0.2**
-- [ ] **Composable workflows** - YAML-based workflow templates with declarative orchestration patterns
 - [ ] **Native tool expansion** - Additional Rust-native tools for file operations and system interactions
 - [ ] **Advanced Memory** - Episodic rollups, entity/temporal knowledge graphs, hybrid dense+sparse retrieval
 - [ ] **Advanced Learning** - Pattern recognition from successful workflows, contextual bandits for agent selection
@@ -840,6 +847,7 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - [**Memory System**](docs/memory-system-architecture.md) - Session + vector memory (Qdrant), MMR diversity, pattern learning
 
 ### Extending Shannon
+- [**Extending Shannon**](docs/extending-shannon.md) - Ways to extend templates, decomposition, and tools
 - [**Adding Custom Tools**](docs/adding-custom-tools.md) - Complete guide for MCP, OpenAPI, and built-in tools
 
 ### API References

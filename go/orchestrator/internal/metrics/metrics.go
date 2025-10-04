@@ -41,6 +41,23 @@ var (
 		[]string{"name"},
 	)
 
+	// Template fallback metrics
+	TemplateFallbackTriggered = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "template_fallback_triggered_total",
+			Help: "Number of times execution fell back from template to AI",
+		},
+		[]string{"reason"}, // reason: error|unsuccessful
+	)
+
+	TemplateFallbackSuccess = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "template_fallback_success_total",
+			Help: "Number of successful fallbacks from template to AI",
+		},
+		[]string{"reason"},
+	)
+
 	TemplateValidationErrors = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "shannon_template_validation_errors_total",
@@ -323,6 +340,32 @@ var (
 		prometheus.CounterOpts{
 			Name: "shannon_strategy_selection_total",
 			Help: "Distribution of selected execution strategies",
+		},
+		[]string{"strategy"},
+	)
+
+	// Learning router metrics
+	LearningRouterLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "shannon_learning_router_latency_seconds",
+			Help:    "Latency of learning router strategy recommendation",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+
+	LearningRouterRecommendations = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_learning_router_recommendations_total",
+			Help: "Total learning router recommendations by strategy and source",
+		},
+		[]string{"strategy", "source", "success"},
+	)
+
+	LearningRouterConfidence = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "shannon_learning_router_confidence",
+			Help:    "Confidence score of learning router recommendations",
+			Buckets: []float64{0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 0.95, 1.0},
 		},
 		[]string{"strategy"},
 	)

@@ -155,6 +155,12 @@ func TestDependentMath_NoPlaceholdersAndNumericValuePropagation(t *testing.T) {
 		},
 		activity.RegisterOptions{Name: "RecordQuery"},
 	)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in activities.RecommendStrategyInput) (activities.RecommendStrategyOutput, error) {
+			return activities.RecommendStrategyOutput{Source: "test"}, nil
+		},
+		activity.RegisterOptions{Name: "RecommendWorkflowStrategy"},
+	)
 	// Register RecordPatternMetrics activity (use map for input since type may not be exported)
 	env.RegisterActivityWithOptions(
 		func(ctx context.Context, in map[string]interface{}) error {
@@ -162,6 +168,37 @@ func TestDependentMath_NoPlaceholdersAndNumericValuePropagation(t *testing.T) {
 			return nil
 		},
 		activity.RegisterOptions{Name: "RecordPatternMetrics"},
+	)
+	// Register RecordLearningRouterMetrics (Sprint 3 addition)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in map[string]interface{}) error {
+			return nil
+		},
+		activity.RegisterOptions{Name: "RecordLearningRouterMetrics"},
+	)
+	// Register EmitTaskUpdate (streaming events)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in map[string]interface{}) error {
+			return nil
+		},
+		activity.RegisterOptions{Name: "EmitTaskUpdate"},
+	)
+	// Register CheckTokenBudgetWithBackpressure
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{
+				"can_proceed":        true,
+				"backpressure_delay": 0,
+			}, nil
+		},
+		activity.RegisterOptions{Name: "CheckTokenBudgetWithBackpressure"},
+	)
+	// Register FetchHierarchicalMemory (memory system)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in map[string]interface{}) (map[string]interface{}, error) {
+			return map[string]interface{}{}, nil
+		},
+		activity.RegisterOptions{Name: "FetchHierarchicalMemory"},
 	)
 	// Synthesis returns last agent result
 	env.RegisterActivityWithOptions(

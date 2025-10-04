@@ -1,13 +1,13 @@
 package strategies
 
 import (
-    "fmt"
-    "strconv"
-    "strings"
-    "time"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "go.temporal.io/sdk/workflow"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"go.temporal.io/sdk/workflow"
 )
 
 // convertHistoryForAgent converts message history to string format for agents
@@ -28,7 +28,7 @@ func determineModelTier(context map[string]interface{}, defaultTier string) stri
 
 	// Get thresholds from config (with defaults)
 	simpleThreshold := 0.3
-	mediumThreshold := 0.5  // Changed default from 0.7 to 0.5
+	mediumThreshold := 0.5 // Changed default from 0.7 to 0.5
 	if cfg, ok := context["config"].(*activities.WorkflowConfig); ok && cfg != nil {
 		if cfg.ComplexitySimpleThreshold > 0 {
 			simpleThreshold = cfg.ComplexitySimpleThreshold
@@ -146,28 +146,28 @@ func extractPersonaHints(context map[string]interface{}) []string {
 
 // parseNumericValue attempts to extract a numeric value from a response string
 func parseNumericValue(response string) (float64, bool) {
-    response = strings.TrimSpace(response)
-    if val, err := strconv.ParseFloat(response, 64); err == nil {
-        return val, true
-    }
-    fields := strings.Fields(response)
-    var numbers []float64
-    for i := 0; i < len(fields); i++ {
-        token := strings.Trim(fields[i], ".,!?:;")
-        if v, err := strconv.ParseFloat(token, 64); err == nil {
-            numbers = append(numbers, v)
-        }
-        if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
-            next := strings.Trim(fields[i+1], ".,!?:;")
-            if v, err := strconv.ParseFloat(next, 64); err == nil {
-                return v, true
-            }
-        }
-    }
-    if len(numbers) > 0 {
-        return numbers[len(numbers)-1], true
-    }
-    return 0, false
+	response = strings.TrimSpace(response)
+	if val, err := strconv.ParseFloat(response, 64); err == nil {
+		return val, true
+	}
+	fields := strings.Fields(response)
+	var numbers []float64
+	for i := 0; i < len(fields); i++ {
+		token := strings.Trim(fields[i], ".,!?:;")
+		if v, err := strconv.ParseFloat(token, 64); err == nil {
+			numbers = append(numbers, v)
+		}
+		if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
+			next := strings.Trim(fields[i+1], ".,!?:;")
+			if v, err := strconv.ParseFloat(next, 64); err == nil {
+				return v, true
+			}
+		}
+	}
+	if len(numbers) > 0 {
+		return numbers[len(numbers)-1], true
+	}
+	return 0, false
 }
 
 // shouldReflect determines if reflection should be applied based on complexity

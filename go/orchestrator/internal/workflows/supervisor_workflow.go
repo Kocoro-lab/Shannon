@@ -371,10 +371,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-    // Version gate for context compression determinism
-    compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
+	// Version gate for context compression determinism
+	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
 
-    for i, st := range decomp.Subtasks {
+	for i, st := range decomp.Subtasks {
 		// Emit progress event for this subtask
 		progressMessage := fmt.Sprintf("Starting subtask %d of %d: %s", i+1, len(decomp.Subtasks), st.Description)
 		if len(st.Description) > 50 {
@@ -434,45 +434,45 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		if v, ok := childCtx["budget_agent_max"].(float64); ok && v > 0 {
 			agentMax = int(v)
 		}
-        if agentMax > 0 && compressionVersion >= 1 {
+		if agentMax > 0 && compressionVersion >= 1 {
 			childCtx["token_budget"] = agentMax
 		}
 
 		// Sliding-window shaping with optional middle summary when nearing per-agent budget
 		historyForAgent := convertHistoryForAgent(input.History)
-        if agentMax > 0 {
-            est := activities.EstimateTokens(historyForAgent)
-            trig, tgt := getCompressionRatios(childCtx, 0.75, 0.375)
-            if est >= int(float64(agentMax)*trig) {
-                var compressResult activities.CompressContextResult
-                _ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext, activities.CompressContextInput{
-                    SessionID:    input.SessionID,
-                    History:      convertHistoryMapForCompression(input.History),
-                    TargetTokens: int(float64(agentMax) * tgt),
-                    ParentWorkflowID: workflowID,
-                }).Get(ctx, &compressResult)
-                if compressResult.Summary != "" {
-                    childCtx["context_summary"] = fmt.Sprintf("Previous context summary: %s", compressResult.Summary)
-                    prim, rec := getPrimersRecents(childCtx, 3, 20)
-                    shaped := shapeHistory(input.History, prim, rec)
-                    historyForAgent = convertHistoryForAgent(shaped)
-                    // Emit compression applied event
-                    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-                        WorkflowID: workflowID,
-                        EventType:  activities.StreamEventDataProcessing,
-                        AgentID:    fmt.Sprintf("agent-%s", st.ID),
-                        Message:    activities.MsgCompressionApplied(),
-                        Timestamp:  workflow.Now(ctx),
-                    }).Get(ctx, nil)
-                    // Emit summary injected event
-                    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-                        WorkflowID: workflowID,
-                        EventType:  activities.StreamEventDataProcessing,
-                        AgentID:    fmt.Sprintf("agent-%s", st.ID),
-                        Message:    activities.MsgSummaryAdded(),
-                        Timestamp:  workflow.Now(ctx),
-                    }).Get(ctx, nil)
-                }
+		if agentMax > 0 {
+			est := activities.EstimateTokens(historyForAgent)
+			trig, tgt := getCompressionRatios(childCtx, 0.75, 0.375)
+			if est >= int(float64(agentMax)*trig) {
+				var compressResult activities.CompressContextResult
+				_ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext, activities.CompressContextInput{
+					SessionID:        input.SessionID,
+					History:          convertHistoryMapForCompression(input.History),
+					TargetTokens:     int(float64(agentMax) * tgt),
+					ParentWorkflowID: workflowID,
+				}).Get(ctx, &compressResult)
+				if compressResult.Summary != "" {
+					childCtx["context_summary"] = fmt.Sprintf("Previous context summary: %s", compressResult.Summary)
+					prim, rec := getPrimersRecents(childCtx, 3, 20)
+					shaped := shapeHistory(input.History, prim, rec)
+					historyForAgent = convertHistoryForAgent(shaped)
+					// Emit compression applied event
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventDataProcessing,
+						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						Message:    activities.MsgCompressionApplied(),
+						Timestamp:  workflow.Now(ctx),
+					}).Get(ctx, nil)
+					// Emit summary injected event
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventDataProcessing,
+						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						Message:    activities.MsgSummaryAdded(),
+						Timestamp:  workflow.Now(ctx),
+					}).Get(ctx, nil)
+				}
 			}
 		}
 
@@ -491,24 +491,24 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		// Only proceed with P2P coordination if:
 		// 1. P2P is enabled in config AND
 		// 2. Version gates indicate P2P code exists
-			if p2pConfig.P2PCoordinationEnabled &&
-				p2pSyncVersion != workflow.DefaultVersion &&
-				teamWorkspaceVersion != workflow.DefaultVersion &&
-				i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Consumes) > 0 {
-				logger.Debug("P2P coordination enabled, checking dependencies",
-					"subtask_id", decomp.Subtasks[i].ID,
-					"consumes", decomp.Subtasks[i].Consumes)
-				for _, topic := range decomp.Subtasks[i].Consumes {
-					// Skip waiting if no subtask produces this topic
-					if _, ok := producesSet[topic]; !ok {
-						logger.Info("Skipping P2P wait: no producer in plan", "topic", topic, "subtask_id", st.ID)
-						continue
-					}
-					// Use configured timeout or default
-					maxWaitTime := time.Duration(p2pConfig.P2PTimeoutSeconds) * time.Second
-					if maxWaitTime == 0 {
-						maxWaitTime = 6 * time.Minute
-					}
+		if p2pConfig.P2PCoordinationEnabled &&
+			p2pSyncVersion != workflow.DefaultVersion &&
+			teamWorkspaceVersion != workflow.DefaultVersion &&
+			i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Consumes) > 0 {
+			logger.Debug("P2P coordination enabled, checking dependencies",
+				"subtask_id", decomp.Subtasks[i].ID,
+				"consumes", decomp.Subtasks[i].Consumes)
+			for _, topic := range decomp.Subtasks[i].Consumes {
+				// Skip waiting if no subtask produces this topic
+				if _, ok := producesSet[topic]; !ok {
+					logger.Info("Skipping P2P wait: no producer in plan", "topic", topic, "subtask_id", st.ID)
+					continue
+				}
+				// Use configured timeout or default
+				maxWaitTime := time.Duration(p2pConfig.P2PTimeoutSeconds) * time.Second
+				if maxWaitTime == 0 {
+					maxWaitTime = 6 * time.Minute
+				}
 				startTime := workflow.Now(ctx)
 				backoff := 1 * time.Second
 				maxBackoff := 30 * time.Second
@@ -611,10 +611,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						"tokens":   prevResult.TokensUsed,
 						"success":  prevResult.Success,
 					}
-                // Try to extract numeric value from response (standardize key name)
-                if numVal, ok := parseNumericValue(prevResult.Response); ok {
-                    resultMap["numeric_value"] = numVal
-                }
+					// Try to extract numeric value from response (standardize key name)
+					if numVal, ok := parseNumericValue(prevResult.Response); ok {
+						resultMap["numeric_value"] = numVal
+					}
 					previousResults[decomp.Subtasks[j].ID] = resultMap
 				}
 			}
@@ -630,9 +630,27 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			st.ToolParameters = nil
 		}
 
+		// Performance-based agent selection (epsilon-greedy)
+		defaultAgentID := fmt.Sprintf("agent-%s", st.ID)
+		availableAgents := []string{defaultAgentID} // TODO: populate from registry
+		selectedAgent, err := SelectAgentForTask(ctx, st.ID, availableAgents, defaultAgentID)
+		if err != nil {
+			logger.Warn("Agent selection failed, using default",
+				"task_id", st.ID,
+				"default_agent", defaultAgentID,
+				"error", err)
+			selectedAgent = defaultAgentID
+		}
+
 		var res activities.AgentExecutionResult
 		// Retry loop within the same iteration to avoid relying on range index mutation
 		var execErr error
+		execStartTime := workflow.Now(ctx)
+		// Prepare fire-and-forget context for persistence activities
+		persistCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 5 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
 		for {
 			// Use budgeted agent when a per-agent budget hint is present
 			agentMax := 0
@@ -646,14 +664,14 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				wid := workflowID
 				execErr = workflow.ExecuteActivity(ctx, constants.ExecuteAgentWithBudgetActivity, activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
-						Query:          st.Description,
-						AgentID:        fmt.Sprintf("agent-%s", st.ID),
-						Context:        childCtx,
-						Mode:           input.Mode,
-						SessionID:      input.SessionID,
-						History:        historyForAgent,
-						SuggestedTools: st.SuggestedTools,
-						ToolParameters: st.ToolParameters,
+						Query:            st.Description,
+						AgentID:          selectedAgent,
+						Context:          childCtx,
+						Mode:             input.Mode,
+						SessionID:        input.SessionID,
+						History:          historyForAgent,
+						SuggestedTools:   st.SuggestedTools,
+						ToolParameters:   st.ToolParameters,
 						ParentWorkflowID: workflowID,
 					},
 					MaxTokens: agentMax,
@@ -663,14 +681,14 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				}).Get(ctx, &res)
 			} else {
 				execErr = workflow.ExecuteActivity(ctx, activities.ExecuteAgent, activities.AgentExecutionInput{
-					Query:          st.Description,
-					AgentID:        fmt.Sprintf("agent-%s", st.ID),
-					Context:        childCtx,
-					Mode:           input.Mode,
-					SessionID:      input.SessionID,
-					History:        historyForAgent,
-					SuggestedTools: st.SuggestedTools,
-					ToolParameters: st.ToolParameters,
+					Query:            st.Description,
+					AgentID:          selectedAgent,
+					Context:          childCtx,
+					Mode:             input.Mode,
+					SessionID:        input.SessionID,
+					History:          historyForAgent,
+					SuggestedTools:   st.SuggestedTools,
+					ToolParameters:   st.ToolParameters,
 					ParentWorkflowID: workflowID,
 				}).Get(ctx, &res)
 			}
@@ -697,11 +715,6 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					}).Get(ctx, nil)
 				}
 				// Persist agent execution (fire-and-forget)
-				persistCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-					StartToCloseTimeout: 5 * time.Second,
-					RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-				})
-
 				state := "COMPLETED"
 				if !res.Success {
 					state = "FAILED"
@@ -711,20 +724,35 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					persistCtx,
 					activities.PersistAgentExecutionStandalone,
 					activities.PersistAgentExecutionInput{
-						WorkflowID:   workflowID,
-						AgentID:      fmt.Sprintf("agent-%s", st.ID),
-						Input:        st.Description,
-						Output:       res.Response,
-						State:        state,
-						TokensUsed:   res.TokensUsed,
-						ModelUsed:    res.ModelUsed,
-						DurationMs:   res.DurationMs,
-						Error:        res.Error,
+						WorkflowID: workflowID,
+						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						Input:      st.Description,
+						Output:     res.Response,
+						State:      state,
+						TokensUsed: res.TokensUsed,
+						ModelUsed:  res.ModelUsed,
+						DurationMs: res.DurationMs,
+						Error:      res.Error,
 						Metadata: map[string]interface{}{
 							"workflow": "supervisor",
 							"strategy": "supervisor",
 							"task_id":  st.ID,
 						},
+					},
+				)
+
+				// Record agent performance (fire-and-forget)
+				execDuration := workflow.Now(ctx).Sub(execStartTime).Milliseconds()
+				workflow.ExecuteActivity(
+					persistCtx,
+					activities.RecordAgentPerformance,
+					activities.RecordAgentPerformanceInput{
+						AgentID:    selectedAgent,
+						SessionID:  input.SessionID,
+						Success:    res.Success,
+						TokensUsed: res.TokensUsed,
+						DurationMs: execDuration,
+						Mode:       input.Mode,
 					},
 				)
 				break
@@ -741,6 +769,21 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				}
 				// Give up on this task and move to the next one
 				execErr = fmt.Errorf("max retries reached")
+
+				// Record failed performance (fire-and-forget)
+				execDuration := workflow.Now(ctx).Sub(execStartTime).Milliseconds()
+				workflow.ExecuteActivity(
+					persistCtx,
+					activities.RecordAgentPerformance,
+					activities.RecordAgentPerformanceInput{
+						AgentID:    selectedAgent,
+						SessionID:  input.SessionID,
+						Success:    false,
+						TokensUsed: 0, // Failed execution
+						DurationMs: execDuration,
+						Mode:       input.Mode,
+					},
+				)
 				break
 			}
 			// Retry immediately (deterministic). Optionally sleep if desired.
@@ -752,9 +795,9 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		// Capture agent result for synthesis directly
 		childResults = append(childResults, res)
 
-			// Produce outputs to workspace per plan
-			if teamWorkspaceVersion != workflow.DefaultVersion &&
-				i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Produces) > 0 {
+		// Produce outputs to workspace per plan
+		if teamWorkspaceVersion != workflow.DefaultVersion &&
+			i < len(decomp.Subtasks) && len(decomp.Subtasks[i].Produces) > 0 {
 			for _, topic := range decomp.Subtasks[i].Produces {
 				var wr activities.WorkspaceAppendResult
 				if err := workflow.ExecuteActivity(ctx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
@@ -922,27 +965,29 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
-// Aggregate tool errors across child results
-var toolErrors []map[string]string
-for _, cr := range childResults {
-    if len(cr.ToolExecutions) == 0 { continue }
-    for _, te := range cr.ToolExecutions {
-        if !te.Success || (te.Error != "") {
-            toolErrors = append(toolErrors, map[string]string{
-                "agent_id": cr.AgentID,
-                "tool":     te.Tool,
-                "error":    te.Error,
-            })
-        }
-    }
-}
-meta := map[string]interface{}{
-    "num_children": len(childResults),
-}
-if len(toolErrors) > 0 {
-    meta["tool_errors"] = toolErrors
-}
-return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: meta}, nil
+	// Aggregate tool errors across child results
+	var toolErrors []map[string]string
+	for _, cr := range childResults {
+		if len(cr.ToolExecutions) == 0 {
+			continue
+		}
+		for _, te := range cr.ToolExecutions {
+			if !te.Success || (te.Error != "") {
+				toolErrors = append(toolErrors, map[string]string{
+					"agent_id": cr.AgentID,
+					"tool":     te.Tool,
+					"error":    te.Error,
+				})
+			}
+		}
+	}
+	meta := map[string]interface{}{
+		"num_children": len(childResults),
+	}
+	if len(toolErrors) > 0 {
+		meta["tool_errors"] = toolErrors
+	}
+	return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: meta}, nil
 }
 
 // Note: convertToStrategiesInput and convertFromStrategiesResult are defined in orchestrator_router.go

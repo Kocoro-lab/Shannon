@@ -10,9 +10,9 @@ import (
 
 // CompressionState tracks when compression was last performed
 type CompressionState struct {
-	LastCompressedAt   time.Time `json:"last_compressed_at"`
-	LastMessageCount   int       `json:"last_message_count"`
-	TotalCompressions  int       `json:"total_compressions"`
+	LastCompressedAt  time.Time `json:"last_compressed_at"`
+	LastMessageCount  int       `json:"last_message_count"`
+	TotalCompressions int       `json:"total_compressions"`
 }
 
 // EstimateTokensFromHistory estimates token count from message history
@@ -54,15 +54,15 @@ func GetModelWindowSize(modelTier string) int {
 	// Common model windows (conservative estimates)
 	switch modelTier {
 	case "small":
-		return 8000    // 8k models
+		return 8000 // 8k models
 	case "medium":
-		return 32000   // 32k models
+		return 32000 // 32k models
 	case "large":
-		return 128000  // 128k models
+		return 128000 // 128k models
 	case "xlarge":
-		return 200000  // Claude 200k
+		return 200000 // Claude 200k
 	default:
-		return 8000    // Conservative default
+		return 8000 // Conservative default
 	}
 }
 
@@ -182,9 +182,9 @@ func UpdateCompressionState(
 
 	// Store updated state in session metadata
 	compStateMap := map[string]interface{}{
-		"last_compressed_at":  state.LastCompressedAt.Unix(),
-		"last_message_count":  state.LastMessageCount,
-		"total_compressions":  state.TotalCompressions,
+		"last_compressed_at": state.LastCompressedAt.Unix(),
+		"last_message_count": state.LastMessageCount,
+		"total_compressions": state.TotalCompressions,
 	}
 
 	// Update session metadata (would need session manager update method)

@@ -51,8 +51,8 @@ name: template_name           # Unique identifier
 description: "What this does"  # Human-readable description
 version: "1.0.0"              # Semantic version
 defaults:
-  budget_agent_max: 10000     # Total workflow token budget
-  strategy: chain_of_thought  # Default execution strategy
+  budget_agent_max: 10000     # Default per-node agent budget
+  require_approval: false     # Optional: gate on human approval
 
 nodes:
   - id: node_1
@@ -73,7 +73,6 @@ nodes:
 edges:
   - from: node_1
     to: node_2
-    condition: "success"      # Conditional execution
 ```
 
 ### Node Types
@@ -86,10 +85,11 @@ edges:
 ```yaml
 - id: fetch_data
   type: simple
-  query: "Fetch current weather data"
   strategy: react
   tools_allowlist: [weather_api]
   budget_max: 500
+  metadata:
+    query: "Fetch current weather data"
 ```
 
 #### Cognitive Node
@@ -100,9 +100,10 @@ edges:
 ```yaml
 - id: analyze
   type: cognitive
-  query: "Analyze trends and provide insights"
   strategy: chain_of_thought
   budget_max: 3000
+  metadata:
+    query: "Analyze trends and provide insights"
   # Note: Degradation due to budget happens automatically; no pattern_degrade flag.
 ```
 
@@ -137,13 +138,11 @@ edges:
 ```yaml
 - id: complex_project
   type: supervisor
-  query: "Coordinate multi-phase project"
-  strategy: adaptive
+  strategy: reflection
   budget_max: 8000
-  sub_agents:
-    - research_agent
-    - analysis_agent
-    - synthesis_agent
+  metadata:
+    query: "Coordinate multi-phase project"
+    sub_agents: ["research_agent", "analysis_agent", "synthesis_agent"]
 ```
 
 ### Template Inheritance
@@ -207,8 +206,9 @@ strategy: chain_of_thought
 
 ```yaml
 strategy: tree_of_thoughts
-branches: 3
-depth: 2
+metadata:
+  branches: 3
+  depth: 2
 ```
 
 ## Pattern Degradation
@@ -302,10 +302,13 @@ registry:
 ### Validation Errors
 
 ```go
+type ValidationIssue struct {
+    Code    string
+    Message string
+}
+
 type ValidationError struct {
-    Code    string  // Error code (e.g., "INVALID_DAG_CYCLE")
-    Message string  // Human-readable message
-    Field   string  // Field path (e.g., "nodes[2].dependencies")
+    Issues []ValidationIssue
 }
 ```
 
@@ -320,7 +323,7 @@ description: "Research a topic and provide a structured summary"
 
 defaults:
   budget_agent_max: 10000
-  strategy: chain_of_thought
+  require_approval: false
 
 nodes:
   - id: discover
@@ -345,10 +348,8 @@ nodes:
 edges:
   - from: discover
     to: expand
-    condition: "success"
   - from: expand
     to: synthesize
-    condition: "has_results"
 ```
 
 ### Complex DAG Workflow
@@ -360,7 +361,7 @@ description: "Parallel market research and analysis"
 
 defaults:
   budget_agent_max: 15000
-  execution_mode: parallel
+  require_approval: false
 
 nodes:
   - id: competitors
@@ -483,29 +484,18 @@ summaries := registry.List()
 
 ### Execution
 
-```go
-// Execute template workflow
-input := TemplateWorkflowInput{
-    TemplateName: "research_summary",
-    Version:      "1.0.0",
-    Variables: map[string]interface{}{
-        "topic": "quantum computing",
-    },
-    MaxBudget: 8000,
-}
+Use the OrchestratorService SubmitTask API and specify the template in the request context. The router will execute TemplateWorkflow deterministically:
 
-result := workflow.ExecuteChildWorkflow(ctx, TemplateWorkflow, input)
+```
+grpcurl -plaintext -d '{
+  "query": "Summarize quantum computing",
+  "context": { "template": "research_summary", "template_version": "1.0.0" }
+}' localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
 ```
 
 ### Monitoring
 
-```go
-// Get execution metrics
-metrics := GetTemplateMetrics("research_summary")
-fmt.Printf("Executions: %d\n", metrics.ExecutionCount)
-fmt.Printf("Avg tokens: %d\n", metrics.AvgTokensUsed)
-fmt.Printf("Success rate: %.2f%%\n", metrics.SuccessRate*100)
-```
+Operational metrics (execution counts, tokens, success rates) are exported via Prometheus. See service dashboards and metrics naming in the codebase (e.g., internal/metrics).
 
 ## Migration Guide
 

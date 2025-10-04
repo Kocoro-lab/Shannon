@@ -19,10 +19,10 @@ type Config struct {
 	Timeout   time.Duration
 	// Validation
 	ExpectedEmbeddingDim int // Expected embedding dimension (e.g., 1536 for OpenAI ada-002)
-    // MMR (diversity) re-ranking
-    MMREnabled        bool
-    MMRLambda         float64
-    MMRPoolMultiplier int
+	// MMR (diversity) re-ranking
+	MMREnabled        bool
+	MMRLambda         float64
+	MMRPoolMultiplier int
 }
 
 // SimilarQuery represents a similar query with metadata
@@ -39,7 +39,7 @@ type ContextItem struct {
 	Payload   map[string]interface{} `json:"payload"`
 	Score     float64                `json:"score"`
 	// Optional candidate vector when fetched with vectors (for MMR)
-	Vector    []float32              `json:"-"`
+	Vector []float32 `json:"-"`
 }
 
 // UpsertItem represents a single point to insert into Qdrant

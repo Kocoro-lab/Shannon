@@ -2,17 +2,16 @@
 Tools API endpoints for Shannon platform
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Request
 import os
 import yaml
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
 
-from ..tools import ToolRegistry, get_registry
+from ..tools import get_registry
 from ..tools.mcp import create_mcp_tool_class
 from ..tools.openapi_tool import load_openapi_tools_from_config
-from ..mcp_client import HttpStatelessClient
 from ..tools.builtin import (
     WebSearchTool,
     CalculatorTool,
@@ -31,22 +30,22 @@ _SELECT_TTL_SECONDS = 300  # 5 minutes
 
 class ToolExecuteRequest(BaseModel):
     """Request to execute a tool"""
+
     tool_name: str = Field(..., description="Name of the tool to execute")
     parameters: Dict[str, Any] = Field(..., description="Tool parameters")
-    
+
     class Config:
         schema_extra = {
             "example": {
                 "tool_name": "calculator",
-                "parameters": {
-                    "expression": "2 + 2"
-                }
+                "parameters": {"expression": "2 + 2"},
             }
         }
 
 
 class ToolExecuteResponse(BaseModel):
     """Response from tool execution"""
+
     success: bool
     output: Any
     error: Optional[str] = None
@@ -56,6 +55,7 @@ class ToolExecuteResponse(BaseModel):
 
 class ToolSchemaResponse(BaseModel):
     """Tool schema information"""
+
     name: str
     description: str
     parameters: Dict[str, Any]
@@ -63,8 +63,11 @@ class ToolSchemaResponse(BaseModel):
 
 class ToolSelectRequest(BaseModel):
     """Request to select tools for a task"""
+
     task: str = Field(..., description="Natural language task")
-    context: Optional[Dict[str, Any]] = Field(default=None, description="Optional context map")
+    context: Optional[Dict[str, Any]] = Field(
+        default=None, description="Optional context map"
+    )
     exclude_dangerous: bool = Field(default=True)
     max_tools: int = Field(default=2, ge=0, le=8)
 
@@ -106,18 +109,36 @@ class MCPRegisterResponse(BaseModel):
 
 class OpenAPIRegisterRequest(BaseModel):
     name: str = Field(..., description="Name to register the tool collection as")
-    spec_url: Optional[str] = Field(default=None, description="URL to OpenAPI spec (JSON or YAML)")
-    spec_inline: Optional[str] = Field(default=None, description="Inline OpenAPI spec (JSON or YAML)")
-    auth_type: str = Field(default="none", description="Auth type: none|api_key|bearer|basic")
-    auth_config: Optional[Dict[str, str]] = Field(default=None, description="Auth configuration")
+    spec_url: Optional[str] = Field(
+        default=None, description="URL to OpenAPI spec (JSON or YAML)"
+    )
+    spec_inline: Optional[str] = Field(
+        default=None, description="Inline OpenAPI spec (JSON or YAML)"
+    )
+    auth_type: str = Field(
+        default="none", description="Auth type: none|api_key|bearer|basic"
+    )
+    auth_config: Optional[Dict[str, str]] = Field(
+        default=None, description="Auth configuration"
+    )
     category: Optional[str] = Field(default="api", description="Tool category")
-    base_cost_per_use: Optional[float] = Field(default=0.001, description="Cost per operation")
-    operations: Optional[List[str]] = Field(default=None, description="Filter to specific operationIds")
+    base_cost_per_use: Optional[float] = Field(
+        default=0.001, description="Cost per operation"
+    )
+    operations: Optional[List[str]] = Field(
+        default=None, description="Filter to specific operationIds"
+    )
     tags: Optional[List[str]] = Field(default=None, description="Filter by tags")
-    base_url: Optional[str] = Field(default=None, description="Override base URL from spec")
+    base_url: Optional[str] = Field(
+        default=None, description="Override base URL from spec"
+    )
     rate_limit: Optional[int] = Field(default=30, description="Requests per minute")
-    timeout_seconds: Optional[float] = Field(default=30.0, description="Request timeout in seconds")
-    max_response_bytes: Optional[int] = Field(default=10 * 1024 * 1024, description="Maximum response size in bytes")
+    timeout_seconds: Optional[float] = Field(
+        default=30.0, description="Request timeout in seconds"
+    )
+    max_response_bytes: Optional[int] = Field(
+        default=10 * 1024 * 1024, description="Maximum response size in bytes"
+    )
 
 
 class OpenAPIRegisterResponse(BaseModel):
@@ -148,39 +169,45 @@ def _load_mcp_tools_from_config():
     """Load MCP tool definitions from config file"""
     config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
     if not os.path.exists(config_path):
-        logger.debug(f"Config file not found at {config_path}, skipping MCP config load")
+        logger.debug(
+            f"Config file not found at {config_path}, skipping MCP config load"
+        )
         return
 
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        mcp_tools = config.get('mcp_tools', {})
+        mcp_tools = config.get("mcp_tools", {})
         registry = get_registry()
 
         for tool_name, tool_config in mcp_tools.items():
-            if not tool_config or not tool_config.get('enabled', True):
+            if not tool_config or not tool_config.get("enabled", True):
                 continue
 
             # Expand env vars in headers
-            headers = tool_config.get('headers', {})
+            headers = tool_config.get("headers", {})
             for key, value in headers.items():
-                if isinstance(value, str) and value.startswith('${') and value.endswith('}'):
+                if (
+                    isinstance(value, str)
+                    and value.startswith("${")
+                    and value.endswith("}")
+                ):
                     env_var = value[2:-1]
-                    headers[key] = os.getenv(env_var, '')
+                    headers[key] = os.getenv(env_var, "")
 
             # Convert parameters to expected format
-            params = tool_config.get('parameters', [])
+            params = tool_config.get("parameters", [])
             if params and isinstance(params, list):
                 # Already in list format from YAML
                 pass
 
             tool_class = create_mcp_tool_class(
                 name=tool_name,
-                url=tool_config['url'],
-                func_name=tool_config['func_name'],
-                description=tool_config.get('description', f'MCP tool {tool_name}'),
-                category=tool_config.get('category', 'mcp'),
+                url=tool_config["url"],
+                func_name=tool_config["func_name"],
+                description=tool_config.get("description", f"MCP tool {tool_name}"),
+                category=tool_config.get("category", "mcp"),
                 headers=headers if headers else None,
                 parameters=params if params else None,
             )
@@ -196,11 +223,13 @@ def _load_openapi_tools_from_config():
     """Load OpenAPI tool definitions from config file"""
     config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
     if not os.path.exists(config_path):
-        logger.debug(f"Config file not found at {config_path}, skipping OpenAPI config load")
+        logger.debug(
+            f"Config file not found at {config_path}, skipping OpenAPI config load"
+        )
         return
 
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
         tool_classes = load_openapi_tools_from_config(config)
@@ -210,7 +239,9 @@ def _load_openapi_tools_from_config():
             try:
                 registry.register(tool_class, override=True)
             except Exception as e:
-                logger.error(f"Failed to register OpenAPI tool {tool_class.__name__}: {e}")
+                logger.error(
+                    f"Failed to register OpenAPI tool {tool_class.__name__}: {e}"
+                )
 
         if tool_classes:
             logger.info(f"Loaded {len(tool_classes)} OpenAPI tools from config")
@@ -256,19 +287,19 @@ async def list_tools(
 ) -> List[str]:
     """
     List available tools
-    
+
     Args:
         category: Filter by category (e.g., "search", "calculation", "file")
         exclude_dangerous: Whether to exclude dangerous tools
     """
     registry = get_registry()
-    
+
     if category:
         # Filter by category
         tools = registry.list_tools_by_category(category)
     else:
         tools = registry.list_tools()
-    
+
     # Apply danger filter if requested
     if exclude_dangerous:
         filtered = []
@@ -277,7 +308,7 @@ async def list_tools(
             if tool and not tool.metadata.dangerous:
                 filtered.append(tool_name)
         tools = filtered
-    
+
     return tools
 
 
@@ -292,20 +323,20 @@ async def list_categories() -> List[str]:
 async def get_tool_schema(tool_name: str) -> ToolSchemaResponse:
     """
     Get schema for a specific tool
-    
+
     Args:
         tool_name: Name of the tool
     """
     registry = get_registry()
     schema = registry.get_tool_schema(tool_name)
-    
+
     if not schema:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    
+
     return ToolSchemaResponse(
         name=schema["name"],
         description=schema["description"],
-        parameters=schema["parameters"]
+        parameters=schema["parameters"],
     )
 
 
@@ -316,42 +347,46 @@ async def get_all_schemas(
 ) -> List[ToolSchemaResponse]:
     """
     Get schemas for all available tools
-    
+
     Args:
         category: Filter by category
         exclude_dangerous: Whether to exclude dangerous tools
     """
     registry = get_registry()
-    
+
     # Get filtered tool names
     if category:
         tool_names = registry.list_tools_by_category(category)
     else:
         tool_names = registry.list_tools()
-    
+
     # Build schemas
     schemas = []
     for tool_name in tool_names:
         tool = registry.get_tool(tool_name)
         if not tool:
             continue
-        
+
         # Skip dangerous tools if requested
         if exclude_dangerous and tool.metadata.dangerous:
             continue
-        
+
         schema = tool.get_schema()
-        schemas.append(ToolSchemaResponse(
-            name=schema["name"],
-            description=schema["description"],
-            parameters=schema["parameters"]
-        ))
-    
+        schemas.append(
+            ToolSchemaResponse(
+                name=schema["name"],
+                description=schema["description"],
+                parameters=schema["parameters"],
+            )
+        )
+
     return schemas
 
 
 @router.post("/mcp/register", response_model=MCPRegisterResponse)
-async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPRegisterResponse:
+async def register_mcp_tool(
+    req: MCPRegisterRequest, request: Request
+) -> MCPRegisterResponse:
     """Register a remote MCP function as a local Tool.
 
     After registration, the tool is accessible via /tools/execute with the given name.
@@ -363,7 +398,7 @@ async def register_mcp_tool(req: MCPRegisterRequest, request: Request) -> MCPReg
         auth = request.headers.get("Authorization", "")
         x_token = request.headers.get("X-Admin-Token", "")
         bearer_ok = auth.startswith("Bearer ") and auth.split(" ", 1)[1] == admin_token
-        header_ok = (x_token == admin_token)
+        header_ok = x_token == admin_token
         if not (bearer_ok or header_ok):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -406,8 +441,6 @@ async def validate_openapi_spec(req: OpenAPIValidateRequest) -> OpenAPIValidateR
     from ..tools.openapi_tool import _fetch_spec_from_url, OpenAPILoader
     from ..tools.openapi_parser import OpenAPIParseError
 
-    errors = []
-
     try:
         # Get spec
         spec_url_for_loader = None
@@ -416,12 +449,13 @@ async def validate_openapi_spec(req: OpenAPIValidateRequest) -> OpenAPIValidateR
             spec_url_for_loader = req.spec_url
         elif req.spec_inline:
             import yaml
+
             spec = yaml.safe_load(req.spec_inline)
         else:
             return OpenAPIValidateResponse(
                 valid=False,
                 operations_count=0,
-                errors=["Must provide either spec_url or spec_inline"]
+                errors=["Must provide either spec_url or spec_inline"],
             )
 
         # Create temporary loader to validate
@@ -436,37 +470,37 @@ async def validate_openapi_spec(req: OpenAPIValidateRequest) -> OpenAPIValidateR
         # Extract operations
         operations = []
         for op_data in loader.operations:
-            operations.append({
-                "operation_id": op_data["operation_id"],
-                "method": op_data["method"],
-                "path": op_data["path"],
-                "description": op_data["operation"].get("summary", "")
-            })
+            operations.append(
+                {
+                    "operation_id": op_data["operation_id"],
+                    "method": op_data["method"],
+                    "path": op_data["path"],
+                    "description": op_data["operation"].get("summary", ""),
+                }
+            )
 
         return OpenAPIValidateResponse(
             valid=True,
             operations_count=len(operations),
             operations=operations,
             base_url=loader.base_url,
-            errors=[]
+            errors=[],
         )
 
     except OpenAPIParseError as e:
         return OpenAPIValidateResponse(
-            valid=False,
-            operations_count=0,
-            errors=[f"Parse error: {str(e)}"]
+            valid=False, operations_count=0, errors=[f"Parse error: {str(e)}"]
         )
     except Exception as e:
         return OpenAPIValidateResponse(
-            valid=False,
-            operations_count=0,
-            errors=[f"Validation error: {str(e)}"]
+            valid=False, operations_count=0, errors=[f"Validation error: {str(e)}"]
         )
 
 
 @router.post("/openapi/register", response_model=OpenAPIRegisterResponse)
-async def register_openapi_tools(req: OpenAPIRegisterRequest, request: Request) -> OpenAPIRegisterResponse:
+async def register_openapi_tools(
+    req: OpenAPIRegisterRequest, request: Request
+) -> OpenAPIRegisterResponse:
     """
     Register OpenAPI spec as Shannon tools dynamically.
 
@@ -489,7 +523,7 @@ async def register_openapi_tools(req: OpenAPIRegisterRequest, request: Request) 
         auth = request.headers.get("Authorization", "")
         x_token = request.headers.get("X-Admin-Token", "")
         bearer_ok = auth.startswith("Bearer ") and auth.split(" ", 1)[1] == admin_token
-        header_ok = (x_token == admin_token)
+        header_ok = x_token == admin_token
         if not (bearer_ok or header_ok):
             raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -501,12 +535,13 @@ async def register_openapi_tools(req: OpenAPIRegisterRequest, request: Request) 
             spec_url_for_loader = req.spec_url
         elif req.spec_inline:
             import yaml
+
             spec = yaml.safe_load(req.spec_inline)
         else:
             return OpenAPIRegisterResponse(
                 success=False,
                 collection_name=req.name,
-                message="Must provide either spec_url or spec_inline"
+                message="Must provide either spec_url or spec_inline",
             )
 
         # Create loader
@@ -538,7 +573,9 @@ async def register_openapi_tools(req: OpenAPIRegisterRequest, request: Request) 
                 temp_instance = tool_class()
                 registered_ops.append(temp_instance.metadata.name)
             except Exception as e:
-                logger.error(f"Failed to register OpenAPI tool {tool_class.__name__}: {e}")
+                logger.error(
+                    f"Failed to register OpenAPI tool {tool_class.__name__}: {e}"
+                )
 
         return OpenAPIRegisterResponse(
             success=True,
@@ -552,15 +589,13 @@ async def register_openapi_tools(req: OpenAPIRegisterRequest, request: Request) 
 
     except OpenAPIParseError as e:
         return OpenAPIRegisterResponse(
-            success=False,
-            collection_name=req.name,
-            message=f"Parse error: {str(e)}"
+            success=False, collection_name=req.name, message=f"Parse error: {str(e)}"
         )
     except Exception as e:
         return OpenAPIRegisterResponse(
             success=False,
             collection_name=req.name,
-            message=f"Registration error: {str(e)}"
+            message=f"Registration error: {str(e)}",
         )
 
 
@@ -576,7 +611,9 @@ async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
     tool = registry.get_tool(request.tool_name)
 
     if not tool:
-        raise HTTPException(status_code=404, detail=f"Tool '{request.tool_name}' not found")
+        raise HTTPException(
+            status_code=404, detail=f"Tool '{request.tool_name}' not found"
+        )
 
     try:
         # Execute the tool and return raw results
@@ -599,27 +636,31 @@ async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
 
 
 @router.post("/batch-execute", response_model=List[ToolExecuteResponse])
-async def batch_execute_tools(requests: List[ToolExecuteRequest]) -> List[ToolExecuteResponse]:
+async def batch_execute_tools(
+    requests: List[ToolExecuteRequest],
+) -> List[ToolExecuteResponse]:
     """
     Execute multiple tools in batch (sequentially for now)
-    
+
     Args:
         requests: List of tool execution requests
     """
     results = []
-    
+
     for request in requests:
         try:
             result = await execute_tool(request)
             results.append(result)
         except HTTPException as e:
             # Add error result for missing tools
-            results.append(ToolExecuteResponse(
-                success=False,
-                output=None,
-                error=e.detail,
-            ))
-    
+            results.append(
+                ToolExecuteResponse(
+                    success=False,
+                    output=None,
+                    error=e.detail,
+                )
+            )
+
     return results
 
 
@@ -627,16 +668,16 @@ async def batch_execute_tools(requests: List[ToolExecuteRequest]) -> List[ToolEx
 async def get_tool_metadata(tool_name: str) -> Dict[str, Any]:
     """
     Get detailed metadata for a tool
-    
+
     Args:
         tool_name: Name of the tool
     """
     registry = get_registry()
     metadata = registry.get_tool_metadata(tool_name)
-    
+
     if not metadata:
         raise HTTPException(status_code=404, detail=f"Tool '{tool_name}' not found")
-    
+
     return {
         "name": metadata.name,
         "version": metadata.version,
@@ -664,6 +705,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
     # Cache key ignores context to keep things simple and safe
     cache_key = f"{body.task}|{body.exclude_dangerous}|{body.max_tools}"
     import time
+
     now = time.time()
     cached = _SELECT_CACHE.get(cache_key)
     if cached and (now - cached.get("ts", 0)) <= _SELECT_TTL_SECONDS:
@@ -690,7 +732,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
         return ToolSelectResponse(selected_tools=[], calls=[], provider_used=None)
 
     # Try LLM-based selection when providers are configured
-    providers = getattr(req.app.state, 'providers', None)
+    providers = getattr(req.app.state, "providers", None)
     if providers and providers.is_configured():
         try:
             # Build concise tool descriptions to keep prompt small
@@ -699,15 +741,22 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
                 tool = registry.get_tool(name)
                 if not tool:
                     continue
-                tools_summary.append({
-                    "name": name,
-                    "description": tool.metadata.description,
-                    "parameters": list(tool.get_schema().get("parameters", {}).get("properties", {}).keys())
-                })
+                tools_summary.append(
+                    {
+                        "name": name,
+                        "description": tool.metadata.description,
+                        "parameters": list(
+                            tool.get_schema()
+                            .get("parameters", {})
+                            .get("properties", {})
+                            .keys()
+                        ),
+                    }
+                )
 
             sys = (
                 "You are a tool selection assistant. Read the task and choose at most N suitable tools. "
-                "Return compact JSON only with fields: {\"selected_tools\": [names], \"calls\": [{\"tool_name\": name, \"parameters\": object}]}. "
+                'Return compact JSON only with fields: {"selected_tools": [names], "calls": [{"tool_name": name, "parameters": object}]}. '
                 "Only include tools from the provided list and prefer zero or minimal arguments."
             )
             user = {
@@ -718,11 +767,18 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             }
 
             # Ask a small model to return JSON; avoid provider-specific tool_call plumbing
-            wf_id = req.headers.get('X-Parent-Workflow-ID') or req.headers.get('X-Workflow-ID') or req.headers.get('x-workflow-id')
-            ag_id = req.headers.get('X-Agent-ID') or req.headers.get('x-agent-id')
+            wf_id = (
+                req.headers.get("X-Parent-Workflow-ID")
+                or req.headers.get("X-Workflow-ID")
+                or req.headers.get("x-workflow-id")
+            )
+            ag_id = req.headers.get("X-Agent-ID") or req.headers.get("x-agent-id")
 
             result = await providers.generate_completion(
-                messages=[{"role": "system", "content": sys}, {"role": "user", "content": str(user)}],
+                messages=[
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": str(user)},
+                ],
                 max_tokens=300,
                 temperature=0.1,
                 response_format={"type": "json_object"},
@@ -731,6 +787,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             )
 
             import json as _json
+
             raw = result.get("output_text", "")
             data = None
             try:
@@ -738,6 +795,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             except Exception:
                 # lenient fallback: try to find first {...}
                 import re
+
                 m = re.search(r"\{[\s\S]*\}", raw)
                 if m:
                     try:
@@ -746,7 +804,9 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
                         data = None
 
             if isinstance(data, dict):
-                selected = [s for s in data.get("selected_tools", []) if s in filtered_tools][: body.max_tools]
+                selected = [
+                    s for s in data.get("selected_tools", []) if s in filtered_tools
+                ][: body.max_tools]
                 calls_in = data.get("calls", []) or []
                 calls: List[ToolCall] = []
                 for c in calls_in:
@@ -773,13 +833,16 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
             logger.warning(f"Tool selection LLM fallback due to error: {e}")
 
     # Heuristic fallback: very small, safe defaults
-    task_lower = body.task.lower()
     selected: List[str] = []
     calls: List[ToolCall] = []
 
     def add(name: str, params: Dict[str, Any]):
         nonlocal selected, calls
-        if name in filtered_tools and name not in selected and len(selected) < body.max_tools:
+        if (
+            name in filtered_tools
+            and name not in selected
+            and len(selected) < body.max_tools
+        ):
             selected.append(name)
             calls.append(ToolCall(tool_name=name, parameters=params))
 
