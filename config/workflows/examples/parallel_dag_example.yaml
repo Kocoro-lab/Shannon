@@ -1,0 +1,61 @@
+name: parallel_dag_example
+version: "1.0.0"
+description: "Demonstrates proper DAG node usage with metadata.tasks"
+
+defaults:
+  model_tier: medium
+  budget_agent_max: 8000
+  require_approval: false
+
+nodes:
+  # Initial understanding phase
+  - id: understand
+    type: simple
+    strategy: react
+    budget_max: 1000
+    tools_allowlist: []
+
+  # Parallel DAG execution with internal dependencies
+  - id: parallel_analysis
+    type: dag
+    depends_on: [understand]
+    budget_max: 5000
+    metadata:
+      tasks:
+        # Root task in DAG
+        - id: data_collection
+          query: "Collect relevant data sources"
+          tools: [web_search]
+
+        # Parallel tasks depending on data_collection
+        - id: quantitative_analysis
+          query: "Perform statistical analysis on collected data"
+          depends_on: [data_collection]
+          tools: [calculator]
+
+        - id: qualitative_analysis
+          query: "Analyze qualitative patterns in data"
+          depends_on: [data_collection]
+          tools: []
+
+        # Synthesis task depending on both analyses
+        - id: cross_validation
+          query: "Cross-validate quantitative and qualitative findings"
+          depends_on: [quantitative_analysis, qualitative_analysis]
+          tools: []
+
+  # Final synthesis
+  - id: report
+    type: cognitive
+    strategy: reflection
+    depends_on: [parallel_analysis]
+    budget_max: 2000
+    on_fail:
+      degrade_to: chain_of_thought
+      retry: 1
+
+edges:
+  - from: understand
+    to: parallel_analysis
+  - from: parallel_analysis
+    to: report
