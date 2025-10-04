@@ -409,19 +409,41 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}).Get(ctx, nil)
 	}
 
-	return TaskResult{
-		Result:     finalResult,
-		Success:    true,
-		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"version":        "v2",
-			"complexity":     decomp.ComplexityScore,
-			"quality_score":  qualityScore,
-			"agent_count":    len(agentResults),
-			"execution_mode": execStrategy,
-			"had_reflection": shouldReflect(decomp.ComplexityScore, &config),
-		},
-	}, nil
+    // Aggregate tool errors across agent results
+    var toolErrors []map[string]string
+    for _, ar := range agentResults {
+        if len(ar.ToolExecutions) == 0 {
+            continue
+        }
+        for _, te := range ar.ToolExecutions {
+            if !te.Success || (te.Error != "") {
+                toolErrors = append(toolErrors, map[string]string{
+                    "agent_id": ar.AgentID,
+                    "tool":     te.Tool,
+                    "error":    te.Error,
+                })
+            }
+        }
+    }
+
+    meta := map[string]interface{}{
+        "version":        "v2",
+        "complexity":     decomp.ComplexityScore,
+        "quality_score":  qualityScore,
+        "agent_count":    len(agentResults),
+        "execution_mode": execStrategy,
+        "had_reflection": shouldReflect(decomp.ComplexityScore, &config),
+    }
+    if len(toolErrors) > 0 {
+        meta["tool_errors"] = toolErrors
+    }
+
+    return TaskResult{
+        Result:     finalResult,
+        Success:    true,
+        TokensUsed: totalTokens,
+        Metadata:   meta,
+    }, nil
 }
 
 // executeParallelPattern uses the parallel execution pattern

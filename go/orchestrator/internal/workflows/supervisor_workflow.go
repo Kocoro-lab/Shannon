@@ -922,9 +922,27 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
-	return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: map[string]interface{}{
-		"num_children": len(childResults),
-	}}, nil
+// Aggregate tool errors across child results
+var toolErrors []map[string]string
+for _, cr := range childResults {
+    if len(cr.ToolExecutions) == 0 { continue }
+    for _, te := range cr.ToolExecutions {
+        if !te.Success || (te.Error != "") {
+            toolErrors = append(toolErrors, map[string]string{
+                "agent_id": cr.AgentID,
+                "tool":     te.Tool,
+                "error":    te.Error,
+            })
+        }
+    }
+}
+meta := map[string]interface{}{
+    "num_children": len(childResults),
+}
+if len(toolErrors) > 0 {
+    meta["tool_errors"] = toolErrors
+}
+return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: meta}, nil
 }
 
 // Note: convertToStrategiesInput and convertFromStrategiesResult are defined in orchestrator_router.go

@@ -326,17 +326,35 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		WorkflowType: "react",
 	}).Get(ctx, nil)
 
-	return TaskResult{
-		Result:     finalResult,
-		Success:    true,
-		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"version":       "v2",
-			"iterations":    reactResult.Iterations,
-			"quality_score": qualityScore,
-			"thoughts":      len(reactResult.Thoughts),
-			"actions":       len(reactResult.Actions),
-			"observations":  len(reactResult.Observations),
-		},
-	}, nil
+    // Aggregate tool errors from React agent results
+    var toolErrors []map[string]string
+    for _, ar := range reactResult.AgentResults {
+        if len(ar.ToolExecutions) == 0 { continue }
+        for _, te := range ar.ToolExecutions {
+            if !te.Success || (te.Error != "") {
+                toolErrors = append(toolErrors, map[string]string{
+                    "agent_id": ar.AgentID,
+                    "tool":     te.Tool,
+                    "error":    te.Error,
+                })
+            }
+        }
+    }
+
+    meta := map[string]interface{}{
+        "version":       "v2",
+        "iterations":    reactResult.Iterations,
+        "quality_score": qualityScore,
+        "thoughts":      len(reactResult.Thoughts),
+        "actions":       len(reactResult.Actions),
+        "observations":  len(reactResult.Observations),
+    }
+    if len(toolErrors) > 0 { meta["tool_errors"] = toolErrors }
+
+    return TaskResult{
+        Result:     finalResult,
+        Success:    true,
+        TokensUsed: totalTokens,
+        Metadata:   meta,
+    }, nil
 }

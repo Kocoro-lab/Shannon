@@ -15,10 +15,18 @@ type UnifiedResponse struct {
 	Result    string                 `json:"result"`
 	Metadata  ResponseMetadata       `json:"metadata"`
 	Usage     ResponseUsage          `json:"usage"`
-	Performance ResponsePerformance `json:"performance,omitempty"`
-	StopReason string               `json:"stop_reason"`
-	Error     *string                `json:"error"`
-	Timestamp string                 `json:"timestamp"`
+    Performance ResponsePerformance `json:"performance,omitempty"`
+    StopReason string               `json:"stop_reason"`
+    Error     *string                `json:"error"`
+    Timestamp string                 `json:"timestamp"`
+    ToolErrors []ToolError           `json:"tool_errors,omitempty"`
+}
+
+// ToolError represents a single tool failure surfaced to clients
+type ToolError struct {
+    AgentID string `json:"agent_id,omitempty"`
+    Tool    string `json:"tool"`
+    Message string `json:"message"`
 }
 
 // ResponseMetadata contains execution metadata
@@ -68,20 +76,73 @@ func TransformToUnifiedResponse(result workflows.TaskResult, sessionID string, e
 		errorPtr = &result.ErrorMessage
 	}
 
-	return UnifiedResponse{
-		TaskID:    extractTaskID(result),
-		SessionID: sessionID,
-		Status:    status,
-		Result:    result.Result,
-		Metadata:  metadata,
-		Usage:     usage,
-		Performance: ResponsePerformance{
-			ExecutionTimeMs: executionTime,
-		},
-		StopReason: stopReason,
-		Error:      errorPtr,
-		Timestamp:  time.Now().UTC().Format(time.RFC3339),
-	}
+    // Extract tool errors from metadata (if present)
+    toolErrors := extractToolErrors(result)
+
+    return UnifiedResponse{
+        TaskID:    extractTaskID(result),
+        SessionID: sessionID,
+        Status:    status,
+        Result:    result.Result,
+        Metadata:  metadata,
+        Usage:     usage,
+        Performance: ResponsePerformance{
+            ExecutionTimeMs: executionTime,
+        },
+        StopReason: stopReason,
+        Error:      errorPtr,
+        Timestamp:  time.Now().UTC().Format(time.RFC3339),
+        ToolErrors: toolErrors,
+    }
+}
+
+// extractToolErrors builds a client-friendly list of tool errors from result metadata
+func extractToolErrors(result workflows.TaskResult) []ToolError {
+    if result.Metadata == nil {
+        return nil
+    }
+    raw, ok := result.Metadata["tool_errors"]
+    if !ok || raw == nil {
+        return nil
+    }
+
+    out := make([]ToolError, 0)
+    // Try typed []map[string]string first
+    if arr, ok := raw.([]map[string]string); ok {
+        for _, m := range arr {
+            out = append(out, ToolError{
+                AgentID: m["agent_id"],
+                Tool:    m["tool"],
+                Message: truncateError(m["error"]),
+            })
+        }
+        return out
+    }
+    // Fallback to []interface{} of maps
+    if arr, ok := raw.([]interface{}); ok {
+        for _, v := range arr {
+            if m, ok := v.(map[string]interface{}); ok {
+                te := ToolError{}
+                if a, ok := m["agent_id"].(string); ok { te.AgentID = a }
+                if t, ok := m["tool"].(string); ok { te.Tool = t }
+                if e, ok := m["error"].(string); ok { te.Message = truncateError(e) }
+                if te.Tool != "" || te.Message != "" {
+                    out = append(out, te)
+                }
+            }
+        }
+        return out
+    }
+    return nil
+}
+
+// truncateError limits error messages to 500 characters to prevent response bloat
+func truncateError(msg string) string {
+    const maxLen = 500
+    if len(msg) <= maxLen {
+        return msg
+    }
+    return msg[:maxLen] + "... (truncated)"
 }
 
 func extractMetadata(result workflows.TaskResult) ResponseMetadata {

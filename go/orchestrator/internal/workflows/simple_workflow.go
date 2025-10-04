@@ -448,7 +448,21 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-	// Record token usage for SimpleTaskWorkflow (best-effort)
+    // Aggregate tool errors for user-facing metadata
+    var toolErrors []map[string]string
+    if len(result.ToolExecutions) > 0 {
+        for _, te := range result.ToolExecutions {
+            if !te.Success || (te.Error != "") {
+                toolErrors = append(toolErrors, map[string]string{
+                    "agent_id": "simple-agent",
+                    "tool":     te.Tool,
+                    "error":    te.Error,
+                })
+            }
+        }
+    }
+
+    // Record token usage for SimpleTaskWorkflow (best-effort)
 	// Use a simple 60/40 split when detailed counts are unavailable
 	if input.UserID != "" && totalTokens > 0 {
 		recOpts := workflow.ActivityOptions{
@@ -494,15 +508,20 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
-	return TaskResult{
-		Result:     finalResult,
-		Success:    true,
-		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"mode":       "simple",
-			"num_agents": 1,
-		},
-	}, nil
+    meta := map[string]interface{}{
+        "mode":       "simple",
+        "num_agents": 1,
+    }
+    if len(toolErrors) > 0 {
+        meta["tool_errors"] = toolErrors
+    }
+
+    return TaskResult{
+        Result:     finalResult,
+        Success:    true,
+        TokensUsed: totalTokens,
+        Metadata:   meta,
+    }, nil
 }
 
 // detectProviderFromModel determines the provider based on the model name
