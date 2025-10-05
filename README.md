@@ -808,7 +808,8 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - ✅ **Provider abstraction layer** - Unified interface for adding new LLM providers with automatic fallback
 - ✅ **Advanced Task Decomposition** - Recursive decomposition with ADaPT patterns, chain-of-thought planning, task template library
 - ✅ **Composable workflows** - YAML-based workflow templates with declarative orchestration patterns
-- 🚧 **Unified Gateway & SDKs** - REST API gateway, Python/TypeScript SDKs, CLI tool for easy adoption
+- ✅ **Unified Gateway & SDKs** - REST API gateway, Python/TypeScript SDKs, CLI tool for easy adoption
+- 🚧 **Ship Docker Images** - Pre-built docker release images, make setup staightforward
 
 **v0.2**
 - [ ] **Native tool expansion** - Additional Rust-native tools for file operations and system interactions
