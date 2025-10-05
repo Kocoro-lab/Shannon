@@ -1,43 +1,43 @@
 package streaming
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "os"
-    "strconv"
-    "sync"
-    "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"strconv"
+	"sync"
+	"time"
 
-    "github.com/go-redis/redis/v8"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
-    "go.uber.org/zap"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+	"github.com/go-redis/redis/v8"
+	"go.uber.org/zap"
 )
 
 // Event is a minimal streaming event used by SSE and future gRPC.
 type Event struct {
-    WorkflowID string    `json:"workflow_id"`
-    Type       string    `json:"type"`
-    AgentID    string    `json:"agent_id,omitempty"`
-    Message    string    `json:"message,omitempty"`
-    Payload    map[string]interface{} `json:"payload,omitempty"`
-    Timestamp  time.Time `json:"timestamp"`
-    Seq        uint64    `json:"seq"`
-    StreamID   string    `json:"stream_id,omitempty"` // Redis stream ID for deduplication
+	WorkflowID string                 `json:"workflow_id"`
+	Type       string                 `json:"type"`
+	AgentID    string                 `json:"agent_id,omitempty"`
+	Message    string                 `json:"message,omitempty"`
+	Payload    map[string]interface{} `json:"payload,omitempty"`
+	Timestamp  time.Time              `json:"timestamp"`
+	Seq        uint64                 `json:"seq"`
+	StreamID   string                 `json:"stream_id,omitempty"` // Redis stream ID for deduplication
 }
 
 // Manager provides Redis Streams-based pub/sub for workflow events.
 type Manager struct {
-    mu          sync.RWMutex
-    redis       *redis.Client
-    // optional persistent store
-    dbClient    *db.Client
-    persistCh   chan db.EventLog
-    batchSize   int
-    flushEvery  time.Duration
-    subscribers map[string]map[chan Event]struct{}
-    capacity    int
-    logger      *zap.Logger
+	mu    sync.RWMutex
+	redis *redis.Client
+	// optional persistent store
+	dbClient    *db.Client
+	persistCh   chan db.EventLog
+	batchSize   int
+	flushEvery  time.Duration
+	subscribers map[string]map[chan Event]struct{}
+	capacity    int
+	logger      *zap.Logger
 }
 
 var (
@@ -74,31 +74,35 @@ func InitializeRedis(redisClient *redis.Client, logger *zap.Logger) {
 
 // InitializeEventStore sets the persistent store for events.
 func InitializeEventStore(store *db.Client, logger *zap.Logger) {
-    if defaultMgr == nil {
-        Get()
-    }
-    defaultMgr.mu.Lock()
-    defer defaultMgr.mu.Unlock()
-    defaultMgr.dbClient = store
-    if logger != nil {
-        defaultMgr.logger = logger
-    }
-    if defaultMgr.persistCh == nil {
-        // Configure batching from env
-        bs := 100
-        if v := os.Getenv("EVENTLOG_BATCH_SIZE"); v != "" {
-            if n, err := strconv.Atoi(v); err == nil && n > 0 { bs = n }
-        }
-        iv := 100 * time.Millisecond
-        if v := os.Getenv("EVENTLOG_BATCH_INTERVAL_MS"); v != "" {
-            if n, err := strconv.Atoi(v); err == nil && n > 0 { iv = time.Duration(n) * time.Millisecond }
-        }
-        defaultMgr.persistCh = make(chan db.EventLog, bs*4)
-        defaultMgr.batchSize = bs
-        defaultMgr.flushEvery = iv
-        go defaultMgr.persistWorker()
-        defaultMgr.logger.Info("Initialized event log batcher", zap.Int("batch_size", bs), zap.Duration("interval", iv))
-    }
+	if defaultMgr == nil {
+		Get()
+	}
+	defaultMgr.mu.Lock()
+	defer defaultMgr.mu.Unlock()
+	defaultMgr.dbClient = store
+	if logger != nil {
+		defaultMgr.logger = logger
+	}
+	if defaultMgr.persistCh == nil {
+		// Configure batching from env
+		bs := 100
+		if v := os.Getenv("EVENTLOG_BATCH_SIZE"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				bs = n
+			}
+		}
+		iv := 100 * time.Millisecond
+		if v := os.Getenv("EVENTLOG_BATCH_INTERVAL_MS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				iv = time.Duration(n) * time.Millisecond
+			}
+		}
+		defaultMgr.persistCh = make(chan db.EventLog, bs*4)
+		defaultMgr.batchSize = bs
+		defaultMgr.flushEvery = iv
+		go defaultMgr.persistWorker()
+		defaultMgr.logger.Info("Initialized event log batcher", zap.Int("batch_size", bs), zap.Duration("interval", iv))
+	}
 }
 
 // Configure sets default capacity for new/empty managers and rings.
@@ -234,15 +238,17 @@ func (m *Manager) streamReaderFrom(workflowID string, ch chan Event, startID str
 						event.Seq = seq
 					}
 				}
-                if v, ok := message.Values["ts_nano"].(string); ok {
-                    if nano, err := strconv.ParseInt(v, 10, 64); err == nil {
-                        event.Timestamp = time.Unix(0, nano)
-                    }
-                }
-                if v, ok := message.Values["payload"].(string); ok && v != "" {
-                    var p map[string]interface{}
-                    if err := json.Unmarshal([]byte(v), &p); err == nil { event.Payload = p }
-                }
+				if v, ok := message.Values["ts_nano"].(string); ok {
+					if nano, err := strconv.ParseInt(v, 10, 64); err == nil {
+						event.Timestamp = time.Unix(0, nano)
+					}
+				}
+				if v, ok := message.Values["payload"].(string); ok && v != "" {
+					var p map[string]interface{}
+					if err := json.Unmarshal([]byte(v), &p); err == nil {
+						event.Payload = p
+					}
+				}
 
 				// Send to channel (non-blocking)
 				select {
@@ -279,8 +285,8 @@ func (m *Manager) Unsubscribe(workflowID string, ch chan Event) {
 
 // Publish sends an event to Redis stream and all local subscribers (for backward compatibility)
 func (m *Manager) Publish(workflowID string, evt Event) {
-    if m.redis != nil {
-        ctx := context.Background()
+	if m.redis != nil {
+		ctx := context.Background()
 
 		// Increment sequence number
 		seq, err := m.redis.Incr(ctx, m.seqKey(workflowID)).Result()
@@ -292,26 +298,28 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 		}
 		evt.Seq = uint64(seq)
 
-        // Add to Redis stream
-        streamKey := m.streamKey(workflowID)
-        var payloadJSON string
-        if evt.Payload != nil {
-            if b, err := json.Marshal(evt.Payload); err == nil { payloadJSON = string(b) }
-        }
-        streamID, err := m.redis.XAdd(ctx, &redis.XAddArgs{
-            Stream: streamKey,
-            MaxLen: int64(m.capacity),
-            Approx: true,
-            Values: map[string]interface{}{
-                "workflow_id": evt.WorkflowID,
-                "type":        evt.Type,
-                "agent_id":    evt.AgentID,
-                "message":     evt.Message,
-                "payload":     payloadJSON,
-                "ts_nano":     strconv.FormatInt(evt.Timestamp.UnixNano(), 10),
-                "seq":         strconv.FormatUint(evt.Seq, 10),
-            },
-        }).Result()
+		// Add to Redis stream
+		streamKey := m.streamKey(workflowID)
+		var payloadJSON string
+		if evt.Payload != nil {
+			if b, err := json.Marshal(evt.Payload); err == nil {
+				payloadJSON = string(b)
+			}
+		}
+		streamID, err := m.redis.XAdd(ctx, &redis.XAddArgs{
+			Stream: streamKey,
+			MaxLen: int64(m.capacity),
+			Approx: true,
+			Values: map[string]interface{}{
+				"workflow_id": evt.WorkflowID,
+				"type":        evt.Type,
+				"agent_id":    evt.AgentID,
+				"message":     evt.Message,
+				"payload":     payloadJSON,
+				"ts_nano":     strconv.FormatInt(evt.Timestamp.UnixNano(), 10),
+				"seq":         strconv.FormatUint(evt.Seq, 10),
+			},
+		}).Result()
 
 		if err != nil {
 			m.logger.Error("Failed to publish to Redis stream",
@@ -326,28 +334,30 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 				zap.String("stream_id", streamID))
 		}
 
-        // Set TTL on stream key (24 hours)
-        m.redis.Expire(ctx, streamKey, 24*time.Hour)
-        m.redis.Expire(ctx, m.seqKey(workflowID), 24*time.Hour)
-    }
+		// Set TTL on stream key (24 hours)
+		m.redis.Expire(ctx, streamKey, 24*time.Hour)
+		m.redis.Expire(ctx, m.seqKey(workflowID), 24*time.Hour)
+	}
 
-    // Persist to DB if configured (best-effort, non-blocking)
-    if m.dbClient != nil && m.persistCh != nil {
-        // Non-blocking enqueue; drop if full (we never block streaming)
-        el := db.EventLog{WorkflowID: evt.WorkflowID, Type: evt.Type, AgentID: evt.AgentID, Message: evt.Message, Timestamp: evt.Timestamp, Seq: evt.Seq, StreamID: evt.StreamID}
-        if evt.Payload != nil { el.Payload = db.JSONB(evt.Payload) }
-        select {
-        case m.persistCh <- el:
-        default:
-            m.logger.Warn("eventlog batcher full; dropping event", zap.String("workflow_id", evt.WorkflowID), zap.String("type", evt.Type))
-        }
-    }
+	// Persist to DB if configured (best-effort, non-blocking)
+	if m.dbClient != nil && m.persistCh != nil {
+		// Non-blocking enqueue; drop if full (we never block streaming)
+		el := db.EventLog{WorkflowID: evt.WorkflowID, Type: evt.Type, AgentID: evt.AgentID, Message: evt.Message, Timestamp: evt.Timestamp, Seq: evt.Seq, StreamID: evt.StreamID}
+		if evt.Payload != nil {
+			el.Payload = db.JSONB(evt.Payload)
+		}
+		select {
+		case m.persistCh <- el:
+		default:
+			m.logger.Warn("eventlog batcher full; dropping event", zap.String("workflow_id", evt.WorkflowID), zap.String("type", evt.Type))
+		}
+	}
 
-    // Only publish to local subscribers if Redis is nil (in-memory mode)
-    // When Redis is available, the streamReader will deliver events
-    if m.redis == nil {
-        m.mu.RLock()
-        subs := m.subscribers[workflowID]
+	// Only publish to local subscribers if Redis is nil (in-memory mode)
+	// When Redis is available, the streamReader will deliver events
+	if m.redis == nil {
+		m.mu.RLock()
+		subs := m.subscribers[workflowID]
 		m.mu.RUnlock()
 		if len(subs) == 0 {
 			return
@@ -364,39 +374,44 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 
 // Marshal returns JSON for event payloads in SSE or logs.
 func (e Event) Marshal() []byte {
-    b, _ := json.Marshal(e)
-    return b
+	b, _ := json.Marshal(e)
+	return b
 }
 
 // persistWorker batches event logs and writes them asynchronously.
 func (m *Manager) persistWorker() {
-    batch := make([]db.EventLog, 0, m.batchSize)
-    ticker := time.NewTicker(m.flushEvery)
-    defer ticker.Stop()
-    flush := func() {
-        if len(batch) == 0 || m.dbClient == nil {
-            return
-        }
-        // Write sequentially (simple, safe). Could be optimized to a batch insert if needed.
-        ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        for i := range batch {
-            if err := m.dbClient.SaveEventLog(ctx, &batch[i]); err != nil {
-                m.logger.Warn("SaveEventLog failed", zap.String("workflow_id", batch[i].WorkflowID), zap.String("type", batch[i].Type), zap.Uint64("seq", batch[i].Seq), zap.Error(err))
-            }
-        }
-        cancel()
-        batch = batch[:0]
-    }
-    for {
-        select {
-        case ev, ok := <-m.persistCh:
-            if !ok { flush(); return }
-            batch = append(batch, ev)
-            if len(batch) >= m.batchSize { flush() }
-        case <-ticker.C:
-            flush()
-        }
-    }
+	batch := make([]db.EventLog, 0, m.batchSize)
+	ticker := time.NewTicker(m.flushEvery)
+	defer ticker.Stop()
+	flush := func() {
+		if len(batch) == 0 || m.dbClient == nil {
+			return
+		}
+		// Write sequentially (simple, safe). Could be optimized to a batch insert if needed.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		for i := range batch {
+			if err := m.dbClient.SaveEventLog(ctx, &batch[i]); err != nil {
+				m.logger.Warn("SaveEventLog failed", zap.String("workflow_id", batch[i].WorkflowID), zap.String("type", batch[i].Type), zap.Uint64("seq", batch[i].Seq), zap.Error(err))
+			}
+		}
+		cancel()
+		batch = batch[:0]
+	}
+	for {
+		select {
+		case ev, ok := <-m.persistCh:
+			if !ok {
+				flush()
+				return
+			}
+			batch = append(batch, ev)
+			if len(batch) >= m.batchSize {
+				flush()
+			}
+		case <-ticker.C:
+			flush()
+		}
+	}
 }
 
 // ReplaySince returns events with Seq > since (from Redis stream)

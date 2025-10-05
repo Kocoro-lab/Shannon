@@ -1,33 +1,33 @@
 package middleware
 
 import (
-    "context"
-    "net/http"
-    "os"
-    "strings"
+	"context"
+	"net/http"
+	"os"
+	"strings"
 
-    authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    "github.com/google/uuid"
-    "go.uber.org/zap"
+	authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 // AuthMiddleware provides authentication middleware
 type APIKeyValidator interface {
-    ValidateAPIKey(ctx context.Context, apiKey string) (*authpkg.UserContext, error)
+	ValidateAPIKey(ctx context.Context, apiKey string) (*authpkg.UserContext, error)
 }
 
 // AuthMiddleware provides authentication middleware
 type AuthMiddleware struct {
-    authService APIKeyValidator
-    logger      *zap.Logger
+	authService APIKeyValidator
+	logger      *zap.Logger
 }
 
 // NewAuthMiddleware creates a new authentication middleware
 func NewAuthMiddleware(authService APIKeyValidator, logger *zap.Logger) *AuthMiddleware {
-    return &AuthMiddleware{
-        authService: authService,
-        logger:      logger,
-    }
+	return &AuthMiddleware{
+		authService: authService,
+		logger:      logger,
+	}
 }
 
 // Middleware returns the HTTP middleware function
@@ -53,12 +53,12 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-    // Extract API key from headers only (no query params)
-    apiKey := m.extractAPIKey(r)
-    if apiKey == "" {
-        m.sendUnauthorized(w, "API key is required")
-        return
-    }
+		// Extract API key from headers only (no query params)
+		apiKey := m.extractAPIKey(r)
+		if apiKey == "" {
+			m.sendUnauthorized(w, "API key is required")
+			return
+		}
 
 		// Validate API key using the auth service
 		userCtx, err := m.authService.ValidateAPIKey(r.Context(), apiKey)
@@ -88,20 +88,20 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 
 // extractAPIKey extracts the API key from the request
 func (m *AuthMiddleware) extractAPIKey(r *http.Request) string {
-    // Check X-API-Key header
-    if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
-        return apiKey
-    }
+	// Check X-API-Key header
+	if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
+		return apiKey
+	}
 
-    // Check Authorization header with Bearer token
-    if auth := r.Header.Get("Authorization"); auth != "" {
-        parts := strings.Split(auth, " ")
-        if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-            return parts[1]
-        }
-    }
+	// Check Authorization header with Bearer token
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		parts := strings.Split(auth, " ")
+		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
+			return parts[1]
+		}
+	}
 
-    return ""
+	return ""
 }
 
 // getKeyPrefix returns the first few characters of the API key for logging

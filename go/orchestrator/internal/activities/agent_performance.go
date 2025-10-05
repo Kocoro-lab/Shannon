@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 )
@@ -41,6 +42,93 @@ type AgentPerformance struct {
 	TotalRuns   int     `json:"total_runs"`
 	AvgTokens   int     `json:"avg_tokens"`
 	AvgDuration int64   `json:"avg_duration_ms"`
+}
+
+// FetchAgentPerformancesInput requests performance data for specific agents
+type FetchAgentPerformancesInput struct {
+	AgentIDs  []string `json:"agent_ids"`
+	SessionID string   `json:"session_id,omitempty"` // Optional: scope to session
+}
+
+// FetchAgentPerformances retrieves historical performance for a list of agent IDs.
+func FetchAgentPerformances(ctx context.Context, in FetchAgentPerformancesInput) ([]AgentPerformance, error) {
+	// Short‑circuit if no agents provided
+	if len(in.AgentIDs) == 0 {
+		return []AgentPerformance{}, nil
+	}
+
+	// Use global DB client if available
+	dbClient := GetGlobalDBClient()
+	if dbClient == nil {
+		return []AgentPerformance{}, nil
+	}
+	db := dbClient.GetDB()
+	if db == nil {
+		return []AgentPerformance{}, nil
+	}
+
+	// Build dynamic IN clause placeholders
+	placeholders := make([]string, 0, len(in.AgentIDs))
+	args := make([]interface{}, 0, len(in.AgentIDs)+1)
+	for i, id := range in.AgentIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, id)
+	}
+
+	// Optional session scope parameter index
+	nextIdx := len(args) + 1
+
+	query := fmt.Sprintf(`
+        SELECT
+            ae.agent_id,
+            AVG(CASE WHEN ae.state = 'COMPLETED' THEN 1.0 ELSE 0.0 END) AS success_rate,
+            COUNT(*) AS total_runs,
+            AVG(ae.tokens_used) AS avg_tokens,
+            AVG(ae.duration_ms) AS avg_duration_ms
+        FROM agent_executions ae
+        LEFT JOIN task_executions te ON te.workflow_id = ae.workflow_id
+        WHERE ae.agent_id IN (%s)
+          %s
+        GROUP BY ae.agent_id
+        ORDER BY success_rate DESC
+    `,
+		strings.Join(placeholders, ","),
+		func() string {
+			if in.SessionID != "" {
+				return fmt.Sprintf("AND te.session_id = $%d", nextIdx)
+			}
+			return ""
+		}(),
+	)
+
+	if in.SessionID != "" {
+		args = append(args, in.SessionID)
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return []AgentPerformance{}, fmt.Errorf("query agent performances: %w", err)
+	}
+	defer rows.Close()
+
+	var results []AgentPerformance
+	for rows.Next() {
+		var perf AgentPerformance
+		var avgTokens, avgDuration sql.NullFloat64
+		if err := rows.Scan(&perf.AgentID, &perf.SuccessRate, &perf.TotalRuns, &avgTokens, &avgDuration); err != nil {
+			// Skip any malformed row
+			continue
+		}
+		if avgTokens.Valid {
+			perf.AvgTokens = int(avgTokens.Float64)
+		}
+		if avgDuration.Valid {
+			perf.AvgDuration = int64(avgDuration.Float64)
+		}
+		results = append(results, perf)
+	}
+
+	return results, nil
 }
 
 // AgentPerformanceResult contains performance metrics for agent selection
@@ -226,4 +314,28 @@ func SelectAgentUCB1(ctx context.Context, in SelectAgentUCB1Input) (SelectAgentU
 		SelectedAgentID: bestAgentID,
 		UCBScore:        bestScore,
 	}, nil
+}
+
+// RecordAgentPerformanceInput records an agent execution outcome for learning
+type RecordAgentPerformanceInput struct {
+	AgentID    string `json:"agent_id"`
+	SessionID  string `json:"session_id"`
+	Success    bool   `json:"success"`
+	TokensUsed int    `json:"tokens_used"`
+	DurationMs int64  `json:"duration_ms"`
+	Mode       string `json:"mode"` // Task mode (e.g., "simple", "research")
+}
+
+type RecordAgentPerformanceResult struct {
+	Recorded bool `json:"recorded"`
+}
+
+// RecordAgentPerformance persists agent execution outcome to agent_executions table.
+// This feeds the performance-based selection algorithms (epsilon-greedy, UCB1).
+func RecordAgentPerformance(ctx context.Context, in RecordAgentPerformanceInput) (RecordAgentPerformanceResult, error) {
+	// TODO: Insert into agent_executions table
+	// INSERT INTO agent_executions (agent_id, session_id, success, tokens_used, duration_ms, mode, created_at)
+	// VALUES ($1, $2, $3, $4, $5, $6, NOW())
+	// For now, this is a stub until agent_executions schema is ready
+	return RecordAgentPerformanceResult{Recorded: false}, nil
 }

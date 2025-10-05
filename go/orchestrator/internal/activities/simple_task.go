@@ -9,28 +9,28 @@ import (
 
 // ExecuteSimpleTaskInput contains everything needed for a simple task
 type ExecuteSimpleTaskInput struct {
-    Query          string                 `json:"query"`
-    UserID         string                 `json:"user_id"`
-    SessionID      string                 `json:"session_id"`
-    Context        map[string]interface{} `json:"context"`
-    SessionCtx     map[string]interface{} `json:"session_ctx"`
-    History        []string               `json:"history"`
-    PersonaID      string                 `json:"persona_id"`
-    SuggestedTools []string               `json:"suggested_tools,omitempty"`
-    ToolParameters map[string]interface{} `json:"tool_parameters,omitempty"`
-    // Parent workflow ID for unified event streaming
-    ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
+	Query          string                 `json:"query"`
+	UserID         string                 `json:"user_id"`
+	SessionID      string                 `json:"session_id"`
+	Context        map[string]interface{} `json:"context"`
+	SessionCtx     map[string]interface{} `json:"session_ctx"`
+	History        []string               `json:"history"`
+	PersonaID      string                 `json:"persona_id"`
+	SuggestedTools []string               `json:"suggested_tools,omitempty"`
+	ToolParameters map[string]interface{} `json:"tool_parameters,omitempty"`
+	// Parent workflow ID for unified event streaming
+	ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
 }
 
 // ExecuteSimpleTaskResult contains the complete result
 type ExecuteSimpleTaskResult struct {
-	Response        string                   `json:"response"`
-	TokensUsed      int                      `json:"tokens_used"`
-	Success         bool                     `json:"success"`
-	Error           string                   `json:"error,omitempty"`
-	ModelUsed       string                   `json:"model_used,omitempty"`
-	DurationMs      int64                    `json:"duration_ms,omitempty"`
-	ToolExecutions  []ToolExecution          `json:"tool_executions,omitempty"`
+	Response       string          `json:"response"`
+	TokensUsed     int             `json:"tokens_used"`
+	Success        bool            `json:"success"`
+	Error          string          `json:"error,omitempty"`
+	ModelUsed      string          `json:"model_used,omitempty"`
+	DurationMs     int64           `json:"duration_ms,omitempty"`
+	ToolExecutions []ToolExecution `json:"tool_executions,omitempty"`
 }
 
 // ExecuteSimpleTask executes a simple query with minimal overhead
@@ -60,15 +60,15 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 
 	// Step 2: Execute agent using shared helper (not calling activity directly)
 	agentResult, err := executeAgentCore(ctx, AgentExecutionInput{
-		Query:          input.Query,
-		AgentID:        "simple-agent",
-		Context:        mergedContext,
-		Mode:           "simple",
-		SessionID:      input.SessionID,
-		History:        input.History,
-		PersonaID:      input.PersonaID,
-		SuggestedTools: input.SuggestedTools,
-		ToolParameters: input.ToolParameters,
+		Query:            input.Query,
+		AgentID:          "simple-agent",
+		Context:          mergedContext,
+		Mode:             "simple",
+		SessionID:        input.SessionID,
+		History:          input.History,
+		PersonaID:        input.PersonaID,
+		SuggestedTools:   input.SuggestedTools,
+		ToolParameters:   input.ToolParameters,
 		ParentWorkflowID: input.ParentWorkflowID,
 	}, logger)
 

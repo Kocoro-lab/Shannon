@@ -1,11 +1,13 @@
 """Legacy provider base definitions for backward compatibility."""
+
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Any
+from typing import Any
 
 
 class ModelTier(Enum):
     """Model tier enumeration for legacy API."""
+
     SMALL = "small"
     MEDIUM = "medium"
     LARGE = "large"
@@ -14,6 +16,7 @@ class ModelTier(Enum):
 @dataclass
 class ModelInfo:
     """Model information for legacy API."""
+
     id: str
     name: str
     provider: Any  # Can be ProviderType enum or string

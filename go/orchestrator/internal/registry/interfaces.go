@@ -22,14 +22,14 @@ type Registry interface {
 
 // RegistryConfig holds configuration for the registry
 type RegistryConfig struct {
-    // EnableBudgetedWorkflows controls whether budget-aware workflows are registered
-    EnableBudgetedWorkflows bool
-    // EnableStreamingWorkflows controls whether streaming workflows are registered
-    EnableStreamingWorkflows bool
-    // EnableApprovalWorkflows controls whether human approval workflows are registered
-    EnableApprovalWorkflows bool
+	// EnableBudgetedWorkflows controls whether budget-aware workflows are registered
+	EnableBudgetedWorkflows bool
+	// EnableStreamingWorkflows controls whether streaming workflows are registered
+	EnableStreamingWorkflows bool
+	// EnableApprovalWorkflows controls whether human approval workflows are registered
+	EnableApprovalWorkflows bool
 
-    // Optional typed-config defaults for budgets (tokens)
-    DefaultTaskBudget    int
-    DefaultSessionBudget int
+	// Optional typed-config defaults for budgets (tokens)
+	DefaultTaskBudget    int
+	DefaultSessionBudget int
 }

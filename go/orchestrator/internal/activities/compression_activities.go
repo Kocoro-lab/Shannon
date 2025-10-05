@@ -11,10 +11,10 @@ import (
 
 // CheckCompressionNeededInput checks if compression should be triggered
 type CheckCompressionNeededInput struct {
-	SessionID    string `json:"session_id"`
-	MessageCount int    `json:"message_count"`
-	EstimatedTokens int `json:"estimated_tokens"`
-	ModelTier    string `json:"model_tier"`
+	SessionID       string `json:"session_id"`
+	MessageCount    int    `json:"message_count"`
+	EstimatedTokens int    `json:"estimated_tokens"`
+	ModelTier       string `json:"model_tier"`
 }
 
 // CheckCompressionNeededResult indicates if compression should proceed
@@ -130,9 +130,9 @@ func (a *Activities) UpdateCompressionStateActivity(ctx context.Context, in Upda
 
 	// Update compression state
 	sessData.Metadata["compression_state"] = map[string]interface{}{
-		"last_compressed_at":  time.Now().Unix(),
-		"last_message_count":  in.MessageCount,
-		"total_compressions":  totalCompressions,
+		"last_compressed_at": time.Now().Unix(),
+		"last_message_count": in.MessageCount,
+		"total_compressions": totalCompressions,
 	}
 
 	// Persist the updated session

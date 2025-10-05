@@ -1,6 +1,5 @@
 """Test the improved heuristic decomposition patterns."""
 
-import pytest
 import unittest.mock as mock
 from llm_service.grpc_gen import agent_pb2
 
@@ -13,15 +12,17 @@ class MockRequest:
 
 def test_calculation_simple():
     """Test single-step calculation decomposition."""
-    with mock.patch("llm_service.api.agent.APIRouter"), \
-         mock.patch("llm_service.api.agent.HTTPException"), \
-         mock.patch("llm_service.api.agent.Request"):
+    with (
+        mock.patch("llm_service.api.agent.APIRouter"),
+        mock.patch("llm_service.api.agent.HTTPException"),
+        mock.patch("llm_service.api.agent.Request"),
+    ):
         from llm_service.api.agent import DecomposeTask
 
         req = agent_pb2.DecomposeTaskRequest(
             query="Calculate 100 divided by 4",
             user_id="test-user",
-            session_id="test-session"
+            session_id="test-session",
         )
         context = MockRequest()
         result = DecomposeTask(req, context)
@@ -34,15 +35,17 @@ def test_calculation_simple():
 
 def test_calculation_multi_step():
     """Test multi-step calculation decomposition."""
-    with mock.patch("llm_service.api.agent.APIRouter"), \
-         mock.patch("llm_service.api.agent.HTTPException"), \
-         mock.patch("llm_service.api.agent.Request"):
+    with (
+        mock.patch("llm_service.api.agent.APIRouter"),
+        mock.patch("llm_service.api.agent.HTTPException"),
+        mock.patch("llm_service.api.agent.Request"),
+    ):
         from llm_service.api.agent import DecomposeTask
 
         req = agent_pb2.DecomposeTaskRequest(
             query="Calculate 500 + 300 - 200 and then multiply by 2",
             user_id="test-user",
-            session_id="test-session"
+            session_id="test-session",
         )
         context = MockRequest()
         result = DecomposeTask(req, context)
@@ -55,15 +58,17 @@ def test_calculation_multi_step():
 
 def test_research_task():
     """Test research task decomposition."""
-    with mock.patch("llm_service.api.agent.APIRouter"), \
-         mock.patch("llm_service.api.agent.HTTPException"), \
-         mock.patch("llm_service.api.agent.Request"):
+    with (
+        mock.patch("llm_service.api.agent.APIRouter"),
+        mock.patch("llm_service.api.agent.HTTPException"),
+        mock.patch("llm_service.api.agent.Request"),
+    ):
         from llm_service.api.agent import DecomposeTask
 
         req = agent_pb2.DecomposeTaskRequest(
             query="Research the history of artificial intelligence",
             user_id="test-user",
-            session_id="test-session"
+            session_id="test-session",
         )
         context = MockRequest()
         result = DecomposeTask(req, context)
@@ -76,15 +81,17 @@ def test_research_task():
 
 def test_code_generation():
     """Test code generation task decomposition."""
-    with mock.patch("llm_service.api.agent.APIRouter"), \
-         mock.patch("llm_service.api.agent.HTTPException"), \
-         mock.patch("llm_service.api.agent.Request"):
+    with (
+        mock.patch("llm_service.api.agent.APIRouter"),
+        mock.patch("llm_service.api.agent.HTTPException"),
+        mock.patch("llm_service.api.agent.Request"),
+    ):
         from llm_service.api.agent import DecomposeTask
 
         req = agent_pb2.DecomposeTaskRequest(
             query="Write a Python function to sort a list",
             user_id="test-user",
-            session_id="test-session"
+            session_id="test-session",
         )
         context = MockRequest()
         result = DecomposeTask(req, context)
@@ -97,15 +104,17 @@ def test_code_generation():
 
 def test_analysis_task():
     """Test analysis task decomposition."""
-    with mock.patch("llm_service.api.agent.APIRouter"), \
-         mock.patch("llm_service.api.agent.HTTPException"), \
-         mock.patch("llm_service.api.agent.Request"):
+    with (
+        mock.patch("llm_service.api.agent.APIRouter"),
+        mock.patch("llm_service.api.agent.HTTPException"),
+        mock.patch("llm_service.api.agent.Request"),
+    ):
         from llm_service.api.agent import DecomposeTask
 
         req = agent_pb2.DecomposeTaskRequest(
             query="Analyze the performance of our database",
             user_id="test-user",
-            session_id="test-session"
+            session_id="test-session",
         )
         context = MockRequest()
         result = DecomposeTask(req, context)
@@ -116,15 +125,17 @@ def test_analysis_task():
 
 def test_comparison_task():
     """Test comparison task decomposition."""
-    with mock.patch("llm_service.api.agent.APIRouter"), \
-         mock.patch("llm_service.api.agent.HTTPException"), \
-         mock.patch("llm_service.api.agent.Request"):
+    with (
+        mock.patch("llm_service.api.agent.APIRouter"),
+        mock.patch("llm_service.api.agent.HTTPException"),
+        mock.patch("llm_service.api.agent.Request"),
+    ):
         from llm_service.api.agent import DecomposeTask
 
         req = agent_pb2.DecomposeTaskRequest(
             query="Compare Python and JavaScript for web development",
             user_id="test-user",
-            session_id="test-session"
+            session_id="test-session",
         )
         context = MockRequest()
         result = DecomposeTask(req, context)

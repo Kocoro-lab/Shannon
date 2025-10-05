@@ -1,13 +1,13 @@
 package handlers
 
 import (
-    "database/sql"
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "strconv"
-    "strings"
-    "time"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
@@ -17,7 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
-    "google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -62,33 +62,33 @@ type TaskResponse struct {
 
 // TaskStatusResponse represents a task status response
 type TaskStatusResponse struct {
-    TaskID    string                 `json:"task_id"`
-    Status    string                 `json:"status"`
-    Response  map[string]interface{} `json:"response,omitempty"`
-    Error     string                 `json:"error,omitempty"`
-    CreatedAt time.Time              `json:"created_at"`
-    UpdatedAt time.Time              `json:"updated_at"`
-    // Extra metadata to enable "reply" UX
-    Query     string    `json:"query,omitempty"`
-    SessionID string    `json:"session_id,omitempty"`
-    Mode      string    `json:"mode,omitempty"`
+	TaskID    string                 `json:"task_id"`
+	Status    string                 `json:"status"`
+	Response  map[string]interface{} `json:"response,omitempty"`
+	Error     string                 `json:"error,omitempty"`
+	CreatedAt time.Time              `json:"created_at"`
+	UpdatedAt time.Time              `json:"updated_at"`
+	// Extra metadata to enable "reply" UX
+	Query     string `json:"query,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Mode      string `json:"mode,omitempty"`
 }
 
 // ListTasksResponse represents the list tasks response
 type ListTasksResponse struct {
-    Tasks      []TaskSummary `json:"tasks"`
-    TotalCount int32         `json:"total_count"`
+	Tasks      []TaskSummary `json:"tasks"`
+	TotalCount int32         `json:"total_count"`
 }
 
 // TaskSummary represents a single task in listing
 type TaskSummary struct {
-    TaskID          string                 `json:"task_id"`
-    Query           string                 `json:"query,omitempty"`
-    Status          string                 `json:"status"`
-    Mode            string                 `json:"mode,omitempty"`
-    CreatedAt       *time.Time             `json:"created_at,omitempty"`
-    CompletedAt     *time.Time             `json:"completed_at,omitempty"`
-    TotalTokenUsage map[string]interface{} `json:"total_token_usage,omitempty"`
+	TaskID          string                 `json:"task_id"`
+	Query           string                 `json:"query,omitempty"`
+	Status          string                 `json:"status"`
+	Mode            string                 `json:"mode,omitempty"`
+	CreatedAt       *time.Time             `json:"created_at,omitempty"`
+	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
+	TotalTokenUsage map[string]interface{} `json:"total_token_usage,omitempty"`
 }
 
 // SubmitTask handles POST /api/v1/tasks
@@ -233,25 +233,25 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		json.Unmarshal([]byte(resp.Result), &responseData)
 	}
 
-    // Prepare response
-    statusResp := TaskStatusResponse{
-        TaskID:   resp.TaskId,
-        Status:   resp.Status.String(),
-        Response: responseData,
-        Error:    resp.ErrorMessage,
-    }
+	// Prepare response
+	statusResp := TaskStatusResponse{
+		TaskID:   resp.TaskId,
+		Status:   resp.Status.String(),
+		Response: responseData,
+		Error:    resp.ErrorMessage,
+	}
 
-    // Enrich with metadata (query, session_id, mode) from database
-    var (
-        q sql.NullString
-        sid sql.NullString
-        mode sql.NullString
-    )
-    row := h.db.QueryRowxContext(ctx, `SELECT query, COALESCE(session_id,''), COALESCE(mode,'') FROM task_executions WHERE workflow_id = $1 LIMIT 1`, taskID)
-    _ = row.Scan(&q, &sid, &mode)
-    statusResp.Query = q.String
-    statusResp.SessionID = sid.String
-    statusResp.Mode = mode.String
+	// Enrich with metadata (query, session_id, mode) from database
+	var (
+		q    sql.NullString
+		sid  sql.NullString
+		mode sql.NullString
+	)
+	row := h.db.QueryRowxContext(ctx, `SELECT query, COALESCE(session_id,''), COALESCE(mode,'') FROM task_executions WHERE workflow_id = $1 LIMIT 1`, taskID)
+	_ = row.Scan(&q, &sid, &mode)
+	statusResp.Query = q.String
+	statusResp.SessionID = sid.String
+	statusResp.Mode = mode.String
 
 	// Set timestamps to current time since they're not in the proto
 	statusResp.CreatedAt = time.Now()
@@ -267,161 +267,179 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Workflow-ID", taskID)
 	w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(statusResp)
+	json.NewEncoder(w).Encode(statusResp)
 }
 
 // ListTasks handles GET /api/v1/tasks
 func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
+	ctx := r.Context()
 
-    userCtx, ok := ctx.Value("user").(*auth.UserContext)
-    if !ok {
-        h.sendError(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    // Parse query params
-    q := r.URL.Query()
-    limit := parseIntDefault(q.Get("limit"), 20)
-    if limit <= 0 || limit > 100 { limit = 20 }
-    offset := parseIntDefault(q.Get("offset"), 0)
-    if offset < 0 { offset = 0 }
-    sessionID := q.Get("session_id")
-    statusStr := q.Get("status")
+	// Parse query params
+	q := r.URL.Query()
+	limit := parseIntDefault(q.Get("limit"), 20)
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	offset := parseIntDefault(q.Get("offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
+	sessionID := q.Get("session_id")
+	statusStr := q.Get("status")
 
-    // Map status to proto
-    var statusFilter orchpb.TaskStatus
-    switch strings.ToUpper(statusStr) {
-    case "QUEUED":
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_QUEUED
-    case "RUNNING":
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_RUNNING
-    case "COMPLETED":
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_COMPLETED
-    case "FAILED":
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_FAILED
-    case "CANCELLED", "CANCELED":
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_CANCELLED
-    case "TIMEOUT":
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_TIMEOUT
-    default:
-        statusFilter = orchpb.TaskStatus_TASK_STATUS_UNSPECIFIED
-    }
+	// Map status to proto
+	var statusFilter orchpb.TaskStatus
+	switch strings.ToUpper(statusStr) {
+	case "QUEUED":
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_QUEUED
+	case "RUNNING":
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_RUNNING
+	case "COMPLETED":
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_COMPLETED
+	case "FAILED":
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_FAILED
+	case "CANCELLED", "CANCELED":
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_CANCELLED
+	case "TIMEOUT":
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_TIMEOUT
+	default:
+		statusFilter = orchpb.TaskStatus_TASK_STATUS_UNSPECIFIED
+	}
 
-    req := &orchpb.ListTasksRequest{
-        UserId:       userCtx.UserID.String(),
-        SessionId:    sessionID,
-        Limit:        int32(limit),
-        Offset:       int32(offset),
-        FilterStatus: statusFilter,
-    }
+	req := &orchpb.ListTasksRequest{
+		UserId:       userCtx.UserID.String(),
+		SessionId:    sessionID,
+		Limit:        int32(limit),
+		Offset:       int32(offset),
+		FilterStatus: statusFilter,
+	}
 
-    resp, err := h.orchClient.ListTasks(ctx, req)
-    if err != nil {
-        if st, ok := status.FromError(err); ok {
-            h.sendError(w, st.Message(), http.StatusInternalServerError)
-        } else {
-            h.sendError(w, err.Error(), http.StatusInternalServerError)
-        }
-        return
-    }
+	resp, err := h.orchClient.ListTasks(ctx, req)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			h.sendError(w, st.Message(), http.StatusInternalServerError)
+		} else {
+			h.sendError(w, err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
 
-    // Map to HTTP response shape
-    out := ListTasksResponse{Tasks: make([]TaskSummary, 0, len(resp.Tasks)), TotalCount: resp.TotalCount}
-    for _, t := range resp.Tasks {
-        var createdAt, completedAt *time.Time
-        if t.CreatedAt != nil { ct := t.CreatedAt.AsTime(); createdAt = &ct }
-        if t.CompletedAt != nil { cp := t.CompletedAt.AsTime(); completedAt = &cp }
-        var usage map[string]interface{}
-        if t.TotalTokenUsage != nil {
-            usage = map[string]interface{}{
-                "total_tokens":  t.TotalTokenUsage.TotalTokens,
-                "cost_usd":      t.TotalTokenUsage.CostUsd,
-                "prompt_tokens": t.TotalTokenUsage.PromptTokens,
-                "completion_tokens": t.TotalTokenUsage.CompletionTokens,
-            }
-        }
-        out.Tasks = append(out.Tasks, TaskSummary{
-            TaskID:          t.TaskId,
-            Query:           t.Query,
-            Status:          t.Status.String(),
-            Mode:            t.Mode.String(),
-            CreatedAt:       createdAt,
-            CompletedAt:     completedAt,
-            TotalTokenUsage: usage,
-        })
-    }
+	// Map to HTTP response shape
+	out := ListTasksResponse{Tasks: make([]TaskSummary, 0, len(resp.Tasks)), TotalCount: resp.TotalCount}
+	for _, t := range resp.Tasks {
+		var createdAt, completedAt *time.Time
+		if t.CreatedAt != nil {
+			ct := t.CreatedAt.AsTime()
+			createdAt = &ct
+		}
+		if t.CompletedAt != nil {
+			cp := t.CompletedAt.AsTime()
+			completedAt = &cp
+		}
+		var usage map[string]interface{}
+		if t.TotalTokenUsage != nil {
+			usage = map[string]interface{}{
+				"total_tokens":      t.TotalTokenUsage.TotalTokens,
+				"cost_usd":          t.TotalTokenUsage.CostUsd,
+				"prompt_tokens":     t.TotalTokenUsage.PromptTokens,
+				"completion_tokens": t.TotalTokenUsage.CompletionTokens,
+			}
+		}
+		out.Tasks = append(out.Tasks, TaskSummary{
+			TaskID:          t.TaskId,
+			Query:           t.Query,
+			Status:          t.Status.String(),
+			Mode:            t.Mode.String(),
+			CreatedAt:       createdAt,
+			CompletedAt:     completedAt,
+			TotalTokenUsage: usage,
+		})
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusOK)
-    json.NewEncoder(w).Encode(out)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(out)
 }
 
 // GetTaskEvents handles GET /api/v1/tasks/{id}/events
 func (h *TaskHandler) GetTaskEvents(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
+	ctx := r.Context()
 
-    if _, ok := ctx.Value("user").(*auth.UserContext); !ok {
-        h.sendError(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+	if _, ok := ctx.Value("user").(*auth.UserContext); !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    taskID := r.PathValue("id")
-    if taskID == "" {
-        h.sendError(w, "Task ID is required", http.StatusBadRequest)
-        return
-    }
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		h.sendError(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
 
-    q := r.URL.Query()
-    limit := parseIntDefault(q.Get("limit"), 50)
-    if limit <= 0 || limit > 200 { limit = 50 }
-    offset := parseIntDefault(q.Get("offset"), 0)
-    if offset < 0 { offset = 0 }
+	q := r.URL.Query()
+	limit := parseIntDefault(q.Get("limit"), 50)
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset := parseIntDefault(q.Get("offset"), 0)
+	if offset < 0 {
+		offset = 0
+	}
 
-    rows, err := h.db.QueryxContext(ctx, `
+	rows, err := h.db.QueryxContext(ctx, `
         SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,'')
         FROM event_logs
         WHERE workflow_id = $1
         ORDER BY timestamp ASC
         LIMIT $2 OFFSET $3
     `, taskID, limit, offset)
-    if err != nil {
-        h.sendError(w, fmt.Sprintf("Failed to load events: %v", err), http.StatusInternalServerError)
-        return
-    }
-    defer rows.Close()
+	if err != nil {
+		h.sendError(w, fmt.Sprintf("Failed to load events: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
 
-    type Event struct {
-        WorkflowID string    `json:"workflow_id"`
-        Type       string    `json:"type"`
-        AgentID    string    `json:"agent_id,omitempty"`
-        Message    string    `json:"message,omitempty"`
-        Timestamp  time.Time `json:"timestamp"`
-        Seq        uint64    `json:"seq"`
-        StreamID   string    `json:"stream_id,omitempty"`
-    }
-    events := []Event{}
-    for rows.Next() {
-        var e Event
-        if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
-            h.sendError(w, fmt.Sprintf("Failed to scan event: %v", err), http.StatusInternalServerError)
-            return
-        }
-        events = append(events, e)
-    }
-    if err := rows.Err(); err != nil {
-        h.sendError(w, fmt.Sprintf("Failed to read events: %v", err), http.StatusInternalServerError)
-        return
-    }
+	type Event struct {
+		WorkflowID string    `json:"workflow_id"`
+		Type       string    `json:"type"`
+		AgentID    string    `json:"agent_id,omitempty"`
+		Message    string    `json:"message,omitempty"`
+		Timestamp  time.Time `json:"timestamp"`
+		Seq        uint64    `json:"seq"`
+		StreamID   string    `json:"stream_id,omitempty"`
+	}
+	events := []Event{}
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
+			h.sendError(w, fmt.Sprintf("Failed to scan event: %v", err), http.StatusInternalServerError)
+			return
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		h.sendError(w, fmt.Sprintf("Failed to read events: %v", err), http.StatusInternalServerError)
+		return
+	}
 
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]any{"events": events, "count": len(events)})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"events": events, "count": len(events)})
 }
 
 func parseIntDefault(s string, def int) int {
-    if s == "" { return def }
-    if n, err := strconv.Atoi(s); err == nil { return n }
-    return def
+	if s == "" {
+		return def
+	}
+	if n, err := strconv.Atoi(s); err == nil {
+		return n
+	}
+	return def
 }
 
 // StreamTask handles GET /api/v1/tasks/{id}/stream

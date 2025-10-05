@@ -158,10 +158,13 @@ class Tool(ABC):
             self._execution_count += 1
             # Extract session_id for tracking or use thread ID for parallel execution
             import threading
+
             session_id = None
             if session_context and isinstance(session_context, dict):
                 session_id = session_context.get("session_id")
-            tracker_key = session_id if session_id else f"thread_{threading.get_ident()}"
+            tracker_key = (
+                session_id if session_id else f"thread_{threading.get_ident()}"
+            )
             self._execution_tracker[tracker_key] = datetime.now()
 
             # Clean up old entries (keep only last 100 sessions)
@@ -307,6 +310,7 @@ class Tool(ABC):
         # Use session_id for tracking, or generate a unique key for each agent
         # to avoid blocking parallel agent executions
         import threading
+
         tracker_key = session_id if session_id else f"thread_{threading.get_ident()}"
 
         if tracker_key not in self._execution_tracker:

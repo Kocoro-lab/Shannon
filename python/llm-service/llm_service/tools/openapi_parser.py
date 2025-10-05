@@ -3,7 +3,7 @@ Minimal OpenAPI 3.x parser for Shannon tool generation.
 Supports OpenAPI 3.0 and 3.1 with MVP feature set.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import re
 import copy
 import ipaddress
@@ -12,6 +12,7 @@ import socket
 
 class OpenAPIParseError(Exception):
     """Raised when OpenAPI spec is invalid or unsupported."""
+
     pass
 
 
@@ -36,11 +37,11 @@ def _is_private_ip(hostname: str) -> bool:
 
         # Check if private/reserved
         return (
-            ip.is_private or
-            ip.is_loopback or
-            ip.is_link_local or
-            ip.is_reserved or
-            ip.is_multicast
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
         )
     except (socket.gaierror, ValueError):
         # Can't resolve or invalid IP - allow (will fail later with proper error)
@@ -62,7 +63,9 @@ def resolve_ref(spec: Dict[str, Any], ref_path: str) -> Any:
         OpenAPIParseError: If reference cannot be resolved
     """
     if not ref_path.startswith("#/"):
-        raise OpenAPIParseError(f"Only local references supported (starting with #/), got: {ref_path}")
+        raise OpenAPIParseError(
+            f"Only local references supported (starting with #/), got: {ref_path}"
+        )
 
     parts = ref_path[2:].split("/")  # Skip "#/"
     current = spec
@@ -77,7 +80,9 @@ def resolve_ref(spec: Dict[str, Any], ref_path: str) -> Any:
         raise OpenAPIParseError(f"Failed to resolve $ref '{ref_path}': {e}")
 
 
-def resolve_refs_in_schema(schema: Any, spec: Dict[str, Any], visited: Optional[set] = None) -> Any:
+def resolve_refs_in_schema(
+    schema: Any, spec: Dict[str, Any], visited: Optional[set] = None
+) -> Any:
     """
     Recursively resolve all $ref references in a schema.
 
@@ -135,7 +140,9 @@ def resolve_refs_in_schema(schema: Any, spec: Dict[str, Any], visited: Optional[
             result[key] = resolve_refs_in_schema(value, spec, visited)
         elif isinstance(value, list):
             result[key] = [
-                resolve_refs_in_schema(item, spec, visited) if isinstance(item, dict) else item
+                resolve_refs_in_schema(item, spec, visited)
+                if isinstance(item, dict)
+                else item
                 for item in value
             ]
         else:
@@ -157,7 +164,9 @@ def validate_spec(spec: Dict[str, Any]) -> None:
     # Check OpenAPI version
     version = spec.get("openapi", "")
     if not version.startswith("3."):
-        raise OpenAPIParseError(f"Unsupported OpenAPI version: {version}. Only 3.x supported.")
+        raise OpenAPIParseError(
+            f"Unsupported OpenAPI version: {version}. Only 3.x supported."
+        )
 
     # Check required top-level fields
     if "info" not in spec:
@@ -171,7 +180,11 @@ def validate_spec(spec: Dict[str, Any]) -> None:
         raise OpenAPIParseError("servers must be an array")
 
 
-def extract_base_url(spec: Dict[str, Any], override_base_url: Optional[str] = None, spec_url: Optional[str] = None) -> str:
+def extract_base_url(
+    spec: Dict[str, Any],
+    override_base_url: Optional[str] = None,
+    spec_url: Optional[str] = None,
+) -> str:
     """
     Extract base URL from OpenAPI spec.
 
@@ -188,7 +201,9 @@ def extract_base_url(spec: Dict[str, Any], override_base_url: Optional[str] = No
 
     servers = spec.get("servers", [])
     if not servers:
-        raise OpenAPIParseError("No servers defined in spec and no base_url override provided")
+        raise OpenAPIParseError(
+            "No servers defined in spec and no base_url override provided"
+        )
 
     # Use first server
     server = servers[0]
@@ -208,6 +223,7 @@ def extract_base_url(spec: Dict[str, Any], override_base_url: Optional[str] = No
         if spec_url:
             # Extract scheme://host from spec_url
             from urllib.parse import urlparse
+
             parsed = urlparse(spec_url)
             base = f"{parsed.scheme}://{parsed.netloc}"
             url = base + url
@@ -218,6 +234,7 @@ def extract_base_url(spec: Dict[str, Any], override_base_url: Optional[str] = No
 
     # SSRF protection: Block private/internal IPs after resolution
     from urllib.parse import urlparse
+
     parsed_url = urlparse(url)
     hostname = parsed_url.hostname
     if hostname and _is_private_ip(hostname):
@@ -233,7 +250,7 @@ def extract_base_url(spec: Dict[str, Any], override_base_url: Optional[str] = No
 def extract_operations(
     spec: Dict[str, Any],
     operations_filter: Optional[List[str]] = None,
-    tags_filter: Optional[List[str]] = None
+    tags_filter: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Extract operations from OpenAPI spec.
@@ -267,7 +284,7 @@ def extract_operations(
             operation_id = operation.get("operationId")
             if not operation_id:
                 # Generate stable name: method_path (sanitized)
-                sanitized_path = re.sub(r'[^a-zA-Z0-9_]', '_', path.strip("/"))
+                sanitized_path = re.sub(r"[^a-zA-Z0-9_]", "_", path.strip("/"))
                 operation_id = f"{method}_{sanitized_path}"
 
             # Filter by operationId if specified
@@ -280,12 +297,14 @@ def extract_operations(
                 if not any(tag in tags_filter for tag in op_tags):
                     continue
 
-            operations.append({
-                "method": method.upper(),
-                "path": path,
-                "operation": operation,
-                "operation_id": operation_id
-            })
+            operations.append(
+                {
+                    "method": method.upper(),
+                    "path": path,
+                    "operation": operation,
+                    "operation_id": operation_id,
+                }
+            )
 
     # Check for explosion
     if len(operations) > 200:
@@ -297,7 +316,9 @@ def extract_operations(
     return operations
 
 
-def map_openapi_type_to_tool_type(openapi_type: str, openapi_format: Optional[str] = None) -> str:
+def map_openapi_type_to_tool_type(
+    openapi_type: str, openapi_format: Optional[str] = None
+) -> str:
     """
     Map OpenAPI primitive types to Shannon ToolParameterType.
 
@@ -330,7 +351,9 @@ def map_openapi_type_to_tool_type(openapi_type: str, openapi_format: Optional[st
     return result
 
 
-def extract_parameters(operation: Dict[str, Any], spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+def extract_parameters(
+    operation: Dict[str, Any], spec: Dict[str, Any]
+) -> List[Dict[str, Any]]:
     """
     Extract path and query parameters from operation.
     MVP: Only support primitive types (string, integer, number, boolean).
@@ -391,14 +414,16 @@ def extract_parameters(operation: Dict[str, Any], spec: Dict[str, Any]) -> List[
         # Extract enum if present
         enum_values = schema.get("enum")
 
-        params.append({
-            "name": name,
-            "type": tool_type,
-            "required": required,
-            "description": description,
-            "location": location,
-            "enum": enum_values
-        })
+        params.append(
+            {
+                "name": name,
+                "type": tool_type,
+                "required": required,
+                "description": description,
+                "location": location,
+                "enum": enum_values,
+            }
+        )
 
     return params
 
@@ -436,7 +461,7 @@ def extract_request_body(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "type": "object",
         "required": required,
         "description": description,
-        "location": "body"
+        "location": "body",
     }
 
 

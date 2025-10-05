@@ -1,10 +1,10 @@
 package workflows
 
 import (
-    "encoding/json"
-    "fmt"
-    "strings"
-    "time"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -86,8 +86,8 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				Query:        input.Query,
 				SessionID:    input.SessionID,
 				TenantID:     input.TenantID,
-				RecentTopK:   5,   // Fixed for determinism
-				SemanticTopK: 5,   // Fixed for determinism
+				RecentTopK:   5,    // Fixed for determinism
+				SemanticTopK: 5,    // Fixed for determinism
 				Threshold:    0.75, // Fixed semantic threshold
 			}).Get(ctx, &hierMemory)
 
@@ -171,9 +171,9 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			var compressResult activities.CompressContextResult
 			err = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
 				activities.CompressContextInput{
-					SessionID:    input.SessionID,
-					History:      convertHistoryMapForCompression(input.History),
-					TargetTokens: int(float64(activities.GetModelWindowSize(modelTier)) * 0.375), // Compress to half of 75%
+					SessionID:        input.SessionID,
+					History:          convertHistoryMapForCompression(input.History),
+					TargetTokens:     int(float64(activities.GetModelWindowSize(modelTier)) * 0.375), // Compress to half of 75%
 					ParentWorkflowID: workflowID,
 				}).Get(ctx, &compressResult)
 
@@ -214,66 +214,68 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-    // Prepare history for agent; optionally inject summary and use sliding window when compressed
-    historyForAgent := convertHistoryForAgent(input.History)
+	// Prepare history for agent; optionally inject summary and use sliding window when compressed
+	historyForAgent := convertHistoryForAgent(input.History)
 
-    // If compression was performed earlier in this workflow and produced a summary,
-    // add it to context and shape history to primers+recents
-    // Note: This piggybacks on the compression block above; we also re-check here in case
-    // no prior compression happened but history is still large.
-    if input.SessionID != "" && compressionVersion >= 1 {
-        // Estimate tokens and, if needed, perform on-the-fly compression for the middle section
-        estimatedTokens := activities.EstimateTokens(historyForAgent)
-        // Use the same model tier determination for consistency
-        modelTier := deriveModelTier(input.Context)
-        if tier, ok := input.Context["model_tier"].(string); ok {
-            modelTier = tier
-        }
-        window := activities.GetModelWindowSize(modelTier)
-        trig, tgt := getCompressionRatios(input.Context, 0.75, 0.375)
-        if estimatedTokens >= int(float64(window)*trig) {
-            // Compress and store context to get a summary
-            var compressResult activities.CompressContextResult
-            _ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
-                activities.CompressContextInput{
-                    SessionID:    input.SessionID,
-                    History:      convertHistoryMapForCompression(input.History),
-                    TargetTokens: int(float64(window) * tgt),
-                    ParentWorkflowID: workflowID,
-                },
-            ).Get(ctx, &compressResult)
-            if compressResult.Summary != "" {
-                if input.Context == nil { input.Context = make(map[string]interface{}) }
-                input.Context["context_summary"] = fmt.Sprintf("Previous context summary: %s", compressResult.Summary)
-                prim, rec := getPrimersRecents(input.Context, 3, 20)
-                shaped := shapeHistory(input.History, prim, rec)
-                historyForAgent = convertHistoryForAgent(shaped)
-                // Emit summary injected (metadata only)
-                _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-                    WorkflowID: workflowID,
-                    EventType:  activities.StreamEventDataProcessing,
-                    AgentID:    "simple-agent",
-                    Message:    activities.MsgSummaryAdded(),
-                    Timestamp:  workflow.Now(ctx),
-                }).Get(ctx, nil)
-            }
-        }
-    }
+	// If compression was performed earlier in this workflow and produced a summary,
+	// add it to context and shape history to primers+recents
+	// Note: This piggybacks on the compression block above; we also re-check here in case
+	// no prior compression happened but history is still large.
+	if input.SessionID != "" && compressionVersion >= 1 {
+		// Estimate tokens and, if needed, perform on-the-fly compression for the middle section
+		estimatedTokens := activities.EstimateTokens(historyForAgent)
+		// Use the same model tier determination for consistency
+		modelTier := deriveModelTier(input.Context)
+		if tier, ok := input.Context["model_tier"].(string); ok {
+			modelTier = tier
+		}
+		window := activities.GetModelWindowSize(modelTier)
+		trig, tgt := getCompressionRatios(input.Context, 0.75, 0.375)
+		if estimatedTokens >= int(float64(window)*trig) {
+			// Compress and store context to get a summary
+			var compressResult activities.CompressContextResult
+			_ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
+				activities.CompressContextInput{
+					SessionID:        input.SessionID,
+					History:          convertHistoryMapForCompression(input.History),
+					TargetTokens:     int(float64(window) * tgt),
+					ParentWorkflowID: workflowID,
+				},
+			).Get(ctx, &compressResult)
+			if compressResult.Summary != "" {
+				if input.Context == nil {
+					input.Context = make(map[string]interface{})
+				}
+				input.Context["context_summary"] = fmt.Sprintf("Previous context summary: %s", compressResult.Summary)
+				prim, rec := getPrimersRecents(input.Context, 3, 20)
+				shaped := shapeHistory(input.History, prim, rec)
+				historyForAgent = convertHistoryForAgent(shaped)
+				// Emit summary injected (metadata only)
+				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+					WorkflowID: workflowID,
+					EventType:  activities.StreamEventDataProcessing,
+					AgentID:    "simple-agent",
+					Message:    activities.MsgSummaryAdded(),
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+			}
+		}
+	}
 
-    // Execute the consolidated simple task activity
-    // This single activity handles everything: agent execution, session update, etc.
-    var result activities.ExecuteSimpleTaskResult
-    err := workflow.ExecuteActivity(ctx, activities.ExecuteSimpleTask, activities.ExecuteSimpleTaskInput{
-        Query:          input.Query,
-        UserID:         input.UserID,
-        SessionID:      input.SessionID,
-        Context:        input.Context,
-        SessionCtx:     input.SessionCtx,
-        History:        historyForAgent,
-        SuggestedTools: input.SuggestedTools,
-        ToolParameters: input.ToolParameters,
-        ParentWorkflowID: workflowID,
-    }).Get(ctx, &result)
+	// Execute the consolidated simple task activity
+	// This single activity handles everything: agent execution, session update, etc.
+	var result activities.ExecuteSimpleTaskResult
+	err := workflow.ExecuteActivity(ctx, activities.ExecuteSimpleTask, activities.ExecuteSimpleTaskInput{
+		Query:            input.Query,
+		UserID:           input.UserID,
+		SessionID:        input.SessionID,
+		Context:          input.Context,
+		SessionCtx:       input.SessionCtx,
+		History:          historyForAgent,
+		SuggestedTools:   input.SuggestedTools,
+		ToolParameters:   input.ToolParameters,
+		ParentWorkflowID: workflowID,
+	}).Get(ctx, &result)
 
 	if err != nil {
 		logger.Error("Simple task execution failed", "error", err)
@@ -429,15 +431,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 
 		var synthesis activities.SynthesisResult
-        err = workflow.ExecuteActivity(ctx,
-            activities.SynthesizeResultsLLM,
-            activities.SynthesisInput{
-                Query:        input.Query,
-                AgentResults: agentResults,
-                Context:      input.Context,
-                ParentWorkflowID: workflowID,
-            },
-        ).Get(ctx, &synthesis)
+		err = workflow.ExecuteActivity(ctx,
+			activities.SynthesizeResultsLLM,
+			activities.SynthesisInput{
+				Query:            input.Query,
+				AgentResults:     agentResults,
+				Context:          input.Context,
+				ParentWorkflowID: workflowID,
+			},
+		).Get(ctx, &synthesis)
 
 		if err != nil {
 			logger.Warn("Synthesis failed, using raw result", "error", err)
@@ -445,6 +447,20 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			finalResult = synthesis.FinalResult
 			totalTokens += synthesis.TokensUsed
 			logger.Info("Synthesis completed", "additional_tokens", synthesis.TokensUsed)
+		}
+	}
+
+	// Aggregate tool errors for user-facing metadata
+	var toolErrors []map[string]string
+	if len(result.ToolExecutions) > 0 {
+		for _, te := range result.ToolExecutions {
+			if !te.Success || (te.Error != "") {
+				toolErrors = append(toolErrors, map[string]string{
+					"agent_id": "simple-agent",
+					"tool":     te.Tool,
+					"error":    te.Error,
+				})
+			}
 		}
 	}
 
@@ -494,14 +510,19 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
+	meta := map[string]interface{}{
+		"mode":       "simple",
+		"num_agents": 1,
+	}
+	if len(toolErrors) > 0 {
+		meta["tool_errors"] = toolErrors
+	}
+
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
 		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"mode":       "simple",
-			"num_agents": 1,
-		},
+		Metadata:   meta,
 	}, nil
 }
 
@@ -509,65 +530,65 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 // deriveModelTier intelligently determines the model tier based on context
 // Priority: explicit model_tier > per-agent budget > default "medium"
 func deriveModelTier(ctx map[string]interface{}) string {
-    if ctx == nil {
-        return "medium"
-    }
+	if ctx == nil {
+		return "medium"
+	}
 
-    // First check for explicit model_tier
-    if tier, ok := ctx["model_tier"].(string); ok && tier != "" {
-        return tier
-    }
+	// First check for explicit model_tier
+	if tier, ok := ctx["model_tier"].(string); ok && tier != "" {
+		return tier
+	}
 
-    // Derive from per-agent budget if available
-    if budget, ok := ctx["token_budget_per_agent"].(int); ok {
-        return modelTierFromBudget(budget)
-    }
-    if budget, ok := ctx["token_budget_per_agent"].(float64); ok {
-        return modelTierFromBudget(int(budget))
-    }
+	// Derive from per-agent budget if available
+	if budget, ok := ctx["token_budget_per_agent"].(int); ok {
+		return modelTierFromBudget(budget)
+	}
+	if budget, ok := ctx["token_budget_per_agent"].(float64); ok {
+		return modelTierFromBudget(int(budget))
+	}
 
-    // Check budget_agent_max (set by orchestrator router)
-    if budget, ok := ctx["budget_agent_max"].(int); ok {
-        return modelTierFromBudget(budget)
-    }
-    if budget, ok := ctx["budget_agent_max"].(float64); ok {
-        return modelTierFromBudget(int(budget))
-    }
+	// Check budget_agent_max (set by orchestrator router)
+	if budget, ok := ctx["budget_agent_max"].(int); ok {
+		return modelTierFromBudget(budget)
+	}
+	if budget, ok := ctx["budget_agent_max"].(float64); ok {
+		return modelTierFromBudget(int(budget))
+	}
 
-    // Default to medium for simple tasks
-    return "medium"
+	// Default to medium for simple tasks
+	return "medium"
 }
 
 // modelTierFromBudget maps token budget to appropriate model tier
 func modelTierFromBudget(budget int) string {
-    switch {
-    case budget <= 8000:
-        return "small"   // 8k window models
-    case budget <= 32000:
-        return "medium"  // 32k window models
-    case budget <= 128000:
-        return "large"   // 128k window models
-    default:
-        return "xlarge"  // 200k+ window models
-    }
+	switch {
+	case budget <= 8000:
+		return "small" // 8k window models
+	case budget <= 32000:
+		return "medium" // 32k window models
+	case budget <= 128000:
+		return "large" // 128k window models
+	default:
+		return "xlarge" // 200k+ window models
+	}
 }
 
 func detectProviderFromModel(model string) string {
-    ml := strings.ToLower(model)
-    switch {
-    case strings.Contains(ml, "gpt-4"), strings.Contains(ml, "gpt-3"), strings.Contains(ml, "davinci"), strings.Contains(ml, "turbo"), strings.Contains(ml, "o1"):
-        return "openai"
-    case strings.Contains(ml, "claude"), strings.Contains(ml, "opus"), strings.Contains(ml, "sonnet"), strings.Contains(ml, "haiku"):
-        return "anthropic"
-    case strings.Contains(ml, "gemini"), strings.Contains(ml, "palm"), strings.Contains(ml, "bard"):
-        return "google"
-    case strings.Contains(ml, "llama"), strings.Contains(ml, "codellama"):
-        return "meta"
-    case strings.Contains(ml, "mistral"), strings.Contains(ml, "mixtral"):
-        return "mistral"
-    case strings.Contains(ml, "command"), strings.Contains(ml, "cohere"):
-        return "cohere"
-    default:
-        return "unknown"
-    }
+	ml := strings.ToLower(model)
+	switch {
+	case strings.Contains(ml, "gpt-4"), strings.Contains(ml, "gpt-3"), strings.Contains(ml, "davinci"), strings.Contains(ml, "turbo"), strings.Contains(ml, "o1"):
+		return "openai"
+	case strings.Contains(ml, "claude"), strings.Contains(ml, "opus"), strings.Contains(ml, "sonnet"), strings.Contains(ml, "haiku"):
+		return "anthropic"
+	case strings.Contains(ml, "gemini"), strings.Contains(ml, "palm"), strings.Contains(ml, "bard"):
+		return "google"
+	case strings.Contains(ml, "llama"), strings.Contains(ml, "codellama"):
+		return "meta"
+	case strings.Contains(ml, "mistral"), strings.Contains(ml, "mixtral"):
+		return "mistral"
+	case strings.Contains(ml, "command"), strings.Contains(ml, "cohere"):
+		return "cohere"
+	default:
+		return "unknown"
+	}
 }

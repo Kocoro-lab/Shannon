@@ -217,11 +217,11 @@ func TestDecompositionAdvisor(t *testing.T) {
 	}{
 		{
 			name:  "similar query matches previous pattern",
-			query: "analyze data",  // Exact match with stored pattern
+			query: "analyze data", // Exact match with stored pattern
 			checkFunc: func(t *testing.T, suggestion DecompositionSuggestion) {
 				assert.True(t, suggestion.UsesPreviousSuccess)
 				assert.Equal(t, "sequential", suggestion.Strategy)
-				assert.Greater(t, suggestion.Confidence, 0.8)  // 0.9 * 1.0 = 0.9
+				assert.Greater(t, suggestion.Confidence, 0.8) // 0.9 * 1.0 = 0.9
 				assert.Len(t, suggestion.SuggestedSubtasks, 4)
 			},
 		},
@@ -257,14 +257,14 @@ func TestDecompositionAdvisor_SelectOptimalStrategy(t *testing.T) {
 	memory := &SupervisorMemoryContext{
 		StrategyPerformance: map[string]StrategyStats{
 			"parallel": {
-				TotalRuns:    100,
-				SuccessRate:  0.8,
-				AvgDuration:  1000,
+				TotalRuns:   100,
+				SuccessRate: 0.8,
+				AvgDuration: 1000,
 			},
 			"sequential": {
-				TotalRuns:    100,
-				SuccessRate:  0.95,
-				AvgDuration:  3000,
+				TotalRuns:   100,
+				SuccessRate: 0.95,
+				AvgDuration: 3000,
 			},
 		},
 		UserPreferences: UserProfile{
@@ -288,38 +288,38 @@ func TestDecompositionAdvisor_SelectOptimalStrategy(t *testing.T) {
 
 func TestDecompositionAdvisor_UserPreferences(t *testing.T) {
 	tests := []struct {
-		name             string
-		expertiseLevel   string
-		speedVsAccuracy  float64
-		expectedSequential bool
+		name                 string
+		expertiseLevel       string
+		speedVsAccuracy      float64
+		expectedSequential   bool
 		expectedExplanations bool
 	}{
 		{
-			name:             "beginner prefers sequential",
-			expertiseLevel:   "beginner",
-			speedVsAccuracy:  0.5,
-			expectedSequential: true,
+			name:                 "beginner prefers sequential",
+			expertiseLevel:       "beginner",
+			speedVsAccuracy:      0.5,
+			expectedSequential:   true,
 			expectedExplanations: true,
 		},
 		{
-			name:             "expert handles parallel",
-			expertiseLevel:   "expert",
-			speedVsAccuracy:  0.5,
-			expectedSequential: false,
+			name:                 "expert handles parallel",
+			expertiseLevel:       "expert",
+			speedVsAccuracy:      0.5,
+			expectedSequential:   false,
 			expectedExplanations: false,
 		},
 		{
-			name:             "accuracy preference forces sequential",
-			expertiseLevel:   "intermediate",
-			speedVsAccuracy:  0.9,
-			expectedSequential: true,
+			name:                 "accuracy preference forces sequential",
+			expertiseLevel:       "intermediate",
+			speedVsAccuracy:      0.9,
+			expectedSequential:   true,
 			expectedExplanations: false,
 		},
 		{
-			name:             "speed preference forces parallel",
-			expertiseLevel:   "intermediate",
-			speedVsAccuracy:  0.2,
-			expectedSequential: false,
+			name:                 "speed preference forces parallel",
+			expertiseLevel:       "intermediate",
+			speedVsAccuracy:      0.2,
+			expectedSequential:   false,
 			expectedExplanations: false,
 		},
 	}
@@ -378,7 +378,7 @@ func TestCalculateSimilarity(t *testing.T) {
 			name:     "empty strings",
 			a:        "",
 			b:        "",
-			expected: 1.0,  // Empty strings are identical
+			expected: 1.0, // Empty strings are identical
 		},
 	}
 

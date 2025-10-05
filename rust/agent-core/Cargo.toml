@@ -86,3 +86,4 @@ protoc-bin-vendored = "3"
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1.6"
+serial_test = "3.2"

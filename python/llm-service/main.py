@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     try:
         ingest_url = settings.events_ingest_url
         # If events_ingest_url not explicitly set and ADMIN_SERVER present, derive from it
-        if (not ingest_url or ingest_url.strip() == ""):
+        if not ingest_url or ingest_url.strip() == "":
             admin = os.getenv("ADMIN_SERVER", "").strip()
             if admin:
                 ingest_url = admin.rstrip("/") + "/events"
@@ -92,7 +92,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         emitter = build_default_emitter_from_env()
     await emitter.start()
-    logger.info("EventEmitter started", extra={"ingest_url": getattr(emitter, 'ingest_url', 'unknown')})
+    logger.info(
+        "EventEmitter started",
+        extra={"ingest_url": getattr(emitter, "ingest_url", "unknown")},
+    )
     provider_manager = ProviderManager(settings)
     provider_manager.set_emitter(emitter)
     await provider_manager.initialize()

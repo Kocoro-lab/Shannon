@@ -11,11 +11,13 @@ import contextlib
 class EventEmitter:
     """Async, non-blocking event emitter posting to orchestrator /events."""
 
-    def __init__(self,
-                 ingest_url: str = "http://orchestrator:8081/events",
-                 auth_token: Optional[str] = None,
-                 queue_max: int = 1000,
-                 timeout_seconds: float = 2.0):
+    def __init__(
+        self,
+        ingest_url: str = "http://orchestrator:8081/events",
+        auth_token: Optional[str] = None,
+        queue_max: int = 1000,
+        timeout_seconds: float = 2.0,
+    ):
         self.ingest_url = ingest_url
         self.auth_token = auth_token
         self.timeout = timeout_seconds
@@ -39,7 +41,15 @@ class EventEmitter:
             await self._client.aclose()
             self._client = None
 
-    def emit(self, workflow_id: str, etype: str, agent_id: Optional[str] = None, message: str = "", timestamp: Optional[float] = None, payload: Optional[Dict[str, Any]] = None):
+    def emit(
+        self,
+        workflow_id: str,
+        etype: str,
+        agent_id: Optional[str] = None,
+        message: str = "",
+        timestamp: Optional[float] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ):
         if not workflow_id or not etype:
             return
         ts = timestamp if timestamp is not None else time.time()
@@ -48,7 +58,7 @@ class EventEmitter:
             "type": etype,
             "agent_id": agent_id or "",
             "message": message or "",
-            "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(ts)),
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ts)),
             "payload": payload or {},
         }
         try:
@@ -75,7 +85,9 @@ class EventEmitter:
                     data = batch
                 if self._client is None:
                     self._client = httpx.AsyncClient(timeout=self.timeout)
-                await self._client.post(self.ingest_url, headers=headers, content=json.dumps(data))
+                await self._client.post(
+                    self.ingest_url, headers=headers, content=json.dumps(data)
+                )
             except asyncio.CancelledError:
                 break
             except Exception:

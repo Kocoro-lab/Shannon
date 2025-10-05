@@ -43,6 +43,9 @@ model_tiers:
       - provider: zai
         model: glm-4.5-flash
         priority: 9
+      - provider: anthropic
+        model: claude-3-haiku
+        priority: 10
 
   medium:
     # Target allocation: 40% (not enforced - actual usage depends on complexity)
@@ -78,6 +81,9 @@ model_tiers:
       - provider: zai
         model: glm-4.5-air
         priority: 10
+      - provider: anthropic
+        model: claude-3-sonnet
+        priority: 11
 
   large:
     # Target allocation: 10% (not enforced - actual usage depends on complexity)
@@ -110,6 +116,9 @@ model_tiers:
       - provider: zai
         model: glm-4.6
         priority: 9
+      - provider: openai
+        model: gpt-4-turbo
+        priority: 10
 
 # Model selection strategy
 selection_strategy:
@@ -198,6 +207,14 @@ model_catalog:
   openai:
     gpt-4.1:
       model_id: gpt-4.1
+      tier: large
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gpt-4-turbo:
+      model_id: gpt-4-turbo
       tier: large
       context_window: 128000
       max_tokens: 4096
@@ -294,8 +311,24 @@ model_catalog:
       supports_functions: true
       supports_streaming: true
       supports_vision: true
+    claude-3-sonnet:
+      model_id: claude-3-sonnet
+      tier: medium
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
     claude-3-5-haiku-20241022:
       model_id: claude-3-5-haiku-20241022
+      tier: small
+      context_window: 200000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    claude-3-haiku:
+      model_id: claude-3-haiku
       tier: small
       context_window: 200000
       max_tokens: 4096
@@ -593,6 +626,9 @@ pricing:
       o1-mini:
         input_per_1k: 0.0030
         output_per_1k: 0.0120
+      gpt-4-turbo:
+        input_per_1k: 0.0100
+        output_per_1k: 0.0300
         
     anthropic:
       claude-3-5-haiku-20241022:
@@ -601,6 +637,12 @@ pricing:
       claude-3-5-sonnet-20241022:
         input_per_1k: 0.0030
         output_per_1k: 0.0150
+      claude-3-haiku:
+        input_per_1k: 0.0002
+        output_per_1k: 0.0020
+      claude-3-sonnet:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0200
       claude-sonnet-4-20250514:
         input_per_1k: 0.0040
         output_per_1k: 0.0180
