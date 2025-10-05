@@ -1,0 +1,21 @@
+# Include README
+include README.md
+
+# Include generated proto stubs
+recursive-include src/shannon/generated *.py *.pyi
+
+# Exclude internal docs
+exclude IMPLEMENTATION_SUMMARY.md
+exclude LIVE_TEST_RESULTS.md
+exclude PHASE2_COMPLETE.md
+exclude REVIEW_FIXES.md
+exclude STATUS.md
+exclude TEST_SUMMARY.md
+
+# Exclude test files
+recursive-exclude tests *
+exclude .pytest_cache
+
+# Exclude development files
+exclude .gitignore
+exclude Makefile

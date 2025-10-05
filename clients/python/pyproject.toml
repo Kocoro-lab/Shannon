@@ -1,0 +1,80 @@
+[project]
+name = "shannon-sdk"
+version = "0.1.0a1"
+description = "Python SDK for Shannon multi-agent AI platform"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Shannon Team", email = "dev@ptmind.com"}
+]
+keywords = ["ai", "agents", "llm", "orchestration", "multi-agent", "workflow"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "grpcio>=1.60.0",
+    "protobuf>=5.29.2",
+    "httpx>=0.26.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Kocoro-lab/Shannon"
+Documentation = "https://github.com/Kocoro-lab/Shannon/blob/main/clients/python/README.md"
+Repository = "https://github.com/Kocoro-lab/Shannon"
+Issues = "https://github.com/Kocoro-lab/Shannon/issues"
+
+[project.optional-dependencies]
+dev = [
+    "grpcio-tools>=1.68.1",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-timeout>=2.2.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
+
+[project.scripts]
+shannon = "shannon.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+timeout = 30

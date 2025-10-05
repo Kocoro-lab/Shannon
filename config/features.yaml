@@ -115,6 +115,10 @@ enforcement:
 
   rate_limiting:
     rps: 20
+    # When false, disables provider-based rate control sleep in workflows.
+    # This can reduce latency during development or when external rate limits
+    # are enforced elsewhere (e.g., at the gateway or provider SDK level).
+    provider_rate_control_enabled: false  # Set to false to disable provider rate limiting delays
 
   circuit_breaker:
     error_threshold: 0.5
