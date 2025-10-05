@@ -104,12 +104,13 @@ type WorkflowsConfig struct {
 
 // EnforcementConfig captures enforcement defaults coming from features.yaml
 type EnforcementConfig struct {
-	TimeoutSeconds int `mapstructure:"timeout_seconds"`
-	MaxTokens      int `mapstructure:"max_tokens"`
+    TimeoutSeconds int `mapstructure:"timeout_seconds"`
+    MaxTokens      int `mapstructure:"max_tokens"`
 
-	RateLimiting struct {
-		RPS int `mapstructure:"rps"`
-	} `mapstructure:"rate_limiting"`
+    RateLimiting struct {
+        RPS                         int   `mapstructure:"rps"`
+        ProviderRateControlEnabled  *bool `mapstructure:"provider_rate_control_enabled"`
+    } `mapstructure:"rate_limiting"`
 
 	CircuitBreaker struct {
 		ErrorThreshold float64 `mapstructure:"error_threshold"`
@@ -274,4 +275,29 @@ func ParseBool(val string) bool {
 		}
 	}
 	return false
+}
+
+// EnforcementRuntime represents resolved enforcement-related runtime settings.
+type EnforcementRuntime struct {
+    ProviderRateControlEnabled bool
+}
+
+// ResolveEnforcementRuntime merges features.yaml defaults with environment overrides.
+// Default: ProviderRateControlEnabled = true; env PROVIDER_RATE_CONTROL_ENABLED overrides if set.
+func ResolveEnforcementRuntime(f *Features) EnforcementRuntime {
+    cfg := EnforcementRuntime{
+        ProviderRateControlEnabled: true,
+    }
+
+    if f != nil {
+        if f.Enforcement.RateLimiting.ProviderRateControlEnabled != nil {
+            cfg.ProviderRateControlEnabled = *f.Enforcement.RateLimiting.ProviderRateControlEnabled
+        }
+    }
+
+    if v := os.Getenv("PROVIDER_RATE_CONTROL_ENABLED"); v != "" {
+        cfg.ProviderRateControlEnabled = ParseBool(v)
+    }
+
+    return cfg
 }
