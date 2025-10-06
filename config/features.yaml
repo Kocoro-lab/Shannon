@@ -127,7 +127,7 @@ enforcement:
 
 # Learning system
 continuous_learning:
-  enabled: true
+  enabled: false  # Disabled by default
   
   case_memory:
     max_cases: 100000

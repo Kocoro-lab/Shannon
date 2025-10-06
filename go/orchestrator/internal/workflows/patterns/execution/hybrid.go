@@ -232,9 +232,6 @@ func executeHybridTask(
 
 	// Clear tool parameters for dependent tasks if configured
 	if config.ClearDependentToolParams && len(task.Dependencies) > 0 && task.ToolParameters != nil {
-		logger.Info("Clearing tool_parameters for dependent task",
-			"task_id", task.ID,
-		)
 		task.ToolParameters = nil
 	}
 

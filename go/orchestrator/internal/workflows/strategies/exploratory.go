@@ -2,9 +2,11 @@ package strategies
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -298,6 +300,23 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"total_thoughts_explored", totResult.TotalThoughts,
 		"tree_depth", totResult.TreeDepth,
 	)
+
+	// Emit WORKFLOW_COMPLETED before returning
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "exploratory",
+		Message:    "Workflow completed",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,

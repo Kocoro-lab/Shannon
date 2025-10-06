@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
@@ -54,8 +55,16 @@ func (a *Activities) DecomposeTask(ctx context.Context, in DecompositionInput) (
 
 	// HTTP client with workflow interceptor to inject headers
 	// In tests, this might not be in a Temporal context, so we handle it gracefully
+	// Timeout configurable via DECOMPOSE_TIMEOUT_SECONDS (default: 30s)
+	timeoutSec := 30
+	if v := os.Getenv("DECOMPOSE_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			timeoutSec = n
+		}
+	}
+	// Increased default timeout to 30s to accommodate complex system prompts and LLM planning
 	client := &http.Client{
-		Timeout:   10 * time.Second,
+		Timeout:   time.Duration(timeoutSec) * time.Second,
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
@@ -69,7 +78,6 @@ func (a *Activities) DecomposeTask(ctx context.Context, in DecompositionInput) (
 
 	resp, err := client.Do(req)
 	if err != nil {
-		// Fallback: empty subtasks to allow simple execution path
 		ometrics.DecompositionErrors.Inc()
 		return DecompositionResult{Mode: "standard", ComplexityScore: 0.5, Subtasks: nil, TotalEstimatedTokens: 0}, nil
 	}

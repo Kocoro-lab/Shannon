@@ -295,12 +295,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"uses_previous", decompositionSuggestion.UsesPreviousSuccess)
 	}
 
-	// Decompose the task to get subtasks and agent types
-	var decomp activities.DecompositionResult
-	if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
-		logger.Error("Task decomposition failed", "error", err)
-		return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
-	}
+    // Decompose the task to get subtasks and agent types (use preplanned if provided)
+    var decomp activities.DecompositionResult
+    if input.PreplannedDecomposition != nil {
+        decomp = *input.PreplannedDecomposition
+    } else {
+        if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
+            logger.Error("Task decomposition failed", "error", err)
+            return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
+        }
+    }
 
 	// Override strategy if advisor has high confidence
 	if decompositionAdvisor != nil && decompositionSuggestion.Confidence > 0.8 {
@@ -326,9 +330,23 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-	// If simple task, delegate full task to DAGWorkflow (reuse behavior)
-	// Route simple tasks properly: check mode, complexity score, or single subtask
-	isSimpleTask := decomp.Mode == "simple" || decomp.ComplexityScore < 0.3 || len(decomp.Subtasks) <= 1
+	// Check if task needs tools or has dependencies
+	needsTools := false
+	for _, subtask := range decomp.Subtasks {
+		if len(subtask.SuggestedTools) > 0 || len(subtask.Dependencies) > 0 || len(subtask.Produces) > 0 || len(subtask.Consumes) > 0 {
+			needsTools = true
+			break
+		}
+		if subtask.ToolParameters != nil && len(subtask.ToolParameters) > 0 {
+			needsTools = true
+			break
+		}
+	}
+
+    // If simple task (no tools, trivial plan) OR zero-subtask fallback, delegate to DAGWorkflow
+    // A single tool-based subtask should NOT be treated as simple
+    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+    isSimpleTask := len(decomp.Subtasks) == 0 || ((decomp.ComplexityScore < 0.3) && simpleByShape)
 
 	if isSimpleTask {
 		// Convert to strategies.TaskInput
@@ -337,6 +355,20 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		if err := workflow.ExecuteChildWorkflow(ctx, strategies.DAGWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
+
+		// Ensure WORKFLOW_COMPLETED is emitted even on the simple path
+		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 30 * time.Second,
+			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+		})
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventWorkflowCompleted,
+			AgentID:    "supervisor",
+			Message:    "Workflow completed",
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+
 		return convertFromStrategiesResult(strategiesResult), nil
 	}
 
@@ -623,10 +655,6 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 		// Clear tool_parameters for dependent tasks to avoid placeholder issues
 		if len(st.Dependencies) > 0 && st.ToolParameters != nil {
-			logger.Info("Clearing tool_parameters for dependent task",
-				"task_id", st.ID,
-				"dependencies", st.Dependencies,
-			)
 			st.ToolParameters = nil
 		}
 

@@ -1,6 +1,9 @@
 package workflows
 
-import "time"
+import (
+    "time"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+)
 
 // TaskInput represents the input to a workflow
 type TaskInput struct {
@@ -30,9 +33,12 @@ type TaskInput struct {
 	// Parent workflow ID for event streaming (used by child workflows)
 	ParentWorkflowID string // Parent workflow ID for unified event streaming
 
-	// Tool suggestions from decomposition (for simple tasks with tools)
-	SuggestedTools []string               // Tools suggested by decomposition
-	ToolParameters map[string]interface{} // Pre-structured parameters for tool execution
+    // Tool suggestions from decomposition (for simple tasks with tools)
+    SuggestedTools []string               // Tools suggested by decomposition
+    ToolParameters map[string]interface{} // Pre-structured parameters for tool execution
+
+    // Optional: preplanned decomposition from router to avoid re-decompose downstream
+    PreplannedDecomposition *activities.DecompositionResult
 }
 
 // Message represents a conversation message

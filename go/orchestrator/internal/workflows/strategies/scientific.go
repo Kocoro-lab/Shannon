@@ -3,9 +3,11 @@ package strategies
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -395,6 +397,23 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		"consensus_reached", debateResult.ConsensusReached,
 		"final_confidence", finalConfidence,
 	)
+
+	// Emit WORKFLOW_COMPLETED before returning
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "scientific",
+		Message:    "Workflow completed",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     scientificReport,

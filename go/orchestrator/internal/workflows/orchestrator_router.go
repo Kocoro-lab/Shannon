@@ -105,7 +105,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	learningVersionGate := workflow.GetVersion(ctx, "learning_router_v1", workflow.DefaultVersion, 1)
-	if learningVersionGate >= 1 && !templateFound {
+	if learningVersionGate >= 1 && !templateFound && cfg.ContinuousLearningEnabled {
 		if rec, err := recommendStrategy(ctx, input); err == nil && rec != nil && rec.Strategy != "" {
 			if input.Context == nil {
 				input.Context = map[string]interface{}{}
@@ -181,12 +181,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		decompContext["history"] = strings.Join(historyLines, "\n")
 	}
 
-	var decomp activities.DecompositionResult
-	if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
-		Query:          input.Query,
-		Context:        decompContext,
-		AvailableTools: []string{},
-	}).Get(ctx, &decomp); err != nil {
+    var decomp activities.DecompositionResult
+    if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
+        Query:          input.Query,
+        Context:        decompContext,
+        AvailableTools: []string{},
+    }).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
 		// Emit error event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
@@ -205,7 +205,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		"cognitive_strategy", decomp.CognitiveStrategy,
 	)
 
-	// 1.5) Budget preflight (estimate based on plan)
+    // Propagate the plan to child workflows to avoid a second decompose
+    input.PreplannedDecomposition = &decomp
+
+    // 1.5) Budget preflight (estimate based on plan)
 	if input.UserID != "" { // Only check when we have a user scope
 		est := EstimateTokensWithConfig(decomp, &cfg)
 		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
@@ -263,9 +266,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 	}
 
-	// 2) Routing rules (simple, cognitive, supervisor, dag)
-	// Simple threshold: prefer explicit single-subtask or low complexity
-	isSimple := len(decomp.Subtasks) <= 1 || decomp.ComplexityScore < simpleThreshold
+    // 2) Routing rules (simple, cognitive, supervisor, dag)
+    // Treat as simple ONLY when truly one-shot (no tools, no deps) AND below threshold
+    needsTools := false
+    for _, st := range decomp.Subtasks {
+        if len(st.SuggestedTools) > 0 || len(st.Dependencies) > 0 || len(st.Consumes) > 0 || len(st.Produces) > 0 {
+            needsTools = true
+            break
+        }
+        if st.ToolParameters != nil && len(st.ToolParameters) > 0 {
+            needsTools = true
+            break
+        }
+    }
+    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+    isSimple := decomp.ComplexityScore < simpleThreshold && simpleByShape
 
 	// Cognitive program takes precedence if specified
 	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
@@ -390,6 +405,7 @@ func convertToStrategiesInput(input TaskInput) strategies.TaskInput {
 		ApprovalTimeout:    input.ApprovalTimeout,
 		BypassSingleResult: input.BypassSingleResult,
 		ParentWorkflowID:   input.ParentWorkflowID,
+        PreplannedDecomposition: input.PreplannedDecomposition,
 	}
 }
 

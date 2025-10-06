@@ -65,23 +65,28 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		baseContext["parent_workflow_id"] = input.ParentWorkflowID
 	}
 
-	// Step 1: Decompose the task
-	var decomp activities.DecompositionResult
-	err := workflow.ExecuteActivity(ctx,
-		constants.DecomposeTaskActivity,
-		activities.DecompositionInput{
-			Query:          input.Query,
-			Context:        baseContext,
-			AvailableTools: []string{},
-		}).Get(ctx, &decomp)
+    // Step 1: Decompose the task (use preplanned plan if provided)
+    var decomp activities.DecompositionResult
+    var err error
+    if input.PreplannedDecomposition != nil {
+        decomp = *input.PreplannedDecomposition
+    } else {
+        err = workflow.ExecuteActivity(ctx,
+            constants.DecomposeTaskActivity,
+            activities.DecompositionInput{
+                Query:          input.Query,
+                Context:        baseContext,
+                AvailableTools: []string{},
+            }).Get(ctx, &decomp)
 
-	if err != nil {
-		logger.Error("Task decomposition failed", "error", err)
-		return TaskResult{
-			Success:      false,
-			ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
-		}, err
-	}
+        if err != nil {
+            logger.Error("Task decomposition failed", "error", err)
+            return TaskResult{
+                Success:      false,
+                ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
+            }, err
+        }
+    }
 
 	// Check for budget configuration
 	agentMaxTokens := 0
@@ -96,10 +101,31 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	var totalTokens int
 	var agentResults []activities.AgentExecutionResult
 
-	// Step 2: Handle simple tasks directly
-	if decomp.ComplexityScore < config.SimpleThreshold || len(decomp.Subtasks) <= 1 {
+	// Step 2: Check if task needs tools or has dependencies
+	needsTools := false
+	for _, subtask := range decomp.Subtasks {
+		if len(subtask.SuggestedTools) > 0 || len(subtask.Dependencies) > 0 || len(subtask.Produces) > 0 || len(subtask.Consumes) > 0 {
+			needsTools = true
+			break
+		}
+		if subtask.ToolParameters != nil && len(subtask.ToolParameters) > 0 {
+			needsTools = true
+			break
+		}
+	}
+
+    // Simple detection:
+    // - Fallback to simple if decomposition returned zero subtasks (LLM/schema hiccup)
+    // - Otherwise, only treat as simple when no tools are needed AND it's trivial AND below threshold
+    //   A single tool-based subtask should use the pattern path, not the simple activity
+    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+    isSimple := len(decomp.Subtasks) == 0 || (decomp.ComplexityScore < config.SimpleThreshold && simpleByShape)
+
+	// Step 3: Handle simple tasks directly (no tools, trivial plan)
+	if isSimple {
 		logger.Info("Executing simple task",
 			"complexity", decomp.ComplexityScore,
+			"subtasks", len(decomp.Subtasks),
 		)
 
 		// Execute single agent
@@ -200,31 +226,23 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	var synthesis activities.SynthesisResult
 
-	// Check if decomposition included a synthesis/summarization subtask
-	// Following SOTA patterns: detect and use existing synthesis to avoid duplication
-	// TODO: Replace string matching with structured subtask types to avoid false positives
-	// (e.g., "photosynthesis" would incorrectly match). For now, this pragmatic approach
-	// works well for typical decomposition outputs.
-	hasSynthesisSubtask := false
-	var synthesisTaskIdx int
+    // Check if decomposition included a synthesis/summarization subtask
+    // Prefer structured subtask type over brittle description matching
+    hasSynthesisSubtask := false
+    var synthesisTaskIdx int
 
-	for i, subtask := range decomp.Subtasks {
-		taskLower := strings.ToLower(subtask.Description)
-		if strings.Contains(taskLower, "synthesize") ||
-			strings.Contains(taskLower, "synthesis") ||
-			strings.Contains(taskLower, "summarize") ||
-			strings.Contains(taskLower, "summary") ||
-			strings.Contains(taskLower, "combine") ||
-			strings.Contains(taskLower, "aggregate") {
-			hasSynthesisSubtask = true
-			synthesisTaskIdx = i
-			logger.Info("Detected synthesis subtask in decomposition",
-				"task_id", subtask.ID,
-				"description", subtask.Description,
-				"index", i,
-			)
-		}
-	}
+    for i, subtask := range decomp.Subtasks {
+        t := strings.ToLower(strings.TrimSpace(subtask.TaskType))
+        if t == "synthesis" || t == "summarization" || t == "summary" || t == "synthesize" {
+            hasSynthesisSubtask = true
+            synthesisTaskIdx = i
+            logger.Info("Detected synthesis subtask in decomposition",
+                "task_id", subtask.ID,
+                "task_type", subtask.TaskType,
+                "index", i,
+            )
+        }
+    }
 
 	// Priority order for synthesis decision:
 	// 1. BypassSingleResult (config-driven optimization)
@@ -437,6 +455,23 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
 	}
+
+	// Emit WORKFLOW_COMPLETED before returning
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "dag",
+		Message:    "Workflow completed",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,

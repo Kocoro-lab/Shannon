@@ -168,9 +168,17 @@ async def agent_query(request: Request, query: AgentQuery):
                         "agent_type"
                     )
                 preset = get_role_preset(str(role_name) if role_name else "generalist")
-                system_prompt = str(
-                    preset.get("system_prompt") or "You are a helpful AI assistant."
-                )
+
+                # Check for system_prompt in context first, then fall back to preset
+                system_prompt = None
+                if isinstance(query.context, dict) and "system_prompt" in query.context:
+                    system_prompt = str(query.context.get("system_prompt"))
+
+                if not system_prompt:
+                    system_prompt = str(
+                        preset.get("system_prompt") or "You are a helpful AI assistant."
+                    )
+
                 cap_overrides = preset.get("caps") or {}
                 # Allow role caps to softly override token/temperature bounds if caller didn't specify
                 max_tokens = int(cap_overrides.get("max_tokens") or query.max_tokens)
@@ -713,6 +721,7 @@ class Subtask(BaseModel):
     description: str
     dependencies: List[str] = []
     estimated_tokens: int = 0
+    task_type: str = Field(default="", description="Optional structured subtask type, e.g., 'synthesis'")
     # LLM-native tool selection
     suggested_tools: List[str] = Field(
         default_factory=list, description="Tools suggested by LLM for this subtask"
@@ -826,28 +835,18 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "CRITICAL: Each subtask MUST have these EXACT fields: id, description, dependencies, estimated_tokens, suggested_tools, tool_parameters\n"
             "NEVER return null for subtasks field - always provide at least one subtask.\n\n"
             "TOOL SELECTION GUIDELINES:\n"
-            "Default: Use NO TOOLS unless explicitly required. Most queries can be answered with your knowledge.\n\n"
-            "USE TOOLS ONLY WHEN:\n"
-            "- web_search: ONLY for specific real-time data queries like:\n"
-            "  * Current stock prices, market data, or financial metrics\n"
-            "  * Recent news events or breaking developments\n"
-            "  * Current weather, sports scores, or time-sensitive information\n"
-            "  * NOT for: general knowledge, concepts, explanations, analysis, or guidance\n"
-            "- calculator: ONLY for complex mathematical computations beyond basic arithmetic\n"
+            "Default: Use NO TOOLS unless explicitly required.\n\n"
+            "USE TOOLS WHEN:\n"
+            "- web_search: ONLY for specific real-time data queries\n"
+            "- calculator: ONLY for mathematical computations beyond basic arithmetic\n"
             "- file_read: ONLY when explicitly asked to read/open a specific file\n"
             "- python_executor: For executing Python code, data analysis, or programming tasks\n"
             "- code_executor: ONLY for executing provided WASM code (do not use for Python)\n\n"
-            "DO NOT USE TOOLS FOR:\n"
-            "- General knowledge questions or explanations\n"
-            "- Analysis, recommendations, or strategic advice\n"
-            "- Monitoring guidance or best practices\n"
-            "- Conceptual or theoretical discussions\n"
-            "- When you can provide a thoughtful response with your training data\n\n"
             "If unsure, default to NO TOOLS. Set suggested_tools to [] for direct LLM response.\n\n"
             "Return ONLY valid JSON with this EXACT structure (no additional text):\n"
             "{\n"
-            '  "mode": "simple",\n'
-            '  "complexity_score": 0.2,\n'
+            '  "mode": "standard",\n'
+            '  "complexity_score": 0.5,\n'
             '  "subtasks": [\n'
             "    {\n"
             '      "id": "task-1",\n'
@@ -896,8 +895,21 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- Let the semantic meaning of the query guide tool selection\n"
         )
 
+        # Enhance decomposition prompt with tool availability (generic approach)
+        decompose_system_prompt = sys  # Start with base decomposition prompt
+
+        # If tools are available, add a generic tool-aware hint
+        if available_tools:
+            tool_hint = (
+                f"\n\nAVAILABLE TOOLS: {', '.join(available_tools)}\n"
+                "When the query requires data retrieval, external APIs, or specific operations that match available tools,\n"
+                "create tool-based subtasks with suggested_tools and tool_parameters.\n"
+                "Set complexity_score >= 0.5 for queries that need tool execution.\n"
+            )
+            decompose_system_prompt = sys + tool_hint
+
         # Build messages with history rehydration for context awareness
-        messages = [{"role": "system", "content": sys}]
+        messages = [{"role": "system", "content": decompose_system_prompt}]
 
         # Rehydrate history from context if present (same as agent_query endpoint)
         history_rehydrated = False
@@ -1014,11 +1026,28 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                         ):
                             tool_params["tool"] = suggested_tools[0]
 
+                # Determine structured task type when available or infer for synthesis-like tasks
+                task_type = str(st.get("task_type") or "")
+                if not task_type:
+                    desc_lower = str(st.get("description", "")).strip().lower()
+                    if (
+                        "synthesize" in desc_lower
+                        or "synthesis" in desc_lower
+                        or "summarize" in desc_lower
+                        or "summary" in desc_lower
+                        or "combine" in desc_lower
+                        or "aggregate" in desc_lower
+                    ):
+                        task_type = "synthesis"
+
+                # Keep tool_params as-is without template resolution
+
                 subtask = Subtask(
                     id=st.get("id", f"task-{len(subtasks) + 1}"),
                     description=st.get("description", ""),
                     dependencies=st.get("dependencies", []),
                     estimated_tokens=st.get("estimated_tokens", 300),
+                    task_type=task_type,
                     suggested_tools=suggested_tools,
                     tool_parameters=tool_params,
                 )
