@@ -55,3 +55,42 @@ def get_role_preset(name: str) -> Dict[str, object]:
     """
     key = (name or "").strip().lower() or "generalist"
     return _PRESETS.get(key, _PRESETS["generalist"]).copy()
+
+
+def render_system_prompt(prompt: str, context: Dict[str, object]) -> str:
+    """Render a system prompt by substituting ${variable} placeholders from context.
+
+    Variable resolution order (whitelisted keys only):
+    1. context["prompt_params"][key]
+    2. context["tool_parameters"][key]
+
+    Non-whitelisted context keys (like "role", "system_prompt") are ignored.
+    Missing variables are replaced with empty strings.
+
+    Args:
+        prompt: System prompt string with optional ${variable} placeholders
+        context: Context dictionary containing prompt_params or tool_parameters
+
+    Returns:
+        Rendered prompt with variables substituted
+    """
+    import re
+    from typing import Any
+
+    # Whitelist of context keys to use for variable substitution
+    ALLOWED_SOURCES = ["prompt_params", "tool_parameters"]
+
+    # Build variable lookup from whitelisted sources
+    variables: Dict[str, str] = {}
+    for source in ALLOWED_SOURCES:
+        if source in context and isinstance(context[source], dict):
+            for key, value in context[source].items():
+                if key not in variables:  # First occurrence wins (prompt_params > tool_parameters)
+                    variables[key] = str(value) if value is not None else ""
+
+    # Substitute ${variable} patterns
+    def substitute(match: Any) -> str:
+        var_name = match.group(1)
+        return variables.get(var_name, "")  # Missing variables -> empty string
+
+    return re.sub(r"\$\{(\w+)\}", substitute, prompt)

@@ -33,7 +33,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
   - Supervisor nodes for hierarchical multi-agent coordination
   - Template inheritance for reusable workflow composition
   - Automatic pattern degradation when budget constrained
-- **Learning Router** — UCB algorithm selects optimal strategies, 85-95% token savings ([→ Details](docs/learning-router-enhancements.md))
+- **Learning Router** — UCB algorithm selects optimal strategies, up to 85-95% token savings in internal testing ([→ Details](docs/learning-router-enhancements.md))
 - **Rate-Aware Execution** — Provider-specific RPM/TPM limits prevent throttling ([→ Rate Control](docs/rate-aware-budgeting.md))
 - Automatic multi‑agent orchestration — Describe the goal; Shannon decomposes into subtasks and schedules DAG execution with dependencies resolved.
 - Plug‑and‑play tools — Add REST APIs via MCP or OpenAPI, or write Python tools; no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md)).
@@ -206,7 +206,7 @@ with ShannonClient(grpc_endpoint="localhost:50052",
     print(status.status.value, status.result)
 ```
 
-CLI is also available after install: `shannon submit "Hello" --endpoint localhost:50052`.
+CLI is also available after install: `shannon --endpoint localhost:50052 submit "Hello"`.
 
 #### Watch Your Agent Work in Real-Time
 
@@ -272,7 +272,7 @@ grpcurl -plaintext \
 ```bash
 # Submit via gRPC
 grpcurl -plaintext \
-  -d '{"query":"Analyze sentiment","sessionId":"test-session"}' \
+  -d '{"metadata":{"userId":"user1","sessionId":"test-session"},"query":"Analyze sentiment"}' \
   localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
 
 # Stream events via gRPC
@@ -345,7 +345,7 @@ Key features:
 - **Session persistence** - Maintains conversation context across requests
 - **Token tracking** - Every request returns token usage and costs
 - **Policy control** - Apply OPA policies for allowed actions (see Example 3)
-- **Result**: 70% cost reduction through smart caching and session management
+- **Result**: Up to 70% cost reduction through smart caching and session management (based on internal testing)
 
 </details>
 
@@ -616,7 +616,7 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLIENT LAYER                            │
 ├─────────────┬─────────────┬─────────────┬───────────────────────┤
-│    HTTP     │    gRPC     │     SSE     │  WebSocket (soon)     │
+│    HTTP     │    gRPC     │     SSE     │     WebSocket         │
 └─────────────┴─────────────┴─────────────┴───────────────────────┘
                               │
                               ▼
@@ -830,6 +830,7 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - 🚧 **Ship Docker Images** - Pre-built docker release images, make setup staightforward
 
 **v0.2**
+- [ ] **(Optional) Drag and Drop UI** - AgentKit-like drag & drop UI to generate workflow yaml templates
 - [ ] **Native tool expansion** - Additional Rust-native tools for file operations and system interactions
 - [ ] **Advanced Memory** - Episodic rollups, entity/temporal knowledge graphs, hybrid dense+sparse retrieval
 - [ ] **Advanced Learning** - Pattern recognition from successful workflows, contextual bandits for agent selection
@@ -864,6 +865,7 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - [**Streaming APIs**](docs/streaming-api.md) - Real-time agent output streaming
 - [**Authentication & Access Control**](docs/authentication-and-multitenancy.md) - Multi-tenancy and OPA policies
 - [**Memory System**](docs/memory-system-architecture.md) - Session + vector memory (Qdrant), MMR diversity, pattern learning
+- [**System Prompts**](docs/system-prompts.md) - Priority, role presets, and template variables
 
 ### Extending Shannon
 - [**Extending Shannon**](docs/extending-shannon.md) - Ways to extend templates, decomposition, and tools

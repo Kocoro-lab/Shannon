@@ -1,7 +1,28 @@
 # Shannon Persona Definitions
-# These personas are automatically assigned to subtasks based on task content
-# Current implementation uses keyword matching (v1)
-# Future versions will add: LLM selection → Semantic matching → Keyword fallback
+# ⚠️  WARNING: THIS FILE IS NOT CURRENTLY LOADED OR USED BY SHANNON
+#
+# Current Status:
+# - This persona system is planned but NOT YET IMPLEMENTED
+# - The Python LLM service does not load this file
+# - Only role presets in python/llm-service/llm_service/roles/presets.py are active
+# - See go/orchestrator/internal/activities/agent.go:453-506 for implementation notes
+#
+# What Works Now:
+# - Use context["role"] to select from: generalist, analysis, research, writer, critic
+# - Use context["system_prompt"] to completely override the system prompt
+# - See docs/system-prompts.md for full documentation
+#
+# Known Issues:
+# - Tool names below (grep, read, glob, code_executor, edit, write, bash, etc.)
+#   do NOT match actual tool registry names
+# - Actual tools: calculator, web_search, python_wasi_executor, file_ops, session_file
+# - Tool names must be mapped when this config is wired up
+#
+# Future Implementation:
+# - These personas will be automatically assigned to subtasks based on task content
+# - Will support keyword matching, LLM selection, and semantic matching
+# - Will enable tool allowlists per persona and richer prompt templates
+# - Tool name mapping required before activation
 
 personas:
   generalist:
