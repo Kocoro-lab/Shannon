@@ -223,6 +223,47 @@ class AsyncShannonClient:
                     details={"grpc_error": str(e)},
                 )
 
+    async def wait(
+        self, task_id: str, timeout: Optional[float] = None, poll_interval: float = 1.0
+    ) -> TaskStatus:
+        """
+        Wait for task completion by polling status.
+
+        Args:
+            task_id: Task ID
+            timeout: Maximum time to wait in seconds
+            poll_interval: Time between status checks in seconds
+
+        Returns:
+            Final TaskStatus when task completes
+
+        Raises:
+            TaskTimeoutError: Task did not complete within timeout
+            TaskNotFoundError: Task not found
+            ConnectionError: Failed to connect
+        """
+        import time
+        start_time = time.time()
+
+        while True:
+            status = await self.get_status(task_id, include_details=True, timeout=timeout)
+
+            if status.status in [
+                TaskStatusEnum.COMPLETED,
+                TaskStatusEnum.FAILED,
+                TaskStatusEnum.CANCELLED,
+                TaskStatusEnum.TIMEOUT,
+            ]:
+                return status
+
+            if timeout and (time.time() - start_time) >= timeout:
+                raise errors.TaskTimeoutError(
+                    f"Task {task_id} did not complete within {timeout}s",
+                    code="TIMEOUT",
+                )
+
+            await asyncio.sleep(poll_interval)
+
     async def get_status(
         self, task_id: str, include_details: bool = True, timeout: Optional[float] = None
     ) -> TaskStatus:
@@ -1259,7 +1300,7 @@ class ShannonClient:
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """Submit a task (blocking). See AsyncShannonClient.submit_task for details."""
-        return self._run(
+        handle = self._run(
             self._async_client.submit_task(
                 query,
                 session_id=session_id,
@@ -1272,6 +1313,17 @@ class ShannonClient:
                 labels=labels,
                 timeout=timeout,
             )
+        )
+        # Override client reference to use sync client for convenience methods
+        handle._set_client(self)
+        return handle
+
+    def wait(
+        self, task_id: str, timeout: Optional[float] = None, poll_interval: float = 1.0
+    ) -> TaskStatus:
+        """Wait for task completion (blocking). See AsyncShannonClient.wait for details."""
+        return self._run(
+            self._async_client.wait(task_id, timeout=timeout, poll_interval=poll_interval)
         )
 
     def get_status(

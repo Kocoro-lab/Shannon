@@ -526,28 +526,44 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	queue := "shannon-tasks"
 	priority := "normal"   // Track priority for logging
 	workflowOverride := "" // Optional workflow override via label
+
+	// Check if priority queues are enabled
+	priorityQueuesEnabled := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") ||
+		os.Getenv("PRIORITY_QUEUES") == "1" ||
+		strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "true")
+
 	if req.Metadata != nil {
 		labels := req.Metadata.GetLabels()
 		if labels != nil {
 			if p, ok := labels["priority"]; ok {
 				priority = p
 				priorityLower := strings.ToLower(p)
-				switch priorityLower {
-				case "critical":
-					queue = "shannon-tasks-critical"
-				case "high":
-					queue = "shannon-tasks-high"
-				case "normal":
-					queue = "shannon-tasks" // Explicitly handle normal priority
-				case "low":
-					queue = "shannon-tasks-low"
-				default:
-					// Warn about invalid priority value and use default queue
-					s.logger.Warn("Invalid priority value provided, using default queue",
+
+				// Only route to priority queues if PRIORITY_QUEUES is enabled
+				if priorityQueuesEnabled {
+					switch priorityLower {
+					case "critical":
+						queue = "shannon-tasks-critical"
+					case "high":
+						queue = "shannon-tasks-high"
+					case "normal":
+						queue = "shannon-tasks" // Explicitly handle normal priority
+					case "low":
+						queue = "shannon-tasks-low"
+					default:
+						// Warn about invalid priority value and use default queue
+						s.logger.Warn("Invalid priority value provided, using default queue",
+							zap.String("priority", p),
+							zap.String("valid_values", "critical, high, normal, low"),
+							zap.String("workflow_id", workflowID))
+						priority = "normal" // Reset to normal for invalid priorities
+					}
+				} else if priorityLower != "normal" {
+					// Priority queues disabled, log override to default queue
+					s.logger.Debug("Priority label ignored in single-queue mode",
 						zap.String("priority", p),
-						zap.String("valid_values", "critical, high, normal, low"),
-						zap.String("workflow_id", workflowID))
-					priority = "normal" // Reset to normal for invalid priorities
+						zap.String("workflow_id", workflowID),
+						zap.String("queue", queue))
 				}
 			}
 			// Optional workflow override: labels["workflow"] = "supervisor" | "dag"

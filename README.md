@@ -190,6 +190,24 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 # {"workflow_id":"task-dev-1234567890","status":"running"}
 ```
 
+#### Option 3: Python SDK (pip)
+
+```bash
+pip install shannon-sdk
+```
+
+```python
+from shannon import ShannonClient
+
+with ShannonClient(grpc_endpoint="localhost:50052",
+                   http_endpoint="http://localhost:8081") as client:
+    handle = client.submit_task("Analyze: Shannon vs AgentKit", user_id="demo")
+    status = client.wait(handle.task_id)
+    print(status.status.value, status.result)
+```
+
+CLI is also available after install: `shannon submit "Hello" --endpoint localhost:50052`.
+
 #### Watch Your Agent Work in Real-Time
 
 ```bash

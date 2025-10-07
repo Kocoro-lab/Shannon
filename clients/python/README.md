@@ -2,6 +2,8 @@
 
 Python client for Shannon multi-agent AI platform.
 
+**Version:** 0.1.0a2 (Alpha)
+
 ## Installation
 
 ```bash
@@ -83,10 +85,28 @@ asyncio.run(main())
 - ✅ Approval workflows (approve, get_pending_approvals)
 - ✅ Session management (7 RPCs for multi-turn conversations)
 - ✅ Template support (pass template names to server)
+- ✅ Workflow routing via custom labels
 - ✅ CLI tool (13 commands: submit, status, stream, approve, sessions, etc.)
 - ✅ Async-first design with sync wrapper
 - ✅ Type-safe enums (EventType, TaskStatusEnum)
 - ✅ Comprehensive error handling
+
+## Examples
+
+The SDK includes comprehensive examples demonstrating key features:
+
+- **`simple_task.py`** - Basic task submission and status polling
+- **`simple_streaming.py`** - Event streaming with filtering
+- **`streaming_with_approvals.py`** - Approval workflow handling
+- **`workflow_routing.py`** - Using labels for workflow routing and task categorization
+- **`session_continuity.py`** - Multi-turn conversations with session management
+- **`template_usage.py`** - Template-based task execution with versioning
+
+Run any example:
+```bash
+cd clients/python
+python examples/simple_task.py
+```
 
 ## Development
 

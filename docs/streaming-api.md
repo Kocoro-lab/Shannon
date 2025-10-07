@@ -66,6 +66,58 @@ ws.onmessage = (e) => {
 };
 ```
 
+## Invalid Workflow Detection
+
+Both gRPC and SSE streaming endpoints automatically validate workflow existence to fail fast for invalid workflow IDs:
+
+### Behavior
+
+- **Validation Timeout**: 30 seconds from connection start
+- **Validation Method**: Uses Temporal `DescribeWorkflowExecution` API
+- **First Event Timer**: Fires after 30s if no events are received
+
+### Response by Transport
+
+**gRPC (`StreamingService.StreamTaskExecution`)**
+- Returns `NotFound` gRPC error code
+- Error message: `"workflow not found"` or `"workflow not found or unavailable"`
+
+**SSE (`/stream/sse`)**
+- Emits `ERROR_OCCURRED` event before closing:
+  ```
+  event: ERROR_OCCURRED
+  data: {"workflow_id":"xxx","type":"ERROR_OCCURRED","message":"Workflow not found"}
+  ```
+- Includes heartbeat pings (`: ping`) every 10s while waiting
+
+**WebSocket (`/stream/ws`)**
+- Same behavior as SSE, sends JSON error event then closes connection
+
+### Valid Workflow Edge Cases
+
+- **Workflow exists but produces no events within 30s**: Stream stays open, timer resets
+- **Temporal unavailable during validation**: Returns error immediately
+- **Valid workflows**: Timer is disabled after first event arrives
+
+### Example Usage
+
+```bash
+# Invalid workflow - returns error after ~30s
+shannon stream "invalid-workflow-123"
+# Output after 30s:
+# ERROR_OCCURRED: Workflow not found
+
+# Valid workflow - streams normally
+shannon stream "task-user-1234567890"
+# Output: immediate streaming of events
+```
+
+### Notes
+
+- This prevents indefinite hanging when streaming non-existent workflows
+- The 30s timeout balances responsiveness with allowing slow workflow startup
+- Heartbeats keep connections alive through proxies during validation period
+
 ## Dynamic Teams (Signals) + Team Events
 
 When `dynamic_team_v1` is enabled in `SupervisorWorkflow`, the workflow accepts signals:

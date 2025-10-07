@@ -5,7 +5,7 @@ import os
 import sys
 import time
 
-from shannon import ShannonClient, TaskStatusEnum, EventType
+from shannon import ShannonClient, TaskStatusEnum, EventType, errors
 
 
 def main():
@@ -132,18 +132,7 @@ def main():
 
             if args.wait:
                 print("\nWaiting for completion...")
-                while True:
-                    status = client.get_status(handle.task_id)
-                    print(f"  Status: {status.status.value} ({status.progress:.1%})")
-
-                    if status.status in [
-                        TaskStatusEnum.COMPLETED,
-                        TaskStatusEnum.FAILED,
-                        TaskStatusEnum.CANCELLED,
-                        TaskStatusEnum.TIMEOUT,
-                    ]:
-                        break
-                    time.sleep(2)
+                status = client.wait(handle.task_id)
 
                 if status.status == TaskStatusEnum.COMPLETED:
                     print(f"\n✓ Result: {status.result}")
@@ -196,6 +185,7 @@ def main():
                     # Exit on completion
                     if event.type == EventType.WORKFLOW_COMPLETED.value:
                         break
+
             except KeyboardInterrupt:
                 print("\n\nStream interrupted by user")
             except Exception as e:
@@ -257,7 +247,7 @@ def main():
                 for s in sessions:
                     print(f"{s.session_id}\t{s.user_id}\t{s.updated_at}\tmsgs={s.message_count}")
             else:
-                print("No sessions found")
+                print("No sessions found (listing not fully implemented in backend)")
 
         elif args.command == "session-delete":
             ok = client.delete_session(args.session_id)
@@ -275,6 +265,12 @@ def main():
             ok = client.update_session(args.session_id, extend_ttl_seconds=args.extend_ttl or 0)
             print("✓ Updated" if ok else "✗ Update failed")
 
+    except errors.ShannonError as e:
+        print(f"✗ {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"✗ Unexpected error: {e}")
+        sys.exit(1)
     finally:
         client.close()
 

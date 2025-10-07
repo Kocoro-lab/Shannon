@@ -128,8 +128,9 @@ func main() {
 			streaming.Configure(n)
 		}
 	}
-	// Register streaming SSE/WS on the shared admin HTTP mux (community-ready)
-	httpapi.NewStreamingHandler(streaming.Get(), logger).RegisterRoutes(httpMux)
+    // Register streaming SSE/WS on the shared admin HTTP mux (community-ready)
+    streamingHandler := httpapi.NewStreamingHandler(streaming.Get(), logger)
+    streamingHandler.RegisterRoutes(httpMux)
 
 	// Start background checks and shared HTTP server
 	go func() {
@@ -138,8 +139,8 @@ func main() {
 			Addr:         ":" + strconv.Itoa(healthPort),
 			Handler:      httpMux,
 			ReadTimeout:  10 * time.Second,
-			WriteTimeout: 10 * time.Second,
-			IdleTimeout:  60 * time.Second,
+			WriteTimeout: 0, // Disable for SSE streaming (set per-handler if needed)
+			IdleTimeout:  120 * time.Second,
 		}
 		logger.Info("Admin HTTP server listening", zap.Int("port", healthPort))
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -621,7 +622,10 @@ func main() {
 			logger.Warn("Temporal not ready, retrying", zap.Int("attempt", attempt), zap.String("host", host), zap.Duration("sleep", delay*time.Second), zap.Error(err))
 			time.Sleep(delay * time.Second)
 		}
-		orchestratorService.SetTemporalClient(tClient)
+            orchestratorService.SetTemporalClient(tClient)
+            // Wire Temporal client to streaming services for first-event validation
+            streamingSvc.SetTemporalClient(tClient)
+            streamingHandler.SetTemporalClient(tClient)
 
 		// After Temporal client is ready, start Approvals HTTP API if configured
 		approvalsToken := getEnvOrDefault("APPROVALS_AUTH_TOKEN", "")
