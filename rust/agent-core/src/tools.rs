@@ -41,7 +41,7 @@ mod tests {
             parameters: params,
             call_id: None,
         };
-        let res = exec.execute_tool(&call).await.expect("tool result");
+        let res = exec.execute_tool(&call, None).await.expect("tool result");
         assert!(res.success, "expected success: {:?}", res.error);
         assert_eq!(res.output, serde_json::Value::String(String::new()));
     }
@@ -112,7 +112,11 @@ impl ToolExecutor {
     }
 
     /// Execute a tool via the LLM service
-    pub async fn execute_tool(&self, tool_call: &ToolCall) -> Result<ToolResult> {
+    pub async fn execute_tool(
+        &self,
+        tool_call: &ToolCall,
+        session_context: Option<&prost_types::Struct>,
+    ) -> Result<ToolResult> {
         info!(
             "Executing tool: {} with parameters: {:?}",
             tool_call.tool_name, tool_call.parameters
@@ -274,10 +278,23 @@ impl ToolExecutor {
         let client = reqwest::Client::new();
         let url = format!("{}/tools/execute", self.llm_service_url);
 
-        let request_body = serde_json::json!({
+        // Convert session_context from prost Struct to JSON if available
+        let context_json = session_context.map(|ctx| {
+            let mut map = serde_json::Map::new();
+            for (k, v) in &ctx.fields {
+                map.insert(k.clone(), crate::grpc_server::prost_value_to_json(v));
+            }
+            serde_json::Value::Object(map)
+        });
+
+        let mut request_body = serde_json::json!({
             "tool_name": tool_call.tool_name,
             "parameters": tool_call.parameters,
         });
+
+        if let Some(ctx) = context_json {
+            request_body["session_context"] = ctx;
+        }
 
         let response = client.post(&url).json(&request_body).send().await?;
 

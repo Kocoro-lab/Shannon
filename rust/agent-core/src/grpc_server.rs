@@ -214,7 +214,7 @@ impl AgentServiceImpl {
 
         // Measure execution time
         let start_time = std::time::Instant::now();
-        match tool_executor.execute_tool(&tool_call).await {
+        match tool_executor.execute_tool(&tool_call, req.context.as_ref()).await {
             Ok(tool_result) => {
                 let execution_time_ms = start_time.elapsed().as_millis() as i64;
                 // Prefer a simple, user-facing response: if the tool output
@@ -443,6 +443,7 @@ impl AgentServiceImpl {
                 let sandbox = ();
                 let tool_name_c = tool_name.clone();
                 let params_map_c = params_map.clone();
+                let context_c = req.context.clone();
                 let jh = tokio::spawn(async move {
                     let _p = permit;
                     let exec = ToolExecutor::new_with_wasi(Some(sandbox), None);
@@ -452,7 +453,7 @@ impl AgentServiceImpl {
                         call_id: None,
                     };
                     let start = std::time::Instant::now();
-                    let outcome = exec.execute_tool(&call).await;
+                    let outcome = exec.execute_tool(&call, context_c.as_ref()).await;
                     let dur_ms = start.elapsed().as_millis() as i64;
                     match outcome {
                         Ok(res) => ItemRes {
@@ -635,7 +636,7 @@ impl AgentServiceImpl {
             };
             debug!("Executing tool {}/{}: {}", idx + 1, total, tool_name);
             let start = std::time::Instant::now();
-            match tool_executor.execute_tool(&call).await {
+            match tool_executor.execute_tool(&call, req.context.as_ref()).await {
                 Ok(res) => {
                     let dur = start.elapsed().as_millis() as i64;
                     last_output = res.output.clone();
@@ -1211,7 +1212,7 @@ impl AgentService for AgentServiceImpl {
 }
 
 // Helper: convert prost_types::Value to serde_json::Value for passing context to Python
-fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
+pub fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
     use prost_types::value::Kind::*;
     match v.kind.as_ref() {
         Some(NullValue(_)) => serde_json::Value::Null,

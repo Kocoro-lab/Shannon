@@ -78,7 +78,7 @@ async fn test_tool_execution_contract() {
     };
 
     let result = executor
-        .execute_tool(&call)
+        .execute_tool(&call, None)
         .await
         .expect("Failed to execute tool");
 
@@ -150,7 +150,7 @@ async fn test_error_handling_contract() {
         call_id: None,
     };
 
-    let result = executor.execute_tool(&call).await;
+    let result = executor.execute_tool(&call, None).await;
 
     // Should handle gracefully
     assert!(result.is_ok(), "Should not panic on unknown tool");
@@ -275,7 +275,7 @@ async fn test_session_context_handling() {
         call_id: Some("session_1".to_string()),
     };
 
-    let result1 = executor.execute_tool(&call1).await;
+    let result1 = executor.execute_tool(&call1, None).await;
     assert!(result1.is_ok(), "First call should succeed");
 
     // Second call that might reference the first
@@ -287,7 +287,7 @@ async fn test_session_context_handling() {
         call_id: Some("session_2".to_string()),
     };
 
-    let result2 = executor.execute_tool(&call2).await;
+    let result2 = executor.execute_tool(&call2, None).await;
     assert!(result2.is_ok(), "Second call should succeed");
 }
 

@@ -132,6 +132,7 @@ class AsyncShannonClient:
         template_name: Optional[str] = None,
         template_version: Optional[str] = None,
         disable_ai: bool = False,
+        labels: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """
@@ -146,6 +147,7 @@ class AsyncShannonClient:
             template_name: Template name (passed via metadata labels)
             template_version: Template version
             disable_ai: Disable AI processing (template-only mode)
+            labels: Custom labels for workflow routing (e.g., {"workflow": "supervisor"})
             timeout: Request timeout in seconds
 
         Returns:
@@ -159,18 +161,19 @@ class AsyncShannonClient:
         await self._ensure_channel()
 
         # Build metadata
-        labels = {}
+        # Make a shallow copy to avoid mutating the caller's dict
+        label_dict = dict(labels) if labels else {}
         if template_name:
-            labels["template"] = template_name
+            label_dict["template"] = template_name
         if template_version:
-            labels["template_version"] = template_version
+            label_dict["template_version"] = template_version
         if disable_ai:
-            labels["disable_ai"] = "true"
+            label_dict["disable_ai"] = "true"
 
         metadata_pb = common_pb2.TaskMetadata(
             user_id=user_id,
             session_id=session_id or "",
-            labels=labels,
+            labels=label_dict,
         )
 
         # Build context
@@ -1252,6 +1255,7 @@ class ShannonClient:
         template_name: Optional[str] = None,
         template_version: Optional[str] = None,
         disable_ai: bool = False,
+        labels: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """Submit a task (blocking). See AsyncShannonClient.submit_task for details."""
@@ -1265,6 +1269,7 @@ class ShannonClient:
                 template_name=template_name,
                 template_version=template_version,
                 disable_ai=disable_ai,
+                labels=labels,
                 timeout=timeout,
             )
         )

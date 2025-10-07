@@ -33,6 +33,9 @@ class ToolExecuteRequest(BaseModel):
 
     tool_name: str = Field(..., description="Name of the tool to execute")
     parameters: Dict[str, Any] = Field(..., description="Tool parameters")
+    session_context: Optional[Dict[str, Any]] = Field(
+        default=None, description="Session context for parameter injection"
+    )
 
     class Config:
         schema_extra = {
@@ -165,9 +168,36 @@ class OpenAPIValidateResponse(BaseModel):
     errors: List[str] = Field(default_factory=list)
 
 
+def _resolve_shannon_config_path() -> str:
+    """Resolve config path with backward-compatible env fallbacks.
+
+    Order:
+    - SHANNON_CONFIG_PATH
+    - CONFIG_PATH (legacy; may point to features.yaml, handled gracefully)
+    - /app/config/shannon.yaml (default)
+    """
+    return (
+        os.getenv("SHANNON_CONFIG_PATH")
+        or os.getenv("CONFIG_PATH")
+        or "/app/config/shannon.yaml"
+    )
+
+
+def _sanitize_session_context(ctx: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pass through only safe, expected keys to tools.
+
+    Keeps: session_id, user_id, prompt_params, tool_parameters.
+    """
+    if not isinstance(ctx, dict):
+        return None
+    allowed = {"session_id", "user_id", "prompt_params", "tool_parameters"}
+    return {k: v for k, v in ctx.items() if k in allowed}
+
+
 def _load_mcp_tools_from_config():
     """Load MCP tool definitions from config file"""
-    config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
+    # Prefer SHANNON_CONFIG_PATH with a legacy fallback
+    config_path = _resolve_shannon_config_path()
     if not os.path.exists(config_path):
         logger.debug(
             f"Config file not found at {config_path}, skipping MCP config load"
@@ -221,7 +251,10 @@ def _load_mcp_tools_from_config():
 
 def _load_openapi_tools_from_config():
     """Load OpenAPI tool definitions from config file"""
-    config_path = os.getenv("CONFIG_PATH", "/app/config/shannon.yaml")
+    # Prefer SHANNON_CONFIG_PATH with a legacy fallback
+    config_path = _resolve_shannon_config_path()
+    logger.info(f"Loading OpenAPI tools from config: {config_path}")
+
     if not os.path.exists(config_path):
         logger.debug(
             f"Config file not found at {config_path}, skipping OpenAPI config load"
@@ -232,12 +265,16 @@ def _load_openapi_tools_from_config():
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
+        logger.info("Calling load_openapi_tools_from_config()...")
         tool_classes = load_openapi_tools_from_config(config)
+        logger.info(f"load_openapi_tools_from_config() returned {len(tool_classes)} tools")
+
         registry = get_registry()
 
         for tool_class in tool_classes:
             try:
                 registry.register(tool_class, override=True)
+                logger.info(f"Registered OpenAPI tool: {tool_class.__name__}")
             except Exception as e:
                 logger.error(
                     f"Failed to register OpenAPI tool {tool_class.__name__}: {e}"
@@ -245,9 +282,13 @@ def _load_openapi_tools_from_config():
 
         if tool_classes:
             logger.info(f"Loaded {len(tool_classes)} OpenAPI tools from config")
+        else:
+            logger.warning("No OpenAPI tools were loaded from config")
 
     except Exception as e:
         logger.error(f"Failed to load OpenAPI tools from config: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
 
 
 @router.on_event("startup")
@@ -617,7 +658,11 @@ async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
 
     try:
         # Execute the tool and return raw results
-        result = await tool.execute(**request.parameters)
+        # Pass session_context if provided for parameter injection
+        result = await tool.execute(
+            session_context=_sanitize_session_context(request.session_context),
+            **request.parameters,
+        )
 
         return ToolExecuteResponse(
             success=result.success,

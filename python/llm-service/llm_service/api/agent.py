@@ -160,7 +160,7 @@ async def agent_query(request: Request, query: AgentQuery):
             # Use real provider - convert query to messages format
             # Roles v1: choose system prompt from role preset if provided in context
             try:
-                from ..roles.presets import get_role_preset
+                from ..roles.presets import get_role_preset, render_system_prompt
 
                 role_name = None
                 if isinstance(query.context, dict):
@@ -178,6 +178,13 @@ async def agent_query(request: Request, query: AgentQuery):
                     system_prompt = str(
                         preset.get("system_prompt") or "You are a helpful AI assistant."
                     )
+
+                # Render templated system prompt using context parameters
+                try:
+                    system_prompt = render_system_prompt(system_prompt, query.context or {})
+                except Exception as e:
+                    # On any rendering issue, keep original system_prompt
+                    logger.warning(f"System prompt rendering failed: {e}")
 
                 cap_overrides = preset.get("caps") or {}
                 # Allow role caps to softly override token/temperature bounds if caller didn't specify
@@ -431,7 +438,7 @@ async def agent_query(request: Request, query: AgentQuery):
 
             if tool_calls_from_output and query.tools:
                 tool_results = await _execute_and_format_tools(
-                    tool_calls_from_output, query.tools, query.query, request
+                    tool_calls_from_output, query.tools, query.query, request, query.context
                 )
                 if tool_results:
                     # Re-engage LLM to interpret tool results
@@ -523,6 +530,7 @@ async def _execute_and_format_tools(
     allowed_tools: List[str],
     query: str = "",
     request=None,
+    context: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Execute tool calls and format results into natural language."""
     if not tool_calls:
@@ -604,7 +612,17 @@ async def _execute_and_format_tools(
                 except Exception:
                     pass
 
-            result = await tool.execute(**args)
+            # Sanitize session context before passing to tools
+            if isinstance(context, dict):
+                safe_keys = {"session_id", "user_id", "prompt_params", "tool_parameters"}
+                sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
+            else:
+                sanitized_context = None
+
+            logger.info(
+                f"Executing tool {tool_name} with context keys: {list(sanitized_context.keys()) if sanitized_context else 'None'}, args: {args}"
+            )
+            result = await tool.execute(session_context=sanitized_context, **args)
 
             if result.success:
                 # Format based on tool type

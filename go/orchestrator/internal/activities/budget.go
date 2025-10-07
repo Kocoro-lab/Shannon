@@ -428,15 +428,13 @@ func (b *BudgetActivities) GenerateUsageReport(ctx context.Context, input UsageR
 
 // UpdateBudgetInput represents input for updating budget policies
 type UpdateBudgetInput struct {
-	UserID           string   `json:"user_id"`
-	SessionID        string   `json:"session_id"`
-	TaskBudget       *int     `json:"task_budget,omitempty"`
-	SessionBudget    *int     `json:"session_budget,omitempty"`
-	DailyBudget      *int     `json:"daily_budget,omitempty"`
-	MonthlyBudget    *int     `json:"monthly_budget,omitempty"`
-	HardLimit        *bool    `json:"hard_limit,omitempty"`
-	WarningThreshold *float64 `json:"warning_threshold,omitempty"`
-	RequireApproval  *bool    `json:"require_approval,omitempty"`
+    UserID           string   `json:"user_id"`
+    SessionID        string   `json:"session_id"`
+    TaskBudget       *int     `json:"task_budget,omitempty"`
+    SessionBudget    *int     `json:"session_budget,omitempty"`
+    HardLimit        *bool    `json:"hard_limit,omitempty"`
+    WarningThreshold *float64 `json:"warning_threshold,omitempty"`
+    RequireApproval  *bool    `json:"require_approval,omitempty"`
 }
 
 // UpdateBudgetPolicy updates budget policies for a user/session

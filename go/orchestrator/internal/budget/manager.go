@@ -24,10 +24,7 @@ type TokenBudget struct {
 	SessionTokensUsed int `json:"session_tokens_used"`
 
 	// User-level budgets (daily/monthly)
-	UserDailyBudget   int `json:"user_daily_budget"`
-	UserMonthlyBudget int `json:"user_monthly_budget"`
-	UserDailyUsed     int `json:"user_daily_used"`
-	UserMonthlyUsed   int `json:"user_monthly_used"`
+	// Daily/Monthly budgets removed - task and session budgets are sufficient
 
 	// Cost tracking
 	EstimatedCostUSD float64 `json:"estimated_cost_usd"`
@@ -85,8 +82,7 @@ type BudgetManager struct {
 	// Budget policies
 	defaultTaskBudget    int
 	defaultSessionBudget int
-	defaultDailyBudget   int
-	defaultMonthlyBudget int
+	// Daily/monthly budgets removed
 
 	// Enhanced features - Backpressure control
 	backpressureThreshold float64 // Activate backpressure at X% of budget (default 0.8)
@@ -135,11 +131,9 @@ func NewBudgetManager(db *sql.DB, logger *zap.Logger) *BudgetManager {
 		userBudgets:    make(map[string]*TokenBudget),
 		modelPricing:   initializeModelPricing(),
 
-		// Default budgets (configurable)
-		defaultTaskBudget:    10000,   // 10K tokens per task
-		defaultSessionBudget: 50000,   // 50K tokens per session
-		defaultDailyBudget:   100000,  // 100K tokens per day
-		defaultMonthlyBudget: 1000000, // 1M tokens per month
+		// Default budgets (configurable via shannon.yaml session.token_budget_per_task)
+		defaultTaskBudget:    10000,   // 10K tokens per task (fallback if not configured)
+		defaultSessionBudget: 50000,   // 50K tokens per session (fallback)
 
 		// Enhanced features initialization
 		backpressureThreshold: 0.8,
@@ -263,8 +257,6 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 				userBudget = ub
 			} else {
 				userBudget = &TokenBudget{
-					UserDailyBudget:   bm.defaultDailyBudget,
-					UserMonthlyBudget: bm.defaultMonthlyBudget,
 					HardLimit:         true,
 					WarningThreshold:  0.8,
 				}
@@ -301,8 +293,7 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 	taskBudget := sessionBudget.TaskBudget
 	sessionTokensUsed := sessionBudget.SessionTokensUsed
 	sessionBudgetLimit := sessionBudget.SessionBudget
-	userDailyUsed := userBudget.UserDailyUsed
-	userDailyBudgetLimit := userBudget.UserDailyBudget
+	// Daily budget tracking removed - using task/session budgets only
 	hardLimit := sessionBudget.HardLimit
 	requireApproval := sessionBudget.RequireApproval
 	warningThreshold := sessionBudget.WarningThreshold
@@ -331,12 +322,7 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 		}
 	}
 
-	// Check user daily budget
-	if userDailyUsed+estimatedTokens > userDailyBudgetLimit {
-		result.CanProceed = false
-		result.Reason = fmt.Sprintf("Daily budget exceeded: %d/%d tokens",
-			userDailyUsed+estimatedTokens, userDailyBudgetLimit)
-	}
+	// Daily budget check removed - task and session budgets provide sufficient control
 
 	// Check warning threshold
 	taskUsagePercent := float64(taskTokensUsed) / float64(taskBudget)
@@ -350,7 +336,7 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 	result.EstimatedCost = bm.estimateCost(estimatedTokens, "gpt-3.5-turbo") // Default model
 	result.RemainingTaskBudget = taskBudget - taskTokensUsed
 	result.RemainingSessionBudget = sessionBudgetLimit - sessionTokensUsed
-	result.RemainingDailyBudget = userDailyBudgetLimit - userDailyUsed
+	// RemainingDailyBudget removed
 
 	return result, nil
 }
@@ -397,15 +383,7 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 		sessionBudget.SessionTokensUsed += usage.TotalTokens
 		sessionBudget.ActualCostUSD += usage.CostUSD
 	}
-	if userBudget, ok := bm.userBudgets[usage.UserID]; ok {
-		if userBudget.UserDailyUsed > maxInt-usage.TotalTokens ||
-			userBudget.UserMonthlyUsed > maxInt-usage.TotalTokens {
-			bm.mu.Unlock()
-			return ErrTokenOverflow
-		}
-		userBudget.UserDailyUsed += usage.TotalTokens
-		userBudget.UserMonthlyUsed += usage.TotalTokens
-	}
+	// Daily/monthly user budget tracking removed
 	bm.mu.Unlock()
 
 	// Store in database
@@ -500,8 +478,6 @@ func (bm *BudgetManager) getUserBudget(userID string) *TokenBudget {
 	}
 	// Return a transient default without mutating shared maps
 	return &TokenBudget{
-		UserDailyBudget:   bm.defaultDailyBudget,
-		UserMonthlyBudget: bm.defaultMonthlyBudget,
 		HardLimit:         true,
 		WarningThreshold:  0.8,
 	}
@@ -643,7 +619,7 @@ type BudgetCheckResult struct {
 	EstimatedCost          float64  `json:"estimated_cost"`
 	RemainingTaskBudget    int      `json:"remaining_task_budget"`
 	RemainingSessionBudget int      `json:"remaining_session_budget"`
-	RemainingDailyBudget   int      `json:"remaining_daily_budget"`
+	// RemainingDailyBudget removed
 }
 
 type UsageFilters struct {
@@ -734,20 +710,18 @@ func (bm *BudgetManager) CheckBudgetWithBackpressure(
 	}
 
 	// Calculate usage percentage INCLUDING the new tokens (ensure budget exists)
-	bm.mu.Lock()
-	userBudget, ok := bm.userBudgets[userID]
-	if !ok {
-		userBudget = &TokenBudget{
-			UserDailyBudget:   bm.defaultDailyBudget,
-			UserMonthlyBudget: bm.defaultMonthlyBudget,
-			HardLimit:         true,
-			WarningThreshold:  0.8,
-		}
-		bm.userBudgets[userID] = userBudget
+	// Use session budget for backpressure calculation (daily budget removed)
+	bm.mu.RLock()
+	sessionBudget, ok := bm.sessionBudgets[sessionID]
+	bm.mu.RUnlock()
+
+	var usagePercent float64
+	if ok && sessionBudget.SessionBudget > 0 {
+		projectedUsage := sessionBudget.SessionTokensUsed + estimatedTokens
+		usagePercent = float64(projectedUsage) / float64(sessionBudget.SessionBudget)
+	} else {
+		usagePercent = 0 // No budget defined, no backpressure
 	}
-	projectedUsage := userBudget.UserDailyUsed + estimatedTokens
-	usagePercent := float64(projectedUsage) / float64(userBudget.UserDailyBudget)
-	bm.mu.Unlock()
 
 	// Apply backpressure if threshold exceeded
 	if usagePercent >= bm.backpressureThreshold {
@@ -835,25 +809,11 @@ func (bm *BudgetManager) CheckRateLimit(userID string) bool {
 }
 
 // GetBudgetPressure returns the current budget pressure level
+// NOTE: Daily budget removed - pressure tracking now done per-session via CheckTokenBudgetWithBackpressure
 func (bm *BudgetManager) GetBudgetPressure(userID string) string {
-	bm.mu.Lock()
-	userBudget, ok := bm.userBudgets[userID]
-	if !ok {
-		userBudget = &TokenBudget{
-			UserDailyBudget:   bm.defaultDailyBudget,
-			UserMonthlyBudget: bm.defaultMonthlyBudget,
-			HardLimit:         true,
-			WarningThreshold:  0.8,
-		}
-		bm.userBudgets[userID] = userBudget
-	}
-	if userBudget.UserDailyBudget == 0 {
-		bm.mu.Unlock()
-		return "low" // No budget set
-	}
-	usagePercent := float64(userBudget.UserDailyUsed) / float64(userBudget.UserDailyBudget)
-	bm.mu.Unlock()
-	return bm.calculatePressureLevel(usagePercent)
+	// Daily budget tracking removed, always return low pressure
+	// Use CheckTokenBudgetWithBackpressure for per-session pressure monitoring
+	return "low"
 }
 
 // ResetUserUsage resets usage counters for a user
@@ -862,8 +822,7 @@ func (bm *BudgetManager) ResetUserUsage(userID string) {
 	defer bm.mu.Unlock()
 
 	if budget, ok := bm.userBudgets[userID]; ok {
-		budget.UserDailyUsed = 0
-		budget.UserMonthlyUsed = 0
+		// Daily/monthly fields removed
 		budget.TaskTokensUsed = 0
 		budget.SessionTokensUsed = 0
 	}

@@ -41,12 +41,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		TaskTokensUsed:    0,
 		SessionTokensUsed: 0,
 	}
-	bm.userBudgets["user-123"] = &TokenBudget{
-		UserDailyBudget:   100000,
-		UserMonthlyBudget: 1000000,
-		UserDailyUsed:     0,
-		UserMonthlyUsed:   0,
-	}
+    // User-level daily/monthly budgets removed; no user budget initialization required
 
 	// Expect user lookup/creation first
 	userID := uuid.New()
@@ -136,12 +131,7 @@ func TestRecordUsage_DifferentIdempotencyKeys(t *testing.T) {
 		TaskTokensUsed:    0,
 		SessionTokensUsed: 0,
 	}
-	bm.userBudgets["user-123"] = &TokenBudget{
-		UserDailyBudget:   100000,
-		UserMonthlyBudget: 1000000,
-		UserDailyUsed:     0,
-		UserMonthlyUsed:   0,
-	}
+    // User-level daily/monthly budgets removed; no user budget initialization required
 
 	// First usage record
 	usage1 := &BudgetTokenUsage{
