@@ -1,0 +1,33 @@
+# Benchmark results and artifacts
+results/
+reports/
+charts/
+logs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep these files
+!results/.gitkeep
+!reports/.gitkeep
+!charts/.gitkeep
+

@@ -255,3 +255,106 @@ generate-v2-histories:
 test-replay-v2:
 	@echo "[Replay] Testing v2 workflow replay determinism..."
 	@cd go/orchestrator && go test -v ./tests/replay/...
+
+# --- Performance Benchmarking ---
+# Setup benchmark environment
+bench-setup:
+	@echo "[Benchmark] Setting up benchmark environment..."
+	@pip3 install --upgrade pip
+	@pip3 install grpcio grpcio-tools protobuf matplotlib pandas plotly
+	@cd clients/python && pip3 install -e .
+	@chmod +x benchmarks/*.sh 2>/dev/null || true
+	@echo "✅ Benchmark environment ready"
+
+# Run all benchmarks (requires services running)
+bench: bench-workflow bench-pattern bench-tool
+	@echo "[Benchmark] All benchmarks complete!"
+	@$(MAKE) bench-report
+
+# Run workflow benchmarks
+bench-workflow:
+	@echo "[Benchmark] Running workflow performance tests..."
+	@python3 benchmarks/workflow_bench.py --test simple --requests 50 --output benchmarks/results/workflow_simple.json || true
+	@python3 benchmarks/workflow_bench.py --test dag --requests 20 --subtasks 5 --output benchmarks/results/workflow_dag.json || true
+
+# Run pattern benchmarks
+bench-pattern:
+	@echo "[Benchmark] Running AI pattern performance tests..."
+	@python3 benchmarks/pattern_bench.py --pattern all --requests 5 --output benchmarks/results/pattern_all.json || true
+
+# Run tool benchmarks
+bench-tool:
+	@echo "[Benchmark] Running tool execution performance tests..."
+	@python3 benchmarks/tool_bench.py --tool all --cold-start 5 --hot-start 20 --output benchmarks/results/tool_all.json || true
+
+# Run load test (high load, use with caution)
+bench-load:
+	@echo "[Benchmark] Running load test (this may take a while)..."
+	@python3 benchmarks/load_test.py --test-type constant --users 20 --duration 60 --output benchmarks/results/load_test.json || true
+
+# Run load test with ramp-up
+bench-load-ramp:
+	@echo "[Benchmark] Running ramp-up load test..."
+	@python3 benchmarks/load_test.py --test-type ramp --users 50 --ramp-up 10 --duration 120 --output benchmarks/results/load_ramp.json || true
+
+# Run spike test
+bench-spike:
+	@echo "[Benchmark] Running spike test..."
+	@python3 benchmarks/load_test.py --test-type spike --users 20 --spike-users 100 --duration 60 --output benchmarks/results/spike_test.json || true
+
+# Run benchmarks in simulation mode (no services required)
+bench-simulate:
+	@echo "[Benchmark] Running benchmarks in simulation mode..."
+	@python3 benchmarks/workflow_bench.py --test simple --requests 100 --simulate || true
+	@python3 benchmarks/pattern_bench.py --pattern all --requests 10 --simulate || true
+	@python3 benchmarks/tool_bench.py --tool all --simulate || true
+
+# Generate benchmark reports
+bench-report:
+	@echo "[Benchmark] Generating reports..."
+	@bash benchmarks/generate_report.sh || true
+	@echo "✅ Reports generated in benchmarks/reports/"
+
+# Compare with baseline
+bench-compare:
+	@echo "[Benchmark] Comparing with baseline..."
+	@bash benchmarks/compare_baseline.sh
+
+# Set current results as baseline
+bench-baseline:
+	@echo "[Benchmark] Setting current results as baseline..."
+	@LATEST=$$(ls -t benchmarks/results/benchmark_*.json 2>/dev/null | head -1); \
+	  if [ -z "$$LATEST" ]; then \
+	    echo "❌ No benchmark results found. Run 'make bench' first."; \
+	    exit 1; \
+	  fi; \
+	  cp "$$LATEST" benchmarks/baseline.json && \
+	  echo "✅ Baseline updated: benchmarks/baseline.json"
+
+# Generate visualizations
+bench-visualize:
+	@echo "[Benchmark] Generating performance visualizations..."
+	@python3 benchmarks/visualize.py || true
+	@echo "✅ Charts generated in benchmarks/charts/"
+
+# Full benchmark suite with report and visualization
+bench-full: bench bench-report bench-visualize
+	@echo "======================================="
+	@echo "Full benchmark suite complete!"
+	@echo "======================================="
+	@echo "Results: benchmarks/results/"
+	@echo "Reports: benchmarks/reports/"
+	@echo "Charts:  benchmarks/charts/"
+
+# Clean benchmark results
+bench-clean:
+	@echo "[Benchmark] Cleaning benchmark results..."
+	@rm -rf benchmarks/results/* benchmarks/reports/* benchmarks/charts/*
+	@echo "✅ Benchmark artifacts cleaned"
+
+# Quick benchmark (fast tests only)
+bench-quick:
+	@echo "[Benchmark] Running quick benchmarks..."
+	@python3 benchmarks/workflow_bench.py --test simple --requests 20 --output benchmarks/results/quick_workflow.json || true
+	@python3 benchmarks/pattern_bench.py --pattern cot --requests 3 --output benchmarks/results/quick_pattern.json || true
+	@echo "✅ Quick benchmark complete"

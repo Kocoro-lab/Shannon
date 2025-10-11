@@ -1,0 +1,303 @@
+name: Performance Benchmarks
+
+on:
+  push:
+    branches:
+      - main
+      - feat/performance-benchmarks
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # 每天运行一次基准测试
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_type:
+        description: 'Benchmark type to run'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - workflow
+          - pattern
+          - tool
+          - load
+
+jobs:
+  benchmark:
+    name: Run Benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    strategy:
+      matrix:
+        test_type: [workflow, pattern, tool]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make docker-compose jq pandoc
+          python -m pip install --upgrade pip
+          pip install grpcio grpcio-tools protobuf
+      
+      - name: Install Shannon Python client
+        run: |
+          cd clients/python
+          pip install -e .
+      
+      - name: Create .env file
+        run: |
+          cat > .env <<EOF
+          OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+          
+          # Database
+          POSTGRES_USER=shannon
+          POSTGRES_PASSWORD=shannon_dev
+          POSTGRES_DB=shannon
+          
+          # Redis
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          
+          # Services
+          ORCHESTRATOR_GRPC=orchestrator:50052
+          AGENT_CORE_ADDR=agent-core:50051
+          LLM_SERVICE_ADDR=llm-service:50053
+          
+          # Test configuration
+          BENCHMARK_MODE=true
+          EOF
+      
+      - name: Start Shannon services
+        run: |
+          docker-compose -f deploy/compose/docker-compose.yml up -d
+          echo "Waiting for services to be ready..."
+          sleep 30
+          
+          # Check service health
+          docker-compose -f deploy/compose/docker-compose.yml ps
+      
+      - name: Wait for services to be healthy
+        run: |
+          max_attempts=60
+          attempt=0
+          
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f http://localhost:8081/health > /dev/null 2>&1; then
+              echo "✅ Services are healthy"
+              break
+            fi
+            echo "Waiting for services... ($attempt/$max_attempts)"
+            sleep 5
+            attempt=$((attempt + 1))
+          done
+          
+          if [ $attempt -eq $max_attempts ]; then
+            echo "❌ Services failed to start"
+            docker-compose -f deploy/compose/docker-compose.yml logs
+            exit 1
+          fi
+      
+      - name: Run benchmark - ${{ matrix.test_type }}
+        run: |
+          mkdir -p benchmarks/results
+          
+          case "${{ matrix.test_type }}" in
+            workflow)
+              echo "Running workflow benchmarks..."
+              python3 benchmarks/workflow_bench.py --test simple --requests 50 --output benchmarks/results/workflow_simple.json
+              python3 benchmarks/workflow_bench.py --test dag --requests 10 --output benchmarks/results/workflow_dag.json
+              ;;
+            pattern)
+              echo "Running pattern benchmarks..."
+              python3 benchmarks/pattern_bench.py --pattern all --requests 5 --output benchmarks/results/pattern_all.json
+              ;;
+            tool)
+              echo "Running tool benchmarks..."
+              python3 benchmarks/tool_bench.py --tool all --cold-start 3 --hot-start 10 --output benchmarks/results/tool_all.json
+              ;;
+            *)
+              echo "Unknown test type: ${{ matrix.test_type }}"
+              exit 1
+              ;;
+          esac
+      
+      - name: Generate reports
+        if: always()
+        run: |
+          if [ -f benchmarks/generate_report.sh ]; then
+            bash benchmarks/generate_report.sh || true
+          fi
+      
+      - name: Compare with baseline
+        id: baseline_comparison
+        continue-on-error: true
+        run: |
+          if [ -f benchmarks/baseline.json ]; then
+            bash benchmarks/compare_baseline.sh
+            echo "baseline_status=$?" >> $GITHUB_OUTPUT
+          else
+            echo "No baseline found, skipping comparison"
+            echo "baseline_status=0" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-results-${{ matrix.test_type }}
+          path: |
+            benchmarks/results/
+            benchmarks/reports/
+          retention-days: 30
+      
+      - name: Comment PR with results
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = 'benchmarks/reports/latest.md';
+            
+            if (fs.existsSync(path)) {
+              const report = fs.readFileSync(path, 'utf8');
+              const comment = `## 🚀 性能基准测试结果 - ${{ matrix.test_type }}\n\n${report}`;
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: comment.substring(0, 65536)  // GitHub comment size limit
+              });
+            }
+      
+      - name: Collect Docker logs
+        if: failure()
+        run: |
+          mkdir -p benchmarks/logs
+          docker-compose -f deploy/compose/docker-compose.yml logs > benchmarks/logs/docker-compose.log
+          docker stats --no-stream > benchmarks/logs/docker-stats.log
+      
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-logs-${{ matrix.test_type }}
+          path: benchmarks/logs/
+          retention-days: 7
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f deploy/compose/docker-compose.yml down -v
+  
+  load_test:
+    name: Load Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 仅在 main 分支和手动触发时运行负载测试
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install grpcio grpcio-tools protobuf
+          cd clients/python && pip install -e .
+      
+      - name: Start Shannon services
+        run: |
+          docker-compose -f deploy/compose/docker-compose.yml up -d
+          sleep 30
+      
+      - name: Run load test
+        run: |
+          python3 benchmarks/load_test.py \
+            --test-type constant \
+            --users 20 \
+            --duration 120 \
+            --output benchmarks/results/load_test.json
+      
+      - name: Upload load test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-results
+          path: benchmarks/results/load_test.json
+          retention-days: 30
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f deploy/compose/docker-compose.yml down -v
+  
+  visualize:
+    name: Generate Visualizations
+    runs-on: ubuntu-latest
+    needs: [benchmark]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install visualization dependencies
+        run: |
+          pip install matplotlib pandas plotly
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: benchmarks/artifacts/
+      
+      - name: Generate performance charts
+        run: |
+          if [ -f benchmarks/visualize.py ]; then
+            python3 benchmarks/visualize.py
+          fi
+      
+      - name: Upload visualizations
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-charts
+          path: benchmarks/charts/
+          retention-days: 30
+

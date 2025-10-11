@@ -1,0 +1,180 @@
+# Docker Compose configuration using pre-built images from GitHub Container Registry
+# Usage: docker compose -f docker-compose.prebuilt.yml up
+
+version: '3.8'
+
+x-common-env: &common-env
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: ${POSTGRES_USER:-shannon}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shannon_dev}
+  POSTGRES_DB: ${POSTGRES_DB:-shannon}
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  TEMPORAL_HOST: temporal:7233
+  QDRANT_HOST: qdrant
+  QDRANT_PORT: 6333
+
+services:
+  # Core Shannon Services - Using pre-built images
+  orchestrator:
+    image: ghcr.io/kocoro-lab/shannon-orchestrator:latest
+    container_name: shannon-orchestrator
+    ports:
+      - "50052:50052"  # gRPC
+      - "2112:2112"    # Metrics
+      - "8090:8090"    # Admin/Health
+    environment:
+      <<: *common-env
+      AGENT_CORE_ADDR: agent-core:50051
+      LLM_SERVICE_ADDR: llm-service:50053
+      ORCHESTRATOR_GRPC_PORT: 50052
+      METRICS_PORT: 2112
+      ADMIN_PORT: 8090
+    depends_on:
+      - postgres
+      - redis
+      - temporal
+      - qdrant
+    restart: unless-stopped
+    networks:
+      - shannon-network
+
+  agent-core:
+    image: ghcr.io/kocoro-lab/shannon-agent-core:latest
+    container_name: shannon-agent-core
+    ports:
+      - "50051:50051"  # gRPC
+      - "2113:2113"    # Metrics
+    environment:
+      <<: *common-env
+      LLM_SERVICE_ADDR: llm-service:50053
+      AGENT_PORT: 50051
+      METRICS_PORT: 2113
+    restart: unless-stopped
+    networks:
+      - shannon-network
+
+  llm-service:
+    image: ghcr.io/kocoro-lab/shannon-llm-service:latest
+    container_name: shannon-llm-service
+    ports:
+      - "50053:50053"  # gRPC
+      - "8000:8000"    # HTTP
+    environment:
+      <<: *common-env
+      # LLM Provider API Keys
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      XAI_API_KEY: ${XAI_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      # Search Provider API Keys
+      EXA_API_KEY: ${EXA_API_KEY}
+      BRAVE_API_KEY: ${BRAVE_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      # Service Config
+      GRPC_PORT: 50053
+      HTTP_PORT: 8000
+    restart: unless-stopped
+    networks:
+      - shannon-network
+
+  dashboard:
+    image: ghcr.io/kocoro-lab/shannon-dashboard:latest
+    container_name: shannon-dashboard
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_ORCHESTRATOR_HTTP: http://localhost:8081
+      NEXT_PUBLIC_WS_URL: ws://localhost:8081/ws
+    restart: unless-stopped
+    networks:
+      - shannon-network
+
+  # Infrastructure Services - Using official images
+  postgres:
+    image: postgres:16-alpine
+    container_name: shannon-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-shannon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shannon_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-shannon}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../../migrations/postgres:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shannon"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shannon-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: shannon-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shannon-network
+
+  temporal:
+    image: temporalio/auto-setup:1.22.4
+    container_name: shannon-temporal
+    ports:
+      - "7233:7233"
+      - "8088:8088"
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-shannon}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD:-shannon_dev}
+      - POSTGRES_SEEDS=postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - shannon-network
+
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: shannon-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - shannon-network
+
+volumes:
+  postgres-data:
+  redis-data:
+  qdrant-data:
+
+networks:
+  shannon-network:
+    driver: bridge
+
