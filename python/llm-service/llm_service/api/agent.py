@@ -86,10 +86,12 @@ class AgentQuery(BaseModel):
         default="standard", description="Execution mode: simple, standard, or complex"
     )
     allowed_tools: Optional[List[str]] = Field(
-        default=None, description="Allowlist of tools available for this query. None means use role preset, [] means no tools."
+        default=None,
+        description="Allowlist of tools available for this query. None means use role preset, [] means no tools.",
     )
     forced_tool_calls: Optional[List[ForcedToolCall]] = Field(
-        default=None, description="Explicit sequence of tool calls to execute before interpretation"
+        default=None,
+        description="Explicit sequence of tool calls to execute before interpretation",
     )
     max_tokens: Optional[int] = Field(
         default=2048, description="Maximum tokens for response"
@@ -191,7 +193,9 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 # Render templated system prompt using context parameters
                 try:
-                    system_prompt = render_system_prompt(system_prompt, query.context or {})
+                    system_prompt = render_system_prompt(
+                        system_prompt, query.context or {}
+                    )
                 except Exception as e:
                     # On any rendering issue, keep original system_prompt
                     logger.warning(f"System prompt rendering failed: {e}")
@@ -290,6 +294,7 @@ async def agent_query(request: Request, query: AgentQuery):
             effective_allowed_tools: List[str] = []
             try:
                 from ..tools import get_registry
+
                 registry = get_registry()
                 # Use preset only if allowed_tools is None (not provided), not if it's [] (explicitly empty)
                 requested = query.allowed_tools
@@ -299,9 +304,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 # Intersect with registry; warn on unknown
                 unknown = [t for t in base if t not in available]
                 if unknown:
-                    logger.warning(
-                        f"Dropping unknown tools from allowlist: {unknown}"
-                    )
+                    logger.warning(f"Dropping unknown tools from allowlist: {unknown}")
                 effective_allowed_tools = [t for t in base if t in available]
             except Exception as e:
                 logger.warning(f"Failed to compute effective allowed tools: {e}")
@@ -332,33 +335,43 @@ async def agent_query(request: Request, query: AgentQuery):
                     # Get schema from tool (works for both built-in and OpenAPI tools)
                     schema = tool.get_schema()
                     if schema:
-                        tools_param.append({
-                            "type": "function",
-                            "function": schema
-                        })
-                        logger.info(f"✅ Added tool schema for '{tool_name}': {schema.get('name')}")
+                        tools_param.append({"type": "function", "function": schema})
+                        logger.info(
+                            f"✅ Added tool schema for '{tool_name}': {schema.get('name')}"
+                        )
                     else:
                         logger.warning(f"Tool '{tool_name}' has no schema")
 
-                logger.info(f"Prepared {len(tools_param) if tools_param else 0} tool schemas to pass to LLM")
+                logger.info(
+                    f"Prepared {len(tools_param) if tools_param else 0} tool schemas to pass to LLM"
+                )
 
             # If forced_tool_calls are provided, execute them sequentially then interpret
             if query.forced_tool_calls:
                 # Validate tools against effective allowlist
                 forced_calls = []
-                for c in (query.forced_tool_calls or []):
-                    if effective_allowed_tools and c.tool not in effective_allowed_tools:
+                for c in query.forced_tool_calls or []:
+                    if (
+                        effective_allowed_tools
+                        and c.tool not in effective_allowed_tools
+                    ):
                         raise HTTPException(
                             status_code=400,
                             detail=f"Forced tool '{c.tool}' is not allowed for this request",
                         )
-                    forced_calls.append({"name": c.tool, "arguments": c.parameters or {}})
+                    forced_calls.append(
+                        {"name": c.tool, "arguments": c.parameters or {}}
+                    )
 
                 logger.info(
                     f"Executing forced tool sequence: {[fc['name'] for fc in forced_calls]}"
                 )
                 tool_results = await _execute_and_format_tools(
-                    forced_calls, effective_allowed_tools or [], query.query, request, query.context
+                    forced_calls,
+                    effective_allowed_tools or [],
+                    query.query,
+                    request,
+                    query.context,
                 )
 
                 # Add messages and interpret results with LLM (no tools enabled)
@@ -418,7 +431,11 @@ async def agent_query(request: Request, query: AgentQuery):
 
             # When force_tools enabled and tools available, force model to use a tool
             # "any" forces the model to use at least one tool, "auto" only allows tools but doesn't force
-            function_call = "any" if (force_tools and effective_allowed_tools) else ("auto" if effective_allowed_tools else None)
+            function_call = (
+                "any"
+                if (force_tools and effective_allowed_tools)
+                else ("auto" if effective_allowed_tools else None)
+            )
 
             result_data = await request.app.state.providers.generate_completion(
                 messages=messages,
@@ -444,16 +461,24 @@ async def agent_query(request: Request, query: AgentQuery):
                 if name:
                     args = function_call.get("arguments") or {}
                     tool_calls_from_output.append({"name": name, "arguments": args})
-                    logger.info(f"✅ Parsed tool call: {name} with args: {list(args.keys())}")
+                    logger.info(
+                        f"✅ Parsed tool call: {name} with args: {list(args.keys())}"
+                    )
                 else:
-                    logger.warning(f"Skipping malformed tool call without name: {function_call}")
+                    logger.warning(
+                        f"Skipping malformed tool call without name: {function_call}"
+                    )
 
             # Execute tools if requested
             total_tokens = result_data.get("usage", {}).get("total_tokens", 0)
 
             if tool_calls_from_output and effective_allowed_tools:
                 tool_results = await _execute_and_format_tools(
-                    tool_calls_from_output, effective_allowed_tools, query.query, request, query.context
+                    tool_calls_from_output,
+                    effective_allowed_tools,
+                    query.query,
+                    request,
+                    query.context,
                 )
                 if tool_results:
                     # Re-engage LLM to interpret tool results
@@ -508,14 +533,20 @@ async def agent_query(request: Request, query: AgentQuery):
             # Optional fallback: tool auto-selection when enabled and no tool calls were chosen
             try:
                 tool_autoselect = bool(
-                    isinstance(query.context, dict) and query.context.get("tool_autoselect")
+                    isinstance(query.context, dict)
+                    and query.context.get("tool_autoselect")
                 )
             except Exception:
                 tool_autoselect = False
 
-            if (not tool_calls_from_output) and effective_allowed_tools and tool_autoselect:
+            if (
+                (not tool_calls_from_output)
+                and effective_allowed_tools
+                and tool_autoselect
+            ):
                 try:
                     from ..tools import get_registry
+
                     registry = get_registry()
                     tools_summary = []
                     for name in effective_allowed_tools:
@@ -523,8 +554,18 @@ async def agent_query(request: Request, query: AgentQuery):
                         if not tool:
                             continue
                         schema = tool.get_schema() or {}
-                        props = list((schema.get("parameters", {}) or {}).get("properties", {}).keys())
-                        tools_summary.append({"name": name, "description": tool.metadata.description, "parameters": props})
+                        props = list(
+                            (schema.get("parameters", {}) or {})
+                            .get("properties", {})
+                            .keys()
+                        )
+                        tools_summary.append(
+                            {
+                                "name": name,
+                                "description": tool.metadata.description,
+                                "parameters": props,
+                            }
+                        )
 
                     sys = (
                         "You are a tool selection assistant. Read the task and choose suitable tools. "
@@ -538,15 +579,20 @@ async def agent_query(request: Request, query: AgentQuery):
                         "max_tools": 1,
                     }
                     selection = await request.app.state.providers.generate_completion(
-                        messages=[{"role": "system", "content": sys}, {"role": "user", "content": str(user_obj)}],
+                        messages=[
+                            {"role": "system", "content": sys},
+                            {"role": "user", "content": str(user_obj)},
+                        ],
                         tier=tier,
                         max_tokens=300,
                         temperature=0.1,
                         response_format={"type": "json_object"},
-                        workflow_id=request.headers.get("X-Workflow-ID") or request.headers.get("x-workflow-id"),
+                        workflow_id=request.headers.get("X-Workflow-ID")
+                        or request.headers.get("x-workflow-id"),
                         agent_id=query.agent_id,
                     )
                     import json as _json
+
                     raw = selection.get("output_text", "")
                     calls = []
                     try:
@@ -554,29 +600,61 @@ async def agent_query(request: Request, query: AgentQuery):
                         for c in data.get("calls", []) or []:
                             name = c.get("tool_name")
                             if name in effective_allowed_tools:
-                                calls.append({"name": name, "arguments": c.get("parameters") or {}})
+                                calls.append(
+                                    {
+                                        "name": name,
+                                        "arguments": c.get("parameters") or {},
+                                    }
+                                )
                     except Exception:
                         calls = []
 
                     if calls:
-                        auto_results = await _execute_and_format_tools(calls, effective_allowed_tools, query.query, request, query.context)
+                        auto_results = await _execute_and_format_tools(
+                            calls,
+                            effective_allowed_tools,
+                            query.query,
+                            request,
+                            query.context,
+                        )
                         # Add the selection + results to the dialogue and interpret
                         if calls:
-                            messages.append({"role": "assistant", "content": f"I'll execute the {calls[0]['name']} tool to help."})
-                        messages.append({"role": "user", "content": f"Tool execution result:\n{auto_results}\n\nBased on this result, provide a clear and complete answer."})
-                        interpretation_result = await request.app.state.providers.generate_completion(
-                            messages=messages,
-                            tier=tier,
-                            specific_model=model_override,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            tools=None,
-                            workflow_id=request.headers.get("X-Workflow-ID") or request.headers.get("x-workflow-id"),
-                            agent_id=query.agent_id,
+                            messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": f"I'll execute the {calls[0]['name']} tool to help.",
+                                }
+                            )
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": f"Tool execution result:\n{auto_results}\n\nBased on this result, provide a clear and complete answer.",
+                            }
                         )
-                        response_text = interpretation_result.get("output_text", auto_results)
-                        total_tokens = interpretation_result.get("usage", {}).get("total_tokens", 0)
-                        result = {"response": response_text, "tokens_used": total_tokens, "model_used": interpretation_result.get("model", "unknown")}
+                        interpretation_result = (
+                            await request.app.state.providers.generate_completion(
+                                messages=messages,
+                                tier=tier,
+                                specific_model=model_override,
+                                max_tokens=max_tokens,
+                                temperature=temperature,
+                                tools=None,
+                                workflow_id=request.headers.get("X-Workflow-ID")
+                                or request.headers.get("x-workflow-id"),
+                                agent_id=query.agent_id,
+                            )
+                        )
+                        response_text = interpretation_result.get(
+                            "output_text", auto_results
+                        )
+                        total_tokens = interpretation_result.get("usage", {}).get(
+                            "total_tokens", 0
+                        )
+                        result = {
+                            "response": response_text,
+                            "tokens_used": total_tokens,
+                            "model_used": interpretation_result.get("model", "unknown"),
+                        }
                         return AgentResponse(
                             success=True,
                             response=result["response"],
@@ -586,7 +664,9 @@ async def agent_query(request: Request, query: AgentQuery):
                                 "agent_id": query.agent_id,
                                 "mode": query.mode,
                                 "allowed_tools": effective_allowed_tools,
-                                "role": (query.context or {}).get("role") if isinstance(query.context, dict) else None,
+                                "role": (query.context or {}).get("role")
+                                if isinstance(query.context, dict)
+                                else None,
                             },
                         )
                 except Exception as e:
@@ -820,8 +900,11 @@ async def _execute_and_format_tools(
                 else:
                     # Generic formatting for other tools
                     import json as _json_fmt
+
                     if isinstance(result.output, dict):
-                        formatted_output = _json_fmt.dumps(result.output, indent=2, ensure_ascii=False)
+                        formatted_output = _json_fmt.dumps(
+                            result.output, indent=2, ensure_ascii=False
+                        )
                     else:
                         formatted_output = str(result.output)
                     formatted_results.append(f"{tool_name} result:\n{formatted_output}")
@@ -861,7 +944,9 @@ class Subtask(BaseModel):
     description: str
     dependencies: List[str] = []
     estimated_tokens: int = 0
-    task_type: str = Field(default="", description="Optional structured subtask type, e.g., 'synthesis'")
+    task_type: str = Field(
+        default="", description="Optional structured subtask type, e.g., 'synthesis'"
+    )
     # LLM-native tool selection
     suggested_tools: List[str] = Field(
         default_factory=list, description="Tools suggested by LLM for this subtask"
@@ -1044,13 +1129,18 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             role_name = query.context.get("role")
             if role_name:
                 from ..roles.presets import get_role_preset, render_system_prompt
+
                 role_preset = get_role_preset(role_name)
                 role_system_prompt = role_preset.get("system_prompt", "")
                 # Render with context for variable substitution
-                rendered_role_prompt = render_system_prompt(role_system_prompt, query.context or {})
+                rendered_role_prompt = render_system_prompt(
+                    role_system_prompt, query.context or {}
+                )
                 # Prepend role prompt before decomposition instructions
                 decompose_system_prompt = rendered_role_prompt + "\n\n" + sys
-                logger.info(f"Decompose: Applied role preset '{role_name}' to system prompt")
+                logger.info(
+                    f"Decompose: Applied role preset '{role_name}' to system prompt"
+                )
 
         # If tools are available, add a generic tool-aware hint
         if available_tools:
