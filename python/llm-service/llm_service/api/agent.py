@@ -163,6 +163,8 @@ async def agent_query(request: Request, query: AgentQuery):
     """
     try:
         logger.info(f"Received agent query: {query.query[:100]}...")
+        # Ensure allowed_tools metadata is always defined for responses
+        effective_allowed_tools: List[str] = []
 
         # Check if we have real providers configured
         if (
@@ -290,7 +292,7 @@ async def agent_query(request: Request, query: AgentQuery):
             else:
                 logger.info(f"Using tier-based selection: {query.model_tier} -> {tier}")
 
-            # Resolve effective allowed tools: request.allowed_tools else preset.allowed_tools
+            # Resolve effective allowed tools: request.allowed_tools (intersect with preset when present)
             effective_allowed_tools: List[str] = []
             try:
                 from ..tools import get_registry
@@ -299,7 +301,19 @@ async def agent_query(request: Request, query: AgentQuery):
                 # Use preset only if allowed_tools is None (not provided), not if it's [] (explicitly empty)
                 requested = query.allowed_tools
                 preset_allowed = list(preset.get("allowed_tools", []))
-                base = requested if requested is not None else preset_allowed
+                if requested is None:
+                    base = preset_allowed
+                else:
+                    # When the role preset defines an allowlist, cap requested tools by it
+                    if preset_allowed:
+                        base = [t for t in requested if t in preset_allowed]
+                        dropped = [t for t in (requested or []) if t not in base]
+                        if dropped:
+                            logger.warning(
+                                f"Dropping tools not permitted by role preset: {dropped}"
+                            )
+                    else:
+                        base = requested
                 available = set(registry.list_tools())
                 # Intersect with registry; warn on unknown
                 unknown = [t for t in base if t not in available]
