@@ -67,6 +67,13 @@ def filter_relevant_results(
     return scored_results[:5]  # Return top 5 most relevant
 
 
+class ForcedToolCall(BaseModel):
+    tool: str = Field(..., description="Tool name to execute")
+    parameters: Dict[str, Any] = Field(
+        default_factory=dict, description="Parameters for the tool"
+    )
+
+
 class AgentQuery(BaseModel):
     """Query from an agent."""
 
@@ -78,8 +85,11 @@ class AgentQuery(BaseModel):
     mode: Optional[str] = Field(
         default="standard", description="Execution mode: simple, standard, or complex"
     )
-    tools: Optional[List[str]] = Field(
-        default_factory=list, description="Available tools for this query"
+    allowed_tools: Optional[List[str]] = Field(
+        default=None, description="Allowlist of tools available for this query. None means use role preset, [] means no tools."
+    )
+    forced_tool_calls: Optional[List[ForcedToolCall]] = Field(
+        default=None, description="Explicit sequence of tool calls to execute before interpretation"
     )
     max_tokens: Optional[int] = Field(
         default=2048, description="Maximum tokens for response"
@@ -240,6 +250,14 @@ async def agent_query(request: Request, query: AgentQuery):
                 )
                 messages[0]["content"] += f"\n\nContext:\n{context_str}"
 
+            # Soft enforcement: if caller requests tool usage and tools are allowed, nudge the model
+            force_tools = False
+            try:
+                if isinstance(query.context, dict):
+                    force_tools = bool(query.context.get("force_tools"))
+            except Exception:
+                force_tools = False
+
             # Log for debugging
             logger.info(
                 f"Prepared {len(messages)} messages for LLM (history_rehydrated={history_rehydrated})"
@@ -255,152 +273,152 @@ async def agent_query(request: Request, query: AgentQuery):
             }
             tier = tier_map.get(query.model_tier, ModelTier.SMALL)
 
-            # Check for model override (from query field or context)
+            # Check for model override (from query field, context, or role preset)
             model_override = query.model_override or (
                 query.context.get("model_override") if query.context else None
             )
-            if model_override:
+            # Apply role preset's preferred_model if no explicit override
+            if not model_override and preset and "preferred_model" in preset:
+                model_override = preset.get("preferred_model")
+                logger.info(f"Using role preset preferred model: {model_override}")
+            elif model_override:
                 logger.info(f"Using model override: {model_override}")
             else:
                 logger.info(f"Using tier-based selection: {query.model_tier} -> {tier}")
 
+            # Resolve effective allowed tools: request.allowed_tools else preset.allowed_tools
+            effective_allowed_tools: List[str] = []
+            try:
+                from ..tools import get_registry
+                registry = get_registry()
+                # Use preset only if allowed_tools is None (not provided), not if it's [] (explicitly empty)
+                requested = query.allowed_tools
+                preset_allowed = list(preset.get("allowed_tools", []))
+                base = requested if requested is not None else preset_allowed
+                available = set(registry.list_tools())
+                # Intersect with registry; warn on unknown
+                unknown = [t for t in base if t not in available]
+                if unknown:
+                    logger.warning(
+                        f"Dropping unknown tools from allowlist: {unknown}"
+                    )
+                effective_allowed_tools = [t for t in base if t in available]
+            except Exception as e:
+                logger.warning(f"Failed to compute effective allowed tools: {e}")
+                effective_allowed_tools = query.allowed_tools or []
+
             # Generate completion with tools if specified
-            if query.tools:
-                logger.info(f"Tools specified for query: {query.tools}")
+            if effective_allowed_tools:
+                logger.info(f"Allowed tools: {effective_allowed_tools}")
+                if force_tools:
+                    try:
+                        messages[0]["content"] += (
+                            "\n\nYou must use one of these tools to retrieve factual data: "
+                            + ", ".join(effective_allowed_tools)
+                            + ". Do not fabricate values."
+                        )
+                    except Exception:
+                        pass
             tools_param = None
-            if query.tools:
-                # Convert tool names to OpenAI-style tool definitions
+            if effective_allowed_tools:
+                # Dynamically fetch tool schemas from registry for ALL tools (built-in and OpenAPI)
                 tools_param = []
-                for tool_name in query.tools:
-                    if tool_name == "web_search":
-                        tools_param.append(
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "web_search",
-                                    "description": "Search the web for information",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "query": {
-                                                "type": "string",
-                                                "description": "Search query",
-                                            },
-                                            "max_results": {
-                                                "type": "integer",
-                                                "description": "Max results",
-                                                "minimum": 1,
-                                                "maximum": 10,
-                                            },
-                                        },
-                                        "required": ["query"],
-                                    },
-                                },
-                            }
+                for tool_name in effective_allowed_tools:
+                    tool = registry.get_tool(tool_name)
+                    if not tool:
+                        logger.warning(f"Tool '{tool_name}' not found in registry")
+                        continue
+
+                    # Get schema from tool (works for both built-in and OpenAPI tools)
+                    schema = tool.get_schema()
+                    if schema:
+                        tools_param.append({
+                            "type": "function",
+                            "function": schema
+                        })
+                        logger.info(f"✅ Added tool schema for '{tool_name}': {schema.get('name')}")
+                    else:
+                        logger.warning(f"Tool '{tool_name}' has no schema")
+
+                logger.info(f"Prepared {len(tools_param) if tools_param else 0} tool schemas to pass to LLM")
+
+            # If forced_tool_calls are provided, execute them sequentially then interpret
+            if query.forced_tool_calls:
+                # Validate tools against effective allowlist
+                forced_calls = []
+                for c in (query.forced_tool_calls or []):
+                    if effective_allowed_tools and c.tool not in effective_allowed_tools:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Forced tool '{c.tool}' is not allowed for this request",
                         )
-                    elif tool_name == "calculator":
-                        tools_param.append(
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "calculator",
-                                    "description": "Evaluate a mathematical expression",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "expression": {
-                                                "type": "string",
-                                                "description": "Math expression to evaluate",
-                                            }
-                                        },
-                                        "required": ["expression"],
-                                    },
-                                },
-                            }
-                        )
-                    elif tool_name == "file_read":
-                        tools_param.append(
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "file_read",
-                                    "description": "Read contents of a file (sandboxed)",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "path": {
-                                                "type": "string",
-                                                "description": "Path to the file",
-                                            },
-                                            "encoding": {
-                                                "type": "string",
-                                                "enum": ["utf-8", "ascii", "latin-1"],
-                                            },
-                                        },
-                                        "required": ["path"],
-                                    },
-                                },
-                            }
-                        )
-                    elif tool_name == "code_executor":
-                        tools_param.append(
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "code_executor",
-                                    "description": "Execute WebAssembly (WASM) bytecode in a secure sandbox. IMPORTANT: This tool ONLY executes pre-compiled WASM binary modules (.wasm files), NOT source code like Python/JavaScript/etc. To execute Python code: 1) First compile it to WASM using py2wasm or similar tools, 2) Then provide the compiled WASM bytecode via wasm_base64 (as a base64-encoded string) or wasm_path (file path to .wasm file). Never pass 'language' or 'code' parameters to this tool.",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "wasm_base64": {
-                                                "type": "string",
-                                                "description": "Base64-encoded WASM bytecode. This must be the binary content of a .wasm file encoded as base64, NOT source code.",
-                                            },
-                                            "wasm_path": {
-                                                "type": "string",
-                                                "description": "Absolute file path to a compiled .wasm module on disk (e.g., /tmp/module.wasm)",
-                                            },
-                                            "stdin": {
-                                                "type": "string",
-                                                "description": "Optional text input to pass to the WASM module's stdin",
-                                            },
-                                        },
-                                        "anyOf": [
-                                            {"required": ["wasm_base64"]},
-                                            {"required": ["wasm_path"]},
-                                        ],
-                                    },
-                                },
-                            }
-                        )
-                    elif tool_name == "python_executor":
-                        tools_param.append(
-                            {
-                                "type": "function",
-                                "function": {
-                                    "name": "python_executor",
-                                    "description": "Execute Python code in a secure WASI sandbox environment. Supports full Python 3.11 standard library. Use this tool to run Python scripts, perform calculations, data processing, or any Python programming task. CRITICAL: You MUST use print() statements to output ALL results - values returned without print() will NOT be visible.",
-                                    "parameters": {
-                                        "type": "object",
-                                        "properties": {
-                                            "code": {
-                                                "type": "string",
-                                                "description": "Python source code to execute. MUST include print() statements for ALL output you want to show. Example: result = fibonacci(133); print(result)",
-                                            },
-                                            "session_id": {
-                                                "type": "string",
-                                                "description": "Optional session ID for maintaining persistent state across executions",
-                                            },
-                                            "stdin": {
-                                                "type": "string",
-                                                "description": "Optional input data to provide via stdin to the Python script",
-                                            },
-                                        },
-                                        "required": ["code"],
-                                    },
-                                },
-                            }
-                        )
+                    forced_calls.append({"name": c.tool, "arguments": c.parameters or {}})
+
+                logger.info(
+                    f"Executing forced tool sequence: {[fc['name'] for fc in forced_calls]}"
+                )
+                tool_results = await _execute_and_format_tools(
+                    forced_calls, effective_allowed_tools or [], query.query, request, query.context
+                )
+
+                # Add messages and interpret results with LLM (no tools enabled)
+                if forced_calls:
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": f"I'll execute the {forced_calls[0]['name']} tool to help with this task.",
+                        }
+                    )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Tool execution result:\n{tool_results}\n\nBased on this result, please provide a clear and complete answer to the original query.",
+                    }
+                )
+
+                interpretation_result = (
+                    await request.app.state.providers.generate_completion(
+                        messages=messages,
+                        tier=tier,
+                        specific_model=model_override,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        tools=None,
+                        workflow_id=request.headers.get("X-Workflow-ID")
+                        or request.headers.get("x-workflow-id"),
+                        agent_id=query.agent_id,
+                    )
+                )
+
+                response_text = interpretation_result.get("output_text", tool_results)
+                total_tokens = interpretation_result.get("usage", {}).get(
+                    "total_tokens", 0
+                )
+
+                result = {
+                    "response": response_text,
+                    "tokens_used": total_tokens,
+                    "model_used": interpretation_result.get("model", "unknown"),
+                }
+
+                return AgentResponse(
+                    success=True,
+                    response=result["response"],
+                    tokens_used=result["tokens_used"],
+                    model_used=result["model_used"],
+                    metadata={
+                        "agent_id": query.agent_id,
+                        "mode": query.mode,
+                        "allowed_tools": effective_allowed_tools,
+                        "role": (query.context or {}).get("role")
+                        if isinstance(query.context, dict)
+                        else None,
+                    },
+                )
+
+            # When force_tools enabled and tools available, force model to use a tool
+            # "any" forces the model to use at least one tool, "auto" only allows tools but doesn't force
+            function_call = "any" if (force_tools and effective_allowed_tools) else ("auto" if effective_allowed_tools else None)
 
             result_data = await request.app.state.providers.generate_completion(
                 messages=messages,
@@ -409,6 +427,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 max_tokens=max_tokens,
                 temperature=temperature,
                 tools=tools_param,
+                function_call=function_call,
                 workflow_id=request.headers.get("X-Workflow-ID")
                 or request.headers.get("x-workflow-id"),
                 agent_id=query.agent_id,
@@ -417,28 +436,24 @@ async def agent_query(request: Request, query: AgentQuery):
             # Process the response (Responses API shape)
             response_text = result_data.get("output_text", "")
 
-            # Extract tool calls from Responses output items if any
+            # Extract tool calls from function_call field (unified provider response format)
             tool_calls_from_output = []
-            try:
-                for item in result_data.get("output") or []:
-                    if isinstance(item, dict) and item.get("type") == "tool_call":
-                        name = item.get("name")
-                        args = item.get("arguments") or {}
-                        tool_calls_from_output.append({"name": name, "arguments": args})
-                if tool_calls_from_output:
-                    logger.info(
-                        f"Parsed {len(tool_calls_from_output)} tool calls: {[tc['name'] for tc in tool_calls_from_output]}"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to parse tool calls: {e}")
-                tool_calls_from_output = []
+            function_call = result_data.get("function_call")
+            if function_call and isinstance(function_call, dict):
+                name = function_call.get("name")
+                if name:
+                    args = function_call.get("arguments") or {}
+                    tool_calls_from_output.append({"name": name, "arguments": args})
+                    logger.info(f"✅ Parsed tool call: {name} with args: {list(args.keys())}")
+                else:
+                    logger.warning(f"Skipping malformed tool call without name: {function_call}")
 
             # Execute tools if requested
             total_tokens = result_data.get("usage", {}).get("total_tokens", 0)
 
-            if tool_calls_from_output and query.tools:
+            if tool_calls_from_output and effective_allowed_tools:
                 tool_results = await _execute_and_format_tools(
-                    tool_calls_from_output, query.tools, query.query, request, query.context
+                    tool_calls_from_output, effective_allowed_tools, query.query, request, query.context
                 )
                 if tool_results:
                     # Re-engage LLM to interpret tool results
@@ -490,11 +505,113 @@ async def agent_query(request: Request, query: AgentQuery):
                         f"interpretation_tokens={interpretation_tokens}, total={total_tokens}"
                     )
 
+            # Optional fallback: tool auto-selection when enabled and no tool calls were chosen
+            try:
+                tool_autoselect = bool(
+                    isinstance(query.context, dict) and query.context.get("tool_autoselect")
+                )
+            except Exception:
+                tool_autoselect = False
+
+            if (not tool_calls_from_output) and effective_allowed_tools and tool_autoselect:
+                try:
+                    from ..tools import get_registry
+                    registry = get_registry()
+                    tools_summary = []
+                    for name in effective_allowed_tools:
+                        tool = registry.get_tool(name)
+                        if not tool:
+                            continue
+                        schema = tool.get_schema() or {}
+                        props = list((schema.get("parameters", {}) or {}).get("properties", {}).keys())
+                        tools_summary.append({"name": name, "description": tool.metadata.description, "parameters": props})
+
+                    sys = (
+                        "You are a tool selection assistant. Read the task and choose suitable tools. "
+                        'Return compact JSON only: {"selected_tools": [names], "calls": [{"tool_name": name, "parameters": object}]}. '
+                        "Only include tools from the provided list. Prefer minimal arguments."
+                    )
+                    user_obj = {
+                        "task": query.query,
+                        "context_keys": list((query.context or {}).keys())[:5],
+                        "tools": tools_summary,
+                        "max_tools": 1,
+                    }
+                    selection = await request.app.state.providers.generate_completion(
+                        messages=[{"role": "system", "content": sys}, {"role": "user", "content": str(user_obj)}],
+                        tier=tier,
+                        max_tokens=300,
+                        temperature=0.1,
+                        response_format={"type": "json_object"},
+                        workflow_id=request.headers.get("X-Workflow-ID") or request.headers.get("x-workflow-id"),
+                        agent_id=query.agent_id,
+                    )
+                    import json as _json
+                    raw = selection.get("output_text", "")
+                    calls = []
+                    try:
+                        data = _json.loads(raw)
+                        for c in data.get("calls", []) or []:
+                            name = c.get("tool_name")
+                            if name in effective_allowed_tools:
+                                calls.append({"name": name, "arguments": c.get("parameters") or {}})
+                    except Exception:
+                        calls = []
+
+                    if calls:
+                        auto_results = await _execute_and_format_tools(calls, effective_allowed_tools, query.query, request, query.context)
+                        # Add the selection + results to the dialogue and interpret
+                        if calls:
+                            messages.append({"role": "assistant", "content": f"I'll execute the {calls[0]['name']} tool to help."})
+                        messages.append({"role": "user", "content": f"Tool execution result:\n{auto_results}\n\nBased on this result, provide a clear and complete answer."})
+                        interpretation_result = await request.app.state.providers.generate_completion(
+                            messages=messages,
+                            tier=tier,
+                            specific_model=model_override,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            tools=None,
+                            workflow_id=request.headers.get("X-Workflow-ID") or request.headers.get("x-workflow-id"),
+                            agent_id=query.agent_id,
+                        )
+                        response_text = interpretation_result.get("output_text", auto_results)
+                        total_tokens = interpretation_result.get("usage", {}).get("total_tokens", 0)
+                        result = {"response": response_text, "tokens_used": total_tokens, "model_used": interpretation_result.get("model", "unknown")}
+                        return AgentResponse(
+                            success=True,
+                            response=result["response"],
+                            tokens_used=result["tokens_used"],
+                            model_used=result["model_used"],
+                            metadata={
+                                "agent_id": query.agent_id,
+                                "mode": query.mode,
+                                "allowed_tools": effective_allowed_tools,
+                                "role": (query.context or {}).get("role") if isinstance(query.context, dict) else None,
+                            },
+                        )
+                except Exception as e:
+                    logger.warning(f"tool_autoselect failed: {e}")
+
             result = {
                 "response": response_text,
                 "tokens_used": total_tokens,
                 "model_used": result_data.get("model", "unknown"),
             }
+
+            return AgentResponse(
+                success=True,
+                response=result["response"],
+                tokens_used=result["tokens_used"],
+                model_used=result["model_used"],
+                metadata={
+                    "agent_id": query.agent_id,
+                    "mode": query.mode,
+                    "allowed_tools": effective_allowed_tools,
+                    "role": (query.context or {}).get("role")
+                    if isinstance(query.context, dict)
+                    else None,
+                },
+            )
         else:
             # Use mock provider for testing
             logger.info("Using mock provider (no API keys configured)")
@@ -505,20 +622,20 @@ async def agent_query(request: Request, query: AgentQuery):
                 temperature=query.temperature,
             )
 
-        return AgentResponse(
-            success=True,
-            response=result["response"],
-            tokens_used=result["tokens_used"],
-            model_used=result["model_used"],
-            metadata={
-                "agent_id": query.agent_id,
-                "mode": query.mode,
-                "tools": query.tools,
-                "role": (query.context or {}).get("role")
-                if isinstance(query.context, dict)
-                else None,
-            },
-        )
+            return AgentResponse(
+                success=True,
+                response=result["response"],
+                tokens_used=result["tokens_used"],
+                model_used=result["model_used"],
+                metadata={
+                    "agent_id": query.agent_id,
+                    "mode": query.mode,
+                    "allowed_tools": effective_allowed_tools,
+                    "role": (query.context or {}).get("role")
+                    if isinstance(query.context, dict)
+                    else None,
+                },
+            )
 
     except Exception as e:
         logger.error(f"Error processing agent query: {e}")
@@ -614,7 +731,7 @@ async def _execute_and_format_tools(
 
             # Sanitize session context before passing to tools
             if isinstance(context, dict):
-                safe_keys = {"session_id", "user_id", "prompt_params", "tool_parameters"}
+                safe_keys = {"session_id", "user_id", "prompt_params"}
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
             else:
                 sanitized_context = None
@@ -702,7 +819,12 @@ async def _execute_and_format_tools(
                     formatted_results.append(f"Calculation result: {result.output}")
                 else:
                     # Generic formatting for other tools
-                    formatted_results.append(f"{tool_name} result: {result.output}")
+                    import json as _json_fmt
+                    if isinstance(result.output, dict):
+                        formatted_output = _json_fmt.dumps(result.output, indent=2, ensure_ascii=False)
+                    else:
+                        formatted_output = str(result.output)
+                    formatted_results.append(f"{tool_name} result:\n{formatted_output}")
             else:
                 formatted_results.append(f"Error executing {tool_name}: {result.error}")
 
@@ -798,7 +920,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # Load actual tool schemas from registry for precise parameter guidance
         registry = get_registry()
-        available_tools = query.tools or []
+        available_tools = query.allowed_tools or []
         tool_schemas_text = ""
 
         # Auto-load all tools from registry when no specific tools provided
@@ -916,6 +1038,20 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         # Enhance decomposition prompt with tool availability (generic approach)
         decompose_system_prompt = sys  # Start with base decomposition prompt
 
+        # If a role is specified in context, prepend role-specific system prompt
+        role_name = None
+        if query.context and "role" in query.context:
+            role_name = query.context.get("role")
+            if role_name:
+                from ..roles.presets import get_role_preset, render_system_prompt
+                role_preset = get_role_preset(role_name)
+                role_system_prompt = role_preset.get("system_prompt", "")
+                # Render with context for variable substitution
+                rendered_role_prompt = render_system_prompt(role_system_prompt, query.context or {})
+                # Prepend role prompt before decomposition instructions
+                decompose_system_prompt = rendered_role_prompt + "\n\n" + sys
+                logger.info(f"Decompose: Applied role preset '{role_name}' to system prompt")
+
         # If tools are available, add a generic tool-aware hint
         if available_tools:
             tool_hint = (
@@ -924,7 +1060,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 "create tool-based subtasks with suggested_tools and tool_parameters.\n"
                 "Set complexity_score >= 0.5 for queries that need tool execution.\n"
             )
-            decompose_system_prompt = sys + tool_hint
+            decompose_system_prompt = decompose_system_prompt + tool_hint
 
         # Build messages with history rehydration for context awareness
         messages = [{"role": "system", "content": decompose_system_prompt}]
@@ -945,7 +1081,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # Add the current query
         ctx_keys = list((query.context or {}).keys())[:5]
-        tools = ",".join(query.tools or [])
+        tools = ",".join(query.allowed_tools or [])
         user = (
             f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"
         )
