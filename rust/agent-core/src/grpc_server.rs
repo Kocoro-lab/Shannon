@@ -214,7 +214,10 @@ impl AgentServiceImpl {
 
         // Measure execution time
         let start_time = std::time::Instant::now();
-        match tool_executor.execute_tool(&tool_call, req.context.as_ref()).await {
+        match tool_executor
+            .execute_tool(&tool_call, req.context.as_ref())
+            .await
+        {
             Ok(tool_result) => {
                 let execution_time_ms = start_time.elapsed().as_millis() as i64;
                 // Prefer a simple, user-facing response: if the tool output
@@ -356,6 +359,24 @@ impl AgentServiceImpl {
         let mut failure_msgs: Vec<String> = Vec::new();
         let total = list.values.len();
 
+        // Optional secondary allowlist from context (defense-in-depth)
+        let mut ctx_allowed: Option<std::collections::HashSet<String>> = None;
+        if let Some(ctx) = &req.context {
+            if let Some(val) = ctx.fields.get("allowed_tools") {
+                if let Some(prost_types::value::Kind::ListValue(lv)) = &val.kind {
+                    let mut s = std::collections::HashSet::new();
+                    for v in &lv.values {
+                        if let Some(prost_types::value::Kind::StringValue(name)) = &v.kind {
+                            s.insert(name.clone());
+                        }
+                    }
+                    if !s.is_empty() {
+                        ctx_allowed = Some(s);
+                    }
+                }
+            }
+        }
+
         // Parallel fan-out (bounded) when enabled via env TOOL_PARALLELISM>1
         if std::env::var("TOOL_PARALLELISM")
             .ok()
@@ -399,6 +420,14 @@ impl AgentServiceImpl {
                                 "Tool '{}' is not allowed for this request",
                                 tool
                             )));
+                        }
+                        if let Some(ref allow) = ctx_allowed {
+                            if !allow.contains(&tool) {
+                                return Err(Status::permission_denied(format!(
+                                    "Tool '{}' is not permitted by context",
+                                    tool
+                                )));
+                            }
                         }
                         let mut params = HashMap::new();
                         if let Some(par_v) = s.fields.get("parameters") {
@@ -611,6 +640,14 @@ impl AgentServiceImpl {
                             tool
                         )));
                     }
+                    if let Some(ref allow) = ctx_allowed {
+                        if !allow.contains(&tool) {
+                            return Err(Status::permission_denied(format!(
+                                "Tool '{}' is not permitted by context",
+                                tool
+                            )));
+                        }
+                    }
 
                     let mut params = HashMap::new();
                     if let Some(par_v) = s.fields.get("parameters") {
@@ -636,7 +673,10 @@ impl AgentServiceImpl {
             };
             debug!("Executing tool {}/{}: {}", idx + 1, total, tool_name);
             let start = std::time::Instant::now();
-            match tool_executor.execute_tool(&call, req.context.as_ref()).await {
+            match tool_executor
+                .execute_tool(&call, req.context.as_ref())
+                .await
+            {
                 Ok(res) => {
                     let dur = start.elapsed().as_millis() as i64;
                     last_output = res.output.clone();
