@@ -214,7 +214,10 @@ impl AgentServiceImpl {
 
         // Measure execution time
         let start_time = std::time::Instant::now();
-        match tool_executor.execute_tool(&tool_call, req.context.as_ref()).await {
+        match tool_executor
+            .execute_tool(&tool_call, req.context.as_ref())
+            .await
+        {
             Ok(tool_result) => {
                 let execution_time_ms = start_time.elapsed().as_millis() as i64;
                 // Prefer a simple, user-facing response: if the tool output
@@ -636,7 +639,10 @@ impl AgentServiceImpl {
             };
             debug!("Executing tool {}/{}: {}", idx + 1, total, tool_name);
             let start = std::time::Instant::now();
-            match tool_executor.execute_tool(&call, req.context.as_ref()).await {
+            match tool_executor
+                .execute_tool(&call, req.context.as_ref())
+                .await
+            {
                 Ok(res) => {
                     let dur = start.elapsed().as_millis() as i64;
                     last_output = res.output.clone();
