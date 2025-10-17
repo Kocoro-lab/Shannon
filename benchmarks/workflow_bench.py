@@ -10,6 +10,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 import json
 
+# 导入配置
+from config import (
+    SIMPLE_TASK_TIMEOUT,
+    DAG_SUBTASK_TIMEOUT,
+    SIMULATION_DELAYS,
+    DEFAULT_SIMPLE_REQUESTS,
+    DEFAULT_CONCURRENCY,
+    DEFAULT_DAG_REQUESTS,
+    DEFAULT_DAG_SUBTASKS,
+    DEFAULT_GRPC_ENDPOINT,
+    DEFAULT_API_KEY,
+    safe_percentile,
+)
+
 try:
     import grpc
     from google.protobuf import struct_pb2
@@ -48,7 +62,8 @@ class WorkflowBenchmark:
         
         try:
             if self.use_simulation:
-                time.sleep(0.5)  # 模拟延迟
+                # 使用配置的模拟延迟
+                time.sleep(SIMULATION_DELAYS['simple_task'])
                 success = True
             else:
                 # 真实 gRPC 调用
@@ -61,7 +76,7 @@ class WorkflowBenchmark:
                 response = self.client.SubmitTask(
                     request,
                     metadata=self._get_metadata(),
-                    timeout=30.0
+                    timeout=SIMPLE_TASK_TIMEOUT
                 )
                 success = response.status == "completed"
             
@@ -91,7 +106,8 @@ class WorkflowBenchmark:
         
         try:
             if self.use_simulation:
-                time.sleep(num_subtasks * 0.3)  # 模拟延迟
+                # 使用配置的DAG子任务延迟
+                time.sleep(num_subtasks * SIMULATION_DELAYS['dag_subtask'])
                 success = True
             else:
                 # 真实 gRPC 调用
@@ -109,7 +125,7 @@ class WorkflowBenchmark:
                 response = self.client.SubmitTask(
                     request,
                     metadata=self._get_metadata(),
-                    timeout=60.0
+                    timeout=DAG_SUBTASK_TIMEOUT
                 )
                 success = response.status == "completed"
             
@@ -189,15 +205,15 @@ class WorkflowBenchmark:
         if len(durations) > 1:
             print(f"  标准差: {statistics.stdev(durations):.3f}s")
         
-        # 百分位数
+        # 百分位数（使用安全计算函数）
         sorted_durations = sorted(durations)
-        p50 = sorted_durations[len(sorted_durations) // 2]
-        p95 = sorted_durations[int(len(sorted_durations) * 0.95)]
-        p99 = sorted_durations[int(len(sorted_durations) * 0.99)]
+        p50 = safe_percentile(sorted_durations, 0.50)
+        p95 = safe_percentile(sorted_durations, 0.95)
+        p99 = safe_percentile(sorted_durations, 0.99)
         
-        print(f"\n  P50: {p50:.3f}s")
-        print(f"  P95: {p95:.3f}s")
-        print(f"  P99: {p99:.3f}s")
+        print(f"\n  P50: {p50:.3f}s" if p50 else "\n  P50: N/A")
+        print(f"  P95: {p95:.3f}s" if p95 else "  P95: N/A")
+        print(f"  P99: {p99:.3f}s" if p99 else "  P99: N/A")
         
         # 吞吐量
         total_time = max(durations)
@@ -208,16 +224,16 @@ def main():
     parser = argparse.ArgumentParser(description="Shannon 工作流基准测试")
     parser.add_argument("--test", choices=["simple", "dag", "parallel"], 
                         default="simple", help="测试类型")
-    parser.add_argument("--requests", type=int, default=100, 
-                        help="请求数量")
-    parser.add_argument("--subtasks", type=int, default=5, 
-                        help="DAG 子任务数")
-    parser.add_argument("--concurrency", type=int, default=10, 
-                        help="并发数")
-    parser.add_argument("--endpoint", default="localhost:50052", 
-                        help="gRPC 端点")
-    parser.add_argument("--api-key", default="test-key", 
-                        help="API Key")
+    parser.add_argument("--requests", type=int, default=DEFAULT_SIMPLE_REQUESTS, 
+                        help=f"请求数量（默认: {DEFAULT_SIMPLE_REQUESTS}）")
+    parser.add_argument("--subtasks", type=int, default=DEFAULT_DAG_SUBTASKS, 
+                        help=f"DAG 子任务数（默认: {DEFAULT_DAG_SUBTASKS}）")
+    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, 
+                        help=f"并发数（默认: {DEFAULT_CONCURRENCY}）")
+    parser.add_argument("--endpoint", default=DEFAULT_GRPC_ENDPOINT, 
+                        help=f"gRPC 端点（默认: {DEFAULT_GRPC_ENDPOINT}）")
+    parser.add_argument("--api-key", default=DEFAULT_API_KEY, 
+                        help=f"API Key（默认: {DEFAULT_API_KEY}）")
     parser.add_argument("--simulate", action="store_true",
                         help="使用模拟模式")
     parser.add_argument("--output", type=str,
