@@ -307,6 +307,119 @@ class LoadTest:
         total_duration = time.time() - start_time
         print(f"\n✅ 峰值测试完成, 总用时: {total_duration:.1f}s")
     
+    def simulate_concurrent_users(self, num_users: int, actions_per_user: int):
+        """模拟并发用户测试"""
+        print(f"\n📊 并发用户模拟测试")
+        print(f"   用户数: {num_users}, 每用户操作: {actions_per_user}")
+        print("-" * 60)
+        
+        completed = 0
+        with ThreadPoolExecutor(max_workers=num_users) as executor:
+            futures = []
+            
+            # 为每个用户提交操作
+            for user_id in range(num_users):
+                for action_num in range(actions_per_user):
+                    future = executor.submit(self._send_request, user_id, action_num)
+                    futures.append(future)
+            
+            # 收集结果
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                    self.results.append(result)
+                    completed += 1
+                except Exception as e:
+                    print(f"  ❌ 请求失败: {e}")
+        
+        print(f"\n✅ 并发用户测试完成: {completed} 个操作")
+        return {
+            'total_requests': completed,
+            'num_users': num_users,
+            'actions_per_user': actions_per_user,
+            'results': self.results
+        }
+    
+    def run_endurance_test(self, rps: int, duration_minutes: float):
+        """耐久性测试（长时间运行）"""
+        duration_seconds = int(duration_minutes * 60)
+        print(f"\n📊 耐久性测试")
+        print(f"   目标速率: {rps} req/s, 持续时间: {duration_minutes} 分钟")
+        print("-" * 60)
+        
+        # 使用run_constant_load
+        users = max(1, rps // 2)  # 估算并发用户数
+        requests_per_user = max(1, (rps * duration_seconds) // users)
+        
+        result = self.run_constant_load(users, duration_seconds, requests_per_user)
+        print(f"\n✅ 耐久性测试完成")
+        return result
+    
+    def run_stress_test(self, max_rps: int, step: int, step_duration: int):
+        """压力测试 - 逐步增加负载直到失败"""
+        print(f"\n📊 压力测试")
+        print(f"   最大RPS: {max_rps}, 步长: {step}, 每步时长: {step_duration}s")
+        print("-" * 60)
+        
+        current_rps = step
+        stress_results = []
+        
+        while current_rps <= max_rps:
+            print(f"\n[压力级别 {current_rps} RPS]")
+            self.results = []  # 重置结果
+            
+            users = max(1, current_rps // 2)
+            self.run_constant_load(users, step_duration, None)
+            
+            error_rate = self.calculate_error_rate(self.results)
+            avg_latency = statistics.mean([r.duration for r in self.results if r.success]) if self.results else 0
+            
+            stress_results.append({
+                'rps': current_rps,
+                'error_rate': error_rate,
+                'avg_latency': avg_latency,
+                'total_requests': len(self.results)
+            })
+            
+            print(f"  错误率: {error_rate*100:.1f}%, 平均延迟: {avg_latency*1000:.0f}ms")
+            
+            # 如果错误率超过10%，停止测试
+            if error_rate > 0.1:
+                print(f"\n⚠️  达到系统极限（错误率>10%），停止测试")
+                break
+            
+            current_rps += step
+        
+        print(f"\n✅ 压力测试完成")
+        return stress_results
+    
+    def calculate_error_rate(self, results: List[Dict]) -> float:
+        """计算错误率"""
+        if not results:
+            return 0.0
+        
+        failed = sum(1 for r in results if not r.success)
+        return failed / len(results)
+    
+    def calculate_percentiles(self, latencies: List[float]) -> Dict[str, float]:
+        """计算延迟百分位数"""
+        if not latencies:
+            return {'p50': 0, 'p95': 0, 'p99': 0}
+        
+        sorted_latencies = sorted(latencies)
+        
+        # 导入safe_percentile
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).parent))
+        from config import safe_percentile
+        
+        return {
+            'p50': safe_percentile(sorted_latencies, 0.50) or 0,
+            'p95': safe_percentile(sorted_latencies, 0.95) or 0,
+            'p99': safe_percentile(sorted_latencies, 0.99) or 0,
+        }
+    
     def print_summary(self):
         """打印测试摘要"""
         if not self.results:

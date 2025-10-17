@@ -31,8 +31,9 @@ class TestLoadTest(unittest.TestCase):
     def test_constant_load(self):
         """测试恒定负载"""
         result = self.load_tester.run_constant_load(
-            requests_per_second=10,
-            duration_seconds=5
+            users=10,
+            duration_seconds=5,
+            requests_per_user=10
         )
         
         self.assertIsInstance(result, dict)
@@ -51,9 +52,9 @@ class TestLoadTest(unittest.TestCase):
     def test_ramp_up_load(self):
         """测试递增负载"""
         result = self.load_tester.run_ramp_up_load(
-            start_rps=1,
-            end_rps=10,
-            duration_seconds=10
+            max_users=10,
+            ramp_up_seconds=5,
+            hold_seconds=5
         )
         
         self.assertIsInstance(result, dict)
@@ -70,10 +71,10 @@ class TestLoadTest(unittest.TestCase):
     
     def test_spike_load(self):
         """测试突发负载"""
-        result = self.load_tester.run_spike_load(
-            baseline_rps=5,
-            spike_rps=50,
-            spike_duration=2
+        result = self.load_tester.run_spike_test(
+            normal_users=5,
+            spike_users=50,
+            duration=2
         )
         
         self.assertIsInstance(result, dict)
