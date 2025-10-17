@@ -179,6 +179,20 @@ class LoadTest:
         
         actual_duration = time.time() - start_time
         print(f"\n✅ 测试完成: {completed} 请求, 实际用时: {actual_duration:.1f}s")
+        
+        # 计算统计数据
+        successful = [r for r in self.results if r.success]
+        failed = [r for r in self.results if not r.success]
+        
+        mean_latency = statistics.mean([r.duration for r in successful]) if successful else 0
+        
+        return {
+            'total_requests': len(self.results),
+            'successful_requests': len(successful),
+            'failed_requests': len(failed),
+            'mean_latency': mean_latency,
+            'actual_duration': actual_duration,
+        }
     
     def run_ramp_up_load(self, max_users: int, ramp_up_seconds: int, hold_seconds: int):
         """渐进式负载测试"""
@@ -306,6 +320,14 @@ class LoadTest:
         
         total_duration = time.time() - start_time
         print(f"\n✅ 峰值测试完成, 总用时: {total_duration:.1f}s")
+        
+        # 返回各阶段结果
+        return {
+            'baseline_phase': {'users': normal_users},
+            'spike_phase': {'users': spike_users, 'duration': duration},
+            'recovery_phase': {'users': normal_users},
+            'total_duration': total_duration
+        }
     
     def simulate_concurrent_users(self, num_users: int, actions_per_user: int):
         """模拟并发用户测试"""
@@ -335,7 +357,8 @@ class LoadTest:
         print(f"\n✅ 并发用户测试完成: {completed} 个操作")
         return {
             'total_requests': completed,
-            'num_users': num_users,
+            'total_users': num_users,
+            'completed_users': num_users,  # 在模拟模式下都完成
             'actions_per_user': actions_per_user,
             'results': self.results
         }
@@ -351,9 +374,17 @@ class LoadTest:
         users = max(1, rps // 2)  # 估算并发用户数
         requests_per_user = max(1, (rps * duration_seconds) // users)
         
-        result = self.run_constant_load(users, duration_seconds, requests_per_user)
+        self.run_constant_load(users, duration_seconds, requests_per_user)
         print(f"\n✅ 耐久性测试完成")
-        return result
+        
+        # 返回耐久性测试特定的结果格式
+        return {
+            'duration_minutes': duration_minutes,
+            'target_rps': rps,
+            'total_requests': len(self.results),
+            'successful_requests': sum(1 for r in self.results if r.success),
+            'error_rate': self.calculate_error_rate(self.results)
+        }
     
     def run_stress_test(self, max_rps: int, step: int, step_duration: int):
         """压力测试 - 逐步增加负载直到失败"""
@@ -393,12 +424,17 @@ class LoadTest:
         print(f"\n✅ 压力测试完成")
         return stress_results
     
-    def calculate_error_rate(self, results: List[Dict]) -> float:
+    def calculate_error_rate(self, results: List) -> float:
         """计算错误率"""
         if not results:
             return 0.0
         
-        failed = sum(1 for r in results if not r.success)
+        # 处理不同类型的结果
+        if isinstance(results[0], dict):
+            failed = sum(1 for r in results if not r.get('success', True))
+        else:
+            failed = sum(1 for r in results if not r.success)
+        
         return failed / len(results)
     
     def calculate_percentiles(self, latencies: List[float]) -> Dict[str, float]:
