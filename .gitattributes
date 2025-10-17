@@ -1,0 +1,47 @@
+# Git attributes for Shannon project
+# Ensures consistent line endings and encoding across different platforms
+
+# Auto detect text files and normalize line endings to LF
+* text=auto eol=lf
+
+# Markdown files: UTF-8 encoding, LF line endings
+*.md text eol=lf encoding=utf-8
+docs/zh-CN/*.md text eol=lf encoding=utf-8
+
+# Source code: LF line endings
+*.py text eol=lf
+*.go text eol=lf
+*.rs text eol=lf
+*.proto text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+
+# Shell scripts: LF line endings, executable
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows scripts: CRLF line endings
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files: no text conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.wasm binary
+*.so binary
+*.dylib binary
+*.dll binary
+
+# Archives
+*.zip binary
+*.tar binary
+*.gz binary
+*.tgz binary
+
