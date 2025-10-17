@@ -12,6 +12,17 @@ import sys
 from typing import List, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 导入配置
+from config import (
+    SIMPLE_TASK_TIMEOUT,
+    COMPLEX_TASK_TIMEOUT,
+    SIMULATION_DELAYS,
+    DEFAULT_PATTERN_REQUESTS,
+    DEFAULT_GRPC_ENDPOINT,
+    DEFAULT_API_KEY,
+    safe_percentile,
+)
+
 try:
     import grpc
     from google.protobuf import struct_pb2
@@ -54,15 +65,8 @@ class PatternBenchmark:
         
         try:
             if self.use_simulation:
-                # Simulation mode - estimate based on pattern complexity
-                delays = {
-                    'cot': 1.5,      # Chain-of-Thought
-                    'react': 2.0,    # ReAct
-                    'debate': 4.5,   # Debate (multiple agents)
-                    'tot': 3.5,      # Tree-of-Thoughts
-                    'reflection': 2.5 # Reflection
-                }
-                time.sleep(delays.get(pattern, 2.0))
+                # Simulation mode - 使用配置的延迟时间
+                time.sleep(SIMULATION_DELAYS.get(pattern, SIMULATION_DELAYS['cot']))
                 success = True
                 output = f"Simulated {pattern} output"
                 token_usage = {'input': 1000, 'output': 500}
@@ -82,7 +86,7 @@ class PatternBenchmark:
                     context=context
                 )
                 
-                response = self.client.SubmitTask(request, metadata=metadata, timeout=120.0)
+                response = self.client.SubmitTask(request, metadata=metadata, timeout=COMPLEX_TASK_TIMEOUT)
                 success = response.status == "completed"
                 output = response.output[:100] if hasattr(response, 'output') else ""
                 
@@ -241,16 +245,16 @@ class PatternBenchmark:
         if len(durations) > 1:
             print(f"    标准差: {statistics.stdev(durations):.3f}s")
         
-        # 百分位数
+        # 百分位数（使用安全计算函数）
         sorted_durations = sorted(durations)
-        p50 = sorted_durations[len(sorted_durations) // 2]
-        p95 = sorted_durations[min(int(len(sorted_durations) * 0.95), len(sorted_durations) - 1)]
-        p99 = sorted_durations[min(int(len(sorted_durations) * 0.99), len(sorted_durations) - 1)]
+        p50 = safe_percentile(sorted_durations, 0.50)
+        p95 = safe_percentile(sorted_durations, 0.95)
+        p99 = safe_percentile(sorted_durations, 0.99)
         
         print(f"\n  百分位数:")
-        print(f"    P50: {p50:.3f}s")
-        print(f"    P95: {p95:.3f}s")
-        print(f"    P99: {p99:.3f}s")
+        print(f"    P50: {p50:.3f}s" if p50 else "    P50: N/A")
+        print(f"    P95: {p95:.3f}s" if p95 else "    P95: N/A")
+        print(f"    P99: {p99:.3f}s" if p99 else "    P99: N/A")
         
         # Token 使用情况
         if tokens:
@@ -318,14 +322,14 @@ def main():
                         choices=["cot", "react", "debate", "tot", "reflection", "all"], 
                         default="all", 
                         help="测试模式")
-    parser.add_argument("--requests", type=int, default=5, 
-                        help="每个模式的请求数")
+    parser.add_argument("--requests", type=int, default=DEFAULT_PATTERN_REQUESTS, 
+                        help=f"每个模式的请求数（默认: {DEFAULT_PATTERN_REQUESTS}）")
     parser.add_argument("--agents", type=int, default=3, 
-                        help="Debate 模式的 agent 数量")
-    parser.add_argument("--endpoint", default="localhost:50052", 
-                        help="gRPC 端点")
-    parser.add_argument("--api-key", default="test-key", 
-                        help="API Key")
+                        help="Debate 模式的 agent 数量（默认: 3）")
+    parser.add_argument("--endpoint", default=DEFAULT_GRPC_ENDPOINT, 
+                        help=f"gRPC 端点（默认: {DEFAULT_GRPC_ENDPOINT}）")
+    parser.add_argument("--api-key", default=DEFAULT_API_KEY, 
+                        help=f"API Key（默认: {DEFAULT_API_KEY}）")
     parser.add_argument("--simulate", action="store_true",
                         help="使用模拟模式（不连接真实服务）")
     parser.add_argument("--output", type=str,
