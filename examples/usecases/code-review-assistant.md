@@ -507,6 +507,154 @@ def review_large_pr(pr_files):
     return merge_reviews(reviews)
 ```
 
+## 前置要求
+
+### 环境要求
+- Shannon v0.2.0+
+- Docker Compose环境
+- 配置好的API密钥
+
+### 可选依赖
+- Git（用于PR审查）
+- Python 3.8+（本地测试代码）
+
+### 配置
+```bash
+# 设置API密钥
+export SHANNON_API_KEY="your-api-key-here"
+
+# 验证服务运行
+docker ps | grep shannon
+```
+
+---
+
+## 成本估算
+
+### 单次代码审查
+
+| 项目 | 数值 | 说明 |
+|------|------|------|
+| **Token使用** | 约8,000 tokens | 中等复杂度代码（200行） |
+| **输入Tokens** | ~5,000 | 代码 + 提示词 + 系统prompt |
+| **输出Tokens** | ~3,000 | 审查报告 + 改进建议 |
+| **模型** | Claude-3.5-Sonnet | 推荐用于代码审查 |
+| **预计成本** | $0.10-0.15 | 基于当前定价 |
+| **时间** | 30-60秒 | 取决于代码复杂度 |
+
+### 成本优化建议
+
+1. **使用缓存**: 相似代码片段可复用分析
+2. **批量审查**: 一次提交多个文件
+3. **模型选择**: 简单审查用Haiku（更便宜）
+
+---
+
+## 常见问题
+
+### Q1: 审查结果不符合预期？
+
+**原因**: 提示词不够具体
+
+**解决**:
+```bash
+# 不好的提示
+"审查这段代码"
+
+# 好的提示
+"审查以下Python代码，重点关注：
+1. SQL注入等安全漏洞
+2. 性能瓶颈（O(n²)算法）
+3. 错误处理完整性
+4. 是否符合PEP8规范"
+```
+
+### Q2: 审查花费时间过长？
+
+**可能原因**:
+- 代码量太大（>500行）
+- 使用了复杂模式（Debate）
+
+**解决**:
+- 拆分为小块审查
+- 使用ReAct而非Debate（更快）
+
+### Q3: 无法执行Python代码？
+
+**检查**:
+```bash
+# 1. 验证Python executor可用
+docker logs shannon-agent-core-1 | grep "python"
+
+# 2. 检查WASI环境
+# 参考 docs/zh-CN/Python代码执行.md
+```
+
+### Q4: 生成的改进代码有错误？
+
+**原因**: Reflection模式可提升质量
+
+**使用**:
+```bash
+./scripts/submit_task.sh "审查并改进以下代码...
+使用Reflection模式确保质量"
+```
+
+### Q5: 成本如何控制？
+
+**策略**:
+1. 对简单代码使用Claude-3.5-Haiku
+2. 只对关键代码使用Debate模式
+3. 设置每月预算限制
+
+---
+
+## 故障排查
+
+### 问题: 提交任务返回"service unavailable"
+
+**检查步骤**:
+1. Shannon服务是否运行？
+   ```bash
+   docker ps | grep shannon
+   ```
+
+2. 查看日志
+   ```bash
+   docker logs shannon-orchestrator-1 --tail 50
+   ```
+
+3. 确认API密钥
+   ```bash
+   echo $SHANNON_API_KEY
+   ```
+
+**解决**: 重启服务
+```bash
+docker-compose restart
+```
+
+### 问题: Python代码执行超时
+
+**可能原因**:
+- 代码复杂度高
+- 死循环或无限递归
+
+**解决**:
+- 简化代码逻辑
+- 增加超时时间（不推荐）
+
+### 问题: 审查质量不高
+
+**原因**: 未使用专业模式
+
+**改进**:
+- 使用Debate模式获得多角度
+- 使用Reflection模式自我改进
+- 提供更详细的审查标准
+
+---
+
 ## 扩展阅读
 
 - [Debate 模式使用指南](../../docs/zh-CN/模式使用指南.md#辩论模式)
@@ -515,5 +663,5 @@ def review_large_pr(pr_files):
 
 ---
 
-*示例更新：2025年1月*
+*示例更新：2025年10月*
 
