@@ -10,18 +10,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
-    from load_test import LoadTester
+    from load_test import LoadTest
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from benchmarks.load_test import LoadTester
+    from benchmarks.load_test import LoadTest
 
 
-class TestLoadTester(unittest.TestCase):
+class TestLoadTest(unittest.TestCase):
     """测试负载测试功能"""
     
     def setUp(self):
         """测试初始化"""
-        self.load_tester = LoadTester(use_simulation=True)
+        self.load_tester = LoadTest(use_simulation=True)
     
     def test_initialization(self):
         """测试初始化"""
