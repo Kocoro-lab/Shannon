@@ -2,30 +2,29 @@
 
 欢迎来到 Shannon 的中文文档！
 
-## 📚 核心指南
+## 快速开始
 
-- [添加自定义工具](添加自定义工具.md) - MCP、OpenAPI 和内置工具的完整指南
+- [中文快速开始指南](快速开始.md)
+- [常见问题解答](常见问题.md)
 
-## 🚀 快速开始
+## 其他文档
 
-- 快速开始指南 - 即将推出
-- 常见问题解答 - 即将推出
-
-## 📖 其他文档
-
-- [贡献指南](../../CONTRIBUTING.md) (英文)
-- [完整文档列表](../) (英文)
+- [贡献指南](https://github.com/Kocoro-lab/Shannon/blob/main/CONTRIBUTING.md) (英文)
+- [架构概览](https://github.com/Kocoro-lab/Shannon/blob/main/docs/multi-agent-workflow-architecture.md) (英文)
 
 ## 关于 Shannon
 
-Shannon 是一个企业级 AI 代理编排器，提供：
+Shannon 是一个企业级 AI 代理编排器，支持多模型路由、自定义 API 端点、安全沙箱执行等功能。
 
-- 🤖 **多模型支持**：集成 OpenAI、Anthropic、Google、DeepSeek 等
-- 🔄 **智能路由**：根据任务复杂度自动选择模型
+### 主要特性
+
+- 🤖 **多模型支持**：集成 OpenAI、Anthropic、Google、DeepSeek 等主流 LLM
+- 🔄 **智能路由**：根据任务复杂度自动选择最适合的模型
 - 🛡️ **安全执行**：基于 WASI 的 Python 代码沙箱
-- 📊 **企业级特性**：完整的监控、成本控制和审计
+- 🌐 **自定义 API**：支持私有部署的 LLM 服务
+- 📊 **企业级**：完整的监控、日志和错误处理
 
-## 快速链接
+### 快速链接
 
 - [GitHub 仓库](https://github.com/Kocoro-lab/Shannon)
 - [英文文档](https://github.com/Kocoro-lab/Shannon/blob/main/README.md)
@@ -33,5 +32,4 @@ Shannon 是一个企业级 AI 代理编排器，提供：
 
 ---
 
-*最后更新：2025 年 1 月*
-
+*最后更新：2025年10月*
