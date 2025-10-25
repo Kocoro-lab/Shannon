@@ -114,13 +114,9 @@ impl AgentServiceImpl {
                     )));
                 }
 
-                // Convert fields (except 'tool') to JSON params
-                let mut params = HashMap::new();
-                for (key, value) in &s.fields {
-                    if key == "tool" {
-                        continue;
-                    }
-                    let json_val = match value.kind.as_ref() {
+                // Helper function for recursive prost Value to JSON conversion
+                fn prost_to_json_recursive(prost_val: &prost_types::Value) -> serde_json::Value {
+                    match prost_val.kind.as_ref() {
                         Some(prost_types::value::Kind::StringValue(s)) => {
                             serde_json::Value::String(s.clone())
                         }
@@ -130,54 +126,39 @@ impl AgentServiceImpl {
                                     .unwrap_or_else(|| serde_json::Number::from(0)),
                             )
                         }
-                        Some(prost_types::value::Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+                        Some(prost_types::value::Kind::BoolValue(b)) => {
+                            serde_json::Value::Bool(*b)
+                        }
+                        Some(prost_types::value::Kind::NullValue(_)) => {
+                            serde_json::Value::Null
+                        }
                         Some(prost_types::value::Kind::ListValue(list)) => {
                             serde_json::Value::Array(
                                 list.values
                                     .iter()
-                                    .map(|v| match v.kind.as_ref() {
-                                        Some(prost_types::value::Kind::StringValue(s)) => {
-                                            serde_json::Value::String(s.clone())
-                                        }
-                                        Some(prost_types::value::Kind::NumberValue(n)) => {
-                                            serde_json::Value::Number(
-                                                serde_json::Number::from_f64(*n)
-                                                    .unwrap_or_else(|| serde_json::Number::from(0)),
-                                            )
-                                        }
-                                        Some(prost_types::value::Kind::BoolValue(b)) => {
-                                            serde_json::Value::Bool(*b)
-                                        }
-                                        _ => serde_json::Value::Null,
-                                    })
+                                    .map(|v| prost_to_json_recursive(v))
                                     .collect(),
                             )
                         }
                         Some(prost_types::value::Kind::StructValue(st)) => {
-                            // Shallow convert nested struct
+                            // Recursive convert nested struct
                             let mut map = serde_json::Map::new();
                             for (k, v) in &st.fields {
-                                let vv = match v.kind.as_ref() {
-                                    Some(prost_types::value::Kind::StringValue(s)) => {
-                                        serde_json::Value::String(s.clone())
-                                    }
-                                    Some(prost_types::value::Kind::NumberValue(n)) => {
-                                        serde_json::Value::Number(
-                                            serde_json::Number::from_f64(*n)
-                                                .unwrap_or_else(|| serde_json::Number::from(0)),
-                                        )
-                                    }
-                                    Some(prost_types::value::Kind::BoolValue(b)) => {
-                                        serde_json::Value::Bool(*b)
-                                    }
-                                    _ => serde_json::Value::Null,
-                                };
-                                map.insert(k.clone(), vv);
+                                map.insert(k.clone(), prost_to_json_recursive(v));
                             }
                             serde_json::Value::Object(map)
                         }
-                        _ => serde_json::Value::Null,
-                    };
+                        None => serde_json::Value::Null,
+                    }
+                }
+
+                // Convert fields (except 'tool') to JSON params
+                let mut params = HashMap::new();
+                for (key, value) in &s.fields {
+                    if key == "tool" {
+                        continue;
+                    }
+                    let json_val = prost_to_json_recursive(value);
                     params.insert(key.clone(), json_val);
                 }
 

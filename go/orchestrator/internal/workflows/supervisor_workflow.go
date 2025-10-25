@@ -432,10 +432,15 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			childCtx[k] = v
 		}
 		if workflow.GetVersion(ctx, "roles_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-			role := "generalist"
-			if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-				role = decomp.AgentTypes[i]
-			}
+            // Preserve incoming role by default; allow LLM-specified agent_types to override
+            baseRole := "generalist"
+            if v, ok := input.Context["role"].(string); ok && v != "" {
+                baseRole = v
+            }
+            role := baseRole
+            if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+                role = decomp.AgentTypes[i]
+            }
 			childCtx["role"] = role
 			teamAgents = append(teamAgents, AgentInfo{AgentID: fmt.Sprintf("agent-%s", st.ID), Role: role})
 			// Optional: record role assignment in mailbox

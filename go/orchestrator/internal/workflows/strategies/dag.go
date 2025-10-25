@@ -492,12 +492,17 @@ func executeParallelPattern(
 	config activities.WorkflowConfig,
 ) ([]activities.AgentExecutionResult, int) {
 
-	parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
-	for i, subtask := range decomp.Subtasks {
-		role := "agent"
-		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-			role = decomp.AgentTypes[i]
-		}
+    parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
+    for i, subtask := range decomp.Subtasks {
+        // Preserve incoming role from base context by default; allow LLM to override via agent_types
+        baseRole := "agent"
+        if v, ok := baseContext["role"].(string); ok && v != "" {
+            baseRole = v
+        }
+        role := baseRole
+        if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+            role = decomp.AgentTypes[i]
+        }
 
 		parallelTasks[i] = execution.ParallelTask{
 			ID:             subtask.ID,
@@ -551,12 +556,17 @@ func executeSequentialPattern(
 	config activities.WorkflowConfig,
 ) ([]activities.AgentExecutionResult, int) {
 
-	sequentialTasks := make([]execution.SequentialTask, len(decomp.Subtasks))
-	for i, subtask := range decomp.Subtasks {
-		role := "agent"
-		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-			role = decomp.AgentTypes[i]
-		}
+    sequentialTasks := make([]execution.SequentialTask, len(decomp.Subtasks))
+    for i, subtask := range decomp.Subtasks {
+        // Preserve incoming role from base context by default; allow LLM to override via agent_types
+        baseRole := "agent"
+        if v, ok := baseContext["role"].(string); ok && v != "" {
+            baseRole = v
+        }
+        role := baseRole
+        if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+            role = decomp.AgentTypes[i]
+        }
 
 		sequentialTasks[i] = execution.SequentialTask{
 			ID:             subtask.ID,
@@ -607,12 +617,17 @@ func executeHybridPattern(
 	config activities.WorkflowConfig,
 ) ([]activities.AgentExecutionResult, int) {
 
-	hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
-	for i, subtask := range decomp.Subtasks {
-		role := "agent"
-		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-			role = decomp.AgentTypes[i]
-		}
+    hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
+    for i, subtask := range decomp.Subtasks {
+        // Preserve incoming role from base context by default; allow LLM to override via agent_types
+        baseRole := "agent"
+        if v, ok := baseContext["role"].(string); ok && v != "" {
+            baseRole = v
+        }
+        role := baseRole
+        if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+            role = decomp.AgentTypes[i]
+        }
 
 		hybridTasks[i] = execution.HybridTask{
 			ID:             subtask.ID,

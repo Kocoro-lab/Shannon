@@ -694,6 +694,24 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				input.Context = make(map[string]interface{})
 			}
 			input.Context["tool_parameters"] = input.ToolParameters
+
+			// Mirror critical body fields into prompt_params as a resilience fallback
+			// This helps Python OpenAPI tools reconstruct the body if arrays get lost upstream.
+			if bodyRaw, ok := input.ToolParameters["body"]; ok {
+				if body, ok2 := bodyRaw.(map[string]interface{}); ok2 {
+					pp, _ := input.Context["prompt_params"].(map[string]interface{})
+					if pp == nil {
+						pp = make(map[string]interface{})
+						input.Context["prompt_params"] = pp
+					}
+					// Mirror all fields from body into prompt_params when missing
+						for key, val := range body {
+							if _, exists := pp[key]; !exists {
+								pp[key] = val
+							}
+						}
+					}
+				}
 			logger.Info("Passing valid tool parameters to context",
 				zap.String("tool", toolName),
 				zap.String("agent_id", input.AgentID),
@@ -1127,9 +1145,118 @@ func ExecuteAgent(ctx context.Context, input AgentExecutionInput) (AgentExecutio
 		"agent_id", input.AgentID,
 		"query", input.Query,
 	)
-	// Use zap logger for the core logic which needs *zap.Logger
+
+	// Use forced tools path if ToolParameters are pre-computed (analytics queries)
+	if input.ToolParameters != nil && len(input.ToolParameters) > 0 && len(input.SuggestedTools) > 0 {
+		return ExecuteAgentWithForcedTools(ctx, input)
+	}
+
+	// Standard execution through agent-core gRPC
 	logger := zap.L()
 	return executeAgentCore(ctx, input, logger)
+}
+
+// ExecuteAgentWithForcedTools bypasses agent-core gRPC and calls /agent/query directly
+// with forced_tool_calls to avoid serialization issues. Use when ToolParameters are
+// pre-computed from decomposition (e.g., analytics queries).
+func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput) (AgentExecutionResult, error) {
+	logger := activity.GetLogger(ctx)
+	logger.Info("ExecuteAgentWithForcedTools activity started",
+		"agent_id", input.AgentID,
+		"query", input.Query,
+		"tool_count", len(input.SuggestedTools),
+	)
+
+	// Bail if no tool parameters to use
+	if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
+		logger.Warn("No ToolParameters provided; falling back to regular ExecuteAgent")
+		zapLogger := zap.L()
+		return executeAgentCore(ctx, input, zapLogger)
+	}
+
+	// Determine which tool to execute (typically just one from decomposition)
+	toolName := ""
+	if len(input.SuggestedTools) > 0 {
+		toolName = input.SuggestedTools[0]
+	} else {
+		logger.Error("No SuggestedTools provided with ToolParameters; cannot proceed")
+		return AgentExecutionResult{Success: false, Error: "No tool specified for forced execution"}, nil
+	}
+
+	// Build forced_tool_calls payload for /agent/query
+	forcedToolCalls := []map[string]interface{}{
+		{
+			"tool":       toolName,
+			"parameters": input.ToolParameters,
+		},
+	}
+
+	// Prepare request to /agent/query
+	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	agentQueryPayload := map[string]interface{}{
+		"query":             input.Query,
+		"context":           input.Context,
+		"agent_id":          input.AgentID,
+		"allowed_tools":     input.SuggestedTools,
+		"forced_tool_calls": forcedToolCalls,
+	}
+
+	payloadBytes, err := json.Marshal(agentQueryPayload)
+	if err != nil {
+		logger.Error("Failed to marshal agent query payload", "error", err)
+		return AgentExecutionResult{Success: false, Error: "Failed to construct request"}, nil
+	}
+
+	client := &http.Client{Timeout: 2 * time.Minute, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payloadBytes)))
+	if err != nil {
+		logger.Error("Failed to create HTTP request", "error", err)
+		return AgentExecutionResult{Success: false, Error: "Failed to create request"}, nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", input.AgentID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error("HTTP request failed", "error", err)
+		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Error("Non-2xx response from /agent/query", "status", resp.StatusCode)
+		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
+	}
+
+	// Parse response
+	var agentResponse struct {
+		Success    bool        `json:"success"`
+		Response   string      `json:"response"`
+		TokensUsed int         `json:"tokens_used"`
+		ModelUsed  string      `json:"model_used"`
+		Metadata   interface{} `json:"metadata"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&agentResponse); err != nil {
+		logger.Error("Failed to decode /agent/query response", "error", err)
+		return AgentExecutionResult{Success: false, Error: "Failed to parse response"}, nil
+	}
+
+	logger.Info("ExecuteAgentWithForcedTools completed",
+		"success", agentResponse.Success,
+		"tokens", agentResponse.TokensUsed,
+		"model", agentResponse.ModelUsed,
+	)
+
+	return AgentExecutionResult{
+		Success:    agentResponse.Success,
+		Response:   agentResponse.Response,
+		TokensUsed: agentResponse.TokensUsed,
+		ModelUsed:  agentResponse.ModelUsed,
+		ToolsUsed:  []string{toolName},
+	}, nil
 }
 
 // fetchAvailableTools queries Python LLM service for a list of non-dangerous tools.

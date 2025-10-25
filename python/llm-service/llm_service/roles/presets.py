@@ -48,6 +48,14 @@ _PRESETS: Dict[str, Dict[str, object]] = {
     },
 }
 
+# Optionally register vendor roles (kept out of generic registry)
+try:
+    from .ptengine.data_analytics import DATA_ANALYTICS_PRESET as _PTENGINE_DATA_ANALYTICS
+
+    _PRESETS["data_analytics"] = _PTENGINE_DATA_ANALYTICS
+except Exception:
+    pass
+
 
 def get_role_preset(name: str) -> Dict[str, object]:
     """Return a role preset by name with safe default fallback.

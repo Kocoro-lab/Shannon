@@ -1022,20 +1022,41 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         available_tools = query.allowed_tools or []
         tool_schemas_text = ""
 
+        # Respect role preset's allowed_tools if role is specified
+        role_preset_tools = []
+        if query.context and "role" in query.context:
+            role_name = query.context.get("role")
+            if role_name:
+                from ..roles.presets import get_role_preset
+                role_preset = get_role_preset(role_name)
+                role_preset_tools = list(role_preset.get("allowed_tools", []))
+                logger.info(f"Decompose: Role '{role_name}' restricts tools to: {role_preset_tools}")
+
         # Auto-load all tools from registry when no specific tools provided
         # This ensures MCP and OpenAPI tools appear in decomposition even when
         # orchestrator doesn't pass AvailableTools (current limitation)
         if not available_tools:
-            all_tool_names = registry.list_tools()
-            # Filter out dangerous tools for safety
-            available_tools = []
-            for name in all_tool_names:
-                tool = registry.get_tool(name)
-                if tool and not getattr(tool.metadata, "dangerous", False):
-                    available_tools.append(name)
-            logger.info(
-                f"Decompose: Auto-loaded {len(available_tools)} tools from registry (orchestrator provided none)"
-            )
+            # If role preset defines allowed_tools, use those as base
+            if role_preset_tools:
+                available_tools = role_preset_tools
+                logger.info(
+                    f"Decompose: Using {len(available_tools)} tools from role preset"
+                )
+            else:
+                all_tool_names = registry.list_tools()
+                # Filter out dangerous tools for safety
+                available_tools = []
+                for name in all_tool_names:
+                    tool = registry.get_tool(name)
+                    if tool and not getattr(tool.metadata, "dangerous", False):
+                        available_tools.append(name)
+                logger.info(
+                    f"Decompose: Auto-loaded {len(available_tools)} tools from registry (orchestrator provided none)"
+                )
+        elif role_preset_tools:
+            # Cap requested tools by role preset if preset defines restrictions
+            available_tools = [t for t in available_tools if t in role_preset_tools]
+            logger.info(f"Decompose: Capped tools by role preset to: {available_tools}")
 
         if available_tools:
             tool_schemas_text = "\n\nAVAILABLE TOOLS WITH EXACT PARAMETER SCHEMAS:\n"

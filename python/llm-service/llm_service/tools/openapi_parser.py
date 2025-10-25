@@ -382,8 +382,8 @@ def extract_parameters(
                 continue
 
         location = param.get("in", "")
-        if location not in ["path", "query"]:
-            # Skip header and cookie params for MVP
+        if location not in ["path", "query", "header"]:
+            # Skip cookie params (header params are now extracted)
             continue
 
         name = param.get("name")
@@ -428,16 +428,19 @@ def extract_parameters(
     return params
 
 
-def extract_request_body(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def extract_request_body(
+    operation: Dict[str, Any], spec: Dict[str, Any]
+) -> Optional[List[Dict[str, Any]]]:
     """
     Extract request body parameter from operation.
     MVP: Only support application/json content type.
 
     Args:
         operation: OpenAPI operation object
+        spec: Full OpenAPI specification (for resolving $ref)
 
     Returns:
-        Request body parameter dict or None if no body
+        List with single body parameter, or None if no body
     """
     request_body = operation.get("requestBody")
     if not request_body:
@@ -448,21 +451,21 @@ def extract_request_body(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Check for application/json
     json_content = content.get("application/json")
     if not json_content:
-        # No JSON body for MVP
+        # No JSON body
         return None
 
     required = request_body.get("required", False)
-    description = request_body.get("description", "Request body")
+    description = request_body.get("description", "Request body (send as-is, no wrapping)")
 
-    # For MVP, treat entire body as a single object parameter
-    # Don't try to flatten nested schemas
-    return {
+    # Return single body parameter - LLM should provide complete object structure
+    # The tool execution will send this directly as json= without wrapping
+    return [{
         "name": "body",
         "type": "object",
         "required": required,
         "description": description,
         "location": "body",
-    }
+    }]
 
 
 def deduplicate_operation_ids(operations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
