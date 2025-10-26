@@ -235,17 +235,22 @@ func executeHybridTask(
 		task.ToolParameters = nil
 	}
 
-	// Emit agent started event
-	if config.EmitEvents {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-			activities.EmitTaskUpdateInput{
-				WorkflowID: wid,
-				EventType:  activities.StreamEventAgentStarted,
-				AgentID:    fmt.Sprintf("agent-%s", task.ID),
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
-	}
+    // Emit agent started event (parent workflow when available)
+    if config.EmitEvents {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if config.Context != nil {
+            if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+            activities.EmitTaskUpdateInput{
+                WorkflowID: wid,
+                EventType:  activities.StreamEventAgentStarted,
+                AgentID:    fmt.Sprintf("agent-%s", task.ID),
+                Timestamp:  workflow.Now(ctx),
+            }).Get(ctx, nil)
+    }
 
 	// Execute the task using parallel or sequential execution patterns
 	parallelTask := ParallelTask{
@@ -275,18 +280,23 @@ func executeHybridTask(
 	)
 
 	if err != nil {
-		// Emit error event
-		if config.EmitEvents {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-				activities.EmitTaskUpdateInput{
-					WorkflowID: wid,
-					EventType:  activities.StreamEventErrorOccurred,
-					AgentID:    fmt.Sprintf("agent-%s", task.ID),
-					Message:    err.Error(),
-					Timestamp:  workflow.Now(ctx),
-				}).Get(ctx, nil)
-		}
+        // Emit error event (parent workflow when available)
+        if config.EmitEvents {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if config.Context != nil {
+                if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+                activities.EmitTaskUpdateInput{
+                    WorkflowID: wid,
+                    EventType:  activities.StreamEventErrorOccurred,
+                    AgentID:    fmt.Sprintf("agent-%s", task.ID),
+                    Message:    err.Error(),
+                    Timestamp:  workflow.Now(ctx),
+                }).Get(ctx, nil)
+        }
 
 		resultsChan.Send(ctx, taskExecutionResult{
 			TaskID: task.ID,
@@ -295,17 +305,22 @@ func executeHybridTask(
 		return
 	}
 
-	// Emit completion event
-	if config.EmitEvents && len(result.Results) > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-			activities.EmitTaskUpdateInput{
-				WorkflowID: wid,
-				EventType:  activities.StreamEventAgentCompleted,
-				AgentID:    fmt.Sprintf("agent-%s", task.ID),
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
-	}
+    // Emit completion event (parent workflow when available)
+    if config.EmitEvents && len(result.Results) > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if config.Context != nil {
+            if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+            activities.EmitTaskUpdateInput{
+                WorkflowID: wid,
+                EventType:  activities.StreamEventAgentCompleted,
+                AgentID:    fmt.Sprintf("agent-%s", task.ID),
+                Timestamp:  workflow.Now(ctx),
+            }).Get(ctx, nil)
+    }
 
 	// Send result
 	if len(result.Results) > 0 {

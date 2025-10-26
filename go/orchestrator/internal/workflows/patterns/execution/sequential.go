@@ -155,6 +155,11 @@ func ExecuteSequential(
 		// Emit agent started event
 		if config.EmitEvents {
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if config.Context != nil {
+				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
 			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 				activities.EmitTaskUpdateInput{
 					WorkflowID: wid,
@@ -225,18 +230,23 @@ func ExecuteSequential(
 			)
 			errorCount++
 
-			// Emit error event
-			if config.EmitEvents {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-					activities.EmitTaskUpdateInput{
-						WorkflowID: wid,
-						EventType:  activities.StreamEventErrorOccurred,
-						AgentID:    fmt.Sprintf("agent-%s", task.ID),
-						Message:    err.Error(),
-						Timestamp:  workflow.Now(ctx),
-					}).Get(ctx, nil)
-			}
+        // Emit error event (parent workflow when available)
+        if config.EmitEvents {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if config.Context != nil {
+                if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+                activities.EmitTaskUpdateInput{
+                    WorkflowID: wid,
+                    EventType:  activities.StreamEventErrorOccurred,
+                    AgentID:    fmt.Sprintf("agent-%s", task.ID),
+                    Message:    err.Error(),
+                    Timestamp:  workflow.Now(ctx),
+                }).Get(ctx, nil)
+        }
 
 			// Continue to next task even on failure
 			continue
@@ -251,17 +261,22 @@ func ExecuteSequential(
 		totalTokens += result.TokensUsed
 		successCount++
 
-		// Emit completion event
-		if config.EmitEvents {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
-				activities.EmitTaskUpdateInput{
-					WorkflowID: wid,
-					EventType:  activities.StreamEventAgentCompleted,
-					AgentID:    fmt.Sprintf("agent-%s", task.ID),
-					Timestamp:  workflow.Now(ctx),
-				}).Get(ctx, nil)
-		}
+        // Emit completion event (parent workflow when available)
+        if config.EmitEvents {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if config.Context != nil {
+                if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            _ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
+                activities.EmitTaskUpdateInput{
+                    WorkflowID: wid,
+                    EventType:  activities.StreamEventAgentCompleted,
+                    AgentID:    fmt.Sprintf("agent-%s", task.ID),
+                    Timestamp:  workflow.Now(ctx),
+                }).Get(ctx, nil)
+        }
 
 		// Record agent memory if session exists
 		if sessionID != "" {
