@@ -246,9 +246,11 @@ Automatic degradation under load:
 - Debug mode available via `LOG_LEVEL=debug`
 
 ### Streaming
-- **SSE**: `/stream/sse?workflow_id=<id>`
-- **WebSocket**: `/stream/ws?workflow_id=<id>`
-- Real-time workflow progress updates
+- SSE: `GET /stream/sse?workflow_id=<id>`
+- WebSocket: `GET /stream/ws?workflow_id=<id>`
+- Notes:
+  - All child workflow and agent events are unified under the parent `workflow_id` for a single stream.
+  - SSE/WS events are buffered in Redis Streams (~24h TTL) and persisted to Postgres when configured.
 
 ## 🧪 Testing
 

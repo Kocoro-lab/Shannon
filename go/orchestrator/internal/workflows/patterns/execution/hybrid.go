@@ -235,9 +235,14 @@ func executeHybridTask(
 		task.ToolParameters = nil
 	}
 
-	// Emit agent started event
+	// Emit agent started event (parent workflow when available)
 	if config.EmitEvents {
 		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		if config.Context != nil {
+			if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+				wid = p
+			}
+		}
 		_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 			activities.EmitTaskUpdateInput{
 				WorkflowID: wid,
@@ -275,9 +280,14 @@ func executeHybridTask(
 	)
 
 	if err != nil {
-		// Emit error event
+		// Emit error event (parent workflow when available)
 		if config.EmitEvents {
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if config.Context != nil {
+				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
 			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 				activities.EmitTaskUpdateInput{
 					WorkflowID: wid,
@@ -295,9 +305,14 @@ func executeHybridTask(
 		return
 	}
 
-	// Emit completion event
+	// Emit completion event (parent workflow when available)
 	if config.EmitEvents && len(result.Results) > 0 {
 		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		if config.Context != nil {
+			if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+				wid = p
+			}
+		}
 		_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 			activities.EmitTaskUpdateInput{
 				WorkflowID: wid,

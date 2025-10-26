@@ -108,9 +108,14 @@ func ExecuteParallel(
 			taskContext["role"] = task.Role
 			taskContext["task_id"] = task.ID
 
-			// Emit agent started event
+			// Emit agent started event (publish under parent workflow when available)
 			if config.EmitEvents {
 				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+				if config.Context != nil {
+					if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+						wid = p
+					}
+				}
 				_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 					activities.EmitTaskUpdateInput{
 						WorkflowID: wid,
@@ -210,9 +215,14 @@ func ExecuteParallel(
 							"error", err,
 						)
 						errorCount++
-						// Emit error event
+						// Emit error event (parent workflow when available)
 						if config.EmitEvents {
 							wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+							if config.Context != nil {
+								if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+									wid = p
+								}
+							}
 							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 								activities.EmitTaskUpdateInput{
 									WorkflowID: wid,
@@ -231,9 +241,14 @@ func ExecuteParallel(
 						workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 						persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
 
-						// Emit completion event
+						// Emit completion event (parent workflow when available)
 						if config.EmitEvents {
 							wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+							if config.Context != nil {
+								if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+									wid = p
+								}
+							}
 							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 								activities.EmitTaskUpdateInput{
 									WorkflowID: wid,
