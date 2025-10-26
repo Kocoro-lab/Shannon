@@ -360,9 +360,6 @@ func generateOpenAPISpec() map[string]interface{} {
 				"HealthResponse": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"status": map[string]interface{}{
-							"type": "string",
-						},
 						"version": map[string]interface{}{
 							"type": "string",
 						},
@@ -386,10 +383,6 @@ func generateOpenAPISpec() map[string]interface{} {
 							"type":        "string",
 							"description": "The task query or command",
 						},
-						"session_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Session ID for context continuity",
-						},
 						"context": map[string]interface{}{
 							"type":        "object",
 							"description": "Additional context for the task",
@@ -406,9 +399,6 @@ func generateOpenAPISpec() map[string]interface{} {
 					"type": "object",
 					"properties": map[string]interface{}{
 						"task_id": map[string]interface{}{
-							"type": "string",
-						},
-						"status": map[string]interface{}{
 							"type": "string",
 						},
 						"message": map[string]interface{}{
@@ -439,26 +429,12 @@ func generateOpenAPISpec() map[string]interface{} {
 							"description": "SSE endpoint URL to stream real-time events for this task",
 							"example":     "/api/v1/stream/sse?workflow_id=task-user123-1234567890",
 						},
-						"session_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Session ID associated with this task",
-							"example":     "session-456",
-						},
-						"status": map[string]interface{}{
-							"type":        "string",
-							"description": "Initial task status",
-							"example":     "submitted",
-							"enum":        []string{"submitted", "queued"},
-						},
 					},
 				},
 				"TaskStatusResponse": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"task_id": map[string]interface{}{
-							"type": "string",
-						},
-						"status": map[string]interface{}{
 							"type": "string",
 						},
 						"response": map[string]interface{}{
@@ -468,9 +444,6 @@ func generateOpenAPISpec() map[string]interface{} {
 							"type": "string",
 						},
 						"query": map[string]interface{}{
-							"type": "string",
-						},
-						"session_id": map[string]interface{}{
 							"type": "string",
 						},
 						"mode": map[string]interface{}{

@@ -54,10 +54,10 @@ type TaskRequest struct {
 
 // TaskResponse represents a task submission response
 type TaskResponse struct {
-    TaskID    string    `json:"task_id"`
-    Status    string    `json:"status"`
-    Message   string    `json:"message,omitempty"`
-    CreatedAt time.Time `json:"created_at"`
+	TaskID    string    `json:"task_id"`
+	Status    string    `json:"status"`
+	Message   string    `json:"message,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // TaskStatusResponse represents a task status response
@@ -193,93 +193,100 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 // SubmitTaskAndGetStreamURL handles POST /api/v1/tasks/stream
 // Submits a task and returns a stream URL for SSE consumption.
 func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
+	ctx := r.Context()
 
-    // Get user context from auth middleware
-    userCtx, ok := ctx.Value("user").(*auth.UserContext)
-    if !ok {
-        h.sendError(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+	// Get user context from auth middleware
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    // Parse request body
-    var req TaskRequest
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        h.sendError(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-        return
-    }
+	// Parse request body
+	var req TaskRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendError(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
 
-    // Validate request
-    if req.Query == "" {
-        h.sendError(w, "Query is required", http.StatusBadRequest)
-        return
-    }
+	// Validate request
+	if req.Query == "" {
+		h.sendError(w, "Query is required", http.StatusBadRequest)
+		return
+	}
 
-    // Generate session ID if not provided
-    if req.SessionID == "" {
-        req.SessionID = uuid.New().String()
-    }
+	// Generate session ID if not provided
+	if req.SessionID == "" {
+		req.SessionID = uuid.New().String()
+	}
 
-    // Build gRPC request (reuse same shape as SubmitTask)
-    grpcReq := &orchpb.SubmitTaskRequest{
-        Metadata: &commonpb.TaskMetadata{
-            UserId:    userCtx.UserID.String(),
-            TenantId:  userCtx.TenantID.String(),
-            SessionId: req.SessionID,
-        },
-        Query: req.Query,
-    }
+	// Build gRPC request (reuse same shape as SubmitTask)
+	grpcReq := &orchpb.SubmitTaskRequest{
+		Metadata: &commonpb.TaskMetadata{
+			UserId:    userCtx.UserID.String(),
+			TenantId:  userCtx.TenantID.String(),
+			SessionId: req.SessionID,
+		},
+		Query: req.Query,
+	}
 
-    // Add context if provided
-    if len(req.Context) > 0 {
-        st, err := structpb.NewStruct(req.Context)
-        if err != nil {
-            h.logger.Warn("Failed to convert context to struct", zap.Error(err))
-        } else {
-            grpcReq.Context = st
-        }
-    }
+	// Add context if provided
+	if len(req.Context) > 0 {
+		st, err := structpb.NewStruct(req.Context)
+		if err != nil {
+			h.logger.Warn("Failed to convert context to struct", zap.Error(err))
+		} else {
+			grpcReq.Context = st
+		}
+	}
 
-    // Propagate tracing
-    if traceParent := r.Header.Get("traceparent"); traceParent != "" {
-        md := metadata.Pairs("traceparent", traceParent)
-        ctx = metadata.NewOutgoingContext(ctx, md)
-    }
+	// Propagate tracing
+	if traceParent := r.Header.Get("traceparent"); traceParent != "" {
+		md := metadata.Pairs("traceparent", traceParent)
+		ctx = metadata.NewOutgoingContext(ctx, md)
+	}
 
-    // Submit task to orchestrator
-    resp, err := h.orchClient.SubmitTask(ctx, grpcReq)
-    if err != nil {
-        if st, ok := status.FromError(err); ok {
-            switch st.Code() {
-            case codes.InvalidArgument:
-                h.sendError(w, st.Message(), http.StatusBadRequest)
-            case codes.ResourceExhausted:
-                h.sendError(w, "Rate limit exceeded", http.StatusTooManyRequests)
-            default:
-                h.sendError(w, fmt.Sprintf("Failed to submit task: %v", st.Message()), http.StatusInternalServerError)
-            }
-        } else {
-            h.sendError(w, fmt.Sprintf("Failed to submit task: %v", err), http.StatusInternalServerError)
-        }
-        return
-    }
+	// Submit task to orchestrator
+	resp, err := h.orchClient.SubmitTask(ctx, grpcReq)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.InvalidArgument:
+				h.sendError(w, st.Message(), http.StatusBadRequest)
+			case codes.ResourceExhausted:
+				h.sendError(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			default:
+				h.sendError(w, fmt.Sprintf("Failed to submit task: %v", st.Message()), http.StatusInternalServerError)
+			}
+		} else {
+			h.sendError(w, fmt.Sprintf("Failed to submit task: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
 
-    // Prepare stream URL (clients will use EventSource on this URL)
-    streamURL := fmt.Sprintf("/api/v1/stream/sse?workflow_id=%s", resp.WorkflowId)
+	// Log task submission
+	h.logger.Info("Task submitted with stream URL",
+		zap.String("task_id", resp.TaskId),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.String("session_id", req.SessionID),
+	)
 
-    // Headers for discoverability
-    w.Header().Set("X-Workflow-ID", resp.WorkflowId)
-    w.Header().Set("X-Session-ID", req.SessionID)
-    w.Header().Set("Link", fmt.Sprintf("<%s>; rel=stream", streamURL))
-    w.Header().Set("Content-Type", "application/json")
+	// Prepare stream URL (clients will use EventSource on this URL)
+	streamURL := fmt.Sprintf("/api/v1/stream/sse?workflow_id=%s", resp.WorkflowId)
 
-    // Body with stream URL
-    w.WriteHeader(http.StatusCreated)
-    _ = json.NewEncoder(w).Encode(map[string]string{
-        "workflow_id": resp.WorkflowId,
-        "task_id":     resp.TaskId,
-        "stream_url":  streamURL,
-    })
+	// Headers for discoverability
+	w.Header().Set("X-Workflow-ID", resp.WorkflowId)
+	w.Header().Set("X-Session-ID", req.SessionID)
+	w.Header().Set("Link", fmt.Sprintf("<%s>; rel=stream", streamURL))
+	w.Header().Set("Content-Type", "application/json")
+
+	// Body with stream URL
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"workflow_id": resp.WorkflowId,
+		"task_id":     resp.TaskId,
+		"stream_url":  streamURL,
+	})
 }
 
 // GetTaskStatus handles GET /api/v1/tasks/{id}
