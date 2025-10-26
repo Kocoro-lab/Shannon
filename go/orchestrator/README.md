@@ -252,6 +252,12 @@ Automatic degradation under load:
   - All child workflow and agent events are unified under the parent `workflow_id` for a single stream.
   - SSE/WS events are buffered in Redis Streams (~24h TTL) and persisted to Postgres when configured.
 
+#### Synthesis Events
+- `LLM_OUTPUT` (AgentID: `synthesis`): Final synthesized content (truncated to 10k chars). Emitted on LLM success and all fallback/simple paths.
+- `DATA_PROCESSING` summary: Lightweight message `"Synthesis summary: model=<m> tokens=<n>"` on LLM path, or `"Synthesis summary: tokens=<n>"` on fallback/simple paths.
+- Ordering: `LLM_OUTPUT` → summary → `DATA_PROCESSING` "Final answer ready" → `WORKFLOW_COMPLETED`.
+- Bypass behavior: when synthesis is bypassed (single suitable result), no extra synthesis events are emitted; the agent’s own `LLM_OUTPUT` serves as the final result.
+
 ## 🧪 Testing
 
 ### Unit Tests

@@ -15,11 +15,17 @@ import (
 
 // TestBypassSingleResult verifies that single successful results bypass synthesis
 func TestBypassSingleResult(t *testing.T) {
-	testSuite := &testsuite.WorkflowTestSuite{}
-	env := testSuite.NewTestWorkflowEnvironment()
+    testSuite := &testsuite.WorkflowTestSuite{}
+    env := testSuite.NewTestWorkflowEnvironment()
 
-	// Register the child workflow that AgentDAGWorkflow calls
-	env.RegisterWorkflow(strategies.DAGWorkflow)
+    // Register the child workflow that AgentDAGWorkflow calls
+    env.RegisterWorkflow(strategies.DAGWorkflow)
+
+    // Register stub EmitTaskUpdate to ignore streaming events in tests
+    env.RegisterActivityWithOptions(
+        func(ctx context.Context, in activities.EmitTaskUpdateInput) error { return nil },
+        activity.RegisterOptions{Name: "EmitTaskUpdate"},
+    )
 
 	// Mock DecomposeTask - returns simple task with single subtask
 	env.RegisterActivityWithOptions(
@@ -103,11 +109,17 @@ func TestBypassSingleResult(t *testing.T) {
 
 // TestNoBypassMultipleResults verifies synthesis is called for multiple results
 func TestNoBypassMultipleResults(t *testing.T) {
-	testSuite := &testsuite.WorkflowTestSuite{}
-	env := testSuite.NewTestWorkflowEnvironment()
+    testSuite := &testsuite.WorkflowTestSuite{}
+    env := testSuite.NewTestWorkflowEnvironment()
 
-	// Register the child workflow that AgentDAGWorkflow calls
-	env.RegisterWorkflow(strategies.DAGWorkflow)
+    // Register the child workflow that AgentDAGWorkflow calls
+    env.RegisterWorkflow(strategies.DAGWorkflow)
+
+    // Register stub EmitTaskUpdate to ignore streaming events in tests
+    env.RegisterActivityWithOptions(
+        func(ctx context.Context, in activities.EmitTaskUpdateInput) error { return nil },
+        activity.RegisterOptions{Name: "EmitTaskUpdate"},
+    )
 
 	// Mock DecomposeTask - returns complex task with multiple subtasks
 	env.RegisterActivityWithOptions(

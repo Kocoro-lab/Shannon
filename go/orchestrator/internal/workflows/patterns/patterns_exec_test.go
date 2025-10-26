@@ -28,11 +28,14 @@ func getWorkflowConfigStub(ctx context.Context) (activities.WorkflowConfig, erro
 }
 
 func TestReactLoopExecutes(t *testing.T) {
-	suite := &testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
+    suite := &testsuite.WorkflowTestSuite{}
+    env := suite.NewTestWorkflowEnvironment()
 
-	env.RegisterActivityWithOptions(execAgentStub, activity.RegisterOptions{Name: "ExecuteAgent"})
-	env.RegisterActivityWithOptions(getWorkflowConfigStub, activity.RegisterOptions{Name: "GetWorkflowConfig"})
+    env.RegisterActivityWithOptions(execAgentStub, activity.RegisterOptions{Name: "ExecuteAgent"})
+    env.RegisterActivityWithOptions(getWorkflowConfigStub, activity.RegisterOptions{Name: "GetWorkflowConfig"})
+
+    // Register stub EmitTaskUpdate in case patterns emit events in future hooks
+    env.RegisterActivityWithOptions(func(ctx context.Context, in activities.EmitTaskUpdateInput) error { return nil }, activity.RegisterOptions{Name: "EmitTaskUpdate"})
 
 	// Wrap ReactLoop into a small workflow for testing
 	wf := func(ctx workflow.Context) (string, error) {
@@ -58,17 +61,19 @@ func TestReactLoopExecutes(t *testing.T) {
 }
 
 func TestChainOfThoughtExecutes(t *testing.T) {
-	suite := &testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
+    suite := &testsuite.WorkflowTestSuite{}
+    env := suite.NewTestWorkflowEnvironment()
 
 	// Respond with a message containing a clear final answer marker
-	env.RegisterActivityWithOptions(
-		func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
-			_ = ctx
-			return activities.AgentExecutionResult{Response: "Reasoning... Therefore: 42", Success: true, TokensUsed: 7}, nil
-		},
-		activity.RegisterOptions{Name: "ExecuteAgent"},
-	)
+    env.RegisterActivityWithOptions(
+        func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
+            _ = ctx
+            return activities.AgentExecutionResult{Response: "Reasoning... Therefore: 42", Success: true, TokensUsed: 7}, nil
+        },
+        activity.RegisterOptions{Name: "ExecuteAgent"},
+    )
+
+    env.RegisterActivityWithOptions(func(ctx context.Context, in activities.EmitTaskUpdateInput) error { return nil }, activity.RegisterOptions{Name: "EmitTaskUpdate"})
 
 	wf := func(ctx workflow.Context) (string, error) {
 		cfg := ChainOfThoughtConfig{MaxSteps: 3}
@@ -94,17 +99,19 @@ func TestChainOfThoughtExecutes(t *testing.T) {
 
 // Optional sanity for semaphore limit: ensure activities overlap is bounded.
 func TestParallelRespectsMaxConcurrency(t *testing.T) {
-	suite := &testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
+    suite := &testsuite.WorkflowTestSuite{}
+    env := suite.NewTestWorkflowEnvironment()
 
 	// Slow stub so overlaps can be observed by the test env scheduler
-	env.RegisterActivityWithOptions(
-		func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
-			time.Sleep(20 * time.Millisecond)
-			return activities.AgentExecutionResult{AgentID: in.AgentID, Response: "ok", Success: true}, nil
-		},
-		activity.RegisterOptions{Name: "ExecuteAgent"},
-	)
+    env.RegisterActivityWithOptions(
+        func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
+            time.Sleep(20 * time.Millisecond)
+            return activities.AgentExecutionResult{AgentID: in.AgentID, Response: "ok", Success: true}, nil
+        },
+        activity.RegisterOptions{Name: "ExecuteAgent"},
+    )
+
+    env.RegisterActivityWithOptions(func(ctx context.Context, in activities.EmitTaskUpdateInput) error { return nil }, activity.RegisterOptions{Name: "EmitTaskUpdate"})
 
 	wf := func(ctx workflow.Context) (int, error) {
 		tasks := []execution.ParallelTask{{ID: "1", Description: "a"}, {ID: "2", Description: "b"}, {ID: "3", Description: "c"}}
