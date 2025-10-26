@@ -324,11 +324,12 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		return res, nil
 	}
 
-	var out struct {
-		Response   string                 `json:"response"`
-		Metadata   map[string]interface{} `json:"metadata"`
-		TokensUsed int                    `json:"tokens_used"`
-	}
+    var out struct {
+        Response   string                 `json:"response"`
+        Metadata   map[string]interface{} `json:"metadata"`
+        TokensUsed int                    `json:"tokens_used"`
+        ModelUsed  string                 `json:"model_used"`
+    }
 	if err := json.Unmarshal(rawBody, &out); err != nil {
 		logger.Warn("LLM synthesis: decode error, falling back",
 			zap.Error(err),
@@ -398,17 +399,17 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		return res, nil
 	}
 
-	// Extract model info from metadata if available
-	model := "unknown"
-	if out.Metadata != nil {
-		if m, ok := out.Metadata["model"].(string); ok {
-			model = m
-		}
-		// Also check allowed_tools to confirm role was applied
-		if tools, ok := out.Metadata["allowed_tools"].([]interface{}); ok && len(tools) > 0 {
-			logger.Info("Role-aware synthesis applied", zap.Int("allowed_tools_count", len(tools)))
-		}
-	}
+    // Extract model info: prefer top-level model_used; fallback to metadata.model
+    model := out.ModelUsed
+    if model == "" && out.Metadata != nil {
+        if m, ok := out.Metadata["model"].(string); ok {
+            model = m
+        }
+        // Also check allowed_tools to confirm role was applied
+        if tools, ok := out.Metadata["allowed_tools"].([]interface{}); ok && len(tools) > 0 {
+            logger.Info("Role-aware synthesis applied", zap.Int("allowed_tools_count", len(tools)))
+        }
+    }
 
 	logger.Info("Synthesis (role-aware LLM) completed",
 		zap.Int("tokens_used", out.TokensUsed),
