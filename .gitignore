@@ -292,6 +292,7 @@ local/
 go/orchestrator/orchestrator
 go/orchestrator/gateway
 go/orchestrator/replay
+go/orchestrator/cmd/gateway/gateway
 go/orchestrator/*.test
 rust/agent-core/agent-core
 rust/agent-core/target/

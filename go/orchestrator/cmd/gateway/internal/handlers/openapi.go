@@ -67,6 +67,28 @@ func generateOpenAPISpec() map[string]interface{} {
 				},
 			},
 			"/api/v1/tasks": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "List tasks",
+					"description": "List tasks for the authenticated user (optionally filter by session/status)",
+					"parameters": []map[string]interface{}{
+						{"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 20, "minimum": 1, "maximum": 100}},
+						{"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
+						{"name": "status", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}}},
+						{"name": "session_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "List of tasks",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/ListTasksResponse",
+									},
+								},
+							},
+						},
+					},
+				},
 				"post": map[string]interface{}{
 					"summary":     "Submit a task",
 					"description": "Submit a new task for processing",
@@ -78,28 +100,6 @@ func generateOpenAPISpec() map[string]interface{} {
 							"required":    false,
 							"schema": map[string]interface{}{
 								"type": "string",
-							},
-							"get": map[string]interface{}{
-								"summary":     "List tasks",
-								"description": "List tasks for the authenticated user (optionally filter by session/status)",
-								"parameters": []map[string]interface{}{
-									{"name": "limit", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 20, "minimum": 1, "maximum": 100}},
-									{"name": "offset", "in": "query", "schema": map[string]interface{}{"type": "integer", "default": 0, "minimum": 0}},
-									{"name": "status", "in": "query", "schema": map[string]interface{}{"type": "string", "enum": []string{"QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"}}},
-									{"name": "session_id", "in": "query", "schema": map[string]interface{}{"type": "string"}},
-								},
-								"responses": map[string]interface{}{
-									"200": map[string]interface{}{
-										"description": "List of tasks",
-										"content": map[string]interface{}{
-											"application/json": map[string]interface{}{
-												"schema": map[string]interface{}{
-													"$ref": "#/components/schemas/ListTasksResponse",
-												},
-											},
-										},
-									},
-								},
 							},
 						},
 					},
@@ -120,6 +120,74 @@ func generateOpenAPISpec() map[string]interface{} {
 								"application/json": map[string]interface{}{
 									"schema": map[string]interface{}{
 										"$ref": "#/components/schemas/TaskResponse",
+									},
+								},
+							},
+						},
+						"400": map[string]interface{}{
+							"description": "Invalid request",
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized",
+						},
+						"429": map[string]interface{}{
+							"description": "Rate limit exceeded",
+						},
+					},
+				},
+			},
+			"/api/v1/tasks/stream": map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary":     "Submit task and get stream URL",
+					"description": "Submit a task and immediately receive the workflow ID and SSE stream URL for real-time updates. This is a convenience endpoint that combines task submission with stream URL generation in a single call.",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "Idempotency-Key",
+							"in":          "header",
+							"description": "Unique key for idempotent requests",
+							"required":    false,
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+					},
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"$ref": "#/components/schemas/TaskRequest",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"201": map[string]interface{}{
+							"description": "Task submitted successfully with stream URL",
+							"headers": map[string]interface{}{
+								"X-Workflow-ID": map[string]interface{}{
+									"description": "The workflow ID for this task",
+									"schema": map[string]interface{}{
+										"type": "string",
+									},
+								},
+								"X-Session-ID": map[string]interface{}{
+									"description": "The session ID associated with this task",
+									"schema": map[string]interface{}{
+										"type": "string",
+									},
+								},
+								"Link": map[string]interface{}{
+									"description": "Link header with stream URL (rel=stream)",
+									"schema": map[string]interface{}{
+										"type": "string",
+									},
+								},
+							},
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/TaskStreamResponse",
 									},
 								},
 							},
@@ -292,9 +360,6 @@ func generateOpenAPISpec() map[string]interface{} {
 				"HealthResponse": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
-						"status": map[string]interface{}{
-							"type": "string",
-						},
 						"version": map[string]interface{}{
 							"type": "string",
 						},
@@ -318,10 +383,6 @@ func generateOpenAPISpec() map[string]interface{} {
 							"type":        "string",
 							"description": "The task query or command",
 						},
-						"session_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Session ID for context continuity",
-						},
 						"context": map[string]interface{}{
 							"type":        "object",
 							"description": "Additional context for the task",
@@ -340,9 +401,6 @@ func generateOpenAPISpec() map[string]interface{} {
 						"task_id": map[string]interface{}{
 							"type": "string",
 						},
-						"status": map[string]interface{}{
-							"type": "string",
-						},
 						"message": map[string]interface{}{
 							"type": "string",
 						},
@@ -352,13 +410,31 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
+				"TaskStreamResponse": map[string]interface{}{
+					"type": "object",
+					"required": []string{"workflow_id", "task_id", "stream_url"},
+					"properties": map[string]interface{}{
+						"workflow_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Unique workflow identifier for this task",
+							"example":     "task-user123-1234567890",
+						},
+						"task_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Task identifier (same as workflow_id)",
+							"example":     "task-user123-1234567890",
+						},
+						"stream_url": map[string]interface{}{
+							"type":        "string",
+							"description": "SSE endpoint URL to stream real-time events for this task",
+							"example":     "/api/v1/stream/sse?workflow_id=task-user123-1234567890",
+						},
+					},
+				},
 				"TaskStatusResponse": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
 						"task_id": map[string]interface{}{
-							"type": "string",
-						},
-						"status": map[string]interface{}{
 							"type": "string",
 						},
 						"response": map[string]interface{}{
@@ -368,9 +444,6 @@ func generateOpenAPISpec() map[string]interface{} {
 							"type": "string",
 						},
 						"query": map[string]interface{}{
-							"type": "string",
-						},
-						"session_id": map[string]interface{}{
 							"type": "string",
 						},
 						"mode": map[string]interface{}{

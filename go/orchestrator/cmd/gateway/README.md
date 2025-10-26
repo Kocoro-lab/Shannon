@@ -45,6 +45,7 @@ curl http://localhost:8080/openapi.json | jq
 #### Authenticated Endpoints
 
 - `POST /api/v1/tasks` - Submit a new task
+- `POST /api/v1/tasks/stream` - Submit task and receive a stream URL (201)
 - `GET /api/v1/tasks` - List tasks (limit, offset, status, session_id)
 - `GET /api/v1/tasks/{id}` - Get task status (includes query/session_id/mode)
 - `GET /api/v1/tasks/{id}/events` - Get persisted event history (from Postgres)
@@ -129,6 +130,32 @@ Response:
   "status": "submitted",
   "created_at": "2025-01-20T10:00:00Z"
 }
+```
+
+### Submit And Get Stream URL (Recommended DX)
+
+This convenience endpoint returns a ready-to-use SSE URL in one call.
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/tasks/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is 2+2?"}' | jq
+```
+
+Response (201 Created):
+```json
+{
+  "workflow_id": "task-...",
+  "task_id": "task-...",
+  "stream_url": "/api/v1/stream/sse?workflow_id=task-..."
+}
+```
+
+Then connect with EventSource:
+```js
+const r = await fetch('/api/v1/tasks/stream', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'What is 2+2?' })});
+const { stream_url } = await r.json();
+const es = new EventSource(stream_url);
 ```
 
 ### Idempotency

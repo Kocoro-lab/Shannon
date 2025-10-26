@@ -142,6 +142,21 @@ func main() {
 		),
 	)
 
+	// Unified submit that returns the SSE stream URL (no long-lived stream here)
+	mux.Handle("POST /api/v1/tasks/stream",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(taskHandler.SubmitTaskAndGetStreamURL),
+						),
+					),
+				),
+			),
+		),
+	)
+
 	mux.Handle("GET /api/v1/tasks",
 		tracingMiddleware(
 			authMiddleware(
