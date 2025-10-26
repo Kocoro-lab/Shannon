@@ -295,16 +295,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"uses_previous", decompositionSuggestion.UsesPreviousSuccess)
 	}
 
-    // Decompose the task to get subtasks and agent types (use preplanned if provided)
-    var decomp activities.DecompositionResult
-    if input.PreplannedDecomposition != nil {
-        decomp = *input.PreplannedDecomposition
-    } else {
-        if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
-            logger.Error("Task decomposition failed", "error", err)
-            return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
-        }
-    }
+	// Decompose the task to get subtasks and agent types (use preplanned if provided)
+	var decomp activities.DecompositionResult
+	if input.PreplannedDecomposition != nil {
+		decomp = *input.PreplannedDecomposition
+	} else {
+		if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
+			logger.Error("Task decomposition failed", "error", err)
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
+		}
+	}
 
 	// Override strategy if advisor has high confidence
 	if decompositionAdvisor != nil && decompositionSuggestion.Confidence > 0.8 {
@@ -343,10 +343,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-    // If simple task (no tools, trivial plan) OR zero-subtask fallback, delegate to DAGWorkflow
-    // A single tool-based subtask should NOT be treated as simple
-    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
-    isSimpleTask := len(decomp.Subtasks) == 0 || ((decomp.ComplexityScore < 0.3) && simpleByShape)
+	// If simple task (no tools, trivial plan) OR zero-subtask fallback, delegate to DAGWorkflow
+	// A single tool-based subtask should NOT be treated as simple
+	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+	isSimpleTask := len(decomp.Subtasks) == 0 || ((decomp.ComplexityScore < 0.3) && simpleByShape)
 
 	if isSimpleTask {
 		// Convert to strategies.TaskInput
@@ -432,15 +432,15 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			childCtx[k] = v
 		}
 		if workflow.GetVersion(ctx, "roles_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-            // Preserve incoming role by default; allow LLM-specified agent_types to override
-            baseRole := "generalist"
-            if v, ok := input.Context["role"].(string); ok && v != "" {
-                baseRole = v
-            }
-            role := baseRole
-            if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-                role = decomp.AgentTypes[i]
-            }
+			// Preserve incoming role by default; allow LLM-specified agent_types to override
+			baseRole := "generalist"
+			if v, ok := input.Context["role"].(string); ok && v != "" {
+				baseRole = v
+			}
+			role := baseRole
+			if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+				role = decomp.AgentTypes[i]
+			}
 			childCtx["role"] = role
 			teamAgents = append(teamAgents, AgentInfo{AgentID: fmt.Sprintf("agent-%s", st.ID), Role: role})
 			// Optional: record role assignment in mailbox

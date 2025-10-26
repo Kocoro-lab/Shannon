@@ -1,5 +1,11 @@
 package activities
 
+// TODO: Add unit tests for:
+//   - ExecuteAgentWithForcedTools (forced tool execution path)
+//   - Body field mirroring to prompt_params (generic field mirroring logic)
+//   - Error handling when /agent/query HTTP endpoint fails
+//   - Session context injection and merging
+
 import (
 	"context"
 	"encoding/json"
@@ -699,18 +705,23 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			// This helps Python OpenAPI tools reconstruct the body if arrays get lost upstream.
 			if bodyRaw, ok := input.ToolParameters["body"]; ok {
 				if body, ok2 := bodyRaw.(map[string]interface{}); ok2 {
-					pp, _ := input.Context["prompt_params"].(map[string]interface{})
-					if pp == nil {
+					// Type assert prompt_params with error handling
+					pp, ok := input.Context["prompt_params"].(map[string]interface{})
+					if !ok {
+						// prompt_params is missing or wrong type, create new map
+						logger.Warn("prompt_params missing or invalid type, creating new map",
+							zap.String("workflow_id", workflowID))
 						pp = make(map[string]interface{})
 						input.Context["prompt_params"] = pp
 					}
 					// Mirror all fields from body into prompt_params when missing
-						for key, val := range body {
-							if _, exists := pp[key]; !exists {
-								pp[key] = val
-							}
+					// This enables vendor adapters to access request body fields
+					for key, val := range body {
+						if _, exists := pp[key]; !exists {
+							pp[key] = val
 						}
 					}
+				}
 				}
 			logger.Info("Passing valid tool parameters to context",
 				zap.String("tool", toolName),

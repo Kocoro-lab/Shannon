@@ -1,6 +1,14 @@
 """
 OpenAPI tool loader for Shannon.
 Dynamically converts OpenAPI 3.x specifications into Shannon tools.
+
+TODO: Add comprehensive tests for:
+  - OpenAPI tool execution with different auth types (bearer, API key, basic)
+  - Circuit breaker behavior (failure threshold, recovery)
+  - Rate limiting enforcement
+  - Header injection and body parameter processing
+  - Vendor adapter loading and body transformation
+  - Error handling for malformed requests/responses
 """
 
 from __future__ import annotations

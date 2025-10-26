@@ -65,28 +65,28 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		baseContext["parent_workflow_id"] = input.ParentWorkflowID
 	}
 
-    // Step 1: Decompose the task (use preplanned plan if provided)
-    var decomp activities.DecompositionResult
-    var err error
-    if input.PreplannedDecomposition != nil {
-        decomp = *input.PreplannedDecomposition
-    } else {
-        err = workflow.ExecuteActivity(ctx,
-            constants.DecomposeTaskActivity,
-            activities.DecompositionInput{
-                Query:          input.Query,
-                Context:        baseContext,
-                AvailableTools: []string{},
-            }).Get(ctx, &decomp)
+	// Step 1: Decompose the task (use preplanned plan if provided)
+	var decomp activities.DecompositionResult
+	var err error
+	if input.PreplannedDecomposition != nil {
+		decomp = *input.PreplannedDecomposition
+	} else {
+		err = workflow.ExecuteActivity(ctx,
+			constants.DecomposeTaskActivity,
+			activities.DecompositionInput{
+				Query:          input.Query,
+				Context:        baseContext,
+				AvailableTools: []string{},
+			}).Get(ctx, &decomp)
 
-        if err != nil {
-            logger.Error("Task decomposition failed", "error", err)
-            return TaskResult{
-                Success:      false,
-                ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
-            }, err
-        }
-    }
+		if err != nil {
+			logger.Error("Task decomposition failed", "error", err)
+			return TaskResult{
+				Success:      false,
+				ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
+			}, err
+		}
+	}
 
 	// Check for budget configuration
 	agentMaxTokens := 0
@@ -114,12 +114,12 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-    // Simple detection:
-    // - Fallback to simple if decomposition returned zero subtasks (LLM/schema hiccup)
-    // - Otherwise, only treat as simple when no tools are needed AND it's trivial AND below threshold
-    //   A single tool-based subtask should use the pattern path, not the simple activity
-    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
-    isSimple := len(decomp.Subtasks) == 0 || (decomp.ComplexityScore < config.SimpleThreshold && simpleByShape)
+	// Simple detection:
+	// - Fallback to simple if decomposition returned zero subtasks (LLM/schema hiccup)
+	// - Otherwise, only treat as simple when no tools are needed AND it's trivial AND below threshold
+	//   A single tool-based subtask should use the pattern path, not the simple activity
+	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+	isSimple := len(decomp.Subtasks) == 0 || (decomp.ComplexityScore < config.SimpleThreshold && simpleByShape)
 
 	// Step 3: Handle simple tasks directly (no tools, trivial plan)
 	if isSimple {
@@ -226,23 +226,23 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	var synthesis activities.SynthesisResult
 
-    // Check if decomposition included a synthesis/summarization subtask
-    // Prefer structured subtask type over brittle description matching
-    hasSynthesisSubtask := false
-    var synthesisTaskIdx int
+	// Check if decomposition included a synthesis/summarization subtask
+	// Prefer structured subtask type over brittle description matching
+	hasSynthesisSubtask := false
+	var synthesisTaskIdx int
 
-    for i, subtask := range decomp.Subtasks {
-        t := strings.ToLower(strings.TrimSpace(subtask.TaskType))
-        if t == "synthesis" || t == "summarization" || t == "summary" || t == "synthesize" {
-            hasSynthesisSubtask = true
-            synthesisTaskIdx = i
-            logger.Info("Detected synthesis subtask in decomposition",
-                "task_id", subtask.ID,
-                "task_type", subtask.TaskType,
-                "index", i,
-            )
-        }
-    }
+	for i, subtask := range decomp.Subtasks {
+		t := strings.ToLower(strings.TrimSpace(subtask.TaskType))
+		if t == "synthesis" || t == "summarization" || t == "summary" || t == "synthesize" {
+			hasSynthesisSubtask = true
+			synthesisTaskIdx = i
+			logger.Info("Detected synthesis subtask in decomposition",
+				"task_id", subtask.ID,
+				"task_type", subtask.TaskType,
+				"index", i,
+			)
+		}
+	}
 
 	// Priority order for synthesis decision:
 	// 1. BypassSingleResult (config-driven optimization)
@@ -492,17 +492,17 @@ func executeParallelPattern(
 	config activities.WorkflowConfig,
 ) ([]activities.AgentExecutionResult, int) {
 
-    parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
-    for i, subtask := range decomp.Subtasks {
-        // Preserve incoming role from base context by default; allow LLM to override via agent_types
-        baseRole := "agent"
-        if v, ok := baseContext["role"].(string); ok && v != "" {
-            baseRole = v
-        }
-        role := baseRole
-        if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-            role = decomp.AgentTypes[i]
-        }
+	parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
+	for i, subtask := range decomp.Subtasks {
+		// Preserve incoming role from base context by default; allow LLM to override via agent_types
+		baseRole := "agent"
+		if v, ok := baseContext["role"].(string); ok && v != "" {
+			baseRole = v
+		}
+		role := baseRole
+		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+			role = decomp.AgentTypes[i]
+		}
 
 		parallelTasks[i] = execution.ParallelTask{
 			ID:             subtask.ID,
@@ -556,17 +556,17 @@ func executeSequentialPattern(
 	config activities.WorkflowConfig,
 ) ([]activities.AgentExecutionResult, int) {
 
-    sequentialTasks := make([]execution.SequentialTask, len(decomp.Subtasks))
-    for i, subtask := range decomp.Subtasks {
-        // Preserve incoming role from base context by default; allow LLM to override via agent_types
-        baseRole := "agent"
-        if v, ok := baseContext["role"].(string); ok && v != "" {
-            baseRole = v
-        }
-        role := baseRole
-        if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-            role = decomp.AgentTypes[i]
-        }
+	sequentialTasks := make([]execution.SequentialTask, len(decomp.Subtasks))
+	for i, subtask := range decomp.Subtasks {
+		// Preserve incoming role from base context by default; allow LLM to override via agent_types
+		baseRole := "agent"
+		if v, ok := baseContext["role"].(string); ok && v != "" {
+			baseRole = v
+		}
+		role := baseRole
+		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+			role = decomp.AgentTypes[i]
+		}
 
 		sequentialTasks[i] = execution.SequentialTask{
 			ID:             subtask.ID,
@@ -617,17 +617,17 @@ func executeHybridPattern(
 	config activities.WorkflowConfig,
 ) ([]activities.AgentExecutionResult, int) {
 
-    hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
-    for i, subtask := range decomp.Subtasks {
-        // Preserve incoming role from base context by default; allow LLM to override via agent_types
-        baseRole := "agent"
-        if v, ok := baseContext["role"].(string); ok && v != "" {
-            baseRole = v
-        }
-        role := baseRole
-        if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
-            role = decomp.AgentTypes[i]
-        }
+	hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
+	for i, subtask := range decomp.Subtasks {
+		// Preserve incoming role from base context by default; allow LLM to override via agent_types
+		baseRole := "agent"
+		if v, ok := baseContext["role"].(string); ok && v != "" {
+			baseRole = v
+		}
+		role := baseRole
+		if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
+			role = decomp.AgentTypes[i]
+		}
 
 		hybridTasks[i] = execution.HybridTask{
 			ID:             subtask.ID,
