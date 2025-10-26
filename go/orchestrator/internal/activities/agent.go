@@ -34,7 +34,8 @@ import (
 )
 
 var (
-	policyEngine policy.Engine
+	policyEngine   policy.Engine
+	policyEngineMu sync.RWMutex // Protects policyEngine reads and writes
 )
 
 // --- Minimal tool metadata cache (cost_per_use) ---
@@ -282,7 +283,10 @@ func InitializePolicyEngine() error {
 		return fmt.Errorf("failed to create policy engine: %w", err)
 	}
 
+	policyEngineMu.Lock()
 	policyEngine = engine
+	policyEngineMu.Unlock()
+
 	logger.Info("Policy engine initialized",
 		zap.Bool("enabled", engine.IsEnabled()),
 		zap.String("mode", string(config.Mode)),
@@ -302,7 +306,10 @@ func InitializePolicyEngineFromConfig(shannonPolicyConfig interface{}) error {
 		return fmt.Errorf("failed to create policy engine: %w", err)
 	}
 
+	policyEngineMu.Lock()
 	policyEngine = engine
+	policyEngineMu.Unlock()
+
 	logger.Info("Policy engine initialized from Shannon config",
 		zap.Bool("enabled", engine.IsEnabled()),
 		zap.String("mode", string(config.Mode)),
@@ -336,7 +343,10 @@ func InitializePolicyEngineFromShannonConfig(shannonPolicyConfig *config.PolicyC
 		return fmt.Errorf("failed to create policy engine: %w", err)
 	}
 
+	policyEngineMu.Lock()
 	policyEngine = engine
+	policyEngineMu.Unlock()
+
 	logger.Info("Policy engine initialized from Shannon config",
 		zap.Bool("enabled", engine.IsEnabled()),
 		zap.String("mode", string(policyConfig.Mode)),
@@ -350,6 +360,8 @@ func InitializePolicyEngineFromShannonConfig(shannonPolicyConfig *config.PolicyC
 
 // GetPolicyEngine returns the global policy engine instance
 func GetPolicyEngine() policy.Engine {
+	policyEngineMu.RLock()
+	defer policyEngineMu.RUnlock()
 	return policyEngine
 }
 
@@ -357,8 +369,12 @@ func GetPolicyEngine() policy.Engine {
 func evaluateAgentPolicy(ctx context.Context, input AgentExecutionInput, logger *zap.Logger) (*policy.Decision, error) {
 	// Get environment from active policy engine configuration for consistency
 	environment := "dev"
-	if policyEngine != nil && policyEngine.IsEnabled() {
-		if env := policyEngine.Environment(); env != "" {
+	policyEngineMu.RLock()
+	engine := policyEngine
+	policyEngineMu.RUnlock()
+
+	if engine != nil && engine.IsEnabled() {
+		if env := engine.Environment(); env != "" {
 			environment = env
 		} else if v := os.Getenv("ENVIRONMENT"); v != "" {
 			environment = v
@@ -424,7 +440,7 @@ func evaluateAgentPolicy(ctx context.Context, input AgentExecutionInput, logger 
 	}
 
 	startTime := time.Now()
-	decision, err := policyEngine.Evaluate(ctx, policyInput)
+	decision, err := engine.Evaluate(ctx, policyInput)
 	duration := time.Since(startTime)
 
 	// Record performance metrics
@@ -537,7 +553,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	emitAgentThinkingEvent(ctx, input)
 
 	// Policy check - Phase 0.5: Basic enforcement at agent execution boundary
-	if policyEngine != nil && policyEngine.IsEnabled() {
+	policyEngineMu.RLock()
+	engine := policyEngine
+	policyEngineMu.RUnlock()
+
+	if engine != nil && engine.IsEnabled() {
 		decision, err := evaluateAgentPolicy(ctx, input, logger)
 		if err != nil {
 			logger.Error("Policy evaluation failed", zap.Error(err))
@@ -550,7 +570,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 		if !decision.Allow {
 			// Check if we're in dry-run mode - if so, don't block execution
-			if policyEngine != nil && policyEngine.Mode() == policy.ModeDryRun {
+			if engine != nil && engine.Mode() == policy.ModeDryRun {
 				logger.Info("DRY-RUN: Policy would deny but allowing execution",
 					zap.String("reason", decision.Reason),
 					zap.String("agent_id", input.AgentID),
@@ -1414,39 +1434,49 @@ var (
 		"critic":     {"code_reader"},
 		"generalist": {},
 	}
-	roleLoaded bool
+	roleAllowlistMu   sync.RWMutex
+	roleAllowlistOnce sync.Once
 )
 
 func getRoleAllowlist() map[string][]string {
-	if roleLoaded {
-		return roleAllowlist
-	}
-	// Try fetching from LLM service
-	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
-	url := fmt.Sprintf("%s/roles", base)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err == nil {
-		client := &http.Client{Timeout: 2 * time.Second, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
-		if resp, err := client.Do(req); err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			defer resp.Body.Close()
-			var payload map[string]struct {
-				AllowedTools []string `json:"allowed_tools"`
-			}
-			if json.NewDecoder(resp.Body).Decode(&payload) == nil {
-				tmp := map[string][]string{}
-				for k, v := range payload {
-					tmp[strings.ToLower(k)] = v.AllowedTools
+	// Use sync.Once to ensure initialization happens exactly once
+	roleAllowlistOnce.Do(func() {
+		// Try fetching from LLM service
+		base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+		url := fmt.Sprintf("%s/roles", base)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err == nil {
+			client := &http.Client{Timeout: 2 * time.Second, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
+			if resp, err := client.Do(req); err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				defer resp.Body.Close()
+				var payload map[string]struct {
+					AllowedTools []string `json:"allowed_tools"`
 				}
-				if len(tmp) > 0 {
-					roleAllowlist = tmp
-					roleLoaded = true
+				if json.NewDecoder(resp.Body).Decode(&payload) == nil {
+					tmp := map[string][]string{}
+					for k, v := range payload {
+						tmp[strings.ToLower(k)] = v.AllowedTools
+					}
+					if len(tmp) > 0 {
+						roleAllowlistMu.Lock()
+						roleAllowlist = tmp
+						roleAllowlistMu.Unlock()
+					}
 				}
 			}
 		}
+	})
+
+	// Return a copy to prevent external modifications
+	roleAllowlistMu.RLock()
+	defer roleAllowlistMu.RUnlock()
+	result := make(map[string][]string, len(roleAllowlist))
+	for k, v := range roleAllowlist {
+		result[k] = v
 	}
-	return roleAllowlist
+	return result
 }
 
 // getenv returns env var or default

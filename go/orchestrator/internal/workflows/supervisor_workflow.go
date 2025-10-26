@@ -3,6 +3,7 @@ package workflows
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -67,12 +68,14 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Mailbox v1 (optional): accept messages via signal and expose via query handler
 	var messages []MailboxMessage
+	var messagesMu sync.RWMutex // Protects messages slice from query handler races
 	// Agent directory (role metadata)
 	type AgentInfo struct {
 		AgentID string
 		Role    string
 	}
 	var teamAgents []AgentInfo
+	var teamAgentsMu sync.RWMutex // Protects teamAgents slice from query handler races
 	// Dependency sync (selectors) — topic notifications
 	topicChans := make(map[string]workflow.Channel)
 	var msgChan workflow.Channel // Declare at function scope for use across version checks
@@ -96,29 +99,38 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			for {
 				var msg MailboxMessage
 				msgChan.Receive(ctx, &msg)
-				messages = append(messages, msg) // Single goroutine for slice modification
+				// Protect slice modification from concurrent query handler reads
+				messagesMu.Lock()
+				messages = append(messages, msg)
+				messagesMu.Unlock()
 			}
 		})
 		_ = workflow.SetQueryHandler(ctx, "getMailbox", func() ([]MailboxMessage, error) {
 			// Return a copy to avoid race conditions
+			messagesMu.RLock()
 			result := make([]MailboxMessage, len(messages))
 			copy(result, messages)
+			messagesMu.RUnlock()
 			return result, nil
 		})
 	}
 	_ = workflow.SetQueryHandler(ctx, "listTeamAgents", func() ([]AgentInfo, error) {
 		// Return a copy to avoid race conditions
+		teamAgentsMu.RLock()
 		result := make([]AgentInfo, len(teamAgents))
 		copy(result, teamAgents)
+		teamAgentsMu.RUnlock()
 		return result, nil
 	})
 	_ = workflow.SetQueryHandler(ctx, "findTeamAgentsByRole", func(role string) ([]AgentInfo, error) {
+		teamAgentsMu.RLock()
 		out := make([]AgentInfo, 0)
 		for _, a := range teamAgents {
 			if a.Role == role {
 				out = append(out, a)
 			}
 		}
+		teamAgentsMu.RUnlock()
 		return out, nil
 	})
 
@@ -443,7 +455,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				role = decomp.AgentTypes[i]
 			}
 			childCtx["role"] = role
+			// Protect slice modification from concurrent query handler reads
+			teamAgentsMu.Lock()
 			teamAgents = append(teamAgents, AgentInfo{AgentID: fmt.Sprintf("agent-%s", st.ID), Role: role})
+			teamAgentsMu.Unlock()
 			// Optional: record role assignment in mailbox
 			if workflow.GetVersion(ctx, "mailbox_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 				msg := MailboxMessage{From: "supervisor", To: fmt.Sprintf("agent-%s", st.ID), Role: role, Content: "role_assigned"}

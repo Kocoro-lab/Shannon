@@ -445,7 +445,9 @@ impl AgentServiceImpl {
             let wall_start = std::time::Instant::now();
             let mut handles = Vec::with_capacity(total);
             for (idx, tool_name, params_map) in parsed.into_iter() {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let permit = semaphore.clone().acquire_owned().await.map_err(|e| {
+                    tonic::Status::internal(format!("Failed to acquire semaphore permit: {}", e))
+                })?;
                 #[cfg(feature = "wasi")]
                 let sandbox = self.sandbox.clone();
                 #[cfg(not(feature = "wasi"))]

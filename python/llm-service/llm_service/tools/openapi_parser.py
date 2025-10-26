@@ -210,8 +210,26 @@ def extract_base_url(
     Returns:
         Base URL for API requests
     """
+    from urllib.parse import urlparse
+
+    # SSRF protection: Validate override_base_url BEFORE using it
     if override_base_url:
+        parsed = urlparse(override_base_url)
+        if parsed.hostname and _is_private_ip(parsed.hostname):
+            raise OpenAPIParseError(
+                f"Override base URL '{override_base_url}' resolves to private/internal IP address. "
+                "This is blocked for security (SSRF protection)."
+            )
         return override_base_url.rstrip("/")
+
+    # SSRF protection: Validate spec_url BEFORE using it to resolve relative URLs
+    if spec_url:
+        parsed = urlparse(spec_url)
+        if parsed.hostname and _is_private_ip(parsed.hostname):
+            raise OpenAPIParseError(
+                f"Spec URL '{spec_url}' resolves to private/internal IP address. "
+                "This is blocked for security (SSRF protection)."
+            )
 
     servers = spec.get("servers", [])
     if not servers:
@@ -225,19 +243,25 @@ def extract_base_url(
     if not url:
         raise OpenAPIParseError("Server URL is empty")
 
-    # Handle server variables (use defaults, no substitution yet)
+    # Handle server variables (use defaults, validate BEFORE substitution)
     variables = server.get("variables", {})
     for var_name, var_spec in variables.items():
         default = var_spec.get("default", "")
+        # SSRF protection: Validate variable defaults if they look like URLs
+        if default and ("://" in default or default.startswith("/")):
+            parsed = urlparse(default)
+            if parsed.hostname and _is_private_ip(parsed.hostname):
+                raise OpenAPIParseError(
+                    f"Server variable '{var_name}' default value '{default}' resolves to private/internal IP address. "
+                    "This is blocked for security (SSRF protection)."
+                )
         placeholder = "{" + var_name + "}"
         url = url.replace(placeholder, default)
 
     # Handle relative URLs (common in PetStore and other examples)
     if url.startswith("/"):
         if spec_url:
-            # Extract scheme://host from spec_url
-            from urllib.parse import urlparse
-
+            # Extract scheme://host from spec_url (already validated above)
             parsed = urlparse(spec_url)
             base = f"{parsed.scheme}://{parsed.netloc}"
             url = base + url
@@ -246,9 +270,8 @@ def extract_base_url(
                 f"Server URL '{url}' is relative but no spec_url provided to resolve it"
             )
 
-    # SSRF protection: Block private/internal IPs after resolution
-    from urllib.parse import urlparse
-
+    # Final SSRF protection: Block private/internal IPs after all resolution
+    # This is a defense-in-depth check in case any edge case slipped through
     parsed_url = urlparse(url)
     hostname = parsed_url.hostname
     if hostname and _is_private_ip(hostname):

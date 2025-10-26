@@ -50,9 +50,14 @@ def get_vendor_adapter(name: str):
     if not name:
         return None
 
-    # Security: Validate vendor name to prevent code injection
-    # Only allow alphanumeric characters and underscores
-    if not name.replace("_", "").isalnum():
+    # Security: Validate vendor name to prevent code injection and path traversal
+    # Block path traversal attempts
+    if ".." in name or "/" in name or "\\" in name:
+        # Path traversal attempt detected - reject
+        return None
+
+    # Only allow alphanumeric characters, underscores, and hyphens
+    if not name.replace("_", "").replace("-", "").isalnum():
         # Invalid vendor name format - reject
         return None
 
