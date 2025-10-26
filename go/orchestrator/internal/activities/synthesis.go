@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -27,8 +27,8 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		"query", input.Query,
 		"num_results", len(input.AgentResults),
 	)
-    // Use activity-scoped logger so logs appear in Temporal activity logs
-    logger := activity.GetLogger(ctx)
+	// Use activity-scoped logger so logs appear in Temporal activity logs
+	logger := activity.GetLogger(ctx)
 
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
@@ -52,7 +52,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	// Build synthesis query that includes agent results
 	const maxAgents = 6
-	const maxPerAgentChars = 1500
+	const maxPerAgentChars = 10000 // Increased for data-heavy responses (analytics, structured data)
 
 	var b strings.Builder
 
@@ -95,7 +95,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	reqBody := map[string]interface{}{
 		"query":         b.String(),
 		"context":       contextMap,
-		"allowed_tools": []string{}, // Disable tools during synthesis - we only want formatting
+		"allowed_tools": []string{},  // Disable tools during synthesis - we only want formatting
 		"agent_id":      "synthesis", // For observability
 	}
 
@@ -126,43 +126,43 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		req.Header.Set("X-Parent-Workflow-ID", input.ParentWorkflowID)
 	}
 
-    resp, err := httpClient.Do(req)
-    if err != nil {
-        logger.Warn("LLM synthesis: HTTP error, falling back", zap.Error(err))
-        return simpleSynthesis(ctx, input)
-    }
-    defer resp.Body.Close()
-    if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-        logger.Warn("LLM synthesis: non-2xx, falling back", zap.Int("status", resp.StatusCode))
-        return simpleSynthesis(ctx, input)
-    }
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		logger.Warn("LLM synthesis: HTTP error, falling back", zap.Error(err))
+		return simpleSynthesis(ctx, input)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn("LLM synthesis: non-2xx, falling back", zap.Int("status", resp.StatusCode))
+		return simpleSynthesis(ctx, input)
+	}
 
-    // Parse /agent/query response format (read body for diagnostics)
-    rawBody, readErr := io.ReadAll(resp.Body)
-    if readErr != nil {
-        logger.Warn("LLM synthesis: read body failed, falling back", zap.Error(readErr))
-        return simpleSynthesis(ctx, input)
-    }
+	// Parse /agent/query response format (read body for diagnostics)
+	rawBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		logger.Warn("LLM synthesis: read body failed, falling back", zap.Error(readErr))
+		return simpleSynthesis(ctx, input)
+	}
 
-    var out struct {
-        Response  string                 `json:"response"`
-        Metadata  map[string]interface{} `json:"metadata"`
-        TokensUsed int                   `json:"tokens_used"`
-    }
-    if err := json.Unmarshal(rawBody, &out); err != nil {
-        logger.Warn("LLM synthesis: decode error, falling back",
-            zap.Error(err),
-            zap.String("raw", truncateForLog(string(rawBody), 2000)),
-        )
-        return simpleSynthesis(ctx, input)
-    }
+	var out struct {
+		Response   string                 `json:"response"`
+		Metadata   map[string]interface{} `json:"metadata"`
+		TokensUsed int                    `json:"tokens_used"`
+	}
+	if err := json.Unmarshal(rawBody, &out); err != nil {
+		logger.Warn("LLM synthesis: decode error, falling back",
+			zap.Error(err),
+			zap.String("raw", truncateForLog(string(rawBody), 2000)),
+		)
+		return simpleSynthesis(ctx, input)
+	}
 
-    if out.Response == "" {
-        logger.Warn("LLM synthesis: empty response, falling back",
-            zap.String("raw", truncateForLog(string(rawBody), 2000)),
-        )
-        return simpleSynthesis(ctx, input)
-    }
+	if out.Response == "" {
+		logger.Warn("LLM synthesis: empty response, falling back",
+			zap.String("raw", truncateForLog(string(rawBody), 2000)),
+		)
+		return simpleSynthesis(ctx, input)
+	}
 
 	// Extract model info from metadata if available
 	model := "unknown"
@@ -176,11 +176,11 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
-    logger.Info("Synthesis (role-aware LLM) completed",
-        zap.Int("tokens_used", out.TokensUsed),
-        zap.String("model", model),
-        zap.String("role", role),
-    )
+	logger.Info("Synthesis (role-aware LLM) completed",
+		zap.Int("tokens_used", out.TokensUsed),
+		zap.String("model", model),
+		zap.String("role", role),
+	)
 
 	return SynthesisResult{
 		FinalResult: out.Response,
@@ -190,16 +190,16 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 // truncateForLog returns s truncated to max characters for safe logging
 func truncateForLog(s string, max int) string {
-    if len(s) <= max {
-        return s
-    }
-    return s[:max] + "...(truncated)"
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 // simpleSynthesis concatenates successful agent outputs with light formatting
 func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
-    // Use activity-scoped logger for consistency with Temporal activity logging
-    logger := activity.GetLogger(ctx)
+	// Use activity-scoped logger for consistency with Temporal activity logging
+	logger := activity.GetLogger(ctx)
 	logger.Info("Synthesizing results (simple)",
 		zap.String("query", input.Query),
 		zap.Int("num_results", len(input.AgentResults)),
