@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from typing import Any, Dict, List, Optional, Type
 from urllib.parse import urlparse, quote
@@ -30,6 +31,36 @@ from .vendor_adapters import get_vendor_adapter
 logger = logging.getLogger(__name__)
 
 
+def _resolve_env_var(value: str) -> str:
+    """
+    Resolve environment variable references in string values.
+
+    Supports both ${VAR} and $VAR formats.
+    Returns the environment variable value if found, otherwise empty string.
+
+    Args:
+        value: String that may contain env var reference
+
+    Returns:
+        Resolved value or empty string if not found
+    """
+    if not isinstance(value, str):
+        return value
+
+    # Handle ${VAR} format
+    if value.startswith("${") and value.endswith("}"):
+        env_var = value[2:-1]
+        return os.getenv(env_var, "")
+
+    # Handle $VAR format
+    if value.startswith("$"):
+        env_var = value[1:]
+        return os.getenv(env_var, "")
+
+    # Not an env var reference
+    return value
+
+
 # Simple circuit breaker (same as MCP)
 class _SimpleBreaker:
     def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 60.0):
@@ -38,26 +69,30 @@ class _SimpleBreaker:
         self.failures = 0
         self.open_until: float = 0.0
         self.half_open = False
+        self._lock = threading.Lock()  # Protect state from concurrent access
 
     def allow(self, now: float) -> bool:
-        if self.open_until > now:
-            return False
-        if self.open_until != 0.0 and self.open_until <= now:
-            # move to half-open and allow one trial
-            self.half_open = True
-            self.open_until = 0.0
-        return True
+        with self._lock:
+            if self.open_until > now:
+                return False
+            if self.open_until != 0.0 and self.open_until <= now:
+                # move to half-open and allow one trial
+                self.half_open = True
+                self.open_until = 0.0
+            return True
 
     def on_success(self) -> None:
-        self.failures = 0
-        self.half_open = False
-        self.open_until = 0.0
+        with self._lock:
+            self.failures = 0
+            self.half_open = False
+            self.open_until = 0.0
 
     def on_failure(self, now: float) -> None:
-        self.failures += 1
-        if self.failures >= self.failure_threshold:
-            self.open_until = now + self.recovery_timeout
-            self.half_open = False
+        with self._lock:
+            self.failures += 1
+            if self.failures >= self.failure_threshold:
+                self.open_until = now + self.recovery_timeout
+                self.half_open = False
 
 
 _breakers: Dict[str, _SimpleBreaker] = {}
@@ -106,6 +141,7 @@ class OpenAPILoader:
         rate_limit: int = 30,
         timeout_seconds: float = 30.0,
         max_response_bytes: int = 10 * 1024 * 1024,
+        retries: int = 2,
         spec_url: Optional[str] = None,
         vendor_name: Optional[str] = None,
     ):
@@ -125,6 +161,7 @@ class OpenAPILoader:
             rate_limit: Requests per minute (default: 30, enforceable)
             timeout_seconds: Request timeout in seconds (default: 30)
             max_response_bytes: Max response size (default: 10MB)
+            retries: Max retry attempts (default: 2, reduced to avoid circuit breaker)
             spec_url: Optional URL where spec was fetched from (for relative server URLs)
             vendor_name: Optional vendor adapter name (e.g., "ptengine")
         """
@@ -137,6 +174,7 @@ class OpenAPILoader:
         self.operations_filter = operations_filter
         self.tags_filter = tags_filter
         self.base_url_override = base_url_override
+        self.retries = retries
         self.rate_limit = rate_limit
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
@@ -190,9 +228,8 @@ class OpenAPILoader:
 
         if self.auth_type == "bearer":
             token = self.auth_config.get("token", "")
-            # Resolve environment variable if token starts with $
-            if token.startswith("$"):
-                token = os.getenv(token[1:], "")
+            # Resolve environment variable references
+            token = _resolve_env_var(token)
             if token:
                 headers["Authorization"] = f"Bearer {token}"
 
@@ -201,9 +238,8 @@ class OpenAPILoader:
             api_key_location = self.auth_config.get("api_key_location", "header")
             api_key_value = self.auth_config.get("api_key_value", "")
 
-            # Resolve environment variable if value starts with $
-            if api_key_value.startswith("$"):
-                api_key_value = os.getenv(api_key_value[1:], "")
+            # Resolve environment variable references
+            api_key_value = _resolve_env_var(api_key_value)
 
             if api_key_location == "header" and api_key_value:
                 headers[api_key_name] = api_key_value
@@ -213,11 +249,9 @@ class OpenAPILoader:
             username = self.auth_config.get("username", "")
             password = self.auth_config.get("password", "")
 
-            # Resolve environment variables
-            if username.startswith("$"):
-                username = os.getenv(username[1:], "")
-            if password.startswith("$"):
-                password = os.getenv(password[1:], "")
+            # Resolve environment variable references
+            username = _resolve_env_var(username)
+            password = _resolve_env_var(password)
 
             if username and password:
                 import base64
@@ -229,13 +263,11 @@ class OpenAPILoader:
         extra_headers = self.auth_config.get("extra_headers", {})
         if isinstance(extra_headers, dict):
             for header_name, header_value in extra_headers.items():
-                # Resolve environment variables (${VAR})
-                if isinstance(header_value, str) and header_value.startswith("${") and header_value.endswith("}"):
-                    env_var = header_value[2:-1]
-                    header_value = os.getenv(env_var, "")
+                # Resolve environment variable references
+                header_value = _resolve_env_var(header_value)
 
-                # Note: Dynamic field resolution ({{body.field}}) happens at execution time
-                # For now, just set static/env values
+                # Only static and environment variable values are supported
+                # Dynamic body field references ({{body.field}}) are NOT supported
                 if header_value:
                     headers[header_name] = str(header_value)
 
@@ -418,10 +450,8 @@ class OpenAPILoader:
                 ):
                     api_key_name = auth_config.get("api_key_name", "api_key")
                     api_key_value = auth_config.get("api_key_value", "")
-                    # Resolve from env if starts with $
-                    if api_key_value.startswith("$"):
-                        env_var = api_key_value[1:]
-                        api_key_value = os.getenv(env_var, "")
+                    # Resolve environment variable references
+                    api_key_value = _resolve_env_var(api_key_value)
                     query_params[api_key_name] = api_key_value
 
                 # Optional debug logging of the final outbound request (sanitized)
@@ -458,8 +488,9 @@ class OpenAPILoader:
                     # Never fail on logging
                     pass
 
-                # Retry logic with exponential backoff (matches MCP)
-                retries = int(os.getenv("OPENAPI_RETRIES", "3"))
+                # Retry logic with exponential backoff
+                # Allow env var override, otherwise use configured retries (default: 2)
+                retries = int(os.getenv("OPENAPI_RETRIES", str(self.retries)))
                 last_exception = None
 
                 for attempt in range(1, retries + 1):
@@ -493,6 +524,10 @@ class OpenAPILoader:
                             else:
                                 # Plain text for MVP
                                 result = response.text
+
+                            # Log response if OPENAPI_LOG_REQUESTS is enabled
+                            if log_requests:
+                                logger.info(f"OpenAPI tool {operation_id}: Response status={response.status_code} body={result}")
 
                             duration_ms = int((time.time() - start_time) * 1000)
 

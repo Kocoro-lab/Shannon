@@ -734,11 +734,47 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						pp = make(map[string]interface{})
 						input.Context["prompt_params"] = pp
 					}
-					// Mirror all fields from body into prompt_params when missing
-					// This enables vendor adapters to access request body fields
+
+					// Safe field allowlist to prevent leaking sensitive data
+					// Only mirror fields that are safe for vendor adapters
+					safeFields := map[string]bool{
+						"account_id":   true,
+						"tenant_id":    true,
+						"user_id":      true,
+						"session_id":   true,
+						"profile_id":   true,
+						"workspace_id": true,
+						"project_id":   true,
+						"aid":          true, // Application ID
+						"current_date": true,
+						"role":         true,
+						"limit":        true,
+						"offset":       true,
+						"page":         true,
+						"page_size":    true,
+						"sort":         true,
+						"order":        true,
+						"filter":       true,
+					}
+
+					// Mirror only safe fields from body into prompt_params when missing
+					// This enables vendor adapters to access request body fields safely
 					for key, val := range body {
-						if _, exists := pp[key]; !exists {
-							pp[key] = val
+						// Skip fields containing sensitive keywords
+						keyLower := strings.ToLower(key)
+						if strings.Contains(keyLower, "token") ||
+							strings.Contains(keyLower, "secret") ||
+							strings.Contains(keyLower, "password") ||
+							strings.Contains(keyLower, "key") ||
+							strings.Contains(keyLower, "credential") {
+							continue
+						}
+
+						// Only mirror if field is in safe list or already exists
+						if safeFields[key] {
+							if _, exists := pp[key]; !exists {
+								pp[key] = val
+							}
 						}
 					}
 				}

@@ -126,17 +126,18 @@ def resolve_refs_in_schema(
             raise OpenAPIParseError(f"Circular reference detected: {ref_path}")
 
         visited.add(ref_path)
+        try:
+            # Resolve the reference
+            resolved = resolve_ref(spec, ref_path)
 
-        # Resolve the reference
-        resolved = resolve_ref(spec, ref_path)
+            # Deep copy to avoid modifying the original spec
+            resolved = copy.deepcopy(resolved)
 
-        # Deep copy to avoid modifying the original spec
-        resolved = copy.deepcopy(resolved)
-
-        # Recursively resolve nested refs
-        resolved = resolve_refs_in_schema(resolved, spec, visited)
-
-        visited.remove(ref_path)
+            # Recursively resolve nested refs
+            resolved = resolve_refs_in_schema(resolved, spec, visited)
+        finally:
+            # Always cleanup visited set, even on exception
+            visited.discard(ref_path)
 
         # Merge properties from the original schema (excluding $ref)
         # OpenAPI 3.1 allows sibling properties alongside $ref
