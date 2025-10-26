@@ -975,15 +975,15 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			wfID = info.WorkflowExecution.ID
 		}
 	}
-	if wfID != "" {
-		streaming.Get().Publish(wfID, streaming.Event{
-			WorkflowID: wfID,
-			Type:       string(StreamEventLLMPrompt),
-			AgentID:    input.AgentID,
-			Message:    truncateQuery(input.Query, 2000),
-			Timestamp:  time.Now(),
-		})
-	}
+    if wfID != "" {
+        streaming.Get().Publish(wfID, streaming.Event{
+            WorkflowID: wfID,
+            Type:       string(StreamEventLLMPrompt),
+            AgentID:    input.AgentID,
+            Message:    truncateQuery(input.Query, MaxPromptChars),
+            Timestamp:  time.Now(),
+        })
+    }
 
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
@@ -1031,13 +1031,13 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					})
 				}
 			}
-			streaming.Get().Publish(wfID, streaming.Event{
-				WorkflowID: wfID,
-				Type:       string(StreamEventLLMOutput),
-				AgentID:    input.AgentID,
-				Message:    truncateQuery(out, 4000),
-				Timestamp:  time.Now(),
-			})
+            streaming.Get().Publish(wfID, streaming.Event{
+                WorkflowID: wfID,
+                Type:       string(StreamEventLLMOutput),
+                AgentID:    input.AgentID,
+                Message:    truncateQuery(out, MaxLLMOutputChars),
+                Timestamp:  time.Now(),
+            })
 		}
 	}
 
@@ -1536,7 +1536,7 @@ func getenvInt(key string, def int) int {
 // emitAgentThinkingEvent emits a human-readable thinking event
 func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-		message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, 80))
+    message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
 		eventData := EmitTaskUpdateInput{
 			WorkflowID: info.WorkflowExecution.ID,
 			EventType:  StreamEventAgentThinking,
