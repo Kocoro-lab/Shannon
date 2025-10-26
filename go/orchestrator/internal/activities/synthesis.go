@@ -438,12 +438,16 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
             Message:    truncateQuery(out.Response, MaxSynthesisOutputChars),
             Timestamp:  time.Now(),
         })
-		// Event 2: Synthesis summary with model and token usage
+		// Event 2: Synthesis summary with model and token usage (omit model if unknown)
+		summary := fmt.Sprintf("~%d tokens", out.TokensUsed)
+		if model != "" && model != "unknown" {
+			summary = fmt.Sprintf("Used %s (~%d tokens)", model, out.TokensUsed)
+		}
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    fmt.Sprintf("Used %s (~%d tokens)", model, out.TokensUsed),
+			Message:    summary,
 			Timestamp:  time.Now(),
 		})
 		// Event 3: Synthesis completion status
