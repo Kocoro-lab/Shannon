@@ -441,7 +441,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-            Message:    "Analyzation completed",
+            Message:    "Final answer ready",
 			Timestamp:  time.Now(),
 		})
 	}
