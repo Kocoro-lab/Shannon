@@ -710,7 +710,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					if !ok {
 						// prompt_params is missing or wrong type, create new map
 						logger.Warn("prompt_params missing or invalid type, creating new map",
-							zap.String("workflow_id", workflowID))
+							zap.String("workflow_id", input.ParentWorkflowID))
 						pp = make(map[string]interface{})
 						input.Context["prompt_params"] = pp
 					}
@@ -722,7 +722,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						}
 					}
 				}
-				}
+			}
 			logger.Info("Passing valid tool parameters to context",
 				zap.String("tool", toolName),
 				zap.String("agent_id", input.AgentID),

@@ -40,7 +40,8 @@ pub struct AgentServiceImpl {
 
 impl Default for AgentServiceImpl {
     fn default() -> Self {
-        Self::new()
+        // Default implementation uses unwrap - should only be used in tests
+        Self::new().expect("Failed to create AgentServiceImpl in Default trait")
     }
 }
 
@@ -54,23 +55,21 @@ impl Default for AgentServiceImpl {
 // fields are Send + Sync, so AgentServiceImpl also automatically implements them.
 
 impl AgentServiceImpl {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         // Get sweep interval from environment or use default of 10 seconds
         let sweep_interval_ms = std::env::var("MEMORY_SWEEP_INTERVAL_MS")
             .unwrap_or_else(|_| "10000".to_string())
             .parse()
             .unwrap_or(10000);
 
-        Self {
+        Ok(Self {
             memory_pool: MemoryPool::new(512).start_sweeper(sweep_interval_ms), // 512MB memory pool with sweeper
             #[cfg(feature = "wasi")]
-            sandbox: WasiSandbox::new().expect("Failed to create WASI sandbox"),
+            sandbox: WasiSandbox::new()?,
             start_time: std::time::Instant::now(),
-            llm: std::sync::Arc::new(LLMClient::new(None).expect("Failed to create LLM client")),
-            enforcer: std::sync::Arc::new(
-                RequestEnforcer::from_global().expect("Failed to create enforcer"),
-            ),
-        }
+            llm: std::sync::Arc::new(LLMClient::new(None)?),
+            enforcer: std::sync::Arc::new(RequestEnforcer::from_global()?),
+        })
     }
 
     pub fn into_service(self) -> AgentServiceServer<Self> {

@@ -50,9 +50,36 @@ def get_vendor_adapter(name: str):
     if not name:
         return None
 
+    # Security: Validate vendor name to prevent code injection
+    # Only allow alphanumeric characters and underscores
+    if not name.replace("_", "").isalnum():
+        # Invalid vendor name format - reject
+        return None
+
+    # Convert to lowercase for case-insensitive matching
+    vendor_name = name.lower()
+
+    # Security: Whitelist of allowed vendor adapters
+    # This prevents arbitrary module imports that could be a security risk
+    ALLOWED_VENDORS = {
+        # Add your vendor names here as you implement them
+        # "myvendor",
+        "ptengine",  # PTEngine analytics adapter
+        # "datainsight",
+    }
+
+    # If vendor not in whitelist, return None (graceful fallback)
+    if vendor_name not in ALLOWED_VENDORS:
+        return None
+
     try:
+        # PTEngine vendor adapter
+        if vendor_name == "ptengine":
+            from .ptengine import PTEngineAdapter
+            return PTEngineAdapter()
+
         # Example vendor adapter registration:
-        # if name.lower() == "myvendor":
+        # if vendor_name == "myvendor":
         #     from .myvendor import MyVendorAdapter
         #     return MyVendorAdapter()
 

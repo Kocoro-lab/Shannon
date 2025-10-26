@@ -25,26 +25,40 @@ def _is_private_ip(hostname: str) -> bool:
     - Loopback (127.0.0.0/8, ::1)
     - Link-local (169.254.0.0/16, fe80::/10)
     - Cloud metadata (169.254.169.254, metadata.google.internal)
+
+    Uses getaddrinfo to check ALL IP addresses (prevents DNS round-robin bypass).
     """
     # Block known metadata hostnames
     if hostname.lower() in ["metadata.google.internal", "metadata", "169.254.169.254"]:
         return True
 
     try:
-        # Try to resolve hostname to IP
-        ip_str = socket.gethostbyname(hostname)
-        ip = ipaddress.ip_address(ip_str)
+        # Use getaddrinfo to get ALL IP addresses (prevents DNS round-robin bypass)
+        addr_info = socket.getaddrinfo(hostname, None)
 
-        # Check if private/reserved
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        )
+        # Check each resolved IP address
+        for family, socktype, proto, canonname, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+
+                # If ANY IP is private/reserved, block the hostname
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_reserved
+                    or ip.is_multicast
+                ):
+                    return True
+            except ValueError:
+                # Invalid IP format - skip this entry
+                continue
+
+        # All IPs checked and none are private
+        return False
     except (socket.gaierror, ValueError):
-        # Can't resolve or invalid IP - allow (will fail later with proper error)
+        # Can't resolve or invalid hostname - allow (will fail later with proper error)
         return False
 
 

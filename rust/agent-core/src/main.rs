@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
     });
 
     let addr = "0.0.0.0:50051".parse()?;
-    let agent_service = AgentServiceImpl::new();
+    let agent_service = AgentServiceImpl::new()?;
 
     // Build reflection service
     let reflection_service = tonic_reflection::server::Builder::configure()

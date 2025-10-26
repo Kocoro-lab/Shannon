@@ -75,9 +75,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	var teamAgents []AgentInfo
 	// Dependency sync (selectors) — topic notifications
 	topicChans := make(map[string]workflow.Channel)
+	var msgChan workflow.Channel // Declare at function scope for use across version checks
 	if workflow.GetVersion(ctx, "mailbox_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		sig := workflow.GetSignalChannel(ctx, "mailbox_v1")
-		msgChan := workflow.NewChannel(ctx)
+		msgChan = workflow.NewChannel(ctx)
 		workflow.Go(ctx, func(ctx workflow.Context) {
 			for {
 				var msg MailboxMessage
@@ -445,7 +446,9 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			teamAgents = append(teamAgents, AgentInfo{AgentID: fmt.Sprintf("agent-%s", st.ID), Role: role})
 			// Optional: record role assignment in mailbox
 			if workflow.GetVersion(ctx, "mailbox_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-				messages = append(messages, MailboxMessage{From: "supervisor", To: fmt.Sprintf("agent-%s", st.ID), Role: role, Content: "role_assigned"})
+				msg := MailboxMessage{From: "supervisor", To: fmt.Sprintf("agent-%s", st.ID), Role: role, Content: "role_assigned"}
+				// Send to channel instead of direct append to avoid race condition
+				msgChan.Send(ctx, msg)
 			}
 			// Stream role assignment
 			emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{

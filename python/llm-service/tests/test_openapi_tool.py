@@ -1,6 +1,7 @@
 """Tests for OpenAPI tool execution and vendor adapter integration."""
 
 import pytest
+import time
 from unittest.mock import AsyncMock, Mock, patch
 from llm_service.tools.openapi_tool import OpenAPILoader, _SimpleBreaker
 from llm_service.tools.base import ToolResult

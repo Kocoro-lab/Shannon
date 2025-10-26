@@ -1,14 +1,6 @@
 """
 OpenAPI tool loader for Shannon.
 Dynamically converts OpenAPI 3.x specifications into Shannon tools.
-
-TODO: Add comprehensive tests for:
-  - OpenAPI tool execution with different auth types (bearer, API key, basic)
-  - Circuit breaker behavior (failure threshold, recovery)
-  - Rate limiting enforcement
-  - Header injection and body parameter processing
-  - Vendor adapter loading and body transformation
-  - Error handling for malformed requests/responses
 """
 
 from __future__ import annotations
@@ -21,6 +13,7 @@ from urllib.parse import urlparse, quote
 import logging
 
 import httpx
+import json as _json
 
 from .base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from .openapi_parser import (
@@ -32,9 +25,9 @@ from .openapi_parser import (
     extract_request_body,
     deduplicate_operation_ids,
 )
+from .vendor_adapters import get_vendor_adapter
 
 logger = logging.getLogger(__name__)
-from .vendor_adapters import get_vendor_adapter  # optional vendor-specific shaping
 
 
 # Simple circuit breaker (same as MCP)
@@ -114,6 +107,7 @@ class OpenAPILoader:
         timeout_seconds: float = 30.0,
         max_response_bytes: int = 10 * 1024 * 1024,
         spec_url: Optional[str] = None,
+        vendor_name: Optional[str] = None,
     ):
         """
         Initialize OpenAPI loader.
@@ -132,6 +126,7 @@ class OpenAPILoader:
             timeout_seconds: Request timeout in seconds (default: 30)
             max_response_bytes: Max response size (default: 10MB)
             spec_url: Optional URL where spec was fetched from (for relative server URLs)
+            vendor_name: Optional vendor adapter name (e.g., "ptengine")
         """
         self.name = name
         self.spec = spec
@@ -146,6 +141,12 @@ class OpenAPILoader:
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
         self.spec_url = spec_url
+        self.vendor_name = vendor_name
+
+        # Load vendor adapter if specified
+        self.vendor_adapter = get_vendor_adapter(vendor_name) if vendor_name else None
+        if vendor_name and not self.vendor_adapter:
+            logger.warning(f"Vendor adapter '{vendor_name}' not found, proceeding without adapter")
 
         # Validate spec
         validate_spec(spec)
@@ -153,12 +154,16 @@ class OpenAPILoader:
         # Extract base URL
         self.base_url = extract_base_url(spec, base_url_override, spec_url)
 
-        # Validate domain
+        # Validate domain - require explicit configuration for security
+        allowed_domains_str = os.getenv("OPENAPI_ALLOWED_DOMAINS")
+        if not allowed_domains_str:
+            raise ValueError(
+                "OPENAPI_ALLOWED_DOMAINS environment variable must be explicitly configured. "
+                "Set to specific domains (e.g., 'api.example.com,api.partner.com') or '*' for development only."
+            )
         allowed_domains = [
             d.strip()
-            for d in os.getenv("OPENAPI_ALLOWED_DOMAINS", "localhost,127.0.0.1").split(
-                ","
-            )
+            for d in allowed_domains_str.split(",")
             if d.strip()
         ]
         _validate_domain(self.base_url, allowed_domains)
@@ -170,6 +175,71 @@ class OpenAPILoader:
         logger.info(
             f"OpenAPI loader '{name}': loaded {len(self.operations)} operations from {self.base_url}"
         )
+
+    def _build_auth_headers(self, session_context: Optional[Dict] = None) -> Dict[str, str]:
+        """
+        Build authentication headers based on auth_type and auth_config.
+
+        Args:
+            session_context: Optional session context for dynamic header resolution
+
+        Returns:
+            Dict of HTTP headers for authentication
+        """
+        headers = {}
+
+        if self.auth_type == "bearer":
+            token = self.auth_config.get("token", "")
+            # Resolve environment variable if token starts with $
+            if token.startswith("$"):
+                token = os.getenv(token[1:], "")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+        elif self.auth_type == "api_key":
+            api_key_name = self.auth_config.get("api_key_name", "X-API-Key")
+            api_key_location = self.auth_config.get("api_key_location", "header")
+            api_key_value = self.auth_config.get("api_key_value", "")
+
+            # Resolve environment variable if value starts with $
+            if api_key_value.startswith("$"):
+                api_key_value = os.getenv(api_key_value[1:], "")
+
+            if api_key_location == "header" and api_key_value:
+                headers[api_key_name] = api_key_value
+            # Note: query parameters are handled separately in tool execution
+
+        elif self.auth_type == "basic":
+            username = self.auth_config.get("username", "")
+            password = self.auth_config.get("password", "")
+
+            # Resolve environment variables
+            if username.startswith("$"):
+                username = os.getenv(username[1:], "")
+            if password.startswith("$"):
+                password = os.getenv(password[1:], "")
+
+            if username and password:
+                import base64
+                credentials = f"{username}:{password}"
+                encoded = base64.b64encode(credentials.encode()).decode()
+                headers["Authorization"] = f"Basic {encoded}"
+
+        # Handle extra_headers if present
+        extra_headers = self.auth_config.get("extra_headers", {})
+        if isinstance(extra_headers, dict):
+            for header_name, header_value in extra_headers.items():
+                # Resolve environment variables (${VAR})
+                if isinstance(header_value, str) and header_value.startswith("${") and header_value.endswith("}"):
+                    env_var = header_value[2:-1]
+                    header_value = os.getenv(env_var, "")
+
+                # Note: Dynamic field resolution ({{body.field}}) happens at execution time
+                # For now, just set static/env values
+                if header_value:
+                    headers[header_name] = str(header_value)
+
+        return headers
 
     def generate_tools(self) -> List[Type[Tool]]:
         """
@@ -229,8 +299,6 @@ class OpenAPILoader:
         base_url = self.base_url
         auth_type = self.auth_type
         auth_config = self.auth_config
-        auth_vendor = (auth_config.get("vendor") or os.getenv("OPENAPI_VENDOR", "")).lower()
-        vendor_adapter = get_vendor_adapter(auth_vendor)
         category = self.category
         base_cost = self.base_cost_per_use
         rate_limit = self.rate_limit
@@ -238,6 +306,7 @@ class OpenAPILoader:
         max_response_bytes = self.max_response_bytes
         loader_name = self.name
         build_auth_headers = self._build_auth_headers
+        vendor_adapter = self.vendor_adapter
 
         # Get or create circuit breaker for this base_url
         breaker_key = f"openapi:{base_url}"
@@ -277,9 +346,7 @@ class OpenAPILoader:
             ) -> ToolResult:
                 now = time.time()
 
-                logger.info(
-                    f"OpenAPI tool {operation_id} _execute_impl called with session_context: {session_context is not None}, kwargs keys: {list(kwargs.keys())}"
-                )
+                logger.info(f"OpenAPI tool {operation_id} _execute_impl called with session_context: {session_context is not None}, kwargs keys: {list(kwargs.keys())}")
 
                 # Circuit breaker check
                 if not breaker.allow(now):
@@ -291,21 +358,6 @@ class OpenAPILoader:
 
                 # Build auth headers with session context for dynamic resolution
                 headers = build_auth_headers(session_context)
-
-                # Process header parameters from OpenAPI spec
-                # Headers can be: explicit values, dynamic from body, or from kwargs
-                for param in params:
-                    if param["location"] == "header":
-                        header_name = param["name"]
-                        # Check if provided in kwargs
-                        if header_name in kwargs:
-                            headers[header_name] = str(kwargs[header_name])
-                        # Check if it's a required header without a provided value
-                        elif param["required"]:
-                            # Try to resolve from body if it references a body field
-                            # Example: sid header might need to come from profileId in body
-                            # For now, we'll let it be resolved later via dynamic header resolution
-                            pass
 
                 # Build URL with path parameters (URL-encoded)
                 url = base_url + path
@@ -326,81 +378,333 @@ class OpenAPILoader:
                 json_body = None
                 if body_param and "body" in kwargs:
                     json_body = kwargs["body"]
-                    # Log initial body BEFORE any modifications
-                    logger.warning(f"🟢 [{operation_id}] INITIAL json_body from kwargs:")
-                    logger.warning(f"  ALL KEYS: {list(json_body.keys()) if isinstance(json_body, dict) else 'NOT A DICT'}")
-                    # Keep OpenAPI layer generic: do not inject tool-specific defaults
 
-                # Inject prompt_params from session_context into request body if available
+                # Extract prompt_params from session_context
                 prompt_params = None
                 if session_context and "prompt_params" in session_context:
                     prompt_params = session_context["prompt_params"]
-                    logger.info(
-                        f"OpenAPI tool {operation_id}: Found prompt_params = {prompt_params}"
-                    )
 
-                # Merge prompt_params into the body (generic, no vendor semantics)
-                if prompt_params:
-                    if json_body is None:
-                        json_body = {}
-                    # Merge prompt_params into request body (fill missing or empty fields)
-                    if isinstance(json_body, dict) and isinstance(prompt_params, dict):
-                        def _is_empty(val: Any) -> bool:
-                            if val is None:
-                                return True
-                            if isinstance(val, str) and val.strip() == "":
-                                return True
-                            if isinstance(val, dict) and not val:
-                                return True
-                            # Arrays: treat [] as valid; do not override intentionally empty lists
-                            return False
+                # Apply vendor-specific body transformations if adapter is available
+                if vendor_adapter and json_body is not None:
+                    try:
+                        json_body = vendor_adapter.transform_body(
+                            json_body,
+                            operation_id,
+                            prompt_params
+                        )
+                        logger.info(f"OpenAPI tool {operation_id}: Applied vendor adapter body transformations")
+                    except Exception as e:
+                        logger.warning(f"OpenAPI tool {operation_id}: Vendor adapter body transform failed: {e}")
 
-                        for key, value in prompt_params.items():
-                            # Only fill if json_body field is missing or empty
-                            # AND the prompt_params value is not empty
-                            if (key not in json_body or _is_empty(json_body.get(key))) and not _is_empty(value):
-                                json_body[key] = value
+                # Build request headers
+                request_headers = dict(headers)
+                request_headers["Accept"] = "application/json"
 
-                        # Common aliasing between snake_case and camelCase for typical fields
-                        try:
-                            def to_snake(s: str) -> str:
-                                out = []
-                                for ch in s:
-                                    if ch.isupper():
-                                        out.append("_" + ch.lower())
+                # Apply vendor-specific header transformations if adapter is available
+                if vendor_adapter and hasattr(vendor_adapter, 'transform_headers'):
+                    try:
+                        request_headers = vendor_adapter.transform_headers(
+                            request_headers,
+                            operation_id,
+                            prompt_params
+                        )
+                        logger.info(f"OpenAPI tool {operation_id}: Applied vendor adapter header transformations")
+                    except Exception as e:
+                        logger.warning(f"OpenAPI tool {operation_id}: Vendor adapter header transform failed: {e}")
+
+                if (
+                    auth_type == "api_key"
+                    and auth_config.get("api_key_location") == "query"
+                ):
+                    api_key_name = auth_config.get("api_key_name", "api_key")
+                    api_key_value = auth_config.get("api_key_value", "")
+                    # Resolve from env if starts with $
+                    if api_key_value.startswith("$"):
+                        env_var = api_key_value[1:]
+                        api_key_value = os.getenv(env_var, "")
+                    query_params[api_key_name] = api_key_value
+
+                # Optional debug logging of the final outbound request (sanitized)
+                try:
+                    log_requests = os.getenv("OPENAPI_LOG_REQUESTS", "0").lower() not in {"0", "false", "no", "off", ""}
+                    if log_requests:
+                        def _mask(data):
+                            if isinstance(data, dict):
+                                out = {}
+                                for k, v in data.items():
+                                    lk = str(k).lower()
+                                    if any(s in lk for s in ["authorization", "token", "secret", "password", "api_key", "apikey"]):
+                                        out[k] = "***"
                                     else:
-                                        out.append(ch)
-                                res = "".join(out)
-                                return res[1:] if res.startswith("_") else res
+                                        out[k] = _mask(v)
+                                return out
+                            if isinstance(data, list):
+                                return [_mask(x) for x in data]
+                            return data
 
-                            def to_camel(s: str) -> str:
-                                parts = s.split("_")
-                                return parts[0] + "".join(p.capitalize() for p in parts[1:])
+                        masked_headers = _mask(dict(request_headers))
+                        masked_query = _mask(dict(query_params))
+                        masked_body = _mask(json_body) if isinstance(json_body, (dict, list)) else json_body
+                        try:
+                            body_str = _json.dumps(masked_body, ensure_ascii=False) if masked_body is not None else None
+                        except Exception:
+                            body_str = str(masked_body) if masked_body is not None else None
+                        if body_str and len(body_str) > 2000:
+                            body_str = body_str[:2000] + "...(truncated)"
+                        logger.info(
+                            f"OpenAPI tool {operation_id}: Request {method} {url} query={masked_query} headers={masked_headers} body={body_str}"
+                        )
+                except Exception:
+                    # Never fail on logging
+                    pass
 
-                            # No vendor-specific mapping here; handled by vendor adapter below
+                # Retry logic with exponential backoff (matches MCP)
+                retries = int(os.getenv("OPENAPI_RETRIES", "3"))
+                last_exception = None
 
-                            # Generic aliasing for all prompt keys (fill when missing or empty)
-                            # Don't overwrite with empty values
-                            for k, v in list(prompt_params.items()):
-                                snake = to_snake(k)
-                                camel = to_camel(k)
-                                if (snake not in json_body or _is_empty(json_body.get(snake))) and snake != k and not _is_empty(v):
-                                    json_body[snake] = v
-                                if (camel not in json_body or _is_empty(json_body.get(camel))) and camel != k and not _is_empty(v):
-                                    json_body[camel] = v
+                for attempt in range(1, retries + 1):
+                    try:
+                        # Execute request with configured timeout
+                        start_time = time.time()
+                        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                            response = await client.request(
+                                method=method,
+                                url=url,
+                                params=query_params,
+                                json=json_body,
+                                headers=request_headers,
+                            )
+                            response.raise_for_status()
+
+                            # Check response size
+                            content_length = len(response.content)
+                            if content_length > max_response_bytes:
+                                breaker.on_failure(now)
+                                return ToolResult(
+                                    success=False,
+                                    output=None,
+                                    error=f"Response too large: {content_length} bytes (max {max_response_bytes})",
+                                )
+
+                            # Parse response
+                            content_type = response.headers.get("content-type", "")
+                            if "application/json" in content_type:
+                                result = response.json()
+                            else:
+                                # Plain text for MVP
+                                result = response.text
+
+                            duration_ms = int((time.time() - start_time) * 1000)
+
+                            # Success: reset breaker
+                            breaker.on_success()
+
+                            return ToolResult(
+                                success=True,
+                                output=result,
+                                execution_time_ms=duration_ms,
+                            )
+
+                    except httpx.HTTPStatusError as e:
+                        last_exception = e
+                        breaker.on_failure(now)
+                        try:
+                            log_requests = os.getenv("OPENAPI_LOG_REQUESTS", "0").lower() not in {"0", "false", "no", "off", ""}
+                            if log_requests:
+                                resp_text = e.response.text if hasattr(e, "response") and e.response is not None else ""
+                                if resp_text and len(resp_text) > 2000:
+                                    resp_text = resp_text[:2000] + "...(truncated)"
+                                logger.warning(
+                                    f"OpenAPI tool %s: HTTP %s error on %s %s: %s",
+                                    operation_id,
+                                    getattr(e.response, "status_code", "?"),
+                                    method,
+                                    url,
+                                    resp_text,
+                                )
                         except Exception:
                             pass
+                        if attempt >= retries:
+                            return ToolResult(
+                                success=False,
+                                output=None,
+                                error=f"HTTP {e.response.status_code}: {e.response.text[:200]}",
+                            )
+                        # Exponential backoff: 0.5s, 1s, 2s
+                        delay = min(2.0 ** (attempt - 1) * 0.5, 5.0)
+                        await asyncio.sleep(delay)
 
-                        logger.info(
-                            f"OpenAPI tool {operation_id}: Injected prompt_params into body. Keys: {list(json_body.keys())}"
-                        )
+                    except Exception as e:
+                        last_exception = e
+                        breaker.on_failure(now)
+                        if attempt >= retries:
+                            return ToolResult(success=False, output=None, error=str(e))
+                        # Exponential backoff
+                        delay = min(2.0 ** (attempt - 1) * 0.5, 5.0)
+                        await asyncio.sleep(delay)
 
-                        # Apply vendor-specific shaping via adapter (when available)
-                        if vendor_adapter and isinstance(json_body, dict):
-                            try:
-                                json_body = vendor_adapter.transform_body(json_body, operation_id, prompt_params)
-                                logger.info(f"Vendor adapter '{auth_vendor}' applied to body for {operation_id}")
-                            except Exception:
-                                pass
+                # Fallback (should never reach here)
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Request failed after {retries} retries: {str(last_exception)}",
+                )
 
-                        # Vendor/domain-specific request shaping is handled via vendor adapters; keep core generic
+        _OpenAPITool.__name__ = f"OpenAPITool_{operation_id}"
+        return _OpenAPITool
+
+
+def load_openapi_tools_from_config(config: Dict[str, Any]) -> List[Type[Tool]]:
+    """
+    Load OpenAPI tools from shannon.yaml configuration.
+
+    Args:
+        config: Configuration dict from shannon.yaml
+
+    Returns:
+        List of Tool class types
+    """
+    tool_classes = []
+    openapi_tools_config = config.get("openapi_tools")
+
+    # Handle None or empty config (all tools commented out)
+    if not openapi_tools_config:
+        return tool_classes
+
+    for tool_name, tool_config in openapi_tools_config.items():
+        if not tool_config.get("enabled", False):
+            logger.info(f"OpenAPI tool collection '{tool_name}' is disabled, skipping")
+            continue
+
+        try:
+            # Get spec (URL or inline)
+            spec_url = tool_config.get("spec_url")
+            spec_inline = tool_config.get("spec_inline")
+
+            spec_url_for_loader = None
+            if spec_url:
+                spec = _fetch_spec_from_url(spec_url)
+                spec_url_for_loader = spec_url
+            elif spec_inline:
+                import yaml
+
+                spec = yaml.safe_load(spec_inline)
+            else:
+                logger.error(
+                    f"OpenAPI tool '{tool_name}': must provide spec_url or spec_inline"
+                )
+                continue
+
+            # Create loader
+            loader = OpenAPILoader(
+                name=tool_name,
+                spec=spec,
+                auth_type=tool_config.get("auth_type", "none"),
+                auth_config=tool_config.get("auth_config", {}),
+                category=tool_config.get("category", "api"),
+                base_cost_per_use=tool_config.get("base_cost_per_use", 0.001),
+                operations_filter=tool_config.get("operations"),
+                tags_filter=tool_config.get("tags"),
+                base_url_override=tool_config.get("base_url"),
+                # Default to 30 so Tool base rate limiting is enforced
+                rate_limit=tool_config.get("rate_limit", 30),
+                timeout_seconds=tool_config.get("timeout_seconds", 30.0),
+                max_response_bytes=tool_config.get(
+                    "max_response_bytes", 10 * 1024 * 1024
+                ),
+                spec_url=spec_url_for_loader,
+                vendor_name=tool_config.get("vendor_adapter"),
+            )
+
+            # Generate tools
+            tools = loader.generate_tools()
+            tool_classes.extend(tools)
+
+            logger.info(
+                f"Loaded {len(tools)} tools from OpenAPI collection '{tool_name}'"
+            )
+
+        except OpenAPIParseError as e:
+            logger.error(f"Failed to parse OpenAPI spec for '{tool_name}': {e}")
+        except Exception as e:
+            logger.error(f"Failed to load OpenAPI tools from '{tool_name}': {e}")
+
+    return tool_classes
+
+
+def _fetch_spec_from_url(url: str) -> Dict[str, Any]:
+    """
+    Fetch OpenAPI spec from URL with size limit and domain validation.
+
+    Args:
+        url: URL to OpenAPI spec (JSON or YAML), supports http://, https://, and file:// protocols
+
+    Returns:
+        Parsed spec dict
+
+    Raises:
+        ValueError: If fetch fails or spec too large
+    """
+    import yaml
+
+    # Handle file:// URLs
+    if url.startswith("file://"):
+        file_path = url.replace("file://", "")
+        max_size = int(os.getenv("OPENAPI_MAX_SPEC_SIZE", str(5 * 1024 * 1024)))
+
+        try:
+            file_size = os.path.getsize(file_path)
+            if file_size > max_size:
+                raise ValueError(
+                    f"Spec size ({file_size} bytes) exceeds max ({max_size} bytes)"
+                )
+
+            with open(file_path, 'r') as f:
+                content = f.read()
+
+            # Try JSON first, fall back to YAML
+            try:
+                import json
+                return json.loads(content)
+            except Exception:
+                return yaml.safe_load(content)
+
+        except Exception as e:
+            raise ValueError(f"Failed to load OpenAPI spec from file {file_path}: {e}")
+
+    # Validate domain for HTTP(S) URLs - require explicit configuration (security fix)
+    allowed_domains_str = os.getenv("OPENAPI_ALLOWED_DOMAINS")
+    if not allowed_domains_str:
+        raise ValueError(
+            "OPENAPI_ALLOWED_DOMAINS environment variable must be explicitly configured"
+        )
+    allowed_domains = [d.strip() for d in allowed_domains_str.split(",") if d.strip()]
+    _validate_domain(url, allowed_domains)
+
+    # Fetch with size limit
+    max_size = int(
+        os.getenv("OPENAPI_MAX_SPEC_SIZE", str(5 * 1024 * 1024))
+    )  # 5MB default
+    timeout = float(os.getenv("OPENAPI_FETCH_TIMEOUT", "30"))
+
+    try:
+        import httpx
+
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(url)
+            response.raise_for_status()
+
+            content_length = len(response.content)
+            if content_length > max_size:
+                raise ValueError(
+                    f"Spec size ({content_length} bytes) exceeds max ({max_size} bytes)"
+                )
+
+            # Try JSON first, fall back to YAML
+            try:
+                return response.json()
+            except Exception:
+                return yaml.safe_load(response.text)
+
+    except Exception as e:
+        raise ValueError(f"Failed to fetch OpenAPI spec from {url}: {e}")
