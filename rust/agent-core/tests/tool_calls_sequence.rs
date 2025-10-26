@@ -56,7 +56,7 @@ async fn test_multi_tool_sequence_mixed_success() {
     // Set the LLM service URL for the test
     std::env::set_var("LLM_SERVICE_URL", "http://localhost:8000");
 
-    let svc = AgentServiceImpl::new();
+    let svc = AgentServiceImpl::new().expect("failed to create AgentServiceImpl");
 
     // Build tool_calls: success (2+2), failure (1/0), success (5*3)
     let tool_calls = prost_types::ListValue {

@@ -40,7 +40,8 @@ pub struct AgentServiceImpl {
 
 impl Default for AgentServiceImpl {
     fn default() -> Self {
-        Self::new()
+        // Default implementation uses unwrap - should only be used in tests
+        Self::new().expect("Failed to create AgentServiceImpl in Default trait")
     }
 }
 
@@ -54,23 +55,21 @@ impl Default for AgentServiceImpl {
 // fields are Send + Sync, so AgentServiceImpl also automatically implements them.
 
 impl AgentServiceImpl {
-    pub fn new() -> Self {
+    pub fn new() -> anyhow::Result<Self> {
         // Get sweep interval from environment or use default of 10 seconds
         let sweep_interval_ms = std::env::var("MEMORY_SWEEP_INTERVAL_MS")
             .unwrap_or_else(|_| "10000".to_string())
             .parse()
             .unwrap_or(10000);
 
-        Self {
+        Ok(Self {
             memory_pool: MemoryPool::new(512).start_sweeper(sweep_interval_ms), // 512MB memory pool with sweeper
             #[cfg(feature = "wasi")]
-            sandbox: WasiSandbox::new().expect("Failed to create WASI sandbox"),
+            sandbox: WasiSandbox::new()?,
             start_time: std::time::Instant::now(),
-            llm: std::sync::Arc::new(LLMClient::new(None).expect("Failed to create LLM client")),
-            enforcer: std::sync::Arc::new(
-                RequestEnforcer::from_global().expect("Failed to create enforcer"),
-            ),
-        }
+            llm: std::sync::Arc::new(LLMClient::new(None)?),
+            enforcer: std::sync::Arc::new(RequestEnforcer::from_global()?),
+        })
     }
 
     pub fn into_service(self) -> AgentServiceServer<Self> {
@@ -114,13 +113,9 @@ impl AgentServiceImpl {
                     )));
                 }
 
-                // Convert fields (except 'tool') to JSON params
-                let mut params = HashMap::new();
-                for (key, value) in &s.fields {
-                    if key == "tool" {
-                        continue;
-                    }
-                    let json_val = match value.kind.as_ref() {
+                // Helper function for recursive prost Value to JSON conversion
+                fn prost_to_json_recursive(prost_val: &prost_types::Value) -> serde_json::Value {
+                    match prost_val.kind.as_ref() {
                         Some(prost_types::value::Kind::StringValue(s)) => {
                             serde_json::Value::String(s.clone())
                         }
@@ -130,54 +125,39 @@ impl AgentServiceImpl {
                                     .unwrap_or_else(|| serde_json::Number::from(0)),
                             )
                         }
-                        Some(prost_types::value::Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+                        Some(prost_types::value::Kind::BoolValue(b)) => {
+                            serde_json::Value::Bool(*b)
+                        }
+                        Some(prost_types::value::Kind::NullValue(_)) => {
+                            serde_json::Value::Null
+                        }
                         Some(prost_types::value::Kind::ListValue(list)) => {
                             serde_json::Value::Array(
                                 list.values
                                     .iter()
-                                    .map(|v| match v.kind.as_ref() {
-                                        Some(prost_types::value::Kind::StringValue(s)) => {
-                                            serde_json::Value::String(s.clone())
-                                        }
-                                        Some(prost_types::value::Kind::NumberValue(n)) => {
-                                            serde_json::Value::Number(
-                                                serde_json::Number::from_f64(*n)
-                                                    .unwrap_or_else(|| serde_json::Number::from(0)),
-                                            )
-                                        }
-                                        Some(prost_types::value::Kind::BoolValue(b)) => {
-                                            serde_json::Value::Bool(*b)
-                                        }
-                                        _ => serde_json::Value::Null,
-                                    })
+                                    .map(|v| prost_to_json_recursive(v))
                                     .collect(),
                             )
                         }
                         Some(prost_types::value::Kind::StructValue(st)) => {
-                            // Shallow convert nested struct
+                            // Recursive convert nested struct
                             let mut map = serde_json::Map::new();
                             for (k, v) in &st.fields {
-                                let vv = match v.kind.as_ref() {
-                                    Some(prost_types::value::Kind::StringValue(s)) => {
-                                        serde_json::Value::String(s.clone())
-                                    }
-                                    Some(prost_types::value::Kind::NumberValue(n)) => {
-                                        serde_json::Value::Number(
-                                            serde_json::Number::from_f64(*n)
-                                                .unwrap_or_else(|| serde_json::Number::from(0)),
-                                        )
-                                    }
-                                    Some(prost_types::value::Kind::BoolValue(b)) => {
-                                        serde_json::Value::Bool(*b)
-                                    }
-                                    _ => serde_json::Value::Null,
-                                };
-                                map.insert(k.clone(), vv);
+                                map.insert(k.clone(), prost_to_json_recursive(v));
                             }
                             serde_json::Value::Object(map)
                         }
-                        _ => serde_json::Value::Null,
-                    };
+                        None => serde_json::Value::Null,
+                    }
+                }
+
+                // Convert fields (except 'tool') to JSON params
+                let mut params = HashMap::new();
+                for (key, value) in &s.fields {
+                    if key == "tool" {
+                        continue;
+                    }
+                    let json_val = prost_to_json_recursive(value);
                     params.insert(key.clone(), json_val);
                 }
 
@@ -465,7 +445,9 @@ impl AgentServiceImpl {
             let wall_start = std::time::Instant::now();
             let mut handles = Vec::with_capacity(total);
             for (idx, tool_name, params_map) in parsed.into_iter() {
-                let permit = semaphore.clone().acquire_owned().await.unwrap();
+                let permit = semaphore.clone().acquire_owned().await.map_err(|e| {
+                    tonic::Status::internal(format!("Failed to acquire semaphore permit: {}", e))
+                })?;
                 #[cfg(feature = "wasi")]
                 let sandbox = self.sandbox.clone();
                 #[cfg(not(feature = "wasi"))]

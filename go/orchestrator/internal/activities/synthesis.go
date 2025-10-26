@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -26,8 +27,8 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		"query", input.Query,
 		"num_results", len(input.AgentResults),
 	)
-	// Use zap.L() for places needing *zap.Logger
-	logger := zap.L()
+	// Use activity-scoped logger so logs appear in Temporal activity logs
+	logger := activity.GetLogger(ctx)
 
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
@@ -35,34 +36,39 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	// LLM-first; fallback to simple synthesis on any failure
 
-	// Build compact messages for /completions
-	sys := "You are a synthesis assistant. Merge multiple agent responses into a single, coherent answer. " +
-		"Be concise, remove duplicates, resolve conflicts, and present a clear final answer."
-
-	// Check for reflection feedback in context
+	// Extract context for role-aware synthesis
+	role := ""
+	contextMap := make(map[string]interface{})
 	if input.Context != nil {
-		if feedback, ok := input.Context["reflection_feedback"].(string); ok && feedback != "" {
-			sys += fmt.Sprintf("\n\nIMPORTANT: The previous response was evaluated and needs improvement. Feedback: %s", feedback)
+		// Extract role to apply role-specific prompts
+		if r, ok := input.Context["role"].(string); ok {
+			role = r
 		}
-		if _, ok := input.Context["improvement_needed"].(bool); ok {
-			sys += "\n\nPlease address the feedback and provide an improved response."
+		// Copy all context (includes prompt_params, language, etc.)
+		for k, v := range input.Context {
+			contextMap[k] = v
 		}
 	}
 
-	// Limit included agent outputs to keep prompt small
+	// Build synthesis query that includes agent results
 	const maxAgents = 6
-	const maxPerAgentChars = 800
+	const maxPerAgentChars = 10000 // Increased for data-heavy responses (analytics, structured data)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "Original task: %s\n\n", input.Query)
 
-	// Include previous response if this is a reflection retry
+	// Include reflection feedback if present
 	if input.Context != nil {
+		if feedback, ok := input.Context["reflection_feedback"].(string); ok && feedback != "" {
+			fmt.Fprintf(&b, "IMPORTANT: The previous response needs improvement. Feedback: %s\n\n", feedback)
+		}
 		if prevResponse, ok := input.Context["previous_response"].(string); ok && prevResponse != "" {
 			fmt.Fprintf(&b, "Previous response (needs improvement):\n%s\n\n", prevResponse)
 		}
 	}
-	fmt.Fprintf(&b, "Agent results (%d total, showing up to %d):\n", len(input.AgentResults), maxAgents)
+
+	fmt.Fprintf(&b, "Please synthesize the following agent results for the query: %s\n\n", input.Query)
+	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
+
 	count := 0
 	for _, r := range input.AgentResults {
 		if !r.Success || r.Response == "" {
@@ -72,30 +78,41 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		if len(trimmed) > maxPerAgentChars {
 			trimmed = trimmed[:maxPerAgentChars] + "..."
 		}
-		fmt.Fprintf(&b, "\n- [%s]: %s\n", r.AgentID, trimmed)
+		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, trimmed)
 		count++
 		if count >= maxAgents {
 			break
 		}
 	}
 
-	messages := []map[string]string{
-		{"role": "system", "content": sys},
-		{"role": "user", "content": b.String()},
+	if count == 0 {
+		logger.Warn("No successful agent results to synthesize")
+		return simpleSynthesis(ctx, input)
 	}
 
+	// Use /agent/query to leverage role presets and proper model selection
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 	reqBody := map[string]interface{}{
-		"messages":    messages,
-		"model_tier":  "small",
-		"temperature": 0.2,
-		"max_tokens":  800,
+		"query":         b.String(),
+		"context":       contextMap,
+		"allowed_tools": []string{},  // Disable tools during synthesis - we only want formatting
+		"agent_id":      "synthesis", // For observability
 	}
+
+	// If role is present, ensure it's in context
+	if role != "" {
+		reqBody["context"].(map[string]interface{})["role"] = role
+		logger.Info("Synthesis using role-aware endpoint", zap.String("role", role))
+	}
+
+	// Add synthesis mode for observability
+	reqBody["context"].(map[string]interface{})["mode"] = "synthesis"
+
 	buf, _ := json.Marshal(reqBody)
-	url := base + "/completions/"
+	url := base + "/agent/query"
 
 	httpClient := &http.Client{
-		Timeout:   8 * time.Second,
+		Timeout:   60 * time.Second, // Allow up to 1 minute for role-aware LLM synthesis
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
@@ -120,57 +137,69 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		return simpleSynthesis(ctx, input)
 	}
 
-	var out struct {
-		Completion string                 `json:"completion"`
-		OutputText string                 `json:"output_text"` // OpenAI uses output_text
-		Usage      map[string]interface{} `json:"usage"`
-		ModelUsed  string                 `json:"model_used"`
-		Model      string                 `json:"model"` // Some providers use "model" instead of "model_used"
-		Provider   string                 `json:"provider"`
-		CacheHit   bool                   `json:"cache_hit"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		logger.Warn("LLM synthesis: decode error, falling back", zap.Error(err))
+	// Parse /agent/query response format (read body for diagnostics)
+	rawBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		logger.Warn("LLM synthesis: read body failed, falling back", zap.Error(readErr))
 		return simpleSynthesis(ctx, input)
 	}
-	// Try both field names for compatibility
-	outCompletion := out.Completion
-	if outCompletion == "" && out.OutputText != "" {
-		outCompletion = out.OutputText
+
+	var out struct {
+		Response   string                 `json:"response"`
+		Metadata   map[string]interface{} `json:"metadata"`
+		TokensUsed int                    `json:"tokens_used"`
 	}
-	// Try both model field names
-	model := out.ModelUsed
-	if model == "" && out.Model != "" {
-		model = out.Model
+	if err := json.Unmarshal(rawBody, &out); err != nil {
+		logger.Warn("LLM synthesis: decode error, falling back",
+			zap.Error(err),
+			zap.String("raw", truncateForLog(string(rawBody), 2000)),
+		)
+		return simpleSynthesis(ctx, input)
 	}
-	cacheHit := out.CacheHit
-	tokens := 0
-	if out.Usage != nil {
-		if v, ok := out.Usage["total_tokens"]; ok {
-			switch t := v.(type) {
-			case float64:
-				tokens = int(t)
-			case int:
-				tokens = t
-			}
+
+	if out.Response == "" {
+		logger.Warn("LLM synthesis: empty response, falling back",
+			zap.String("raw", truncateForLog(string(rawBody), 2000)),
+		)
+		return simpleSynthesis(ctx, input)
+	}
+
+	// Extract model info from metadata if available
+	model := "unknown"
+	if out.Metadata != nil {
+		if m, ok := out.Metadata["model"].(string); ok {
+			model = m
+		}
+		// Also check allowed_tools to confirm role was applied
+		if tools, ok := out.Metadata["allowed_tools"].([]interface{}); ok && len(tools) > 0 {
+			logger.Info("Role-aware synthesis applied", zap.Int("allowed_tools_count", len(tools)))
 		}
 	}
 
-	logger.Info("Synthesis (LLM) completed",
-		zap.Int("tokens_used", tokens),
+	logger.Info("Synthesis (role-aware LLM) completed",
+		zap.Int("tokens_used", out.TokensUsed),
 		zap.String("model", model),
-		zap.Bool("cache_hit", cacheHit),
+		zap.String("role", role),
 	)
 
 	return SynthesisResult{
-		FinalResult: outCompletion,
-		TokensUsed:  tokens,
+		FinalResult: out.Response,
+		TokensUsed:  out.TokensUsed,
 	}, nil
+}
+
+// truncateForLog returns s truncated to max characters for safe logging
+func truncateForLog(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 // simpleSynthesis concatenates successful agent outputs with light formatting
 func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
-	logger := zap.L()
+	// Use activity-scoped logger for consistency with Temporal activity logging
+	logger := activity.GetLogger(ctx)
 	logger.Info("Synthesizing results (simple)",
 		zap.String("query", input.Query),
 		zap.Int("num_results", len(input.AgentResults)),

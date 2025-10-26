@@ -228,6 +228,11 @@ class ProviderManager:
         if "temperature" not in manager_kwargs or manager_kwargs["temperature"] is None:
             manager_kwargs["temperature"] = self.settings.temperature
 
+        # Anthropic models don't support both temperature and top_p
+        # If temperature is set, remove top_p to avoid API errors
+        if "temperature" in manager_kwargs and "top_p" in manager_kwargs:
+            manager_kwargs.pop("top_p", None)
+
         if agent_id and "agent_id" not in manager_kwargs:
             manager_kwargs["agent_id"] = agent_id
 

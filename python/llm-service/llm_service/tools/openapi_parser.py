@@ -25,26 +25,40 @@ def _is_private_ip(hostname: str) -> bool:
     - Loopback (127.0.0.0/8, ::1)
     - Link-local (169.254.0.0/16, fe80::/10)
     - Cloud metadata (169.254.169.254, metadata.google.internal)
+
+    Uses getaddrinfo to check ALL IP addresses (prevents DNS round-robin bypass).
     """
     # Block known metadata hostnames
     if hostname.lower() in ["metadata.google.internal", "metadata", "169.254.169.254"]:
         return True
 
     try:
-        # Try to resolve hostname to IP
-        ip_str = socket.gethostbyname(hostname)
-        ip = ipaddress.ip_address(ip_str)
+        # Use getaddrinfo to get ALL IP addresses (prevents DNS round-robin bypass)
+        addr_info = socket.getaddrinfo(hostname, None)
 
-        # Check if private/reserved
-        return (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_reserved
-            or ip.is_multicast
-        )
+        # Check each resolved IP address
+        for family, socktype, proto, canonname, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            try:
+                ip = ipaddress.ip_address(ip_str)
+
+                # If ANY IP is private/reserved, block the hostname
+                if (
+                    ip.is_private
+                    or ip.is_loopback
+                    or ip.is_link_local
+                    or ip.is_reserved
+                    or ip.is_multicast
+                ):
+                    return True
+            except ValueError:
+                # Invalid IP format - skip this entry
+                continue
+
+        # All IPs checked and none are private
+        return False
     except (socket.gaierror, ValueError):
-        # Can't resolve or invalid IP - allow (will fail later with proper error)
+        # Can't resolve or invalid hostname - allow (will fail later with proper error)
         return False
 
 
@@ -112,17 +126,18 @@ def resolve_refs_in_schema(
             raise OpenAPIParseError(f"Circular reference detected: {ref_path}")
 
         visited.add(ref_path)
+        try:
+            # Resolve the reference
+            resolved = resolve_ref(spec, ref_path)
 
-        # Resolve the reference
-        resolved = resolve_ref(spec, ref_path)
+            # Deep copy to avoid modifying the original spec
+            resolved = copy.deepcopy(resolved)
 
-        # Deep copy to avoid modifying the original spec
-        resolved = copy.deepcopy(resolved)
-
-        # Recursively resolve nested refs
-        resolved = resolve_refs_in_schema(resolved, spec, visited)
-
-        visited.remove(ref_path)
+            # Recursively resolve nested refs
+            resolved = resolve_refs_in_schema(resolved, spec, visited)
+        finally:
+            # Always cleanup visited set, even on exception
+            visited.discard(ref_path)
 
         # Merge properties from the original schema (excluding $ref)
         # OpenAPI 3.1 allows sibling properties alongside $ref
@@ -196,8 +211,26 @@ def extract_base_url(
     Returns:
         Base URL for API requests
     """
+    from urllib.parse import urlparse
+
+    # SSRF protection: Validate override_base_url BEFORE using it
     if override_base_url:
+        parsed = urlparse(override_base_url)
+        if parsed.hostname and _is_private_ip(parsed.hostname):
+            raise OpenAPIParseError(
+                f"Override base URL '{override_base_url}' resolves to private/internal IP address. "
+                "This is blocked for security (SSRF protection)."
+            )
         return override_base_url.rstrip("/")
+
+    # SSRF protection: Validate spec_url BEFORE using it to resolve relative URLs
+    if spec_url:
+        parsed = urlparse(spec_url)
+        if parsed.hostname and _is_private_ip(parsed.hostname):
+            raise OpenAPIParseError(
+                f"Spec URL '{spec_url}' resolves to private/internal IP address. "
+                "This is blocked for security (SSRF protection)."
+            )
 
     servers = spec.get("servers", [])
     if not servers:
@@ -211,19 +244,25 @@ def extract_base_url(
     if not url:
         raise OpenAPIParseError("Server URL is empty")
 
-    # Handle server variables (use defaults, no substitution yet)
+    # Handle server variables (use defaults, validate BEFORE substitution)
     variables = server.get("variables", {})
     for var_name, var_spec in variables.items():
         default = var_spec.get("default", "")
+        # SSRF protection: Validate variable defaults if they look like URLs
+        if default and ("://" in default or default.startswith("/")):
+            parsed = urlparse(default)
+            if parsed.hostname and _is_private_ip(parsed.hostname):
+                raise OpenAPIParseError(
+                    f"Server variable '{var_name}' default value '{default}' resolves to private/internal IP address. "
+                    "This is blocked for security (SSRF protection)."
+                )
         placeholder = "{" + var_name + "}"
         url = url.replace(placeholder, default)
 
     # Handle relative URLs (common in PetStore and other examples)
     if url.startswith("/"):
         if spec_url:
-            # Extract scheme://host from spec_url
-            from urllib.parse import urlparse
-
+            # Extract scheme://host from spec_url (already validated above)
             parsed = urlparse(spec_url)
             base = f"{parsed.scheme}://{parsed.netloc}"
             url = base + url
@@ -232,9 +271,8 @@ def extract_base_url(
                 f"Server URL '{url}' is relative but no spec_url provided to resolve it"
             )
 
-    # SSRF protection: Block private/internal IPs after resolution
-    from urllib.parse import urlparse
-
+    # Final SSRF protection: Block private/internal IPs after all resolution
+    # This is a defense-in-depth check in case any edge case slipped through
     parsed_url = urlparse(url)
     hostname = parsed_url.hostname
     if hostname and _is_private_ip(hostname):
@@ -382,8 +420,8 @@ def extract_parameters(
                 continue
 
         location = param.get("in", "")
-        if location not in ["path", "query"]:
-            # Skip header and cookie params for MVP
+        if location not in ["path", "query", "header"]:
+            # Skip cookie params (header params are now extracted)
             continue
 
         name = param.get("name")
@@ -428,16 +466,19 @@ def extract_parameters(
     return params
 
 
-def extract_request_body(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def extract_request_body(
+    operation: Dict[str, Any], spec: Dict[str, Any]
+) -> Optional[List[Dict[str, Any]]]:
     """
     Extract request body parameter from operation.
     MVP: Only support application/json content type.
 
     Args:
         operation: OpenAPI operation object
+        spec: Full OpenAPI specification (for resolving $ref)
 
     Returns:
-        Request body parameter dict or None if no body
+        List with single body parameter, or None if no body
     """
     request_body = operation.get("requestBody")
     if not request_body:
@@ -448,21 +489,21 @@ def extract_request_body(operation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     # Check for application/json
     json_content = content.get("application/json")
     if not json_content:
-        # No JSON body for MVP
+        # No JSON body
         return None
 
     required = request_body.get("required", False)
-    description = request_body.get("description", "Request body")
+    description = request_body.get("description", "Request body (send as-is, no wrapping)")
 
-    # For MVP, treat entire body as a single object parameter
-    # Don't try to flatten nested schemas
-    return {
+    # Return single body parameter - LLM should provide complete object structure
+    # The tool execution will send this directly as json= without wrapping
+    return [{
         "name": "body",
         "type": "object",
         "required": required,
         "description": description,
         "location": "body",
-    }
+    }]
 
 
 def deduplicate_operation_ids(operations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

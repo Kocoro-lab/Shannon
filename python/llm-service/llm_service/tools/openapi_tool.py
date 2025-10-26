@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from typing import Any, Dict, List, Optional, Type
 from urllib.parse import urlparse, quote
 import logging
 
 import httpx
+import json as _json
 
 from .base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from .openapi_parser import (
@@ -24,8 +26,39 @@ from .openapi_parser import (
     extract_request_body,
     deduplicate_operation_ids,
 )
+from .vendor_adapters import get_vendor_adapter
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_env_var(value: str) -> str:
+    """
+    Resolve environment variable references in string values.
+
+    Supports both ${VAR} and $VAR formats.
+    Returns the environment variable value if found, otherwise empty string.
+
+    Args:
+        value: String that may contain env var reference
+
+    Returns:
+        Resolved value or empty string if not found
+    """
+    if not isinstance(value, str):
+        return value
+
+    # Handle ${VAR} format
+    if value.startswith("${") and value.endswith("}"):
+        env_var = value[2:-1]
+        return os.getenv(env_var, "")
+
+    # Handle $VAR format
+    if value.startswith("$"):
+        env_var = value[1:]
+        return os.getenv(env_var, "")
+
+    # Not an env var reference
+    return value
 
 
 # Simple circuit breaker (same as MCP)
@@ -36,26 +69,30 @@ class _SimpleBreaker:
         self.failures = 0
         self.open_until: float = 0.0
         self.half_open = False
+        self._lock = threading.Lock()  # Protect state from concurrent access
 
     def allow(self, now: float) -> bool:
-        if self.open_until > now:
-            return False
-        if self.open_until != 0.0 and self.open_until <= now:
-            # move to half-open and allow one trial
-            self.half_open = True
-            self.open_until = 0.0
-        return True
+        with self._lock:
+            if self.open_until > now:
+                return False
+            if self.open_until != 0.0 and self.open_until <= now:
+                # move to half-open and allow one trial
+                self.half_open = True
+                self.open_until = 0.0
+            return True
 
     def on_success(self) -> None:
-        self.failures = 0
-        self.half_open = False
-        self.open_until = 0.0
+        with self._lock:
+            self.failures = 0
+            self.half_open = False
+            self.open_until = 0.0
 
     def on_failure(self, now: float) -> None:
-        self.failures += 1
-        if self.failures >= self.failure_threshold:
-            self.open_until = now + self.recovery_timeout
-            self.half_open = False
+        with self._lock:
+            self.failures += 1
+            if self.failures >= self.failure_threshold:
+                self.open_until = now + self.recovery_timeout
+                self.half_open = False
 
 
 _breakers: Dict[str, _SimpleBreaker] = {}
@@ -104,7 +141,9 @@ class OpenAPILoader:
         rate_limit: int = 30,
         timeout_seconds: float = 30.0,
         max_response_bytes: int = 10 * 1024 * 1024,
+        retries: int = 2,
         spec_url: Optional[str] = None,
+        vendor_name: Optional[str] = None,
     ):
         """
         Initialize OpenAPI loader.
@@ -122,7 +161,9 @@ class OpenAPILoader:
             rate_limit: Requests per minute (default: 30, enforceable)
             timeout_seconds: Request timeout in seconds (default: 30)
             max_response_bytes: Max response size (default: 10MB)
+            retries: Max retry attempts (default: 2, reduced to avoid circuit breaker)
             spec_url: Optional URL where spec was fetched from (for relative server URLs)
+            vendor_name: Optional vendor adapter name (e.g., "ptengine")
         """
         self.name = name
         self.spec = spec
@@ -133,10 +174,17 @@ class OpenAPILoader:
         self.operations_filter = operations_filter
         self.tags_filter = tags_filter
         self.base_url_override = base_url_override
+        self.retries = retries
         self.rate_limit = rate_limit
         self.timeout_seconds = timeout_seconds
         self.max_response_bytes = max_response_bytes
         self.spec_url = spec_url
+        self.vendor_name = vendor_name
+
+        # Load vendor adapter if specified
+        self.vendor_adapter = get_vendor_adapter(vendor_name) if vendor_name else None
+        if vendor_name and not self.vendor_adapter:
+            logger.warning(f"Vendor adapter '{vendor_name}' not found, proceeding without adapter")
 
         # Validate spec
         validate_spec(spec)
@@ -144,12 +192,16 @@ class OpenAPILoader:
         # Extract base URL
         self.base_url = extract_base_url(spec, base_url_override, spec_url)
 
-        # Validate domain
+        # Validate domain - require explicit configuration for security
+        allowed_domains_str = os.getenv("OPENAPI_ALLOWED_DOMAINS")
+        if not allowed_domains_str:
+            raise ValueError(
+                "OPENAPI_ALLOWED_DOMAINS environment variable must be explicitly configured. "
+                "Set to specific domains (e.g., 'api.example.com,api.partner.com') or '*' for development only."
+            )
         allowed_domains = [
             d.strip()
-            for d in os.getenv("OPENAPI_ALLOWED_DOMAINS", "localhost,127.0.0.1").split(
-                ","
-            )
+            for d in allowed_domains_str.split(",")
             if d.strip()
         ]
         _validate_domain(self.base_url, allowed_domains)
@@ -161,6 +213,65 @@ class OpenAPILoader:
         logger.info(
             f"OpenAPI loader '{name}': loaded {len(self.operations)} operations from {self.base_url}"
         )
+
+    def _build_auth_headers(self, session_context: Optional[Dict] = None) -> Dict[str, str]:
+        """
+        Build authentication headers based on auth_type and auth_config.
+
+        Args:
+            session_context: Optional session context for dynamic header resolution
+
+        Returns:
+            Dict of HTTP headers for authentication
+        """
+        headers = {}
+
+        if self.auth_type == "bearer":
+            token = self.auth_config.get("token", "")
+            # Resolve environment variable references
+            token = _resolve_env_var(token)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+        elif self.auth_type == "api_key":
+            api_key_name = self.auth_config.get("api_key_name", "X-API-Key")
+            api_key_location = self.auth_config.get("api_key_location", "header")
+            api_key_value = self.auth_config.get("api_key_value", "")
+
+            # Resolve environment variable references
+            api_key_value = _resolve_env_var(api_key_value)
+
+            if api_key_location == "header" and api_key_value:
+                headers[api_key_name] = api_key_value
+            # Note: query parameters are handled separately in tool execution
+
+        elif self.auth_type == "basic":
+            username = self.auth_config.get("username", "")
+            password = self.auth_config.get("password", "")
+
+            # Resolve environment variable references
+            username = _resolve_env_var(username)
+            password = _resolve_env_var(password)
+
+            if username and password:
+                import base64
+                credentials = f"{username}:{password}"
+                encoded = base64.b64encode(credentials.encode()).decode()
+                headers["Authorization"] = f"Basic {encoded}"
+
+        # Handle extra_headers if present
+        extra_headers = self.auth_config.get("extra_headers", {})
+        if isinstance(extra_headers, dict):
+            for header_name, header_value in extra_headers.items():
+                # Resolve environment variable references
+                header_value = _resolve_env_var(header_value)
+
+                # Only static and environment variable values are supported
+                # Dynamic body field references ({{body.field}}) are NOT supported
+                if header_value:
+                    headers[header_name] = str(header_value)
+
+        return headers
 
     def generate_tools(self) -> List[Type[Tool]]:
         """
@@ -194,9 +305,9 @@ class OpenAPILoader:
 
         # Extract parameters (pass spec for $ref resolution)
         params = extract_parameters(operation, self.spec)
-        body_param = extract_request_body(operation)
+        body_param = extract_request_body(operation, self.spec)
         if body_param:
-            params.append(body_param)
+            params.extend(body_param)
 
         # Build tool parameters
         tool_params = []
@@ -216,9 +327,6 @@ class OpenAPILoader:
                 )
             )
 
-        # Build headers with auth
-        headers = self._build_auth_headers()
-
         # Capture variables for closure
         base_url = self.base_url
         auth_type = self.auth_type
@@ -229,6 +337,8 @@ class OpenAPILoader:
         timeout_seconds = self.timeout_seconds
         max_response_bytes = self.max_response_bytes
         loader_name = self.name
+        build_auth_headers = self._build_auth_headers
+        vendor_adapter = self.vendor_adapter
 
         # Get or create circuit breaker for this base_url
         breaker_key = f"openapi:{base_url}"
@@ -254,7 +364,7 @@ class OpenAPILoader:
                     timeout_seconds=int(timeout_seconds),
                     memory_limit_mb=128,
                     sandboxed=False,
-                    session_aware=False,
+                    session_aware=True,
                     dangerous=False,
                     cost_per_use=base_cost,
                     rate_limit=rate_limit,
@@ -268,6 +378,8 @@ class OpenAPILoader:
             ) -> ToolResult:
                 now = time.time()
 
+                logger.info(f"OpenAPI tool {operation_id} _execute_impl called with session_context: {session_context is not None}, kwargs keys: {list(kwargs.keys())}")
+
                 # Circuit breaker check
                 if not breaker.allow(now):
                     return ToolResult(
@@ -275,6 +387,9 @@ class OpenAPILoader:
                         output=None,
                         error=f"Circuit breaker open for {base_url} (too many failures)",
                     )
+
+                # Build auth headers with session context for dynamic resolution
+                headers = build_auth_headers(session_context)
 
                 # Build URL with path parameters (URL-encoded)
                 url = base_url + path
@@ -296,10 +411,38 @@ class OpenAPILoader:
                 if body_param and "body" in kwargs:
                     json_body = kwargs["body"]
 
-                # Add query-based API key if configured
+                # Extract prompt_params from session_context
+                prompt_params = None
+                if session_context and "prompt_params" in session_context:
+                    prompt_params = session_context["prompt_params"]
+
+                # Apply vendor-specific body transformations if adapter is available
+                if vendor_adapter and json_body is not None:
+                    try:
+                        json_body = vendor_adapter.transform_body(
+                            json_body,
+                            operation_id,
+                            prompt_params
+                        )
+                        logger.info(f"OpenAPI tool {operation_id}: Applied vendor adapter body transformations")
+                    except Exception as e:
+                        logger.warning(f"OpenAPI tool {operation_id}: Vendor adapter body transform failed: {e}")
+
+                # Build request headers
                 request_headers = dict(headers)
-                # Add Accept header to prefer JSON responses
                 request_headers["Accept"] = "application/json"
+
+                # Apply vendor-specific header transformations if adapter is available
+                if vendor_adapter and hasattr(vendor_adapter, 'transform_headers'):
+                    try:
+                        request_headers = vendor_adapter.transform_headers(
+                            request_headers,
+                            operation_id,
+                            prompt_params
+                        )
+                        logger.info(f"OpenAPI tool {operation_id}: Applied vendor adapter header transformations")
+                    except Exception as e:
+                        logger.warning(f"OpenAPI tool {operation_id}: Vendor adapter header transform failed: {e}")
 
                 if (
                     auth_type == "api_key"
@@ -307,14 +450,47 @@ class OpenAPILoader:
                 ):
                     api_key_name = auth_config.get("api_key_name", "api_key")
                     api_key_value = auth_config.get("api_key_value", "")
-                    # Resolve from env if starts with $
-                    if api_key_value.startswith("$"):
-                        env_var = api_key_value[1:]
-                        api_key_value = os.getenv(env_var, "")
+                    # Resolve environment variable references
+                    api_key_value = _resolve_env_var(api_key_value)
                     query_params[api_key_name] = api_key_value
 
-                # Retry logic with exponential backoff (matches MCP)
-                retries = int(os.getenv("OPENAPI_RETRIES", "3"))
+                # Optional debug logging of the final outbound request (sanitized)
+                try:
+                    log_requests = os.getenv("OPENAPI_LOG_REQUESTS", "0").lower() not in {"0", "false", "no", "off", ""}
+                    if log_requests:
+                        def _mask(data):
+                            if isinstance(data, dict):
+                                out = {}
+                                for k, v in data.items():
+                                    lk = str(k).lower()
+                                    if any(s in lk for s in ["authorization", "token", "secret", "password", "api_key", "apikey"]):
+                                        out[k] = "***"
+                                    else:
+                                        out[k] = _mask(v)
+                                return out
+                            if isinstance(data, list):
+                                return [_mask(x) for x in data]
+                            return data
+
+                        masked_headers = _mask(dict(request_headers))
+                        masked_query = _mask(dict(query_params))
+                        masked_body = _mask(json_body) if isinstance(json_body, (dict, list)) else json_body
+                        try:
+                            body_str = _json.dumps(masked_body, ensure_ascii=False) if masked_body is not None else None
+                        except Exception:
+                            body_str = str(masked_body) if masked_body is not None else None
+                        if body_str and len(body_str) > 2000:
+                            body_str = body_str[:2000] + "...(truncated)"
+                        logger.info(
+                            f"OpenAPI tool {operation_id}: Request {method} {url} query={masked_query} headers={masked_headers} body={body_str}"
+                        )
+                except Exception:
+                    # Never fail on logging
+                    pass
+
+                # Retry logic with exponential backoff
+                # Allow env var override, otherwise use configured retries (default: 2)
+                retries = int(os.getenv("OPENAPI_RETRIES", str(self.retries)))
                 last_exception = None
 
                 for attempt in range(1, retries + 1):
@@ -349,6 +525,10 @@ class OpenAPILoader:
                                 # Plain text for MVP
                                 result = response.text
 
+                            # Log response if OPENAPI_LOG_REQUESTS is enabled
+                            if log_requests:
+                                logger.info(f"OpenAPI tool {operation_id}: Response status={response.status_code} body={result}")
+
                             duration_ms = int((time.time() - start_time) * 1000)
 
                             # Success: reset breaker
@@ -363,6 +543,22 @@ class OpenAPILoader:
                     except httpx.HTTPStatusError as e:
                         last_exception = e
                         breaker.on_failure(now)
+                        try:
+                            log_requests = os.getenv("OPENAPI_LOG_REQUESTS", "0").lower() not in {"0", "false", "no", "off", ""}
+                            if log_requests:
+                                resp_text = e.response.text if hasattr(e, "response") and e.response is not None else ""
+                                if resp_text and len(resp_text) > 2000:
+                                    resp_text = resp_text[:2000] + "...(truncated)"
+                                logger.warning(
+                                    "OpenAPI tool %s: HTTP %s error on %s %s: %s",
+                                    operation_id,
+                                    getattr(e.response, "status_code", "?"),
+                                    method,
+                                    url,
+                                    resp_text,
+                                )
+                        except Exception:
+                            pass
                         if attempt >= retries:
                             return ToolResult(
                                 success=False,
@@ -391,53 +587,6 @@ class OpenAPILoader:
 
         _OpenAPITool.__name__ = f"OpenAPITool_{operation_id}"
         return _OpenAPITool
-
-    def _build_auth_headers(self) -> Dict[str, str]:
-        """
-        Build authentication headers based on auth_type and auth_config.
-
-        Returns:
-            Headers dict
-        """
-        headers = {}
-
-        if self.auth_type == "bearer":
-            token = self.auth_config.get("token", "")
-            # Resolve from env if starts with $
-            if token.startswith("$"):
-                env_var = token[1:]
-                token = os.getenv(env_var, "")
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-
-        elif self.auth_type == "api_key":
-            location = self.auth_config.get("api_key_location", "header")
-            if location == "header":
-                key_name = self.auth_config.get("api_key_name", "X-API-Key")
-                key_value = self.auth_config.get("api_key_value", "")
-                # Resolve from env if starts with $
-                if key_value.startswith("$"):
-                    env_var = key_value[1:]
-                    key_value = os.getenv(env_var, "")
-                if key_value:
-                    headers[key_name] = key_value
-
-        elif self.auth_type == "basic":
-            username = self.auth_config.get("username", "")
-            password = self.auth_config.get("password", "")
-            # Resolve from env
-            if username.startswith("$"):
-                username = os.getenv(username[1:], "")
-            if password.startswith("$"):
-                password = os.getenv(password[1:], "")
-            if username and password:
-                import base64
-
-                creds = f"{username}:{password}"
-                encoded = base64.b64encode(creds.encode()).decode()
-                headers["Authorization"] = f"Basic {encoded}"
-
-        return headers
 
 
 def load_openapi_tools_from_config(config: Dict[str, Any]) -> List[Type[Tool]]:
@@ -499,6 +648,7 @@ def load_openapi_tools_from_config(config: Dict[str, Any]) -> List[Type[Tool]]:
                     "max_response_bytes", 10 * 1024 * 1024
                 ),
                 spec_url=spec_url_for_loader,
+                vendor_name=tool_config.get("vendor_adapter"),
             )
 
             # Generate tools
@@ -522,7 +672,7 @@ def _fetch_spec_from_url(url: str) -> Dict[str, Any]:
     Fetch OpenAPI spec from URL with size limit and domain validation.
 
     Args:
-        url: URL to OpenAPI spec (JSON or YAML)
+        url: URL to OpenAPI spec (JSON or YAML), supports http://, https://, and file:// protocols
 
     Returns:
         Parsed spec dict
@@ -530,12 +680,40 @@ def _fetch_spec_from_url(url: str) -> Dict[str, Any]:
     Raises:
         ValueError: If fetch fails or spec too large
     """
-    # Validate domain
-    allowed_domains = [
-        d.strip()
-        for d in os.getenv("OPENAPI_ALLOWED_DOMAINS", "localhost,127.0.0.1").split(",")
-        if d.strip()
-    ]
+    import yaml
+
+    # Handle file:// URLs
+    if url.startswith("file://"):
+        file_path = url.replace("file://", "")
+        max_size = int(os.getenv("OPENAPI_MAX_SPEC_SIZE", str(5 * 1024 * 1024)))
+
+        try:
+            file_size = os.path.getsize(file_path)
+            if file_size > max_size:
+                raise ValueError(
+                    f"Spec size ({file_size} bytes) exceeds max ({max_size} bytes)"
+                )
+
+            with open(file_path, 'r') as f:
+                content = f.read()
+
+            # Try JSON first, fall back to YAML
+            try:
+                import json
+                return json.loads(content)
+            except Exception:
+                return yaml.safe_load(content)
+
+        except Exception as e:
+            raise ValueError(f"Failed to load OpenAPI spec from file {file_path}: {e}")
+
+    # Validate domain for HTTP(S) URLs - require explicit configuration (security fix)
+    allowed_domains_str = os.getenv("OPENAPI_ALLOWED_DOMAINS")
+    if not allowed_domains_str:
+        raise ValueError(
+            "OPENAPI_ALLOWED_DOMAINS environment variable must be explicitly configured"
+        )
+    allowed_domains = [d.strip() for d in allowed_domains_str.split(",") if d.strip()]
     _validate_domain(url, allowed_domains)
 
     # Fetch with size limit
@@ -546,7 +724,6 @@ def _fetch_spec_from_url(url: str) -> Dict[str, Any]:
 
     try:
         import httpx
-        import yaml
 
         with httpx.Client(timeout=timeout) as client:
             response = client.get(url)

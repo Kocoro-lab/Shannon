@@ -36,7 +36,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - **Learning Router** — UCB algorithm selects optimal strategies, up to 85-95% token savings in internal testing ([→ Details](docs/learning-router-enhancements.md))
 - **Rate-Aware Execution** — Provider-specific RPM/TPM limits prevent throttling ([→ Rate Control](docs/rate-aware-budgeting.md))
 - Automatic multi‑agent orchestration — Describe the goal; Shannon decomposes into subtasks and schedules DAG execution with dependencies resolved.
-- Plug‑and‑play tools — Add REST APIs via MCP or OpenAPI, or write Python tools; no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md)).
+- Plug‑and‑play tools — Add REST APIs via MCP or OpenAPI, or write Python tools; no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md)). Domain-specific integrations via vendor adapter pattern ([→ Vendor Guide](docs/vendor-adapters.md)).
 - Multiple AI patterns — ReAct, Chain‑of‑Thought, Tree‑of‑Thoughts, Debate, Reflection (selectable via `cognitive_strategy`).
 - Time‑travel debugging — Export and replay any workflow to reproduce exact agent behavior.
 - Hot configuration — Live reload for model pricing and OPA policies (config/models.yaml, config/opa/policies).

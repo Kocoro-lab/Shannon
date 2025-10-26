@@ -657,11 +657,26 @@ async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
         )
 
     try:
+        # Unwrap parameters if they're nested under the tool name
+        # This handles cases where orchestrator wraps all parameters under tool name key
+        params = request.parameters
+        if (
+            len(params) == 1
+            and request.tool_name in params
+            and isinstance(params[request.tool_name], dict)
+        ):
+            # Unwrap the nested parameters
+            params = params[request.tool_name]
+            logger.info(
+                f"Unwrapped parameters from nested '{request.tool_name}' key",
+                extra={"tool": request.tool_name},
+            )
+
         # Execute the tool and return raw results
         # Pass session_context if provided for parameter injection
         result = await tool.execute(
             session_context=_sanitize_session_context(request.session_context),
-            **request.parameters,
+            **params,
         )
 
         return ToolExecuteResponse(

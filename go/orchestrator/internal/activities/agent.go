@@ -1,5 +1,11 @@
 package activities
 
+// TODO: Add unit tests for:
+//   - ExecuteAgentWithForcedTools (forced tool execution path)
+//   - Body field mirroring to prompt_params (generic field mirroring logic)
+//   - Error handling when /agent/query HTTP endpoint fails
+//   - Session context injection and merging
+
 import (
 	"context"
 	"encoding/json"
@@ -28,7 +34,8 @@ import (
 )
 
 var (
-	policyEngine policy.Engine
+	policyEngine   policy.Engine
+	policyEngineMu sync.RWMutex // Protects policyEngine reads and writes
 )
 
 // --- Minimal tool metadata cache (cost_per_use) ---
@@ -276,7 +283,10 @@ func InitializePolicyEngine() error {
 		return fmt.Errorf("failed to create policy engine: %w", err)
 	}
 
+	policyEngineMu.Lock()
 	policyEngine = engine
+	policyEngineMu.Unlock()
+
 	logger.Info("Policy engine initialized",
 		zap.Bool("enabled", engine.IsEnabled()),
 		zap.String("mode", string(config.Mode)),
@@ -296,7 +306,10 @@ func InitializePolicyEngineFromConfig(shannonPolicyConfig interface{}) error {
 		return fmt.Errorf("failed to create policy engine: %w", err)
 	}
 
+	policyEngineMu.Lock()
 	policyEngine = engine
+	policyEngineMu.Unlock()
+
 	logger.Info("Policy engine initialized from Shannon config",
 		zap.Bool("enabled", engine.IsEnabled()),
 		zap.String("mode", string(config.Mode)),
@@ -330,7 +343,10 @@ func InitializePolicyEngineFromShannonConfig(shannonPolicyConfig *config.PolicyC
 		return fmt.Errorf("failed to create policy engine: %w", err)
 	}
 
+	policyEngineMu.Lock()
 	policyEngine = engine
+	policyEngineMu.Unlock()
+
 	logger.Info("Policy engine initialized from Shannon config",
 		zap.Bool("enabled", engine.IsEnabled()),
 		zap.String("mode", string(policyConfig.Mode)),
@@ -344,6 +360,8 @@ func InitializePolicyEngineFromShannonConfig(shannonPolicyConfig *config.PolicyC
 
 // GetPolicyEngine returns the global policy engine instance
 func GetPolicyEngine() policy.Engine {
+	policyEngineMu.RLock()
+	defer policyEngineMu.RUnlock()
 	return policyEngine
 }
 
@@ -351,8 +369,12 @@ func GetPolicyEngine() policy.Engine {
 func evaluateAgentPolicy(ctx context.Context, input AgentExecutionInput, logger *zap.Logger) (*policy.Decision, error) {
 	// Get environment from active policy engine configuration for consistency
 	environment := "dev"
-	if policyEngine != nil && policyEngine.IsEnabled() {
-		if env := policyEngine.Environment(); env != "" {
+	policyEngineMu.RLock()
+	engine := policyEngine
+	policyEngineMu.RUnlock()
+
+	if engine != nil && engine.IsEnabled() {
+		if env := engine.Environment(); env != "" {
 			environment = env
 		} else if v := os.Getenv("ENVIRONMENT"); v != "" {
 			environment = v
@@ -418,7 +440,7 @@ func evaluateAgentPolicy(ctx context.Context, input AgentExecutionInput, logger 
 	}
 
 	startTime := time.Now()
-	decision, err := policyEngine.Evaluate(ctx, policyInput)
+	decision, err := engine.Evaluate(ctx, policyInput)
 	duration := time.Since(startTime)
 
 	// Record performance metrics
@@ -531,7 +553,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	emitAgentThinkingEvent(ctx, input)
 
 	// Policy check - Phase 0.5: Basic enforcement at agent execution boundary
-	if policyEngine != nil && policyEngine.IsEnabled() {
+	policyEngineMu.RLock()
+	engine := policyEngine
+	policyEngineMu.RUnlock()
+
+	if engine != nil && engine.IsEnabled() {
 		decision, err := evaluateAgentPolicy(ctx, input, logger)
 		if err != nil {
 			logger.Error("Policy evaluation failed", zap.Error(err))
@@ -544,7 +570,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 		if !decision.Allow {
 			// Check if we're in dry-run mode - if so, don't block execution
-			if policyEngine != nil && policyEngine.Mode() == policy.ModeDryRun {
+			if engine != nil && engine.Mode() == policy.ModeDryRun {
 				logger.Info("DRY-RUN: Policy would deny but allowing execution",
 					zap.String("reason", decision.Reason),
 					zap.String("agent_id", input.AgentID),
@@ -694,6 +720,65 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				input.Context = make(map[string]interface{})
 			}
 			input.Context["tool_parameters"] = input.ToolParameters
+
+			// Mirror critical body fields into prompt_params as a resilience fallback
+			// This helps Python OpenAPI tools reconstruct the body if arrays get lost upstream.
+			if bodyRaw, ok := input.ToolParameters["body"]; ok {
+				if body, ok2 := bodyRaw.(map[string]interface{}); ok2 {
+					// Type assert prompt_params with error handling
+					pp, ok := input.Context["prompt_params"].(map[string]interface{})
+					if !ok {
+						// prompt_params is missing or wrong type, create new map
+						logger.Warn("prompt_params missing or invalid type, creating new map",
+							zap.String("workflow_id", input.ParentWorkflowID))
+						pp = make(map[string]interface{})
+						input.Context["prompt_params"] = pp
+					}
+
+					// Safe field allowlist to prevent leaking sensitive data
+					// Only mirror fields that are safe for vendor adapters
+					safeFields := map[string]bool{
+						"account_id":   true,
+						"tenant_id":    true,
+						"user_id":      true,
+						"session_id":   true,
+						"profile_id":   true,
+						"workspace_id": true,
+						"project_id":   true,
+						"aid":          true, // Application ID
+						"current_date": true,
+						"role":         true,
+						"limit":        true,
+						"offset":       true,
+						"page":         true,
+						"page_size":    true,
+						"sort":         true,
+						"order":        true,
+						"filter":       true,
+					}
+
+					// Mirror only safe fields from body into prompt_params when missing
+					// This enables vendor adapters to access request body fields safely
+					for key, val := range body {
+						// Skip fields containing sensitive keywords
+						keyLower := strings.ToLower(key)
+						if strings.Contains(keyLower, "token") ||
+							strings.Contains(keyLower, "secret") ||
+							strings.Contains(keyLower, "password") ||
+							strings.Contains(keyLower, "key") ||
+							strings.Contains(keyLower, "credential") {
+							continue
+						}
+
+						// Only mirror if field is in safe list or already exists
+						if safeFields[key] {
+							if _, exists := pp[key]; !exists {
+								pp[key] = val
+							}
+						}
+					}
+				}
+			}
 			logger.Info("Passing valid tool parameters to context",
 				zap.String("tool", toolName),
 				zap.String("agent_id", input.AgentID),
@@ -1127,9 +1212,118 @@ func ExecuteAgent(ctx context.Context, input AgentExecutionInput) (AgentExecutio
 		"agent_id", input.AgentID,
 		"query", input.Query,
 	)
-	// Use zap logger for the core logic which needs *zap.Logger
+
+	// Use forced tools path if ToolParameters are pre-computed (analytics queries)
+	if input.ToolParameters != nil && len(input.ToolParameters) > 0 && len(input.SuggestedTools) > 0 {
+		return ExecuteAgentWithForcedTools(ctx, input)
+	}
+
+	// Standard execution through agent-core gRPC
 	logger := zap.L()
 	return executeAgentCore(ctx, input, logger)
+}
+
+// ExecuteAgentWithForcedTools bypasses agent-core gRPC and calls /agent/query directly
+// with forced_tool_calls to avoid serialization issues. Use when ToolParameters are
+// pre-computed from decomposition (e.g., analytics queries).
+func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput) (AgentExecutionResult, error) {
+	logger := activity.GetLogger(ctx)
+	logger.Info("ExecuteAgentWithForcedTools activity started",
+		"agent_id", input.AgentID,
+		"query", input.Query,
+		"tool_count", len(input.SuggestedTools),
+	)
+
+	// Bail if no tool parameters to use
+	if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
+		logger.Warn("No ToolParameters provided; falling back to regular ExecuteAgent")
+		zapLogger := zap.L()
+		return executeAgentCore(ctx, input, zapLogger)
+	}
+
+	// Determine which tool to execute (typically just one from decomposition)
+	toolName := ""
+	if len(input.SuggestedTools) > 0 {
+		toolName = input.SuggestedTools[0]
+	} else {
+		logger.Error("No SuggestedTools provided with ToolParameters; cannot proceed")
+		return AgentExecutionResult{Success: false, Error: "No tool specified for forced execution"}, nil
+	}
+
+	// Build forced_tool_calls payload for /agent/query
+	forcedToolCalls := []map[string]interface{}{
+		{
+			"tool":       toolName,
+			"parameters": input.ToolParameters,
+		},
+	}
+
+	// Prepare request to /agent/query
+	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	agentQueryPayload := map[string]interface{}{
+		"query":             input.Query,
+		"context":           input.Context,
+		"agent_id":          input.AgentID,
+		"allowed_tools":     input.SuggestedTools,
+		"forced_tool_calls": forcedToolCalls,
+	}
+
+	payloadBytes, err := json.Marshal(agentQueryPayload)
+	if err != nil {
+		logger.Error("Failed to marshal agent query payload", "error", err)
+		return AgentExecutionResult{Success: false, Error: "Failed to construct request"}, nil
+	}
+
+	client := &http.Client{Timeout: 2 * time.Minute, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payloadBytes)))
+	if err != nil {
+		logger.Error("Failed to create HTTP request", "error", err)
+		return AgentExecutionResult{Success: false, Error: "Failed to create request"}, nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", input.AgentID)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Error("HTTP request failed", "error", err)
+		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Error("Non-2xx response from /agent/query", "status", resp.StatusCode)
+		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
+	}
+
+	// Parse response
+	var agentResponse struct {
+		Success    bool        `json:"success"`
+		Response   string      `json:"response"`
+		TokensUsed int         `json:"tokens_used"`
+		ModelUsed  string      `json:"model_used"`
+		Metadata   interface{} `json:"metadata"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&agentResponse); err != nil {
+		logger.Error("Failed to decode /agent/query response", "error", err)
+		return AgentExecutionResult{Success: false, Error: "Failed to parse response"}, nil
+	}
+
+	logger.Info("ExecuteAgentWithForcedTools completed",
+		"success", agentResponse.Success,
+		"tokens", agentResponse.TokensUsed,
+		"model", agentResponse.ModelUsed,
+	)
+
+	return AgentExecutionResult{
+		Success:    agentResponse.Success,
+		Response:   agentResponse.Response,
+		TokensUsed: agentResponse.TokensUsed,
+		ModelUsed:  agentResponse.ModelUsed,
+		ToolsUsed:  []string{toolName},
+	}, nil
 }
 
 // fetchAvailableTools queries Python LLM service for a list of non-dangerous tools.
@@ -1276,39 +1470,49 @@ var (
 		"critic":     {"code_reader"},
 		"generalist": {},
 	}
-	roleLoaded bool
+	roleAllowlistMu   sync.RWMutex
+	roleAllowlistOnce sync.Once
 )
 
 func getRoleAllowlist() map[string][]string {
-	if roleLoaded {
-		return roleAllowlist
-	}
-	// Try fetching from LLM service
-	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
-	url := fmt.Sprintf("%s/roles", base)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err == nil {
-		client := &http.Client{Timeout: 2 * time.Second, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
-		if resp, err := client.Do(req); err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			defer resp.Body.Close()
-			var payload map[string]struct {
-				AllowedTools []string `json:"allowed_tools"`
-			}
-			if json.NewDecoder(resp.Body).Decode(&payload) == nil {
-				tmp := map[string][]string{}
-				for k, v := range payload {
-					tmp[strings.ToLower(k)] = v.AllowedTools
+	// Use sync.Once to ensure initialization happens exactly once
+	roleAllowlistOnce.Do(func() {
+		// Try fetching from LLM service
+		base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+		url := fmt.Sprintf("%s/roles", base)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err == nil {
+			client := &http.Client{Timeout: 2 * time.Second, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
+			if resp, err := client.Do(req); err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				defer resp.Body.Close()
+				var payload map[string]struct {
+					AllowedTools []string `json:"allowed_tools"`
 				}
-				if len(tmp) > 0 {
-					roleAllowlist = tmp
-					roleLoaded = true
+				if json.NewDecoder(resp.Body).Decode(&payload) == nil {
+					tmp := map[string][]string{}
+					for k, v := range payload {
+						tmp[strings.ToLower(k)] = v.AllowedTools
+					}
+					if len(tmp) > 0 {
+						roleAllowlistMu.Lock()
+						roleAllowlist = tmp
+						roleAllowlistMu.Unlock()
+					}
 				}
 			}
 		}
+	})
+
+	// Return a copy to prevent external modifications
+	roleAllowlistMu.RLock()
+	defer roleAllowlistMu.RUnlock()
+	result := make(map[string][]string, len(roleAllowlist))
+	for k, v := range roleAllowlist {
+		result[k] = v
 	}
-	return roleAllowlist
+	return result
 }
 
 // getenv returns env var or default

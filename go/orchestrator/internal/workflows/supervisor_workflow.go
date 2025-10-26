@@ -3,6 +3,7 @@ package workflows
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -67,17 +68,20 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Mailbox v1 (optional): accept messages via signal and expose via query handler
 	var messages []MailboxMessage
+	var messagesMu sync.RWMutex // Protects messages slice from query handler races
 	// Agent directory (role metadata)
 	type AgentInfo struct {
 		AgentID string
 		Role    string
 	}
 	var teamAgents []AgentInfo
+	var teamAgentsMu sync.RWMutex // Protects teamAgents slice from query handler races
 	// Dependency sync (selectors) — topic notifications
 	topicChans := make(map[string]workflow.Channel)
+	var msgChan workflow.Channel // Declare at function scope for use across version checks
 	if workflow.GetVersion(ctx, "mailbox_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
 		sig := workflow.GetSignalChannel(ctx, "mailbox_v1")
-		msgChan := workflow.NewChannel(ctx)
+		msgChan = workflow.NewChannel(ctx)
 		workflow.Go(ctx, func(ctx workflow.Context) {
 			for {
 				var msg MailboxMessage
@@ -95,29 +99,38 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			for {
 				var msg MailboxMessage
 				msgChan.Receive(ctx, &msg)
-				messages = append(messages, msg) // Single goroutine for slice modification
+				// Protect slice modification from concurrent query handler reads
+				messagesMu.Lock()
+				messages = append(messages, msg)
+				messagesMu.Unlock()
 			}
 		})
 		_ = workflow.SetQueryHandler(ctx, "getMailbox", func() ([]MailboxMessage, error) {
 			// Return a copy to avoid race conditions
+			messagesMu.RLock()
 			result := make([]MailboxMessage, len(messages))
 			copy(result, messages)
+			messagesMu.RUnlock()
 			return result, nil
 		})
 	}
 	_ = workflow.SetQueryHandler(ctx, "listTeamAgents", func() ([]AgentInfo, error) {
 		// Return a copy to avoid race conditions
+		teamAgentsMu.RLock()
 		result := make([]AgentInfo, len(teamAgents))
 		copy(result, teamAgents)
+		teamAgentsMu.RUnlock()
 		return result, nil
 	})
 	_ = workflow.SetQueryHandler(ctx, "findTeamAgentsByRole", func(role string) ([]AgentInfo, error) {
+		teamAgentsMu.RLock()
 		out := make([]AgentInfo, 0)
 		for _, a := range teamAgents {
 			if a.Role == role {
 				out = append(out, a)
 			}
 		}
+		teamAgentsMu.RUnlock()
 		return out, nil
 	})
 
@@ -295,16 +308,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"uses_previous", decompositionSuggestion.UsesPreviousSuccess)
 	}
 
-    // Decompose the task to get subtasks and agent types (use preplanned if provided)
-    var decomp activities.DecompositionResult
-    if input.PreplannedDecomposition != nil {
-        decomp = *input.PreplannedDecomposition
-    } else {
-        if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
-            logger.Error("Task decomposition failed", "error", err)
-            return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
-        }
-    }
+	// Decompose the task to get subtasks and agent types (use preplanned if provided)
+	var decomp activities.DecompositionResult
+	if input.PreplannedDecomposition != nil {
+		decomp = *input.PreplannedDecomposition
+	} else {
+		if err := workflow.ExecuteActivity(ctx, constants.DecomposeTaskActivity, decomposeInput).Get(ctx, &decomp); err != nil {
+			logger.Error("Task decomposition failed", "error", err)
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
+		}
+	}
 
 	// Override strategy if advisor has high confidence
 	if decompositionAdvisor != nil && decompositionSuggestion.Confidence > 0.8 {
@@ -343,10 +356,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-    // If simple task (no tools, trivial plan) OR zero-subtask fallback, delegate to DAGWorkflow
-    // A single tool-based subtask should NOT be treated as simple
-    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
-    isSimpleTask := len(decomp.Subtasks) == 0 || ((decomp.ComplexityScore < 0.3) && simpleByShape)
+	// If simple task (no tools, trivial plan) OR zero-subtask fallback, delegate to DAGWorkflow
+	// A single tool-based subtask should NOT be treated as simple
+	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+	isSimpleTask := len(decomp.Subtasks) == 0 || ((decomp.ComplexityScore < 0.3) && simpleByShape)
 
 	if isSimpleTask {
 		// Convert to strategies.TaskInput
@@ -432,15 +445,25 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			childCtx[k] = v
 		}
 		if workflow.GetVersion(ctx, "roles_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-			role := "generalist"
+			// Preserve incoming role by default; allow LLM-specified agent_types to override
+			baseRole := "generalist"
+			if v, ok := input.Context["role"].(string); ok && v != "" {
+				baseRole = v
+			}
+			role := baseRole
 			if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 				role = decomp.AgentTypes[i]
 			}
 			childCtx["role"] = role
+			// Protect slice modification from concurrent query handler reads
+			teamAgentsMu.Lock()
 			teamAgents = append(teamAgents, AgentInfo{AgentID: fmt.Sprintf("agent-%s", st.ID), Role: role})
+			teamAgentsMu.Unlock()
 			// Optional: record role assignment in mailbox
 			if workflow.GetVersion(ctx, "mailbox_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-				messages = append(messages, MailboxMessage{From: "supervisor", To: fmt.Sprintf("agent-%s", st.ID), Role: role, Content: "role_assigned"})
+				msg := MailboxMessage{From: "supervisor", To: fmt.Sprintf("agent-%s", st.ID), Role: role, Content: "role_assigned"}
+				// Send to channel instead of direct append to avoid race condition
+				msgChan.Send(ctx, msg)
 			}
 			// Stream role assignment
 			emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -898,15 +921,40 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-	if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
-		// Single result bypass
-		synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
-	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
-		// Use the synthesis subtask's result as the final result
-		// This prevents double synthesis and respects the user's requested format
-		synthesisResult := childResults[synthesisTaskIdx]
-		synth = activities.SynthesisResult{
-			FinalResult: synthesisResult.Response,
+    if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
+        // Only bypass if the single result is not raw JSON and role doesn't require formatting
+        shouldBypass := true
+        trimmed := strings.TrimSpace(childResults[0].Response)
+        if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+            shouldBypass = false
+        }
+        if input.Context != nil {
+            if role, ok := input.Context["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
+                // Enforce role-aware synthesis to produce dataResult formatting
+                shouldBypass = false
+            }
+        }
+
+        if shouldBypass {
+            synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
+        } else {
+            // Perform synthesis for JSON-like results or when role requires formatting
+            logger.Info("Single result requires synthesis (JSON/role formatting)")
+            if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+                Query:            input.Query,
+                AgentResults:     childResults,
+                Context:          input.Context,
+                ParentWorkflowID: workflowID,
+            }).Get(ctx, &synth); err != nil {
+                return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+            }
+        }
+    } else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
+        // Use the synthesis subtask's result as the final result
+        // This prevents double synthesis and respects the user's requested format
+        synthesisResult := childResults[synthesisTaskIdx]
+        synth = activities.SynthesisResult{
+            FinalResult: synthesisResult.Response,
 			TokensUsed:  0, // Don't double-count tokens as they're already counted in agent execution
 		}
 		logger.Info("Using synthesis subtask result as final output",
@@ -914,11 +962,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"response_length", len(synthesisResult.Response),
 		)
 	} else {
-		// No synthesis subtask in decomposition, perform standard synthesis
-		logger.Info("Performing standard synthesis of agent results")
-		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: childResults}).Get(ctx, &synth); err != nil {
-			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-		}
+    // No synthesis subtask in decomposition, perform standard synthesis
+    logger.Info("Performing standard synthesis of agent results")
+    if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+        Query:            input.Query,
+        AgentResults:     childResults,
+        Context:          input.Context,       // Pass role/prompt_params for role-aware synthesis
+        ParentWorkflowID: workflowID,          // For observability correlation
+    }).Get(ctx, &synth); err != nil {
+        return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+    }
 	}
 
 	// Update session with token usage (include per-agent usage for accurate cost)

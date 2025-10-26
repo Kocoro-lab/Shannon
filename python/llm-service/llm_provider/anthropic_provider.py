@@ -105,8 +105,12 @@ class AnthropicProvider(LLMProvider):
             "messages": claude_messages,
             "max_tokens": request.max_tokens or 4096,
             "temperature": request.temperature,
-            "top_p": request.top_p,
         }
+
+        # Anthropic doesn't support both temperature and top_p
+        # Only add top_p if temperature is not specified
+        if not request.temperature:
+            api_request["top_p"] = request.top_p
 
         if system_message:
             api_request["system"] = system_message

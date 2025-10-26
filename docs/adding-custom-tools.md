@@ -213,6 +213,8 @@ Your endpoint should return JSON:
 
 For REST APIs with OpenAPI 3.x specifications, Shannon can automatically generate tools.
 
+> **💡 New in v0.8:** For domain-specific APIs requiring custom transformations, see the [Vendor Adapter Pattern](#vendor-adapter-pattern) section below or the comprehensive [Vendor Adapters Guide](vendor-adapters.md).
+
 ### Features
 
 **Supported:**
@@ -1223,3 +1225,91 @@ curl -X POST http://localhost:8000/tools/execute \
 ```
 
 Happy tool building! 🛠️
+
+---
+
+## Vendor Adapter Pattern
+
+**For domain-specific APIs and custom agents**
+
+When integrating proprietary or internal APIs that require domain-specific transformations, use the **vendor adapter pattern** to keep vendor logic separate from Shannon's core infrastructure.
+
+### When to Use
+
+Use vendor adapters when your API integration requires:
+- Custom field name aliasing (e.g., `users` → `my:unique_users`)
+- Request/response transformations
+- Dynamic parameter injection from session context
+- Domain-specific validation or normalization
+- Specialized agent roles with custom system prompts
+
+### Quick Example
+
+**1. Create vendor adapter:**
+
+`python/llm-service/llm_service/tools/vendor_adapters/myvendor.py`:
+```python
+class MyVendorAdapter:
+    def transform_body(self, body, operation_id, prompt_params):
+        # Transform field names
+        if isinstance(body.get("metrics"), list):
+            body["metrics"] = [m.replace("users", "my:users") for m in body["metrics"]]
+
+        # Inject session params
+        if prompt_params and "account_id" in prompt_params:
+            body["account_id"] = prompt_params["account_id"]
+
+        return body
+```
+
+**2. Register adapter:**
+
+`python/llm-service/llm_service/tools/vendor_adapters/__init__.py`:
+```python
+def get_vendor_adapter(name: str):
+    if name.lower() == "myvendor":
+        from .myvendor import MyVendorAdapter
+        return MyVendorAdapter()
+    return None
+```
+
+**3. Configure with vendor flag:**
+
+`config/overlays/shannon.myvendor.yaml`:
+```yaml
+openapi_tools:
+  myvendor_api:
+    enabled: true
+    spec_path: config/openapi_specs/myvendor_api.yaml
+    auth_type: bearer
+    auth_config:
+      vendor: myvendor  # Triggers adapter loading
+      token: "${MYVENDOR_API_TOKEN}"
+    category: custom
+```
+
+**4. Use environment:**
+```bash
+SHANNON_CONFIG_PATH=config/overlays/shannon.myvendor.yaml
+MYVENDOR_API_TOKEN=your_token_here
+```
+
+### Benefits
+
+- ✅ **Clean separation:** Vendor code isolated from Shannon core
+- ✅ **No core changes:** Shannon infrastructure remains generic
+- ✅ **Conditional loading:** Graceful fallback if vendor module unavailable
+- ✅ **Easy testing:** Unit test adapters in isolation
+- ✅ **Secrets management:** All tokens via environment variables
+
+### Complete Guide
+
+For a comprehensive guide including:
+- Custom agent roles for specialized domains
+- Session context injection patterns
+- Testing strategies
+- Best practices and troubleshooting
+
+See: **[Vendor Adapters Guide](vendor-adapters.md)**
+
+---
