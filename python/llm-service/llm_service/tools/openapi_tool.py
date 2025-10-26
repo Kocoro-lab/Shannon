@@ -336,6 +336,7 @@ class OpenAPILoader:
         rate_limit = self.rate_limit
         timeout_seconds = self.timeout_seconds
         max_response_bytes = self.max_response_bytes
+        default_retries = self.retries
         loader_name = self.name
         build_auth_headers = self._build_auth_headers
         vendor_adapter = self.vendor_adapter
@@ -490,7 +491,7 @@ class OpenAPILoader:
 
                 # Retry logic with exponential backoff
                 # Allow env var override, otherwise use configured retries (default: 2)
-                retries = int(os.getenv("OPENAPI_RETRIES", str(self.retries)))
+                retries = int(os.getenv("OPENAPI_RETRIES", str(default_retries)))
                 last_exception = None
 
                 for attempt in range(1, retries + 1):

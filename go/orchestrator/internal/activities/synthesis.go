@@ -11,13 +11,45 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
 )
 
 // SynthesizeResults synthesizes results from multiple agents (baseline concatenation)
 func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
-	return simpleSynthesis(ctx, input)
+	// Emit synthesis start once for the simple (non-LLM) path
+	wfID := input.ParentWorkflowID
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventDataProcessing),
+			AgentID:    "synthesis",
+			Message:    MsgCombiningResults(),
+			Timestamp:  time.Now(),
+		})
+	}
+	// Compute result without emitting completion here, then emit once
+	res, err := simpleSynthesisNoEvents(ctx, input)
+	if err != nil {
+		return res, err
+	}
+	// Emit synthesis completed (DATA_PROCESSING)
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventDataProcessing),
+			AgentID:    "synthesis",
+			Message:    "Synthesis completed",
+			Timestamp:  time.Now(),
+		})
+	}
+	return res, nil
 }
 
 // SynthesizeResultsLLM synthesizes results using the LLM service, with fallback to simple synthesis
@@ -35,6 +67,23 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	// LLM-first; fallback to simple synthesis on any failure
+
+	// Emit synthesis start once at the beginning of the LLM attempt
+	wfID := input.ParentWorkflowID
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventDataProcessing),
+			AgentID:    "synthesis",
+			Message:    MsgCombiningResults(),
+			Timestamp:  time.Now(),
+		})
+	}
 
 	// Extract context for role-aware synthesis
 	role := ""
@@ -87,7 +136,21 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	if count == 0 {
 		logger.Warn("No successful agent results to synthesize")
-		return simpleSynthesis(ctx, input)
+		// Fallback: simple synthesis without emitting completion here; emit below
+		res, err := simpleSynthesisNoEvents(ctx, input)
+		if err != nil {
+			return res, err
+		}
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    "Synthesis completed",
+				Timestamp:  time.Now(),
+			})
+		}
+		return res, nil
 	}
 
 	// Use /agent/query to leverage role presets and proper model selection
@@ -129,19 +192,58 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		logger.Warn("LLM synthesis: HTTP error, falling back", zap.Error(err))
-		return simpleSynthesis(ctx, input)
+		res, serr := simpleSynthesisNoEvents(ctx, input)
+		if serr != nil {
+			return res, serr
+		}
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    "Synthesis completed",
+				Timestamp:  time.Now(),
+			})
+		}
+		return res, nil
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Warn("LLM synthesis: non-2xx, falling back", zap.Int("status", resp.StatusCode))
-		return simpleSynthesis(ctx, input)
+		res, serr := simpleSynthesisNoEvents(ctx, input)
+		if serr != nil {
+			return res, serr
+		}
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    "Synthesis completed",
+				Timestamp:  time.Now(),
+			})
+		}
+		return res, nil
 	}
 
 	// Parse /agent/query response format (read body for diagnostics)
 	rawBody, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
 		logger.Warn("LLM synthesis: read body failed, falling back", zap.Error(readErr))
-		return simpleSynthesis(ctx, input)
+		res, serr := simpleSynthesisNoEvents(ctx, input)
+		if serr != nil {
+			return res, serr
+		}
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    "Synthesis completed",
+				Timestamp:  time.Now(),
+			})
+		}
+		return res, nil
 	}
 
 	var out struct {
@@ -154,14 +256,40 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			zap.Error(err),
 			zap.String("raw", truncateForLog(string(rawBody), 2000)),
 		)
-		return simpleSynthesis(ctx, input)
+		res, serr := simpleSynthesisNoEvents(ctx, input)
+		if serr != nil {
+			return res, serr
+		}
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    "Synthesis completed",
+				Timestamp:  time.Now(),
+			})
+		}
+		return res, nil
 	}
 
 	if out.Response == "" {
 		logger.Warn("LLM synthesis: empty response, falling back",
 			zap.String("raw", truncateForLog(string(rawBody), 2000)),
 		)
-		return simpleSynthesis(ctx, input)
+		res, serr := simpleSynthesisNoEvents(ctx, input)
+		if serr != nil {
+			return res, serr
+		}
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    "Synthesis completed",
+				Timestamp:  time.Now(),
+			})
+		}
+		return res, nil
 	}
 
 	// Extract model info from metadata if available
@@ -182,6 +310,17 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		zap.String("role", role),
 	)
 
+	// Emit synthesis completed (DATA_PROCESSING)
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventDataProcessing),
+			AgentID:    "synthesis",
+			Message:    "Synthesis completed",
+			Timestamp:  time.Now(),
+		})
+	}
+
 	return SynthesisResult{
 		FinalResult: out.Response,
 		TokensUsed:  out.TokensUsed,
@@ -197,7 +336,8 @@ func truncateForLog(s string, max int) string {
 }
 
 // simpleSynthesis concatenates successful agent outputs with light formatting
-func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
+// simpleSynthesisNoEvents performs simple synthesis without emitting streaming events
+func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
 	// Use activity-scoped logger for consistency with Temporal activity logging
 	logger := activity.GetLogger(ctx)
 	logger.Info("Synthesizing results (simple)",
@@ -239,6 +379,30 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 		FinalResult: finalResult,
 		TokensUsed:  totalTokens,
 	}, nil
+}
+
+// simpleSynthesis wraps simpleSynthesisNoEvents and emits a completion event
+func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
+	res, err := simpleSynthesisNoEvents(ctx, input)
+	if err != nil {
+		return res, err
+	}
+	wfID := input.ParentWorkflowID
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventDataProcessing),
+			AgentID:    "synthesis",
+			Message:    "Synthesis completed",
+			Timestamp:  time.Now(),
+		})
+	}
+	return res, nil
 }
 
 // cleanAgentOutput processes raw agent outputs to be more user-friendly
