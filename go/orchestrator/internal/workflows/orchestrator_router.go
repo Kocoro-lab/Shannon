@@ -137,7 +137,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    fmt.Sprintf("Routing to TemplateWorkflow (%s)", templateEntry.Template.Name),
+			Message:    fmt.Sprintf("Handing off to template (%s)", templateEntry.Template.Name),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 
@@ -181,18 +181,18 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		decompContext["history"] = strings.Join(historyLines, "\n")
 	}
 
-    var decomp activities.DecompositionResult
-    if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
-        Query:          input.Query,
-        Context:        decompContext,
-        AvailableTools: []string{},
-    }).Get(ctx, &decomp); err != nil {
+	var decomp activities.DecompositionResult
+	if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
+		Query:          input.Query,
+		Context:        decompContext,
+		AvailableTools: []string{},
+	}).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
 		// Emit error event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			EventType:  activities.StreamEventErrorOccurred,
-			Message:    "Task decomposition failed: " + err.Error(),
+			Message:    "Couldn't create a plan: " + err.Error(),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -205,10 +205,34 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		"cognitive_strategy", decomp.CognitiveStrategy,
 	)
 
-    // Propagate the plan to child workflows to avoid a second decompose
-    input.PreplannedDecomposition = &decomp
+	// Emit a human-friendly plan summary with payload (steps + deps)
+	{
+		steps := make([]map[string]interface{}, 0, len(decomp.Subtasks))
+		deps := make([]map[string]string, 0, 4)
+		for _, st := range decomp.Subtasks {
+			steps = append(steps, map[string]interface{}{
+				"id":   st.ID,
+				"name": st.Description,
+				"type": st.TaskType,
+			})
+			for _, d := range st.Dependencies {
+				deps = append(deps, map[string]string{"from": d, "to": st.ID})
+			}
+		}
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventProgress,
+			AgentID:    "planner",
+			Message:    fmt.Sprintf("Created a plan with %d steps", len(steps)),
+			Timestamp:  workflow.Now(ctx),
+			Payload:    map[string]interface{}{"plan": steps, "deps": deps},
+		}).Get(ctx, nil)
+	}
 
-    // 1.5) Budget preflight (estimate based on plan)
+	// Propagate the plan to child workflows to avoid a second decompose
+	input.PreplannedDecomposition = &decomp
+
+	// 1.5) Budget preflight (estimate based on plan)
 	if input.UserID != "" { // Only check when we have a user scope
 		est := EstimateTokensWithConfig(decomp, &cfg)
 		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
@@ -266,21 +290,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 	}
 
-    // 2) Routing rules (simple, cognitive, supervisor, dag)
-    // Treat as simple ONLY when truly one-shot (no tools, no deps) AND below threshold
-    needsTools := false
-    for _, st := range decomp.Subtasks {
-        if len(st.SuggestedTools) > 0 || len(st.Dependencies) > 0 || len(st.Consumes) > 0 || len(st.Produces) > 0 {
-            needsTools = true
-            break
-        }
-        if st.ToolParameters != nil && len(st.ToolParameters) > 0 {
-            needsTools = true
-            break
-        }
-    }
-    simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
-    isSimple := decomp.ComplexityScore < simpleThreshold && simpleByShape
+	// 2) Routing rules (simple, cognitive, supervisor, dag)
+	// Treat as simple ONLY when truly one-shot (no tools, no deps) AND below threshold
+	needsTools := false
+	for _, st := range decomp.Subtasks {
+		if len(st.SuggestedTools) > 0 || len(st.Dependencies) > 0 || len(st.Consumes) > 0 || len(st.Produces) > 0 {
+			needsTools = true
+			break
+		}
+		if st.ToolParameters != nil && len(st.ToolParameters) > 0 {
+			needsTools = true
+			break
+		}
+	}
+	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
+	isSimple := decomp.ComplexityScore < simpleThreshold && simpleByShape
 
 	// Cognitive program takes precedence if specified
 	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
@@ -328,7 +352,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Routing to SimpleTaskWorkflow",
+			Message:    "Handing off to simple task",
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 
@@ -350,7 +374,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Routing to SupervisorWorkflow",
+			Message:    "Handing off to supervisor",
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		if err := workflow.ExecuteChildWorkflow(ctx, SupervisorWorkflow, input).Get(ctx, &result); err != nil {
@@ -365,7 +389,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Routing to DAGWorkflow",
+			Message:    "Handing off to team plan",
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		strategiesInput := convertToStrategiesInput(input)
@@ -390,22 +414,22 @@ func convertToStrategiesInput(input TaskInput) strategies.TaskInput {
 	}
 
 	return strategies.TaskInput{
-		Query:              input.Query,
-		UserID:             input.UserID,
-		TenantID:           input.TenantID,
-		SessionID:          input.SessionID,
-		Context:            input.Context,
-		Mode:               input.Mode,
-		TemplateName:       input.TemplateName,
-		TemplateVersion:    input.TemplateVersion,
-		DisableAI:          input.DisableAI,
-		History:            history,
-		SessionCtx:         input.SessionCtx,
-		RequireApproval:    input.RequireApproval,
-		ApprovalTimeout:    input.ApprovalTimeout,
-		BypassSingleResult: input.BypassSingleResult,
-		ParentWorkflowID:   input.ParentWorkflowID,
-        PreplannedDecomposition: input.PreplannedDecomposition,
+		Query:                   input.Query,
+		UserID:                  input.UserID,
+		TenantID:                input.TenantID,
+		SessionID:               input.SessionID,
+		Context:                 input.Context,
+		Mode:                    input.Mode,
+		TemplateName:            input.TemplateName,
+		TemplateVersion:         input.TemplateVersion,
+		DisableAI:               input.DisableAI,
+		History:                 history,
+		SessionCtx:              input.SessionCtx,
+		RequireApproval:         input.RequireApproval,
+		ApprovalTimeout:         input.ApprovalTimeout,
+		BypassSingleResult:      input.BypassSingleResult,
+		ParentWorkflowID:        input.ParentWorkflowID,
+		PreplannedDecomposition: input.PreplannedDecomposition,
 	}
 }
 

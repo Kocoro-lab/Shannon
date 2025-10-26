@@ -35,10 +35,10 @@ func decomposeReactStub(ctx context.Context, in activities.DecompositionInput) (
 }
 
 func TestOrchestratorRoutesToReactWhenStrategySpecified(t *testing.T) {
-	suite := &testsuite.WorkflowTestSuite{}
-	env := suite.NewTestWorkflowEnvironment()
+    suite := &testsuite.WorkflowTestSuite{}
+    env := suite.NewTestWorkflowEnvironment()
 
-	// Register activities used by the router
+    // Register activities used by the router
 	env.RegisterActivityWithOptions(getWorkflowConfigStub, activity.RegisterOptions{Name: "GetWorkflowConfig"})
 	env.RegisterActivityWithOptions(checkTokenBudgetStub, activity.RegisterOptions{Name: "CheckTokenBudgetWithBackpressure"})
 	env.RegisterActivityWithOptions(decomposeReactStub, activity.RegisterOptions{Name: "DecomposeTask"})
@@ -56,7 +56,10 @@ func TestOrchestratorRoutesToReactWhenStrategySpecified(t *testing.T) {
 	env.RegisterActivityWithOptions(func(ctx context.Context, in activities.RecordQueryInput) (activities.RecordQueryResult, error) {
 		return activities.RecordQueryResult{}, nil
 	}, activity.RegisterOptions{Name: "RecordQuery"})
-	env.RegisterActivityWithOptions(func(ctx context.Context, in activities.PatternMetricsInput) error { return nil }, activity.RegisterOptions{Name: "RecordPatternMetrics"})
+    env.RegisterActivityWithOptions(func(ctx context.Context, in activities.PatternMetricsInput) error { return nil }, activity.RegisterOptions{Name: "RecordPatternMetrics"})
+
+    // Register stub for streaming events to avoid ActivityNotRegisteredError
+    env.RegisterActivityWithOptions(func(ctx context.Context, in activities.EmitTaskUpdateInput) error { return nil }, activity.RegisterOptions{Name: "EmitTaskUpdate"})
 
 	input := TaskInput{Query: "q", UserID: "u", SessionID: "s"}
 	env.ExecuteWorkflow(OrchestratorWorkflow, input)

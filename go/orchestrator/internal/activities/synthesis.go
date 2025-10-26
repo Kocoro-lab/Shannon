@@ -39,16 +39,35 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 	if err != nil {
 		return res, err
 	}
-	// Emit synthesis completed (DATA_PROCESSING)
+	// Emit final synthesized content and completion
 	if wfID != "" {
+		// LLM_OUTPUT with final content (simple path)
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMOutput),
+			AgentID:    "synthesis",
+			Message:    truncateQuery(res.FinalResult, 10000),
+			Timestamp:  time.Now(),
+		})
+		// Lightweight tokens summary
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    "Synthesis completed",
+			Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
 			Timestamp:  time.Now(),
 		})
 	}
+    // Emit synthesis completed (DATA_PROCESSING)
+    if wfID != "" {
+        streaming.Get().Publish(wfID, streaming.Event{
+            WorkflowID: wfID,
+            Type:       string(StreamEventDataProcessing),
+            AgentID:    "synthesis",
+            Message:    "Final answer ready",
+            Timestamp:  time.Now(),
+        })
+    }
 	return res, nil
 }
 
@@ -142,13 +161,30 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			return res, err
 		}
 		if wfID != "" {
+			// Emit final synthesized content
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    "synthesis",
+				Message:    truncateQuery(res.FinalResult, 10000),
+				Timestamp:  time.Now(),
+			})
+			// Emit friendly summary with tokens
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Synthesis completed",
+				Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
+            // Emit completion
+            streaming.Get().Publish(wfID, streaming.Event{
+                WorkflowID: wfID,
+                Type:       string(StreamEventDataProcessing),
+                AgentID:    "synthesis",
+                Message:    "Final answer ready",
+                Timestamp:  time.Now(),
+            })
 		}
 		return res, nil
 	}
@@ -199,11 +235,25 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
-				Type:       string(StreamEventDataProcessing),
+				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
-				Message:    "Synthesis completed",
+				Message:    truncateQuery(res.FinalResult, 10000),
 				Timestamp:  time.Now(),
 			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+				Timestamp:  time.Now(),
+			})
+            streaming.Get().Publish(wfID, streaming.Event{
+                WorkflowID: wfID,
+                Type:       string(StreamEventDataProcessing),
+                AgentID:    "synthesis",
+                Message:    "Final answer ready",
+                Timestamp:  time.Now(),
+            })
 		}
 		return res, nil
 	}
@@ -217,9 +267,23 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    "synthesis",
+				Message:    truncateQuery(res.FinalResult, 10000),
+				Timestamp:  time.Now(),
+			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Synthesis completed",
+				Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+				Timestamp:  time.Now(),
+			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+                Message:    "Final answer ready",
 				Timestamp:  time.Now(),
 			})
 		}
@@ -237,9 +301,23 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    "synthesis",
+				Message:    truncateQuery(res.FinalResult, 10000),
+				Timestamp:  time.Now(),
+			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Synthesis completed",
+				Message:    fmt.Sprintf("Synthesis summary: tokens=%d", res.TokensUsed),
+				Timestamp:  time.Now(),
+			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+                Message:    "Analyzation completed",
 				Timestamp:  time.Now(),
 			})
 		}
@@ -263,11 +341,25 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
-				Type:       string(StreamEventDataProcessing),
+				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
-				Message:    "Synthesis completed",
+				Message:    truncateQuery(res.FinalResult, 10000),
 				Timestamp:  time.Now(),
 			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    fmt.Sprintf("Synthesis summary: tokens=%d", res.TokensUsed),
+				Timestamp:  time.Now(),
+			})
+            streaming.Get().Publish(wfID, streaming.Event{
+                WorkflowID: wfID,
+                Type:       string(StreamEventDataProcessing),
+                AgentID:    "synthesis",
+                Message:    "Analyzation completed",
+                Timestamp:  time.Now(),
+            })
 		}
 		return res, nil
 	}
@@ -283,11 +375,25 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
-				Type:       string(StreamEventDataProcessing),
+				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
-				Message:    "Synthesis completed",
+				Message:    truncateQuery(res.FinalResult, 10000),
 				Timestamp:  time.Now(),
 			})
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventDataProcessing),
+				AgentID:    "synthesis",
+				Message:    fmt.Sprintf("Synthesis summary: tokens=%d", res.TokensUsed),
+				Timestamp:  time.Now(),
+			})
+            streaming.Get().Publish(wfID, streaming.Event{
+                WorkflowID: wfID,
+                Type:       string(StreamEventDataProcessing),
+                AgentID:    "synthesis",
+                Message:    "Analyzation completed",
+                Timestamp:  time.Now(),
+            })
 		}
 		return res, nil
 	}
@@ -310,13 +416,32 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		zap.String("role", role),
 	)
 
+	// Emit synthesis result as LLM_OUTPUT so clients can see the final result
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMOutput),
+			AgentID:    "synthesis",
+			Message:    truncateQuery(out.Response, 10000),
+			Timestamp:  time.Now(),
+		})
+		// Also emit a friendly synthesis summary (model + tokens)
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventDataProcessing),
+			AgentID:    "synthesis",
+			Message:    fmt.Sprintf("Used %s (~%d tokens)", model, out.TokensUsed),
+			Timestamp:  time.Now(),
+		})
+	}
+
 	// Emit synthesis completed (DATA_PROCESSING)
 	if wfID != "" {
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    "Synthesis completed",
+            Message:    "Analyzation completed",
 			Timestamp:  time.Now(),
 		})
 	}
@@ -394,13 +519,29 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 		}
 	}
 	if wfID != "" {
+		// Emit synthesized content (simple path)
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
-			Type:       string(StreamEventDataProcessing),
+			Type:       string(StreamEventLLMOutput),
 			AgentID:    "synthesis",
-			Message:    "Synthesis completed",
+			Message:    truncateQuery(res.FinalResult, 10000),
 			Timestamp:  time.Now(),
 		})
+        // Emit a simple summary with tokens
+        streaming.Get().Publish(wfID, streaming.Event{
+            WorkflowID: wfID,
+            Type:       string(StreamEventDataProcessing),
+            AgentID:    "synthesis",
+            Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+            Timestamp:  time.Now(),
+        })
+        streaming.Get().Publish(wfID, streaming.Event{
+            WorkflowID: wfID,
+            Type:       string(StreamEventDataProcessing),
+            AgentID:    "synthesis",
+            Message:    "Analyzation completed",
+            Timestamp:  time.Now(),
+        })
 	}
 	return res, nil
 }

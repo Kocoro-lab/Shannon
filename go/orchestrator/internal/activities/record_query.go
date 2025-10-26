@@ -8,6 +8,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/activity"
@@ -244,5 +245,25 @@ func recordQueryCore(ctx context.Context, in RecordQueryInput) (RecordQueryResul
 // RecordQuery generates an embedding and upserts to Qdrant (TaskEmbeddings)
 // This is a Temporal activity that wraps the core logic
 func RecordQuery(ctx context.Context, in RecordQueryInput) (RecordQueryResult, error) {
-	return recordQueryCore(ctx, in)
+	res, err := recordQueryCore(ctx, in)
+	if err == nil && res.Stored {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID := info.WorkflowExecution.ID
+			// Friendly message for memory write
+			msg := "Saved to task memory"
+			count := res.ChunksCreated
+			if count <= 0 { // single vector path
+				count = 1
+			}
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventProgress),
+				AgentID:    "memory",
+				Message:    msg,
+				Payload:    map[string]interface{}{"operation": "upsert", "count": count},
+				Timestamp:  time.Now(),
+			})
+		}
+	}
+	return res, err
 }

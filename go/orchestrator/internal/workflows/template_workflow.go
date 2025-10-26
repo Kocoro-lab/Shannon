@@ -114,13 +114,13 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflowID,
-		EventType:  activities.StreamEventWorkflowCompleted,
-		AgentID:    "template",
-		Message:    "Workflow completed",
-		Timestamp:  workflow.Now(ctx),
-	}).Get(ctx, nil)
+    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflowID,
+        EventType:  activities.StreamEventWorkflowCompleted,
+        AgentID:    "template",
+        Message:    "All done",
+        Timestamp:  workflow.Now(ctx),
+    }).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,

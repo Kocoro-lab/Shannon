@@ -48,13 +48,13 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	if len(truncatedQuery) > 80 {
 		truncatedQuery = truncatedQuery[:77] + "..."
 	}
-	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflowID,
-		EventType:  activities.StreamEventAgentThinking,
-		AgentID:    "simple-agent",
-		Message:    "Analyzing: " + truncatedQuery,
-		Timestamp:  workflow.Now(ctx),
-	}).Get(ctx, nil)
+    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflowID,
+        EventType:  activities.StreamEventAgentThinking,
+        AgentID:    "simple-agent",
+        Message:    "Thinking: " + truncatedQuery,
+        Timestamp:  workflow.Now(ctx),
+    }).Get(ctx, nil)
 
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
@@ -497,7 +497,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentCompleted,
 		AgentID:    "simple-agent",
-		Message:    "Task completed successfully",
+    Message:    "Task done",
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -506,7 +506,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
 		AgentID:    "simple-agent",
-		Message:    "Workflow completed",
+    Message:    "All done",
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 

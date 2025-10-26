@@ -19,9 +19,7 @@ func compactTokens(tokens int) string {
 }
 
 // MsgContextPreparing returns a short status for context preparation.
-func MsgContextPreparing(msgs int, estTokens int) string {
-	return fmt.Sprintf("Preparing context (%d msgs, ~%s tokens)", msgs, compactTokens(estTokens))
-}
+func MsgContextPreparing(_ int, _ int) string { return "Preparing context" }
 
 // MsgAgentRunning announces an agent role starting work.
 func MsgAgentRunning(role string) string {
@@ -52,16 +50,16 @@ func MsgBudget(used, limit int) string {
 }
 
 // MsgCompressionApplied notes that trimming was applied.
-func MsgCompressionApplied() string { return "Context trimmed to stay within budget" }
+func MsgCompressionApplied() string { return "Shortened context to fit budget" }
 
 // MsgCombiningResults announces synthesis.
-func MsgCombiningResults() string { return "Combining results" }
+func MsgCombiningResults() string { return "Analyzing gathered results" }
 
 // MsgWaiting reports a generic waiting status.
 func MsgWaiting(_ string) string { return "Waiting for previous step" }
 
 // MsgMemoryRecalled reports number of memory items recalled.
-func MsgMemoryRecalled(items int) string { return fmt.Sprintf("Memory recalled (%d items)", items) }
+func MsgMemoryRecalled(items int) string { return fmt.Sprintf("Found %d past notes", items) }
 
 // MsgSummaryAdded indicates a previous context summary was injected.
 func MsgSummaryAdded() string { return "Previous context summary added" }

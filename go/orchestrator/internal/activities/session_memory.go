@@ -2,8 +2,13 @@ package activities
 
 import (
 	"context"
+	"fmt"
+	"time"
+
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
+	"go.temporal.io/sdk/activity"
 )
 
 // FetchSessionMemoryInput requests session-scoped context items
@@ -39,6 +44,20 @@ func FetchSessionMemory(ctx context.Context, in FetchSessionMemoryInput) (FetchS
 		metrics.MemoryFetches.WithLabelValues("session", "qdrant", "hit").Inc()
 	}
 	metrics.MemoryItemsRetrieved.WithLabelValues("session", "qdrant").Observe(float64(len(items)))
+
+	// Emit a friendly memory retrieval event
+	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		wfID := info.WorkflowExecution.ID
+		msg := fmt.Sprintf("Looking up past notes (%d found)", len(items))
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventProgress),
+			AgentID:    "memory",
+			Message:    msg,
+			Payload:    map[string]interface{}{"operation": "fetch", "hits": len(items)},
+			Timestamp:  time.Now(),
+		})
+	}
 
 	out := make([]map[string]interface{}, 0, len(items))
 	for _, it := range items {
