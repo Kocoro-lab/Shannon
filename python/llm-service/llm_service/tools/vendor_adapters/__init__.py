@@ -29,7 +29,6 @@ To register a vendor adapter:
 
 See docs/vendor-adapters.md for complete guide.
 """
-from typing import Optional
 
 
 def get_vendor_adapter(name: str):

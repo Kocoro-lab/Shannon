@@ -1,9 +1,10 @@
 package strategies
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "strings"
+    "time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -273,12 +274,27 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			}
 		}
 		// 2) If response looks like raw JSON, avoid bypass
-		if shouldBypass {
-			trimmed := strings.TrimSpace(singleSuccessResult.Response)
-			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-				shouldBypass = false
-			}
-		}
+        if shouldBypass {
+            trimmed := strings.TrimSpace(singleSuccessResult.Response)
+            if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+                shouldBypass = false
+            } else if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") {
+                // Handle JSON encoded as a quoted string
+                var inner string
+                if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
+                    innerTrim := strings.TrimSpace(inner)
+                    if strings.HasPrefix(innerTrim, "{") || strings.HasPrefix(innerTrim, "[") {
+                        shouldBypass = false
+                    }
+                }
+            }
+        }
+        // Enforce role-aware synthesis for data_analytics even with single result
+        if shouldBypass && baseContext != nil {
+            if role, ok := baseContext["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
+                shouldBypass = false
+            }
+        }
 
 		if shouldBypass {
 			// Single success bypass - skip synthesis entirely for efficiency

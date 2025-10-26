@@ -283,7 +283,11 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
 		} else {
 			var err error
-			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: agentResults}).Get(ctx, &synthesis)
+        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+            Query:        input.Query,
+            AgentResults: agentResults,
+            Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
+        }).Get(ctx, &synthesis)
 			if err != nil {
 				logger.Error("Result synthesis failed", "error", err)
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -291,7 +295,11 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	} else {
 		var err error
-		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: agentResults}).Get(ctx, &synthesis)
+        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+            Query:        input.Query,
+            AgentResults: agentResults,
+            Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
+        }).Get(ctx, &synthesis)
 		if err != nil {
 			logger.Error("Result synthesis failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err

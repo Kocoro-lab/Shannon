@@ -2,9 +2,8 @@
 
 import pytest
 import time
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 from llm_service.tools.openapi_tool import OpenAPILoader, _SimpleBreaker
-from llm_service.tools.base import ToolResult
 
 
 class TestOpenAPIToolExecution:
@@ -311,9 +310,6 @@ class TestRateLimiting:
 
             assert result1.success
             assert result2.success
-
-            # Third request should be rate limited (within same minute)
-            result3 = await tool.execute(userId="3")
 
             # Note: Actual rate limiting behavior depends on implementation
             # This test verifies the rate_limit configuration is passed through

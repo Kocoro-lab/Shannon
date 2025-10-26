@@ -921,15 +921,40 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-	if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
-		// Single result bypass
-		synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
-	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
-		// Use the synthesis subtask's result as the final result
-		// This prevents double synthesis and respects the user's requested format
-		synthesisResult := childResults[synthesisTaskIdx]
-		synth = activities.SynthesisResult{
-			FinalResult: synthesisResult.Response,
+    if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
+        // Only bypass if the single result is not raw JSON and role doesn't require formatting
+        shouldBypass := true
+        trimmed := strings.TrimSpace(childResults[0].Response)
+        if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+            shouldBypass = false
+        }
+        if input.Context != nil {
+            if role, ok := input.Context["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
+                // Enforce role-aware synthesis to produce dataResult formatting
+                shouldBypass = false
+            }
+        }
+
+        if shouldBypass {
+            synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
+        } else {
+            // Perform synthesis for JSON-like results or when role requires formatting
+            logger.Info("Single result requires synthesis (JSON/role formatting)")
+            if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+                Query:            input.Query,
+                AgentResults:     childResults,
+                Context:          input.Context,
+                ParentWorkflowID: workflowID,
+            }).Get(ctx, &synth); err != nil {
+                return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+            }
+        }
+    } else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
+        // Use the synthesis subtask's result as the final result
+        // This prevents double synthesis and respects the user's requested format
+        synthesisResult := childResults[synthesisTaskIdx]
+        synth = activities.SynthesisResult{
+            FinalResult: synthesisResult.Response,
 			TokensUsed:  0, // Don't double-count tokens as they're already counted in agent execution
 		}
 		logger.Info("Using synthesis subtask result as final output",
@@ -937,11 +962,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"response_length", len(synthesisResult.Response),
 		)
 	} else {
-		// No synthesis subtask in decomposition, perform standard synthesis
-		logger.Info("Performing standard synthesis of agent results")
-		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{Query: input.Query, AgentResults: childResults}).Get(ctx, &synth); err != nil {
-			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-		}
+    // No synthesis subtask in decomposition, perform standard synthesis
+    logger.Info("Performing standard synthesis of agent results")
+    if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+        Query:            input.Query,
+        AgentResults:     childResults,
+        Context:          input.Context,       // Pass role/prompt_params for role-aware synthesis
+        ParentWorkflowID: workflowID,          // For observability correlation
+    }).Get(ctx, &synth); err != nil {
+        return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+    }
 	}
 
 	// Update session with token usage (include per-agent usage for accurate cost)

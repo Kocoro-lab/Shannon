@@ -550,7 +550,7 @@ class OpenAPILoader:
                                 if resp_text and len(resp_text) > 2000:
                                     resp_text = resp_text[:2000] + "...(truncated)"
                                 logger.warning(
-                                    f"OpenAPI tool %s: HTTP %s error on %s %s: %s",
+                                    "OpenAPI tool %s: HTTP %s error on %s %s: %s",
                                     operation_id,
                                     getattr(e.response, "status_code", "?"),
                                     method,
