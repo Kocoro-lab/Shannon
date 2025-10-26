@@ -481,13 +481,13 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflowID,
-		EventType:  activities.StreamEventWorkflowCompleted,
-		AgentID:    "dag",
-		Message:    "Workflow completed",
-		Timestamp:  workflow.Now(ctx),
-	}).Get(ctx, nil)
+    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflowID,
+        EventType:  activities.StreamEventWorkflowCompleted,
+        AgentID:    "dag",
+        Message:    "All done",
+        Timestamp:  workflow.Now(ctx),
+    }).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,

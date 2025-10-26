@@ -975,15 +975,15 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			wfID = info.WorkflowExecution.ID
 		}
 	}
-	if wfID != "" {
-		streaming.Get().Publish(wfID, streaming.Event{
-			WorkflowID: wfID,
-			Type:       string(StreamEventLLMPrompt),
-			AgentID:    input.AgentID,
-			Message:    truncateQuery(input.Query, 2000),
-			Timestamp:  time.Now(),
-		})
-	}
+    if wfID != "" {
+        streaming.Get().Publish(wfID, streaming.Event{
+            WorkflowID: wfID,
+            Type:       string(StreamEventLLMPrompt),
+            AgentID:    input.AgentID,
+            Message:    truncateQuery(input.Query, MaxPromptChars),
+            Timestamp:  time.Now(),
+        })
+    }
 
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
@@ -1031,13 +1031,13 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					})
 				}
 			}
-			streaming.Get().Publish(wfID, streaming.Event{
-				WorkflowID: wfID,
-				Type:       string(StreamEventLLMOutput),
-				AgentID:    input.AgentID,
-				Message:    truncateQuery(out, 4000),
-				Timestamp:  time.Now(),
-			})
+            streaming.Get().Publish(wfID, streaming.Event{
+                WorkflowID: wfID,
+                Type:       string(StreamEventLLMOutput),
+                AgentID:    input.AgentID,
+                Message:    truncateQuery(out, MaxLLMOutputChars),
+                Timestamp:  time.Now(),
+            })
 		}
 	}
 
@@ -1536,7 +1536,7 @@ func getenvInt(key string, def int) int {
 // emitAgentThinkingEvent emits a human-readable thinking event
 func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-		message := fmt.Sprintf("Analyzing: %s", truncateQuery(input.Query, 80))
+    message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
 		eventData := EmitTaskUpdateInput{
 			WorkflowID: info.WorkflowExecution.ID,
 			EventType:  StreamEventAgentThinking,
@@ -1592,30 +1592,30 @@ func humanizeToolCall(toolName string, params interface{}) string {
 	switch toolName {
 	case "web_search":
 		if query, ok := paramsMap["query"].(string); ok {
-			return fmt.Sprintf("Searching web for '%s'", truncateQuery(query, 50))
+			return fmt.Sprintf("Looking this up: '%s'", truncateQuery(query, 50))
 		}
-		return "Searching the web"
+		return "Looking this up"
 	case "calculator":
 		if expr, ok := paramsMap["expression"].(string); ok {
-			return fmt.Sprintf("Calculating: %s", expr)
+			return fmt.Sprintf("Doing the math: %s", expr)
 		}
-		return "Performing calculation"
+		return "Doing the math"
 	case "python_code", "code_executor", "python_executor":
-		return "Executing Python code"
+		return "Running some code"
 	case "read_file", "file_reader":
 		if path, ok := paramsMap["path"].(string); ok {
-			return fmt.Sprintf("Reading file: %s", path)
+			return fmt.Sprintf("Opening file: %s", path)
 		}
-		return "Reading file"
+		return "Opening a file"
 	case "web_fetch":
 		if url, ok := paramsMap["url"].(string); ok {
-			return fmt.Sprintf("Fetching content from: %s", truncateURL(url))
+			return fmt.Sprintf("Grabbing content from: %s", truncateURL(url))
 		}
-		return "Fetching web content"
+		return "Grabbing something from the web"
 	case "code_reader":
-		return "Analyzing code structure"
+		return "Reviewing code"
 	default:
-		return fmt.Sprintf("Using %s tool", toolName)
+		return fmt.Sprintf("Using %s", toolName)
 	}
 }
 

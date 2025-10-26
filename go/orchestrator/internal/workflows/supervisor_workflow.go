@@ -374,13 +374,13 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			StartToCloseTimeout: 30 * time.Second,
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		})
-		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflowID,
-			EventType:  activities.StreamEventWorkflowCompleted,
-			AgentID:    "supervisor",
-			Message:    "Workflow completed",
-			Timestamp:  workflow.Now(ctx),
-		}).Get(ctx, nil)
+        _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+            WorkflowID: workflowID,
+            EventType:  activities.StreamEventWorkflowCompleted,
+            AgentID:    "supervisor",
+            Message:    "All done",
+            Timestamp:  workflow.Now(ctx),
+        }).Get(ctx, nil)
 
 		return convertFromStrategiesResult(strategiesResult), nil
 	}
@@ -1038,13 +1038,13 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflowID,
-		EventType:  activities.StreamEventWorkflowCompleted,
-		AgentID:    "supervisor",
-		Message:    "Workflow completed",
-		Timestamp:  workflow.Now(ctx),
-	}).Get(ctx, nil)
+    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflowID,
+        EventType:  activities.StreamEventWorkflowCompleted,
+        AgentID:    "supervisor",
+        Message:    "All done",
+        Timestamp:  workflow.Now(ctx),
+    }).Get(ctx, nil)
 
 	// Aggregate tool errors across child results
 	var toolErrors []map[string]string
