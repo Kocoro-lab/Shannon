@@ -76,14 +76,14 @@ providers:
 
 ### Default Limits
 
-If limits are not specified, the system uses conservative defaults:
+If limits are not specified in `config/models.yaml`, the system applies conservative built‑in defaults (override recommended):
 
-| Provider | Default RPM | Default TPM |
-|----------|------------|-------------|
-| OpenAI | 500 | 150,000 |
-| Anthropic | 50 | 100,000 |
-| Google | 60 | 60,000 |
-| Others | 60 | 30,000 |
+| Provider | Built‑in RPM | Built‑in TPM |
+|----------|--------------|--------------|
+| OpenAI   | 30           | 60,000       |
+| Anthropic| 20           | 40,000       |
+| Google   | 40           | 80,000       |
+| Others   | 45           | 90,000       |
 
 ## Implementation
 

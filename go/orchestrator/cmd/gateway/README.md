@@ -6,15 +6,17 @@ A unified HTTP gateway for the Shannon multi-agent AI platform, providing REST A
 
 - **REST API** - Clean HTTP/JSON interface for task submission and status checking
 - **Authentication** - API key validation using existing auth service
-- **Rate Limiting** - Per-API-key token bucket rate limiting
+- **Rate Limiting** - Per-user fixed-window rate limiting (1-minute windows)
 - **Idempotency** - Support for idempotent requests with `Idempotency-Key` header
 - **SSE Streaming** - Real-time event streaming via Server-Sent Events
 - **OpenAPI Spec** - Self-documenting API with OpenAPI 3.0 specification
 - **Distributed Tracing** - Trace context propagation for debugging
 
-## Quick Start (No Auth Required!)
+## Quick Start
 
-By default, the gateway runs with `GATEWAY_SKIP_AUTH=1` for easy open-source adoption. You can start using Shannon immediately without setting up authentication.
+**Docker Compose (No Auth Required!)**: The Docker Compose setup defaults to `GATEWAY_SKIP_AUTH=1` for easy open-source adoption.
+
+**Local Builds**: Require either setting `GATEWAY_SKIP_AUTH=1` environment variable or configuring `gateway.skip_auth: true` in `config/features.yaml`.
 
 ### Running with Docker Compose
 
@@ -44,15 +46,22 @@ curl http://localhost:8080/openapi.json | jq
 
 #### Authenticated Endpoints
 
+**Task Management:**
 - `POST /api/v1/tasks` - Submit a new task
 - `POST /api/v1/tasks/stream` - Submit task and receive a stream URL (201)
 - `GET /api/v1/tasks` - List tasks (limit, offset, status, session_id)
 - `GET /api/v1/tasks/{id}` - Get task status (includes query/session_id/mode)
 - `GET /api/v1/tasks/{id}/events` - Get persisted event history (from Postgres)
 - `GET /api/v1/tasks/{id}/timeline` - Build human‑readable timeline from Temporal history (summary/full, persist)
-- `GET /api/v1/tasks/{id}/stream` - Stream task events (SSE)
-- `GET /api/v1/stream/sse` - Direct SSE stream
-- `GET /api/v1/stream/ws` - WebSocket stream
+- `GET /api/v1/tasks/{id}/stream` - Redirect to SSE stream for this task
+- `GET /api/v1/stream/sse?workflow_id={id}` - Stream task events (SSE)
+- `GET /api/v1/stream/ws?workflow_id={id}` - WebSocket stream
+
+**Session Management:**
+- `GET /api/v1/sessions` - List sessions with pagination (limit, offset)
+- `GET /api/v1/sessions/{sessionId}` - Get session details
+- `GET /api/v1/sessions/{sessionId}/history` - Get conversation history
+- `GET /api/v1/sessions/{sessionId}/events` - Get session events (excludes LLM_PARTIAL)
 
 ##### Task Listing
 
@@ -80,14 +89,36 @@ curl -s -H "X-API-Key: $API_KEY" \
   "http://localhost:8080/api/v1/tasks/$TASK_ID/timeline?mode=full&include_payloads=false&persist=false" | jq
 ```
 
+##### Session Management
+
+```bash
+# List all sessions for a user
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/sessions?limit=20&offset=0"
+
+# Get session details
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/sessions/$SESSION_ID" | jq
+
+# Get conversation history for a session
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/sessions/$SESSION_ID/history" | jq
+
+# Get session events (excludes partial LLM responses)
+curl -s -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/sessions/$SESSION_ID/events?limit=100" | jq
+```
+
 Notes:
 - SSE events are stored in Redis Streams (~24h TTL) for live viewing.
 - Persistent event history is stored in Postgres `event_logs`.
-- Timeline API derives a human‑readable history from Temporal’s canonical event store and persists it asynchronously when `persist=true`.
+- Timeline API derives a human‑readable history from Temporal's canonical event store and persists it asynchronously when `persist=true`.
 
 ### Authentication
 
-**🚀 Open Source Default**: Authentication is **disabled by default** (`GATEWAY_SKIP_AUTH=1`) for easy getting started.
+**🚀 Docker Compose Default**: Authentication is **disabled by default** in Docker Compose (`GATEWAY_SKIP_AUTH=1`) for easy getting started.
+
+**Local Builds**: Authentication is enabled by default (`config/features.yaml` sets `gateway.skip_auth: false`). Set `GATEWAY_SKIP_AUTH=1` to disable.
 
 **For Production**: Enable authentication by setting `GATEWAY_SKIP_AUTH=0` and using API keys:
 
@@ -107,13 +138,12 @@ curl -N -H "X-API-Key: sk_test_123456" \
 ### Task Submission
 
 ```bash
-# Default mode (no auth required)
+# Default (no auth required in Docker Compose)
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "query": "What is 2+2?",
-    "session_id": "optional-session-id",
-    "mode": "simple"
+    "session_id": "optional-session-id"
   }'
 
 # With authentication enabled (production)
@@ -127,7 +157,7 @@ Response:
 ```json
 {
   "task_id": "task-00000000-0000-0000-0000-000000000001",
-  "status": "submitted",
+  "status": "QUEUED",
   "created_at": "2025-01-20T10:00:00Z"
 }
 ```
@@ -172,9 +202,10 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 
 ### Rate Limiting
 
-The gateway enforces per-API-key rate limits:
+The gateway enforces per-user fixed-window rate limits:
 
-- Default: 60 requests per minute
+- Default: 60 requests per minute (1-minute fixed windows)
+- Keyed by user ID (not API key)
 - Headers returned: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
 - When exceeded: HTTP 429 with `Retry-After` header
 
@@ -183,11 +214,7 @@ The gateway enforces per-API-key rate limits:
 Stream real-time events for a task:
 
 ```bash
-# Direct task streaming
-curl -N -H "X-API-Key: sk_test_123456" \
-  "http://localhost:8080/api/v1/tasks/{task_id}/stream"
-
-# Or use the general SSE endpoint
+# Stream task events via SSE
 curl -N -H "X-API-Key: sk_test_123456" \
   "http://localhost:8080/api/v1/stream/sse?workflow_id={task_id}"
 ```
@@ -206,7 +233,7 @@ curl -N -H "X-API-Key: sk_test_123456" \
 | `POSTGRES_DB` | `shannon` | Database name |
 | `REDIS_URL` | `redis://redis:6379` | Redis URL for rate limiting |
 | `JWT_SECRET` | `your-secret-key` | JWT signing secret |
-| `GATEWAY_SKIP_AUTH` | `1` | Skip authentication (1=disabled for easy start, 0=enabled for production) |
+| `GATEWAY_SKIP_AUTH` | `0` (repo), `1` (Compose) | Skip authentication (1=disabled for easy start, 0=enabled for production) |
 
 ## Development
 
@@ -225,32 +252,36 @@ go build -o gateway cmd/gateway/main.go
 cd go/orchestrator
 go test ./cmd/gateway/...
 
-# Integration tests
-./scripts/test_gateway.sh
+# Full E2E smoke test (includes gateway)
+make smoke
 ```
 
 ### Adding New Endpoints
 
-1. Add handler in `internal/handlers/`
-2. Register route in `main.go`
-3. Update OpenAPI spec in `internal/handlers/openapi.go`
-4. Add tests
+1. Add handler in `cmd/gateway/internal/handlers/`
+2. Register route in `cmd/gateway/main.go`
+3. Update OpenAPI spec in `cmd/gateway/internal/handlers/openapi.go`
+4. Add tests in `cmd/gateway/internal/handlers/`
 
 ## Architecture
 
 The gateway acts as a thin HTTP translation layer:
 
 ```
-Client → Gateway → Orchestrator (gRPC)
+Client → Gateway (cmd/gateway/main.go)
          ↓
-         Admin Server (SSE proxy)
+         ├─→ Orchestrator gRPC (tasks, workflows)
+         ├─→ Postgres (sessions, events, auth)
+         ├─→ Redis (rate limiting, idempotency)
+         └─→ Admin Server (SSE/WebSocket proxy)
 ```
 
 Key design decisions:
-- Lives inside orchestrator module for internal package access
-- Direct function calls to auth service (not RPC)
-- Manual HTTP handlers for v0.1 (no grpc-gateway)
-- Reverse proxy for SSE to reuse existing streaming
+- Lives in `go/orchestrator/cmd/gateway/` as a separate binary
+- Uses `cmd/gateway/internal/` for gateway-specific handlers and middleware
+- Direct function calls to orchestrator's internal auth service (no separate auth RPC)
+- Manual HTTP handlers for precise control (no grpc-gateway auto-generation)
+- Reverse proxy for SSE/WebSocket to reuse existing admin server streaming infrastructure
 
 ## Monitoring
 
@@ -304,9 +335,10 @@ Check Redis connectivity:
 docker compose exec redis redis-cli ping
 ```
 
-Clear rate limit for a key:
+Clear rate limit for a user:
 ```bash
-docker compose exec redis redis-cli DEL "ratelimit:apikey:YOUR_KEY_ID"
+# Keys are per user and window (ratelimit:user:<USER_ID>:<window_unix>)
+docker compose exec redis sh -lc 'for k in \$(redis-cli --scan --pattern "ratelimit:user:YOUR_USER_ID:*"); do redis-cli DEL "$k"; done'
 ```
 
 ## Security
@@ -315,7 +347,7 @@ docker compose exec redis redis-cli DEL "ratelimit:apikey:YOUR_KEY_ID"
 - Rate limiting prevents abuse
 - Idempotency keys prevent replay attacks
 - CORS headers for development (configure for production)
-- All database queries use prepared statements
+- All database queries use parameterized queries
 - Secrets never logged
 
 ## License

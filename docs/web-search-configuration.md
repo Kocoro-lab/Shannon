@@ -8,7 +8,7 @@ The Shannon platform supports multiple web search providers to deliver real-time
 Industry-standard search with comprehensive coverage and rich results.
 ```bash
 export WEB_SEARCH_PROVIDER=google
-export GOOGLE_API_KEY=your_api_key_here
+export GOOGLE_SEARCH_API_KEY=your_api_key_here
 export GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
 ```
 - Get API key at: https://console.cloud.google.com/apis/credentials
@@ -68,7 +68,7 @@ Add to your `deploy/compose/.env` file:
 WEB_SEARCH_PROVIDER=google
 
 # Google Custom Search (recommended)
-GOOGLE_API_KEY=your_google_api_key_here
+GOOGLE_SEARCH_API_KEY=your_google_api_key_here
 GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
 
 # Or Serper (simple and affordable)
@@ -93,7 +93,7 @@ The environment variables are already configured in `deploy/compose/docker-compo
 llm-service:
   environment:
     - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-google}
-    - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    - GOOGLE_SEARCH_API_KEY=${GOOGLE_SEARCH_API_KEY}
     - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID}
     - SERPER_API_KEY=${SERPER_API_KEY}
     - BING_API_KEY=${BING_API_KEY}
@@ -164,7 +164,7 @@ curl -X POST http://localhost:8000/tools/execute \
 
 3. **Configure Shannon:**
    ```bash
-   export GOOGLE_API_KEY=your_key
+   export GOOGLE_SEARCH_API_KEY=your_key
    export GOOGLE_SEARCH_ENGINE_ID=your_engine_id
    export WEB_SEARCH_PROVIDER=google
    ```

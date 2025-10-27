@@ -152,7 +152,7 @@ Current pricing for common models:
 ```yaml
 pricing:
   defaults:
-    combined_per_1k: 0.002
+    combined_per_1k: 0.005
   models:
     openai:
       gpt-3.5-turbo:

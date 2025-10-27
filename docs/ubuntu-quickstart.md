@@ -131,7 +131,7 @@ ANTHROPIC_API_KEY=your-anthropic-key-here
 EXA_API_KEY=your-exa-key-here
 
 # Optional: Web search configuration
-GOOGLE_API_KEY=your-google-key
+GOOGLE_SEARCH_API_KEY=your-google-key
 GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
 ```
 
@@ -397,4 +397,3 @@ The following are the two most frequently encountered problems during deployment
 ---
 
 **Note**: Ensure your Ubuntu system has at least 8GB of memory and 20GB of available disk space for optimal performance.
-

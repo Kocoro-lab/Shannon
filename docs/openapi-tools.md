@@ -40,15 +40,14 @@ Shannon can automatically generate tools from OpenAPI 3.x specifications, allowi
 openapi_tools:
   tool_collection_name:
     enabled: true | false                   # Enable/disable this tool collection
-    spec_path: string                       # Path to OpenAPI spec file
-    spec_url: string                        # OR: URL to fetch spec from
+    spec_url: string                        # URL or file:// path to OpenAPI spec
     spec_inline: string                     # OR: Inline YAML/JSON spec
 
     auth_type: none | api_key | bearer | basic
     auth_config: object                     # Auth configuration (see below)
 
     category: string                        # Tool category (e.g., "analytics", "data")
-    base_cost_per_use: float               # Estimated cost per operation (USD)
+    base_cost_per_use: float                # Estimated cost per operation (USD)
     rate_limit: integer                     # Requests per minute (default: 30)
     timeout_seconds: float                  # Request timeout (default: 30)
     max_response_bytes: integer             # Max response size (default: 10MB)
@@ -56,6 +55,7 @@ openapi_tools:
     operations: [string]                    # Optional: Filter by operationId
     tags: [string]                          # Optional: Filter by tags
     base_url: string                        # Optional: Override spec's base URL
+    vendor_adapter: string                  # Optional: Adapter for dynamic headers/body
 ```
 
 ### Field Descriptions
@@ -63,8 +63,7 @@ openapi_tools:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `enabled` | boolean | Yes | - | Enable this tool collection |
-| `spec_path` | string | One of spec_* | - | Local file path to OpenAPI spec |
-| `spec_url` | string | One of spec_* | - | URL to fetch spec from (supports relative server URLs) |
+| `spec_url` | string | One of spec_* | - | URL or file:// path to fetch spec (supports resolving relative server URLs) |
 | `spec_inline` | string | One of spec_* | - | Inline YAML/JSON spec content |
 | `auth_type` | enum | Yes | `none` | Authentication method |
 | `auth_config` | object | If auth ≠ none | `{}` | Auth configuration (varies by type) |
@@ -192,7 +191,7 @@ Authorization: Basic YWRtaW46c2VjcmV0MTIz
 
 ### 6. Custom Headers
 
-For vendor-specific authentication:
+For vendor-specific authentication use a vendor adapter and static/env-driven headers:
 
 ```yaml
 openapi_tools:
@@ -201,20 +200,17 @@ openapi_tools:
     spec_url: https://api.custom.com/v1/openapi.json
     auth_type: api_key
     auth_config:
-      vendor: myvendor                      # Triggers vendor adapter
       api_key_name: X-API-Key
       api_key_location: header
-      api_key_value: "${CUSTOM_API_KEY}"
+      api_key_value: "${CUSTOM_API_KEY}"     # Resolved from environment
       extra_headers:
-        X-Account-ID: "{{body.account_id}}"  # Dynamic from request body
-        X-User-ID: "${CUSTOM_USER_ID}"       # Static from environment
-        X-Timestamp: "{{timestamp}}"          # Dynamic template
+        X-User-ID: "${CUSTOM_USER_ID}"       # Static/env only
+    vendor_adapter: myvendor                  # Adapter provides dynamic headers/body
 ```
 
-**Dynamic Header Templates**:
-- `"${ENV_VAR}"` - Resolved from environment
-- `"{{body.field}}"` - Resolved from request body at runtime
-- Static strings - Used as-is
+Notes:
+- Only environment substitution (`${ENV}`) is supported in config values.
+- Dynamic fields (e.g., from request body or session) must be added in your adapter’s `transform_headers()` or `transform_body()`.
 
 ---
 
@@ -261,7 +257,7 @@ openapi_tools:
 
 ### Rate Limiting
 
-Protect external APIs from overload:
+Protect external APIs from overload (per-tool limit):
 
 ```yaml
 openapi_tools:
@@ -274,9 +270,9 @@ openapi_tools:
 **Per-tool limits**: Each operation generated from the spec inherits this limit.
 
 **Behavior**:
-- Enforced via token bucket algorithm
-- Shared across all tool instances (single Shannon instance)
-- Returns error if limit exceeded
+- Enforced in the Tool base class as a simple per-session interval (requests/minute)
+- Not distributed across instances; use upstream rate limits as needed
+- Returns an error when exceeded
 
 ### Circuit Breaker
 
@@ -539,8 +535,8 @@ class MyCompanyAdapter:
    ```
 
 4. **Use HTTPS**
-   - Shannon automatically upgrades HTTP to HTTPS for external APIs
-   - localhost/127.0.0.1 allowed on HTTP for development
+   - Specify HTTPS endpoints explicitly
+   - HTTP and private/loopback addresses are blocked unless using file:// or allowed domains for spec fetches
 
 5. **Limit response sizes**
    ```yaml

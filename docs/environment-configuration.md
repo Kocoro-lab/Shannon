@@ -75,7 +75,7 @@ GOOGLE_SEARCH_ENGINE_ID=...
 # FIRECRAWL_API_KEY=...
 
 # Model routing overrides (optional)
-COMPLEXITY_MODEL_ID=gpt-4o-mini
+COMPLEXITY_MODEL_ID=gpt-4o
 DECOMPOSITION_MODEL_ID=claude-sonnet-4-20250514
 ```
 
@@ -160,6 +160,7 @@ PYTHON_WASI_WASM_PATH=./wasm-interpreters/python-3.11.4.wasm
 - Use UPPER_CASE_WITH_UNDERSCORES for environment variables
 - Prefix service-specific variables (e.g., `LLM_SERVICE_URL`)
 
+### 3. Document All Variables
 - Maintain `.env.example` with all required variables grouped by section
 - Include short comments describing defaults/usage so contributors know what to change
 - Specify which variables are optional vs required

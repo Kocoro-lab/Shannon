@@ -1,6 +1,6 @@
 # Adding Custom Tools to Shannon
 
-**Complete guide for open-source adopters to extend Shannon with custom tools****
+**Complete guide for open‑source adopters to extend Shannon with custom tools**
 
 ---
 
@@ -64,7 +64,8 @@ mcp_tools:
         description: "Temperature units (celsius/fahrenheit)"
         enum: ["celsius", "fahrenheit"]
     headers:
-      X-API-Key: "${WEATHER_API_KEY}"  # Resolves from .env
+      X-API-Key: "your_api_key_here"  # For MCP, header values are literal (no env expansion)
+      # Tip: Prefer the runtime registration API below and inject secrets from your env at call time
 ```
 
 **Required Fields:**
@@ -225,7 +226,7 @@ For REST APIs with OpenAPI 3.x specifications, Shannon can automatically generat
 - ✅ Bearer, API Key (header/query), Basic auth
 - ✅ Operation filtering by operationId or tags
 - ✅ Circuit breaker (5 failures → 60s cooldown)
-- ✅ Retry logic with exponential backoff (3 retries, configurable via `OPENAPI_RETRIES`)
+- ✅ Retry logic with exponential backoff (default 2 retries; override via `OPENAPI_RETRIES`)
 - ✅ Configurable rate limits and timeouts
 - ✅ Relative server URLs (resolved against spec URL)
 - ✅ Basic `$ref` resolution (local references to `#/components/schemas/*`)
@@ -567,7 +568,7 @@ class MyCustomTool(Tool):
 
 ### Step 2: Register Tool
 
-Edit `python/llm-service/llm_service/api/tools.py` around line 228:
+Edit `python/llm-service/llm_service/api/tools.py` and update the `startup_event()` registration list:
 
 ```python
 # Add import at top
@@ -674,7 +675,8 @@ mcp_tools:
         enum: ["val1", "val2"]       # Optional: Allowed values
         default: "val1"              # Optional: Default value
     headers:                         # Optional: HTTP headers
-      X-API-Key: "${API_KEY_VAR}"   # Use ${} for env vars
+      X-API-Key: "your_api_key"     # Note: MCP does not expand env vars in headers
+                                    # Prefer dynamic registration and pass secrets at runtime
 ```
 
 ### OpenAPI Tool Configuration
@@ -736,7 +738,7 @@ OPENAPI_MAX_SPEC_SIZE=5242880        # 5MB spec size limit
 OPENAPI_FETCH_TIMEOUT=30             # Spec fetch timeout
 
 # Request Behavior
-OPENAPI_RETRIES=3                    # Retry attempts (default: 3, matches MCP)
+OPENAPI_RETRIES=2                    # Retry attempts (default: 2). Set higher if needed
 ```
 
 **Tool-Specific API Keys:**

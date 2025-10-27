@@ -28,19 +28,17 @@ The system automatically selects the appropriate workflow:
 
 ### Enable P2P Coordination
 
+Configure via `config/features.yaml`:
+
 ```yaml
 # config/features.yaml
 workflows:
   p2p:
     enabled: true           # Master switch for P2P coordination
-    timeout_seconds: 360    # Maximum wait time for dependencies (default: 6 minutes)
+    timeout_seconds: 360    # Maximum wait time for dependencies
 ```
 
-Or via environment variables:
-```bash
-export P2P_COORDINATION_ENABLED=true
-export P2P_TIMEOUT_SECONDS=360
-```
+Note: P2P is not toggled via environment variables; the orchestrator reads these YAML settings at runtime.
 
 ## Usage Examples
 

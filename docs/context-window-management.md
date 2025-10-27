@@ -19,8 +19,8 @@ Shannon implements a sophisticated token-aware context window management system 
 Note: Typed config fields exist in `shannon.yaml` for defaults, and are used for budget defaults today. Server-side history window currently prefers request/env for operational control.
 
 ### 2. Token Budget Management
-- **Per-agent budgets**: 50,000 tokens default
-- **Per-task budgets**: 200,000 tokens default
+- **Per-agent budgets**: 200,000 tokens default
+- **Per-task budgets**: 5,000,000 tokens default
 - **Progressive clamping (per-agent)**: Environment → Request context (optional). Typed config provides global defaults for BudgetManager; per-agent clamp uses env/context today.
 - **Running totals**: Track cumulative usage across agents
 - **Budget enforcement**: Hard stop when configured as hard limit (policy), otherwise warnings/backpressure/approval paths per budget manager configuration.

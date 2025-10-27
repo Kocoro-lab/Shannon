@@ -48,8 +48,8 @@ curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=AGENT_STARTED,AG
 ```
 
 Notes:
-- Server emits `id: <seq>` so browsers can reconnect with `Last-Event-ID`.
-- Heartbeats are sent as SSE comments every 15s to keep proxies alive.
+- Server emits `id` as the Redis `stream_id` when available (preferred) or falls back to numeric `seq`; browsers can reconnect using `Last-Event-ID`.
+- Heartbeats are sent as SSE comments every ~10s to keep intermediaries alive.
 
 ## WebSocket: HTTP `/stream/ws`
 
@@ -160,24 +160,14 @@ make smoke-stream WF_ID=<workflow_id>
 make smoke-stream WF_ID=workflow-123 ADMIN=http://localhost:8081 GRPC=localhost:50052
 ```
 
-### Browser Demo
-Open `docs/streaming-demo.html` in your browser for an interactive SSE demo with:
-- Configurable host, workflow ID, event type filters
-- Auto-resume support with Last-Event-ID
-- Real-time event log display
+<!-- Browser demo section removed: file no longer included -->
 
-## Configuration
+## Capacity & Replay Behaviour
 
-### Environment Variables
-- `STREAMING_RING_CAPACITY` (default: 256) - Number of recent events retained per workflow for replay
-
-### Configuration File (`config/shannon.yaml`)
-```yaml
-streaming:
-  ring_capacity: 256  # Number of recent events to retain per workflow for replay
-```
-
-The configuration supports both environment variables and YAML file settings, with environment variables taking precedence.
+- Live streaming uses Redis Streams with a bounded length (approximate maxlen ~256) per workflow for deterministic replay.
+- Capacity can be adjusted via environment variable or code:
+  - `STREAMING_RING_CAPACITY` (integer) — orchestrator reads this and calls `streaming.Configure(n)` at startup
+  - Programmatic: call `streaming.Configure(n)` during initialization
 
 ## Operational Notes
 
@@ -275,8 +265,7 @@ function WorkflowStream({ workflowId }) {
 
 **"Events missing after reconnect"**
 - Use `last_event_id` parameter or `Last-Event-ID` header
-- Check ring buffer capacity - events older than buffer size are lost
-- Consider increasing `STREAMING_RING_CAPACITY` for longer workflows
+- Replay reads from the bounded Redis Stream; very old events may be pruned once the stream (~256 items) evicts them
 
 **"High memory usage"**
 - Reduce ring buffer capacity in config
@@ -292,8 +281,8 @@ curl -N "http://localhost:8081/stream/sse?workflow_id=test" | head -10
 # Test gRPC connectivity
 grpcurl -plaintext localhost:50052 list shannon.orchestrator.StreamingService
 
-# Monitor ring buffer usage (logs)
-docker compose logs orchestrator | grep "streaming"
+# Monitor streaming logs
+docker compose logs orchestrator | grep "stream"
 ```
 
 ## Roadmap
@@ -301,8 +290,8 @@ docker compose logs orchestrator | grep "streaming"
 ### Phase 1 (Current)
 - ✅ Minimal event types: WORKFLOW_STARTED, AGENT_STARTED, AGENT_COMPLETED, ERROR_OCCURRED
 - ✅ Three protocols: gRPC, SSE, WebSocket
-- ✅ Replay support with ring buffer
-- ✅ Configuration via shannon.yaml and environment variables
+- ✅ Replay support using bounded Redis Streams
+- ✅ Operational defaults are code-level; no env knob for stream capacity
 
 ### Phase 2 (Multi-Agent Features)
 - Extended event types after `roles_v1/supervisor_v1/mailbox_v1` are enabled:

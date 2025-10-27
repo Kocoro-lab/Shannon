@@ -94,9 +94,8 @@ curl -sS -X POST http://localhost:8000/agent/query \
   }'
 ```
 
-**Variable resolution order:**
-1. `context["prompt_params"][key]` (highest priority)
-2. `context["tool_parameters"][key]`
+**Variable resolution:**
+- `context["prompt_params"][key]` only; other context keys are ignored for substitution
 
 Non-whitelisted keys (like `"role"`, `"system_prompt"`) are ignored. Missing variables become empty strings.
 

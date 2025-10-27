@@ -246,14 +246,24 @@ pub struct ToolCapability {
 
 ### Docker Container
 ```dockerfile
-FROM rust:1.75 as builder
-WORKDIR /app
-COPY . .
-RUN cargo build --release
+FROM rust:latest as builder
+WORKDIR /usr/src/app
+
+# Copy manifests and sources
+COPY rust/agent-core/Cargo.toml ./
+COPY rust/agent-core/build.rs ./
+COPY protos /protos
+COPY rust/agent-core/src ./src
+
+# Build
+RUN apt-get update && apt-get install -y protobuf-compiler \
+ && cargo build --release
 
 FROM debian:bookworm-slim
-COPY --from=builder /app/target/release/shannon-agent-core /usr/local/bin/
-EXPOSE 50051 2113
+RUN apt-get update && apt-get install -y ca-certificates netcat-openbsd \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/src/app/target/release/shannon-agent-core /usr/local/bin/shannon-agent-core
+EXPOSE 50051
 CMD ["shannon-agent-core"]
 ```
 
@@ -263,10 +273,12 @@ Environment variables:
 - `OTEL_EXPORTER_OTLP_ENDPOINT`: Tracing endpoint
 - `MEMORY_POOL_SIZE_MB`: Memory pool size
 - `WASI_MEMORY_LIMIT_MB`: WASI sandbox memory limit
-- `TOOL_CACHE_TTL_SECONDS`: Default cache TTL
+- `LLM_SERVICE_URL`: Python LLM service base URL
+
+Note: tool result cache TTL is configured via `tools.cache_ttl_secs` in the agent config (YAML). There is no `TOOL_CACHE_TTL_SECONDS` env override.
 
 ### Health Checks
-- gRPC health endpoint: `:50051/health`
+- gRPC HealthCheck RPC on port `50051`
 - Metrics endpoint: `:2113/metrics`
 
 ## Migration Guide
