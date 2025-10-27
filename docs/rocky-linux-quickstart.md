@@ -189,7 +189,7 @@ ANTHROPIC_API_KEY=your-anthropic-key-here
 EXA_API_KEY=your-exa-key-here
 
 # Optional: Web search configuration
-GOOGLE_API_KEY=your-google-key
+GOOGLE_SEARCH_API_KEY=your-google-key
 GOOGLE_SEARCH_ENGINE_ID=your-search-engine-id
 ```
 

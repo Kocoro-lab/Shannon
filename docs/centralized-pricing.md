@@ -11,13 +11,13 @@ The pricing configuration is defined in `config/models.yaml` under the `pricing`
 ```yaml
 pricing:
   defaults:
-    combined_per_1k: 0.002  # Default cost per 1K tokens when model is unknown
+    combined_per_1k: 0.005  # Default cost per 1K tokens when model is unknown
   models:
     <provider>:
       <model_id>:
         input_per_1k: 0.0005   # Cost per 1K input tokens
         output_per_1k: 0.0015  # Cost per 1K output tokens
-        combined_per_1k: 0.002 # Optional: Used when only total tokens are known
+        combined_per_1k: 0.005 # Optional: Used when only total tokens are known
 ```
 
 ## Implementation Details
@@ -152,7 +152,7 @@ Current pricing for common models:
 ```yaml
 pricing:
   defaults:
-    combined_per_1k: 0.002
+    combined_per_1k: 0.005
   models:
     openai:
       gpt-3.5-turbo:

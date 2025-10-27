@@ -503,28 +503,43 @@ match client.execute_task(request).await {
 
 ## Rate Limiting
 
-The agent implements rate limiting at multiple levels:
+The agent core supports rate limiting enforcement at multiple levels:
 
 1. **Tool-level**: Each tool can specify rate limits
-2. **User-level**: Per-user request limits
+2. **Request-level**: Per-request timeout and budget limits
 3. **Global**: Overall system rate limits
 
-Rate limit headers returned:
-- `X-RateLimit-Limit`: Maximum requests allowed
-- `X-RateLimit-Remaining`: Requests remaining
-- `X-RateLimit-Reset`: Unix timestamp when limit resets
+**Note:** HTTP rate limit headers (`X-RateLimit-*`) are returned by the Gateway service, not directly by agent-core gRPC endpoints. See `go/orchestrator/cmd/gateway` for HTTP-level rate limiting.
 
 ## Metrics
 
 Prometheus metrics available at `http://localhost:2113/metrics`:
 
-- `agent_tool_executions_total`: Total tool executions
-- `agent_tool_execution_duration_seconds`: Tool execution latency
-- `agent_cache_hits_total`: Cache hit count
-- `agent_cache_misses_total`: Cache miss count
-- `agent_memory_usage_bytes`: Current memory usage
-- `agent_active_tasks`: Number of active tasks
-- `agent_grpc_requests_total`: Total gRPC requests
+**Task Metrics:**
+- `agent_core_tasks_total{mode, status}`: Total tasks processed
+- `agent_core_task_duration_seconds{mode}`: Task execution duration
+- `agent_core_task_tokens{mode, model}`: Tokens used per task
+
+**Tool Metrics:**
+- `agent_core_tool_executions_total{tool_name, status}`: Total tool executions
+- `agent_core_tool_duration_seconds{tool_name}`: Tool execution latency
+- `agent_core_tool_selection_duration_seconds{status}`: Tool selection latency
+
+**Memory Metrics:**
+- `agent_core_memory_pool_used_bytes`: Current memory pool usage
+- `agent_core_memory_pool_total_bytes`: Total memory pool size
+
+**gRPC Metrics:**
+- `agent_core_grpc_requests_total{method, status}`: Total gRPC requests
+- `agent_core_grpc_request_duration_seconds{method}`: gRPC request duration
+
+**Enforcement Metrics:**
+- `agent_core_enforcement_drops_total{reason}`: Requests dropped by enforcement layer
+- `agent_core_enforcement_allowed_total{outcome}`: Requests allowed by enforcement layer
+
+**FSM Metrics:**
+- `agent_core_fsm_transitions_total{from_state, to_state}`: FSM state transitions
+- `agent_core_fsm_current_state`: Current FSM state (encoded as number)
 
 ## Versioning
 

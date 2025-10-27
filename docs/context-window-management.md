@@ -20,7 +20,7 @@ Note: Typed config fields exist in `shannon.yaml` for defaults, and are used for
 
 ### 2. Token Budget Management
 - **Per-agent budgets**: 50,000 tokens default
-- **Per-task budgets**: 200,000 tokens default
+- **Per-task budgets**: 200,000 tokens default (max: 200,000)
 - **Progressive clamping (per-agent)**: Environment → Request context (optional). Typed config provides global defaults for BudgetManager; per-agent clamp uses env/context today.
 - **Running totals**: Track cumulative usage across agents
 - **Budget enforcement**: Hard stop when configured as hard limit (policy), otherwise warnings/backpressure/approval paths per budget manager configuration.

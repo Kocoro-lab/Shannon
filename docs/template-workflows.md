@@ -225,9 +225,9 @@ Chain of Thought (3000 tokens)
 ReAct (1000 tokens)
 ```
 
-### Configuration
+### on_fail (validated; limited runtime use)
 
-Degradation is controlled per-node via the `on_fail` field:
+The YAML supports `on_fail` with `degrade_to`, `retry`, and `escalate_to`. These fields are validated today, but budget-based degradation is the active mechanism:
 
 ```yaml
 nodes:

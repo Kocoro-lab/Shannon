@@ -276,7 +276,7 @@ auth:
 1. **Run database migration**
 ```bash
 docker exec shannon-postgres-1 psql -U shannon -d shannon \
-  -f /docker-entrypoint-initdb.d/003_authentication.sql
+  -f /migrations/postgres/003_authentication.sql
 ```
 
 2. **Update configuration**

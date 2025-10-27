@@ -20,7 +20,7 @@ nodes:
   - id: analyze
     type: simple
     strategy: react
-    allowed_tools: ["web_search"]
+    tools_allowlist: ["web_search"]
     budget_max: 500
     depends_on: []
 ```
@@ -28,7 +28,7 @@ nodes:
 Tips:
 - `type`: `simple | cognitive | dag | supervisor`
 - `strategy`: `react | chain_of_thought | reflection | debate | tree_of_thoughts`
-- Set per‑node `budget_max` and `allowed_tools` to constrain execution.
+- Set per‑node `budget_max` and `tools_allowlist` to constrain execution.
 
 2) Load templates at startup
 
@@ -117,7 +117,7 @@ nodes:
     type: simple                 # simple/cognitive/dag/supervisor
     strategy: react              # react/chain_of_thought/tree_of_thoughts/debate/reflection
     budget_max: 2000
-    allowed_tools:
+    tools_allowlist:
       - web_search
       - calculator
     depends_on: []               # DAG ordering
@@ -133,7 +133,7 @@ edges:
     to: node_2
 ```
 
-The compiler prefers the `allowed_tools` field and automatically falls back to legacy `tools_allowlist` if present.
+Use `tools_allowlist` on nodes. For hybrid DAG tasks inside `metadata.tasks`, either `tools` or `tools_allowlist` is accepted.
 
 ### Node Types
 
@@ -247,13 +247,13 @@ nodes:
   - id: discover
     type: simple
     strategy: react
-    allowed_tools: [web_search]
+    tools_allowlist: [web_search]
     budget_max: 1500
 
   - id: expand
     type: cognitive
     strategy: chain_of_thought
-    allowed_tools: [web_search, web_fetch]
+    tools_allowlist: [web_search, web_fetch]
     budget_max: 3000
     depends_on: ["discover"]
 
@@ -289,13 +289,13 @@ nodes:
       tasks:
         - id: competitor_1
           query: "Analyze competitor A"
-          allowed_tools: [web_search]
+          tools_allowlist: [web_search]
         - id: competitor_2
           query: "Analyze competitor B"
-          allowed_tools: [web_search]
+          tools_allowlist: [web_search]
         - id: competitor_3
           query: "Analyze competitor C"
-          allowed_tools: [web_search]
+          tools_allowlist: [web_search]
 
   - id: market_trends
     type: cognitive

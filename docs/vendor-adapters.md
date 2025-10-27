@@ -101,6 +101,9 @@ Create `python/llm-service/llm_service/tools/vendor_adapters/datainsight.py`:
 ```python
 """Vendor adapter for DataInsight Analytics API."""
 from typing import Any, Dict, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class DataInsightAdapter:
@@ -140,6 +143,29 @@ class DataInsightAdapter:
             body = self._transform_dimension_values(body)
 
         return body
+
+    def transform_headers(
+        self,
+        headers: Dict[str, str],
+        operation_id: str,
+        prompt_params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, str]:
+        """Inject dynamic headers from body/prompt params.
+
+        Example: add X-Account-ID from request body or prompt_params.
+        """
+        try:
+            account_id = None
+            if isinstance(json_body, dict):
+                account_id = json_body.get("account_id")
+            if not account_id and isinstance(prompt_params, dict):
+                account_id = prompt_params.get("account_id")
+            if account_id:
+                headers["X-Account-ID"] = str(account_id)
+        except Exception as e:
+            logger.warning(f"transform_headers error: {e}")
+        return headers
 
     def _transform_query_metrics(self, body: Dict) -> Dict:
         """Transform metric query requests."""
@@ -225,14 +251,16 @@ Create `config/overlays/shannon.datainsight.yaml`:
 openapi_tools:
   datainsight_analytics:
     enabled: true
-    spec_path: config/openapi_specs/datainsight_api.yaml
+    # Use file:// for local specs (no domain allowlist required)
+    spec_url: file://config/openapi_specs/datainsight_api.yaml
     auth_type: bearer
     auth_config:
-      vendor: datainsight  # This triggers adapter loading
-      token: "${DATAINSIGHT_API_TOKEN}"
+      token: "${DATAINSIGHT_API_TOKEN}"   # Resolved from env at runtime
       extra_headers:
-        X-Account-ID: "{{body.account_id}}"  # Dynamic from request body
-        X-User-ID: "${DATAINSIGHT_USER_ID}"   # Static from env
+        # Static headers can reference env vars (resolved) — avoid committing secrets
+        X-User-ID: "${DATAINSIGHT_USER_ID}"
+        # Dynamic headers (e.g., X-Account-ID) should be added by the adapter (no template syntax here)
+    vendor_adapter: datainsight        # This triggers adapter loading
     category: analytics
     base_cost_per_use: 0.002
     rate_limit: 60
@@ -240,6 +268,10 @@ openapi_tools:
     operations:
       - queryMetrics
       - getDimensionValues
+
+# Notes:
+# - For HTTP(S) spec URLs, set OPENAPI_ALLOWED_DOMAINS to include the spec host.
+# - Do not commit secrets. Always reference them via ${ENV_VAR} and set in your environment.
 ```
 
 ### Step 4: Create Vendor Role (Optional)
@@ -404,20 +436,20 @@ class MyVendorAdapter:
 openapi_tools:
   myvendor_api:
     enabled: true
-    spec_path: config/openapi_specs/myvendor_api.yaml
+    # Prefer file:// for local specs (no domain allowlist required)
+    spec_url: file://config/openapi_specs/myvendor_api.yaml
     auth_type: bearer | api_key | basic | none
     auth_config:
-      vendor: myvendor  # Triggers adapter loading
       # Bearer auth:
       token: "${MYVENDOR_API_TOKEN}"
       # API key auth:
       # api_key_name: X-API-Key
       # api_key_location: header
       # api_key_value: "${MYVENDOR_API_KEY}"
-      # Extra headers (support templates):
+      # Extra headers (env expansion only; dynamic headers via adapter):
       extra_headers:
-        X-Tenant-ID: "{{body.tenant_id}}"
         X-Custom-Header: "${STATIC_VALUE}"
+    vendor_adapter: myvendor
     category: custom
     base_cost_per_use: 0.001
     rate_limit: 60
@@ -430,10 +462,10 @@ openapi_tools:
     #   - tag1
 ```
 
-**Dynamic header templating:**
-- `"${ENV_VAR}"` - Resolved from environment variables
-- `"{{body.field}}"` - Resolved from request body at runtime
-- Static strings - Used as-is
+**Header resolution:**
+- `"${ENV_VAR}"` — Resolved from environment variables
+- Static strings — Used as-is
+- Dynamic headers — Add them in your adapter's `transform_headers()` (the loader does not support `{{...}}` templating)
 
 ### 3. Vendor Role
 

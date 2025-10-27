@@ -584,7 +584,7 @@ Some event types require feature gates to be enabled:
 - Events are stored in `event_logs` table in PostgreSQL
 - Real-time streaming uses in-memory ring buffer (default: 256 events)
 - Historical events are queryable via REST API
-- Ring buffer size configurable via `STREAMING_RING_CAPACITY`
+- Real-time streaming uses bounded Redis Streams; capacity (~256 items per workflow by default) is configurable via `STREAMING_RING_CAPACITY` or programmatically with `streaming.Configure(n)`
 
 ---
 

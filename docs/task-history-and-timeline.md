@@ -39,7 +39,7 @@ All endpoints require authentication unless `GATEWAY_SKIP_AUTH=1` is set.
 ## SSE vs Persistent vs Timeline
 
 - SSE (live):
-  - `GET /api/v1/stream/sse?workflow_id=...` or `/api/v1/tasks/{id}/stream`
+  - `GET /api/v1/stream/sse?workflow_id=...`
   - Ephemeral, resume‑friendly via `Last-Event-ID`, not stored beyond Redis TTL.
 
 - Persistent events (`event_logs`):
