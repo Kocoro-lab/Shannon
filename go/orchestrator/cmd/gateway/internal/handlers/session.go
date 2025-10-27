@@ -124,7 +124,7 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	err := h.db.GetContext(ctx, &session, `
 		SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
 		FROM sessions
-		WHERE id = $1
+		WHERE id::text = $1
 	`, sessionID)
 
 	if err == sql.ErrNoRows {
@@ -220,7 +220,7 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 	// Verify session exists and user has access
 	var sessionUserID string
 	err := h.db.GetContext(ctx, &sessionUserID, `
-		SELECT user_id FROM sessions WHERE id = $1
+		SELECT user_id FROM sessions WHERE id::text = $1
 	`, sessionID)
 
 	if err == sql.ErrNoRows {
@@ -372,7 +372,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
     // Verify session exists and user has access
     var sessionUserID string
     err := h.db.GetContext(ctx, &sessionUserID, `
-        SELECT user_id FROM sessions WHERE id = $1
+        SELECT user_id FROM sessions WHERE id::text = $1
     `, sessionID)
     if err == sql.ErrNoRows {
         h.sendError(w, "Session not found", http.StatusNotFound)
@@ -485,6 +485,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query sessions for this user
+	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - cast for JOIN
 	rows, err := h.db.QueryxContext(ctx, `
 		SELECT
 			s.id,
@@ -496,7 +497,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 			s.expires_at,
 			COUNT(t.id) as task_count
 		FROM sessions s
-		LEFT JOIN task_executions t ON t.session_id = s.id
+		LEFT JOIN task_executions t ON t.session_id = s.id::text
 		WHERE s.user_id = $1
 		GROUP BY s.id, s.user_id, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
 		ORDER BY s.created_at DESC
