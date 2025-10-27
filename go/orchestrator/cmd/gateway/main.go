@@ -107,6 +107,7 @@ func main() {
 
 	// Create handlers
 	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, logger)
+	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
 
@@ -196,6 +197,38 @@ func main() {
 					rateLimiter(
 						http.HandlerFunc(taskHandler.GetTaskEvents),
 					),
+				),
+			),
+		),
+	)
+
+	// Session endpoints (require auth)
+	mux.Handle("GET /api/v1/sessions/{sessionId}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(sessionHandler.GetSession),
+				),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/sessions/{sessionId}/history",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(sessionHandler.GetSessionHistory),
+				),
+			),
+		),
+	)
+
+	// Session events (chat history-like, excludes LLM_PARTIAL)
+	mux.Handle("GET /api/v1/sessions/{sessionId}/events",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(sessionHandler.GetSessionEvents),
 				),
 			),
 		),
