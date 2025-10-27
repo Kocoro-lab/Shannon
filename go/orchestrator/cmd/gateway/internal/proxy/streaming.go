@@ -59,10 +59,7 @@ func NewStreamingProxy(adminURL string, logger *zap.Logger) (*StreamingProxy, er
 			resp.Header.Set("X-Accel-Buffering", "no")
 		}
 
-		// Add CORS headers if not present
-		if resp.Header.Get("Access-Control-Allow-Origin") == "" {
-			resp.Header.Set("Access-Control-Allow-Origin", "*")
-		}
+		// CORS headers handled by CORS middleware, not here
 
 		return nil
 	}
