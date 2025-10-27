@@ -203,6 +203,18 @@ func main() {
 	)
 
 	// Session endpoints (require auth)
+	mux.Handle("GET /api/v1/sessions",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(sessionHandler.ListSessions),
+					),
+				),
+			),
+		),
+	)
+
 	mux.Handle("GET /api/v1/sessions/{sessionId}",
 		tracingMiddleware(
 			authMiddleware(
