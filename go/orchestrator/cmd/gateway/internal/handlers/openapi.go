@@ -346,6 +346,144 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 			},
+			"/api/v1/sessions/{sessionId}": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Get session metadata",
+					"description": "Retrieve session information including token usage and task count",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "sessionId",
+							"in":          "path",
+							"description": "Session UUID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":   "string",
+								"format": "uuid",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Session metadata retrieved",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/SessionResponse",
+									},
+								},
+							},
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized",
+						},
+						"403": map[string]interface{}{
+							"description": "Forbidden - User does not have access to this session",
+						},
+						"404": map[string]interface{}{
+							"description": "Session not found",
+						},
+					},
+				},
+			},
+			"/api/v1/sessions/{sessionId}/history": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Get session task history",
+					"description": "Retrieve all tasks in a session with full execution details",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "sessionId",
+							"in":          "path",
+							"description": "Session UUID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":   "string",
+								"format": "uuid",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Session task history retrieved",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/SessionHistoryResponse",
+									},
+								},
+							},
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized",
+						},
+						"403": map[string]interface{}{
+							"description": "Forbidden - User does not have access to this session",
+						},
+						"404": map[string]interface{}{
+							"description": "Session not found",
+						},
+					},
+				},
+			},
+			"/api/v1/sessions/{sessionId}/events": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Get session events (chat history)",
+					"description": "Retrieve SSE-like events across all tasks in a session. Excludes LLM_PARTIAL events for cleaner chat history. Supports pagination.",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "sessionId",
+							"in":          "path",
+							"description": "Session UUID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":   "string",
+								"format": "uuid",
+							},
+						},
+						{
+							"name":        "limit",
+							"in":          "query",
+							"description": "Maximum number of events to return",
+							"schema": map[string]interface{}{
+								"type":    "integer",
+								"default": 200,
+								"minimum": 1,
+								"maximum": 500,
+							},
+						},
+						{
+							"name":        "offset",
+							"in":          "query",
+							"description": "Number of events to skip",
+							"schema": map[string]interface{}{
+								"type":    "integer",
+								"default": 0,
+								"minimum": 0,
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Session events retrieved",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/SessionEventsResponse",
+									},
+								},
+							},
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized",
+						},
+						"403": map[string]interface{}{
+							"description": "Forbidden - User does not have access to this session",
+						},
+						"404": map[string]interface{}{
+							"description": "Session not found",
+						},
+					},
+				},
+			},
 		},
 		"components": map[string]interface{}{
 			"securitySchemes": map[string]interface{}{
@@ -488,6 +626,168 @@ func generateOpenAPISpec() map[string]interface{} {
 						"timestamp":   map[string]interface{}{"type": "string", "format": "date-time"},
 						"seq":         map[string]interface{}{"type": "integer"},
 						"stream_id":   map[string]interface{}{"type": "string"},
+					},
+				},
+				"SessionResponse": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"session_id", "user_id", "task_count", "tokens_used", "created_at"},
+					"properties": map[string]interface{}{
+						"session_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "Unique session identifier",
+						},
+						"user_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "User who owns this session",
+						},
+						"context": map[string]interface{}{
+							"type":        "object",
+							"description": "Session context metadata",
+						},
+						"token_budget": map[string]interface{}{
+							"type":        "integer",
+							"description": "Token budget for the session",
+						},
+						"tokens_used": map[string]interface{}{
+							"type":        "integer",
+							"description": "Total tokens consumed in this session",
+						},
+						"task_count": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of tasks in this session",
+						},
+						"created_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Session creation timestamp",
+						},
+						"updated_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Session last update timestamp",
+						},
+						"expires_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Session expiration timestamp",
+						},
+					},
+				},
+				"TaskHistory": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"task_id", "workflow_id", "query", "status", "started_at"},
+					"properties": map[string]interface{}{
+						"task_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "Task UUID",
+						},
+						"workflow_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Temporal workflow ID",
+						},
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "Task query/command",
+						},
+						"status": map[string]interface{}{
+							"type":        "string",
+							"description": "Task execution status",
+							"enum":        []string{"RUNNING", "COMPLETED", "FAILED", "CANCELLED", "TIMEOUT"},
+						},
+						"mode": map[string]interface{}{
+							"type":        "string",
+							"description": "Execution mode",
+						},
+						"result": map[string]interface{}{
+							"type":        "string",
+							"description": "Task result/output",
+						},
+						"error_message": map[string]interface{}{
+							"type":        "string",
+							"description": "Error message if task failed",
+						},
+						"total_tokens": map[string]interface{}{
+							"type":        "integer",
+							"description": "Total tokens used",
+						},
+						"total_cost_usd": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Total cost in USD",
+						},
+						"duration_ms": map[string]interface{}{
+							"type":        "integer",
+							"description": "Task duration in milliseconds",
+						},
+						"agents_used": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of agents used",
+						},
+						"tools_invoked": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of tools invoked",
+						},
+						"started_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Task start timestamp",
+						},
+						"completed_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Task completion timestamp",
+						},
+						"metadata": map[string]interface{}{
+							"type":        "object",
+							"description": "Additional task metadata",
+						},
+					},
+				},
+				"SessionHistoryResponse": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"session_id", "tasks", "total"},
+					"properties": map[string]interface{}{
+						"session_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "Session UUID",
+						},
+						"tasks": map[string]interface{}{
+							"type":        "array",
+							"description": "List of tasks in chronological order",
+							"items": map[string]interface{}{
+								"$ref": "#/components/schemas/TaskHistory",
+							},
+						},
+						"total": map[string]interface{}{
+							"type":        "integer",
+							"description": "Total number of tasks in session",
+						},
+					},
+				},
+				"SessionEventsResponse": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"session_id", "events", "count"},
+					"properties": map[string]interface{}{
+						"session_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "Session UUID",
+						},
+						"events": map[string]interface{}{
+							"type":        "array",
+							"description": "List of events in chronological order (excludes LLM_PARTIAL)",
+							"items": map[string]interface{}{
+								"$ref": "#/components/schemas/TaskEvent",
+							},
+						},
+						"count": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of events returned",
+						},
 					},
 				},
 			},
