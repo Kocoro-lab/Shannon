@@ -341,7 +341,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isStreaming := strings.HasPrefix(r.URL.Path, "/api/v1/stream/")
 
-		allowedHeaders := "Content-Type, Authorization, X-API-Key, Idempotency-Key, traceparent, tracestate, Cache-Control, Last-Event-ID"
+		allowedHeaders := "Content-Type, Authorization, X-API-Key, X-User-Id, Idempotency-Key, traceparent, tracestate, Cache-Control, Last-Event-ID"
 
 		if !isStreaming {
 			// Allow CORS for development
@@ -349,16 +349,16 @@ func corsMiddleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
 			w.Header().Set("Access-Control-Max-Age", "3600")
+		} else {
+			// Streaming endpoints also need CORS headers for GET requests
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
+			w.Header().Set("Access-Control-Max-Age", "3600")
 		}
 
 		if r.Method == http.MethodOptions {
-			// Handle preflight directly. For streaming endpoints we still return a single header set.
-			if isStreaming {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-				w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-				w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
-				w.Header().Set("Access-Control-Max-Age", "3600")
-			}
+			// Handle preflight - headers already set above
 			w.WriteHeader(http.StatusOK)
 			return
 		}
