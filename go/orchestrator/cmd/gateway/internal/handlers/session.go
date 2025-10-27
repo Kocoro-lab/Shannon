@@ -54,6 +54,24 @@ type SessionHistoryResponse struct {
     Total     int           `json:"total"`
 }
 
+// ListSessionsResponse represents the list sessions response
+type ListSessionsResponse struct {
+	Sessions   []SessionSummary `json:"sessions"`
+	TotalCount int              `json:"total_count"`
+}
+
+// SessionSummary represents a single session in listing
+type SessionSummary struct {
+	SessionID   string     `json:"session_id"`
+	UserID      string     `json:"user_id"`
+	TaskCount   int        `json:"task_count"`
+	TokensUsed  int        `json:"tokens_used"`
+	TokenBudget int        `json:"token_budget,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+}
+
 // TaskHistory represents a task in session history
 type TaskHistory struct {
 	TaskID          string                 `json:"task_id"`
@@ -106,7 +124,7 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	err := h.db.GetContext(ctx, &session, `
 		SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
 		FROM sessions
-		WHERE id = $1
+		WHERE id::text = $1
 	`, sessionID)
 
 	if err == sql.ErrNoRows {
@@ -202,7 +220,7 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 	// Verify session exists and user has access
 	var sessionUserID string
 	err := h.db.GetContext(ctx, &sessionUserID, `
-		SELECT user_id FROM sessions WHERE id = $1
+		SELECT user_id FROM sessions WHERE id::text = $1
 	`, sessionID)
 
 	if err == sql.ErrNoRows {
@@ -354,7 +372,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
     // Verify session exists and user has access
     var sessionUserID string
     err := h.db.GetContext(ctx, &sessionUserID, `
-        SELECT user_id FROM sessions WHERE id = $1
+        SELECT user_id FROM sessions WHERE id::text = $1
     `, sessionID)
     if err == sql.ErrNoRows {
         h.sendError(w, "Session not found", http.StatusNotFound)
@@ -438,6 +456,133 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         "events":     events,
         "count":      len(events),
     })
+}
+
+// ListSessions handles GET /api/v1/sessions
+func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context from auth middleware
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse pagination params
+	q := r.URL.Query()
+	limit := 20
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	// Query sessions for this user
+	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - cast for JOIN
+	rows, err := h.db.QueryxContext(ctx, `
+		SELECT
+			s.id,
+			s.user_id,
+			COALESCE(s.token_budget, 0) as token_budget,
+			COALESCE(s.tokens_used, 0) as tokens_used,
+			s.created_at,
+			s.updated_at,
+			s.expires_at,
+			COUNT(t.id) as task_count
+		FROM sessions s
+		LEFT JOIN task_executions t ON t.session_id = s.id::text
+		WHERE s.user_id = $1
+		GROUP BY s.id, s.user_id, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
+		ORDER BY s.created_at DESC
+		LIMIT $2 OFFSET $3
+	`, userCtx.UserID.String(), limit, offset)
+
+	if err != nil {
+		h.logger.Error("Failed to query sessions", zap.Error(err))
+		h.sendError(w, "Failed to retrieve sessions", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	// Parse results
+	sessions := make([]SessionSummary, 0)
+	for rows.Next() {
+		var sess struct {
+			ID          string       `db:"id"`
+			UserID      string       `db:"user_id"`
+			TokenBudget int          `db:"token_budget"`
+			TokensUsed  int          `db:"tokens_used"`
+			CreatedAt   time.Time    `db:"created_at"`
+			UpdatedAt   sql.NullTime `db:"updated_at"`
+			ExpiresAt   sql.NullTime `db:"expires_at"`
+			TaskCount   int          `db:"task_count"`
+		}
+
+		if err := rows.StructScan(&sess); err != nil {
+			h.logger.Error("Failed to scan session", zap.Error(err))
+			continue
+		}
+
+		summary := SessionSummary{
+			SessionID:  sess.ID,
+			UserID:     sess.UserID,
+			TaskCount:  sess.TaskCount,
+			TokensUsed: sess.TokensUsed,
+			CreatedAt:  sess.CreatedAt,
+		}
+
+		if sess.TokenBudget > 0 {
+			summary.TokenBudget = sess.TokenBudget
+		}
+		if sess.UpdatedAt.Valid {
+			summary.UpdatedAt = &sess.UpdatedAt.Time
+		}
+		if sess.ExpiresAt.Valid {
+			summary.ExpiresAt = &sess.ExpiresAt.Time
+		}
+
+		sessions = append(sessions, summary)
+	}
+
+	if err := rows.Err(); err != nil {
+		h.logger.Error("Failed to iterate session rows", zap.Error(err))
+		h.sendError(w, "Failed to retrieve sessions", http.StatusInternalServerError)
+		return
+	}
+
+	// Get total count for pagination
+	var totalCount int
+	err = h.db.GetContext(ctx, &totalCount, `
+		SELECT COUNT(*) FROM sessions WHERE user_id = $1
+	`, userCtx.UserID.String())
+	if err != nil {
+		h.logger.Warn("Failed to get total session count", zap.Error(err))
+		totalCount = len(sessions)
+	}
+
+	h.logger.Debug("Sessions retrieved",
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.Int("count", len(sessions)),
+		zap.Int("total", totalCount),
+	)
+
+	// Build response
+	resp := ListSessionsResponse{
+		Sessions:   sessions,
+		TotalCount: totalCount,
+	}
+
+	// Send response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
 }
 
 // sendError sends an error response

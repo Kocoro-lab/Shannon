@@ -346,6 +346,50 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 			},
+			"/api/v1/sessions": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "List all sessions",
+					"description": "Retrieve all sessions for the authenticated user with pagination support",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "limit",
+							"in":          "query",
+							"description": "Maximum number of sessions to return",
+							"schema": map[string]interface{}{
+								"type":    "integer",
+								"default": 20,
+								"minimum": 1,
+								"maximum": 100,
+							},
+						},
+						{
+							"name":        "offset",
+							"in":          "query",
+							"description": "Number of sessions to skip",
+							"schema": map[string]interface{}{
+								"type":    "integer",
+								"default": 0,
+								"minimum": 0,
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Sessions retrieved successfully",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/ListSessionsResponse",
+									},
+								},
+							},
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized",
+						},
+					},
+				},
+			},
 			"/api/v1/sessions/{sessionId}": map[string]interface{}{
 				"get": map[string]interface{}{
 					"summary":     "Get session metadata",
@@ -626,6 +670,66 @@ func generateOpenAPISpec() map[string]interface{} {
 						"timestamp":   map[string]interface{}{"type": "string", "format": "date-time"},
 						"seq":         map[string]interface{}{"type": "integer"},
 						"stream_id":   map[string]interface{}{"type": "string"},
+					},
+				},
+				"ListSessionsResponse": map[string]interface{}{
+					"type": "object",
+					"required": []string{"sessions", "total_count"},
+					"properties": map[string]interface{}{
+						"sessions": map[string]interface{}{
+							"type":        "array",
+							"description": "List of sessions",
+							"items": map[string]interface{}{
+								"$ref": "#/components/schemas/SessionSummary",
+							},
+						},
+						"total_count": map[string]interface{}{
+							"type":        "integer",
+							"description": "Total number of sessions for the user",
+						},
+					},
+				},
+				"SessionSummary": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"session_id", "user_id", "task_count", "tokens_used", "created_at"},
+					"properties": map[string]interface{}{
+						"session_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "Unique session identifier",
+						},
+						"user_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "User who owns this session",
+						},
+						"task_count": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of tasks in this session",
+						},
+						"tokens_used": map[string]interface{}{
+							"type":        "integer",
+							"description": "Total tokens consumed in this session",
+						},
+						"token_budget": map[string]interface{}{
+							"type":        "integer",
+							"description": "Token budget for the session",
+						},
+						"created_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Session creation timestamp",
+						},
+						"updated_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Session last update timestamp",
+						},
+						"expires_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Session expiration timestamp",
+						},
 					},
 				},
 				"SessionResponse": map[string]interface{}{
