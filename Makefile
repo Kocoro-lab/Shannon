@@ -42,7 +42,11 @@ check-env:
 
 # Full stack
 dev: check-env check-protos
-	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml up -d
+	@OTEL_EXPORTER_OTLP_ENDPOINT= OTEL_EXPORTER_OTLP_TRACES_ENDPOINT= OTEL_TRACES_EXPORTER= \
+	OTEL_SERVICE_NAME= OTEL_ENABLED= \
+	DOCKER_BUILDKIT=0 COMPOSE_DOCKER_CLI_BUILD=0 \
+	docker compose -f $(COMPOSE_BASE)/docker-compose.yml build --no-cache
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml up -d --no-build
 	@echo "Temporal UI: http://localhost:8088"
 
 # Check if protobuf files are generated
