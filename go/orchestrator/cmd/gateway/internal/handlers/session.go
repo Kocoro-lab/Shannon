@@ -9,6 +9,7 @@ import (
     "time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+    "github.com/google/uuid"
     "github.com/jmoiron/sqlx"
     "github.com/redis/go-redis/v9"
     "go.uber.org/zap"
@@ -121,11 +122,11 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt   sql.NullTime   `db:"expires_at"`
 	}
 
-	err := h.db.GetContext(ctx, &session, `
-		SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
-		FROM sessions
-		WHERE id::text = $1
-	`, sessionID)
+    err := h.db.GetContext(ctx, &session, `
+            SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
+            FROM sessions
+            WHERE id::text = $1 AND deleted_at IS NULL
+        `, sessionID)
 
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
@@ -217,11 +218,11 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Verify session exists and user has access
-	var sessionUserID string
-	err := h.db.GetContext(ctx, &sessionUserID, `
-		SELECT user_id FROM sessions WHERE id::text = $1
-	`, sessionID)
+    // Verify session exists and user has access
+    var sessionUserID string
+    err := h.db.GetContext(ctx, &sessionUserID, `
+        SELECT user_id FROM sessions WHERE id::text = $1 AND deleted_at IS NULL
+    `, sessionID)
 
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
@@ -372,7 +373,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
     // Verify session exists and user has access
     var sessionUserID string
     err := h.db.GetContext(ctx, &sessionUserID, `
-        SELECT user_id FROM sessions WHERE id::text = $1
+        SELECT user_id FROM sessions WHERE id::text = $1 AND deleted_at IS NULL
     `, sessionID)
     if err == sql.ErrNoRows {
         h.sendError(w, "Session not found", http.StatusNotFound)
@@ -486,23 +487,23 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Query sessions for this user
 	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - cast for JOIN
-	rows, err := h.db.QueryxContext(ctx, `
-		SELECT
-			s.id,
-			s.user_id,
-			COALESCE(s.token_budget, 0) as token_budget,
-			COALESCE(s.tokens_used, 0) as tokens_used,
-			s.created_at,
-			s.updated_at,
-			s.expires_at,
-			COUNT(t.id) as task_count
-		FROM sessions s
-		LEFT JOIN task_executions t ON t.session_id = s.id::text
-		WHERE s.user_id = $1
-		GROUP BY s.id, s.user_id, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
-		ORDER BY s.created_at DESC
-		LIMIT $2 OFFSET $3
-	`, userCtx.UserID.String(), limit, offset)
+    rows, err := h.db.QueryxContext(ctx, `
+        SELECT
+            s.id,
+            s.user_id,
+            COALESCE(s.token_budget, 0) as token_budget,
+            COALESCE(s.tokens_used, 0) as tokens_used,
+            s.created_at,
+            s.updated_at,
+            s.expires_at,
+            COUNT(t.id) as task_count
+        FROM sessions s
+        LEFT JOIN task_executions t ON t.session_id = s.id::text
+        WHERE s.user_id = $1 AND s.deleted_at IS NULL
+        GROUP BY s.id, s.user_id, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
+        ORDER BY s.created_at DESC
+        LIMIT $2 OFFSET $3
+    `, userCtx.UserID.String(), limit, offset)
 
 	if err != nil {
 		h.logger.Error("Failed to query sessions", zap.Error(err))
@@ -559,9 +560,9 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count for pagination
 	var totalCount int
-	err = h.db.GetContext(ctx, &totalCount, `
-		SELECT COUNT(*) FROM sessions WHERE user_id = $1
-	`, userCtx.UserID.String())
+    err = h.db.GetContext(ctx, &totalCount, `
+        SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND deleted_at IS NULL
+    `, userCtx.UserID.String())
 	if err != nil {
 		h.logger.Warn("Failed to get total session count", zap.Error(err))
 		totalCount = len(sessions)
@@ -587,9 +588,72 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 // sendError sends an error response
 func (h *SessionHandler) sendError(w http.ResponseWriter, message string, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{
-		"error": message,
-	})
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(code)
+    json.NewEncoder(w).Encode(map[string]string{
+        "error": message,
+    })
+}
+
+// DeleteSession handles DELETE /api/v1/sessions/{sessionId}
+func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+
+    // Get user context
+    userCtx, ok := ctx.Value("user").(*auth.UserContext)
+    if !ok {
+        h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+        return
+    }
+
+    // Extract and validate session ID
+    sessionID := r.PathValue("sessionId")
+    if sessionID == "" {
+        h.sendError(w, "Session ID is required", http.StatusBadRequest)
+        return
+    }
+    if _, err := uuid.Parse(sessionID); err != nil {
+        h.sendError(w, "Invalid session ID format (uuid required)", http.StatusBadRequest)
+        return
+    }
+
+    // Ownership check (do not filter on deleted_at to keep idempotency)
+    var owner string
+    if err := h.db.GetContext(ctx, &owner, `
+        SELECT user_id FROM sessions WHERE id::text = $1
+    `, sessionID); err != nil {
+        if err == sql.ErrNoRows {
+            h.sendError(w, "Session not found", http.StatusNotFound)
+            return
+        }
+        h.logger.Error("Failed to query session for delete", zap.Error(err), zap.String("session_id", sessionID))
+        h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
+        return
+    }
+    if owner != userCtx.UserID.String() {
+        h.sendError(w, "Forbidden", http.StatusForbidden)
+        return
+    }
+
+    // Soft delete (idempotent)
+    if _, err := h.db.ExecContext(ctx, `
+        UPDATE sessions
+        SET deleted_at = NOW(), deleted_by = $2, updated_at = NOW()
+        WHERE id::text = $1 AND deleted_at IS NULL
+    `, sessionID, userCtx.UserID.String()); err != nil {
+        h.logger.Error("Failed to soft delete session", zap.Error(err), zap.String("session_id", sessionID))
+        h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
+        return
+    }
+
+    // Clear Redis cache for this session (best-effort)
+    if h.redis != nil {
+        key := fmt.Sprintf("session:%s", sessionID)
+        if err := h.redis.Del(ctx, key).Err(); err != nil {
+            h.logger.Warn("Failed to clear session cache", zap.Error(err), zap.String("key", key))
+        }
+    }
+
+    // No content, idempotent
+    w.WriteHeader(http.StatusNoContent)
 }

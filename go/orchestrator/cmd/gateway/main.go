@@ -276,6 +276,19 @@ func main() {
 		),
 	)
 
+	// Soft delete session (idempotent)
+	mux.Handle("DELETE /api/v1/sessions/{sessionId}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(sessionHandler.DeleteSession),
+					),
+				),
+			),
+		),
+	)
+
 	// SSE/WebSocket reverse proxy to admin server
 	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
 	streamProxy, err := proxy.NewStreamingProxy(adminURL, logger)

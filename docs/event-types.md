@@ -619,6 +619,8 @@ GET /api/v1/tasks/{id}/events?limit=50&offset=0
 GET /api/v1/sessions/{sessionId}/events?limit=200&offset=0
 ```
 
+Note: Returns 404 if the session has been soft-deleted.
+
 ---
 
 ## Best Practices
