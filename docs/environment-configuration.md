@@ -61,7 +61,10 @@ docker compose -f deploy/compose/docker-compose.yml exec llm-service env | grep 
 
 ```bash
 # LLM provider (set at least one)
+# Note: OpenAI is REQUIRED for memory features (embeddings)
 OPENAI_API_KEY=sk-...
+
+# Additional LLM providers (optional)
 # ANTHROPIC_API_KEY=...
 # XAI_API_KEY=...
 # ZAI_API_KEY=...
@@ -78,6 +81,13 @@ GOOGLE_SEARCH_ENGINE_ID=...
 COMPLEXITY_MODEL_ID=gpt-4o
 DECOMPOSITION_MODEL_ID=claude-sonnet-4-20250514
 ```
+
+**Important**: OpenAI API key is required for memory features (semantic search, hierarchical memory, agent context). Without it:
+- Workflows continue executing normally
+- Memory retrieval silently degrades (returns empty results)
+- Agents operate in "stateless" mode without historical context
+
+See [Memory System Architecture](memory-system-architecture.md#dependencies) for details.
 
 ### Core Service Endpoints
 
