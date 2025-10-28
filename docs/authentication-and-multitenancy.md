@@ -134,6 +134,7 @@ curl -X POST http://localhost:8080/api/v1/tasks \
    - Sessions tagged with tenant_id
    - GetSession enforces tenant match
    - Session queries filtered by tenant
+   - Soft delete supported via `deleted_at`/`deleted_by`; gateway filters with `deleted_at IS NULL`
 
 3. **Workflow Layer**
    - Tenant ID passed through workflow input

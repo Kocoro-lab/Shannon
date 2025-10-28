@@ -249,6 +249,19 @@ curl -X POST http://localhost:8080/api/v1/tasks \
   -d '{"query":"Your task here"}'
 ```
 
+### Delete a session (soft delete)
+
+```bash
+# Soft-delete a session you own (idempotent, returns 204)
+curl -X DELETE http://localhost:8080/api/v1/sessions/<SESSION_UUID> \
+  -H "X-API-Key: sk_test_123456"
+
+# Notes:
+# - Marks the session as deleted (deleted_at/deleted_by); data remains in DB
+# - Deleted sessions are excluded from reads and cannot be fetched
+# - Redis cache for the session is cleared
+```
+
 <details>
 <summary><b>Advanced Methods: Scripts, gRPC, and Command Line</b> (click to expand)</summary>
 

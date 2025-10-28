@@ -491,6 +491,29 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
+				"delete": map[string]interface{}{
+					"summary":     "Delete session (soft delete)",
+					"description": "Marks the session as deleted; data remains and is filtered from reads.",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "sessionId",
+							"in":          "path",
+							"description": "Session UUID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":   "string",
+								"format": "uuid",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"204": map[string]interface{}{"description": "Session deleted (idempotent)"},
+						"400": map[string]interface{}{"description": "Invalid session ID"},
+						"401": map[string]interface{}{"description": "Unauthorized"},
+						"403": map[string]interface{}{"description": "Forbidden - Not the owner"},
+						"404": map[string]interface{}{"description": "Session not found"},
+					},
+				},
 			},
 			"/api/v1/sessions/{sessionId}/history": map[string]interface{}{
 				"get": map[string]interface{}{
