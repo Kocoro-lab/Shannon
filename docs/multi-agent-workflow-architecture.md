@@ -262,15 +262,19 @@ APPROVAL_TIMEOUT_SECONDS=3600                         # Timeout in seconds (defa
 
 ### API Endpoint
 ```bash
-# Approve or deny a pending task
-curl -X POST "http://localhost:8081/approvals/decision" \
+# Approve or deny a pending task via Gateway (recommended)
+curl -X POST "http://localhost:8080/api/v1/approvals/decision" \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: your-api-key" \
   -d '{
     "approval_id": "<approval-id>",
     "workflow_id": "<workflow-id>",
     "approved": true,
     "feedback": "Approved for production deployment"
   }'
+
+# Legacy admin endpoint (deprecated, use gateway instead)
+# curl -X POST "http://localhost:8081/approvals/decision" ...
 ```
 
 ## Performance Considerations

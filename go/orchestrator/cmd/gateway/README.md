@@ -51,11 +51,15 @@ curl http://localhost:8080/openapi.json | jq
 - `POST /api/v1/tasks/stream` - Submit task and receive a stream URL (201)
 - `GET /api/v1/tasks` - List tasks (limit, offset, status, session_id)
 - `GET /api/v1/tasks/{id}` - Get task status (includes query/session_id/mode)
+- `POST /api/v1/tasks/{id}/cancel` - Cancel a running or queued task
 - `GET /api/v1/tasks/{id}/events` - Get persisted event history (from Postgres)
 - `GET /api/v1/tasks/{id}/timeline` - Build human‑readable timeline from Temporal history (summary/full, persist)
 - `GET /api/v1/tasks/{id}/stream` - Redirect to SSE stream for this task
 - `GET /api/v1/stream/sse?workflow_id={id}` - Stream task events (SSE)
 - `GET /api/v1/stream/ws?workflow_id={id}` - WebSocket stream
+
+**Approval Management:**
+- `POST /api/v1/approvals/decision` - Submit approval decision for workflows requiring human approval
 
 **Session Management:**
 - `GET /api/v1/sessions` - List sessions with pagination (limit, offset)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -438,8 +439,11 @@ func executeSupervisorTemplateNode(ctx workflow.Context, rt *templateRuntime, no
 		childInput.ApprovalTimeout = timeout
 	}
 
+	childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+		ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+	})
 	var childResult TaskResult
-	if err := workflow.ExecuteChildWorkflow(ctx, SupervisorWorkflow, childInput).Get(ctx, &childResult); err != nil {
+	if err := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, childInput).Get(childCtx, &childResult); err != nil {
 		return TemplateNodeResult{}, err
 	}
 	if !childResult.Success {

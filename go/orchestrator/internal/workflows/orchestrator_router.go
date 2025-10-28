@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -141,8 +142,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
 		var result TaskResult
-		if err := workflow.ExecuteChildWorkflow(ctx, TemplateWorkflow, templateInput).Get(ctx, &result); err != nil {
+		if err := workflow.ExecuteChildWorkflow(childCtx, TemplateWorkflow, templateInput).Get(childCtx, &result); err != nil {
 			if cfg.TemplateFallbackEnabled {
 				logger.Warn("Template workflow failed; falling back to AI decomposition", "error", err)
 				ometrics.TemplateFallbackTriggered.WithLabelValues("error").Inc()
@@ -362,7 +366,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			input.ToolParameters = decomp.Subtasks[0].ToolParameters
 		}
 
-		if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, input).Get(ctx, &result); err != nil {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		if err := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result); err != nil {
 			return result, err
 		}
 		return result, nil
@@ -377,7 +384,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			Message:    "Handing off to supervisor",
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
-		if err := workflow.ExecuteChildWorkflow(ctx, SupervisorWorkflow, input).Get(ctx, &result); err != nil {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		if err := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, input).Get(childCtx, &result); err != nil {
 			return result, err
 		}
 		return result, nil
@@ -394,7 +404,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}).Get(ctx, nil)
 		strategiesInput := convertToStrategiesInput(input)
 		var strategiesResult strategies.TaskResult
-		if err := workflow.ExecuteChildWorkflow(ctx, strategies.DAGWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		if err := workflow.ExecuteChildWorkflow(childCtx, strategies.DAGWorkflow, strategiesInput).Get(childCtx, &strategiesResult); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
 		return convertFromStrategiesResult(strategiesResult), nil
@@ -477,7 +490,10 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 			Message:    "Routing to SimpleTaskWorkflow (learning)",
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
-		if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, input).Get(ctx, &result); err != nil {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		if err := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result); err != nil {
 			return result, true, err
 		}
 		return result, true, nil
@@ -508,7 +524,10 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 			Message:    fmt.Sprintf("Routing to %s (%s)", wfName, mode),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
-		if err := workflow.ExecuteChildWorkflow(ctx, wfFunc, strategiesInput).Get(ctx, &strategiesResult); err != nil {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		if err := workflow.ExecuteChildWorkflow(childCtx, wfFunc, strategiesInput).Get(childCtx, &strategiesResult); err != nil {
 			return TaskResult{}, true, err
 		}
 		return convertFromStrategiesResult(strategiesResult), true, nil

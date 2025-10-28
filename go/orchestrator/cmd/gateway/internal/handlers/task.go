@@ -17,7 +17,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -140,12 +139,8 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Add tracing headers to gRPC metadata
-	if traceParent := r.Header.Get("traceparent"); traceParent != "" {
-		// Propagate trace context via gRPC metadata
-		md := metadata.Pairs("traceparent", traceParent)
-		ctx = metadata.NewOutgoingContext(ctx, md)
-	}
+    // Propagate auth/tracing headers to gRPC metadata
+    ctx = withGRPCMetadata(ctx, r)
 
 	// Submit task to orchestrator
 	resp, err := h.orchClient.SubmitTask(ctx, grpcReq)
@@ -240,11 +235,8 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Propagate tracing
-	if traceParent := r.Header.Get("traceparent"); traceParent != "" {
-		md := metadata.Pairs("traceparent", traceParent)
-		ctx = metadata.NewOutgoingContext(ctx, md)
-	}
+    // Propagate auth/tracing headers to gRPC metadata
+    ctx = withGRPCMetadata(ctx, r)
 
 	// Submit task to orchestrator
 	resp, err := h.orchClient.SubmitTask(ctx, grpcReq)
@@ -291,7 +283,7 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 
 // GetTaskStatus handles GET /api/v1/tasks/{id}
 func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+    ctx := r.Context()
 
 	// Get user context
 	userCtx, ok := ctx.Value("user").(*auth.UserContext)
@@ -307,10 +299,13 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get task status from orchestrator
-	grpcReq := &orchpb.GetTaskStatusRequest{
-		TaskId: taskID,
-	}
+    // Propagate auth/tracing headers to gRPC metadata
+    ctx = withGRPCMetadata(ctx, r)
+
+    // Get task status from orchestrator
+    grpcReq := &orchpb.GetTaskStatusRequest{
+        TaskId: taskID,
+    }
 
 	resp, err := h.orchClient.GetTaskStatus(ctx, grpcReq)
 	if err != nil {
@@ -371,7 +366,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 
 // ListTasks handles GET /api/v1/tasks
 func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+    ctx := r.Context()
 
 	userCtx, ok := ctx.Value("user").(*auth.UserContext)
 	if !ok {
@@ -419,7 +414,10 @@ func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 		FilterStatus: statusFilter,
 	}
 
-	resp, err := h.orchClient.ListTasks(ctx, req)
+    // Propagate auth/tracing headers to gRPC metadata
+    ctx = withGRPCMetadata(ctx, r)
+
+    resp, err := h.orchClient.ListTasks(ctx, req)
 	if err != nil {
 		if st, ok := status.FromError(err); ok {
 			h.sendError(w, st.Message(), http.StatusInternalServerError)
@@ -564,6 +562,77 @@ func (h *TaskHandler) StreamTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+}
+
+// CancelTask handles POST /api/v1/tasks/{id}/cancel
+func (h *TaskHandler) CancelTask(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract task ID from path
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		h.sendError(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse optional request body for reason
+	type cancelRequest struct {
+		Reason string `json:"reason,omitempty"`
+	}
+	var req cancelRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	// Propagate auth/tracing headers to gRPC metadata
+	ctx = withGRPCMetadata(ctx, r)
+
+	// Call CancelTask gRPC
+	// Service layer enforces ownership and handles all auth/authorization
+	cancelReq := &orchpb.CancelTaskRequest{
+		TaskId: taskID,
+		Reason: req.Reason,
+	}
+	cancelResp, err := h.orchClient.CancelTask(ctx, cancelReq)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.Unauthenticated:
+				h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+			case codes.PermissionDenied:
+				h.sendError(w, "Forbidden", http.StatusForbidden)
+			case codes.NotFound:
+				h.sendError(w, "Task not found", http.StatusNotFound)
+			default:
+				h.sendError(w, fmt.Sprintf("Failed to cancel task: %v", st.Message()), http.StatusInternalServerError)
+			}
+		} else {
+			h.sendError(w, fmt.Sprintf("Failed to cancel task: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Log cancellation
+	h.logger.Info("Task cancelled",
+		zap.String("task_id", taskID),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.String("reason", req.Reason),
+	)
+
+	// Return 202 Accepted
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": cancelResp.Success,
+		"message": cancelResp.Message,
+	})
 }
 
 // sendError sends an error response
