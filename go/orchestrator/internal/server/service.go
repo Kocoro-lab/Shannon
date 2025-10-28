@@ -1018,24 +1018,56 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 
 // CancelTask cancels a running task
 func (s *OrchestratorService) CancelTask(ctx context.Context, req *pb.CancelTaskRequest) (*pb.CancelTaskResponse, error) {
-	s.logger.Info("Received CancelTask request",
-		zap.String("task_id", req.TaskId),
-		zap.String("reason", req.Reason),
-	)
+    s.logger.Info("Received CancelTask request",
+        zap.String("task_id", req.TaskId),
+        zap.String("reason", req.Reason),
+    )
 
-	err := s.temporalClient.CancelWorkflow(ctx, req.TaskId, "")
-	if err != nil {
-		s.logger.Error("Failed to cancel workflow", zap.Error(err))
-		return &pb.CancelTaskResponse{
-			Success: false,
-			Message: fmt.Sprintf("Failed to cancel task: %v", err),
-		}, nil
-	}
+    // Enforce authentication
+    uc, err := auth.GetUserContext(ctx)
+    if err != nil || uc == nil {
+        return nil, status.Error(codes.Unauthenticated, "authentication required")
+    }
 
-	return &pb.CancelTaskResponse{
-		Success: true,
-		Message: "Task cancelled successfully",
-	}, nil
+    // Verify ownership/tenancy via workflow memo (atomic with cancel on server side)
+    desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
+    if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+        return nil, status.Error(codes.NotFound, "task not found")
+    }
+    if desc.WorkflowExecutionInfo.Memo != nil {
+        dc := converter.GetDefaultDataConverter()
+        // Check tenant first (primary isolation key)
+        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+            var memoTenant string
+            _ = dc.FromPayload(f, &memoTenant)
+            if memoTenant != "" && uc.TenantID.String() != memoTenant {
+                // Do not leak existence
+                return nil, status.Error(codes.NotFound, "task not found")
+            }
+        }
+        // Optional: check user ownership when available
+        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+            var memoUser string
+            _ = dc.FromPayload(f, &memoUser)
+            if memoUser != "" && uc.UserID.String() != memoUser {
+                return nil, status.Error(codes.NotFound, "task not found")
+            }
+        }
+    }
+
+    // Perform cancellation
+    if err := s.temporalClient.CancelWorkflow(ctx, req.TaskId, ""); err != nil {
+        s.logger.Error("Failed to cancel workflow", zap.Error(err))
+        return &pb.CancelTaskResponse{
+            Success: false,
+            Message: fmt.Sprintf("Failed to cancel task: %v", err),
+        }, nil
+    }
+
+    return &pb.CancelTaskResponse{
+        Success: true,
+        Message: "Task cancelled successfully",
+    }, nil
 }
 
 // ListTasks lists tasks for a user/session
@@ -1475,19 +1507,46 @@ func convertHistoryForWorkflow(messages []session.Message) []workflows.Message {
 
 // ApproveTask handles human approval for a task
 func (s *OrchestratorService) ApproveTask(ctx context.Context, req *pb.ApproveTaskRequest) (*pb.ApproveTaskResponse, error) {
-	s.logger.Info("Received ApproveTask request",
-		zap.String("approval_id", req.ApprovalId),
-		zap.String("workflow_id", req.WorkflowId),
-		zap.Bool("approved", req.Approved),
-	)
+    s.logger.Info("Received ApproveTask request",
+        zap.String("approval_id", req.ApprovalId),
+        zap.String("workflow_id", req.WorkflowId),
+        zap.Bool("approved", req.Approved),
+    )
 
-	// Validate input
-	if req.ApprovalId == "" || req.WorkflowId == "" {
-		return &pb.ApproveTaskResponse{
-			Success: false,
-			Message: "approval_id and workflow_id are required",
-		}, nil
-	}
+    // Validate input
+    if req.ApprovalId == "" || req.WorkflowId == "" {
+        return &pb.ApproveTaskResponse{
+            Success: false,
+            Message: "approval_id and workflow_id are required",
+        }, nil
+    }
+
+    // Enforce authentication and ownership
+    uc, err := auth.GetUserContext(ctx)
+    if err != nil || uc == nil {
+        return nil, status.Error(codes.Unauthenticated, "authentication required")
+    }
+    desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.WorkflowId, req.RunId)
+    if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+        return nil, status.Error(codes.NotFound, "workflow not found")
+    }
+    if desc.WorkflowExecutionInfo.Memo != nil {
+        dc := converter.GetDefaultDataConverter()
+        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+            var memoTenant string
+            _ = dc.FromPayload(f, &memoTenant)
+            if memoTenant != "" && uc.TenantID.String() != memoTenant {
+                return nil, status.Error(codes.NotFound, "workflow not found")
+            }
+        }
+        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+            var memoUser string
+            _ = dc.FromPayload(f, &memoUser)
+            if memoUser != "" && uc.UserID.String() != memoUser {
+                return nil, status.Error(codes.NotFound, "workflow not found")
+            }
+        }
+    }
 
 	// Create the approval result
 	approvalResult := activities.HumanApprovalResult{
@@ -1500,9 +1559,8 @@ func (s *OrchestratorService) ApproveTask(ctx context.Context, req *pb.ApproveTa
 	}
 
 	// Store the approval in our activities (for tracking/audit)
-	err := s.humanActivities.ProcessApprovalResponse(ctx, approvalResult)
-	if err != nil {
-		s.logger.Error("Failed to process approval response", zap.Error(err))
+	if procErr := s.humanActivities.ProcessApprovalResponse(ctx, approvalResult); procErr != nil {
+		s.logger.Error("Failed to process approval response", zap.Error(procErr))
 	}
 
 	// Send signal to the workflow

@@ -108,6 +108,7 @@ func main() {
 	// Create handlers
 	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, logger)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
+	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
 
@@ -196,6 +197,35 @@ func main() {
 				validationMiddleware(
 					rateLimiter(
 						http.HandlerFunc(taskHandler.GetTaskEvents),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("POST /api/v1/tasks/{id}/cancel",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(taskHandler.CancelTask),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	// Approval endpoints (require auth)
+	mux.Handle("POST /api/v1/approvals/decision",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(approvalHandler.SubmitDecision),
+						),
 					),
 				),
 			),

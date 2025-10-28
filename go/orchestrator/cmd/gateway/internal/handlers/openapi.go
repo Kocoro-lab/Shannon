@@ -238,6 +238,69 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 			},
+			"/api/v1/tasks/{id}/cancel": map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary":     "Cancel a task",
+					"description": "Cancel a running or queued task. Returns 202 Accepted for async cancellation, 409 if task is already in terminal state, 404 if not found.",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "id",
+							"in":          "path",
+							"description": "Task ID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":      "string",
+								"minLength": 1,
+								"maxLength": 128,
+							},
+						},
+					},
+					"requestBody": map[string]interface{}{
+						"required": false,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"$ref": "#/components/schemas/CancelTaskRequest",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"202": map[string]interface{}{
+							"description": "Cancellation accepted",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/CancelTaskResponse",
+									},
+								},
+							},
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized - Invalid or missing API key",
+						},
+						"403": map[string]interface{}{
+							"description": "Forbidden - User does not have permission to cancel this task",
+						},
+						"404": map[string]interface{}{
+							"description": "Task not found",
+						},
+						"409": map[string]interface{}{
+							"description": "Task already in terminal state",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/CancelTaskResponse",
+									},
+								},
+							},
+						},
+						"429": map[string]interface{}{
+							"description": "Rate limit exceeded",
+						},
+					},
+				},
+			},
 			"/api/v1/tasks/{id}/stream": map[string]interface{}{
 				"get": map[string]interface{}{
 					"summary":     "Stream task events",
@@ -524,6 +587,49 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 						"404": map[string]interface{}{
 							"description": "Session not found",
+						},
+					},
+				},
+			},
+			"/api/v1/approvals/decision": map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary":     "Submit approval decision",
+					"description": "Submit a human approval decision for a workflow requiring approval. Replaces the admin-only endpoint with a gateway-managed, authenticated endpoint.",
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"$ref": "#/components/schemas/ApprovalDecisionRequest",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Approval decision submitted successfully",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/ApprovalDecisionResponse",
+									},
+								},
+							},
+						},
+						"400": map[string]interface{}{
+							"description": "Invalid request - Missing required fields",
+						},
+						"401": map[string]interface{}{
+							"description": "Unauthorized - Invalid or missing API key",
+						},
+						"403": map[string]interface{}{
+							"description": "Forbidden - User does not have permission to approve this workflow",
+						},
+						"404": map[string]interface{}{
+							"description": "Workflow or approval not found",
+						},
+						"429": map[string]interface{}{
+							"description": "Rate limit exceeded",
 						},
 					},
 				},
@@ -891,6 +997,95 @@ func generateOpenAPISpec() map[string]interface{} {
 						"count": map[string]interface{}{
 							"type":        "integer",
 							"description": "Number of events returned",
+						},
+					},
+				},
+				"CancelTaskRequest": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"reason": map[string]interface{}{
+							"type":        "string",
+							"description": "Optional reason for cancellation",
+						},
+					},
+				},
+				"CancelTaskResponse": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"success": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Whether the cancellation was successful",
+						},
+						"message": map[string]interface{}{
+							"type":        "string",
+							"description": "Status message",
+						},
+						"status": map[string]interface{}{
+							"type":        "string",
+							"description": "Current task status (included in 409 response)",
+						},
+					},
+				},
+				"ApprovalDecisionRequest": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"workflow_id", "approval_id", "approved"},
+					"properties": map[string]interface{}{
+						"workflow_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Workflow ID requiring approval",
+						},
+						"run_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Optional run ID",
+						},
+						"approval_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Unique approval identifier",
+						},
+						"approved": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Whether the action is approved",
+						},
+						"feedback": map[string]interface{}{
+							"type":        "string",
+							"description": "Optional feedback message",
+						},
+						"modified_action": map[string]interface{}{
+							"type":        "string",
+							"description": "Optional modified action if approved with changes",
+						},
+						"approved_by": map[string]interface{}{
+							"type":        "string",
+							"description": "User who approved (defaults to authenticated user)",
+						},
+					},
+				},
+				"ApprovalDecisionResponse": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"status": map[string]interface{}{
+							"type":        "string",
+							"description": "Status of the approval submission",
+						},
+						"success": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Whether the approval was successfully submitted",
+						},
+						"message": map[string]interface{}{
+							"type":        "string",
+							"description": "Status message",
+						},
+						"workflow_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Workflow ID",
+						},
+						"run_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Run ID",
+						},
+						"approval_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Approval ID",
 						},
 					},
 				},

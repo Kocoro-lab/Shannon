@@ -27,7 +27,28 @@ Shannon's memory system provides intelligent context retention and retrieval acr
 - **Hybrid Search**: Combines recency and semantic relevance
 - **Chunked Storage**: Efficient handling of long Q&A pairs
 
-### 2. Memory Types
+### 2. Dependencies
+
+#### Embedding Provider Requirement
+
+**Memory features require OpenAI API access for text embeddings.**
+
+- **Default Model**: `text-embedding-3-small` (1536 dimensions)
+- **Required For**: Semantic search, hierarchical memory, agent memory retrieval
+- **Fallback Behavior**: If OpenAI key is not configured, memory operations silently degrade:
+  - Workflows continue executing normally
+  - Memory retrieval returns empty results (no errors thrown)
+  - Agents operate in "stateless" mode without historical context
+
+**Configuration**:
+```bash
+# Required for memory features
+OPENAI_API_KEY=sk-...
+```
+
+**Note**: Currently, only the OpenAI provider implements `generate_embedding()`. Running Shannon with Anthropic/XAI/other providers alone will disable memory features. This is by design to allow graceful degradation.
+
+### 3. Memory Types
 
 #### Hierarchical Memory
 Combines multiple retrieval strategies:
@@ -53,7 +74,7 @@ Strategic memory for intelligent task decomposition:
 - **Failure Patterns**: Known failures with mitigation strategies
 - **User Preferences**: Inferred expertise and interaction style
 
-### 3. Persistence Layer
+### 4. Persistence Layer
 
 #### Agent Execution Tracking
 - Workflow ID, Agent ID, and Task ID correlation
@@ -66,35 +87,35 @@ Strategic memory for intelligent task decomposition:
 - Success/failure tracking
 - Associated agent and workflow context
 
-## Key Features
+### 5. Key Features
 
-### Advanced Chunking System
+#### Advanced Chunking System
 - **Intelligent Text Chunking**: Splits long answers (>2000 tokens)
 - **Idempotent Storage**: Deduplication via qa_id and chunk_index
 - **Batch Embeddings**: Processes all chunks in single API call
 - **Smart Reconstruction**: Reassembles full answers from chunks
 - **Overlap Strategy**: 200-token overlap for context preservation
 
-### Context Compression
+#### Context Compression
 - **Automatic Triggers**: Based on message count and token estimates
 - **Rate Limiting**: Prevents excessive compression operations
 - **Model-aware Thresholds**: Different limits for various model tiers
 - **Fire-and-forget Storage**: Non-blocking persistence
 
-### Memory Retrieval Strategies
+#### Memory Retrieval Strategies
 
-#### Hierarchical Retrieval (Default)
+**Hierarchical Retrieval (Default)**
 1. Fetches recent messages from session
 2. Performs semantic search for relevant history
 3. Merges and deduplicates results
 4. Injects into agent context as `agent_memory`
 
-#### Fallback Chain
+**Fallback Chain**
 1. Primary: Hierarchical memory
 2. Secondary: Simple session memory
 3. Tertiary: No memory injection (new sessions)
 
-### Version Gating
+#### Version Gating
 Memory features protected by Temporal workflow version gates:
 - `memory_retrieval_v1`: Hierarchical memory system
 - `session_memory_v1`: Basic session memory
@@ -142,40 +163,40 @@ Memory features protected by Temporal workflow version gates:
 
 ## Performance Optimizations
 
-### Intelligent Chunking
+#### Intelligent Chunking
 - **Character-based tokenization**: Uses 4 characters ≈ 1 token approximation for consistent chunking
 - **50% storage reduction**: Only stores chunk text, not full embeddings
 - **Deduplication**: qa_id and chunk_index for idempotency
 - **Efficient reconstruction**: Ordered chunk aggregation
 - **Configurable parameters**: MaxTokens (2000) and OverlapTokens (200) via config
 
-### MMR (Maximal Marginal Relevance) Diversity
+#### MMR (Maximal Marginal Relevance) Diversity
 - **Diversity-aware reranking**: Balances relevance with information diversity
 - **Lambda parameter**: Configurable trade-off between relevance (λ→1) and diversity (λ→0)
 - **Default λ=0.7**: Optimized for relevant yet diverse context selection
 - **Pool multiplier**: Fetches 3x requested items, then reranks for diversity
 
-### Batch Processing
+#### Batch Processing
 - **5x faster**: Single API call for multiple chunks
 - **Smart caching**: LRU (2048 entries) + Redis
 - **Reduced costs**: N chunks → 1 API call
 - **Pool expansion**: Fetch 3x candidates, re-rank
 - **Better coverage**: Prevents redundant results
 
-### Indexing Strategy
+#### Indexing Strategy
 - **50-90% faster filtering**: Payload indexes on filter fields
 - **Optimized HNSW**: m=16, ef_construct=100
 - **Comprehensive indexing**: session_id, tenant_id, user_id, agent_id
 
 ## Privacy and Data Governance
 
-### PII Protection
+#### PII Protection
 - **Data Minimization**: Store only essential fields
 - **Anonymization**: UUIDs instead of real identities
 - **Redaction**: Automatic PII detection and removal
 - **Access Control**: Role-based permissions
 
-### Data Retention
+#### Data Retention
 - **Conversation History**: 30-day default retention
 - **Decomposition Patterns**: 90-day retention
 - **User Preferences**: Session-based, 24-hour expiry

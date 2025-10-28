@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -234,13 +235,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					}).Get(ctx, nil); err != nil {
 						logger.Warn("Failed to emit team recruited event", "error", err)
 					}
-					// Start child simple task
+					// Start child simple task with graceful cancellation
+					childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+						ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+					})
 					var res TaskResult
-					if err := workflow.ExecuteChildWorkflow(ctx, SimpleTaskWorkflow, TaskInput{
+					if err := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, TaskInput{
 						Query: req.Description, UserID: input.UserID, SessionID: input.SessionID,
 						Context: map[string]interface{}{"role": role}, Mode: input.Mode, History: input.History, SessionCtx: input.SessionCtx,
 						ParentWorkflowID: workflowID, // Preserve parent workflow ID for event streaming
-					}).Get(ctx, &res); err != nil {
+					}).Get(childCtx, &res); err != nil {
 						logger.Error("Dynamic child workflow failed", "error", err)
 						return
 					}
