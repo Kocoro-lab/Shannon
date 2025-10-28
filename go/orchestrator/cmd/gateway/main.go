@@ -276,6 +276,19 @@ func main() {
 		),
 	)
 
+	// Update session title
+	mux.Handle("PATCH /api/v1/sessions/{sessionId}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(sessionHandler.UpdateSessionTitle),
+					),
+				),
+			),
+		),
+	)
+
 	// Soft delete session (idempotent)
 	mux.Handle("DELETE /api/v1/sessions/{sessionId}",
 		tracingMiddleware(
@@ -401,7 +414,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 		if !isStreaming {
 			// Allow CORS for development
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", allowedHeaders)
 			w.Header().Set("Access-Control-Max-Age", "3600")
 		} else {

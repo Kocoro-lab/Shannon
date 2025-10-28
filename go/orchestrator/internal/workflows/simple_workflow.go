@@ -389,6 +389,23 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				"error", err,
 			)
 		}
+
+		// Generate session title after first task (best-effort, non-blocking)
+		titleVersion := workflow.GetVersion(ctx, "session_title_v1", workflow.DefaultVersion, 1)
+		if titleVersion >= 1 {
+			titleCtx, _ := workflow.NewDisconnectedContext(ctx)
+			titleOpts := workflow.ActivityOptions{
+				StartToCloseTimeout: 15 * time.Second,
+				RetryPolicy: &temporal.RetryPolicy{
+					MaximumAttempts: 1, // Don't retry on failure
+				},
+			}
+			titleCtx = workflow.WithActivityOptions(titleCtx, titleOpts)
+			workflow.ExecuteActivity(titleCtx, "GenerateSessionTitle", activities.GenerateSessionTitleInput{
+				SessionID: input.SessionID,
+				Query:     input.Query,
+			})
+		}
 	}
 
 	// Check if we need synthesis for web_search or JSON results

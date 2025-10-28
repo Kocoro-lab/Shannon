@@ -6,6 +6,7 @@ import (
     "fmt"
     "net/http"
     "strconv"
+    "strings"
     "time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
@@ -65,6 +66,7 @@ type ListSessionsResponse struct {
 type SessionSummary struct {
 	SessionID   string     `json:"session_id"`
 	UserID      string     `json:"user_id"`
+	Title       string     `json:"title,omitempty"`
 	TaskCount   int        `json:"task_count"`
 	TokensUsed  int        `json:"tokens_used"`
 	TokenBudget int        `json:"token_budget,omitempty"`
@@ -491,6 +493,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
         SELECT
             s.id,
             s.user_id,
+            COALESCE(s.context->>'title', '') as title,
             COALESCE(s.token_budget, 0) as token_budget,
             COALESCE(s.tokens_used, 0) as tokens_used,
             s.created_at,
@@ -500,7 +503,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
         FROM sessions s
         LEFT JOIN task_executions t ON t.session_id = s.id::text
         WHERE s.user_id = $1 AND s.deleted_at IS NULL
-        GROUP BY s.id, s.user_id, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
+        GROUP BY s.id, s.user_id, s.context, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
         ORDER BY s.created_at DESC
         LIMIT $2 OFFSET $3
     `, userCtx.UserID.String(), limit, offset)
@@ -518,6 +521,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		var sess struct {
 			ID          string       `db:"id"`
 			UserID      string       `db:"user_id"`
+			Title       string       `db:"title"`
 			TokenBudget int          `db:"token_budget"`
 			TokensUsed  int          `db:"tokens_used"`
 			CreatedAt   time.Time    `db:"created_at"`
@@ -534,6 +538,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		summary := SessionSummary{
 			SessionID:  sess.ID,
 			UserID:     sess.UserID,
+			Title:      sess.Title,
 			TaskCount:  sess.TaskCount,
 			TokensUsed: sess.TokensUsed,
 			CreatedAt:  sess.CreatedAt,
@@ -593,6 +598,159 @@ func (h *SessionHandler) sendError(w http.ResponseWriter, message string, code i
     json.NewEncoder(w).Encode(map[string]string{
         "error": message,
     })
+}
+
+// UpdateSessionTitle handles PATCH /api/v1/sessions/{sessionId}
+func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract session ID from path
+	sessionID := r.PathValue("sessionId")
+	if sessionID == "" {
+		h.sendError(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse request body
+	var reqBody struct {
+		Title string `json:"title"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		h.sendError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate title
+	title := strings.TrimSpace(reqBody.Title)
+	if title == "" {
+		h.sendError(w, "Title cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if len(title) > 60 {
+		h.sendError(w, "Title must be 60 characters or less", http.StatusBadRequest)
+		return
+	}
+
+	// Verify session exists and user has access
+	var session struct {
+		UserID  string `db:"user_id"`
+		Context []byte `db:"context"`
+	}
+	err := h.db.GetContext(ctx, &session, `
+		SELECT user_id, context FROM sessions WHERE id::text = $1 AND deleted_at IS NULL
+	`, sessionID)
+	if err == sql.ErrNoRows {
+		h.sendError(w, "Session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to query session", zap.Error(err))
+		h.sendError(w, "Failed to update session", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify ownership
+	if session.UserID != userCtx.UserID.String() {
+		h.sendError(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Parse existing context
+	var contextData map[string]interface{}
+	if len(session.Context) > 0 {
+		if err := json.Unmarshal(session.Context, &contextData); err != nil {
+			h.logger.Error("Failed to parse session context", zap.Error(err))
+			contextData = make(map[string]interface{})
+		}
+	} else {
+		contextData = make(map[string]interface{})
+	}
+
+	// Update title in context
+	contextData["title"] = title
+
+	// Serialize updated context
+	updatedContext, err := json.Marshal(contextData)
+	if err != nil {
+		h.logger.Error("Failed to serialize context", zap.Error(err))
+		h.sendError(w, "Failed to update session", http.StatusInternalServerError)
+		return
+	}
+
+	// Update database (with deleted_at guard for race hardening)
+	_, err = h.db.ExecContext(ctx, `
+		UPDATE sessions
+		SET context = $1, updated_at = NOW()
+		WHERE id::text = $2 AND deleted_at IS NULL
+	`, updatedContext, sessionID)
+	if err != nil {
+		h.logger.Error("Failed to update session title", zap.Error(err))
+		h.sendError(w, "Failed to update session", http.StatusInternalServerError)
+		return
+	}
+
+	// Also update Redis cache if available (best-effort)
+	if h.redis != nil {
+		redisKey := fmt.Sprintf("session:%s", sessionID)
+		// Try to get current session data from Redis
+		sessionData, err := h.redis.Get(ctx, redisKey).Result()
+		if err != nil {
+			h.logger.Debug("Session not found in Redis cache or Redis unavailable",
+				zap.String("session_id", sessionID),
+				zap.Error(err),
+			)
+		} else {
+			var redisSession map[string]interface{}
+			if err := json.Unmarshal([]byte(sessionData), &redisSession); err != nil {
+				h.logger.Warn("Failed to unmarshal Redis session data",
+					zap.String("session_id", sessionID),
+					zap.Error(err),
+				)
+			} else {
+				// Update context in Redis session (lowercase "context" to match Session struct)
+				if redisCtx, ok := redisSession["context"].(map[string]interface{}); ok {
+					redisCtx["title"] = title
+				} else {
+					redisSession["context"] = map[string]interface{}{"title": title}
+				}
+				// Write back to Redis with KeepTTL to preserve expiration
+				if updatedData, err := json.Marshal(redisSession); err != nil {
+					h.logger.Warn("Failed to marshal updated Redis session",
+						zap.String("session_id", sessionID),
+						zap.Error(err),
+					)
+				} else {
+					if err := h.redis.SetArgs(ctx, redisKey, updatedData, redis.SetArgs{KeepTTL: true}).Err(); err != nil {
+						h.logger.Warn("Failed to update Redis cache with new title",
+							zap.String("session_id", sessionID),
+							zap.Error(err),
+						)
+					}
+				}
+			}
+		}
+	}
+
+	h.logger.Info("Session title updated",
+		zap.String("session_id", sessionID),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.String("new_title", title),
+	)
+
+	// Return success with updated title
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"session_id": sessionID,
+		"title":      title,
+	})
 }
 
 // DeleteSession handles DELETE /api/v1/sessions/{sessionId}
