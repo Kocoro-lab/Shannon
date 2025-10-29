@@ -11,7 +11,6 @@ import (
     "unicode"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    "github.com/google/uuid"
     "github.com/jmoiron/sqlx"
     "github.com/redis/go-redis/v9"
     "go.uber.org/zap"
@@ -133,7 +132,7 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
     err := h.db.GetContext(ctx, &session, `
             SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
             FROM sessions
-            WHERE id::text = $1 AND deleted_at IS NULL
+            WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
         `, sessionID)
 
 	if err == sql.ErrNoRows {
@@ -152,27 +151,52 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get task count for this session from task_executions
-	var taskCount int
-	err = h.db.GetContext(ctx, &taskCount, `
-		SELECT COUNT(*) FROM task_executions WHERE session_id = $1
-	`, sessionID)
-	if err != nil {
-		h.logger.Warn("Failed to get task count", zap.Error(err))
-		taskCount = 0
-	}
-
-	// Parse context JSON
+	// Parse context JSON first to get external_id if present
 	var contextData map[string]interface{}
 	if len(session.Context) > 0 {
 		json.Unmarshal(session.Context, &contextData)
 	}
 
+	// Get task count for this session from task_executions (check both UUID and external_id)
+	var taskCount int
+	if extID, ok := contextData["external_id"].(string); ok && extID != "" {
+		// Session has external_id, check both session.ID and external_id
+		err = h.db.GetContext(ctx, &taskCount, `
+			SELECT COUNT(*) FROM task_executions
+			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+		`, session.ID, extID, userCtx.UserID.String())
+	} else {
+		// No external_id, just check by UUID
+		err = h.db.GetContext(ctx, &taskCount, `
+			SELECT COUNT(*) FROM task_executions
+			WHERE session_id = $1 AND user_id = $2
+		`, session.ID, userCtx.UserID.String())
+	}
+	if err != nil {
+		h.logger.Warn("Failed to get task count", zap.Error(err))
+		taskCount = 0
+	}
+
 	// Try to get real-time token usage from Redis (if available)
+	// Session manager stores sessions as JSON values with SET, not as Redis hashes
 	tokensUsed := int(session.TokensUsed.Int32)
-	if redisKey := fmt.Sprintf("session:%s", sessionID); h.redis != nil {
-		if val, err := h.redis.HGet(ctx, redisKey, "total_tokens_used").Int(); err == nil {
-			tokensUsed = val
+	if h.redis != nil {
+		// Try both possible Redis keys: the input sessionID and any external_id
+		keysToTry := []string{fmt.Sprintf("session:%s", sessionID)}
+		if extID, ok := contextData["external_id"].(string); ok && extID != "" {
+			keysToTry = append(keysToTry, fmt.Sprintf("session:%s", extID))
+		}
+
+		for _, redisKey := range keysToTry {
+			if data, err := h.redis.Get(ctx, redisKey).Result(); err == nil {
+				var sessionData map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &sessionData); err == nil {
+					if tokens, ok := sessionData["total_tokens_used"].(float64); ok {
+						tokensUsed = int(tokens)
+						break
+					}
+				}
+			}
 		}
 	}
 
@@ -226,10 +250,16 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-    // Verify session exists and user has access
-    var sessionUserID string
-    err := h.db.GetContext(ctx, &sessionUserID, `
-        SELECT user_id FROM sessions WHERE id::text = $1 AND deleted_at IS NULL
+    // Verify session exists and user has access (also get id and external_id for task query)
+    var sessionData struct {
+        ID         string  `db:"id"`
+        UserID     string  `db:"user_id"`
+        ExternalID *string `db:"external_id"`
+    }
+    err := h.db.GetContext(ctx, &sessionData, `
+        SELECT id, user_id, context->>'external_id' as external_id
+        FROM sessions
+        WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
     `, sessionID)
 
 	if err == sql.ErrNoRows {
@@ -243,33 +273,60 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Verify user has access
-	if sessionUserID != userCtx.UserID.String() {
+	if sessionData.UserID != userCtx.UserID.String() {
 		h.sendError(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	// Query all tasks for this session
-	rows, err := h.db.QueryxContext(ctx, `
-		SELECT
-			id,
-			workflow_id,
-			query,
-			status,
-			COALESCE(mode, '') as mode,
-			COALESCE(result, '') as result,
-			COALESCE(error_message, '') as error_message,
-			COALESCE(total_tokens, 0) as total_tokens,
-			COALESCE(total_cost_usd, 0) as total_cost_usd,
-			COALESCE(duration_ms, 0) as duration_ms,
-			COALESCE(agents_used, 0) as agents_used,
-			COALESCE(tools_invoked, 0) as tools_invoked,
-			started_at,
-			completed_at,
-			metadata
-		FROM task_executions
-		WHERE session_id = $1
-		ORDER BY started_at ASC
-	`, sessionID)
+	// Query all tasks for this session (check both UUID and external_id with user_id filter)
+	var rows *sqlx.Rows
+	if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
+		// Session has external_id, check both session.ID and external_id
+		rows, err = h.db.QueryxContext(ctx, `
+			SELECT
+				id,
+				workflow_id,
+				query,
+				status,
+				COALESCE(mode, '') as mode,
+				COALESCE(result, '') as result,
+				COALESCE(error_message, '') as error_message,
+				COALESCE(total_tokens, 0) as total_tokens,
+				COALESCE(total_cost_usd, 0) as total_cost_usd,
+				COALESCE(duration_ms, 0) as duration_ms,
+				COALESCE(agents_used, 0) as agents_used,
+				COALESCE(tools_invoked, 0) as tools_invoked,
+				started_at,
+				completed_at,
+				metadata
+			FROM task_executions
+			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+			ORDER BY started_at ASC
+		`, sessionData.ID, *sessionData.ExternalID, sessionData.UserID)
+	} else {
+		// No external_id, just check by UUID
+		rows, err = h.db.QueryxContext(ctx, `
+			SELECT
+				id,
+				workflow_id,
+				query,
+				status,
+				COALESCE(mode, '') as mode,
+				COALESCE(result, '') as result,
+				COALESCE(error_message, '') as error_message,
+				COALESCE(total_tokens, 0) as total_tokens,
+				COALESCE(total_cost_usd, 0) as total_cost_usd,
+				COALESCE(duration_ms, 0) as duration_ms,
+				COALESCE(agents_used, 0) as agents_used,
+				COALESCE(tools_invoked, 0) as tools_invoked,
+				started_at,
+				completed_at,
+				metadata
+			FROM task_executions
+			WHERE session_id = $1 AND user_id = $2
+			ORDER BY started_at ASC
+		`, sessionData.ID, sessionData.UserID)
+	}
 
 	if err != nil {
 		h.logger.Error("Failed to query task history", zap.Error(err))
@@ -378,10 +435,16 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         return
     }
 
-    // Verify session exists and user has access
-    var sessionUserID string
-    err := h.db.GetContext(ctx, &sessionUserID, `
-        SELECT user_id FROM sessions WHERE id::text = $1 AND deleted_at IS NULL
+    // Verify session exists and user has access (also get id and external_id for event query)
+    var sessionData struct {
+        ID         string  `db:"id"`
+        UserID     string  `db:"user_id"`
+        ExternalID *string `db:"external_id"`
+    }
+    err := h.db.GetContext(ctx, &sessionData, `
+        SELECT id, user_id, context->>'external_id' as external_id
+        FROM sessions
+        WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
     `, sessionID)
     if err == sql.ErrNoRows {
         h.sendError(w, "Session not found", http.StatusNotFound)
@@ -392,7 +455,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         h.sendError(w, "Failed to retrieve session", http.StatusInternalServerError)
         return
     }
-    if sessionUserID != userCtx.UserID.String() {
+    if sessionData.UserID != userCtx.UserID.String() {
         h.sendError(w, "Forbidden", http.StatusForbidden)
         return
     }
@@ -423,15 +486,29 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         StreamID   string    `json:"stream_id,omitempty"`
     }
 
-    // Fetch events across all tasks in this session, excluding LLM_PARTIAL
-    rows, err := h.db.QueryxContext(ctx, `
-        SELECT e.workflow_id, e.type, COALESCE(e.agent_id,''), COALESCE(e.message,''), e.timestamp, COALESCE(e.seq,0), COALESCE(e.stream_id,'')
-        FROM event_logs e
-        JOIN task_executions t ON t.workflow_id = e.workflow_id
-        WHERE t.session_id = $1 AND t.user_id = $2 AND e.type <> 'LLM_PARTIAL'
-        ORDER BY e.timestamp ASC
-        LIMIT $3 OFFSET $4
-    `, sessionID, userCtx.UserID.String(), limit, offset)
+    // Fetch events across all tasks in this session (check both UUID and external_id), excluding LLM_PARTIAL
+    var rows *sqlx.Rows
+    if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
+        // Session has external_id, check both session.ID and external_id
+        rows, err = h.db.QueryxContext(ctx, `
+            SELECT e.workflow_id, e.type, COALESCE(e.agent_id,''), COALESCE(e.message,''), e.timestamp, COALESCE(e.seq,0), COALESCE(e.stream_id,'')
+            FROM event_logs e
+            JOIN task_executions t ON t.workflow_id = e.workflow_id
+            WHERE (t.session_id = $1 OR t.session_id = $2) AND t.user_id = $3 AND e.type <> 'LLM_PARTIAL'
+            ORDER BY e.timestamp ASC
+            LIMIT $4 OFFSET $5
+        `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, limit, offset)
+    } else {
+        // No external_id, just check by UUID
+        rows, err = h.db.QueryxContext(ctx, `
+            SELECT e.workflow_id, e.type, COALESCE(e.agent_id,''), COALESCE(e.message,''), e.timestamp, COALESCE(e.seq,0), COALESCE(e.stream_id,'')
+            FROM event_logs e
+            JOIN task_executions t ON t.workflow_id = e.workflow_id
+            WHERE t.session_id = $1 AND t.user_id = $2 AND e.type <> 'LLM_PARTIAL'
+            ORDER BY e.timestamp ASC
+            LIMIT $3 OFFSET $4
+        `, sessionData.ID, sessionData.UserID, limit, offset)
+    }
     if err != nil {
         h.logger.Error("Failed to query session events", zap.Error(err))
         h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
@@ -494,7 +571,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Query sessions for this user
-	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - cast for JOIN
+	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - match by id or external_id
     rows, err := h.db.QueryxContext(ctx, `
         SELECT
             s.id,
@@ -507,7 +584,8 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
             s.expires_at,
             COUNT(t.id) as task_count
         FROM sessions s
-        LEFT JOIN task_executions t ON t.session_id = s.id::text
+        LEFT JOIN task_executions t ON (t.session_id = s.id::text OR t.session_id = s.context->>'external_id')
+            AND t.user_id = s.user_id
         WHERE s.user_id = $1 AND s.deleted_at IS NULL
         GROUP BY s.id, s.user_id, s.context, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
         ORDER BY s.created_at DESC
@@ -660,13 +738,14 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Verify session exists and user has access
+	// Verify session exists and user has access (fetch ID for Redis cache)
 	var session struct {
+		ID      string `db:"id"`
 		UserID  string `db:"user_id"`
 		Context []byte `db:"context"`
 	}
 	err := h.db.GetContext(ctx, &session, `
-		SELECT user_id, context FROM sessions WHERE id::text = $1 AND deleted_at IS NULL
+		SELECT id, user_id, context FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
 	`, sessionID)
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
@@ -710,7 +789,7 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 	_, err = h.db.ExecContext(ctx, `
 		UPDATE sessions
 		SET context = $1, updated_at = NOW()
-		WHERE id::text = $2 AND deleted_at IS NULL
+		WHERE (id::text = $2 OR context->>'external_id' = $2) AND deleted_at IS NULL
 	`, updatedContext, sessionID)
 	if err != nil {
 		h.logger.Error("Failed to update session title", zap.Error(err))
@@ -719,42 +798,58 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Also update Redis cache if available (best-effort)
+	// Session manager may store sessions under different keys depending on how they were created
 	if h.redis != nil {
-		redisKey := fmt.Sprintf("session:%s", sessionID)
-		// Try to get current session data from Redis
-		sessionData, err := h.redis.Get(ctx, redisKey).Result()
-		if err != nil {
-			h.logger.Debug("Session not found in Redis cache or Redis unavailable",
-				zap.String("session_id", sessionID),
-				zap.Error(err),
-			)
-		} else {
+		// Try multiple possible Redis keys: input sessionID, DB UUID, and external_id
+		keysToTry := []string{
+			fmt.Sprintf("session:%s", sessionID),     // Original input (could be UUID or external_id)
+			fmt.Sprintf("session:%s", session.ID),    // Database UUID
+		}
+		// Also add external_id if present
+		if extID, ok := contextData["external_id"].(string); ok && extID != "" {
+			keysToTry = append(keysToTry, fmt.Sprintf("session:%s", extID))
+		}
+
+		// Try each possible key
+		for _, redisKey := range keysToTry {
+			sessionData, err := h.redis.Get(ctx, redisKey).Result()
+			if err != nil {
+				continue // Try next key
+			}
+
 			var redisSession map[string]interface{}
 			if err := json.Unmarshal([]byte(sessionData), &redisSession); err != nil {
 				h.logger.Warn("Failed to unmarshal Redis session data",
-					zap.String("session_id", sessionID),
+					zap.String("redis_key", redisKey),
+					zap.Error(err),
+				)
+				continue
+			}
+
+			// Update context in Redis session (lowercase "context" to match Session struct)
+			if redisCtx, ok := redisSession["context"].(map[string]interface{}); ok {
+				redisCtx[SessionContextKeyTitle] = title
+			} else {
+				redisSession["context"] = map[string]interface{}{SessionContextKeyTitle: title}
+			}
+
+			// Write back to Redis with KeepTTL to preserve expiration
+			if updatedData, err := json.Marshal(redisSession); err != nil {
+				h.logger.Warn("Failed to marshal updated Redis session",
+					zap.String("redis_key", redisKey),
 					zap.Error(err),
 				)
 			} else {
-				// Update context in Redis session (lowercase "context" to match Session struct)
-				if redisCtx, ok := redisSession["context"].(map[string]interface{}); ok {
-					redisCtx[SessionContextKeyTitle] = title
-				} else {
-					redisSession["context"] = map[string]interface{}{SessionContextKeyTitle: title}
-				}
-				// Write back to Redis with KeepTTL to preserve expiration
-				if updatedData, err := json.Marshal(redisSession); err != nil {
-					h.logger.Warn("Failed to marshal updated Redis session",
-						zap.String("session_id", sessionID),
+				if err := h.redis.SetArgs(ctx, redisKey, updatedData, redis.SetArgs{KeepTTL: true}).Err(); err != nil {
+					h.logger.Warn("Failed to update Redis cache with new title",
+						zap.String("redis_key", redisKey),
 						zap.Error(err),
 					)
 				} else {
-					if err := h.redis.SetArgs(ctx, redisKey, updatedData, redis.SetArgs{KeepTTL: true}).Err(); err != nil {
-						h.logger.Warn("Failed to update Redis cache with new title",
-							zap.String("session_id", sessionID),
-							zap.Error(err),
-						)
-					}
+					h.logger.Debug("Updated Redis session title",
+						zap.String("redis_key", redisKey),
+						zap.String("new_title", title),
+					)
 				}
 			}
 		}
@@ -786,21 +881,22 @@ func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // Extract and validate session ID
+    // Extract session ID (accepts both UUID and external_id for consistency)
     sessionID := r.PathValue("sessionId")
     if sessionID == "" {
         h.sendError(w, "Session ID is required", http.StatusBadRequest)
         return
     }
-    if _, err := uuid.Parse(sessionID); err != nil {
-        h.sendError(w, "Invalid session ID format (uuid required)", http.StatusBadRequest)
-        return
-    }
 
-    // Ownership check (do not filter on deleted_at to keep idempotency)
-    var owner string
-    if err := h.db.GetContext(ctx, &owner, `
-        SELECT user_id FROM sessions WHERE id::text = $1
+    // Ownership check and fetch canonical/id mapping (do not filter on deleted_at to keep idempotency)
+    var sessMeta struct {
+        ID         string  `db:"id"`
+        UserID     string  `db:"user_id"`
+        ExternalID *string `db:"external_id"`
+    }
+    if err := h.db.GetContext(ctx, &sessMeta, `
+        SELECT id, user_id, context->>'external_id' as external_id
+        FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1)
     `, sessionID); err != nil {
         if err == sql.ErrNoRows {
             h.sendError(w, "Session not found", http.StatusNotFound)
@@ -810,7 +906,7 @@ func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
         h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
         return
     }
-    if owner != userCtx.UserID.String() {
+    if sessMeta.UserID != userCtx.UserID.String() {
         h.sendError(w, "Forbidden", http.StatusForbidden)
         return
     }
@@ -819,7 +915,7 @@ func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
     if _, err := h.db.ExecContext(ctx, `
         UPDATE sessions
         SET deleted_at = NOW(), deleted_by = $2, updated_at = NOW()
-        WHERE id::text = $1 AND deleted_at IS NULL
+        WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
     `, sessionID, userCtx.UserID.String()); err != nil {
         h.logger.Error("Failed to soft delete session", zap.Error(err), zap.String("session_id", sessionID))
         h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
@@ -828,9 +924,15 @@ func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
 
     // Clear Redis cache for this session (best-effort)
     if h.redis != nil {
-        key := fmt.Sprintf("session:%s", sessionID)
-        if err := h.redis.Del(ctx, key).Err(); err != nil {
-            h.logger.Warn("Failed to clear session cache", zap.Error(err), zap.String("key", key))
+        // Try all possible keys: original input, DB UUID, and external_id (if present)
+        keys := []string{fmt.Sprintf("session:%s", sessionID), fmt.Sprintf("session:%s", sessMeta.ID)}
+        if sessMeta.ExternalID != nil && *sessMeta.ExternalID != "" {
+            keys = append(keys, fmt.Sprintf("session:%s", *sessMeta.ExternalID))
+        }
+        for _, key := range keys {
+            if err := h.redis.Del(ctx, key).Err(); err != nil {
+                h.logger.Warn("Failed to clear session cache", zap.Error(err), zap.String("redis_key", key))
+            }
         }
     }
 

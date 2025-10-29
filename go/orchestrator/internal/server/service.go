@@ -1231,16 +1231,35 @@ func (s *OrchestratorService) GetSessionContext(ctx context.Context, req *pb.Get
 		}
 	}
 
-	if s.dbClient != nil {
-		tasks, err := s.loadRecentSessionTasks(ctx, req.SessionId, 5)
-		if err != nil {
-			s.logger.Warn("Failed to load recent session tasks",
-				zap.String("session_id", req.SessionId),
-				zap.Error(err))
-		} else if len(tasks) > 0 {
-			response.RecentTasks = tasks
-		}
-	}
+    if s.dbClient != nil {
+        // Resolve both canonical UUID and external_id for dual-format session IDs
+        sessionIDs := []string{}
+        var dbID string
+        var extID sql.NullString
+        row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+            SELECT id::text, context->>'external_id'
+            FROM sessions
+            WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
+        `, req.SessionId)
+        if err := row.Scan(&dbID, &extID); err == nil {
+            sessionIDs = append(sessionIDs, dbID)
+            if extID.Valid && extID.String != "" {
+                sessionIDs = append(sessionIDs, extID.String)
+            }
+        } else {
+            // Fallback to the provided session ID if not resolvable in DB
+            sessionIDs = append(sessionIDs, req.SessionId)
+        }
+
+        tasks, err := s.loadRecentSessionTasksByIDs(ctx, sessionIDs, 5)
+        if err != nil {
+            s.logger.Warn("Failed to load recent session tasks",
+                zap.String("session_id", req.SessionId),
+                zap.Error(err))
+        } else if len(tasks) > 0 {
+            response.RecentTasks = tasks
+        }
+    }
 
 	return response, nil
 }
@@ -1330,6 +1349,108 @@ func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessio
 	}
 
 	return summaries, nil
+}
+
+// loadRecentSessionTasksByIDs loads recent tasks for one or two possible session IDs
+// to support dual-format session identifiers (UUID and external string ID).
+func (s *OrchestratorService) loadRecentSessionTasksByIDs(ctx context.Context, sessionIDs []string, limit int) ([]*pb.TaskSummary, error) {
+    // Normalize inputs
+    ids := make([]string, 0, 2)
+    for _, id := range sessionIDs {
+        if id != "" {
+            ids = append(ids, id)
+            if len(ids) == 2 {
+                break
+            }
+        }
+    }
+    if len(ids) == 0 || limit <= 0 || s.dbClient == nil {
+        return nil, nil
+    }
+    if len(ids) == 1 {
+        return s.loadRecentSessionTasks(ctx, ids[0], limit)
+    }
+
+    // Build query for two IDs
+    query := `
+        SELECT workflow_id, query, status, mode,
+               started_at, completed_at, created_at,
+               total_tokens, total_cost_usd
+        FROM task_executions
+        WHERE (session_id = $1 OR session_id = $2)
+        ORDER BY COALESCE(started_at, created_at) DESC
+        LIMIT $3`
+
+    rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, ids[0], ids[1], limit)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+
+    summaries := make([]*pb.TaskSummary, 0, limit)
+
+    for rows.Next() {
+        var (
+            workflowID string
+            queryText  sql.NullString
+            statusStr  sql.NullString
+            modeStr    sql.NullString
+            started    sql.NullTime
+            completed  sql.NullTime
+            created    sql.NullTime
+            tokens     sql.NullInt64
+            costUSD    sql.NullFloat64
+        )
+
+        if err := rows.Scan(
+            &workflowID,
+            &queryText,
+            &statusStr,
+            &modeStr,
+            &started,
+            &completed,
+            &created,
+            &tokens,
+            &costUSD,
+        ); err != nil {
+            return nil, err
+        }
+
+        summary := &pb.TaskSummary{
+            TaskId: workflowID,
+            Query:  queryText.String,
+            Status: mapDBStatusToProto(statusStr.String),
+            Mode:   mapDBModeToProto(modeStr.String),
+        }
+
+        if started.Valid {
+            summary.CreatedAt = timestamppb.New(started.Time)
+        } else if created.Valid {
+            summary.CreatedAt = timestamppb.New(created.Time)
+        }
+
+        if completed.Valid {
+            summary.CompletedAt = timestamppb.New(completed.Time)
+        }
+
+        if tokens.Valid || costUSD.Valid {
+            tokenUsage := &common.TokenUsage{}
+            if tokens.Valid {
+                tokenUsage.TotalTokens = int32(tokens.Int64)
+            }
+            if costUSD.Valid {
+                tokenUsage.CostUsd = costUSD.Float64
+            }
+            summary.TotalTokenUsage = tokenUsage
+        }
+
+        summaries = append(summaries, summary)
+    }
+    if err := rows.Err(); err != nil {
+        return nil, status.Error(codes.Internal, fmt.Sprintf("failed to iterate rows: %v", err))
+    }
+
+    return summaries, nil
 }
 
 func mapDBStatusToProto(status string) pb.TaskStatus {
