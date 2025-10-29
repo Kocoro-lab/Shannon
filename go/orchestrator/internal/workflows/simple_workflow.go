@@ -389,6 +389,10 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				"error", err,
 			)
 		}
+
+		// Session title generation is now handled centrally in OrchestratorWorkflow
+		// Keep version gate for replay determinism (no-op for new executions)
+		_ = workflow.GetVersion(ctx, "session_title_v1", workflow.DefaultVersion, 1)
 	}
 
 	// Check if we need synthesis for web_search or JSON results

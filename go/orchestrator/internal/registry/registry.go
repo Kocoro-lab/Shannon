@@ -131,6 +131,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(acts.UpdateSessionResult, activity.RegisterOptions{
 		Name: constants.UpdateSessionResultActivity,
 	})
+	w.RegisterActivityWithOptions(acts.GenerateSessionTitle, activity.RegisterOptions{Name: "GenerateSessionTitle"})
 
 	// Human intervention activities
 	if r.config.EnableApprovalWorkflows {

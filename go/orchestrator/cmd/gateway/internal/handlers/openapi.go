@@ -491,6 +491,48 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
+				"patch": map[string]interface{}{
+					"summary":     "Update session title",
+					"description": "Update the title of an existing session (max 60 characters)",
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "sessionId",
+							"in":          "path",
+							"description": "Session UUID",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type":   "string",
+								"format": "uuid",
+							},
+						},
+					},
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"$ref": "#/components/schemas/UpdateSessionTitleRequest",
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Session title updated successfully",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"$ref": "#/components/schemas/UpdateSessionTitleResponse",
+									},
+								},
+							},
+						},
+						"400": map[string]interface{}{"description": "Invalid request - title empty or too long"},
+						"401": map[string]interface{}{"description": "Unauthorized"},
+						"403": map[string]interface{}{"description": "Forbidden - Not the owner"},
+						"404": map[string]interface{}{"description": "Session not found"},
+					},
+				},
 				"delete": map[string]interface{}{
 					"summary":     "Delete session (soft delete)",
 					"description": "Marks the session as deleted; data remains and is filtered from reads.",
@@ -832,6 +874,11 @@ func generateOpenAPISpec() map[string]interface{} {
 							"format":      "uuid",
 							"description": "User who owns this session",
 						},
+						"title": map[string]interface{}{
+							"type":        "string",
+							"description": "Session title (auto-generated or user-defined, max 60 chars)",
+							"maxLength":   60,
+						},
 						"task_count": map[string]interface{}{
 							"type":        "integer",
 							"description": "Number of tasks in this session",
@@ -1109,6 +1156,33 @@ func generateOpenAPISpec() map[string]interface{} {
 						"approval_id": map[string]interface{}{
 							"type":        "string",
 							"description": "Approval ID",
+						},
+					},
+				},
+				"UpdateSessionTitleRequest": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"title"},
+					"properties": map[string]interface{}{
+						"title": map[string]interface{}{
+							"type":        "string",
+							"description": "New session title (max 60 characters)",
+							"minLength":   1,
+							"maxLength":   60,
+						},
+					},
+				},
+				"UpdateSessionTitleResponse": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"session_id", "title"},
+					"properties": map[string]interface{}{
+						"session_id": map[string]interface{}{
+							"type":        "string",
+							"format":      "uuid",
+							"description": "Session identifier",
+						},
+						"title": map[string]interface{}{
+							"type":        "string",
+							"description": "Updated session title",
 						},
 					},
 				},
