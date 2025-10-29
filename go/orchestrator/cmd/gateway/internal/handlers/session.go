@@ -642,8 +642,8 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 
 	// Sanitize title: strip control characters (newlines, tabs, zero-width chars, etc.)
 	title = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1 // Remove control characters
+		if unicode.IsControl(r) || r == '\u200B' || r == '\uFEFF' {
+			return -1 // Remove control characters, zero-width space, and BOM
 		}
 		return r
 	}, title)
