@@ -129,14 +129,35 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 	if dbClient != nil {
 		db := dbClient.GetDB()
 
+		// First, fetch existing context from PostgreSQL to preserve external_id and other DB-only fields
+		var existingContext json.RawMessage
+		err := db.QueryRowContext(ctx, `
+			SELECT context
+			FROM sessions
+			WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
+		`, input.SessionID).Scan(&existingContext)
+
 		// Build updated context JSON with title
 		contextData := make(map[string]interface{})
+
+		// First load PostgreSQL context (to preserve external_id)
+		if err == nil && existingContext != nil {
+			if err := json.Unmarshal(existingContext, &contextData); err != nil {
+				a.logger.Warn("Failed to unmarshal existing Postgres context",
+					zap.Error(err),
+					zap.String("session_id", input.SessionID),
+				)
+			}
+		}
+
+		// Then overlay Redis context (to get latest updates)
 		if sess.Context != nil {
-			// Copy existing context
 			for k, v := range sess.Context {
 				contextData[k] = v
 			}
 		}
+
+		// Finally add the title
 		contextData[sessionContextKeyTitle] = title
 
 		contextJSON, err := json.Marshal(contextData)
@@ -146,11 +167,11 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 				zap.String("session_id", input.SessionID),
 			)
 		} else {
-			// Update Postgres sessions.context
+			// Update Postgres sessions.context (support both UUID and external_id)
 			_, err = db.ExecContext(ctx, `
 				UPDATE sessions
 				SET context = $1, updated_at = NOW()
-				WHERE id::text = $2 AND deleted_at IS NULL
+				WHERE (id::text = $2 OR context->>'external_id' = $2) AND deleted_at IS NULL
 			`, contextJSON, input.SessionID)
 			if err != nil {
 				a.logger.Warn("Failed to update Postgres with title",
