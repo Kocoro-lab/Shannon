@@ -72,6 +72,13 @@ func (vm *ValidationMiddleware) Middleware(next http.Handler) http.Handler {
 			if !vm.validateOptionalLastEventID(w, r) {
 				return
 			}
+
+		case method == http.MethodGet && strings.HasPrefix(path, "/api/v1/sessions/") && strings.HasSuffix(path, "/events"):
+			// Validate sessions events pagination (turns)
+			// Note: pathValue("sessionId") is validated in handler (dual ID allowed)
+			if !vm.validatePagination(w, r, 1, 100) {
+				return
+			}
 		}
 
 		next.ServeHTTP(w, r)

@@ -5,6 +5,7 @@ import (
     "encoding/json"
     "fmt"
     "net/http"
+    "sort"
     "strconv"
     "strings"
     "time"
@@ -417,7 +418,7 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 }
 
 // GetSessionEvents handles GET /api/v1/sessions/{sessionId}/events
-// Returns SSE-like events for all tasks in a session, excluding LLM_PARTIAL.
+// Returns grouped turns (one per task) including full events per turn.
 func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request) {
     ctx := r.Context()
 
@@ -435,7 +436,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         return
     }
 
-    // Verify session exists and user has access (also get id and external_id for event query)
+    // Verify session exists and user has access (also get id and external_id)
     var sessionData struct {
         ID         string  `db:"id"`
         UserID     string  `db:"user_id"`
@@ -460,11 +461,11 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         return
     }
 
-    // Pagination params
+    // Pagination params (turns)
     q := r.URL.Query()
-    limit := 200
+    limit := 10
     if v := q.Get("limit"); v != "" {
-        if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+        if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
             limit = n
         }
     }
@@ -475,7 +476,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         }
     }
 
-    // Event shape (aligned with task events endpoint)
+    // Shapes
     type Event struct {
         WorkflowID string    `json:"workflow_id"`
         Type       string    `json:"type"`
@@ -485,62 +486,205 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         Seq        uint64    `json:"seq"`
         StreamID   string    `json:"stream_id,omitempty"`
     }
+    type Turn struct {
+        Turn       int         `json:"turn"`
+        TaskID     string      `json:"task_id"`
+        UserQuery  string      `json:"user_query"`
+        FinalOutput string     `json:"final_output"`
+        Timestamp  time.Time   `json:"timestamp"`
+        Events     []Event     `json:"events"`
+        Metadata   struct {
+            TokensUsed       int      `json:"tokens_used"`
+            ExecutionTimeMs  int      `json:"execution_time_ms"`
+            AgentsInvolved   []string `json:"agents_involved"`
+        } `json:"metadata"`
+    }
 
-    // Fetch events across all tasks in this session (check both UUID and external_id), excluding LLM_PARTIAL
-    var rows *sqlx.Rows
+    // Count total turns (tasks)
+    var total int
     if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
-        // Session has external_id, check both session.ID and external_id
-        rows, err = h.db.QueryxContext(ctx, `
-            SELECT e.workflow_id, e.type, COALESCE(e.agent_id,''), COALESCE(e.message,''), e.timestamp, COALESCE(e.seq,0), COALESCE(e.stream_id,'')
-            FROM event_logs e
-            JOIN task_executions t ON t.workflow_id = e.workflow_id
-            WHERE (t.session_id = $1 OR t.session_id = $2) AND t.user_id = $3 AND e.type <> 'LLM_PARTIAL'
-            ORDER BY e.timestamp ASC
+        err = h.db.GetContext(ctx, &total, `
+            SELECT COUNT(*) FROM task_executions
+            WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+        `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID)
+    } else {
+        err = h.db.GetContext(ctx, &total, `
+            SELECT COUNT(*) FROM task_executions
+            WHERE session_id = $1 AND user_id = $2
+        `, sessionData.ID, sessionData.UserID)
+    }
+    if err != nil {
+        h.logger.Error("Failed to count session turns", zap.Error(err))
+        h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
+        return
+    }
+
+    // Fetch turns ordered by started_at
+    type turnRow struct {
+        TaskID      string         `db:"id"`
+        WorkflowID  string         `db:"workflow_id"`
+        Query       string         `db:"query"`
+        Result      sql.NullString `db:"result"`
+        StartedAt   time.Time      `db:"started_at"`
+        CompletedAt sql.NullTime   `db:"completed_at"`
+        TotalTokens sql.NullInt32  `db:"total_tokens"`
+        DurationMs  sql.NullInt32  `db:"duration_ms"`
+    }
+
+    var turnRows []turnRow
+    if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
+        err = h.db.SelectContext(ctx, &turnRows, `
+            SELECT id, workflow_id, query, result, started_at, completed_at,
+                   COALESCE(total_tokens,0) as total_tokens,
+                   COALESCE(duration_ms,0) as duration_ms
+            FROM task_executions
+            WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+            ORDER BY started_at ASC
             LIMIT $4 OFFSET $5
         `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, limit, offset)
     } else {
-        // No external_id, just check by UUID
-        rows, err = h.db.QueryxContext(ctx, `
-            SELECT e.workflow_id, e.type, COALESCE(e.agent_id,''), COALESCE(e.message,''), e.timestamp, COALESCE(e.seq,0), COALESCE(e.stream_id,'')
-            FROM event_logs e
-            JOIN task_executions t ON t.workflow_id = e.workflow_id
-            WHERE t.session_id = $1 AND t.user_id = $2 AND e.type <> 'LLM_PARTIAL'
-            ORDER BY e.timestamp ASC
+        err = h.db.SelectContext(ctx, &turnRows, `
+            SELECT id, workflow_id, query, result, started_at, completed_at,
+                   COALESCE(total_tokens,0) as total_tokens,
+                   COALESCE(duration_ms,0) as duration_ms
+            FROM task_executions
+            WHERE session_id = $1 AND user_id = $2
+            ORDER BY started_at ASC
             LIMIT $3 OFFSET $4
         `, sessionData.ID, sessionData.UserID, limit, offset)
     }
     if err != nil {
-        h.logger.Error("Failed to query session events", zap.Error(err))
+        h.logger.Error("Failed to query session turns", zap.Error(err))
         h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
         return
     }
-    defer rows.Close()
 
-    events := []Event{}
-    for rows.Next() {
-        var e Event
-        if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
-            h.sendError(w, "Failed to scan event row", http.StatusInternalServerError)
+    // Build IN clause for workflows
+    wfIDs := make([]string, 0, len(turnRows))
+    for _, t := range turnRows {
+        wfIDs = append(wfIDs, t.WorkflowID)
+    }
+
+    // Map of workflow_id -> []Event
+    eventsByWF := make(map[string][]Event, len(wfIDs))
+    if len(wfIDs) > 0 {
+        // Safe IN expansion using sqlx.In and rebind for Postgres
+        baseQuery := `
+            SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,'')
+            FROM event_logs
+            WHERE workflow_id IN (?) AND type <> 'LLM_PARTIAL'
+            ORDER BY timestamp ASC`
+        inQuery, args, inErr := sqlx.In(baseQuery, wfIDs)
+        if inErr != nil {
+            h.logger.Error("Failed to build IN query for workflows", zap.Error(inErr))
+            h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
             return
         }
-        events = append(events, e)
-    }
-    if err := rows.Err(); err != nil {
-        h.sendError(w, "Failed to read session events", http.StatusInternalServerError)
-        return
+        // Force PostgreSQL-style bindvars for predictable queries
+        inQuery = sqlx.Rebind(sqlx.DOLLAR, inQuery)
+
+        rows, qerr := h.db.QueryxContext(ctx, inQuery, args...)
+        if qerr != nil {
+            h.logger.Error("Failed to query events for workflows", zap.Error(qerr))
+            h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
+            return
+        }
+        defer rows.Close()
+        // Safety: cap total events to avoid excessive memory usage per request
+        const maxEventsPerRequest = 5000
+        totalEvents := 0
+        for rows.Next() {
+            if totalEvents >= maxEventsPerRequest {
+                h.logger.Error("Session exceeds event limit",
+                    zap.Int("max", maxEventsPerRequest),
+                    zap.Strings("workflow_ids", wfIDs))
+                h.sendError(w, "Session has too many events. Please use pagination with smaller turn limits.", http.StatusRequestEntityTooLarge)
+                return
+            }
+            var e Event
+            if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
+                h.logger.Error("Failed to scan event row", zap.Error(err), zap.Strings("workflow_ids", wfIDs))
+                h.sendError(w, "Failed to read events", http.StatusInternalServerError)
+                return
+            }
+            eventsByWF[e.WorkflowID] = append(eventsByWF[e.WorkflowID], e)
+            totalEvents++
+        }
+        if err := rows.Err(); err != nil {
+            h.sendError(w, "Failed to read events", http.StatusInternalServerError)
+            return
+        }
     }
 
-    h.logger.Debug("Session events retrieved",
+    // Build turns with metadata and fallback logic
+    turns := make([]Turn, 0, len(turnRows))
+    globalStart := offset + 1
+    for i, t := range turnRows {
+        evs := eventsByWF[t.WorkflowID]
+        // Final output fallback: result -> first LLM_OUTPUT message -> ""
+        final := strings.TrimSpace(t.Result.String)
+        if final == "" {
+            for _, e := range evs {
+                if e.Type == "LLM_OUTPUT" && strings.TrimSpace(e.Message) != "" {
+                    final = e.Message
+                    break
+                }
+            }
+        }
+        // Execution time
+        execMs := 0
+        if t.DurationMs.Valid && t.DurationMs.Int32 > 0 {
+            execMs = int(t.DurationMs.Int32)
+        } else if t.CompletedAt.Valid {
+            ms := int(t.CompletedAt.Time.Sub(t.StartedAt).Milliseconds())
+            if ms > 0 {
+                execMs = ms
+            }
+        } else {
+            // Still running: compute duration up to now
+            ms := int(time.Since(t.StartedAt).Milliseconds())
+            if ms > 0 {
+                execMs = ms
+            }
+        }
+        // Agents involved (distinct agent_id from events)
+        agentSet := map[string]struct{}{}
+        for _, e := range evs {
+            if e.AgentID != "" {
+                agentSet[e.AgentID] = struct{}{}
+            }
+        }
+        agents := make([]string, 0, len(agentSet))
+        for a := range agentSet {
+            agents = append(agents, a)
+        }
+        sort.Strings(agents) // Sort for deterministic output
+
+        var turn Turn
+        turn.Turn = globalStart + i
+        turn.TaskID = t.TaskID
+        turn.UserQuery = t.Query
+        turn.FinalOutput = final
+        turn.Timestamp = t.StartedAt
+        turn.Events = evs
+        turn.Metadata.TokensUsed = int(t.TotalTokens.Int32)
+        turn.Metadata.ExecutionTimeMs = execMs
+        turn.Metadata.AgentsInvolved = agents
+        turns = append(turns, turn)
+    }
+
+    h.logger.Debug("Session turns retrieved",
         zap.String("session_id", sessionID),
         zap.String("user_id", userCtx.UserID.String()),
-        zap.Int("count", len(events)),
+        zap.Int("turns", len(turns)),
+        zap.Int("total", total),
     )
 
     w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]any{
+    _ = json.NewEncoder(w).Encode(map[string]any{
         "session_id": sessionID,
-        "events":     events,
-        "count":      len(events),
+        "count":      total,
+        "turns":      turns,
     })
 }
 
