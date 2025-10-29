@@ -51,14 +51,32 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 		}, fmt.Errorf("query is required")
 	}
 
-	// Check if session already has a title
+	// Check if session exists and already has a title
 	sess, err := a.sessionManager.GetSession(ctx, input.SessionID)
 	if err != nil {
-		a.logger.Warn("Failed to get session, will continue with title generation",
+		a.logger.Error("Failed to get session for title generation",
 			zap.Error(err),
 			zap.String("session_id", input.SessionID),
 		)
-	} else if sess != nil && sess.Context != nil {
+		return GenerateSessionTitleResult{
+			Success: false,
+			Error:   fmt.Sprintf("session not found: %v", err),
+		}, err
+	}
+
+	if sess == nil {
+		err := fmt.Errorf("session is nil for id: %s", input.SessionID)
+		a.logger.Error("Session is nil after successful fetch",
+			zap.String("session_id", input.SessionID),
+		)
+		return GenerateSessionTitleResult{
+			Success: false,
+			Error:   "session not found",
+		}, err
+	}
+
+	// Check if session already has a title
+	if sess.Context != nil {
 		if existingTitle, ok := sess.Context["title"].(string); ok && existingTitle != "" {
 			a.logger.Info("Session already has a title, skipping generation",
 				zap.String("session_id", input.SessionID),
@@ -89,54 +107,52 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 	}
 
 	// Update session context with the generated title
-	if sess != nil {
-		// First update Redis via session manager
-		if err := a.sessionManager.UpdateContext(ctx, input.SessionID, "title", title); err != nil {
-			a.logger.Error("Failed to update session with title in Redis",
+	// First update Redis via session manager
+	if err := a.sessionManager.UpdateContext(ctx, input.SessionID, "title", title); err != nil {
+		a.logger.Error("Failed to update session with title in Redis",
+			zap.Error(err),
+			zap.String("session_id", input.SessionID),
+		)
+		return GenerateSessionTitleResult{
+			Title:   title,
+			Success: false,
+			Error:   fmt.Sprintf("failed to save title to Redis: %v", err),
+		}, err
+	}
+
+	// Also update Postgres so HTTP APIs can see the title
+	dbClient := GetGlobalDBClient()
+	if dbClient != nil {
+		db := dbClient.GetDB()
+
+		// Build updated context JSON with title
+		contextData := make(map[string]interface{})
+		if sess.Context != nil {
+			// Copy existing context
+			for k, v := range sess.Context {
+				contextData[k] = v
+			}
+		}
+		contextData["title"] = title
+
+		contextJSON, err := json.Marshal(contextData)
+		if err != nil {
+			a.logger.Warn("Failed to marshal context for Postgres update",
 				zap.Error(err),
 				zap.String("session_id", input.SessionID),
 			)
-			return GenerateSessionTitleResult{
-				Title:   title,
-				Success: false,
-				Error:   fmt.Sprintf("failed to save title to Redis: %v", err),
-			}, err
-		}
-
-		// Also update Postgres so HTTP APIs can see the title
-		dbClient := GetGlobalDBClient()
-		if dbClient != nil {
-			db := dbClient.GetDB()
-
-			// Build updated context JSON with title
-			contextData := make(map[string]interface{})
-			if sess.Context != nil {
-				// Copy existing context
-				for k, v := range sess.Context {
-					contextData[k] = v
-				}
-			}
-			contextData["title"] = title
-
-			contextJSON, err := json.Marshal(contextData)
+		} else {
+			// Update Postgres sessions.context
+			_, err = db.ExecContext(ctx, `
+				UPDATE sessions
+				SET context = $1, updated_at = NOW()
+				WHERE id::text = $2 AND deleted_at IS NULL
+			`, contextJSON, input.SessionID)
 			if err != nil {
-				a.logger.Warn("Failed to marshal context for Postgres update",
+				a.logger.Warn("Failed to update Postgres with title",
 					zap.Error(err),
 					zap.String("session_id", input.SessionID),
 				)
-			} else {
-				// Update Postgres sessions.context
-				_, err = db.ExecContext(ctx, `
-					UPDATE sessions
-					SET context = $1, updated_at = NOW()
-					WHERE id::text = $2 AND deleted_at IS NULL
-				`, contextJSON, input.SessionID)
-				if err != nil {
-					a.logger.Warn("Failed to update Postgres with title",
-						zap.Error(err),
-						zap.String("session_id", input.SessionID),
-					)
-				}
 			}
 		}
 	}

@@ -8,6 +8,7 @@ import (
     "strconv"
     "strings"
     "time"
+    "unicode"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
     "github.com/google/uuid"
@@ -633,7 +634,23 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 		h.sendError(w, "Title cannot be empty", http.StatusBadRequest)
 		return
 	}
-	if len(title) > 60 {
+
+	// Sanitize title: strip control characters (newlines, tabs, zero-width chars, etc.)
+	title = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1 // Remove control characters
+		}
+		return r
+	}, title)
+
+	// Re-check after sanitization
+	if strings.TrimSpace(title) == "" {
+		h.sendError(w, "Title cannot contain only control characters", http.StatusBadRequest)
+		return
+	}
+
+	// Check character count (runes) not byte count to match truncation logic
+	if len([]rune(title)) > 60 {
 		h.sendError(w, "Title must be 60 characters or less", http.StatusBadRequest)
 		return
 	}
