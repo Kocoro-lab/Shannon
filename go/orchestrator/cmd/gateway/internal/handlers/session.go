@@ -5,6 +5,7 @@ import (
     "encoding/json"
     "fmt"
     "net/http"
+    "sort"
     "strconv"
     "strings"
     "time"
@@ -594,8 +595,11 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         totalEvents := 0
         for rows.Next() {
             if totalEvents >= maxEventsPerRequest {
-                h.logger.Warn("Truncating events due to safety cap", zap.Int("max", maxEventsPerRequest), zap.Strings("workflow_ids", wfIDs))
-                break
+                h.logger.Error("Session exceeds event limit",
+                    zap.Int("max", maxEventsPerRequest),
+                    zap.Strings("workflow_ids", wfIDs))
+                h.sendError(w, "Session has too many events. Please use pagination with smaller turn limits.", http.StatusRequestEntityTooLarge)
+                return
             }
             var e Event
             if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
@@ -632,12 +636,15 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         if t.DurationMs.Valid && t.DurationMs.Int32 > 0 {
             execMs = int(t.DurationMs.Int32)
         } else if t.CompletedAt.Valid {
-            execMs = int(t.CompletedAt.Time.Sub(t.StartedAt).Milliseconds())
+            ms := int(t.CompletedAt.Time.Sub(t.StartedAt).Milliseconds())
+            if ms > 0 {
+                execMs = ms
+            }
         } else {
             // Still running: compute duration up to now
-            execMs = int(time.Since(t.StartedAt).Milliseconds())
-            if execMs < 0 {
-                execMs = 0
+            ms := int(time.Since(t.StartedAt).Milliseconds())
+            if ms > 0 {
+                execMs = ms
             }
         }
         // Agents involved (distinct agent_id from events)
@@ -651,6 +658,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
         for a := range agentSet {
             agents = append(agents, a)
         }
+        sort.Strings(agents) // Sort for deterministic output
 
         var turn Turn
         turn.Turn = globalStart + i
