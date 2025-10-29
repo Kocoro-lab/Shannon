@@ -163,9 +163,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				ometrics.TemplateFallbackSuccess.WithLabelValues("unsuccessful").Inc()
 				templateFound = false
 			} else {
+				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 				return result, nil
 			}
 		} else {
+			scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 			return result, nil
 		}
 	}
@@ -199,6 +201,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			Message:    "Couldn't create a plan: " + err.Error(),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
+		// Best-effort title generation even on planning failures
+		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
@@ -240,9 +244,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if input.UserID != "" { // Only check when we have a user scope
 		est := EstimateTokensWithConfig(decomp, &cfg)
 		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
-			if !res.CanProceed {
-				return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
-			}
+				if !res.CanProceed {
+					// Best-effort title generation even when budget preflight blocks execution
+					scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+					return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
+				}
 			// Pass budget info to child workflows via context
 			if input.Context == nil {
 				input.Context = map[string]interface{}{}
@@ -282,15 +288,19 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			RequireForTools:     cfg.ApprovalDangerousTools,
 		}
 		if need, reason := CheckApprovalPolicyWith(pol, input, decomp); need {
-			if ar, err := RequestAndWaitApproval(ctx, input, reason); err != nil {
-				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}, err
-			} else if ar == nil || !ar.Approved {
-				msg := reason
-				if ar != nil && ar.Feedback != "" {
-					msg = ar.Feedback
+				if ar, err := RequestAndWaitApproval(ctx, input, reason); err != nil {
+					// Best-effort title generation even on approval flow errors
+					scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+					return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}, err
+				} else if ar == nil || !ar.Approved {
+					msg := reason
+					if ar != nil && ar.Feedback != "" {
+						msg = ar.Feedback
+					}
+					// Best-effort title generation even when approval is denied
+					scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+					return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}, nil
 				}
-				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}, nil
-			}
 		}
 	}
 
@@ -369,8 +379,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		if err := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result); err != nil {
-			return result, err
+		execErr := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result)
+
+		// Generate title regardless of success/failure (best-effort)
+		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+
+		if execErr != nil {
+			return result, execErr
 		}
 		return result, nil
 
@@ -387,8 +402,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		if err := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, input).Get(childCtx, &result); err != nil {
-			return result, err
+		execErr := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, input).Get(childCtx, &result)
+
+		// Generate title regardless of success/failure (best-effort)
+		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+
+		if execErr != nil {
+			return result, execErr
 		}
 		return result, nil
 
@@ -407,11 +427,47 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		if err := workflow.ExecuteChildWorkflow(childCtx, strategies.DAGWorkflow, strategiesInput).Get(childCtx, &strategiesResult); err != nil {
-			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		execErr := workflow.ExecuteChildWorkflow(childCtx, strategies.DAGWorkflow, strategiesInput).Get(childCtx, &strategiesResult)
+
+		// Generate title regardless of success/failure (best-effort)
+		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+
+		if execErr != nil {
+			return TaskResult{Success: false, ErrorMessage: execErr.Error()}, execErr
 		}
 		return convertFromStrategiesResult(strategiesResult), nil
 	}
+}
+
+// scheduleSessionTitleGeneration schedules the session title generation activity.
+// This is called after the first task completes, regardless of success or failure.
+// The activity is best-effort with a short timeout and no retries.
+func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query string) {
+    // Version gate for deterministic replay
+    titleVersion := workflow.GetVersion(ctx, "session_title_v1", workflow.DefaultVersion, 1)
+    if titleVersion < 1 {
+        return
+    }
+    // Skip when sessionID is empty
+    if sessionID == "" {
+        return
+    }
+
+    // Use a short timeout and no retries for best-effort execution
+    titleOpts := workflow.ActivityOptions{
+        StartToCloseTimeout: 10 * time.Second,
+        RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 1, // Best-effort, don't retry on failure
+		},
+	}
+	titleCtx := workflow.WithActivityOptions(ctx, titleOpts)
+
+	// Execute and wait (non-detached) to ensure it runs even if workflow fails
+	// Ignore errors since this is best-effort
+	_ = workflow.ExecuteActivity(titleCtx, "GenerateSessionTitle", activities.GenerateSessionTitleInput{
+		SessionID: sessionID,
+		Query:     query,
+	}).Get(titleCtx, nil)
 }
 
 // convertToStrategiesInput converts workflows.TaskInput to strategies.TaskInput
@@ -493,8 +549,13 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		if err := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result); err != nil {
-			return result, true, err
+		execErr := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result)
+
+		// Generate title regardless of success/failure (best-effort)
+		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+
+		if execErr != nil {
+			return result, true, execErr
 		}
 		return result, true, nil
 	case "react", "exploratory", "research", "scientific":
@@ -527,8 +588,13 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		if err := workflow.ExecuteChildWorkflow(childCtx, wfFunc, strategiesInput).Get(childCtx, &strategiesResult); err != nil {
-			return TaskResult{}, true, err
+		execErr := workflow.ExecuteChildWorkflow(childCtx, wfFunc, strategiesInput).Get(childCtx, &strategiesResult)
+
+		// Generate title regardless of success/failure (best-effort)
+		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+
+		if execErr != nil {
+			return TaskResult{}, true, execErr
 		}
 		return convertFromStrategiesResult(strategiesResult), true, nil
 	default:

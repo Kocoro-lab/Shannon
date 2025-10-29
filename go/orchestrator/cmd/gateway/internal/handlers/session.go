@@ -17,6 +17,11 @@ import (
     "go.uber.org/zap"
 )
 
+const (
+	// SessionContextKeyTitle is the key for session title in the context JSONB field
+	SessionContextKeyTitle = "title"
+)
+
 // SessionHandler handles session-related HTTP requests
 type SessionHandler struct {
 	db     *sqlx.DB
@@ -691,7 +696,7 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Update title in context
-	contextData["title"] = title
+	contextData[SessionContextKeyTitle] = title
 
 	// Serialize updated context
 	updatedContext, err := json.Marshal(contextData)
@@ -733,9 +738,9 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 			} else {
 				// Update context in Redis session (lowercase "context" to match Session struct)
 				if redisCtx, ok := redisSession["context"].(map[string]interface{}); ok {
-					redisCtx["title"] = title
+					redisCtx[SessionContextKeyTitle] = title
 				} else {
-					redisSession["context"] = map[string]interface{}{"title": title}
+					redisSession["context"] = map[string]interface{}{SessionContextKeyTitle: title}
 				}
 				// Write back to Redis with KeepTTL to preserve expiration
 				if updatedData, err := json.Marshal(redisSession); err != nil {

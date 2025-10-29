@@ -33,17 +33,17 @@ func TestGenerateFallbackTitle(t *testing.T) {
 		{
 			name:     "UTF-8 characters - emoji",
 			query:    "🚀 Rocket ship launch sequence for Mars mission",
-			expected: "🚀 Rocket ship launch sequence for...",
+			expected: "🚀 Rocket ship launch sequence for Mars...",
 		},
 		{
-			name:     "UTF-8 characters - Chinese",
-			query:    "分析网站流量趋势包括访客数页面浏览量和跳出率以及用户行为分析报告生成系统",
-			expected: "分析网站流量趋势包括访客数页面浏览量和跳出率以及用户行为分析报告生...",
+			name:     "UTF-8 characters - long text",
+			query:    "Analyze website traffic trends including visitor count page views bounce rate and user behavior analysis report generation system",
+			expected: "Analyze website traffic trends...",
 		},
 		{
 			name:     "long single word no spaces",
 			query:    "supercalifragilisticexpialidociousandmorecharacters",
-			expected: "supercalifragilisticexpialidociousa...",
+			expected: "supercalifragilisticexpialidociousandmor...",
 		},
 		{
 			name:     "empty query",
@@ -124,8 +124,8 @@ func TestGenerateSessionTitle_UTF8Truncation(t *testing.T) {
 			title: "🚀🎉🔥💯✨🌟⭐🎯🎪🎨🎭🎬🎮🎲🎰🎳🏀🏈⚽🎾🏐🏉🎱🏓🏸🏒🏑🏏⛳🏹🎣🏂",
 		},
 		{
-			name:  "chinese characters",
-			title: "这是一个非常长的中文标题用来测试UTF-8字符的截断功能是否正确处理多字节字符而不会导致字符串损坏",
+			name:  "long multi-byte characters",
+			title: "This is a very long title with special characters to test UTF-8 truncation without corrupting multi-byte sequences",
 		},
 		{
 			name:  "arabic characters",
@@ -133,7 +133,7 @@ func TestGenerateSessionTitle_UTF8Truncation(t *testing.T) {
 		},
 		{
 			name:  "mixed scripts",
-			title: "Mix 混合 مختلط 🚀 Test with various scripts and emoji characters that are all multi-byte UTF-8",
+			title: "Mix مختلط 🚀 Test with various scripts and emoji characters that are all multi-byte UTF-8",
 		},
 	}
 

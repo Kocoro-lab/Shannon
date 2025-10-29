@@ -13,7 +13,11 @@ import (
 	"go.uber.org/zap"
 )
 
-const maxTitleLength = 60
+const (
+	maxTitleLength = 60
+	// sessionContextKeyTitle is the key for session title in the context JSONB field
+	sessionContextKeyTitle = "title"
+)
 
 // GenerateSessionTitleInput is the input for generating a session title
 type GenerateSessionTitleInput struct {
@@ -77,7 +81,7 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 
 	// Check if session already has a title
 	if sess.Context != nil {
-		if existingTitle, ok := sess.Context["title"].(string); ok && existingTitle != "" {
+		if existingTitle, ok := sess.Context[sessionContextKeyTitle].(string); ok && existingTitle != "" {
 			a.logger.Info("Session already has a title, skipping generation",
 				zap.String("session_id", input.SessionID),
 				zap.String("existing_title", existingTitle),
@@ -108,7 +112,7 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 
 	// Update session context with the generated title
 	// First update Redis via session manager
-	if err := a.sessionManager.UpdateContext(ctx, input.SessionID, "title", title); err != nil {
+	if err := a.sessionManager.UpdateContext(ctx, input.SessionID, sessionContextKeyTitle, title); err != nil {
 		a.logger.Error("Failed to update session with title in Redis",
 			zap.Error(err),
 			zap.String("session_id", input.SessionID),
@@ -133,7 +137,7 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 				contextData[k] = v
 			}
 		}
-		contextData["title"] = title
+		contextData[sessionContextKeyTitle] = title
 
 		contextJSON, err := json.Marshal(contextData)
 		if err != nil {
