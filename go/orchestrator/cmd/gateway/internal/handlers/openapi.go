@@ -598,34 +598,33 @@ func generateOpenAPISpec() map[string]interface{} {
 			},
 			"/api/v1/sessions/{sessionId}/events": map[string]interface{}{
 				"get": map[string]interface{}{
-					"summary":     "Get session events (chat history)",
-					"description": "Retrieve SSE-like events across all tasks in a session. Excludes LLM_PARTIAL events for cleaner chat history. Supports pagination.",
+					"summary":     "Get session events grouped by turn",
+					"description": "Returns chat history grouped by task/turn, with full events per turn. Excludes LLM_PARTIAL.",
 					"parameters": []map[string]interface{}{
 						{
 							"name":        "sessionId",
 							"in":          "path",
-							"description": "Session UUID",
+							"description": "Session ID (UUID or external_id)",
 							"required":    true,
 							"schema": map[string]interface{}{
 								"type":   "string",
-								"format": "uuid",
 							},
 						},
 						{
 							"name":        "limit",
 							"in":          "query",
-							"description": "Maximum number of events to return",
+							"description": "Maximum number of turns to return",
 							"schema": map[string]interface{}{
 								"type":    "integer",
-								"default": 200,
+								"default": 10,
 								"minimum": 1,
-								"maximum": 500,
+								"maximum": 100,
 							},
 						},
 						{
 							"name":        "offset",
 							"in":          "query",
-							"description": "Number of events to skip",
+							"description": "Number of turns to skip",
 							"schema": map[string]interface{}{
 								"type":    "integer",
 								"default": 0,
@@ -635,11 +634,11 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 					"responses": map[string]interface{}{
 						"200": map[string]interface{}{
-							"description": "Session events retrieved",
+							"description": "Session turns retrieved",
 							"content": map[string]interface{}{
 								"application/json": map[string]interface{}{
 									"schema": map[string]interface{}{
-										"$ref": "#/components/schemas/SessionEventsResponse",
+										"$ref": "#/components/schemas/SessionTurnsResponse",
 									},
 								},
 							},
@@ -1048,26 +1047,47 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
-				"SessionEventsResponse": map[string]interface{}{
+				"SessionTurnsResponse": map[string]interface{}{
 					"type":     "object",
-					"required": []string{"session_id", "events", "count"},
+					"required": []string{"session_id", "turns", "count"},
 					"properties": map[string]interface{}{
 						"session_id": map[string]interface{}{
 							"type":        "string",
-							"format":      "uuid",
-							"description": "Session UUID",
-						},
-						"events": map[string]interface{}{
-							"type":        "array",
-							"description": "List of events in chronological order (excludes LLM_PARTIAL)",
-							"items": map[string]interface{}{
-								"$ref": "#/components/schemas/TaskEvent",
-							},
+							"description": "Session identifier (UUID or external_id)",
 						},
 						"count": map[string]interface{}{
 							"type":        "integer",
-							"description": "Number of events returned",
+							"description": "Total number of turns in session",
 						},
+						"turns": map[string]interface{}{
+							"type":        "array",
+							"description": "Turns grouped by task in chronological order",
+							"items": map[string]interface{}{
+								"$ref": "#/components/schemas/Turn",
+							},
+						},
+					},
+				},
+				"Turn": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"turn", "task_id", "user_query", "final_output", "timestamp", "events", "metadata"},
+					"properties": map[string]interface{}{
+						"turn":        map[string]interface{}{"type": "integer"},
+						"task_id":     map[string]interface{}{"type": "string"},
+						"user_query":  map[string]interface{}{"type": "string"},
+						"final_output": map[string]interface{}{"type": "string"},
+						"timestamp":   map[string]interface{}{"type": "string", "format": "date-time"},
+						"events":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskEvent"}},
+						"metadata":    map[string]interface{}{"$ref": "#/components/schemas/TurnMetadata"},
+					},
+				},
+				"TurnMetadata": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"tokens_used", "execution_time_ms", "agents_involved"},
+					"properties": map[string]interface{}{
+						"tokens_used":      map[string]interface{}{"type": "integer"},
+						"execution_time_ms": map[string]interface{}{"type": "integer"},
+						"agents_involved":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 					},
 				},
 				"CancelTaskRequest": map[string]interface{}{
