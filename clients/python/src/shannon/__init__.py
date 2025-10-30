@@ -1,6 +1,6 @@
 """Shannon SDK - Python client for Shannon multi-agent AI platform."""
 
-__version__ = "0.1.0a3"
+__version__ = "0.2.0a1"
 
 from shannon.client import AsyncShannonClient, ShannonClient
 from shannon.models import (

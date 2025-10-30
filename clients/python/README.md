@@ -162,3 +162,14 @@ clients/python/
 ## License
 
 MIT
+## Security
+
+- Do not hardcode credentials in code. Prefer environment variables (`SHANNON_API_KEY`) or a secrets manager.
+- Use `--bearer-token` for short-lived tokens where possible.
+- Rotate API keys regularly and scope access minimally.
+- Avoid logging sensitive headers (e.g., `Authorization`, `X-API-Key`, `traceparent`).
+
+## Rate Limits
+
+- The Gateway may enforce rate limits. Use `Idempotency-Key` for safe retries of `submit` calls.
+- Backoff on 429/5xx responses and consider adding application-level retry logic if needed.

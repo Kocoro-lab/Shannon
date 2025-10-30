@@ -5,17 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+import logging
+import re
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
 import httpx
 
 from shannon import errors
 
+logger = logging.getLogger(__name__)
+_ID_RE = re.compile(r'^[A-Za-z0-9:_\-.]{1,128}$')
+
 
 def _parse_timestamp(ts_str: str) -> datetime:
     """Parse ISO timestamp with variable decimal places."""
     if not ts_str:
-        return datetime.now()
+        raise ValueError("empty timestamp")
 
     # Replace Z with +00:00
     ts_str = ts_str.replace("Z", "+00:00")
@@ -169,6 +174,14 @@ class AsyncShannonClient:
         """
         client = await self._ensure_client()
 
+        # Validate before sending
+        if not isinstance(query, str) or not query.strip():
+            raise errors.ValidationError("Query is required", code="400")
+        if len(query) > 10000:
+            raise errors.ValidationError("Query too long (max 10000 chars)", code="400")
+        if session_id is not None and not _ID_RE.match(session_id):
+            raise errors.ValidationError("Invalid session_id format", code="400")
+
         payload = {"query": query}
         if session_id:
             payload["session_id"] = session_id
@@ -236,6 +249,14 @@ class AsyncShannonClient:
             ConnectionError: Failed to connect
         """
         client = await self._ensure_client()
+
+        # Validate before sending
+        if not isinstance(query, str) or not query.strip():
+            raise errors.ValidationError("Query is required", code="400")
+        if len(query) > 10000:
+            raise errors.ValidationError("Query too long (max 10000 chars)", code="400")
+        if session_id is not None and not _ID_RE.match(session_id):
+            raise errors.ValidationError("Invalid session_id format", code="400")
 
         payload = {"query": query}
         if session_id:
@@ -957,6 +978,7 @@ class AsyncShannonClient:
         reconnect: bool = True,
         max_retries: int = 5,
         traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> AsyncIterator[Event]:
         """
         Stream events from a workflow execution via SSE.
@@ -986,6 +1008,7 @@ class AsyncShannonClient:
             reconnect=reconnect,
             max_retries=max_retries,
             traceparent=traceparent,
+            timeout=timeout,
         ):
             yield event
 
@@ -998,6 +1021,7 @@ class AsyncShannonClient:
         reconnect: bool = True,
         max_retries: int = 5,
         traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> AsyncIterator[Event]:
         """Stream events via HTTP SSE."""
         retries = 0
@@ -1026,7 +1050,8 @@ class AsyncShannonClient:
 
                 url = f"{self.base_url}/api/v1/stream/sse"
 
-                async with httpx.AsyncClient(timeout=None) as client:
+                sse_timeout = httpx.Timeout(timeout, connect=self.default_timeout) if timeout is not None else httpx.Timeout(None, connect=self.default_timeout)
+                async with httpx.AsyncClient(timeout=sse_timeout) as client:
                     async with client.stream("GET", url, params=params, headers=headers) as response:
                         # Gateway may return 404 (not found) or 400 after completion
                         if response.status_code in (404, 400):
@@ -1058,7 +1083,7 @@ class AsyncShannonClient:
 
                                         yield event
                                     except json.JSONDecodeError:
-                                        pass  # Skip malformed events
+                                        logger.debug("Malformed SSE event data", extra={"data": data_str, "event_id": event_id})
 
                                     event_data = []
                                     event_id = None
@@ -1332,6 +1357,7 @@ class ShannonClient:
         reconnect: bool = True,
         max_retries: int = 5,
         traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
     ) -> Iterator[Event]:
         """
         Stream events (blocking iterator).
@@ -1348,6 +1374,7 @@ class ShannonClient:
                 reconnect=reconnect,
                 max_retries=max_retries,
                 traceparent=traceparent,
+                timeout=timeout,
             ):
                 yield event
 
