@@ -117,7 +117,16 @@ impl LLMClient {
             let body = response.text().await.unwrap_or_default();
             warn!("LLM service returned error: {} - {}", status, body);
 
-            // Fallback to mock response if LLM service fails
+            // In non-dev environments, surface the error for observability
+            let env = std::env::var("ENVIRONMENT").unwrap_or_default();
+            if env != "dev" {
+                return Err(AgentError::HttpError {
+                    status: status.as_u16(),
+                    message: format!("LLM service error: {} - {}", status, body),
+                });
+            }
+
+            // In dev, fall back to a mock response for easier local testing
             return Ok((
                 format!("Mock response for: {}", query),
                 TokenUsage {

@@ -72,6 +72,15 @@ class AnthropicProvider(LLMProvider):
         """Convert OpenAI function format to Claude tools format"""
         tools = []
         for func in functions:
+            # Handle both OpenAI format ({"type": "function", "function": {...}})
+            # and direct function schema format ({"name": "...", ...})
+            if func.get("type") == "function" and "function" in func:
+                func = func["function"]
+
+            # Skip if function schema doesn't have required 'name' field
+            if "name" not in func:
+                continue
+
             tool = {
                 "name": func["name"],
                 "description": func.get("description", ""),
