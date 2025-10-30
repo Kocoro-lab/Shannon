@@ -174,7 +174,7 @@ provider_settings:
     max_retries: 3
     
   ollama:
-    base_url: http://localhost:11434
+    base_url: http://host.docker.internal:11434/v1
     timeout: 120
     max_retries: 2
     
@@ -567,6 +567,15 @@ model_catalog:
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
+
+  ollama:
+    qwen2.5:0.5b:
+      model_id: qwen2.5:0.5b
+      tier: small
+      context_window: 32768
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
     llama-4-scout-17b-16e-instruct:
       model_id: llama-4-scout-17b-16e-instruct
       tier: medium
@@ -781,6 +790,11 @@ pricing:
       command-r-08-2024:
         input_per_1k: 0.00015
         output_per_1k: 0.0006
+
+    ollama:
+      qwen2.5:0.5b:
+        input_per_1k: 0.0
+        output_per_1k: 0.0
 
 # Feature flags for advanced capabilities
 feature_flags:

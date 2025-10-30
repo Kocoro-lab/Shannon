@@ -387,7 +387,8 @@ class LLMManager:
             # OpenAI-compatible providers we support
             "deepseek": ("openai_compatible", "DEEPSEEK_API_KEY"),
             "qwen": ("openai_compatible", "QWEN_API_KEY"),
-            # Others exist in config but not yet implemented here: mistral/meta/cohere/bedrock/ollama
+            "ollama": ("openai_compatible", "OLLAMA_API_KEY"),
+            # Others exist in config but not yet implemented here: mistral/meta/cohere/bedrock
         }
 
         providers_cfg: Dict[str, Any] = {}
