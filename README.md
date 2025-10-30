@@ -6,9 +6,16 @@
 [![Docker](https://img.shields.io/badge/Docker-required-blue.svg)](https://www.docker.com/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-**Stop burning money on AI tokens. Ship reliable agents that won't break in production.**
+Shannon is battle-tested infrastructure for AI agents that solves the problems you'll hit at scale: runaway costs, non-deterministic failures, and security nightmares.
 
-Shannon is battle-tested infrastructure for AI agents that solves the problems you'll hit at scale: runaway costs, non-deterministic failures, and security nightmares. Built on Temporal workflows and WASI sandboxing, it's the platform we wished existed when our LLM bills hit $50k/month.
+**Why Shannon?**
+- **Deterministic & Debuggable** — Temporal workflows with time-travel debugging; replay any execution step-by-step
+- **Observable by Default** — Real-time dashboard, Prometheus metrics, OpenTelemetry tracing built-in
+- **Governable** — OPA policies for fine-grained control; human-in-the-loop approvals for sensitive operations
+- **Cost-Controlled** — Hard token budgets per task/agent; automatic model fallback when limits approached
+- **Production-Ready** — WASI sandbox for secure code execution; multi-tenant isolation; on-prem friendly
+- **Vendor-Agnostic** — HTTP REST API + Python SDK; works with OpenAI, Anthropic, Google, DeepSeek, local models
+- **Multi-Agent Orchestration** — DAGs and supervisor patterns as first‑class primitives; dynamic team formation and coordination
 
 <div align="center">
 
@@ -25,44 +32,30 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 ```
 </div>
 
-## ⚡ What Makes Shannon Different
+## ⚡ Key Features
 
-### 🚀 Ship Faster
-- **Zero-Token Templates** — YAML workflows eliminate LLM calls for common patterns ([→ Template Guide](docs/template-workflows.md), [→ Getting Started](docs/template-user-guide.md))
-  - DAG nodes for parallel execution with dependency resolution
-  - Supervisor nodes for hierarchical multi-agent coordination
-  - Template inheritance for reusable workflow composition
-  - Automatic pattern degradation when budget constrained
-- **Learning Router** — UCB algorithm selects optimal strategies, up to 85-95% token savings in internal testing ([→ Details](docs/learning-router-enhancements.md))
-- **Rate-Aware Execution** — Provider-specific RPM/TPM limits prevent throttling ([→ Rate Control](docs/rate-aware-budgeting.md))
-- Automatic multi‑agent orchestration — Describe the goal; Shannon decomposes into subtasks and schedules DAG execution with dependencies resolved.
-- Plug‑and‑play tools — Add REST APIs via MCP or OpenAPI, or write Python tools; no proto/Rust/Go changes needed ([→ Guide](docs/adding-custom-tools.md)). Domain-specific integrations via vendor adapter pattern ([→ Vendor Guide](docs/vendor-adapters.md)).
-- Multiple AI patterns — ReAct, Chain‑of‑Thought, Tree‑of‑Thoughts, Debate, Reflection (selectable via `cognitive_strategy`).
-- Time‑travel debugging — Export and replay any workflow to reproduce exact agent behavior.
-- Hot configuration — Live reload for model pricing and OPA policies (config/models.yaml, config/opa/policies).
+- **Zero-Token Templates** — YAML workflows eliminate LLM calls for common patterns; up to 85-95% token savings ([→ Docs](docs/template-workflows.md))
+- **Time-Travel Debugging** — Temporal-backed workflows; export and replay any execution step-by-step ([→ Architecture](docs/multi-agent-workflow-architecture.md))
+- **Hard Budget Limits** — Per-task/per-agent token caps with automatic model fallback when limits approached
+- **WASI Sandbox** — Secure Python code execution (CPython 3.11, no network, read-only FS) ([→ Guide](docs/python-code-execution.md))
+- **OPA Policies** — Fine-grained rules for tools, models, data access; human-in-the-loop approvals ([→ Auth](docs/authentication-and-multitenancy.md))
+- **Multi-Provider** — OpenAI, Anthropic, Google, Groq, DeepSeek, Ollama; centralized pricing in `config/models.yaml`
+- **Plug-and-Play Tools** — Add REST APIs via MCP/OpenAPI or write Python tools; no proto changes ([→ Guide](docs/adding-custom-tools.md))
+- **Session Memory** — Redis + Qdrant vector store with MMR diversity; learns from failures across sessions ([→ Memory](docs/memory-system-architecture.md))
+- **Observable** — Real-time dashboard, Prometheus metrics, OpenTelemetry tracing built-in
+- **Multi-Tenant** — Tenant-scoped auth, sessions, memory, workflows with isolation guarantees
 
-### 🔒 Production Ready
-- WASI sandbox for code — CPython 3.11 in a WASI sandbox (stdlib, no network, read‑only FS). See [Python Code Execution](docs/python-code-execution.md).
-- Token budget control — Hard per‑agent/per‑task budgets with live usage tracking and enforcement.
-- Policy engine (OPA) — Fine‑grained rules for tools, models, and data; hot‑reload policies; approvals at `/approvals/decision`.
-- Multi‑tenancy — Tenant‑scoped auth, sessions, memory, and workflows with isolation guarantees.
+## 🎯 Shannon vs. Agent Libraries
 
-### 📈 Scale Without Breaking
-- Cost optimization — Caching, session persistence, context shaping, and budget‑aware routing.
-- Provider support — OpenAI, Anthropic, Google (Gemini), Groq, plus OpenAI‑compatible endpoints (e.g., DeepSeek, Qwen, Ollama). Centralized pricing via `config/models.yaml`.
-- Observable by default — Real‑time dashboard, Prometheus metrics, OpenTelemetry tracing.
-- Distributed by design — Temporal‑backed workflows with horizontal scaling.
+**Why choose Shannon over LangGraph, AutoGen, or CrewAI?**
 
-### 🧠 Memory & Context Management
-- **Clean State-Compute Separation** — Go Orchestrator owns all persistent state (Qdrant vector store, session memory); Python LLM Service is stateless compute (provider abstraction with exact-match caching only).
-- Comprehensive memory — Session memory in Redis + vector memory in Qdrant with MMR‑based diversity; optional hierarchical recall in workflows (all managed by Go).
-- Continuous learning — Records decomposition and failure patterns for future planning and mitigation; learns across sessions to improve strategy selection.
-- Sliding‑window shaping — Primers + previous summary + recents, with token‑aware budgets and live progress events.
-- Details: see docs/context-window-management.md and docs/llm-service-caching.md
+- **Deterministic Workflows** — Temporal-backed with time-travel debugging and replay (not just stateful graphs)
+- **First-Class Observability** — Built-in dashboard, Prometheus metrics, OpenTelemetry tracing (not DIY)
+- **Human Approvals + OPA Policies** — Fine-grained governance for production use (not basic tool filters)
+- **Vendor-Agnostic** — On-prem friendly, HTTP REST API + SDKs, works with any OpenAI-compatible provider
 
-*Model pricing is centralized in `config/models.yaml` - all services load from this single source for consistent cost tracking.*
-
-## 🎯 Why Shannon vs. Others?
+<details>
+<summary><b>Detailed Feature Comparison</b> (click to expand)</summary>
 
 | Challenge | Shannon | LangGraph | AutoGen | CrewAI |
 |---------|---------|-----------|---------|---------|
@@ -78,12 +71,14 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 | **Multi-Language** | ✅ Go/Rust/Python | ⚠️ Python only | ⚠️ Python only | ⚠️ Python only |
 | **Production Metrics** | ✅ Dashboard/Prometheus | ⚠️ DIY | ❌ | ❌ |
 
+</details>
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 
 - Docker and Docker Compose
-- Make, curl, grpcurl
+- Make, curl
 - An API key for at least one supported LLM provider
 
 <details>
@@ -116,20 +111,6 @@ sudo apt-get install docker-compose-plugin
 docker --version
 docker compose version
 ```
-
-#### Docker Services
-
-The `make dev` command starts all services:
-- **PostgreSQL**: Database on port 5432
-- **Redis**: Cache on port 6379
-- **Qdrant**: Vector store on port 6333
-- **Temporal**: Workflow engine on port 7233 (UI on 8088)
-- **Orchestrator**: Go service on port 50052
-- **Agent Core**: Rust service on port 50051
-- **LLM Service**: Python service on port 8000
-- **Gateway**: REST API gateway on port 8080
-- **Dashboard**: Real-time observability UI on port 2111
-
 </details>
 
 ### 30-Second Setup
@@ -150,16 +131,24 @@ echo "OPENAI_API_KEY=your-key-here" >> .env
 # Start all services and verify
 make dev
 make smoke
-
-# (Optional) Start Grafana & Prometheus monitoring
-cd deploy/compose/grafana && docker compose -f docker-compose-grafana-prometheus.yml up -d
 ```
+
+<details>
+<summary><b>Optional: Enable Grafana & Prometheus</b> (click to expand)</summary>
+
+```bash
+# Start monitoring stack (Grafana on :3000, Prometheus on :9090)
+cd deploy/compose/grafana
+docker compose -f docker-compose-grafana-prometheus.yml up -d
+```
+
+</details>
 
 ### Your First Agent
 
 Shannon provides multiple ways to interact with your AI agents:
 
-#### Option 1: Use the Dashboard UI (Recommended for Getting Started)
+#### Option 1: Use the Dashboard UI (Demo purpose only)
 
 ```bash
 # Open the Shannon Dashboard in your browser
@@ -201,7 +190,7 @@ from shannon import ShannonClient
 
 with ShannonClient(base_url="http://localhost:8080") as client:
     handle = client.submit_task(
-        "Analyze: Shannon vs AgentKit",
+        "Analyzing sentiment: Shannon makes AI agents simple!",
         session_id="demo-session"
     )
     status = client.wait(handle.task_id)
@@ -214,7 +203,7 @@ CLI is also available after install: `shannon --base-url http://localhost:8080 s
 
 ```bash
 # Stream live events as your agent works (replace with your workflow_id)
-curl -N http://localhost:8081/stream/sse?workflow_id=task-dev-1234567890
+curl -N http://localhost:8080/api/v1/stream/sse?workflow_id=task-dev-1234567890
 
 # You'll see human-readable events like:
 # event: AGENT_THINKING
@@ -251,6 +240,22 @@ curl -X POST http://localhost:8080/api/v1/tasks \
   -d '{"query":"Your task here"}'
 ```
 
+<!-- For full API details, see Gateway README or the docs site. -->
+
+#### Production Checklist
+
+Before deploying Shannon to production:
+
+- [ ] **Authentication** — Replace `GATEWAY_SKIP_AUTH=1` with API keys (`make seed-api-key`)
+- [ ] **OPA Policies** — Configure fine-grained access rules in `config/opa/policies/`
+- [ ] **Token Budgets** — Set per-task/per-agent limits in task submission context
+- [ ] **Monitoring** — Enable Prometheus metrics and OpenTelemetry tracing (see [Grafana setup](#optional-enable-grafana--prometheus-click-to-expand))
+- [ ] **Approvals** — Configure human-in-the-loop for sensitive operations in `config/features.yaml`
+- [ ] **Secrets Management** — Use environment variables or secrets manager (never commit `.env`)
+- [ ] **Rate Limits** — Configure provider-specific RPM/TPM limits in `config/models.yaml`
+
+See [Configuration Guide](config/README.md) and [Authentication](docs/authentication-and-multitenancy.md) for details.
+
 ### Delete a session (soft delete)
 
 ```bash
@@ -264,82 +269,7 @@ curl -X DELETE http://localhost:8080/api/v1/sessions/<SESSION_UUID> \
 # - Redis cache for the session is cleared
 ```
 
-<details>
-<summary><b>Advanced Methods: Scripts, gRPC, and Command Line</b> (click to expand)</summary>
-
-#### Using Shell Scripts
-
-```bash
-# Submit a simple task
-./scripts/submit_task.sh "Analyze the sentiment of: 'Shannon makes AI agents simple!'"
-
-# Check session usage and token tracking (session ID is in SubmitTask response message)
-grpcurl -plaintext \
-  -d '{"sessionId":"YOUR_SESSION_ID"}' \
-  localhost:50052 shannon.orchestrator.OrchestratorService/GetSessionContext
-
-# Export and replay a workflow history (use the workflow ID from submit_task output)
-./scripts/replay_workflow.sh <WORKFLOW_ID>
-```
-
-#### Direct gRPC Calls
-
-```bash
-# Submit via gRPC
-grpcurl -plaintext \
-  -d '{"metadata":{"userId":"user1","sessionId":"test-session"},"query":"Analyze sentiment"}' \
-  localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
-
-# Stream events via gRPC
-grpcurl -plaintext \
-  -d '{"workflowId":"task-dev-1234567890"}' \
-  localhost:50052 shannon.orchestrator.StreamingService/StreamTaskExecution
-```
-
-#### WebSocket Streaming
-
-```bash
-# Connect to WebSocket for bidirectional streaming
-# Via admin port (no auth):
-wscat -c ws://localhost:8081/stream/ws?workflow_id=task-dev-1234567890
-
-# Or via gateway (with auth):
-# wscat -c ws://localhost:8080/api/v1/stream/ws?workflow_id=task-dev-1234567890 \
-#   -H "Authorization: Bearer YOUR_API_KEY"
-```
-
-#### Visual Debugging Tools
-
-```bash
-# Access Shannon Dashboard for real-time monitoring
-open http://localhost:2111
-
-# Dashboard features:
-# - Real-time task execution and event streams
-# - System metrics and performance graphs
-# - Token usage tracking and budget monitoring
-# - Agent traffic control visualization
-# - Interactive command execution
-
-# Access Temporal Web UI for workflow debugging
-open http://localhost:8088
-
-# Temporal UI provides:
-# - Workflow execution history and timeline
-# - Task status, retries, and failures
-# - Input/output data for each step
-# - Real-time workflow progress
-# - Search workflows by ID, type, or status
-```
-
-The visual tools provide comprehensive monitoring:
-- **Shannon Dashboard** (http://localhost:2111) - Real-time agent traffic control, metrics, and events
-- **Temporal UI** (http://localhost:8088) - Workflow debugging and state inspection
-- **Grafana** (http://localhost:3000) - System metrics visualization with Prometheus (optional, see [monitoring setup](deploy/compose/grafana/README.md))
-- **Prometheus** (http://localhost:9090) - Metrics collection and querying (optional)
-- **Combined view** - Full visibility into your AI agents' behavior and system performance
-
-</details>
+<!-- Advanced methods (scripts, gRPC, admin streaming) are available in service READMEs and scripts/. Keeping the root README focused on core value and quick paths. -->
 
 ## 📚 Examples That Actually Matter
 
@@ -479,10 +409,6 @@ SESSION="learning-session-$(date +%s)"
 # Later, agent recalls and applies this knowledge
 ./scripts/submit_task.sh "What language and tools should I use for my new data project?" "$SESSION"
 # Response includes personalized recommendations based on learned preferences
-
-# Check memory storage (character-based chunking with MMR diversity)
-grpcurl -plaintext -d "{\"sessionId\":\"$SESSION\"}" \
-  localhost:50052 shannon.orchestrator.OrchestratorService/GetSessionContext
 ```
 **Unique to Shannon**: Persistent memory with intelligent chunking (4 chars ≈ 1 token) and MMR diversity ranking.
 
@@ -496,7 +422,7 @@ grpcurl -plaintext -d "{\"sessionId\":\"$SESSION\"}" \
 ./scripts/submit_task.sh "Analyze our website performance, identify bottlenecks, and create an optimization plan with specific recommendations"
 
 # Watch the orchestration in real-time
-curl -N "http://localhost:8081/stream/sse?workflow_id=<WORKFLOW_ID>"
+curl -N "http://localhost:8080/api/v1/stream/sse?workflow_id=<WORKFLOW_ID>"
 
 # Events show:
 # - Complexity analysis (score: 0.85)
@@ -692,8 +618,9 @@ echo "OPENAI_API_KEY=sk-..." >> .env
 # Launch
 make dev
 
-# Set budgets per request (see "Examples That Actually Matter" section)
-# Configure in SubmitTask payload: {"budget": {"max_tokens": 5000}}
+# Configure budgets via config (recommended)
+# See go/orchestrator/README.md (Budget Management) and config/models.yaml for limits/pricing.
+# If you need per-call hints, include them under `context` and handle in your workflow/template.
 ```
 
 ### Day 2: Add Policies
@@ -733,26 +660,6 @@ grep ERROR logs/orchestrator.log | tail -1
 ./scripts/replay_workflow.sh replay debug.json
 
 # 4. Fix, test, deploy with confidence
-```
-
-### Day 30: Scale to Multiple Teams
-```yaml
-# config/teams.yaml
-teams:
-  data-science:
-    models: ["gpt-4o", "claude-4-sonnet"]
-    max_tokens_per_day: 1000000
-    tools: ["*"]
-
-  customer-support:
-    models: ["gpt-4o-mini"]
-    max_tokens_per_day: 50000
-    tools: ["search", "respond", "escalate"]
-
-  engineering:
-    models: ["claude-4-sonnet", "gpt-4o"]
-    max_tokens_per_day: 500000
-    tools: ["code_*", "test_*", "deploy_*"]
 ```
 
 ### Configuration
@@ -860,6 +767,7 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 - [ ] **Shared workspace functions** - Agent artifact sharing (AppendToWorkspace/ListWorkspaceItems)
 - [ ] **Intelligent Tool Selection** - Semantic tool result caching, agent experience learning, performance-based routing
 - [ ] **Native RAG System** - Document chunking service, knowledge base integration, context injection with source attribution
+- [ ] **Team-level quotas & policies** - Per-team budgets, model/tool allowlists via config
 
 **v0.3**
 - [ ] **Solana Integration** - Decentralized trust, on-chain attestation, and blockchain-based audit trails for agent actions
@@ -874,23 +782,8 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 
 ## 📚 Documentation
 
-### Core Guides
-- [**Python Code Execution**](docs/python-code-execution.md) - Secure Python execution via WASI sandbox
-- [**Multi-Agent Workflows**](docs/multi-agent-workflow-architecture.md) - Orchestration patterns and best practices
-- [**Pattern Usage Guide**](docs/pattern-usage-guide.md) - ReAct, Tree-of-Thoughts, Debate patterns
-- [**Streaming APIs**](docs/streaming-api.md) - Real-time agent output streaming
-- [**Authentication & Access Control**](docs/authentication-and-multitenancy.md) - Multi-tenancy and OPA policies
-- [**Memory System**](docs/memory-system-architecture.md) - Session + vector memory (Qdrant), MMR diversity, pattern learning
-- [**System Prompts**](docs/system-prompts.md) - Priority, role presets, and template variables
-
-### Extending Shannon
-- [**Extending Shannon**](docs/extending-shannon.md) - Ways to extend templates, decomposition, and tools
-- [**Adding Custom Tools**](docs/adding-custom-tools.md) - Complete guide for MCP, OpenAPI, and built-in tools
-
-### API References
-- [Agent Core API](docs/agent-core-api.md) - Rust service endpoints
-- [Orchestrator Service](go/orchestrator/README.md) - Workflow management and patterns
-- [LLM Service API](python/llm-service/README.md) - Provider abstraction
+- Official docs: https://shannon.kocoro.dev/en/
+- Local docs folder: [docs/](docs/)
 
 ### Get Involved
 
@@ -910,25 +803,6 @@ We're building decentralized trust infrastructure with Solana blockchain:
 - **Decentralized Reputation**: Build trust through verifiable on-chain agent performance
 
 Stay tuned for our Web3 trust layer - bringing transparency and verifiability to AI systems!
-
-## 🙏 Acknowledgments & Inspirations
-
-Shannon builds upon and integrates amazing work from the open-source community:
-
-### Core Inspirations
-- **[Agent Traffic Control](https://github.com/gkamradt/agenttrafficcontrol)** - The original inspiration for our retro terminal UI design and agent visualization concept
-- **[Model Context Protocol (MCP)](https://modelcontextprotocol.io/)** - Anthropic's protocol for standardized LLM-tool interactions
-- **[Claude Code](https://claude.ai/code)** - Used extensively in developing Shannon's codebase
-- **[Temporal](https://temporal.io/)** - The bulletproof workflow orchestration engine powering Shannon's reliability
-
-### Key Technologies
-- **[LangGraph](https://github.com/langchain-ai/langgraph)** - Inspiration for stateful agent architectures
-- **[AutoGen](https://github.com/microsoft/autogen)** - Microsoft's multi-agent conversation framework
-- **[WASI](https://wasi.dev/)** - WebAssembly System Interface for secure code execution
-- **[Open Policy Agent](https://www.openpolicyagent.org/)** - Policy engine for fine-grained access control
-
-### Community Contributors
-Special thanks to all our contributors and the broader AI agent community for feedback, bug reports, and feature suggestions.
 
 ## 📄 License
 
