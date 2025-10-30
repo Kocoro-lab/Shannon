@@ -199,14 +199,16 @@ pip install shannon-sdk
 ```python
 from shannon import ShannonClient
 
-with ShannonClient(grpc_endpoint="localhost:50052",
-                   http_endpoint="http://localhost:8081") as client:
-    handle = client.submit_task("Analyze: Shannon vs AgentKit", user_id="demo")
+with ShannonClient(base_url="http://localhost:8080") as client:
+    handle = client.submit_task(
+        "Analyze: Shannon vs AgentKit",
+        session_id="demo-session"
+    )
     status = client.wait(handle.task_id)
-    print(status.status.value, status.result)
+    print(status.status, status.result)
 ```
 
-CLI is also available after install: `shannon --endpoint localhost:50052 submit "Hello"`.
+CLI is also available after install: `shannon --base-url http://localhost:8080 submit "Hello"`.
 
 #### Watch Your Agent Work in Real-Time
 
