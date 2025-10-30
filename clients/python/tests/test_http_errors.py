@@ -23,7 +23,7 @@ async def test_error_mapping_authentication():
 @pytest.mark.asyncio
 async def test_error_mapping_task_not_found():
     c = AsyncShannonClient()
-    resp = make_response(404, '{"error":"Task not found"}')
+    resp = make_response(404, '{"error":"Task not found"}', url="http://test/api/v1/tasks/123")
     with pytest.raises(errors.TaskNotFoundError):
         c._handle_http_error(resp)
 
@@ -31,7 +31,7 @@ async def test_error_mapping_task_not_found():
 @pytest.mark.asyncio
 async def test_error_mapping_session_not_found():
     c = AsyncShannonClient()
-    resp = make_response(404, '{"error":"Session not found"}')
+    resp = make_response(404, '{"error":"Session not found"}', url="http://test/api/v1/sessions/abc")
     with pytest.raises(errors.SessionNotFoundError):
         c._handle_http_error(resp)
 
@@ -47,9 +47,21 @@ async def test_error_mapping_validation():
 @pytest.mark.asyncio
 async def test_error_mapping_server_error():
     c = AsyncShannonClient()
-    resp = make_response(500, '{"error":"Internal"}')
-    with pytest.raises(errors.ConnectionError):
-        c._handle_http_error(resp)
+    for code in (500, 502, 503):
+        resp = make_response(code, '{"error":"Internal"}')
+        with pytest.raises(errors.ServerError):
+            c._handle_http_error(resp)
+
+
+@pytest.mark.asyncio
+async def test_error_mapping_permission_and_ratelimit():
+    c = AsyncShannonClient()
+    resp_forbidden = make_response(403, '{"error":"Forbidden"}')
+    with pytest.raises(errors.PermissionDeniedError):
+        c._handle_http_error(resp_forbidden)
+    resp_rl = make_response(429, '{"error":"Rate limit"}')
+    with pytest.raises(errors.RateLimitError):
+        c._handle_http_error(resp_rl)
 
 
 @pytest.mark.asyncio
@@ -67,4 +79,3 @@ async def test_timeout_wrapped(monkeypatch):
 
     with pytest.raises(errors.ConnectionError):
         await c.get_status("task-1")
-

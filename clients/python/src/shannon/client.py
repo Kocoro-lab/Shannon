@@ -15,6 +15,7 @@ from shannon import errors
 
 logger = logging.getLogger(__name__)
 _ID_RE = re.compile(r'^[A-Za-z0-9:_\-.]{1,128}$')
+MAX_QUERY_LEN = 10000
 
 
 def _parse_timestamp(ts_str: str) -> datetime:
@@ -128,15 +129,25 @@ class AsyncShannonClient:
             raise errors.AuthenticationError(
                 error_msg, code=str(response.status_code)
             )
+        elif response.status_code == 403:
+            raise errors.PermissionDeniedError(error_msg, code="403")
+        elif response.status_code == 429:
+            raise errors.RateLimitError(error_msg, code="429")
         elif response.status_code == 404:
-            if "task" in error_msg.lower():
+            path = ""
+            try:
+                path = response.request.url.path
+            except Exception:
+                path = ""
+            if "/tasks/" in path:
                 raise errors.TaskNotFoundError(error_msg, code="404")
-            elif "session" in error_msg.lower():
+            if "/sessions/" in path:
                 raise errors.SessionNotFoundError(error_msg, code="404")
-            else:
-                raise errors.ShannonError(error_msg, code="404")
+            raise errors.ShannonError(error_msg, code="404")
         elif response.status_code == 400:
             raise errors.ValidationError(error_msg, code="400")
+        elif 500 <= response.status_code <= 503:
+            raise errors.ServerError(error_msg, code=str(response.status_code))
         else:
             raise errors.ConnectionError(
                 f"HTTP {response.status_code}: {error_msg}",
@@ -177,7 +188,7 @@ class AsyncShannonClient:
         # Validate before sending
         if not isinstance(query, str) or not query.strip():
             raise errors.ValidationError("Query is required", code="400")
-        if len(query) > 10000:
+        if len(query) > MAX_QUERY_LEN:
             raise errors.ValidationError("Query too long (max 10000 chars)", code="400")
         if session_id is not None and not _ID_RE.match(session_id):
             raise errors.ValidationError("Invalid session_id format", code="400")
@@ -253,7 +264,7 @@ class AsyncShannonClient:
         # Validate before sending
         if not isinstance(query, str) or not query.strip():
             raise errors.ValidationError("Query is required", code="400")
-        if len(query) > 10000:
+        if len(query) > MAX_QUERY_LEN:
             raise errors.ValidationError("Query too long (max 10000 chars)", code="400")
         if session_id is not None and not _ID_RE.match(session_id):
             raise errors.ValidationError("Invalid session_id format", code="400")
@@ -979,6 +990,7 @@ class AsyncShannonClient:
         max_retries: int = 5,
         traceparent: Optional[str] = None,
         timeout: Optional[float] = None,
+        total_timeout: Optional[float] = None,
     ) -> AsyncIterator[Event]:
         """
         Stream events from a workflow execution via SSE.
@@ -1001,6 +1013,12 @@ class AsyncShannonClient:
         if types:
             type_filters = [t.value if isinstance(t, EventType) else t for t in types]
 
+        # Validate timeouts
+        if timeout is not None and timeout < 0:
+            raise errors.ValidationError("timeout must be >= 0", code="400")
+        if total_timeout is not None and total_timeout < 0:
+            raise errors.ValidationError("total_timeout must be >= 0", code="400")
+
         async for event in self._stream_sse(
             workflow_id,
             types=type_filters,
@@ -1009,6 +1027,7 @@ class AsyncShannonClient:
             max_retries=max_retries,
             traceparent=traceparent,
             timeout=timeout,
+            total_timeout=total_timeout,
         ):
             yield event
 
@@ -1022,13 +1041,21 @@ class AsyncShannonClient:
         max_retries: int = 5,
         traceparent: Optional[str] = None,
         timeout: Optional[float] = None,
+        total_timeout: Optional[float] = None,
     ) -> AsyncIterator[Event]:
         """Stream events via HTTP SSE."""
+        import time
+        start_time = time.time()
         retries = 0
         last_resume_id = last_event_id
+        server_retry_ms: Optional[int] = None
 
         while True:
             try:
+                # Check absolute timeout
+                if total_timeout is not None and (time.time() - start_time) >= total_timeout:
+                    raise errors.ConnectionError("SSE stream timed out", code="TIMEOUT")
+
                 # Build query params
                 params = {"workflow_id": workflow_id}
                 if types:
@@ -1063,8 +1090,9 @@ class AsyncShannonClient:
                             )
 
                         # Parse SSE stream
-                        event_data = []
-                        event_id = None
+                        event_data: List[str] = []
+                        event_id: Optional[str] = None
+                        event_name: Optional[str] = None
 
                         async for line in response.aiter_lines():
                             if not line:
@@ -1073,6 +1101,9 @@ class AsyncShannonClient:
                                     data_str = "\n".join(event_data)
                                     try:
                                         event_json = json.loads(data_str)
+                                        # If server provided event name and no type in JSON, use it
+                                        if event_name and isinstance(event_json, dict) and not event_json.get("type"):
+                                            event_json["type"] = event_name
                                         event = self._parse_sse_event(event_json, event_id)
 
                                         # Update resume point
@@ -1087,11 +1118,19 @@ class AsyncShannonClient:
 
                                     event_data = []
                                     event_id = None
+                                    event_name = None
                                 continue
 
                             # Parse SSE line
                             if line.startswith("id:"):
                                 event_id = line[3:].strip()
+                            elif line.startswith("event:"):
+                                event_name = line[6:].strip()
+                            elif line.startswith("retry:"):
+                                try:
+                                    server_retry_ms = int(line[6:].strip())
+                                except ValueError:
+                                    server_retry_ms = None
                             elif line.startswith("data:"):
                                 event_data.append(line[5:].strip())
                             elif line.startswith(":"):
@@ -1108,9 +1147,19 @@ class AsyncShannonClient:
                         details={"http_error": str(e)},
                     )
 
-                # Exponential backoff
+                # Exponential backoff with absolute timeout check
                 retries += 1
-                wait_time = min(2**retries, 30)  # Cap at 30 seconds
+                exp_wait = min(2**retries, 30)
+                if server_retry_ms is not None:
+                    wait_time = max(exp_wait, min(server_retry_ms / 1000.0, 30.0))
+                else:
+                    wait_time = exp_wait
+                if total_timeout is not None:
+                    elapsed = time.time() - start_time
+                    if elapsed + wait_time > total_timeout:
+                        wait_time = max(0.0, total_timeout - elapsed)
+                if wait_time <= 0:
+                    raise errors.ConnectionError("SSE stream timed out", code="TIMEOUT")
                 await asyncio.sleep(wait_time)
 
     def _parse_sse_event(self, data: Dict[str, Any], event_id: Optional[str] = None) -> Event:
@@ -1165,19 +1214,22 @@ class ShannonClient:
             bearer_token=bearer_token,
             default_timeout=default_timeout,
         )
+        import threading
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_lock = threading.Lock()
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         """Get or create event loop."""
-        if self._loop is None or self._loop.is_closed():
-            try:
-                self._loop = asyncio.get_event_loop()
-            except RuntimeError:
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-        return self._loop
+        with self._loop_lock:
+            if self._loop is None or self._loop.is_closed():
+                try:
+                    self._loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    self._loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(self._loop)
+            return self._loop
 
-    def _run(self, coro):
+    def _run(self, coro: Any) -> Any:
         """Run async coroutine synchronously."""
         loop = self._get_loop()
         return loop.run_until_complete(coro)
@@ -1358,6 +1410,7 @@ class ShannonClient:
         max_retries: int = 5,
         traceparent: Optional[str] = None,
         timeout: Optional[float] = None,
+        total_timeout: Optional[float] = None,
     ) -> Iterator[Event]:
         """
         Stream events (blocking iterator).
@@ -1375,6 +1428,7 @@ class ShannonClient:
                 max_retries=max_retries,
                 traceparent=traceparent,
                 timeout=timeout,
+                total_timeout=total_timeout,
             ):
                 yield event
 
@@ -1390,8 +1444,16 @@ class ShannonClient:
             loop.run_until_complete(async_gen.aclose())
 
     def close(self):
-        """Close HTTP client."""
-        self._run(self._async_client.close())
+        """Close HTTP client and cleanup event loop when appropriate."""
+        try:
+            if self._loop is None or self._loop.is_closed():
+                # Run close without persisting a new loop
+                asyncio.run(self._async_client.close())
+            else:
+                self._run(self._async_client.close())
+        except RuntimeError:
+            # Fallback if asyncio.run() not allowed in current context
+            self._run(self._async_client.close())
 
     def __enter__(self):
         """Context manager entry."""
