@@ -5,7 +5,7 @@ from shannon import ShannonClient, EventType
 
 # Initialize client
 client = ShannonClient(
-    grpc_endpoint="localhost:50052",
+    base_url="http://localhost:8080",
     api_key=os.getenv("SHANNON_API_KEY", ""),
 )
 
@@ -13,7 +13,6 @@ client = ShannonClient(
 print("Submitting task...")
 handle = client.submit_task(
     "Research recent developments in quantum computing and summarize key findings",
-    user_id="researcher",
 )
 
 print(f"Task ID: {handle.task_id}")

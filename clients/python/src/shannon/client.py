@@ -1,138 +1,153 @@
-"""Shannon SDK client implementation."""
+"""Shannon SDK HTTP client implementation."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import re
-import time
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
 
-import grpc
 import httpx
-from google.protobuf import struct_pb2, timestamp_pb2
 
 from shannon import errors
-from shannon.generated.common import common_pb2
-from shannon.generated.orchestrator import orchestrator_pb2, orchestrator_pb2_grpc
-from shannon.generated.session import session_pb2, session_pb2_grpc
-from shannon.generated.orchestrator import streaming_pb2, streaming_pb2_grpc
+
+
+def _parse_timestamp(ts_str: str) -> datetime:
+    """Parse ISO timestamp with variable decimal places."""
+    if not ts_str:
+        return datetime.now()
+
+    # Replace Z with +00:00
+    ts_str = ts_str.replace("Z", "+00:00")
+
+    try:
+        return datetime.fromisoformat(ts_str)
+    except ValueError:
+        # Handle timestamps with more than 6 decimal places
+        # Python's fromisoformat accepts 0-6 decimal places
+        if "." in ts_str:
+            # Split into parts
+            if "+" in ts_str:
+                date_time, tz = ts_str.rsplit("+", 1)
+                tz = "+" + tz
+            elif ts_str.count("-") > 2:  # Has timezone with -
+                date_time, tz = ts_str.rsplit("-", 1)
+                tz = "-" + tz
+            else:
+                date_time = ts_str
+                tz = ""
+
+            # Split datetime into date+time and microseconds
+            if "." in date_time:
+                base, microseconds = date_time.split(".", 1)
+                # Pad or truncate to 6 digits
+                if len(microseconds) < 6:
+                    microseconds = microseconds.ljust(6, "0")
+                elif len(microseconds) > 6:
+                    microseconds = microseconds[:6]
+                ts_str = f"{base}.{microseconds}{tz}"
+
+        return datetime.fromisoformat(ts_str)
+
+
 from shannon.models import (
     Event,
     EventType,
     PendingApproval,
     Session,
+    SessionEventTurn,
+    SessionHistoryItem,
     SessionSummary,
     TaskHandle,
     TaskStatus,
     TaskStatusEnum,
-    ExecutionMetrics,
-    AgentTaskStatus,
-    ConversationMessage,
+    TaskSummary,
+    TokenUsage,
 )
 
 
-def _dict_to_struct(d: Optional[Dict[str, Any]]) -> struct_pb2.Struct:
-    """Convert Python dict to protobuf Struct."""
-    s = struct_pb2.Struct()
-    if d:
-        s.update(d)
-    return s
-
-
-def _struct_to_dict(s: struct_pb2.Struct) -> Dict[str, Any]:
-    """Convert protobuf Struct to Python dict."""
-    return dict(s)
-
-
-def _task_status_from_proto(proto_status: int) -> TaskStatusEnum:
-    """Convert proto TaskStatus to SDK enum."""
-    mapping = {
-        orchestrator_pb2.TASK_STATUS_QUEUED: TaskStatusEnum.QUEUED,
-        orchestrator_pb2.TASK_STATUS_RUNNING: TaskStatusEnum.RUNNING,
-        orchestrator_pb2.TASK_STATUS_COMPLETED: TaskStatusEnum.COMPLETED,
-        orchestrator_pb2.TASK_STATUS_FAILED: TaskStatusEnum.FAILED,
-        orchestrator_pb2.TASK_STATUS_CANCELLED: TaskStatusEnum.CANCELLED,
-        orchestrator_pb2.TASK_STATUS_TIMEOUT: TaskStatusEnum.TIMEOUT,
-    }
-    return mapping.get(proto_status, TaskStatusEnum.FAILED)
-
-
 class AsyncShannonClient:
-    """Async Shannon client for task submission and streaming."""
+    """Async Shannon client using HTTP Gateway API."""
 
     def __init__(
         self,
-        grpc_endpoint: str = "localhost:50052",
-        http_endpoint: str = "http://localhost:8081",
+        base_url: str = "http://localhost:8080",
         api_key: Optional[str] = None,
         bearer_token: Optional[str] = None,
-        use_tls: bool = False,
         default_timeout: float = 30.0,
     ):
         """
-        Initialize Shannon async client.
+        Initialize Shannon async HTTP client.
 
         Args:
-            grpc_endpoint: gRPC endpoint (default: localhost:50052)
-            http_endpoint: HTTP endpoint for SSE (default: http://localhost:8081)
+            base_url: Gateway base URL (default: http://localhost:8080)
             api_key: API key for authentication (e.g., sk_xxx)
             bearer_token: JWT bearer token (alternative to api_key)
-            use_tls: Enable TLS for gRPC
             default_timeout: Default timeout in seconds
         """
-        self.grpc_endpoint = grpc_endpoint
-        self.http_endpoint = http_endpoint
+        self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.bearer_token = bearer_token
-        self.use_tls = use_tls
         self.default_timeout = default_timeout
+        self._http_client: Optional[httpx.AsyncClient] = None
 
-        # gRPC channel and stubs (lazy initialized)
-        self._channel: Optional[grpc.aio.Channel] = None
-        self._orchestrator_stub: Optional[orchestrator_pb2_grpc.OrchestratorServiceStub] = None
-        self._session_stub: Optional[session_pb2_grpc.SessionServiceStub] = None
-        self._streaming_stub: Optional[streaming_pb2_grpc.StreamingServiceStub] = None
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        """Ensure HTTP client is initialized."""
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(timeout=self.default_timeout)
+        return self._http_client
 
-    async def _ensure_channel(self) -> grpc.aio.Channel:
-        """Ensure gRPC channel is initialized."""
-        if self._channel is None:
-            if self.use_tls:
-                credentials = grpc.ssl_channel_credentials()
-                self._channel = grpc.aio.secure_channel(self.grpc_endpoint, credentials)
-            else:
-                self._channel = grpc.aio.insecure_channel(self.grpc_endpoint)
+    def _get_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Build HTTP headers with authentication."""
+        headers = {"Content-Type": "application/json"}
 
-            self._orchestrator_stub = orchestrator_pb2_grpc.OrchestratorServiceStub(
-                self._channel
-            )
-            self._session_stub = session_pb2_grpc.SessionServiceStub(self._channel)
-            self._streaming_stub = streaming_pb2_grpc.StreamingServiceStub(self._channel)
-
-        return self._channel
-
-    def _get_metadata(self) -> List[tuple]:
-        """Get gRPC metadata for authentication."""
-        metadata = []
         if self.bearer_token:
-            metadata.append(("authorization", f"Bearer {self.bearer_token}"))
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
         elif self.api_key:
-            metadata.append(("x-api-key", self.api_key))
-        return metadata
+            headers["X-API-Key"] = self.api_key
+
+        if extra:
+            headers.update(extra)
+
+        return headers
+
+    def _handle_http_error(self, response: httpx.Response) -> None:
+        """Handle HTTP error responses."""
+        try:
+            error_data = response.json()
+            error_msg = error_data.get("error", response.text)
+        except Exception:
+            error_msg = response.text or f"HTTP {response.status_code}"
+
+        if response.status_code == 401:
+            raise errors.AuthenticationError(
+                error_msg, code=str(response.status_code)
+            )
+        elif response.status_code == 404:
+            if "task" in error_msg.lower():
+                raise errors.TaskNotFoundError(error_msg, code="404")
+            elif "session" in error_msg.lower():
+                raise errors.SessionNotFoundError(error_msg, code="404")
+            else:
+                raise errors.ShannonError(error_msg, code="404")
+        elif response.status_code == 400:
+            raise errors.ValidationError(error_msg, code="400")
+        else:
+            raise errors.ConnectionError(
+                f"HTTP {response.status_code}: {error_msg}",
+                code=str(response.status_code),
+            )
+
+    # ===== Task Operations =====
 
     async def submit_task(
         self,
         query: str,
         *,
         session_id: Optional[str] = None,
-        user_id: str = "default",
         context: Optional[Dict[str, Any]] = None,
-        require_approval: bool = False,
-        template_name: Optional[str] = None,
-        template_version: Optional[str] = None,
-        disable_ai: bool = False,
-        labels: Optional[Dict[str, str]] = None,
+        idempotency_key: Optional[str] = None,
+        traceparent: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """
@@ -141,90 +156,352 @@ class AsyncShannonClient:
         Args:
             query: Task query/description
             session_id: Session ID for continuity (optional)
-            user_id: User ID (default: "default")
             context: Additional context dictionary
-            require_approval: Require human approval before execution
-            template_name: Template name (passed via metadata labels)
-            template_version: Template version
-            disable_ai: Disable AI processing (template-only mode)
-            labels: Custom labels for workflow routing (e.g., {"workflow": "supervisor"})
             timeout: Request timeout in seconds
 
         Returns:
-            TaskHandle with task_id, workflow_id, run_id
+            TaskHandle with task_id, workflow_id
 
         Raises:
             ValidationError: Invalid parameters
             ConnectionError: Failed to connect to Shannon
             AuthenticationError: Authentication failed
         """
-        await self._ensure_channel()
+        client = await self._ensure_client()
 
-        # Build metadata
-        # Make a shallow copy to avoid mutating the caller's dict
-        label_dict = dict(labels) if labels else {}
-        if template_name:
-            label_dict["template"] = template_name
-        if template_version:
-            label_dict["template_version"] = template_version
-        if disable_ai:
-            label_dict["disable_ai"] = "true"
-
-        metadata_pb = common_pb2.TaskMetadata(
-            user_id=user_id,
-            session_id=session_id or "",
-            labels=label_dict,
-        )
-
-        # Build context
-        context_dict = context or {}
-        if template_name:
-            context_dict["template"] = template_name
-        if template_version:
-            context_dict["template_version"] = template_version
-
-        request = orchestrator_pb2.SubmitTaskRequest(
-            metadata=metadata_pb,
-            query=query,
-            context=_dict_to_struct(context_dict),
-            require_approval=require_approval,
-        )
+        payload = {"query": query}
+        if session_id:
+            payload["session_id"] = session_id
+        if context:
+            payload["context"] = context
 
         try:
-            response: orchestrator_pb2.SubmitTaskResponse = (
-                await self._orchestrator_stub.SubmitTask(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            extra_headers: Dict[str, str] = {}
+            if idempotency_key:
+                extra_headers["Idempotency-Key"] = idempotency_key
+            if traceparent:
+                extra_headers["traceparent"] = traceparent
+
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks",
+                json=payload,
+                headers=self._get_headers(extra_headers),
+                timeout=timeout or self.default_timeout,
             )
 
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            # Prefer header workflow ID if present
+            wf_id = response.headers.get("X-Workflow-ID") or data.get("workflow_id") or data.get("task_id")
+            sess_id = response.headers.get("X-Session-ID") or session_id
             handle = TaskHandle(
-                task_id=response.task_id,
-                workflow_id=response.workflow_id,
-                run_id="",  # Will be populated by workflow
+                task_id=data["task_id"],
+                workflow_id=wf_id or data["task_id"],
+                session_id=sess_id,
             )
             handle._set_client(self)
             return handle
 
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.UNAUTHENTICATED:
-                raise errors.AuthenticationError(
-                    "Authentication failed", code=str(e.code()), details={"grpc_error": str(e)}
-                )
-            elif e.code() == grpc.StatusCode.INVALID_ARGUMENT:
-                raise errors.ValidationError(
-                    "Invalid parameters", code=str(e.code()), details={"grpc_error": str(e)}
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to submit task: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to submit task: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def submit_and_stream(
+        self,
+        query: str,
+        *,
+        session_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> tuple[TaskHandle, str]:
+        """
+        Submit task and get stream URL in one call.
+
+        Args:
+            query: Task query/description
+            session_id: Session ID for continuity
+            context: Additional context
+            timeout: Request timeout
+
+        Returns:
+            Tuple of (TaskHandle, stream_url)
+
+        Raises:
+            ValidationError: Invalid parameters
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload = {"query": query}
+        if session_id:
+            payload["session_id"] = session_id
+        if context:
+            payload["context"] = context
+
+        try:
+            extra_headers: Dict[str, str] = {}
+            if idempotency_key:
+                extra_headers["Idempotency-Key"] = idempotency_key
+            if traceparent:
+                extra_headers["traceparent"] = traceparent
+
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks/stream",
+                json=payload,
+                headers=self._get_headers(extra_headers),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in [200, 201]:
+                self._handle_http_error(response)
+
+            data = response.json()
+            # Prefer header workflow ID if present
+            wf_id = response.headers.get("X-Workflow-ID") or data.get("workflow_id") or data.get("task_id")
+            sess_id = response.headers.get("X-Session-ID") or session_id
+            handle = TaskHandle(
+                task_id=data["task_id"],
+                workflow_id=wf_id or data["task_id"],
+                session_id=sess_id,
+            )
+            handle._set_client(self)
+
+            stream_url = data.get("stream_url", f"{self.base_url}/api/v1/stream/sse?workflow_id={data['task_id']}")
+
+            return handle, stream_url
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to submit task: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_status(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> TaskStatus:
+        """
+        Get current task status.
+
+        Args:
+            task_id: Task ID
+            timeout: Request timeout in seconds
+
+        Returns:
+            TaskStatus with status, progress, result
+
+        Raises:
+            TaskNotFoundError: Task not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tasks/{task_id}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+
+            # Parse status
+            status_str = data.get("status", "").replace("TASK_STATUS_", "")
+            try:
+                status = TaskStatusEnum[status_str]
+            except KeyError:
+                status = TaskStatusEnum.FAILED
+
+            # Parse result
+            result = None
+            if data.get("response"):
+                if isinstance(data["response"], dict):
+                    result = data["response"].get("result")
+                else:
+                    result = data["response"]
+
+            return TaskStatus(
+                task_id=data["task_id"],
+                status=status,
+                progress=data.get("progress", 0.0),
+                result=result,
+                error_message=data.get("error", ""),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get task status: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def list_tasks(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        status: Optional[str] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[TaskSummary], int]:
+        """
+        List tasks with pagination and filters.
+
+        Args:
+            limit: Number of tasks to return (1-100)
+            offset: Number of tasks to skip
+            status: Filter by status (QUEUED, RUNNING, COMPLETED, FAILED, etc.)
+            session_id: Filter by session ID
+            timeout: Request timeout
+
+        Returns:
+            Tuple of (tasks list, total_count)
+
+        Raises:
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        params = {"limit": limit, "offset": offset}
+        if status:
+            params["status"] = status
+        if session_id:
+            params["session_id"] = session_id
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tasks",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            tasks = []
+
+            for task_data in data.get("tasks", []):
+                token_usage = None
+                if task_data.get("total_token_usage"):
+                    tu = task_data["total_token_usage"]
+                    token_usage = TokenUsage(
+                        total_tokens=tu.get("total_tokens", 0),
+                        cost_usd=tu.get("cost_usd", 0.0),
+                        prompt_tokens=tu.get("prompt_tokens", 0),
+                        completion_tokens=tu.get("completion_tokens", 0),
+                    )
+
+                tasks.append(TaskSummary(
+                    task_id=task_data["task_id"],
+                    query=task_data["query"],
+                    status=task_data["status"],
+                    mode=task_data.get("mode", ""),
+                    created_at=_parse_timestamp(task_data["created_at"]),
+                    completed_at=_parse_timestamp(task_data.get("completed_at")) if task_data.get("completed_at") else None,
+                    total_token_usage=token_usage,
+                ))
+
+            return tasks, data.get("total_count", len(tasks))
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list tasks: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_task_events(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> List[Event]:
+        """
+        Get persistent event history for a task.
+
+        Args:
+            task_id: Task ID
+            timeout: Request timeout
+
+        Returns:
+            List of Event objects
+
+        Raises:
+            TaskNotFoundError: Task not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tasks/{task_id}/events",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            events = []
+
+            for event_data in data.get("events", []):
+                events.append(Event(
+                    type=event_data.get("type", ""),
+                    workflow_id=event_data.get("workflow_id", task_id),
+                    message=event_data.get("message", ""),
+                    agent_id=event_data.get("agent_id"),
+                    timestamp=_parse_timestamp(event_data["timestamp"]),
+                    seq=event_data.get("seq", 0),
+                    stream_id=event_data.get("stream_id"),
+                ))
+
+            return events
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get task events: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_task_timeline(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Get Temporal workflow timeline (deterministic event history).
+
+        Args:
+            task_id: Task ID (also workflow ID)
+            timeout: Request timeout
+
+        Returns:
+            Timeline data dictionary
+
+        Raises:
+            TaskNotFoundError: Task not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tasks/{task_id}/timeline",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get task timeline: {str(e)}", details={"http_error": str(e)}
+            )
 
     async def wait(
-        self, task_id: str, timeout: Optional[float] = None, poll_interval: float = 1.0
+        self, task_id: str, timeout: Optional[float] = None, poll_interval: float = 2.0
     ) -> TaskStatus:
         """
         Wait for task completion by polling status.
@@ -246,7 +523,7 @@ class AsyncShannonClient:
         start_time = time.time()
 
         while True:
-            status = await self.get_status(task_id, include_details=True, timeout=timeout)
+            status = await self.get_status(task_id, timeout=timeout)
 
             if status.status in [
                 TaskStatusEnum.COMPLETED,
@@ -263,95 +540,6 @@ class AsyncShannonClient:
                 )
 
             await asyncio.sleep(poll_interval)
-
-    async def get_status(
-        self, task_id: str, include_details: bool = True, timeout: Optional[float] = None
-    ) -> TaskStatus:
-        """
-        Get current task status.
-
-        Args:
-            task_id: Task ID
-            include_details: Include detailed metrics and agent statuses
-            timeout: Request timeout in seconds
-
-        Returns:
-            TaskStatus with status, progress, result, metrics
-
-        Raises:
-            TaskNotFoundError: Task not found
-            ConnectionError: Failed to connect
-        """
-        await self._ensure_channel()
-
-        request = orchestrator_pb2.GetTaskStatusRequest(
-            task_id=task_id, include_details=include_details
-        )
-
-        try:
-            response: orchestrator_pb2.GetTaskStatusResponse = (
-                await self._orchestrator_stub.GetTaskStatus(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
-            )
-
-            # Parse metrics
-            metrics = None
-            if response.HasField("metrics"):
-                # Extract token usage from nested TokenUsage message
-                tokens_used = 0
-                cost_usd = 0.0
-                if response.metrics.HasField("token_usage"):
-                    tokens_used = response.metrics.token_usage.total_tokens
-                    cost_usd = response.metrics.token_usage.cost_usd
-
-                metrics = ExecutionMetrics(
-                    tokens_used=tokens_used,
-                    cost_usd=cost_usd,
-                    duration_seconds=response.metrics.latency_ms / 1000.0,  # Convert ms to seconds
-                    llm_calls=0,  # Not in proto, will be 0
-                    tool_calls=0,  # Not in proto, will be 0
-                )
-
-            # Parse agent statuses
-            agent_statuses = []
-            for agent_status in response.agent_statuses:
-                agent_statuses.append(
-                    AgentTaskStatus(
-                        agent_id=agent_status.agent_id,
-                        task_id=agent_status.task_id,
-                        status=str(agent_status.status),
-                        progress=agent_status.progress,
-                        result=agent_status.result if agent_status.result else None,
-                        error_message=agent_status.error_message
-                        if agent_status.error_message
-                        else None,
-                    )
-                )
-
-            return TaskStatus(
-                task_id=response.task_id,
-                status=_task_status_from_proto(response.status),
-                progress=response.progress,
-                result=response.result if response.result else None,
-                error_message=response.error_message if response.error_message else None,
-                metrics=metrics,
-                agent_statuses=agent_statuses,
-            )
-
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.TaskNotFoundError(
-                    f"Task {task_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to get task status: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
 
     async def cancel(
         self, task_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
@@ -371,44 +559,39 @@ class AsyncShannonClient:
             TaskNotFoundError: Task not found
             ConnectionError: Failed to connect
         """
-        await self._ensure_channel()
+        client = await self._ensure_client()
 
-        request = orchestrator_pb2.CancelTaskRequest(
-            task_id=task_id, reason=reason or ""
-        )
+        payload = {}
+        if reason:
+            payload["reason"] = reason
 
         try:
-            response: orchestrator_pb2.CancelTaskResponse = (
-                await self._orchestrator_stub.CancelTask(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks/{task_id}/cancel",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
             )
-            return response.success
 
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.TaskNotFoundError(
-                    f"Task {task_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to cancel task: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
+            # Gateway returns 202 Accepted
+            if response.status_code not in (200, 202):
+                self._handle_http_error(response)
+
+            data = response.json()
+            return data.get("success", False)
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to cancel task: {str(e)}", details={"http_error": str(e)}
+            )
 
     async def approve(
         self,
         approval_id: str,
         workflow_id: str,
         *,
-        run_id: Optional[str] = None,
         approved: bool = True,
         feedback: Optional[str] = None,
-        modified_action: Optional[str] = None,
-        approved_by: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> bool:
         """
@@ -417,11 +600,8 @@ class AsyncShannonClient:
         Args:
             approval_id: Approval ID
             workflow_id: Workflow ID
-            run_id: Run ID (optional, for workflow context)
             approved: True to approve, False to reject
             feedback: Optional feedback message
-            modified_action: Optional modified action to execute
-            approved_by: Optional approver identifier
             timeout: Request timeout in seconds
 
         Returns:
@@ -431,185 +611,102 @@ class AsyncShannonClient:
             ValidationError: Invalid parameters
             ConnectionError: Failed to connect
         """
-        await self._ensure_channel()
+        client = await self._ensure_client()
 
-        request = orchestrator_pb2.ApproveTaskRequest(
-            approval_id=approval_id,
-            workflow_id=workflow_id,
-            run_id=run_id or "",
-            approved=approved,
-            feedback=feedback or "",
-            modified_action=modified_action or "",
-            approved_by=approved_by or "",
-        )
+        payload = {
+            "approval_id": approval_id,
+            "workflow_id": workflow_id,
+            "approved": approved,
+        }
+        if feedback:
+            payload["feedback"] = feedback
 
         try:
-            response: orchestrator_pb2.ApproveTaskResponse = (
-                await self._orchestrator_stub.ApproveTask(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
-            )
-            return response.success
-
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.INVALID_ARGUMENT:
-                raise errors.ValidationError(
-                    f"Invalid approval request: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to submit approval: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
-
-    async def get_pending_approvals(
-        self,
-        *,
-        user_id: Optional[str] = None,
-        session_id: Optional[str] = None,
-        timeout: Optional[float] = None,
-    ) -> List[PendingApproval]:
-        """
-        Get list of pending approval requests.
-
-        Args:
-            user_id: Filter by user ID (optional)
-            session_id: Filter by session ID (optional)
-            timeout: Request timeout in seconds
-
-        Returns:
-            List of PendingApproval objects
-
-        Raises:
-            ConnectionError: Failed to connect
-        """
-        await self._ensure_channel()
-
-        request = orchestrator_pb2.GetPendingApprovalsRequest(
-            user_id=user_id or "",
-            session_id=session_id or "",
-        )
-
-        try:
-            response: orchestrator_pb2.GetPendingApprovalsResponse = (
-                await self._orchestrator_stub.GetPendingApprovals(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            response = await client.post(
+                f"{self.base_url}/api/v1/approvals/decision",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
             )
 
-            approvals = []
-            for approval in response.approvals:
-                approvals.append(
-                    PendingApproval(
-                        approval_id=approval.approval_id,
-                        workflow_id=approval.workflow_id,
-                        run_id=None,  # Not in proto
-                        message=f"{approval.proposed_action}: {approval.reason}",
-                        requested_at=datetime.fromtimestamp(
-                            approval.requested_at.seconds
-                            + approval.requested_at.nanos / 1e9
-                        ),
-                        context=_struct_to_dict(approval.metadata)
-                        if approval.HasField("metadata")
-                        else None,
-                    )
-                )
+            if response.status_code != 200:
+                self._handle_http_error(response)
 
-            return approvals
+            data = response.json()
+            return data.get("success", False)
 
-        except grpc.RpcError as e:
+        except httpx.HTTPError as e:
             raise errors.ConnectionError(
-                f"Failed to get pending approvals: {e.details()}",
-                code=str(e.code()),
-                details={"grpc_error": str(e)},
+                f"Failed to submit approval: {str(e)}", details={"http_error": str(e)}
             )
 
-    # ===== Session Management =====
+    # ===== Session Management (HTTP Gateway) =====
 
-    async def create_session(
+    async def list_sessions(
         self,
-        user_id: str,
         *,
-        initial_context: Optional[Dict[str, Any]] = None,
-        max_history: int = 50,
-        ttl_seconds: int = 3600,
+        limit: int = 20,
+        offset: int = 0,
         timeout: Optional[float] = None,
-    ) -> Session:
+    ) -> tuple[List[SessionSummary], int]:
         """
-        Create a new session for multi-turn conversations.
+        List sessions with pagination.
 
         Args:
-            user_id: User ID
-            initial_context: Initial context dictionary
-            max_history: Maximum messages in history
-            ttl_seconds: Session TTL in seconds
+            limit: Number of sessions to return (1-100)
+            offset: Number of sessions to skip
             timeout: Request timeout
 
         Returns:
-            Session object
+            Tuple of (sessions list, total_count)
 
         Raises:
-            ValidationError: Invalid parameters
             ConnectionError: Failed to connect
         """
-        await self._ensure_channel()
+        client = await self._ensure_client()
 
-        request = session_pb2.CreateSessionRequest(
-            user_id=user_id,
-            initial_context=_dict_to_struct(initial_context),
-            max_history=max_history,
-            ttl_seconds=ttl_seconds,
-        )
+        params = {"limit": limit, "offset": offset}
 
         try:
-            response: session_pb2.CreateSessionResponse = (
-                await self._session_stub.CreateSession(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            response = await client.get(
+                f"{self.base_url}/api/v1/sessions",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
             )
 
-            return Session(
-                session_id=response.session_id,
-                user_id=user_id,
-                created_at=datetime.fromtimestamp(
-                    response.created_at.seconds + response.created_at.nanos / 1e9
-                ),
-                updated_at=datetime.fromtimestamp(
-                    response.created_at.seconds + response.created_at.nanos / 1e9
-                ),
-                max_history=max_history,
-                ttl_seconds=ttl_seconds,
-            )
+            if response.status_code != 200:
+                self._handle_http_error(response)
 
-        except grpc.RpcError as e:
+            data = response.json()
+            sessions = []
+
+            for session_data in data.get("sessions", []):
+                sessions.append(SessionSummary(
+                    session_id=session_data["session_id"],
+                    user_id=session_data["user_id"],
+                    created_at=_parse_timestamp(session_data["created_at"]),
+                    updated_at=_parse_timestamp(session_data["created_at"]),  # Use created_at if updated not present
+                    message_count=session_data.get("task_count", 0),
+                    total_tokens_used=session_data.get("tokens_used", 0),
+                    is_active=True,  # Assume active if returned
+                ))
+
+            return sessions, data.get("total_count", len(sessions))
+
+        except httpx.HTTPError as e:
             raise errors.ConnectionError(
-                f"Failed to create session: {e.details()}",
-                code=str(e.code()),
-                details={"grpc_error": str(e)},
+                f"Failed to list sessions: {str(e)}", details={"http_error": str(e)}
             )
 
     async def get_session(
-        self,
-        session_id: str,
-        *,
-        include_history: bool = True,
-        timeout: Optional[float] = None,
+        self, session_id: str, timeout: Optional[float] = None
     ) -> Session:
         """
         Get session details.
 
         Args:
-            session_id: Session ID
-            include_history: Include message history
+            session_id: Session ID (UUID or external_id)
             timeout: Request timeout
 
         Returns:
@@ -619,87 +716,167 @@ class AsyncShannonClient:
             SessionNotFoundError: Session not found
             ConnectionError: Failed to connect
         """
-        await self._ensure_channel()
-
-        request = session_pb2.GetSessionRequest(
-            session_id=session_id,
-            include_history=include_history,
-        )
+        client = await self._ensure_client()
 
         try:
-            response: session_pb2.GetSessionResponse = (
-                await self._session_stub.GetSession(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            response = await client.get(
+                f"{self.base_url}/api/v1/sessions/{session_id}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
             )
 
-            session = response.session
-            history = []
-            if include_history:
-                for msg in session.history:
-                    history.append(
-                        ConversationMessage(
-                            role=msg.role,
-                            content=msg.content,
-                            timestamp=datetime.fromtimestamp(
-                                msg.timestamp.seconds + msg.timestamp.nanos / 1e9
-                            )
-                            if msg.HasField("timestamp")
-                            else None,
-                            tokens_used=msg.tokens_used,
-                        )
-                    )
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
 
             return Session(
-                session_id=session.id,
-                user_id=session.user_id,
-                created_at=datetime.fromtimestamp(
-                    session.created_at.seconds + session.created_at.nanos / 1e9
-                ),
-                updated_at=datetime.fromtimestamp(
-                    session.last_active.seconds + session.last_active.nanos / 1e9
-                ),
-                history=history,
-                persistent_context=_struct_to_dict(session.context)
-                if session.HasField("context")
-                else {},
-                total_tokens_used=session.metrics.total_tokens
-                if session.HasField("metrics")
-                else 0,
-                total_cost_usd=session.metrics.total_cost_usd
-                if session.HasField("metrics")
-                else 0.0,
+                session_id=data["session_id"],
+                user_id=data["user_id"],
+                created_at=_parse_timestamp(data["created_at"]),
+                updated_at=_parse_timestamp(data.get("updated_at", data["created_at"])),
+                total_tokens_used=data.get("tokens_used", 0),
+                total_cost_usd=data.get("cost_usd", 0.0),
             )
 
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.SessionNotFoundError(
-                    f"Session {session_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to get session: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get session: {str(e)}", details={"http_error": str(e)}
+            )
 
-    async def update_session(
-        self,
-        session_id: str,
-        *,
-        context_updates: Optional[Dict[str, Any]] = None,
-        extend_ttl_seconds: Optional[int] = None,
-        timeout: Optional[float] = None,
-    ) -> bool:
+    async def get_session_history(
+        self, session_id: str, timeout: Optional[float] = None
+    ) -> List[SessionHistoryItem]:
         """
-        Update session context or extend TTL.
+        Get session conversation history (all tasks in session).
 
         Args:
             session_id: Session ID
-            context_updates: Context fields to update
-            extend_ttl_seconds: Extend TTL by this many seconds
+            timeout: Request timeout
+
+        Returns:
+            List of SessionHistoryItem objects
+
+        Raises:
+            SessionNotFoundError: Session not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/sessions/{session_id}/history",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            history = []
+
+            # Gateway returns tasks under "tasks" with started_at/completed_at and total_tokens
+            for item in data.get("tasks", []):
+                created_at_val = item.get("started_at") or item.get("created_at")
+                history.append(SessionHistoryItem(
+                    task_id=item["task_id"] if "task_id" in item else item.get("id", ""),
+                    query=item.get("query", ""),
+                    result=item.get("result"),
+                    status=item.get("status", ""),
+                    created_at=_parse_timestamp(created_at_val) if created_at_val else datetime.now(),
+                    completed_at=_parse_timestamp(item.get("completed_at")) if item.get("completed_at") else None,
+                    tokens_used=item.get("total_tokens", 0),
+                ))
+
+            return history
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get session history: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_session_events(
+        self,
+        session_id: str,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[SessionEventTurn], int]:
+        """
+        Get session events grouped by turn (task).
+
+        Args:
+            session_id: Session ID
+            limit: Number of turns to return (1-100)
+            offset: Number of turns to skip
+            timeout: Request timeout
+
+        Returns:
+            Tuple of (turns list, total_count)
+
+        Raises:
+            SessionNotFoundError: Session not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        params = {"limit": limit, "offset": offset}
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/sessions/{session_id}/events",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            turns = []
+
+            for turn_data in data.get("turns", []):
+                events = []
+                for event_data in turn_data.get("events", []):
+                    events.append(Event(
+                        type=event_data.get("type", ""),
+                        workflow_id=event_data.get("workflow_id", ""),
+                        message=event_data.get("message", ""),
+                        agent_id=event_data.get("agent_id"),
+                        timestamp=_parse_timestamp(event_data["timestamp"]),
+                        seq=event_data.get("seq", 0),
+                        stream_id=event_data.get("stream_id"),
+                    ))
+
+                turns.append(SessionEventTurn(
+                    turn=turn_data["turn"],
+                    task_id=turn_data["task_id"],
+                    user_query=turn_data["user_query"],
+                    final_output=turn_data.get("final_output"),
+                    timestamp=_parse_timestamp(turn_data["timestamp"]),
+                    events=events,
+                    metadata=turn_data.get("metadata", {}),
+                ))
+
+            return turns, data.get("count", len(turns))
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get session events: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def update_session_title(
+        self, session_id: str, title: str, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Update session title.
+
+        Args:
+            session_id: Session ID (UUID or external_id)
+            title: New title (max 60 chars)
             timeout: Request timeout
 
         Returns:
@@ -707,43 +884,36 @@ class AsyncShannonClient:
 
         Raises:
             SessionNotFoundError: Session not found
+            ValidationError: Invalid title
             ConnectionError: Failed to connect
         """
-        await self._ensure_channel()
+        client = await self._ensure_client()
 
-        request = session_pb2.UpdateSessionRequest(
-            session_id=session_id,
-            context_updates=_dict_to_struct(context_updates),
-            extend_ttl_seconds=extend_ttl_seconds or 0,
-        )
+        payload = {"title": title}
 
         try:
-            response: session_pb2.UpdateSessionResponse = (
-                await self._session_stub.UpdateSession(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            response = await client.patch(
+                f"{self.base_url}/api/v1/sessions/{session_id}",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
             )
-            return response.success
 
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.SessionNotFoundError(
-                    f"Session {session_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to update session: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return True
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to update session title: {str(e)}", details={"http_error": str(e)}
+            )
 
     async def delete_session(
         self, session_id: str, timeout: Optional[float] = None
     ) -> bool:
         """
-        Delete a session.
+        Delete a session (soft delete).
 
         Args:
             session_id: Session ID
@@ -756,234 +926,45 @@ class AsyncShannonClient:
             SessionNotFoundError: Session not found
             ConnectionError: Failed to connect
         """
-        await self._ensure_channel()
-
-        request = session_pb2.DeleteSessionRequest(session_id=session_id)
+        client = await self._ensure_client()
 
         try:
-            response: session_pb2.DeleteSessionResponse = (
-                await self._session_stub.DeleteSession(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
-            )
-            return response.success
-
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.SessionNotFoundError(
-                    f"Session {session_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to delete session: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
-
-    async def list_sessions(
-        self,
-        user_id: str,
-        *,
-        active_only: bool = True,
-        limit: int = 50,
-        offset: int = 0,
-        timeout: Optional[float] = None,
-    ) -> List[SessionSummary]:
-        """
-        List user sessions.
-
-        Args:
-            user_id: User ID
-            active_only: Only active (non-expired) sessions
-            limit: Maximum sessions to return
-            offset: Offset for pagination
-            timeout: Request timeout
-
-        Returns:
-            List of SessionSummary objects
-
-        Raises:
-            ConnectionError: Failed to connect
-        """
-        await self._ensure_channel()
-
-        request = session_pb2.ListSessionsRequest(
-            user_id=user_id,
-            active_only=active_only,
-            limit=limit,
-            offset=offset,
-        )
-
-        try:
-            response: session_pb2.ListSessionsResponse = (
-                await self._session_stub.ListSessions(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
+            response = await client.delete(
+                f"{self.base_url}/api/v1/sessions/{session_id}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
             )
 
-            sessions = []
-            for summary in response.sessions:
-                sessions.append(
-                    SessionSummary(
-                        session_id=summary.id,
-                        user_id=summary.user_id,
-                        created_at=datetime.fromtimestamp(
-                            summary.created_at.seconds + summary.created_at.nanos / 1e9
-                        ),
-                        updated_at=datetime.fromtimestamp(
-                            summary.last_active.seconds + summary.last_active.nanos / 1e9
-                        ),
-                        message_count=summary.message_count,
-                        total_tokens_used=summary.total_tokens,
-                        is_active=summary.is_active,
-                    )
-                )
+            # 204 No Content is success
+            if response.status_code not in [200, 204]:
+                self._handle_http_error(response)
 
-            return sessions
+            return True
 
-        except grpc.RpcError as e:
+        except httpx.HTTPError as e:
             raise errors.ConnectionError(
-                f"Failed to list sessions: {e.details()}",
-                code=str(e.code()),
-                details={"grpc_error": str(e)},
+                f"Failed to delete session: {str(e)}", details={"http_error": str(e)}
             )
 
-    async def add_message(
-        self,
-        session_id: str,
-        role: str,
-        content: str,
-        *,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: Optional[float] = None,
-    ) -> bool:
-        """
-        Add message to session history.
-
-        Args:
-            session_id: Session ID
-            role: Message role ("user", "assistant", "system")
-            content: Message content
-            metadata: Optional metadata
-            timeout: Request timeout
-
-        Returns:
-            True if added successfully
-
-        Raises:
-            SessionNotFoundError: Session not found
-            ConnectionError: Failed to connect
-        """
-        await self._ensure_channel()
-
-        message = session_pb2.Message(
-            role=role,
-            content=content,
-            metadata=_dict_to_struct(metadata) if metadata else None,
-        )
-
-        request = session_pb2.AddMessageRequest(
-            session_id=session_id,
-            message=message,
-        )
-
-        try:
-            response: session_pb2.AddMessageResponse = (
-                await self._session_stub.AddMessage(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
-            )
-            return response.success
-
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.SessionNotFoundError(
-                    f"Session {session_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to add message: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
-
-    async def clear_history(
-        self,
-        session_id: str,
-        *,
-        keep_context: bool = True,
-        timeout: Optional[float] = None,
-    ) -> bool:
-        """
-        Clear session history.
-
-        Args:
-            session_id: Session ID
-            keep_context: Keep persistent context, only clear messages
-            timeout: Request timeout
-
-        Returns:
-            True if cleared successfully
-
-        Raises:
-            SessionNotFoundError: Session not found
-            ConnectionError: Failed to connect
-        """
-        await self._ensure_channel()
-
-        request = session_pb2.ClearHistoryRequest(
-            session_id=session_id,
-            keep_context=keep_context,
-        )
-
-        try:
-            response: session_pb2.ClearHistoryResponse = (
-                await self._session_stub.ClearHistory(
-                    request,
-                    metadata=self._get_metadata(),
-                    timeout=timeout or self.default_timeout,
-                )
-            )
-            return response.success
-
-        except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.NOT_FOUND:
-                raise errors.SessionNotFoundError(
-                    f"Session {session_id} not found", code=str(e.code())
-                )
-            else:
-                raise errors.ConnectionError(
-                    f"Failed to clear history: {e.details()}",
-                    code=str(e.code()),
-                    details={"grpc_error": str(e)},
-                )
+    # ===== Streaming (SSE and WebSocket) =====
 
     async def stream(
         self,
         workflow_id: str,
         *,
         types: Optional[List[Union[str, EventType]]] = None,
-        last_stream_id: Optional[str] = None,
-        last_event_id: Optional[Union[str, int]] = None,
-        use_grpc: Optional[bool] = None,
+        last_event_id: Optional[str] = None,
         reconnect: bool = True,
         max_retries: int = 5,
+        traceparent: Optional[str] = None,
     ) -> AsyncIterator[Event]:
         """
-        Stream events from a workflow execution.
+        Stream events from a workflow execution via SSE.
 
         Args:
             workflow_id: Workflow ID to stream
-            types: Optional list of event types to filter (EventType enum or strings)
-            last_stream_id: Resume from Redis stream ID (preferred)
-            last_event_id: Resume from numeric event ID (fallback)
-            use_grpc: Force transport (True=gRPC, False=SSE, None=auto-fallback)
+            types: Optional list of event types to filter
+            last_event_id: Resume from event ID
             reconnect: Auto-reconnect on connection loss
             max_retries: Maximum reconnection attempts
 
@@ -992,138 +973,35 @@ class AsyncShannonClient:
 
         Raises:
             ConnectionError: Failed to connect after retries
-            ValidationError: Invalid parameters
         """
         # Convert EventType enums to strings
         type_filters = None
         if types:
             type_filters = [t.value if isinstance(t, EventType) else t for t in types]
 
-        # Auto-select transport with fallback
-        if use_grpc is None:
-            try:
-                async for event in self._stream_grpc(
-                    workflow_id,
-                    types=type_filters,
-                    last_stream_id=last_stream_id,
-                    last_event_id=last_event_id,
-                    reconnect=reconnect,
-                    max_retries=max_retries,
-                ):
-                    yield event
-            except (grpc.RpcError, errors.ConnectionError) as e:
-                # Fall back to SSE
-                async for event in self._stream_sse(
-                    workflow_id,
-                    types=type_filters,
-                    last_stream_id=last_stream_id,
-                    last_event_id=last_event_id,
-                    reconnect=reconnect,
-                    max_retries=max_retries,
-                ):
-                    yield event
-        elif use_grpc:
-            async for event in self._stream_grpc(
-                workflow_id,
-                types=type_filters,
-                last_stream_id=last_stream_id,
-                last_event_id=last_event_id,
-                reconnect=reconnect,
-                max_retries=max_retries,
-            ):
-                yield event
-        else:
-            async for event in self._stream_sse(
-                workflow_id,
-                types=type_filters,
-                last_stream_id=last_stream_id,
-                last_event_id=last_event_id,
-                reconnect=reconnect,
-                max_retries=max_retries,
-            ):
-                yield event
-
-    async def _stream_grpc(
-        self,
-        workflow_id: str,
-        *,
-        types: Optional[List[str]] = None,
-        last_stream_id: Optional[str] = None,
-        last_event_id: Optional[Union[str, int]] = None,
-        reconnect: bool = True,
-        max_retries: int = 5,
-    ) -> AsyncIterator[Event]:
-        """Stream events via gRPC StreamingService."""
-        await self._ensure_channel()
-
-        retries = 0
-        last_resume_id = last_stream_id
-        last_resume_seq = int(last_event_id) if last_event_id else 0
-
-        while True:
-            try:
-                request = streaming_pb2.StreamRequest(
-                    workflow_id=workflow_id,
-                    types=types or [],
-                    last_stream_id=last_resume_id or "",
-                    last_event_id=last_resume_seq,
-                )
-
-                stream = self._streaming_stub.StreamTaskExecution(
-                    request, metadata=self._get_metadata()
-                )
-
-                async for update in stream:
-                    # Convert proto TaskUpdate to Event
-                    event = Event(
-                        type=update.type,
-                        workflow_id=update.workflow_id,
-                        message=update.message,
-                        agent_id=update.agent_id if update.agent_id else None,
-                        timestamp=datetime.fromtimestamp(
-                            update.timestamp.seconds + update.timestamp.nanos / 1e9
-                        ),
-                        seq=update.seq,
-                        stream_id=update.stream_id if update.stream_id else None,
-                    )
-
-                    # Update resume points
-                    if event.stream_id:
-                        last_resume_id = event.stream_id
-                    if event.seq:
-                        last_resume_seq = event.seq
-
-                    yield event
-
-                # Stream ended normally
-                break
-
-            except grpc.RpcError as e:
-                if not reconnect or retries >= max_retries:
-                    raise errors.ConnectionError(
-                        f"gRPC stream failed: {e.details()}",
-                        code=str(e.code()),
-                        details={"grpc_error": str(e)},
-                    )
-
-                # Exponential backoff
-                retries += 1
-                wait_time = min(2**retries, 30)  # Cap at 30 seconds
-                await asyncio.sleep(wait_time)
+        async for event in self._stream_sse(
+            workflow_id,
+            types=type_filters,
+            last_event_id=last_event_id,
+            reconnect=reconnect,
+            max_retries=max_retries,
+            traceparent=traceparent,
+        ):
+            yield event
 
     async def _stream_sse(
         self,
         workflow_id: str,
         *,
         types: Optional[List[str]] = None,
-        last_stream_id: Optional[str] = None,
-        last_event_id: Optional[Union[str, int]] = None,
+        last_event_id: Optional[str] = None,
         reconnect: bool = True,
         max_retries: int = 5,
+        traceparent: Optional[str] = None,
     ) -> AsyncIterator[Event]:
         """Stream events via HTTP SSE."""
         retries = 0
-        last_resume_id = last_stream_id or (str(last_event_id) if last_event_id else None)
+        last_resume_id = last_event_id
 
         while True:
             try:
@@ -1139,15 +1017,20 @@ class AsyncShannonClient:
                 if self.bearer_token:
                     headers["Authorization"] = f"Bearer {self.bearer_token}"
                 elif self.api_key:
-                    headers["x-api-key"] = self.api_key
+                    headers["X-API-Key"] = self.api_key
 
                 if last_resume_id:
                     headers["Last-Event-ID"] = last_resume_id
+                if traceparent:
+                    headers["traceparent"] = traceparent
 
-                url = f"{self.http_endpoint}/stream/sse"
+                url = f"{self.base_url}/api/v1/stream/sse"
 
                 async with httpx.AsyncClient(timeout=None) as client:
                     async with client.stream("GET", url, params=params, headers=headers) as response:
+                        # Gateway may return 404 (not found) or 400 after completion
+                        if response.status_code in (404, 400):
+                            break
                         if response.status_code != 200:
                             raise errors.ConnectionError(
                                 f"SSE stream failed: HTTP {response.status_code}",
@@ -1207,36 +1090,29 @@ class AsyncShannonClient:
 
     def _parse_sse_event(self, data: Dict[str, Any], event_id: Optional[str] = None) -> Event:
         """Parse SSE event data into Event model."""
-        # Handle ISO timestamps with optional trailing 'Z'
-        ts = None
+        # Parse timestamp
+        ts = datetime.now()
         if "timestamp" in data:
-            ts_str = str(data["timestamp"]).strip()
             try:
-                # Python's fromisoformat doesn't accept trailing 'Z'; convert to +00:00
-                if ts_str.endswith("Z"):
-                    ts_str = ts_str[:-1] + "+00:00"
-                ts = datetime.fromisoformat(ts_str)
+                ts = _parse_timestamp(str(data["timestamp"]))
             except Exception:
-                ts = None
+                pass
 
         return Event(
             type=data.get("type", ""),
             workflow_id=data.get("workflow_id", ""),
             message=data.get("message", ""),
             agent_id=data.get("agent_id"),
-            timestamp=ts or datetime.now(),
+            timestamp=ts,
             seq=data.get("seq", 0),
             stream_id=data.get("stream_id") or event_id,
         )
 
     async def close(self):
-        """Close gRPC channel."""
-        if self._channel:
-            await self._channel.close()
-            self._channel = None
-            self._orchestrator_stub = None
-            self._session_stub = None
-            self._streaming_stub = None
+        """Close HTTP client."""
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
 
     async def __aenter__(self):
         """Async context manager entry."""
@@ -1252,20 +1128,16 @@ class ShannonClient:
 
     def __init__(
         self,
-        grpc_endpoint: str = "localhost:50052",
-        http_endpoint: str = "http://localhost:8081",
+        base_url: str = "http://localhost:8080",
         api_key: Optional[str] = None,
         bearer_token: Optional[str] = None,
-        use_tls: bool = False,
         default_timeout: float = 30.0,
     ):
         """Initialize synchronous Shannon client."""
         self._async_client = AsyncShannonClient(
-            grpc_endpoint=grpc_endpoint,
-            http_endpoint=http_endpoint,
+            base_url=base_url,
             api_key=api_key,
             bearer_token=bearer_token,
-            use_tls=use_tls,
             default_timeout=default_timeout,
         )
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -1285,59 +1157,101 @@ class ShannonClient:
         loop = self._get_loop()
         return loop.run_until_complete(coro)
 
+    # Task operations
     def submit_task(
         self,
         query: str,
         *,
         session_id: Optional[str] = None,
-        user_id: str = "default",
         context: Optional[Dict[str, Any]] = None,
-        require_approval: bool = False,
-        template_name: Optional[str] = None,
-        template_version: Optional[str] = None,
-        disable_ai: bool = False,
-        labels: Optional[Dict[str, str]] = None,
+        idempotency_key: Optional[str] = None,
+        traceparent: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
-        """Submit a task (blocking). See AsyncShannonClient.submit_task for details."""
+        """Submit a task (blocking)."""
         handle = self._run(
             self._async_client.submit_task(
                 query,
                 session_id=session_id,
-                user_id=user_id,
                 context=context,
-                require_approval=require_approval,
-                template_name=template_name,
-                template_version=template_version,
-                disable_ai=disable_ai,
-                labels=labels,
+                idempotency_key=idempotency_key,
+                traceparent=traceparent,
                 timeout=timeout,
             )
         )
-        # Override client reference to use sync client for convenience methods
         handle._set_client(self)
         return handle
 
-    def wait(
-        self, task_id: str, timeout: Optional[float] = None, poll_interval: float = 1.0
-    ) -> TaskStatus:
-        """Wait for task completion (blocking). See AsyncShannonClient.wait for details."""
-        return self._run(
-            self._async_client.wait(task_id, timeout=timeout, poll_interval=poll_interval)
+    def submit_and_stream(
+        self,
+        query: str,
+        *,
+        session_id: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        idempotency_key: Optional[str] = None,
+        traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> tuple[TaskHandle, str]:
+        """Submit task and get stream URL (blocking)."""
+        handle, url = self._run(
+            self._async_client.submit_and_stream(
+                query,
+                session_id=session_id,
+                context=context,
+                idempotency_key=idempotency_key,
+                traceparent=traceparent,
+                timeout=timeout,
+            )
         )
+        handle._set_client(self)
+        return handle, url
 
     def get_status(
-        self, task_id: str, include_details: bool = True, timeout: Optional[float] = None
+        self, task_id: str, timeout: Optional[float] = None
     ) -> TaskStatus:
-        """Get task status (blocking). See AsyncShannonClient.get_status for details."""
+        """Get task status (blocking)."""
+        return self._run(self._async_client.get_status(task_id, timeout))
+
+    def list_tasks(
+        self,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        status: Optional[str] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[TaskSummary], int]:
+        """List tasks (blocking)."""
         return self._run(
-            self._async_client.get_status(task_id, include_details, timeout)
+            self._async_client.list_tasks(
+                limit=limit, offset=offset, status=status, session_id=session_id, timeout=timeout
+            )
+        )
+
+    def get_task_events(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> List[Event]:
+        """Get task events (blocking)."""
+        return self._run(self._async_client.get_task_events(task_id, timeout))
+
+    def get_task_timeline(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Get task timeline (blocking)."""
+        return self._run(self._async_client.get_task_timeline(task_id, timeout))
+
+    def wait(
+        self, task_id: str, timeout: Optional[float] = None, poll_interval: float = 2.0
+    ) -> TaskStatus:
+        """Wait for task completion (blocking)."""
+        return self._run(
+            self._async_client.wait(task_id, timeout=timeout, poll_interval=poll_interval)
         )
 
     def cancel(
         self, task_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
     ) -> bool:
-        """Cancel task (blocking). See AsyncShannonClient.cancel for details."""
+        """Cancel task (blocking)."""
         return self._run(self._async_client.cancel(task_id, reason, timeout))
 
     def approve(
@@ -1345,56 +1259,82 @@ class ShannonClient:
         approval_id: str,
         workflow_id: str,
         *,
-        run_id: Optional[str] = None,
         approved: bool = True,
         feedback: Optional[str] = None,
-        modified_action: Optional[str] = None,
-        approved_by: Optional[str] = None,
         timeout: Optional[float] = None,
     ) -> bool:
-        """Approve task (blocking). See AsyncShannonClient.approve for details."""
+        """Approve task (blocking)."""
         return self._run(
             self._async_client.approve(
-                approval_id,
-                workflow_id,
-                run_id=run_id,
-                approved=approved,
-                feedback=feedback,
-                modified_action=modified_action,
-                approved_by=approved_by,
-                timeout=timeout,
+                approval_id, workflow_id, approved=approved, feedback=feedback, timeout=timeout
             )
         )
 
-    def get_pending_approvals(
+    # Session operations
+    def list_sessions(
         self,
         *,
-        user_id: Optional[str] = None,
-        session_id: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
         timeout: Optional[float] = None,
-    ) -> List[PendingApproval]:
-        """Get pending approvals (blocking). See AsyncShannonClient.get_pending_approvals for details."""
+    ) -> tuple[List[SessionSummary], int]:
+        """List sessions (blocking)."""
         return self._run(
-            self._async_client.get_pending_approvals(
-                user_id=user_id,
-                session_id=session_id,
-                timeout=timeout,
+            self._async_client.list_sessions(limit=limit, offset=offset, timeout=timeout)
+        )
+
+    def get_session(
+        self, session_id: str, timeout: Optional[float] = None
+    ) -> Session:
+        """Get session details (blocking)."""
+        return self._run(self._async_client.get_session(session_id, timeout))
+
+    def get_session_history(
+        self, session_id: str, timeout: Optional[float] = None
+    ) -> List[SessionHistoryItem]:
+        """Get session history (blocking)."""
+        return self._run(self._async_client.get_session_history(session_id, timeout))
+
+    def get_session_events(
+        self,
+        session_id: str,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[SessionEventTurn], int]:
+        """Get session events (blocking)."""
+        return self._run(
+            self._async_client.get_session_events(
+                session_id, limit=limit, offset=offset, timeout=timeout
             )
         )
 
+    def update_session_title(
+        self, session_id: str, title: str, timeout: Optional[float] = None
+    ) -> bool:
+        """Update session title (blocking)."""
+        return self._run(self._async_client.update_session_title(session_id, title, timeout))
+
+    def delete_session(
+        self, session_id: str, timeout: Optional[float] = None
+    ) -> bool:
+        """Delete session (blocking)."""
+        return self._run(self._async_client.delete_session(session_id, timeout))
+
+    # Streaming
     def stream(
         self,
         workflow_id: str,
         *,
         types: Optional[List[Union[str, EventType]]] = None,
-        last_stream_id: Optional[str] = None,
-        last_event_id: Optional[Union[str, int]] = None,
-        use_grpc: Optional[bool] = None,
+        last_event_id: Optional[str] = None,
         reconnect: bool = True,
         max_retries: int = 5,
+        traceparent: Optional[str] = None,
     ) -> Iterator[Event]:
         """
-        Stream events (blocking iterator). See AsyncShannonClient.stream for details.
+        Stream events (blocking iterator).
 
         Returns synchronous iterator over events.
         """
@@ -1404,11 +1344,10 @@ class ShannonClient:
             async for event in self._async_client.stream(
                 workflow_id,
                 types=types,
-                last_stream_id=last_stream_id,
                 last_event_id=last_event_id,
-                use_grpc=use_grpc,
                 reconnect=reconnect,
                 max_retries=max_retries,
+                traceparent=traceparent,
             ):
                 yield event
 
@@ -1424,7 +1363,7 @@ class ShannonClient:
             loop.run_until_complete(async_gen.aclose())
 
     def close(self):
-        """Close gRPC channel."""
+        """Close HTTP client."""
         self._run(self._async_client.close())
 
     def __enter__(self):
@@ -1434,113 +1373,3 @@ class ShannonClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
-
-    # ===== Session Management (sync wrappers) =====
-
-    def create_session(
-        self,
-        user_id: str,
-        *,
-        initial_context: Optional[Dict[str, Any]] = None,
-        max_history: int = 50,
-        ttl_seconds: int = 3600,
-        timeout: Optional[float] = None,
-    ) -> Session:
-        """Create a new session (blocking)."""
-        return self._run(
-            self._async_client.create_session(
-                user_id,
-                initial_context=initial_context,
-                max_history=max_history,
-                ttl_seconds=ttl_seconds,
-                timeout=timeout,
-            )
-        )
-
-    def get_session(
-        self, session_id: str, *, include_history: bool = True, timeout: Optional[float] = None
-    ) -> Session:
-        """Get session details (blocking)."""
-        return self._run(
-            self._async_client.get_session(
-                session_id, include_history=include_history, timeout=timeout
-            )
-        )
-
-    def update_session(
-        self,
-        session_id: str,
-        *,
-        context_updates: Optional[Dict[str, Any]] = None,
-        extend_ttl_seconds: Optional[int] = None,
-        timeout: Optional[float] = None,
-    ) -> bool:
-        """Update session context or TTL (blocking)."""
-        return self._run(
-            self._async_client.update_session(
-                session_id,
-                context_updates=context_updates,
-                extend_ttl_seconds=extend_ttl_seconds,
-                timeout=timeout,
-            )
-        )
-
-    def delete_session(self, session_id: str, timeout: Optional[float] = None) -> bool:
-        """Delete a session (blocking)."""
-        return self._run(self._async_client.delete_session(session_id, timeout))
-
-    def list_sessions(
-        self,
-        user_id: str,
-        *,
-        active_only: bool = True,
-        limit: int = 50,
-        offset: int = 0,
-        timeout: Optional[float] = None,
-    ) -> List[SessionSummary]:
-        """List user sessions (blocking)."""
-        return self._run(
-            self._async_client.list_sessions(
-                user_id,
-                active_only=active_only,
-                limit=limit,
-                offset=offset,
-                timeout=timeout,
-            )
-        )
-
-    def add_message(
-        self,
-        session_id: str,
-        role: str,
-        content: str,
-        *,
-        metadata: Optional[Dict[str, Any]] = None,
-        timeout: Optional[float] = None,
-    ) -> bool:
-        """Add message to session (blocking)."""
-        return self._run(
-            self._async_client.add_message(
-                session_id,
-                role,
-                content,
-                metadata=metadata,
-                timeout=timeout,
-            )
-        )
-
-    def clear_history(
-        self,
-        session_id: str,
-        *,
-        keep_context: bool = True,
-        timeout: Optional[float] = None,
-    ) -> bool:
-        """Clear session history (blocking)."""
-        return self._run(
-            self._async_client.clear_history(
-                session_id,
-                keep_context=keep_context,
-                timeout=timeout,
-            )
-        )

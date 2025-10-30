@@ -7,8 +7,7 @@ from shannon import ShannonClient, EventType
 
 # Initialize client
 client = ShannonClient(
-    grpc_endpoint="localhost:50052",
-    http_endpoint="http://localhost:8081",
+    base_url="http://localhost:8080",
     api_key=os.getenv("SHANNON_API_KEY", ""),
 )
 
@@ -16,9 +15,7 @@ client = ShannonClient(
 print("Submitting task with approval requirement...")
 handle = client.submit_task(
     "Analyze market data and execute a trade if conditions are favorable",
-    user_id="trader-user",
     session_id="trading-session",
-    require_approval=True,  # Will pause for approval before executing actions
 )
 
 print(f"✓ Task submitted:")
@@ -57,60 +54,26 @@ for event in client.stream(
         print("⏸️  APPROVAL REQUIRED")
         print("-" * 60)
 
-        # Option A: Get pending approvals (recommended)
-        pending = client.get_pending_approvals(
-            user_id="trader-user",
-            session_id="trading-session"
-        )
-
-        if pending:
-            approval = pending[0]
-            print(f"Approval ID: {approval.approval_id}")
-            print(f"Workflow: {approval.workflow_id}")
-            print(f"Request: {approval.message}")
-            print(f"Time: {approval.requested_at}")
-
-            # Simulate user decision
-            print()
-            decision = input("Approve? (y/n): ").strip().lower()
-
-            if decision == 'y':
-                success = client.approve(
-                    approval_id=approval.approval_id,
-                    workflow_id=approval.workflow_id,
-                    run_id=handle.run_id,
-                    approved=True,
-                    feedback="Approved by user",
-                    approved_by="trader-user"
-                )
-                print(f"✓ Approval submitted: {success}")
-            else:
-                success = client.approve(
-                    approval_id=approval.approval_id,
-                    workflow_id=approval.workflow_id,
-                    run_id=handle.run_id,
-                    approved=False,
-                    feedback="Rejected by user - conditions not met",
-                    approved_by="trader-user"
-                )
-                print(f"✗ Rejection submitted: {success}")
-
-        else:
-            # Option B: Parse approval ID from message (fallback)
+        approval_id = None
+        if event.payload and isinstance(event.payload, dict):
+            approval_id = event.payload.get("approval_id")
+        if not approval_id:
             match = re.search(r'id=([a-f0-9-]{36})', event.message)
             if match:
                 approval_id = match.group(1)
                 print(f"Parsed approval ID: {approval_id}")
 
-                # Auto-approve for demo
-                success = client.approve(
-                    approval_id=approval_id,
-                    workflow_id=handle.workflow_id,
-                    run_id=handle.run_id,
-                    approved=True,
-                    feedback="Auto-approved for demo"
-                )
-                print(f"✓ Auto-approved: {success}")
+        if approval_id:
+            # Auto-approve for demo
+            success = client.approve(
+                approval_id=approval_id,
+                workflow_id=handle.workflow_id,
+                approved=True,
+                feedback="Auto-approved for demo"
+            )
+            print(f"✓ Auto-approved: {success}")
+        else:
+            print("Could not determine approval_id from event payload or message.")
 
         print("-" * 60)
         print()
@@ -124,7 +87,7 @@ print("-" * 60)
 print("Stream complete. Getting final status...")
 
 # Get final status
-status = client.get_status(handle.task_id, include_details=True)
+status = client.get_status(handle.task_id)
 print(f"Final status: {status.status.value}")
 if status.result:
     print(f"Result: {status.result}")

@@ -84,6 +84,7 @@ class TaskHandle:
     task_id: str
     workflow_id: str
     run_id: Optional[str] = None
+    session_id: Optional[str] = None
 
     def __post_init__(self):
         """Store reference to client for convenience methods."""
@@ -204,3 +205,52 @@ class SessionSummary:
     message_count: int
     total_tokens_used: int
     is_active: bool
+
+
+@dataclass
+class TokenUsage:
+    """Token usage breakdown."""
+
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+
+@dataclass
+class TaskSummary:
+    """Summary of a task (for list operations)."""
+
+    task_id: str
+    query: str
+    status: str
+    mode: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    total_token_usage: Optional[TokenUsage] = None
+
+
+@dataclass
+class SessionHistoryItem:
+    """Task in session history."""
+
+    task_id: str
+    query: str
+    result: Optional[str]
+    status: str
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+    tokens_used: int = 0
+
+
+@dataclass
+class SessionEventTurn:
+    """Single turn in session events (grouped by task)."""
+
+    turn: int
+    task_id: str
+    user_query: str
+    final_output: Optional[str]
+    timestamp: datetime
+    events: List[Event]
+    metadata: Dict[str, Any] = field(default_factory=dict)

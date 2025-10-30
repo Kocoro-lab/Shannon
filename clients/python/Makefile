@@ -3,7 +3,6 @@
 help:
 	@echo "Shannon Python SDK - Development Commands"
 	@echo ""
-	@echo "  make proto         - Generate Python stubs from proto files"
 	@echo "  make install       - Install package in development mode"
 	@echo "  make dev           - Install with dev dependencies"
 	@echo "  make test          - Run all tests with coverage"
@@ -15,28 +14,6 @@ help:
 	@echo "  make publish-test  - Upload to TestPyPI"
 	@echo "  make publish       - Upload to PyPI (production)"
 	@echo "  make clean         - Remove generated files"
-
-# Generate Python protobuf stubs
-proto:
-	@echo "Generating Python stubs from protos..."
-	mkdir -p src/shannon/generated
-	python -m grpc_tools.protoc \
-		-I../../protos \
-		--python_out=src/shannon/generated \
-		--grpc_python_out=src/shannon/generated \
-		--pyi_out=src/shannon/generated \
-		../../protos/common/common.proto \
-		../../protos/orchestrator/orchestrator.proto \
-		../../protos/orchestrator/streaming.proto \
-		../../protos/session/session.proto
-	@echo "Fixing import paths in generated files..."
-	@find src/shannon/generated -name "*_pb2*.py" -exec sed -i.bak 's/^from common import/from shannon.generated.common import/g' {} \;
-	@find src/shannon/generated -name "*_pb2*.py" -exec sed -i.bak 's/^from orchestrator import/from shannon.generated.orchestrator import/g' {} \;
-	@find src/shannon/generated -name "*_pb2*.py" -exec sed -i.bak 's/^from session import/from shannon.generated.session import/g' {} \;
-	@find src/shannon/generated -name "*.bak" -delete
-	@echo "Creating __init__.py files..."
-	@find src/shannon/generated -type d -exec sh -c 'touch "$$1/__init__.py"' _ {} \;
-	@echo "✓ Proto generation complete"
 
 install:
 	pip install -e .
@@ -65,13 +42,11 @@ format:
 
 build:
 	@echo "Building distribution packages..."
-	@echo "⚠️  Make sure you ran 'make proto' first!"
 	python3 -m build
 	@echo "✓ Built: dist/shannon_sdk-*.tar.gz and dist/shannon_sdk-*.whl"
 
 publish-test:
 	@echo "Uploading to TestPyPI..."
-	@echo "⚠️  Make sure you ran 'make build' first!"
 	python3 -m twine upload -r testpypi dist/*
 	@echo "✓ Published to TestPyPI"
 	@echo "  Install: pip install -i https://test.pypi.org/simple/ shannon-sdk==0.1.0a1"
@@ -86,7 +61,6 @@ publish:
 
 clean:
 	@echo "Cleaning build artifacts..."
-	rm -rf src/shannon/generated
 	rm -rf build dist *.egg-info
 	rm -rf htmlcov .coverage .pytest_cache
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

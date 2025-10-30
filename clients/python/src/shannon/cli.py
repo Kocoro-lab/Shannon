@@ -12,14 +12,9 @@ def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(description="Shannon AI Platform CLI")
     parser.add_argument(
-        "--endpoint",
-        default=os.getenv("SHANNON_GRPC_ENDPOINT", "localhost:50052"),
-        help="gRPC endpoint (default: localhost:50052)",
-    )
-    parser.add_argument(
-        "--http-endpoint",
-        default=os.getenv("SHANNON_HTTP_ENDPOINT", "http://localhost:8081"),
-        help="HTTP endpoint for SSE (default: http://localhost:8081)",
+        "--base-url",
+        default=os.getenv("SHANNON_BASE_URL", "http://localhost:8080"),
+        help="Gateway base URL (default: http://localhost:8080)",
     )
     parser.add_argument(
         "--api-key",
@@ -37,9 +32,10 @@ def main():
     # Submit command
     submit_parser = subparsers.add_parser("submit", help="Submit a task")
     submit_parser.add_argument("query", help="Task query")
-    submit_parser.add_argument("--user-id", default="cli-user", help="User ID")
     submit_parser.add_argument("--session-id", help="Session ID")
     submit_parser.add_argument("--wait", action="store_true", help="Wait for completion")
+    submit_parser.add_argument("--idempotency-key", help="Idempotency key for deduplicated submission")
+    submit_parser.add_argument("--traceparent", help="W3C traceparent header for distributed tracing")
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Get task status")
@@ -57,7 +53,8 @@ def main():
         "--types",
         help="Event types to filter (comma-separated)",
     )
-    stream_parser.add_argument("--use-sse", action="store_true", help="Force SSE transport")
+    # SSE is the only transport
+    stream_parser.add_argument("--traceparent", help="W3C traceparent header for distributed tracing")
 
     # Approve command
     approve_parser = subparsers.add_parser("approve", help="Approve pending request")
@@ -68,42 +65,21 @@ def main():
     approve_group.add_argument("--reject", action="store_false", dest="approved", help="Reject the request")
     approve_parser.add_argument("--feedback", help="Approval feedback")
 
-    # List approvals command
-    list_approvals_parser = subparsers.add_parser("approvals", help="List pending approvals")
-    list_approvals_parser.add_argument("--user-id", help="Filter by user ID")
-    list_approvals_parser.add_argument("--session-id", help="Filter by session ID")
-
-    # Session commands (basic)
-    sess_create = subparsers.add_parser("session-create", help="Create a session")
-    sess_create.add_argument("--user-id", required=True, help="User ID")
-    sess_create.add_argument("--ttl-seconds", type=int, default=3600, help="TTL seconds")
-    sess_create.add_argument("--max-history", type=int, default=50, help="Max history size")
-
+    # Session commands (HTTP)
     sess_get = subparsers.add_parser("session-get", help="Get a session")
     sess_get.add_argument("session_id", help="Session ID")
     sess_get.add_argument("--no-history", action="store_true", help="Do not include history")
 
-    sess_list = subparsers.add_parser("session-list", help="List sessions for a user")
-    sess_list.add_argument("--user-id", required=True, help="User ID")
-    sess_list.add_argument("--all", action="store_true", help="Include inactive sessions")
+    sess_list = subparsers.add_parser("session-list", help="List sessions")
     sess_list.add_argument("--limit", type=int, default=50)
     sess_list.add_argument("--offset", type=int, default=0)
 
     sess_delete = subparsers.add_parser("session-delete", help="Delete a session")
     sess_delete.add_argument("session_id", help="Session ID")
-
-    sess_add_msg = subparsers.add_parser("session-add-message", help="Add message to session")
-    sess_add_msg.add_argument("session_id", help="Session ID")
-    sess_add_msg.add_argument("--role", default="user", choices=["user", "assistant", "system"], help="Message role")
-    sess_add_msg.add_argument("--content", required=True, help="Message content")
-
-    sess_clear = subparsers.add_parser("session-clear", help="Clear session history")
-    sess_clear.add_argument("session_id", help="Session ID")
-    sess_clear.add_argument("--drop-context", action="store_true", help="Also drop persistent context")
-
-    sess_update = subparsers.add_parser("session-update", help="Update a session (TTL only)")
-    sess_update.add_argument("session_id", help="Session ID")
-    sess_update.add_argument("--extend-ttl", type=int, default=0, help="Seconds to extend TTL")
+    # Optional: session title update
+    sess_title = subparsers.add_parser("session-title", help="Update session title")
+    sess_title.add_argument("session_id", help="Session ID")
+    sess_title.add_argument("title", help="New title")
 
     args = parser.parse_args()
 
@@ -113,8 +89,7 @@ def main():
 
     # Initialize client
     client = ShannonClient(
-        grpc_endpoint=args.endpoint,
-        http_endpoint=args.http_endpoint,
+        base_url=args.base_url,
         api_key=args.api_key if args.api_key else None,
         bearer_token=args.bearer_token if args.bearer_token else None,
     )
@@ -123,8 +98,9 @@ def main():
         if args.command == "submit":
             handle = client.submit_task(
                 args.query,
-                user_id=args.user_id,
                 session_id=args.session_id,
+                idempotency_key=args.idempotency_key,
+                traceparent=args.traceparent,
             )
             print(f"Task submitted:")
             print(f"  Task ID: {handle.task_id}")
@@ -141,7 +117,7 @@ def main():
                     sys.exit(1)
 
         elif args.command == "status":
-            status = client.get_status(args.task_id, include_details=True)
+            status = client.get_status(args.task_id)
             print(f"Task: {status.task_id}")
             print(f"Status: {status.status.value}")
             print(f"Progress: {status.progress:.1%}")
@@ -149,9 +125,6 @@ def main():
                 print(f"Result: {status.result}")
             if status.error_message:
                 print(f"Error: {status.error_message}")
-            if status.metrics:
-                print(f"Tokens: {status.metrics.tokens_used}")
-                print(f"Cost: ${status.metrics.cost_usd:.4f}")
 
         elif args.command == "cancel":
             success = client.cancel(args.task_id, reason=args.reason)
@@ -167,8 +140,6 @@ def main():
             if args.types:
                 event_types = [t.strip() for t in args.types.split(",")]
 
-            use_grpc = None if not args.use_sse else False
-
             print(f"Streaming events for workflow: {args.workflow_id}")
             print("-" * 60)
 
@@ -176,7 +147,7 @@ def main():
                 for event in client.stream(
                     args.workflow_id,
                     types=event_types,
-                    use_grpc=use_grpc,
+                    traceparent=args.traceparent,
                 ):
                     timestamp = event.timestamp.strftime("%H:%M:%S")
                     agent = f"[{event.agent_id}] " if event.agent_id else ""
@@ -206,63 +177,33 @@ def main():
                 print(f"✗ Failed to submit approval")
                 sys.exit(1)
 
-        elif args.command == "approvals":
-            approvals = client.get_pending_approvals(
-                user_id=args.user_id,
-                session_id=args.session_id,
-            )
-            if approvals:
-                print(f"Found {len(approvals)} pending approval(s):\n")
-                for approval in approvals:
-                    print(f"  Approval ID: {approval.approval_id}")
-                    print(f"  Workflow: {approval.workflow_id}")
-                    print(f"  Message: {approval.message}")
-                    print(f"  Requested: {approval.requested_at}")
-                    print()
-            else:
-                print("No pending approvals")
-
         elif args.command == "session-create":
-            sess = client.create_session(
-                args.user_id,
-                ttl_seconds=args.ttl_seconds,
-                max_history=args.max_history,
-            )
-            print(f"✓ Session created: {sess.session_id}")
+            print("This command is no longer supported in HTTP SDK.")
+            sys.exit(1)
 
         elif args.command == "session-get":
-            sess = client.get_session(args.session_id, include_history=(not args.no_history))
+            sess = client.get_session(args.session_id)
             print(f"Session {sess.session_id} (user={sess.user_id})")
             print(f"Created: {sess.created_at}, Updated: {sess.updated_at}")
-            print(f"History msgs: {len(sess.history)}")
+            if not args.no_history:
+                try:
+                    hist = client.get_session_history(args.session_id)
+                    print(f"History msgs: {len(hist)}")
+                except Exception:
+                    print("History not available")
 
         elif args.command == "session-list":
-            sessions = client.list_sessions(
-                args.user_id,
-                active_only=not args.all,  # Default True (active only), --all makes it False
-                limit=args.limit,
-                offset=args.offset,
-            )
-            if sessions:
-                for s in sessions:
-                    print(f"{s.session_id}\t{s.user_id}\t{s.updated_at}\tmsgs={s.message_count}")
-            else:
-                print("No sessions found (listing not fully implemented in backend)")
+            sessions, total = client.list_sessions(limit=args.limit, offset=args.offset)
+            print(f"Total: {total}")
+            for s in sessions:
+                print(f"{s.session_id}\t{s.user_id}\t{s.created_at}")
 
         elif args.command == "session-delete":
             ok = client.delete_session(args.session_id)
             print("✓ Deleted" if ok else "✗ Delete failed")
 
-        elif args.command == "session-add-message":
-            ok = client.add_message(args.session_id, role=args.role, content=args.content)
-            print("✓ Added" if ok else "✗ Add failed")
-
-        elif args.command == "session-clear":
-            ok = client.clear_history(args.session_id, keep_context=(not args.drop_context))
-            print("✓ Cleared" if ok else "✗ Clear failed")
-
-        elif args.command == "session-update":
-            ok = client.update_session(args.session_id, extend_ttl_seconds=args.extend_ttl or 0)
+        elif args.command == "session-title":
+            ok = client.update_session_title(args.session_id, args.title)
             print("✓ Updated" if ok else "✗ Update failed")
 
     except errors.ShannonError as e:
