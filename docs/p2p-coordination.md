@@ -94,18 +94,20 @@ SubmitTaskRequest {
 
 ### Via Python Client
 ```python
-from shannon_client import ShannonClient
+from shannon import ShannonClient
 
-client = ShannonClient()
+client = ShannonClient(base_url="http://localhost:8080")
 
 # Automatic P2P for dependent tasks
 response = client.submit_task(
-    "Research the topic, validate findings, and write article"
+    "Research the topic, validate findings, and write article",
+    session_id="p2p-demo"
 )
 
 # Force P2P mode
 response = client.submit_task(
     "Simple query",
+    session_id="p2p-demo",
     context={"force_p2p": True}
 )
 ```
