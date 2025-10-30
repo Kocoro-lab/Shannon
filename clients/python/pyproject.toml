@@ -1,6 +1,6 @@
 [project]
 name = "shannon-sdk"
-version = "0.1.0a2"
+version = "0.2.0a1"
 description = "Python SDK for Shannon multi-agent AI platform"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -23,11 +23,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "grpcio>=1.60.0",
-    "protobuf>=5.29.2",
     "httpx>=0.26.0",
-    "pydantic>=2.5.0",
-    "pydantic-settings>=2.1.0",
 ]
 
 [project.urls]
@@ -38,7 +34,6 @@ Issues = "https://github.com/Kocoro-lab/Shannon/issues"
 
 [project.optional-dependencies]
 dev = [
-    "grpcio-tools>=1.68.1",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-timeout>=2.2.0",
@@ -77,4 +72,3 @@ check_untyped_defs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-timeout = 30

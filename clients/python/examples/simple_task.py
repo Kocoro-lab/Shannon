@@ -7,8 +7,7 @@ from shannon import ShannonClient, TaskStatusEnum
 
 # Initialize client
 client = ShannonClient(
-    grpc_endpoint="localhost:50052",
-    http_endpoint="http://localhost:8081",
+    base_url="http://localhost:8080",
     api_key=os.getenv("SHANNON_API_KEY", ""),  # or use bearer_token
 )
 
@@ -16,7 +15,6 @@ client = ShannonClient(
 print("Submitting task...")
 handle = client.submit_task(
     "What is 15 + 25?",
-    user_id="example-user",
     session_id="example-session",
 )
 
@@ -27,20 +25,7 @@ print()
 
 # Poll for completion
 print("Waiting for completion...")
-while True:
-    status = client.get_status(handle.task_id, include_details=True)
-
-    print(f"  Status: {status.status.value} ({status.progress:.1%})")
-
-    if status.status in [
-        TaskStatusEnum.COMPLETED,
-        TaskStatusEnum.FAILED,
-        TaskStatusEnum.CANCELLED,
-        TaskStatusEnum.TIMEOUT,
-    ]:
-        break
-
-    time.sleep(2)
+status = client.wait(handle.task_id, timeout=60, poll_interval=2.0)
 
 # Display result
 print()

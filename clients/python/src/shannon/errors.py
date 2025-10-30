@@ -82,6 +82,20 @@ class ValidationError(ShannonError):
 
     pass
 
+class PermissionDeniedError(ShannonError):
+    """Forbidden (authorization) error."""
+
+    pass
+
+class RateLimitError(ShannonError):
+    """Too many requests / rate limited."""
+
+    pass
+
+class ServerError(ShannonError):
+    """Upstream server error (5xx)."""
+
+    pass
 
 class TemplateError(ShannonError):
     """Base exception for template-related errors."""

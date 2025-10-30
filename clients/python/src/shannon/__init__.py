@@ -1,6 +1,6 @@
 """Shannon SDK - Python client for Shannon multi-agent AI platform."""
 
-__version__ = "0.1.0a1"
+__version__ = "0.2.0a1"
 
 from shannon.client import AsyncShannonClient, ShannonClient
 from shannon.models import (
@@ -8,18 +8,25 @@ from shannon.models import (
     EventType,
     PendingApproval,
     Session,
+    SessionEventTurn,
+    SessionHistoryItem,
     SessionSummary,
     TaskHandle,
     TaskStatus,
     TaskStatusEnum,
+    TaskSummary,
+    TokenUsage,
 )
 from shannon.errors import (
     AuthenticationError,
     ConnectionError,
+    PermissionDeniedError,
+    RateLimitError,
     SessionError,
     SessionExpiredError,
     SessionNotFoundError,
     ShannonError,
+    ServerError,
     TaskCancelledError,
     TaskError,
     TaskNotFoundError,
@@ -38,17 +45,24 @@ __all__ = [
     "EventType",
     "PendingApproval",
     "Session",
+    "SessionEventTurn",
+    "SessionHistoryItem",
     "SessionSummary",
     "TaskHandle",
     "TaskStatus",
     "TaskStatusEnum",
+    "TaskSummary",
+    "TokenUsage",
     # Errors
     "AuthenticationError",
     "ConnectionError",
+    "PermissionDeniedError",
+    "RateLimitError",
     "SessionError",
     "SessionExpiredError",
     "SessionNotFoundError",
     "ShannonError",
+    "ServerError",
     "TaskCancelledError",
     "TaskError",
     "TaskNotFoundError",
