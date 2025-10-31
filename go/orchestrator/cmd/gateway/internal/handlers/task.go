@@ -46,9 +46,15 @@ func NewTaskHandler(
 
 // TaskRequest represents a task submission request
 type TaskRequest struct {
-	Query     string                 `json:"query"`
-	SessionID string                 `json:"session_id,omitempty"`
-	Context   map[string]interface{} `json:"context,omitempty"`
+    Query     string                 `json:"query"`
+    SessionID string                 `json:"session_id,omitempty"`
+    Context   map[string]interface{} `json:"context,omitempty"`
+    // Optional execution mode hint (e.g., "supervisor").
+    // Routed via metadata labels to orchestrator.
+    Mode      string                 `json:"mode,omitempty"`
+    // Optional model tier hint; if provided, inject into context
+    // so downstream services can honor it (small|medium|large).
+    ModelTier string                 `json:"model_tier,omitempty"`
 }
 
 // TaskResponse represents a task submission response
@@ -119,25 +125,60 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		req.SessionID = uuid.New().String()
 	}
 
-	// Build gRPC request
-	grpcReq := &orchpb.SubmitTaskRequest{
-		Metadata: &commonpb.TaskMetadata{
-			UserId:    userCtx.UserID.String(),
-			TenantId:  userCtx.TenantID.String(),
-			SessionId: req.SessionID,
-		},
-		Query: req.Query,
-	}
+    // Build gRPC request
+    grpcReq := &orchpb.SubmitTaskRequest{
+        Metadata: &commonpb.TaskMetadata{
+            UserId:    userCtx.UserID.String(),
+            TenantId:  userCtx.TenantID.String(),
+            SessionId: req.SessionID,
+            Labels:    map[string]string{},
+        },
+        Query: req.Query,
+    }
 
-	// Add context if provided
-	if len(req.Context) > 0 {
-		st, err := structpb.NewStruct(req.Context)
-		if err != nil {
-			h.logger.Warn("Failed to convert context to struct", zap.Error(err))
-		} else {
-			grpcReq.Context = st
-		}
-	}
+    // Ensure context map exists so we can inject optional fields safely
+    ctxMap := map[string]interface{}{}
+    if len(req.Context) > 0 {
+        for k, v := range req.Context {
+            ctxMap[k] = v
+        }
+    }
+    // Validate and inject model_tier from top-level (top-level wins)
+    if mt := strings.TrimSpace(strings.ToLower(req.ModelTier)); mt != "" {
+        switch mt {
+        case "small", "medium", "large":
+            // Top-level overrides any value in context
+            ctxMap["model_tier"] = mt
+            h.logger.Debug("Applied top-level model_tier override", zap.String("model_tier", mt))
+        default:
+            h.sendError(w, "Invalid model_tier (allowed: small, medium, large)", http.StatusBadRequest)
+            return
+        }
+    }
+    // Add context if present
+    if len(ctxMap) > 0 {
+        st, err := structpb.NewStruct(ctxMap)
+        if err != nil {
+            h.logger.Warn("Failed to convert context to struct", zap.Error(err))
+        } else {
+            grpcReq.Context = st
+        }
+    }
+
+    // Propagate optional mode via labels for routing (e.g., supervisor)
+    if m := strings.TrimSpace(strings.ToLower(req.Mode)); m != "" {
+        // Validate allowed modes to avoid silent drift
+        switch m {
+        case "simple", "supervisor":
+            if grpcReq.Metadata.Labels == nil {
+                grpcReq.Metadata.Labels = map[string]string{}
+            }
+            grpcReq.Metadata.Labels["mode"] = m
+        default:
+            h.sendError(w, "Invalid mode (allowed: simple, supervisor)", http.StatusBadRequest)
+            return
+        }
+    }
 
     // Propagate auth/tracing headers to gRPC metadata
     ctx = withGRPCMetadata(ctx, r)
@@ -215,25 +256,58 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 		req.SessionID = uuid.New().String()
 	}
 
-	// Build gRPC request (reuse same shape as SubmitTask)
-	grpcReq := &orchpb.SubmitTaskRequest{
-		Metadata: &commonpb.TaskMetadata{
-			UserId:    userCtx.UserID.String(),
-			TenantId:  userCtx.TenantID.String(),
-			SessionId: req.SessionID,
-		},
-		Query: req.Query,
-	}
+    // Build gRPC request (reuse same shape as SubmitTask)
+    grpcReq := &orchpb.SubmitTaskRequest{
+        Metadata: &commonpb.TaskMetadata{
+            UserId:    userCtx.UserID.String(),
+            TenantId:  userCtx.TenantID.String(),
+            SessionId: req.SessionID,
+            Labels:    map[string]string{},
+        },
+        Query: req.Query,
+    }
 
-	// Add context if provided
-	if len(req.Context) > 0 {
-		st, err := structpb.NewStruct(req.Context)
-		if err != nil {
-			h.logger.Warn("Failed to convert context to struct", zap.Error(err))
-		} else {
-			grpcReq.Context = st
-		}
-	}
+    // Ensure context map exists so we can inject optional fields safely
+    ctxMap := map[string]interface{}{}
+    if len(req.Context) > 0 {
+        for k, v := range req.Context {
+            ctxMap[k] = v
+        }
+    }
+    // Validate and inject model_tier from top-level (top-level wins)
+    if mt := strings.TrimSpace(strings.ToLower(req.ModelTier)); mt != "" {
+        switch mt {
+        case "small", "medium", "large":
+            ctxMap["model_tier"] = mt
+            h.logger.Debug("Applied top-level model_tier override", zap.String("model_tier", mt))
+        default:
+            h.sendError(w, "Invalid model_tier (allowed: small, medium, large)", http.StatusBadRequest)
+            return
+        }
+    }
+    // Add context if present
+    if len(ctxMap) > 0 {
+        st, err := structpb.NewStruct(ctxMap)
+        if err != nil {
+            h.logger.Warn("Failed to convert context to struct", zap.Error(err))
+        } else {
+            grpcReq.Context = st
+        }
+    }
+
+    // Propagate optional mode via labels for routing (e.g., supervisor)
+    if m := strings.TrimSpace(strings.ToLower(req.Mode)); m != "" {
+        switch m {
+        case "simple", "supervisor":
+            if grpcReq.Metadata.Labels == nil {
+                grpcReq.Metadata.Labels = map[string]string{}
+            }
+            grpcReq.Metadata.Labels["mode"] = m
+        default:
+            h.sendError(w, "Invalid mode (allowed: simple, supervisor)", http.StatusBadRequest)
+            return
+        }
+    }
 
     // Propagate auth/tracing headers to gRPC metadata
     ctx = withGRPCMetadata(ctx, r)
