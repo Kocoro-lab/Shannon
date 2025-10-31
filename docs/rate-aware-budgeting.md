@@ -126,6 +126,14 @@ context:
   model_tier: "large"        # Determines rate limits
   provider: "openai"         # Optional, inferred from model
   respect_rate_limits: true  # Enable rate control
+
+#### Set tier via HTTP API
+
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "Process batch data", "model_tier": "medium"}'
+```
 ```
 
 ### Template-Based Control

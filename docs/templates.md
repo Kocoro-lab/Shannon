@@ -60,6 +60,23 @@ Notes:
 - When `disable_ai` is true and the template is missing, the request fails fast.
 - When `workflows.templates.fallback_to_ai` (or `TEMPLATE_FALLBACK_ENABLED=1`) is enabled, failed template runs can fall back to AI decomposition.
 
+HTTP usage:
+
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "Weekly research briefing",
+    "context": {
+      "template": "simple_analysis",
+      "template_version": "1.0.0",
+      "disable_ai": true
+    }
+  }'
+```
+
+Alias support: `context.template_name` is accepted as an alias for `context.template` when calling the HTTP API.
+
 5) Best practices
 
 - Keep nodes small and deterministic; prefer more nodes over large monoliths.
