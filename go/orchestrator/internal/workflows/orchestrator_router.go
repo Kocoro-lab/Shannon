@@ -514,20 +514,26 @@ func convertFromStrategiesResult(result strategies.TaskResult) TaskResult {
 }
 
 func extractTemplateRequest(input TaskInput) (string, string) {
-	name := strings.TrimSpace(input.TemplateName)
-	version := strings.TrimSpace(input.TemplateVersion)
+    name := strings.TrimSpace(input.TemplateName)
+    version := strings.TrimSpace(input.TemplateVersion)
 
-	if name == "" && input.Context != nil {
-		if v, ok := input.Context["template"].(string); ok {
-			name = strings.TrimSpace(v)
-		}
-	}
-	if version == "" && input.Context != nil {
-		if v, ok := input.Context["template_version"].(string); ok {
-			version = strings.TrimSpace(v)
-		}
-	}
-	return name, version
+    if name == "" && input.Context != nil {
+        if v, ok := input.Context["template"].(string); ok {
+            name = strings.TrimSpace(v)
+        }
+        // Accept legacy/alias key: template_name
+        if name == "" {
+            if v2, ok2 := input.Context["template_name"].(string); ok2 {
+                name = strings.TrimSpace(v2)
+            }
+        }
+    }
+    if version == "" && input.Context != nil {
+        if v, ok := input.Context["template_version"].(string); ok {
+            version = strings.TrimSpace(v)
+        }
+    }
+    return name, version
 }
 
 func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy string, mode string, emitCtx workflow.Context) (TaskResult, bool, error) {

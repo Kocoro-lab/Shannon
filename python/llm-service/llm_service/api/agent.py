@@ -277,7 +277,13 @@ async def agent_query(request: Request, query: AgentQuery):
                 "medium": ModelTier.MEDIUM,
                 "large": ModelTier.LARGE,
             }
-            tier = tier_map.get(query.model_tier, ModelTier.SMALL)
+            # Prefer explicit top-level tier; fallback to context.model_tier when provided
+            tier = tier_map.get(query.model_tier, None)
+            if tier is None and isinstance(query.context, dict):
+                ctx_tier = str(query.context.get("model_tier", "")).lower().strip()
+                tier = tier_map.get(ctx_tier, None)
+            if tier is None:
+                tier = ModelTier.SMALL
 
             # Check for model override (from query field, context, or role preset)
             model_override = query.model_override or (
@@ -290,7 +296,8 @@ async def agent_query(request: Request, query: AgentQuery):
             elif model_override:
                 logger.info(f"Using model override: {model_override}")
             else:
-                logger.info(f"Using tier-based selection: {query.model_tier} -> {tier}")
+                chosen = query.model_tier or (query.context or {}).get("model_tier") if isinstance(query.context, dict) else None
+                logger.info(f"Using tier-based selection: {chosen or 'small'} -> {tier}")
 
             # Resolve effective allowed tools: request.allowed_tools (intersect with preset when present)
             effective_allowed_tools: List[str] = []

@@ -727,26 +727,50 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
-				"TaskRequest": map[string]interface{}{
-					"type":     "object",
-					"required": []string{"query"},
-					"properties": map[string]interface{}{
-						"query": map[string]interface{}{
-							"type":        "string",
-							"description": "The task query or command",
-						},
-						"context": map[string]interface{}{
-							"type":        "object",
-							"description": "Additional context for the task",
-						},
-						"mode": map[string]interface{}{
-							"type":        "string",
-							"enum":        []string{"simple", "supervisor"},
-							"description": "Execution mode",
-							"default":     "simple",
-						},
-					},
-				},
+                "TaskRequest": map[string]interface{}{
+                    "type":     "object",
+                    "required": []string{"query"},
+                    "properties": map[string]interface{}{
+                        "query": map[string]interface{}{
+                            "type":        "string",
+                            "description": "The task query or command",
+                        },
+                        "session_id": map[string]interface{}{
+                            "type":        "string",
+                            "description": "Session ID for continuity (UUID or custom string)",
+                        },
+                        "context": map[string]interface{}{
+                            "type":        "object",
+                            "description": "Additional context for the task (recognized keys: role, model_tier, model_override, system_prompt, prompt_params, template, template_version, disable_ai, history_window_size, use_case_preset, primers_count, recents_count, compression_trigger_ratio, compression_target_ratio)",
+                            "example": map[string]interface{}{
+                                "role":               "analysis",
+                                "model_tier":         "large",
+                                "model_override":     "gpt-4.1",
+                                "system_prompt":      "You are a concise assistant.",
+                                "prompt_params":      map[string]interface{}{"profile_id": "49598h6e", "current_date": "2025-09-01"},
+                                "template":           "research_summary",
+                                "template_version":   "1.0.0",
+                                "disable_ai":         true,
+                                "history_window_size": 75,
+                                "primers_count":       3,
+                                "recents_count":       20,
+                                "compression_trigger_ratio": 0.75,
+                                "compression_target_ratio":  0.375,
+                            },
+                        },
+                        "mode": map[string]interface{}{
+                            "type":        "string",
+                            "enum":        []string{"simple", "supervisor"},
+                            "description": "Execution mode hint (supervisor routes via SupervisorWorkflow)",
+                            "default":     "simple",
+                        },
+                        "model_tier": map[string]interface{}{
+                            "type":        "string",
+                            "enum":        []string{"small", "medium", "large"},
+                            "description": "Preferred model tier (injects into context.model_tier)",
+                        },
+                    },
+                },
 				"TaskResponse": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{

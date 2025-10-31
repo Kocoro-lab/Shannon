@@ -76,19 +76,32 @@ impl LLMClient {
             .map(Cow::Owned)
             .collect();
 
+        // Determine model_tier, allowing context override
+        let ctx_val = context.clone().unwrap_or_else(|| serde_json::json!({}));
+        let tier_from_mode = match mode {
+            "simple" => "small".to_string(),
+            "complex" => "large".to_string(),
+            _ => "medium".to_string(),
+        };
+        let mut effective_tier = tier_from_mode.clone();
+        if let Some(obj) = ctx_val.as_object() {
+            if let Some(mt) = obj.get("model_tier").and_then(|v| v.as_str()) {
+                let mt_l = mt.to_lowercase();
+                if mt_l == "small" || mt_l == "medium" || mt_l == "large" {
+                    effective_tier = mt_l;
+                }
+            }
+        }
+
         let request = AgentQuery {
             query: Cow::Borrowed(query),
-            context: context.unwrap_or_else(|| serde_json::json!({})),
+            context: ctx_val,
             agent_id: Cow::Borrowed(agent_id),
             mode: Cow::Borrowed(mode),
             tools: tools_vec,
             max_tokens: 2048,
             temperature: 0.7,
-            model_tier: match mode {
-                "simple" => Cow::Borrowed("small"),
-                "complex" => Cow::Borrowed("large"),
-                _ => Cow::Borrowed("medium"),
-            },
+            model_tier: Cow::Owned(effective_tier),
         };
 
         debug!("Sending query to LLM service: {:?}", request);
