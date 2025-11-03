@@ -33,13 +33,13 @@ func TestEnhancedBudgetManager(t *testing.T) {
 		userID := "test-user-1"
 		sessionID := "test-session-1"
 
-        // Configure session budget for testing
-        manager.SetSessionBudget(sessionID, &TokenBudget{
-            TaskBudget:        1000,
-            SessionBudget:     1000,
-            SessionTokensUsed: 0,
-            HardLimit:         true,
-        })
+		// Configure session budget for testing
+		manager.SetSessionBudget(sessionID, &TokenBudget{
+			TaskBudget:        1000,
+			SessionBudget:     1000,
+			SessionTokensUsed: 0,
+			HardLimit:         true,
+		})
 
 		// First request at 70% - should not trigger backpressure
 		result, err := manager.CheckBudgetWithBackpressure(ctx, userID, sessionID, "task-1", 700)
@@ -68,15 +68,15 @@ func TestEnhancedBudgetManager(t *testing.T) {
 			t.Fatalf("CheckBudget failed: %v", err)
 		}
 
-        // At exactly 80%, backpressure should be active
-        if !result.BackpressureActive {
-            // Get current usage for debugging
-            manager.mu.RLock()
-            sessionBudget := manager.getSessionBudget(sessionID)
-            t.Errorf("Backpressure should be active at 80%% budget. Current usage: %d/%d",
-                    sessionBudget.SessionTokensUsed, sessionBudget.SessionBudget)
-            manager.mu.RUnlock()
-        }
+		// At exactly 80%, backpressure should be active
+		if !result.BackpressureActive {
+			// Get current usage for debugging
+			manager.mu.RLock()
+			sessionBudget := manager.getSessionBudget(sessionID)
+			t.Errorf("Backpressure should be active at 80%% budget. Current usage: %d/%d",
+				sessionBudget.SessionTokensUsed, sessionBudget.SessionBudget)
+			manager.mu.RUnlock()
+		}
 		if result.BackpressureDelay <= 0 {
 			t.Error("Should have backpressure delay")
 		}
@@ -105,13 +105,13 @@ func TestEnhancedBudgetManager(t *testing.T) {
 		userID := "test-user-2"
 		sessionID := "test-session-2"
 
-        // Set session budget
-        manager.SetSessionBudget(sessionID, &TokenBudget{
-            TaskBudget:        10000,
-            SessionBudget:     10000,
-            SessionTokensUsed: 0,
-            HardLimit:         false,
-        })
+		// Set session budget
+		manager.SetSessionBudget(sessionID, &TokenBudget{
+			TaskBudget:        10000,
+			SessionBudget:     10000,
+			SessionTokensUsed: 0,
+			HardLimit:         false,
+		})
 
 		// Pre-seed usage close to backpressure threshold so some requests trigger delay
 		manager.RecordUsage(ctx, &BudgetTokenUsage{
@@ -217,17 +217,17 @@ func TestEnhancedBudgetManager(t *testing.T) {
 		}
 	})
 
-    t.Run("BudgetPressureAlwaysLowAfterDailyRemoval", func(t *testing.T) {
-        userID := "test-user-4"
-        // Daily/monthly tracking removed; GetBudgetPressure should always be "low"
-        for _, used := range []int{0, 2500, 5000, 7500, 9000} {
-            _ = used // usage no longer affects GetBudgetPressure
-            pressure := manager.GetBudgetPressure(userID)
-            if pressure != "low" {
-                t.Errorf("expected 'low' pressure after daily removal, got %s", pressure)
-            }
-        }
-    })
+	t.Run("BudgetPressureAlwaysLowAfterDailyRemoval", func(t *testing.T) {
+		userID := "test-user-4"
+		// Daily/monthly tracking removed; GetBudgetPressure should always be "low"
+		for _, used := range []int{0, 2500, 5000, 7500, 9000} {
+			_ = used // usage no longer affects GetBudgetPressure
+			pressure := manager.GetBudgetPressure(userID)
+			if pressure != "low" {
+				t.Errorf("expected 'low' pressure after daily removal, got %s", pressure)
+			}
+		}
+	})
 
 	t.Run("BackpressureDelayCalculation", func(t *testing.T) {
 		manager := NewBudgetManager(nil, zap.NewNop())

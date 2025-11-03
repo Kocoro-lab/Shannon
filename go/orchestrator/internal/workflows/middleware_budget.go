@@ -1,18 +1,18 @@
 package workflows
 
 import (
-    "strings"
-    "time"
+	"strings"
+	"time"
 
-    "go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
-    ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/ratecontrol"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/ratecontrol"
 )
 
 // BudgetPreflight performs a token budget check with optional backpressure delay.
@@ -44,39 +44,39 @@ func BudgetPreflight(ctx workflow.Context, input TaskInput, estimatedTokens int)
 		_ = workflow.Sleep(ctx, time.Duration(res.BackpressureDelay)*time.Millisecond)
 	}
 
-    rateControlVersion := workflow.GetVersion(ctx, "provider_rate_control_v1", workflow.DefaultVersion, 1)
-    if rateControlVersion >= 1 {
-        // Resolve runtime setting from features.yaml + env override
-        var f *config.Features
-        if feats, err := config.Load(); err == nil {
-            f = feats
-        }
-        er := config.ResolveEnforcementRuntime(f)
-        if !er.ProviderRateControlEnabled {
-            logger.Info("Provider rate control disabled by config/env")
-        } else {
-            tier := deriveModelTier(input.Context)
-            provider := resolveProviderFromContext(input.Context)
+	rateControlVersion := workflow.GetVersion(ctx, "provider_rate_control_v1", workflow.DefaultVersion, 1)
+	if rateControlVersion >= 1 {
+		// Resolve runtime setting from features.yaml + env override
+		var f *config.Features
+		if feats, err := config.Load(); err == nil {
+			f = feats
+		}
+		er := config.ResolveEnforcementRuntime(f)
+		if !er.ProviderRateControlEnabled {
+			logger.Info("Provider rate control disabled by config/env")
+		} else {
+			tier := deriveModelTier(input.Context)
+			provider := resolveProviderFromContext(input.Context)
 
-            // If provider is unknown, infer from tier's primary provider (models.yaml priority 1)
-            if provider == "unknown" {
-                provider = inferProviderFromTier(tier)
-            }
+			// If provider is unknown, infer from tier's primary provider (models.yaml priority 1)
+			if provider == "unknown" {
+				provider = inferProviderFromTier(tier)
+			}
 
-            delay := ratecontrol.DelayForRequest(provider, tier, estimatedTokens)
-            if delay > 0 {
-                logger.Info("Applying provider rate control delay",
-                    "provider", provider,
-                    "tier", tier,
-                    "delay_ms", delay.Milliseconds(),
-                )
-                // Record metric for rate limit delay
-                ometrics.RateLimitDelay.WithLabelValues(provider, tier).Observe(delay.Seconds())
-                _ = workflow.Sleep(ctx, delay)
-            }
-        }
-    }
-    return &res, nil
+			delay := ratecontrol.DelayForRequest(provider, tier, estimatedTokens)
+			if delay > 0 {
+				logger.Info("Applying provider rate control delay",
+					"provider", provider,
+					"tier", tier,
+					"delay_ms", delay.Milliseconds(),
+				)
+				// Record metric for rate limit delay
+				ometrics.RateLimitDelay.WithLabelValues(provider, tier).Observe(delay.Seconds())
+				_ = workflow.Sleep(ctx, delay)
+			}
+		}
+	}
+	return &res, nil
 }
 
 // WithAgentBudget returns a child context annotated with a per-agent budget.

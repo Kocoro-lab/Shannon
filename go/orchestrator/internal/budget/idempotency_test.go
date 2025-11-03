@@ -27,7 +27,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		SessionID:      "session-456",
 		TaskID:         "task-789",
 		AgentID:        "agent-001",
-        Model:          "gpt-5-nano-2025-08-07",
+		Model:          "gpt-5-nano-2025-08-07",
 		Provider:       "openai",
 		InputTokens:    100,
 		OutputTokens:   50,
@@ -41,7 +41,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		TaskTokensUsed:    0,
 		SessionTokensUsed: 0,
 	}
-    // User-level daily/monthly budgets removed; no user budget initialization required
+	// User-level daily/monthly budgets removed; no user budget initialization required
 
 	// Expect user lookup/creation first
 	userID := uuid.New()
@@ -61,14 +61,14 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 
 	// Expect the first insert to succeed
 	mock.ExpectExec("INSERT INTO token_usage").WithArgs(
-		userID,           // user_id (UUID)
-		taskID,           // task_id (UUID)
-		"openai",         // provider
-        "gpt-5-nano-2025-08-07",  // model
-		100,              // prompt_tokens (InputTokens)
-		50,               // completion_tokens (OutputTokens)
-		150,              // total_tokens
-		sqlmock.AnyArg(), // cost_usd
+		userID,                  // user_id (UUID)
+		taskID,                  // task_id (UUID)
+		"openai",                // provider
+		"gpt-5-nano-2025-08-07", // model
+		100,                     // prompt_tokens (InputTokens)
+		50,                      // completion_tokens (OutputTokens)
+		150,                     // total_tokens
+		sqlmock.AnyArg(),        // cost_usd
 	).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// First call should succeed and record usage
@@ -89,7 +89,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		SessionID:      "session-456",
 		TaskID:         "task-789",
 		AgentID:        "agent-001",
-        Model:          "gpt-5-nano",
+		Model:          "gpt-5-nano",
 		Provider:       "openai",
 		InputTokens:    100,
 		OutputTokens:   50,
@@ -131,7 +131,7 @@ func TestRecordUsage_DifferentIdempotencyKeys(t *testing.T) {
 		TaskTokensUsed:    0,
 		SessionTokensUsed: 0,
 	}
-    // User-level daily/monthly budgets removed; no user budget initialization required
+	// User-level daily/monthly budgets removed; no user budget initialization required
 
 	// First usage record
 	usage1 := &BudgetTokenUsage{

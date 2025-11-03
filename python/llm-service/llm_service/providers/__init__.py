@@ -24,6 +24,7 @@ class ProviderType(Enum):
     OLLAMA = "ollama"
     GROQ = "groq"
     MISTRAL = "mistral"
+    XAI = "xai"
 
 
 _PROVIDER_NAME_MAP: Dict[str, ProviderType] = {
@@ -36,6 +37,7 @@ _PROVIDER_NAME_MAP: Dict[str, ProviderType] = {
     "ollama": ProviderType.OLLAMA,
     "groq": ProviderType.GROQ,
     "mistral": ProviderType.MISTRAL,
+    "xai": ProviderType.XAI,
 }
 
 
@@ -229,9 +231,14 @@ class ProviderManager:
         if "temperature" not in manager_kwargs or manager_kwargs["temperature"] is None:
             manager_kwargs["temperature"] = self.settings.temperature
 
-        # Anthropic models don't support both temperature and top_p
-        # If temperature is set, remove top_p to avoid API errors
-        if "temperature" in manager_kwargs and "top_p" in manager_kwargs:
+        # Anthropic models don't support both temperature and top_p.
+        # Only drop top_p when explicitly targeting Anthropic.
+        if (
+            "temperature" in manager_kwargs
+            and "top_p" in manager_kwargs
+            and isinstance(provider_override, str)
+            and provider_override.lower() == "anthropic"
+        ):
             manager_kwargs.pop("top_p", None)
 
         if agent_id and "agent_id" not in manager_kwargs:
@@ -239,7 +246,21 @@ class ProviderManager:
 
         tools = params.pop("tools", None)
         if tools:
-            manager_kwargs["functions"] = tools
+            # Normalize OpenAI tools schema → legacy functions schema for providers
+            # that expect functions. Each tool is {"type":"function","function":{...}}
+            functions: List[Dict[str, Any]] = []
+            try:
+                for t in tools:
+                    if isinstance(t, dict) and t.get("type") == "function" and isinstance(t.get("function"), dict):
+                        functions.append(t["function"])
+                    elif isinstance(t, dict):
+                        # Already a function schema
+                        functions.append(t)
+            except Exception:
+                # Best-effort; fall back to passing through
+                functions = tools  # type: ignore[assignment]
+            if functions:
+                manager_kwargs["functions"] = functions
 
         if specific_model:
             manager_kwargs["model"] = specific_model
@@ -279,8 +300,11 @@ class ProviderManager:
     def _serialize_completion(self, response: CompletionResponse) -> Dict[str, Any]:
         usage = self._serialize_usage(response.usage)
 
+        # Normalize provider to a non-null string to avoid None → null propagation
+        provider = response.provider if isinstance(response.provider, str) and response.provider else "unknown"
+
         return {
-            "provider": response.provider,
+            "provider": provider,
             "model": response.model,
             "output_text": response.content,
             "usage": usage,

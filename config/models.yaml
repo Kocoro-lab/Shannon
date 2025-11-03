@@ -338,14 +338,6 @@ model_catalog:
       supports_functions: true
       supports_streaming: true
       supports_reasoning: true
-    grok-beta:
-      model_id: grok-beta
-      tier: large
-      context_window: 65536
-      max_tokens: 8192
-      supports_functions: true
-      supports_streaming: true
-      supports_reasoning: false
 
   zai:
     glm-4.5-flash:
@@ -723,6 +715,8 @@ model_capabilities:
     - gemini-2.5-pro
     - deepseek-r1
     - qwen3-omni-30b-a3b-instruct
+    - grok-4
+    - grok-4-fast-reasoning
 
   coding_specialists:
     - codestral-22b-v0.1

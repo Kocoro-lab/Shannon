@@ -17,13 +17,13 @@ func TestCheckTokenBudgetWithBackpressure_ReturnsDelayValue(t *testing.T) {
 	userID := "u-delay"
 	sessionID := "s-delay"
 
-    // Configure session budget so a modest estimate crosses 80%
-    mgr.SetSessionBudget(sessionID, &budget.TokenBudget{
-        TaskBudget:        1000,
-        SessionBudget:     1000,
-        SessionTokensUsed: 700,
-        HardLimit:         true,
-    })
+	// Configure session budget so a modest estimate crosses 80%
+	mgr.SetSessionBudget(sessionID, &budget.TokenBudget{
+		TaskBudget:        1000,
+		SessionBudget:     1000,
+		SessionTokensUsed: 700,
+		HardLimit:         true,
+	})
 
 	// This request projects usage to exactly 80% (800/1000)
 	in := BudgetCheckInput{

@@ -28,7 +28,7 @@ func TestCheckBudget_DefaultsAllowSmallEstimate(t *testing.T) {
 
 func TestEstimateCost_ModelPricing(t *testing.T) {
 	bm := NewBudgetManager(&sql.DB{}, zap.NewNop())
-    cost := bm.estimateCost(1000, "gpt-5-nano-2025-08-07")
+	cost := bm.estimateCost(1000, "gpt-5-nano-2025-08-07")
 	if cost <= 0 {
 		t.Fatalf("expected positive cost for 1k tokens, got %f", cost)
 	}
@@ -42,10 +42,10 @@ func TestRecordUsage_ExecInsertsTokenUsage(t *testing.T) {
 	defer db.Close()
 
 	bm := NewBudgetManager(db, zap.NewNop())
-    usage := &BudgetTokenUsage{
-        UserID: "u1", SessionID: "s1", TaskID: "t1", AgentID: "a1",
-        Model: "gpt-5-nano-2025-08-07", Provider: "openai", InputTokens: 10, OutputTokens: 20,
-    }
+	usage := &BudgetTokenUsage{
+		UserID: "u1", SessionID: "s1", TaskID: "t1", AgentID: "a1",
+		Model: "gpt-5-nano-2025-08-07", Provider: "openai", InputTokens: 10, OutputTokens: 20,
+	}
 
 	// Expect user lookup
 	mock.ExpectQuery("SELECT id FROM users WHERE external_id").
@@ -88,8 +88,8 @@ func TestGetUsageReport_AggregatesRows(t *testing.T) {
 
 	bm := NewBudgetManager(db, zap.NewNop())
 
-    rows := sqlmock.NewRows([]string{"user_id", "task_id", "model", "provider", "input_total", "output_total", "total_tokens", "total_cost", "request_count"}).
-        AddRow("u1", "t1", "gpt-5-nano-2025-08-07", "openai", 30, 60, 90, 0.1, 2)
+	rows := sqlmock.NewRows([]string{"user_id", "task_id", "model", "provider", "input_total", "output_total", "total_tokens", "total_cost", "request_count"}).
+		AddRow("u1", "t1", "gpt-5-nano-2025-08-07", "openai", 30, 60, 90, 0.1, 2)
 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT user_id, task_id, model, provider")).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).

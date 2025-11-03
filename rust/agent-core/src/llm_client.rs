@@ -24,6 +24,8 @@ pub struct AgentResponse {
     pub response: String,
     pub tokens_used: u32,
     pub model_used: String,
+    #[serde(default)]
+    pub provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,7 @@ pub struct TokenUsage {
     pub total_tokens: u32,
     pub cost_usd: f64,
     pub model: String,
+    pub provider: String,
 }
 
 pub struct LLMClient {
@@ -138,26 +141,11 @@ impl LLMClient {
             let body = response.text().await.unwrap_or_default();
             warn!("LLM service returned error: {} - {}", status, body);
 
-            // In non-dev environments, surface the error for observability
-            let env = std::env::var("ENVIRONMENT").unwrap_or_default();
-            if env != "dev" {
-                return Err(AgentError::HttpError {
-                    status: status.as_u16(),
-                    message: format!("LLM service error: {} - {}", status, body),
-                });
-            }
-
-            // In dev, fall back to a mock response for easier local testing
-            return Ok((
-                format!("Mock response for: {}", query),
-                TokenUsage {
-                    prompt_tokens: 10,
-                    completion_tokens: 20,
-                    total_tokens: 30,
-                    cost_usd: 0.0001,
-                    model: "mock".to_string(),
-                },
-            ));
+            // Always surface errors for observability (removed dev mock fallback)
+            return Err(AgentError::HttpError {
+                status: status.as_u16(),
+                message: format!("LLM service error: {} - {}", status, body),
+            });
         }
 
         let agent_response: AgentResponse = response.json().await.map_err(|e| {
@@ -177,6 +165,7 @@ impl LLMClient {
                     total_tokens: 0,
                     cost_usd: 0.0,
                     model: "error".to_string(),
+                    provider: "unknown".to_string(),
                 },
             ));
         }
@@ -187,6 +176,7 @@ impl LLMClient {
             total_tokens: agent_response.tokens_used,
             cost_usd: calculate_cost(&agent_response.model_used, agent_response.tokens_used),
             model: agent_response.model_used.clone(),
+            provider: agent_response.provider.clone(),
         };
 
         info!(

@@ -291,9 +291,9 @@ func TestExecuteAgentWithForcedToolsLogic(t *testing.T) {
 	t.Run("validates required fields", func(t *testing.T) {
 		// Test input validation logic
 		type Input struct {
-			Query              string
-			ForcedToolName     string
-			ForcedToolParams   map[string]interface{}
+			Query                string
+			ForcedToolName       string
+			ForcedToolParams     map[string]interface{}
 			AllowedToolsOverride []string
 		}
 

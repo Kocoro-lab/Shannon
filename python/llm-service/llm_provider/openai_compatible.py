@@ -174,6 +174,13 @@ class OpenAICompatibleProvider(LLMProvider):
             output_price_per_1k=0.0,
         )
 
+    def _resolve_alias(self, model_id: str) -> str:
+        """Return the configured alias for a given vendor model_id, if any."""
+        for alias, cfg in self.models.items():
+            if cfg.model_id == model_id:
+                return alias
+        return model_id
+
     def count_tokens(self, messages: List[Dict[str, Any]], model: str) -> int:
         """
         Count tokens for the model.
@@ -190,6 +197,7 @@ class OpenAICompatibleProvider(LLMProvider):
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
         model = model_config.model_id
+        model_alias = self._resolve_alias(model)
 
         # Prepare API request
         api_request = {
@@ -264,8 +272,8 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             total_tokens = prompt_tokens + completion_tokens
 
-        # Calculate cost
-        cost = self.estimate_cost(prompt_tokens, completion_tokens, model)
+        # Calculate cost using alias for proper lookup
+        cost = self.estimate_cost(prompt_tokens, completion_tokens, model_alias)
 
         # Build response
         return CompletionResponse(

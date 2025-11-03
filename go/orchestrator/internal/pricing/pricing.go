@@ -324,73 +324,73 @@ func GetPriorityOneProvider(tier string) string {
 // GetPriorityOneModel returns the priority-1 model for a given tier from config.
 // Returns empty string if not found in config.
 func GetPriorityOneModel(tier string) string {
-    cfg := get()
-    if cfg == nil {
-        return ""
-    }
+	cfg := get()
+	if cfg == nil {
+		return ""
+	}
 
-    var providers []struct {
-        Provider string `yaml:"provider"`
-        Model    string `yaml:"model"`
-        Priority int    `yaml:"priority"`
-    }
+	var providers []struct {
+		Provider string `yaml:"provider"`
+		Model    string `yaml:"model"`
+		Priority int    `yaml:"priority"`
+	}
 
-    switch strings.ToLower(tier) {
-    case "small":
-        providers = cfg.ModelTiers.Small.Providers
-    case "medium":
-        providers = cfg.ModelTiers.Medium.Providers
-    case "large":
-        providers = cfg.ModelTiers.Large.Providers
-    default:
-        return ""
-    }
+	switch strings.ToLower(tier) {
+	case "small":
+		providers = cfg.ModelTiers.Small.Providers
+	case "medium":
+		providers = cfg.ModelTiers.Medium.Providers
+	case "large":
+		providers = cfg.ModelTiers.Large.Providers
+	default:
+		return ""
+	}
 
-    for _, p := range providers {
-        if p.Priority == 1 && p.Model != "" {
-            return p.Model
-        }
-    }
-    return ""
+	for _, p := range providers {
+		if p.Priority == 1 && p.Model != "" {
+			return p.Model
+		}
+	}
+	return ""
 }
 
 // GetPriorityModelForProvider returns the preferred model for a given tier and provider.
 // It scans the tier's provider list and returns the model with the lowest priority value
 // for the specified provider (case-insensitive). Returns empty string if not found.
 func GetPriorityModelForProvider(tier, provider string) string {
-    cfg := get()
-    if cfg == nil || provider == "" {
-        return ""
-    }
+	cfg := get()
+	if cfg == nil || provider == "" {
+		return ""
+	}
 
-    provider = strings.ToLower(provider)
-    var providers []struct {
-        Provider string `yaml:"provider"`
-        Model    string `yaml:"model"`
-        Priority int    `yaml:"priority"`
-    }
-    switch strings.ToLower(tier) {
-    case "small":
-        providers = cfg.ModelTiers.Small.Providers
-    case "medium":
-        providers = cfg.ModelTiers.Medium.Providers
-    case "large":
-        providers = cfg.ModelTiers.Large.Providers
-    default:
-        return ""
-    }
+	provider = strings.ToLower(provider)
+	var providers []struct {
+		Provider string `yaml:"provider"`
+		Model    string `yaml:"model"`
+		Priority int    `yaml:"priority"`
+	}
+	switch strings.ToLower(tier) {
+	case "small":
+		providers = cfg.ModelTiers.Small.Providers
+	case "medium":
+		providers = cfg.ModelTiers.Medium.Providers
+	case "large":
+		providers = cfg.ModelTiers.Large.Providers
+	default:
+		return ""
+	}
 
-    bestModel := ""
-    bestPriority := int(^uint(0) >> 1) // max int
-    for _, p := range providers {
-        if strings.ToLower(p.Provider) == provider {
-            if p.Priority > 0 && p.Priority < bestPriority && p.Model != "" {
-                bestPriority = p.Priority
-                bestModel = p.Model
-            }
-        }
-    }
-    return bestModel
+	bestModel := ""
+	bestPriority := int(^uint(0) >> 1) // max int
+	for _, p := range providers {
+		if strings.ToLower(p.Provider) == provider {
+			if p.Priority > 0 && p.Priority < bestPriority && p.Model != "" {
+				bestPriority = p.Priority
+				bestModel = p.Model
+			}
+		}
+	}
+	return bestModel
 }
 
 // GetProviderForModel searches all model tiers to find which provider offers a given model.

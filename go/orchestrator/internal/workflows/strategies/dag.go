@@ -10,8 +10,8 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
@@ -540,36 +540,36 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-        // If cost is missing or zero but we now have model and tokens, compute cost using pricing
-        if cv, ok := meta["cost_usd"]; !ok || (ok && (func() bool {
-            switch x := cv.(type) {
-            case int:
-                return x == 0
-            case float64:
-                return x == 0.0
-            default:
-                return false
-            }
-        })()) {
-            if m, okm := meta["model"].(string); okm && m != "" {
-                // Try to get total tokens as int
-                tokens := 0
-                if tv, ok := meta["total_tokens"]; ok {
-                    switch x := tv.(type) {
-                    case int:
-                        tokens = x
-                    case float64:
-                        tokens = int(x)
-                    }
-                }
-                if tokens == 0 {
-                    tokens = totalTokens
-                }
-                if tokens > 0 {
-                    meta["cost_usd"] = pricing.CostForTokens(m, tokens)
-                }
-            }
-        }
+	// If cost is missing or zero but we now have model and tokens, compute cost using pricing
+	if cv, ok := meta["cost_usd"]; !ok || (ok && (func() bool {
+		switch x := cv.(type) {
+		case int:
+			return x == 0
+		case float64:
+			return x == 0.0
+		default:
+			return false
+		}
+	})()) {
+		if m, okm := meta["model"].(string); okm && m != "" {
+			// Try to get total tokens as int
+			tokens := 0
+			if tv, ok := meta["total_tokens"]; ok {
+				switch x := tv.(type) {
+				case int:
+					tokens = x
+				case float64:
+					tokens = int(x)
+				}
+			}
+			if tokens == 0 {
+				tokens = totalTokens
+			}
+			if tokens > 0 {
+				meta["cost_usd"] = pricing.CostForTokens(m, tokens)
+			}
+		}
+	}
 
 	// Emit WORKFLOW_COMPLETED before returning
 	workflowID := input.ParentWorkflowID

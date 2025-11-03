@@ -299,6 +299,11 @@ impl AgentServiceImpl {
                     },
                 };
 
+                tracing::info!(
+                    "ExecuteTaskResponse (direct tool): token_usage=None, tool={}, ms={}",
+                    tool_name,
+                    execution_time_ms
+                );
                 Ok(Response::new(response))
             }
             Err(e) => {
@@ -599,6 +604,11 @@ impl AgentServiceImpl {
                     proto::agent::AgentState::Failed.into()
                 },
             };
+            tracing::info!(
+                "ExecuteTaskResponse (multi-tool): token_usage=None, tools={}, cumulative_ms={}",
+                response.tool_calls.len(),
+                cumulative_ms
+            );
             return Ok(Response::new(response));
         }
         for (idx, item) in list.values.iter().enumerate() {
@@ -956,6 +966,11 @@ impl AgentService for AgentServiceImpl {
                         _ => Status::internal(e.to_string()),
                     })?;
 
+                // Save values for logging before move
+                let log_provider = usage.provider.clone();
+                let log_model = usage.model.clone();
+                let log_tokens = usage.total_tokens;
+
                 let response = ExecuteTaskResponse {
                     task_id: req
                         .metadata
@@ -974,6 +989,7 @@ impl AgentService for AgentServiceImpl {
                             total_tokens: usage.total_tokens as i32,
                             cost_usd: usage.cost_usd,
                             model: usage.model,
+                            provider: usage.provider,
                             tier: match req.mode() {
                                 proto::common::ExecutionMode::Simple => {
                                     proto::common::ModelTier::Small.into()
@@ -993,6 +1009,12 @@ impl AgentService for AgentServiceImpl {
                     final_state: proto::agent::AgentState::Completed.into(),
                 };
 
+                tracing::info!(
+                    "ExecuteTaskResponse (LLM): provider={}, model={}, tokens={} (suggested-tools path)",
+                    log_provider,
+                    log_model,
+                    log_tokens
+                );
                 return Ok(Response::new(response));
             }
             _ => {}
@@ -1061,6 +1083,11 @@ impl AgentService for AgentServiceImpl {
                 _ => Status::internal(e.to_string()),
             })?;
 
+        // Save values for logging before move
+        let log_provider = usage.provider.clone();
+        let log_model = usage.model.clone();
+        let log_tokens = usage.total_tokens;
+
         let response = ExecuteTaskResponse {
             task_id: req
                 .metadata
@@ -1079,6 +1106,7 @@ impl AgentService for AgentServiceImpl {
                     total_tokens: usage.total_tokens as i32,
                     cost_usd: usage.cost_usd,
                     model: usage.model,
+                    provider: usage.provider,
                     tier: match req.mode() {
                         proto::common::ExecutionMode::Simple => {
                             proto::common::ModelTier::Small.into()
@@ -1098,6 +1126,12 @@ impl AgentService for AgentServiceImpl {
             final_state: proto::agent::AgentState::Completed.into(),
         };
 
+        tracing::info!(
+            "ExecuteTaskResponse (LLM final): provider={}, model={}, tokens={}",
+            log_provider,
+            log_model,
+            log_tokens
+        );
         Ok(Response::new(response))
     }
 

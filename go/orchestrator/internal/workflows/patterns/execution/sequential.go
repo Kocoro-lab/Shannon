@@ -1,17 +1,17 @@
 package execution
 
 import (
-    "encoding/json"
-    "fmt"
-    "strings"
-    "time"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
-    "go.temporal.io/sdk/temporal"
-    "go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 )
 
 // SequentialConfig controls sequential execution behavior
@@ -112,9 +112,9 @@ func ExecuteSequential(
 
 					// Extract numeric value if configured
 					if config.ExtractNumericValues {
-                    if numVal, ok := util.ParseNumericValue(prevResult.Response); ok {
-                        resultMap["numeric_value"] = numVal
-                    }
+						if numVal, ok := util.ParseNumericValue(prevResult.Response); ok {
+							resultMap["numeric_value"] = numVal
+						}
 					}
 
 					// Extract tool results if available

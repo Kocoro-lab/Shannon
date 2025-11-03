@@ -174,10 +174,10 @@ func isControlChar(r rune) bool {
 
 func TestUpdateSessionTitle_RuneLengthValidation(t *testing.T) {
 	tests := []struct {
-		name        string
-		title       string
-		shouldPass  bool
-		runeCount   int
+		name       string
+		title      string
+		shouldPass bool
+		runeCount  int
 	}{
 		{
 			name:       "ASCII - exactly 60 chars",

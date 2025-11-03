@@ -64,12 +64,12 @@ type WorkflowConfig struct {
 	P2PCoordinationEnabled bool `json:"p2p_coordination_enabled"`
 	P2PTimeoutSeconds      int  `json:"p2p_timeout_seconds"`
 
-    // Templates
-    TemplateFallbackEnabled bool `json:"template_fallback_enabled"`
+	// Templates
+	TemplateFallbackEnabled bool `json:"template_fallback_enabled"`
 
-    // Learning router toggle (continuous learning)
-    // When false, skip learning-based strategy recommendation in the router
-    ContinuousLearningEnabled bool `json:"continuous_learning_enabled"`
+	// Learning router toggle (continuous learning)
+	// When false, skip learning-based strategy recommendation in the router
+	ContinuousLearningEnabled bool `json:"continuous_learning_enabled"`
 }
 
 // GetWorkflowConfig is an activity that returns workflow configuration
@@ -269,19 +269,19 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 	}
 
 	// Template fallback (prefer env override; default false)
-    if env := os.Getenv("TEMPLATE_FALLBACK_ENABLED"); env != "" {
-        config.TemplateFallbackEnabled = env == "true" || env == "1"
-    } else {
-        config.TemplateFallbackEnabled = v.GetBool("workflows.templates.fallback_to_ai")
-    }
+	if env := os.Getenv("TEMPLATE_FALLBACK_ENABLED"); env != "" {
+		config.TemplateFallbackEnabled = env == "true" || env == "1"
+	} else {
+		config.TemplateFallbackEnabled = v.GetBool("workflows.templates.fallback_to_ai")
+	}
 
-    // Continuous learning toggle (default false)
-    // Prefer env CONTINUOUS_LEARNING_ENABLED, else config key continuous_learning.enabled
-    if env := os.Getenv("CONTINUOUS_LEARNING_ENABLED"); env != "" {
-        config.ContinuousLearningEnabled = env == "true" || env == "1"
-    } else {
-        config.ContinuousLearningEnabled = v.GetBool("continuous_learning.enabled")
-    }
+	// Continuous learning toggle (default false)
+	// Prefer env CONTINUOUS_LEARNING_ENABLED, else config key continuous_learning.enabled
+	if env := os.Getenv("CONTINUOUS_LEARNING_ENABLED"); env != "" {
+		config.ContinuousLearningEnabled = env == "true" || env == "1"
+	} else {
+		config.ContinuousLearningEnabled = v.GetBool("continuous_learning.enabled")
+	}
 
 	return config, nil
 }

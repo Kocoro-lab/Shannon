@@ -1,15 +1,15 @@
 package handlers
 
 import (
-    "encoding/json"
-    "fmt"
-    "net/http"
+	"encoding/json"
+	"fmt"
+	"net/http"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
-    "go.uber.org/zap"
-    "google.golang.org/grpc/codes"
-    "google.golang.org/grpc/status"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // ApprovalHandler handles approval-related HTTP requests
@@ -69,8 +69,8 @@ func (h *ApprovalHandler) SubmitDecision(w http.ResponseWriter, r *http.Request)
 		req.ApprovedBy = userCtx.UserID.String()
 	}
 
-    // Propagate auth/tracing headers to gRPC metadata
-    ctx = withGRPCMetadata(ctx, r)
+	// Propagate auth/tracing headers to gRPC metadata
+	ctx = withGRPCMetadata(ctx, r)
 
 	// Build gRPC request
 	grpcReq := &orchpb.ApproveTaskRequest{

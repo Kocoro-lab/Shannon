@@ -70,19 +70,19 @@ func detectProviderFromPattern(model string) string {
 
 	// OpenAI models
 	if strings.Contains(ml, "gpt-") || strings.Contains(ml, "davinci") ||
-	   strings.Contains(ml, "turbo") || strings.Contains(ml, "text-") {
+		strings.Contains(ml, "turbo") || strings.Contains(ml, "text-") {
 		return "openai"
 	}
 
 	// Anthropic models
 	if strings.Contains(ml, "claude") || strings.Contains(ml, "opus") ||
-	   strings.Contains(ml, "sonnet") || strings.Contains(ml, "haiku") {
+		strings.Contains(ml, "sonnet") || strings.Contains(ml, "haiku") {
 		return "anthropic"
 	}
 
 	// Google models
 	if strings.Contains(ml, "gemini") || strings.Contains(ml, "palm") ||
-	   strings.Contains(ml, "bard") {
+		strings.Contains(ml, "bard") {
 		return "google"
 	}
 
@@ -103,7 +103,7 @@ func detectProviderFromPattern(model string) string {
 
 	// Mistral models (check before llama since some names might overlap)
 	if strings.Contains(ml, "mistral") || strings.Contains(ml, "mixtral") ||
-	   strings.Contains(ml, "codestral") {
+		strings.Contains(ml, "codestral") {
 		return "mistral"
 	}
 

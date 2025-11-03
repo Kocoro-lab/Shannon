@@ -15,17 +15,17 @@ type ComplexityAnalysisResult struct {
 
 // Subtask represents a decomposed subtask
 type Subtask struct {
-    ID              string
-    Description     string
-    Dependencies    []string
-    EstimatedTokens int
-    // Structured subtask classification to avoid brittle string matching
-    TaskType        string                 `json:"task_type,omitempty"`
-    // Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
-    Produces []string
-    Consumes []string
-    // LLM-native tool selection
-    SuggestedTools []string               `json:"suggested_tools"`
+	ID              string
+	Description     string
+	Dependencies    []string
+	EstimatedTokens int
+	// Structured subtask classification to avoid brittle string matching
+	TaskType string `json:"task_type,omitempty"`
+	// Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
+	Produces []string
+	Consumes []string
+	// LLM-native tool selection
+	SuggestedTools []string               `json:"suggested_tools"`
 	ToolParameters map[string]interface{} `json:"tool_parameters"`
 	// Persona assignment for specialized agent behavior
 	SuggestedPersona string `json:"suggested_persona"`
@@ -54,6 +54,7 @@ type AgentExecutionResult struct {
 	Response     string
 	TokensUsed   int
 	ModelUsed    string
+	Provider     string
 	InputTokens  int
 	OutputTokens int
 	DurationMs   int64
