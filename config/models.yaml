@@ -17,10 +17,10 @@ model_tiers:
     # Fast, cost-optimized models for basic tasks without reasoning capabilities
     providers:
       - provider: openai
-        model: gpt-4.1-nano
+        model: gpt-5-nano-2025-08-07
         priority: 1
       - provider: anthropic
-        model: claude-3-5-haiku-20241022
+        model: claude-haiku-4-5-20251001
         priority: 2
       - provider: xai
         model: grok-4-fast-non-reasoning
@@ -43,16 +43,13 @@ model_tiers:
       - provider: zai
         model: glm-4.5-flash
         priority: 9
-      - provider: anthropic
-        model: claude-3-haiku
-        priority: 10
 
   medium:
     # Target allocation: 40% (not enforced - actual usage depends on complexity)
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: openai
-        model: gpt-4.1-mini
+        model: gpt-5-2025-08-07
         priority: 1
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
@@ -81,16 +78,13 @@ model_tiers:
       - provider: zai
         model: glm-4.5-air
         priority: 10
-      - provider: anthropic
-        model: claude-3-sonnet
-        priority: 11
 
   large:
     # Target allocation: 10% (not enforced - actual usage depends on complexity)
     # Heavy thinking/reasoning models for complex tasks
     providers:
       - provider: openai
-        model: gpt-4.1
+        model: gpt-4.1-2025-04-14
         priority: 1
       - provider: anthropic
         model: claude-opus-4-1-20250805
@@ -116,9 +110,6 @@ model_tiers:
       - provider: zai
         model: glm-4.6
         priority: 9
-      - provider: openai
-        model: gpt-4-turbo
-        priority: 10
 
 # Model selection strategy
 selection_strategy:
@@ -205,87 +196,47 @@ provider_settings:
 
 model_catalog:
   openai:
-    gpt-4.1:
-      model_id: gpt-4.1
-      tier: large
-      context_window: 128000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: true
-    gpt-4-turbo:
-      model_id: gpt-4-turbo
-      tier: large
-      context_window: 128000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: true
-    gpt-4.1-mini:
-      model_id: gpt-4.1-mini
+    gpt-5-2025-08-07:
+      model_id: gpt-5-2025-08-07
       tier: medium
       context_window: 128000
       max_tokens: 4096
       supports_functions: true
       supports_streaming: true
       supports_vision: true
-    gpt-4.1-nano:
-      model_id: gpt-4.1-nano
-      tier: small
-      context_window: 128000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: false
-    gpt-4o:
-      model_id: gpt-4o
-      tier: large
-      context_window: 128000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: true
-    gpt-4o-mini:
-      model_id: gpt-4o-mini
+    gpt-5-mini-2025-08-07:
+      model_id: gpt-5-mini-2025-08-07
       tier: small
       context_window: 128000
       max_tokens: 4096
       supports_functions: true
       supports_streaming: true
       supports_vision: true
-    o3:
-      model_id: o3
+    gpt-5-nano-2025-08-07:
+      model_id: gpt-5-nano-2025-08-07
+      tier: small
+      context_window: 128000
+      max_tokens: 4096
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: false
+    gpt-4.1-2025-04-14:
+      model_id: gpt-4.1-2025-04-14
       tier: large
       context_window: 128000
       max_tokens: 4096
       supports_functions: true
       supports_streaming: true
       supports_vision: true
-    o1:
-      model_id: o1
+    gpt-5-pro-2025-10-06:
+      model_id: gpt-5-pro-2025-10-06
       tier: large
       context_window: 128000
       max_tokens: 4096
       supports_functions: true
       supports_streaming: true
-      supports_vision: false
-    o1-mini:
-      model_id: o1-mini
-      tier: medium
-      context_window: 128000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: false
-    gpt-3.5-turbo:
-      model_id: gpt-3.5-turbo
-      tier: small
-      context_window: 16384
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: false
-
+      supports_vision: true
+  
   anthropic:
     claude-sonnet-4-20250514:
       model_id: claude-sonnet-4-20250514
@@ -299,39 +250,15 @@ model_catalog:
       model_id: claude-sonnet-4-5-20250929
       tier: medium
       context_window: 200000
-      max_tokens: 4096
+      max_tokens: 8192
       supports_functions: true
       supports_streaming: true
       supports_vision: true
-    claude-3-5-sonnet-20241022:
-      model_id: claude-3-5-sonnet-20241022
-      tier: medium
-      context_window: 200000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: true
-    claude-3-sonnet:
-      model_id: claude-3-sonnet
-      tier: medium
-      context_window: 200000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: true
-    claude-3-5-haiku-20241022:
-      model_id: claude-3-5-haiku-20241022
+    claude-haiku-4-5-20251001:
+      model_id: claude-haiku-4-5-20251001
       tier: small
       context_window: 200000
-      max_tokens: 4096
-      supports_functions: true
-      supports_streaming: true
-      supports_vision: true
-    claude-3-haiku:
-      model_id: claude-3-haiku
-      tier: small
-      context_window: 200000
-      max_tokens: 4096
+      max_tokens: 8192
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -608,56 +535,29 @@ pricing:
     combined_per_1k: 0.005
   models:
     openai:
-      gpt-3.5-turbo:
-        input_per_1k: 0.0005
-        output_per_1k: 0.0020
-      gpt-4o-mini:
-        input_per_1k: 0.00015
-        output_per_1k: 0.00060
-      gpt-4o:
-        input_per_1k: 0.0050
-        output_per_1k: 0.0150
-      gpt-4.1:
-        input_per_1k: 0.0050
-        output_per_1k: 0.0150
-      gpt-4.1-mini:
-        input_per_1k: 0.0025
-        output_per_1k: 0.0075
-      gpt-4.1-nano:
-        input_per_1k: 0.0010
-        output_per_1k: 0.0030
-      o3:
-        input_per_1k: 0.0020
-        output_per_1k: 0.0080
-      o1:
-        input_per_1k: 0.0150
-        output_per_1k: 0.0600
-      o1-mini:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0120
-      gpt-4-turbo:
-        input_per_1k: 0.0100
-        output_per_1k: 0.0300
-        
-    anthropic:
-      claude-3-5-haiku-20241022:
-        input_per_1k: 0.0008
-        output_per_1k: 0.0040
-      claude-3-5-sonnet-20241022:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0150
-      claude-3-haiku:
-        input_per_1k: 0.0002
-        output_per_1k: 0.0020
-      claude-3-sonnet:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0200
-      claude-sonnet-4-20250514:
-        input_per_1k: 0.0040
+      gpt-5-nano-2025-08-07:
+        input_per_1k: 0.00010
+        output_per_1k: 0.00040
+      gpt-5-mini-2025-08-07:
+        input_per_1k: 0.00020
+        output_per_1k: 0.00080
+      gpt-5-2025-08-07:
+        input_per_1k: 0.0060
         output_per_1k: 0.0180
+      gpt-4.1-2025-04-14:
+        input_per_1k: 0.0200
+        output_per_1k: 0.0800
+      gpt-5-pro-2025-10-06:
+        input_per_1k: 0.0250
+        output_per_1k: 0.1000
+
+    anthropic:
+      claude-haiku-4-5-20251001:
+        input_per_1k: 0.0010
+        output_per_1k: 0.0050
       claude-sonnet-4-5-20250929:
-        input_per_1k: 0.0045
-        output_per_1k: 0.0190
+        input_per_1k: 0.0030
+        output_per_1k: 0.0150
       claude-opus-4-1-20250805:
         input_per_1k: 0.0150
         output_per_1k: 0.0750
@@ -808,29 +708,29 @@ feature_flags:
 # Model capabilities matrix
 model_capabilities:
   multimodal_models:
-    - gpt-4.1
-    - gpt-4o
-    - claude-sonnet-4-5-20250929
+    - gpt-5-2025-08-07
+    - gpt-5-pro-2025-10-06
+    - gpt-5-pro-2025-10-06
     - claude-sonnet-4-5-20250929
     - gemini-2.5-flash
     - gemini-2.0-flash
-    
+
   thinking_models:
-    - gpt-4.1
-    - o3
-    - o1
-    - o1-mini
+    - gpt-5-pro-2025-10-06
+    - gpt-5-pro-2025-10-06
+    - gpt-5-2025-08-07
     - claude-opus-4-1-20250805
     - gemini-2.5-pro
     - deepseek-r1
     - qwen3-omni-30b-a3b-instruct
-    
+
   coding_specialists:
     - codestral-22b-v0.1
     - 'deepseek-v3.2'
     - claude-sonnet-4-5-20250929
     - claude-sonnet-4-20250514
-    - o1
+    - gpt-5-pro-2025-10-06
+    - gpt-5-2025-08-07
     - qwen3-omni-30b-a3b-instruct
 
   long_context_models:

@@ -11,7 +11,10 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
@@ -378,13 +381,13 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			StartToCloseTimeout: 30 * time.Second,
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 		})
-        _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-            WorkflowID: workflowID,
-            EventType:  activities.StreamEventWorkflowCompleted,
-            AgentID:    "supervisor",
-            Message:    "All done",
-            Timestamp:  workflow.Now(ctx),
-        }).Get(ctx, nil)
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventWorkflowCompleted,
+			AgentID:    "supervisor",
+			Message:    "All done",
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
 
 		return convertFromStrategiesResult(strategiesResult), nil
 	}
@@ -671,7 +674,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						"success":  prevResult.Success,
 					}
 					// Try to extract numeric value from response (standardize key name)
-					if numVal, ok := parseNumericValue(prevResult.Response); ok {
+					if numVal, ok := util.ParseNumericValue(prevResult.Response); ok {
 						resultMap["numeric_value"] = numVal
 					}
 					previousResults[decomp.Subtasks[j].ID] = resultMap
@@ -925,40 +928,40 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-    if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
-        // Only bypass if the single result is not raw JSON and role doesn't require formatting
-        shouldBypass := true
-        trimmed := strings.TrimSpace(childResults[0].Response)
-        if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-            shouldBypass = false
-        }
-        if input.Context != nil {
-            if role, ok := input.Context["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
-                // Enforce role-aware synthesis to produce dataResult formatting
-                shouldBypass = false
-            }
-        }
+	if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
+		// Only bypass if the single result is not raw JSON and role doesn't require formatting
+		shouldBypass := true
+		trimmed := strings.TrimSpace(childResults[0].Response)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			shouldBypass = false
+		}
+		if input.Context != nil {
+			if role, ok := input.Context["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
+				// Enforce role-aware synthesis to produce dataResult formatting
+				shouldBypass = false
+			}
+		}
 
-        if shouldBypass {
-            synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
-        } else {
-            // Perform synthesis for JSON-like results or when role requires formatting
-            logger.Info("Single result requires synthesis (JSON/role formatting)")
-            if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-                Query:            input.Query,
-                AgentResults:     childResults,
-                Context:          input.Context,
-                ParentWorkflowID: workflowID,
-            }).Get(ctx, &synth); err != nil {
-                return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-            }
-        }
-    } else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
-        // Use the synthesis subtask's result as the final result
-        // This prevents double synthesis and respects the user's requested format
-        synthesisResult := childResults[synthesisTaskIdx]
-        synth = activities.SynthesisResult{
-            FinalResult: synthesisResult.Response,
+		if shouldBypass {
+			synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
+		} else {
+			// Perform synthesis for JSON-like results or when role requires formatting
+			logger.Info("Single result requires synthesis (JSON/role formatting)")
+			if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+				Query:            input.Query,
+				AgentResults:     childResults,
+				Context:          input.Context,
+				ParentWorkflowID: workflowID,
+			}).Get(ctx, &synth); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
+		}
+	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
+		// Use the synthesis subtask's result as the final result
+		// This prevents double synthesis and respects the user's requested format
+		synthesisResult := childResults[synthesisTaskIdx]
+		synth = activities.SynthesisResult{
+			FinalResult: synthesisResult.Response,
 			TokensUsed:  0, // Don't double-count tokens as they're already counted in agent execution
 		}
 		logger.Info("Using synthesis subtask result as final output",
@@ -966,17 +969,24 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"response_length", len(synthesisResult.Response),
 		)
 	} else {
-    // No synthesis subtask in decomposition, perform standard synthesis
-    logger.Info("Performing standard synthesis of agent results")
-    if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-        Query:            input.Query,
-        AgentResults:     childResults,
-        Context:          input.Context,       // Pass role/prompt_params for role-aware synthesis
-        ParentWorkflowID: workflowID,          // For observability correlation
-    }).Get(ctx, &synth); err != nil {
-        return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-    }
+		// No synthesis subtask in decomposition, perform standard synthesis
+		logger.Info("Performing standard synthesis of agent results")
+		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+			Query:            input.Query,
+			AgentResults:     childResults,
+			Context:          input.Context, // Pass role/prompt_params for role-aware synthesis
+			ParentWorkflowID: workflowID,    // For observability correlation
+		}).Get(ctx, &synth); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
 	}
+
+	// Compute total tokens across child results + synthesis
+	totalChildTokens := 0
+	for _, cr := range childResults {
+		totalChildTokens += cr.TokensUsed
+	}
+	totalTokens := totalChildTokens + synth.TokensUsed
 
 	// Update session with token usage (include per-agent usage for accurate cost)
 	if input.SessionID != "" {
@@ -991,7 +1001,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			activities.SessionUpdateInput{
 				SessionID:  input.SessionID,
 				Result:     synth.FinalResult,
-				TokensUsed: synth.TokensUsed,
+				TokensUsed: totalTokens,
 				AgentsUsed: len(childResults),
 				AgentUsage: usages,
 			},
@@ -1028,7 +1038,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			Strategy:   decomp.ExecutionStrategy,
 			Success:    true,
 			DurationMs: workflowDuration,
-			TokensUsed: synth.TokensUsed,
+			TokensUsed: totalTokens,
 		})
 
 		logger.Info("Recorded decomposition outcome",
@@ -1042,13 +1052,13 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "supervisor",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "supervisor",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	// Aggregate tool errors across child results
 	var toolErrors []map[string]string
@@ -1072,7 +1082,91 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
 	}
-	return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: synth.TokensUsed, Metadata: meta}, nil
+
+	// Aggregate agent metadata (model, provider, tokens, cost)
+	agentMeta := metadata.AggregateAgentMetadata(childResults, synth.TokensUsed)
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
+
+	// Ensure total_tokens present (fallback to computed workflow total)
+	if tv, ok := meta["total_tokens"]; !ok || (ok && ((func() int {
+		switch x := tv.(type) {
+		case int:
+			return x
+		case float64:
+			return int(x)
+		default:
+			return 0
+		}
+	})() == 0)) {
+		if totalTokens > 0 {
+			meta["total_tokens"] = totalTokens
+		}
+	}
+
+	// Fallbacks for model/provider/cost using tier defaults, but prefer provider override from input.Context
+	tier := deriveModelTier(input.Context)
+	providerOverride := ""
+	if input.Context != nil {
+		if v, ok := input.Context["provider_override"].(string); ok && strings.TrimSpace(v) != "" {
+			providerOverride = strings.ToLower(strings.TrimSpace(v))
+		} else if v, ok := input.Context["provider"].(string); ok && strings.TrimSpace(v) != "" {
+			providerOverride = strings.ToLower(strings.TrimSpace(v))
+		} else if v, ok := input.Context["llm_provider"].(string); ok && strings.TrimSpace(v) != "" {
+			providerOverride = strings.ToLower(strings.TrimSpace(v))
+		}
+	}
+	if _, ok := meta["model"]; !ok {
+		if _, ok2 := meta["model_used"]; !ok2 {
+			chosen := ""
+			if providerOverride != "" {
+				chosen = pricing.GetPriorityModelForProvider(tier, providerOverride)
+			}
+			if chosen == "" {
+				chosen = pricing.GetPriorityOneModel(tier)
+			}
+			if chosen != "" {
+				meta["model"] = chosen
+				meta["model_used"] = chosen
+			}
+		}
+	}
+	if _, ok := meta["provider"]; !ok || meta["provider"] == "" {
+		prov := providerOverride
+		if prov == "" {
+			if m, okm := meta["model"].(string); okm && m != "" {
+				prov = detectProviderFromModel(m)
+			}
+		}
+		if prov == "" || prov == "unknown" {
+			prov = pricing.GetPriorityOneProvider(tier)
+		}
+		if prov != "" {
+			meta["provider"] = prov
+		}
+	}
+	if _, ok := meta["cost_usd"]; !ok {
+		if m, okm := meta["model"].(string); okm && m != "" {
+			tokens := 0
+			if tv, ok := meta["total_tokens"]; ok {
+				switch x := tv.(type) {
+				case int:
+					tokens = x
+				case float64:
+					tokens = int(x)
+				}
+			}
+			if tokens == 0 {
+				tokens = totalTokens
+			}
+			if tokens > 0 {
+				meta["cost_usd"] = pricing.CostForTokens(m, tokens)
+			}
+		}
+	}
+
+	return TaskResult{Result: synth.FinalResult, Success: true, TokensUsed: totalTokens, Metadata: meta}, nil
 }
 
 // Note: convertToStrategiesInput and convertFromStrategiesResult are defined in orchestrator_router.go

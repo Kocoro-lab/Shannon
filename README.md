@@ -292,6 +292,24 @@ Key features:
 - **Policy control** - Apply OPA policies for allowed actions (see Example 3)
 - **Result**: Up to 70% cost reduction through smart caching and session management (based on internal testing)
 
+Typical Task Status response (shape):
+
+```json
+{
+  "task_id": "task-...",
+  "status": "TASK_STATUS_COMPLETED",
+  "result": "...",
+  "model_used": "gpt-5-mini-2025-08-07",
+  "provider": "openai",
+  "usage": {
+    "total_tokens": 300,
+    "input_tokens": 200,
+    "output_tokens": 100,
+    "estimated_cost": 0.006
+  }
+}
+```
+
 </details>
 
 <details>
@@ -322,7 +340,7 @@ default allow = false
 
 allow {
     input.team == "data-science"
-    input.model in ["gpt-4o", "claude-3-sonnet"]
+    input.model in ["gpt-5-2025-08-07", "claude-sonnet-4-5-20250929"]
 }
 
 max_tokens = 50000 {
@@ -336,7 +354,7 @@ default allow = false
 
 allow {
     input.team == "support"
-    input.model == "gpt-4o-mini"
+    input.model == "gpt-5-mini-2025-08-07"
 }
 
 max_tokens = 5000 {
@@ -472,7 +490,7 @@ curl -X POST http://localhost:8080/api/v1/tasks \
     "config": {
       "budget": {
         "max_tokens": 5000,
-        "fallback_model": "gpt-4o-mini",
+        "fallback_model": "gpt-5-mini-2025-08-07",
         "circuit_breaker": {
           "threshold": 0.8,
           "cooldown_seconds": 60
@@ -640,7 +658,7 @@ allow {
 allow {
     input.environment == "production"
     input.tokens_requested < 10000
-    input.model in ["gpt-4o-mini", "claude-4-haiku"]
+    input.model in ["gpt-5-mini-2025-08-07", "claude-haiku-4-5-20251001"]
 }
 EOF
 

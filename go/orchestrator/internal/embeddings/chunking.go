@@ -163,8 +163,8 @@ func (c *Chunker) simpleTokenize(text string) []string {
 func EstimateTokensForModel(text string, model string) int {
 	// Model-specific adjustments
 	switch {
-	case strings.Contains(model, "gpt-4"):
-		// GPT-4 tends to have slightly different tokenization
+	case strings.Contains(model, "gpt-"):
+		// GPT models (gpt-5, gpt-4, etc.) tend to have similar tokenization
 		return len(strings.Fields(text)) * 13 / 10 // 1.3 tokens per word
 	case strings.Contains(model, "embedding"):
 		// Embedding models often have similar tokenization to GPT-3

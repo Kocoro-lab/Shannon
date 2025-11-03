@@ -8,7 +8,7 @@ import future.keywords.in
 # Allow high-tier models for data science team
 allow_model(model) if {
     input.context.team == "data-science"
-    model in ["gpt-4o", "claude-4", "claude-3-opus"]
+    model in ["gpt-5-2025-08-07", "claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"]
 }
 
 # Higher token budget for data science team
@@ -27,7 +27,7 @@ decision := {
     "reason": "Data science team has full access",
     "obligations": {
         "max_tokens": 50000,
-        "allowed_models": ["gpt-4o", "claude-4", "claude-3-opus"],
+        "allowed_models": ["gpt-5-2025-08-07", "claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"],
         "tool_restrictions": []
     }
 } if {

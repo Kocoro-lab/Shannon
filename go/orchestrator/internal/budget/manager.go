@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -76,9 +77,6 @@ type BudgetManager struct {
 	userBudgets    map[string]*TokenBudget
 	mu             sync.RWMutex // Lock order: 1
 
-	// Model pricing configuration
-	modelPricing map[string]ModelPricing
-
 	// Budget policies
 	defaultTaskBudget    int
 	defaultSessionBudget int
@@ -113,15 +111,6 @@ type BudgetManager struct {
 // ErrTokenOverflow indicates a token counter would overflow the int range.
 var ErrTokenOverflow = fmt.Errorf("token count would overflow")
 
-// ModelPricing defines token costs for different models
-type ModelPricing struct {
-	Provider        string  `json:"provider"`
-	Model           string  `json:"model"`
-	InputPricePerK  float64 `json:"input_price_per_k"`  // Price per 1K input tokens
-	OutputPricePerK float64 `json:"output_price_per_k"` // Price per 1K output tokens
-	Tier            string  `json:"tier"`               // small/medium/large
-}
-
 // NewBudgetManager creates a new budget manager
 func NewBudgetManager(db *sql.DB, logger *zap.Logger) *BudgetManager {
 	bm := &BudgetManager{
@@ -129,11 +118,10 @@ func NewBudgetManager(db *sql.DB, logger *zap.Logger) *BudgetManager {
 		logger:         logger,
 		sessionBudgets: make(map[string]*TokenBudget),
 		userBudgets:    make(map[string]*TokenBudget),
-		modelPricing:   initializeModelPricing(),
 
 		// Default budgets (configurable via shannon.yaml session.token_budget_per_task)
-		defaultTaskBudget:    10000,   // 10K tokens per task (fallback if not configured)
-		defaultSessionBudget: 50000,   // 50K tokens per session (fallback)
+		defaultTaskBudget:    10000, // 10K tokens per task (fallback if not configured)
+		defaultSessionBudget: 50000, // 50K tokens per session (fallback)
 
 		// Enhanced features initialization
 		backpressureThreshold: 0.8,
@@ -183,63 +171,6 @@ func NewBudgetManagerWithOptions(db *sql.DB, logger *zap.Logger, opts Options) *
 	return bm
 }
 
-// initializeModelPricing sets up pricing for different models
-func initializeModelPricing() map[string]ModelPricing {
-	return map[string]ModelPricing{
-		// OpenAI Models
-		"gpt-4-turbo": {
-			Provider: "openai", Model: "gpt-4-turbo",
-			InputPricePerK: 0.01, OutputPricePerK: 0.03, Tier: "large",
-		},
-		"gpt-4": {
-			Provider: "openai", Model: "gpt-4",
-			InputPricePerK: 0.03, OutputPricePerK: 0.06, Tier: "large",
-		},
-		"gpt-3.5-turbo": {
-			Provider: "openai", Model: "gpt-3.5-turbo",
-			InputPricePerK: 0.0005, OutputPricePerK: 0.0015, Tier: "small",
-		},
-
-		// Anthropic Models
-		"claude-3-opus": {
-			Provider: "anthropic", Model: "claude-3-opus",
-			InputPricePerK: 0.015, OutputPricePerK: 0.075, Tier: "large",
-		},
-		"claude-3-sonnet": {
-			Provider: "anthropic", Model: "claude-3-sonnet",
-			InputPricePerK: 0.003, OutputPricePerK: 0.015, Tier: "medium",
-		},
-		"claude-3-haiku": {
-			Provider: "anthropic", Model: "claude-3-haiku",
-			InputPricePerK: 0.00025, OutputPricePerK: 0.00125, Tier: "small",
-		},
-
-		// DeepSeek Models
-		"deepseek-v3": {
-			Provider: "deepseek", Model: "deepseek-v3",
-			InputPricePerK: 0.001, OutputPricePerK: 0.002, Tier: "medium",
-		},
-		"deepseek-chat": {
-			Provider: "deepseek", Model: "deepseek-chat",
-			InputPricePerK: 0.0001, OutputPricePerK: 0.0002, Tier: "small",
-		},
-
-		// Qwen Models
-		"qwen-max": {
-			Provider: "qwen", Model: "qwen-max",
-			InputPricePerK: 0.002, OutputPricePerK: 0.006, Tier: "large",
-		},
-		"qwen-plus": {
-			Provider: "qwen", Model: "qwen-plus",
-			InputPricePerK: 0.0008, OutputPricePerK: 0.002, Tier: "medium",
-		},
-		"qwen-turbo": {
-			Provider: "qwen", Model: "qwen-turbo",
-			InputPricePerK: 0.0003, OutputPricePerK: 0.0006, Tier: "small",
-		},
-	}
-}
-
 // CheckBudget verifies if an operation can proceed within budget constraints
 func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, taskID string, estimatedTokens int) (*BudgetCheckResult, error) {
 	// Phase 1: Try read lock first for existing budgets (optimization for common case)
@@ -257,8 +188,8 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 				userBudget = ub
 			} else {
 				userBudget = &TokenBudget{
-					HardLimit:         true,
-					WarningThreshold:  0.8,
+					HardLimit:        true,
+					WarningThreshold: 0.8,
 				}
 				bm.userBudgets[userID] = userBudget
 			}
@@ -332,8 +263,12 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 				taskUsagePercent*100, warningThreshold*100))
 	}
 
-	// Estimate cost
-	result.EstimatedCost = bm.estimateCost(estimatedTokens, "gpt-3.5-turbo") // Default model
+	// Estimate cost using priority-1 small tier model from config
+	defaultModel := pricing.GetPriorityOneModel("small")
+	if defaultModel == "" {
+		defaultModel = "gpt-5-nano-2025-08-07" // Fallback if config unavailable
+	}
+	result.EstimatedCost = bm.estimateCost(estimatedTokens, defaultModel)
 	result.RemainingTaskBudget = taskBudget - taskTokensUsed
 	result.RemainingSessionBudget = sessionBudgetLimit - sessionTokensUsed
 	// RemainingDailyBudget removed
@@ -364,11 +299,8 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	usage.Timestamp = time.Now()
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
-	// Calculate cost based on model
-	if pricing, ok := bm.modelPricing[usage.Model]; ok {
-		usage.CostUSD = (float64(usage.InputTokens)/1000)*pricing.InputPricePerK +
-			(float64(usage.OutputTokens)/1000)*pricing.OutputPricePerK
-	}
+	// Calculate cost using centralized pricing (config/models.yaml)
+	usage.CostUSD = pricing.CostForSplit(usage.Model, usage.InputTokens, usage.OutputTokens)
 
 	// Update in-memory budgets with overflow checks
 	const maxInt = int(^uint(0) >> 1)
@@ -478,8 +410,8 @@ func (bm *BudgetManager) getUserBudget(userID string) *TokenBudget {
 	}
 	// Return a transient default without mutating shared maps
 	return &TokenBudget{
-		HardLimit:         true,
-		WarningThreshold:  0.8,
+		HardLimit:        true,
+		WarningThreshold: 0.8,
 	}
 }
 
@@ -498,15 +430,8 @@ func (bm *BudgetManager) getSessionBudget(sessionID string) *TokenBudget {
 }
 
 func (bm *BudgetManager) estimateCost(tokens int, model string) float64 {
-	if pricing, ok := bm.modelPricing[model]; ok {
-		// Assume 60/40 split between input/output for estimation
-		inputTokens := int(float64(tokens) * 0.6)
-		outputTokens := int(float64(tokens) * 0.4)
-		return (float64(inputTokens)/1000)*pricing.InputPricePerK +
-			(float64(outputTokens)/1000)*pricing.OutputPricePerK
-	}
-	// Default fallback pricing
-	return float64(tokens) * 0.000002 // $0.002 per 1K tokens
+	// Use centralized pricing for estimation; if model unknown, defaults are applied
+	return pricing.CostForTokens(model, tokens)
 }
 
 func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage) error {
@@ -552,36 +477,78 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 		}
 	}
 
-	// Handle task_id - convert to UUID or null
-	var taskUUID *uuid.UUID
-	if usage.TaskID != "" {
-		parsed, err := uuid.Parse(usage.TaskID)
-		if err == nil {
-			taskUUID = &parsed
-		} else {
-			// Option B: Attempt to resolve by workflow_id -> task_executions.id
-			if bm.db != nil {
-				var resolved uuid.UUID
-				err2 := bm.db.QueryRowContext(ctx,
-					"SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
-					usage.TaskID,
-				).Scan(&resolved)
-				if err2 == nil {
-					taskUUID = &resolved
-					bm.logger.Debug("Resolved task_id by workflow_id",
-						zap.String("workflow_id", usage.TaskID),
-						zap.String("task_id", resolved.String()))
-				} else {
-					bm.logger.Debug("Invalid task_id and no matching workflow_id; storing NULL",
-						zap.String("task_id", usage.TaskID),
-						zap.Error(err2))
-				}
-			} else {
-				bm.logger.Debug("Invalid task_id UUID and DB unavailable; storing NULL",
-					zap.String("task_id", usage.TaskID))
-			}
-		}
-	}
+    // Handle task_id - convert to UUID, verify existence, or resolve by workflow_id; otherwise store NULL
+    var taskUUID *uuid.UUID
+    if usage.TaskID != "" {
+        if parsed, err := uuid.Parse(usage.TaskID); err == nil {
+            // Parsed as UUID; verify it exists in task_executions
+            exists := false
+            if bm.db != nil {
+                if err := bm.db.QueryRowContext(ctx,
+                    "SELECT EXISTS(SELECT 1 FROM task_executions WHERE id = $1)",
+                    parsed,
+                ).Scan(&exists); err != nil {
+                    bm.logger.Warn("Failed to verify task_id UUID existence",
+                        zap.String("task_id", usage.TaskID),
+                        zap.Error(err))
+                }
+            }
+            if exists {
+                taskUUID = &parsed
+                bm.logger.Debug("Successfully verified task_id UUID",
+                    zap.String("task_id", parsed.String()))
+            } else if bm.db != nil {
+                // Might actually be a workflow_id that looks like a UUID; try resolving by workflow_id
+                bm.logger.Debug("task_id UUID not found in task_executions; attempting workflow_id resolution",
+                    zap.String("task_id", usage.TaskID))
+                var resolved uuid.UUID
+                if err2 := bm.db.QueryRowContext(ctx,
+                    "SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
+                    usage.TaskID,
+                ).Scan(&resolved); err2 == nil {
+                    taskUUID = &resolved
+                    bm.logger.Info("Resolved task_id by workflow_id after UUID check failed",
+                        zap.String("workflow_id", usage.TaskID),
+                        zap.String("resolved_task_id", resolved.String()))
+                } else {
+                    bm.logger.Warn("task_id UUID not found and no matching workflow_id; storing NULL",
+                        zap.String("task_id", usage.TaskID),
+                        zap.String("user_id", usage.UserID),
+                        zap.String("model", usage.Model),
+                        zap.Error(err2))
+                }
+            } else {
+                bm.logger.Warn("task_id UUID provided but DB unavailable; storing NULL",
+                    zap.String("task_id", usage.TaskID))
+            }
+        } else if bm.db != nil {
+            // Not a UUID: attempt to resolve by workflow_id -> task_executions.id
+            bm.logger.Debug("task_id is not a UUID; attempting workflow_id resolution",
+                zap.String("task_id", usage.TaskID),
+                zap.Error(err))
+            var resolved uuid.UUID
+            if err2 := bm.db.QueryRowContext(ctx,
+                "SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
+                usage.TaskID,
+            ).Scan(&resolved); err2 == nil {
+                taskUUID = &resolved
+                bm.logger.Info("Successfully resolved task_id by workflow_id",
+                    zap.String("workflow_id", usage.TaskID),
+                    zap.String("resolved_task_id", resolved.String()))
+            } else {
+                bm.logger.Warn("Invalid task_id format and no matching workflow_id; storing NULL",
+                    zap.String("task_id", usage.TaskID),
+                    zap.String("user_id", usage.UserID),
+                    zap.String("model", usage.Model),
+                    zap.String("parse_error", err.Error()),
+                    zap.Error(err2))
+            }
+        } else {
+            bm.logger.Warn("Invalid task_id format and DB unavailable; storing NULL",
+                zap.String("task_id", usage.TaskID),
+                zap.Error(err))
+        }
+    }
 
 	// Store using schema that matches migration: prompt_tokens, completion_tokens, created_at
 	_, err := bm.db.ExecContext(ctx, `

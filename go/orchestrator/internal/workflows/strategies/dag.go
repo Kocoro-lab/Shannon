@@ -1,16 +1,18 @@
 package strategies
 
 import (
-    "encoding/json"
-    "fmt"
-    "strings"
-    "time"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
@@ -274,27 +276,27 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			}
 		}
 		// 2) If response looks like raw JSON, avoid bypass
-        if shouldBypass {
-            trimmed := strings.TrimSpace(singleSuccessResult.Response)
-            if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-                shouldBypass = false
-            } else if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") {
-                // Handle JSON encoded as a quoted string
-                var inner string
-                if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
-                    innerTrim := strings.TrimSpace(inner)
-                    if strings.HasPrefix(innerTrim, "{") || strings.HasPrefix(innerTrim, "[") {
-                        shouldBypass = false
-                    }
-                }
-            }
-        }
-        // Enforce role-aware synthesis for data_analytics even with single result
-        if shouldBypass && baseContext != nil {
-            if role, ok := baseContext["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
-                shouldBypass = false
-            }
-        }
+		if shouldBypass {
+			trimmed := strings.TrimSpace(singleSuccessResult.Response)
+			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+				shouldBypass = false
+			} else if strings.HasPrefix(trimmed, "\"") && strings.HasSuffix(trimmed, "\"") {
+				// Handle JSON encoded as a quoted string
+				var inner string
+				if err := json.Unmarshal([]byte(trimmed), &inner); err == nil {
+					innerTrim := strings.TrimSpace(inner)
+					if strings.HasPrefix(innerTrim, "{") || strings.HasPrefix(innerTrim, "[") {
+						shouldBypass = false
+					}
+				}
+			}
+		}
+		// Enforce role-aware synthesis for data_analytics even with single result
+		if shouldBypass && baseContext != nil {
+			if role, ok := baseContext["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
+				shouldBypass = false
+			}
+		}
 
 		if shouldBypass {
 			// Single success bypass - skip synthesis entirely for efficiency
@@ -472,6 +474,103 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		meta["tool_errors"] = toolErrors
 	}
 
+	// Aggregate agent metadata (model, provider, tokens, cost)
+	agentMeta := metadata.AggregateAgentMetadata(agentResults, reflectionTokens+synthesis.TokensUsed)
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
+
+	// Ensure total_tokens present in metadata (fallback to workflow total if missing/zero)
+	if tv, ok := meta["total_tokens"]; !ok || (ok && ((func() int {
+		switch x := tv.(type) {
+		case int:
+			return x
+		case float64:
+			return int(x)
+		default:
+			return 0
+		}
+	})() == 0)) {
+		if totalTokens > 0 {
+			meta["total_tokens"] = totalTokens
+		}
+	}
+
+	// Fallback: if model/provider missing, prefer provider override from context, then derive from model/tier
+	// Provider override from context/session
+	providerOverride := ""
+	if v, ok := baseContext["provider_override"].(string); ok && strings.TrimSpace(v) != "" {
+		providerOverride = strings.ToLower(strings.TrimSpace(v))
+	} else if v, ok := baseContext["provider"].(string); ok && strings.TrimSpace(v) != "" {
+		providerOverride = strings.ToLower(strings.TrimSpace(v))
+	} else if v, ok := baseContext["llm_provider"].(string); ok && strings.TrimSpace(v) != "" {
+		providerOverride = strings.ToLower(strings.TrimSpace(v))
+	}
+
+	// Model fallback
+	_, hasModel := meta["model"]
+	_, hasModelUsed := meta["model_used"]
+	if !hasModel && !hasModelUsed {
+		chosen := ""
+		if providerOverride != "" {
+			chosen = pricing.GetPriorityModelForProvider(modelTier, providerOverride)
+		}
+		if chosen == "" {
+			chosen = pricing.GetPriorityOneModel(modelTier)
+		}
+		if chosen != "" {
+			meta["model"] = chosen
+			meta["model_used"] = chosen
+		}
+	}
+
+	// Provider fallback (prefer override, then detect from model, then tier default)
+	if _, ok := meta["provider"]; !ok || meta["provider"] == "" {
+		prov := providerOverride
+		if prov == "" {
+			if m, ok := meta["model"].(string); ok && m != "" {
+				prov = detectProviderFromModel(m)
+			}
+		}
+		if prov == "" || prov == "unknown" {
+			prov = pricing.GetPriorityOneProvider(modelTier)
+		}
+		if prov != "" {
+			meta["provider"] = prov
+		}
+	}
+
+        // If cost is missing or zero but we now have model and tokens, compute cost using pricing
+        if cv, ok := meta["cost_usd"]; !ok || (ok && (func() bool {
+            switch x := cv.(type) {
+            case int:
+                return x == 0
+            case float64:
+                return x == 0.0
+            default:
+                return false
+            }
+        })()) {
+            if m, okm := meta["model"].(string); okm && m != "" {
+                // Try to get total tokens as int
+                tokens := 0
+                if tv, ok := meta["total_tokens"]; ok {
+                    switch x := tv.(type) {
+                    case int:
+                        tokens = x
+                    case float64:
+                        tokens = int(x)
+                    }
+                }
+                if tokens == 0 {
+                    tokens = totalTokens
+                }
+                if tokens > 0 {
+                    meta["cost_usd"] = pricing.CostForTokens(m, tokens)
+                }
+            }
+        }
+
 	// Emit WORKFLOW_COMPLETED before returning
 	workflowID := input.ParentWorkflowID
 	if workflowID == "" {
@@ -481,13 +580,13 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "dag",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "dag",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,

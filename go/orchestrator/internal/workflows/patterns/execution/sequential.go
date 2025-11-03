@@ -1,17 +1,17 @@
 package execution
 
 import (
-	"encoding/json"
-	"fmt"
-	"strconv"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "strings"
+    "time"
 
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 )
 
 // SequentialConfig controls sequential execution behavior
@@ -112,9 +112,9 @@ func ExecuteSequential(
 
 					// Extract numeric value if configured
 					if config.ExtractNumericValues {
-						if numVal, ok := parseNumericValue(prevResult.Response); ok {
-							resultMap["numeric_value"] = numVal
-						}
+                    if numVal, ok := util.ParseNumericValue(prevResult.Response); ok {
+                        resultMap["numeric_value"] = numVal
+                    }
 					}
 
 					// Extract tool results if available
@@ -391,34 +391,4 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 }
 
 // Helper function to parse numeric values from responses
-func parseNumericValue(response string) (float64, bool) {
-	// Prefer patterns like "equals N" or "is N"; otherwise take the last number.
-	response = strings.TrimSpace(response)
-
-	// Direct parse
-	var direct float64
-	if _, err := fmt.Sscanf(response, "%f", &direct); err == nil {
-		return direct, true
-	}
-
-	// Token scanning with preferences
-	fields := strings.Fields(response)
-	var numbers []float64
-	for i := 0; i < len(fields); i++ {
-		token := strings.Trim(fields[i], ".,!?:;")
-		// Prefer "equals X" or "is X"
-		if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
-			next := strings.Trim(fields[i+1], ".,!?:;")
-			if val, err := strconv.ParseFloat(next, 64); err == nil {
-				return val, true
-			}
-		}
-		if val, err := strconv.ParseFloat(token, 64); err == nil {
-			numbers = append(numbers, val)
-		}
-	}
-	if len(numbers) > 0 {
-		return numbers[len(numbers)-1], true
-	}
-	return 0, false
-}
+// parseNumericValue wrapper removed in favor of util.ParseNumericValue at call sites

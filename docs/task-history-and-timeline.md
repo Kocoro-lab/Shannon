@@ -20,7 +20,28 @@ This document explains Shannon's task history APIs, persistent event storage, an
   - Query: `limit`, `offset`, `status` (QUEUED|RUNNING|COMPLETED|FAILED|CANCELLED|TIMEOUT), `session_id`
   - Response: `{ tasks: TaskSummary[], total_count }`
 - `GET /api/v1/tasks/{id}` — Task status
-  - Includes: `query`, `session_id`, `mode` to support replay/continuation.
+  - Includes: `query`, `session_id`, `mode` for replay/continuation
+  - Now also includes usage metadata populated by workflows and persisted in DB:
+    - `model_used` (string), `provider` (string)
+    - `usage` (object): `{ total_tokens, input_tokens?, output_tokens?, estimated_cost? }`
+
+Example response (shape):
+
+```json
+{
+  "task_id": "task-...",
+  "status": "TASK_STATUS_COMPLETED",
+  "result": "...",
+  "model_used": "gpt-5-mini-2025-08-07",
+  "provider": "openai",
+  "usage": {
+    "total_tokens": 300,
+    "input_tokens": 200,
+    "output_tokens": 100,
+    "estimated_cost": 0.006
+  }
+}
+```
 - `GET /api/v1/tasks/{id}/events` — Persistent event history (from `event_logs`)
   - Query: `limit`, `offset`
   - Response: `{ events: [...], count }`
@@ -103,4 +124,3 @@ curl -H "X-API-Key: $API_KEY" \
 ## OpenAPI
 
 - The gateway publishes OpenAPI at `GET /openapi.json` including these endpoints.
-

@@ -78,7 +78,7 @@ GOOGLE_SEARCH_ENGINE_ID=...
 # FIRECRAWL_API_KEY=...
 
 # Model routing overrides (optional)
-COMPLEXITY_MODEL_ID=gpt-4o
+COMPLEXITY_MODEL_ID=gpt-5-nano-2025-08-07
 DECOMPOSITION_MODEL_ID=claude-sonnet-4-20250514
 ```
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"time"
 
 	"go.temporal.io/sdk/activity"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 )
 
 // BudgetActivities handles token budget operations
@@ -249,45 +249,9 @@ type BudgetedAgentInput struct {
 }
 
 // detectProviderFromModel determines the provider based on the model name
+// Delegates to shared models.DetectProvider for consistent provider detection
 func detectProviderFromModel(model string) string {
-	modelLower := strings.ToLower(model)
-
-	// OpenAI models (including o1-preview, o1-mini, gpt-4o, gpt-4-turbo, text-*)
-	if strings.Contains(modelLower, "gpt-") || strings.Contains(modelLower, "o1-") ||
-		strings.Contains(modelLower, "davinci") || strings.Contains(modelLower, "text-") ||
-		strings.HasPrefix(modelLower, "o1") {
-		return "openai"
-	}
-
-	// Anthropic models (including opus-4, sonnet-4.5, claude-3.x, haiku-3.5)
-	if strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "opus-") ||
-		strings.Contains(modelLower, "sonnet-") || strings.Contains(modelLower, "haiku-") {
-		return "anthropic"
-	}
-
-	// Google models
-	if strings.Contains(modelLower, "gemini") || strings.Contains(modelLower, "palm") ||
-		strings.Contains(modelLower, "bard") {
-		return "google"
-	}
-
-	// Llama/Meta models
-	if strings.Contains(modelLower, "llama") || strings.Contains(modelLower, "codellama") {
-		return "meta"
-	}
-
-	// Mistral models
-	if strings.Contains(modelLower, "mistral") || strings.Contains(modelLower, "mixtral") {
-		return "mistral"
-	}
-
-	// Cohere models
-	if strings.Contains(modelLower, "command") || strings.Contains(modelLower, "cohere") {
-		return "cohere"
-	}
-
-	// Default to unknown
-	return "unknown"
+	return models.DetectProvider(model)
 }
 
 // ExecuteAgentWithBudget executes an agent with token budget constraints
@@ -319,14 +283,9 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		}, nil
 	}
 
-	// Select model based on tier and budget
-	model, provider := selectModelForTier(input.ModelTier, input.MaxTokens)
-
-	// Add budget constraints to context
-	input.AgentInput.Context["max_tokens"] = input.MaxTokens
-	input.AgentInput.Context["model"] = model
-	input.AgentInput.Context["provider"] = provider
-	input.AgentInput.Context["model_tier"] = input.ModelTier
+    // Add budget constraints to context (do not hardcode model/provider)
+    input.AgentInput.Context["max_tokens"] = input.MaxTokens
+    input.AgentInput.Context["model_tier"] = input.ModelTier
 
 	// Execute the actual agent using shared helper (not calling activity directly)
 	activity.GetLogger(ctx).Info("Executing agent with budget",
@@ -339,8 +298,7 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
 
-	// Don't override model - let it report what was actually used
-	// TODO: Pass specific model through to Rust/Python to enforce budget constraints
+    // Don't override model/provider — rely on downstream selection based on tier
 
 	// Ensure tokens don't exceed budget
 	if result.TokensUsed > input.MaxTokens {
@@ -353,20 +311,34 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 
 	// Record the actual usage with the model that was actually used
 	// Use the model from result if available, otherwise fall back to what we selected
-	actualModel := result.ModelUsed
-	if actualModel == "" {
-		actualModel = model // Fallback to our selection if agent didn't report
-	}
-	// Determine actual provider from the model that was actually used
-	actualProvider := detectProviderFromModel(actualModel)
+    actualModel := result.ModelUsed
+    if actualModel == "" {
+        // If agent didn't report a model, leave it empty to use defaults in pricing
+        actualModel = ""
+    }
+    // Determine actual provider from the reported model (best-effort)
+    actualProvider := detectProviderFromModel(actualModel)
 
 	// Get activity info for idempotency key
 	info := activity.GetInfo(ctx)
 	idempotencyKey := fmt.Sprintf("%s-%s-%d", info.WorkflowExecution.ID, info.ActivityID, info.Attempt)
 
-	// Estimate split for input/output tokens if not provided
-	inputTokens := result.TokensUsed * 6 / 10
-	outputTokens := result.TokensUsed * 4 / 10
+	// Populate input/output tokens in result if not already provided by agent
+	// Prefer agent-reported splits, fallback to estimation
+	if result.InputTokens == 0 && result.OutputTokens == 0 && result.TokensUsed > 0 {
+		result.InputTokens = result.TokensUsed * 6 / 10
+		result.OutputTokens = result.TokensUsed * 4 / 10
+	}
+
+	// Use result's populated splits for budget recording
+	inputTokens := result.InputTokens
+	outputTokens := result.OutputTokens
+	if inputTokens == 0 && outputTokens == 0 {
+		// Fallback if result still doesn't have splits
+		inputTokens = result.TokensUsed * 6 / 10
+		outputTokens = result.TokensUsed * 4 / 10
+	}
+
 	err = b.budgetManager.RecordUsage(ctx, &budget.BudgetTokenUsage{
 		UserID:         input.UserID,
 		SessionID:      input.AgentInput.SessionID,
@@ -450,34 +422,6 @@ func (b *BudgetActivities) UpdateBudgetPolicy(ctx context.Context, input UpdateB
 	return nil
 }
 
-// selectModelForTier selects a model based on tier and token budget.
-// NOTE: Tier is determined by task complexity or explicit caller request,
-// NOT by quota-based allocation. The 50/40/10 distribution in configs
-// is a target guideline, not an enforced ratio.
-func selectModelForTier(tier string, maxTokens int) (string, string) {
-	// Model selection based on tier and token constraints
-	switch tier {
-	case "small":
-		if maxTokens > 8000 {
-			return "gpt-3.5-turbo-16k", "openai"
-		}
-		return "gpt-3.5-turbo", "openai"
-
-	case "medium":
-		if maxTokens > 100000 {
-			return "claude-3-sonnet", "anthropic"
-		}
-		return "gpt-4", "openai"
-
-	case "large":
-		if maxTokens > 100000 {
-			return "claude-3-opus", "anthropic"
-		}
-		return "gpt-4-turbo", "openai"
-
-	default:
-		return "gpt-3.5-turbo", "openai"
-	}
-}
+// Model selection is delegated downstream; avoid hardcoding here.
 
 // SessionUpdateInput is defined in types.go

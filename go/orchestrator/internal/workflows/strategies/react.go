@@ -2,13 +2,16 @@ package strategies
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 )
 
@@ -105,7 +108,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	if compressionVersion >= 1 && input.SessionID != "" && len(input.History) > 20 {
 		// Check if compression is needed with rate limiting
 		estimatedTokens := activities.EstimateTokens(convertHistoryForAgent(input.History))
-		modelTier := "medium" // Default for React tasks
+		tierForCompression := "medium"
 
 		var checkResult activities.CheckCompressionNeededResult
 		err := workflow.ExecuteActivity(ctx, "CheckCompressionNeeded",
@@ -113,7 +116,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				SessionID:       input.SessionID,
 				MessageCount:    len(input.History),
 				EstimatedTokens: estimatedTokens,
-				ModelTier:       modelTier,
+				ModelTier:       tierForCompression,
 			}).Get(ctx, &checkResult)
 
 		if err == nil && checkResult.ShouldCompress {
@@ -129,7 +132,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				activities.CompressContextInput{
 					SessionID:        input.SessionID,
 					History:          convertHistoryMapForCompression(input.History),
-					TargetTokens:     int(float64(activities.GetModelWindowSize(modelTier)) * 0.375),
+					TargetTokens:     int(float64(activities.GetModelWindowSize(tierForCompression)) * 0.375),
 					ParentWorkflowID: input.ParentWorkflowID,
 				}).Get(ctx, &compressResult)
 
@@ -161,6 +164,25 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	// Determine model tier based on query complexity
 	modelTier := "medium" // Default for React tasks
+	// Resolve an approximate concrete model for pricing/metadata; prefer provider override from context
+	providerOverride := ""
+	if v, ok := baseContext["provider_override"].(string); ok && strings.TrimSpace(v) != "" {
+		providerOverride = strings.ToLower(strings.TrimSpace(v))
+	} else if v, ok := baseContext["provider"].(string); ok && strings.TrimSpace(v) != "" {
+		providerOverride = strings.ToLower(strings.TrimSpace(v))
+	} else if v, ok := baseContext["llm_provider"].(string); ok && strings.TrimSpace(v) != "" {
+		providerOverride = strings.ToLower(strings.TrimSpace(v))
+	}
+	approxModel := ""
+	if providerOverride != "" {
+		approxModel = pricing.GetPriorityModelForProvider(modelTier, providerOverride)
+	}
+	if approxModel == "" {
+		approxModel = pricing.GetPriorityOneModel(modelTier)
+	}
+	if approxModel == "" {
+		approxModel = modelTier
+	}
 
 	// Configure React pattern
 	reactConfig := patterns.ReactConfig{
@@ -208,6 +230,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	finalResult := reactResult.FinalResult
 	qualityScore := 0.5
 	totalTokens := reactResult.TotalTokens
+	reflectionTokens := 0
 
 	if reactResult.Iterations > 5 { // Complex task that needed many iterations
 		logger.Info("Applying reflection for quality improvement",
@@ -230,17 +253,21 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 
 		// Convert React result to agent result for reflection
+		approxModelRefl := pricing.GetPriorityOneModel(modelTier)
+		if approxModelRefl == "" {
+			approxModelRefl = modelTier
+		}
 		agentResults := []activities.AgentExecutionResult{
 			{
 				AgentID:    "react-agent",
 				Response:   reactResult.FinalResult,
 				TokensUsed: reactResult.TotalTokens,
 				Success:    true,
-				ModelUsed:  modelTier,
+				ModelUsed:  approxModelRefl,
 			},
 		}
 
-		improvedResult, score, reflectionTokens, err := patterns.ReflectOnResult(
+		improvedResult, score, reflTokens, err := patterns.ReflectOnResult(
 			ctx,
 			input.Query,
 			reactResult.FinalResult,
@@ -253,6 +280,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		if err == nil {
 			finalResult = improvedResult
 			qualityScore = score
+			reflectionTokens = reflTokens
 			totalTokens += reflectionTokens
 			logger.Info("Reflection improved quality",
 				"score", qualityScore,
@@ -294,7 +322,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				UserID:    input.UserID,
 				Query:     input.Query,
 				Answer:    finalResult,
-				Model:     modelTier,
+				Model:     approxModel,
 				Metadata: map[string]interface{}{
 					"workflow":      "react_v2",
 					"iterations":    reactResult.Iterations,
@@ -355,6 +383,23 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		meta["tool_errors"] = toolErrors
 	}
 
+	// Aggregate agent metadata (model, provider, tokens, cost)
+	// Note: ReactResult doesn't track per-iteration models; use tier's priority-1 model
+	agentResults := []activities.AgentExecutionResult{
+		{
+			AgentID:      "react-agent",
+			ModelUsed:    approxModel,
+			TokensUsed:   reactResult.TotalTokens,
+			InputTokens:  reactResult.TotalTokens * 6 / 10, // Estimate 60/40 split
+			OutputTokens: reactResult.TotalTokens * 4 / 10,
+			Success:      true,
+		},
+	}
+	agentMeta := metadata.AggregateAgentMetadata(agentResults, reflectionTokens)
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
+
 	// Emit WORKFLOW_COMPLETED before returning
 	workflowID := input.ParentWorkflowID
 	if workflowID == "" {
@@ -364,13 +409,13 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "react",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "react",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -310,26 +311,48 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "exploratory",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "exploratory",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
+	// Build metadata with agent information
+	meta := map[string]interface{}{
+		"workflow_type":      "exploratory",
+		"pattern_used":       "tree_of_thoughts",
+		"total_thoughts":     totResult.TotalThoughts,
+		"tree_depth":         totResult.TreeDepth,
+		"final_confidence":   finalConfidence,
+		"debate_applied":     totResult.Confidence < config.ExploratoryConfidenceThreshold,
+		"reflection_applied": finalConfidence < 0.9,
+	}
+
+	// Aggregate agent metadata (model, provider, tokens, cost)
+	// Resolve actual model from tier using config (pattern doesn't track model used)
+	actualModel := getPriorityModelForTier(opts.ModelTier)
+	agentResults := []activities.AgentExecutionResult{
+		{
+			AgentID:      "exploratory-agent",
+			ModelUsed:    actualModel,
+			TokensUsed:   totResult.TotalTokens,
+			InputTokens:  totResult.TotalTokens * 6 / 10, // Estimate 60/40 split
+			OutputTokens: totResult.TotalTokens * 4 / 10,
+			Success:      true,
+		},
+	}
+	reflectionTokensCount := totalTokens - totResult.TotalTokens // Approximate reflection tokens
+	agentMeta := metadata.AggregateAgentMetadata(agentResults, reflectionTokensCount)
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
 
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
 		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"workflow_type":      "exploratory",
-			"pattern_used":       "tree_of_thoughts",
-			"total_thoughts":     totResult.TotalThoughts,
-			"tree_depth":         totResult.TreeDepth,
-			"final_confidence":   finalConfidence,
-			"debate_applied":     totResult.Confidence < config.ExploratoryConfidenceThreshold,
-			"reflection_applied": finalConfidence < 0.9,
-		},
+		Metadata:   meta,
 	}, nil
 }

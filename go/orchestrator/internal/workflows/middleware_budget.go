@@ -11,6 +11,7 @@ import (
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
     ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/ratecontrol"
 )
 
@@ -135,19 +136,24 @@ func resolveProviderFromContext(ctx map[string]interface{}) string {
 	return "unknown"
 }
 
-// inferProviderFromTier returns the most likely provider for a given tier
-// Based on models.yaml priority 1 providers for each tier
+// inferProviderFromTier returns the most likely provider for a given tier.
+// Reads priority-1 provider from config/models.yaml to avoid config drift.
+// Falls back to hardcoded defaults if config unavailable.
 func inferProviderFromTier(tier string) string {
-	switch strings.ToLower(tier) {
+	// Try to get from config first (data-driven)
+	if provider := pricing.GetPriorityOneProvider(tier); provider != "" {
+		return provider
+	}
+
+	// Fallback to hardcoded defaults if config not available
+	switch tier {
 	case "small":
-		return "openai" // gpt-4.1-nano is priority 1
+		return "openai" // Default: gpt-5-nano-2025-08-07 is priority 1
 	case "medium":
-		return "openai" // gpt-4.1-mini is priority 1
+		return "openai" // Default: gpt-5-2025-08-07 is priority 1
 	case "large":
-		return "openai" // gpt-4.1 is priority 1
-	case "xlarge":
-		return "anthropic" // claude-3-7-sonnet is priority 1
+		return "openai" // Default: gpt-4.1-2025-04-14 is priority 1
 	default:
-		return "openai" // Default to openai as most common
+		return "unknown"
 	}
 }

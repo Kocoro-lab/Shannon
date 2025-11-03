@@ -1,8 +1,8 @@
 package strategies
 
 import (
-    "time"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"time"
 )
 
 // TaskInput represents the input to a workflow
@@ -29,11 +29,11 @@ type TaskInput struct {
 	// Workflow behavior flags (deterministic per-run)
 	BypassSingleResult bool // If true, return single successful result directly
 
-    // Parent workflow ID for event streaming (used by child workflows)
-    ParentWorkflowID string // Parent workflow ID for unified event streaming
+	// Parent workflow ID for event streaming (used by child workflows)
+	ParentWorkflowID string // Parent workflow ID for unified event streaming
 
-    // Optional: preplanned decomposition to avoid re-decompose
-    PreplannedDecomposition *activities.DecompositionResult
+	// Optional: preplanned decomposition to avoid re-decompose
+	PreplannedDecomposition *activities.DecompositionResult
 }
 
 // Message represents a conversation message

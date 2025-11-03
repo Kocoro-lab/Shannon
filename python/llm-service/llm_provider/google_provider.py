@@ -267,28 +267,8 @@ class GoogleProvider(LLMProvider):
             self.logger.error(f"Google streaming failed: {e}")
             raise
 
-    def _select_model_for_tier(self, tier: ModelTier) -> str:
-        """Select appropriate model based on tier"""
-        tier_models = {
-            ModelTier.SMALL: "gemini-1.5-flash",
-            ModelTier.MEDIUM: "gemini-pro",
-            ModelTier.LARGE: "gemini-1.5-pro",
-        }
-
-        model_id = tier_models.get(tier, "gemini-pro")
-
-        # Check if model is available
-        if model_id not in self.models:
-            # Fallback to any available model
-            if self.models:
-                model_id = list(self.models.keys())[0]
-                self.logger.warning(
-                    f"Model for tier {tier} not found, using {model_id}"
-                )
-            else:
-                raise ValueError("No models available")
-
-        return model_id
+    # NOTE: Tier-to-model fallback removed. Selection now relies on resolve_model_config
+    # backed by models.yaml via the manager's configuration.
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count for text"""

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +16,29 @@ import (
 
 // Config structure for pricing section in config/models.yaml
 type config struct {
+	ModelTiers struct {
+		Small struct {
+			Providers []struct {
+				Provider string `yaml:"provider"`
+				Model    string `yaml:"model"`
+				Priority int    `yaml:"priority"`
+			} `yaml:"providers"`
+		} `yaml:"small"`
+		Medium struct {
+			Providers []struct {
+				Provider string `yaml:"provider"`
+				Model    string `yaml:"model"`
+				Priority int    `yaml:"priority"`
+			} `yaml:"providers"`
+		} `yaml:"medium"`
+		Large struct {
+			Providers []struct {
+				Provider string `yaml:"provider"`
+				Model    string `yaml:"model"`
+				Priority int    `yaml:"priority"`
+			} `yaml:"providers"`
+		} `yaml:"large"`
+	} `yaml:"model_tiers"`
 	Pricing struct {
 		Defaults struct {
 			CombinedPer1K float64 `yaml:"combined_per_1k"`
@@ -147,8 +171,8 @@ func DefaultPerToken() float64 {
 	if cfg.Pricing.Defaults.CombinedPer1K > 0 {
 		return cfg.Pricing.Defaults.CombinedPer1K / 1000.0
 	}
-	// Fallback: $0.002 per 1K tokens (gpt-3.5-ish)
-	return 0.000002
+	// Fallback: $0.005 per 1K tokens (generic default)
+	return 0.000005
 }
 
 // PricePerTokenForModel returns combined price per token for a model if available
@@ -260,4 +284,144 @@ func ValidateMap(m map[string]interface{}) error {
 		}
 	}
 	return nil
+}
+
+// GetPriorityOneProvider returns the priority-1 provider for a given tier from config.
+// Returns empty string if not found in config (caller should use fallback).
+func GetPriorityOneProvider(tier string) string {
+	cfg := get()
+	if cfg == nil {
+		return ""
+	}
+
+	var providers []struct {
+		Provider string `yaml:"provider"`
+		Model    string `yaml:"model"`
+		Priority int    `yaml:"priority"`
+	}
+
+	switch strings.ToLower(tier) {
+	case "small":
+		providers = cfg.ModelTiers.Small.Providers
+	case "medium":
+		providers = cfg.ModelTiers.Medium.Providers
+	case "large":
+		providers = cfg.ModelTiers.Large.Providers
+	default:
+		return ""
+	}
+
+	// Find provider with priority == 1
+	for _, p := range providers {
+		if p.Priority == 1 {
+			return p.Provider
+		}
+	}
+
+	return ""
+}
+
+// GetPriorityOneModel returns the priority-1 model for a given tier from config.
+// Returns empty string if not found in config.
+func GetPriorityOneModel(tier string) string {
+    cfg := get()
+    if cfg == nil {
+        return ""
+    }
+
+    var providers []struct {
+        Provider string `yaml:"provider"`
+        Model    string `yaml:"model"`
+        Priority int    `yaml:"priority"`
+    }
+
+    switch strings.ToLower(tier) {
+    case "small":
+        providers = cfg.ModelTiers.Small.Providers
+    case "medium":
+        providers = cfg.ModelTiers.Medium.Providers
+    case "large":
+        providers = cfg.ModelTiers.Large.Providers
+    default:
+        return ""
+    }
+
+    for _, p := range providers {
+        if p.Priority == 1 && p.Model != "" {
+            return p.Model
+        }
+    }
+    return ""
+}
+
+// GetPriorityModelForProvider returns the preferred model for a given tier and provider.
+// It scans the tier's provider list and returns the model with the lowest priority value
+// for the specified provider (case-insensitive). Returns empty string if not found.
+func GetPriorityModelForProvider(tier, provider string) string {
+    cfg := get()
+    if cfg == nil || provider == "" {
+        return ""
+    }
+
+    provider = strings.ToLower(provider)
+    var providers []struct {
+        Provider string `yaml:"provider"`
+        Model    string `yaml:"model"`
+        Priority int    `yaml:"priority"`
+    }
+    switch strings.ToLower(tier) {
+    case "small":
+        providers = cfg.ModelTiers.Small.Providers
+    case "medium":
+        providers = cfg.ModelTiers.Medium.Providers
+    case "large":
+        providers = cfg.ModelTiers.Large.Providers
+    default:
+        return ""
+    }
+
+    bestModel := ""
+    bestPriority := int(^uint(0) >> 1) // max int
+    for _, p := range providers {
+        if strings.ToLower(p.Provider) == provider {
+            if p.Priority > 0 && p.Priority < bestPriority && p.Model != "" {
+                bestPriority = p.Priority
+                bestModel = p.Model
+            }
+        }
+    }
+    return bestModel
+}
+
+// GetProviderForModel searches all model tiers to find which provider offers a given model.
+// Returns empty string if the model is not found in any tier.
+// This is useful for reverse-lookup: given a model name, determine its provider.
+func GetProviderForModel(tier, model string) string {
+	cfg := get()
+	if cfg == nil || model == "" {
+		return ""
+	}
+
+	var providers []struct {
+		Provider string `yaml:"provider"`
+		Model    string `yaml:"model"`
+		Priority int    `yaml:"priority"`
+	}
+	switch strings.ToLower(tier) {
+	case "small":
+		providers = cfg.ModelTiers.Small.Providers
+	case "medium":
+		providers = cfg.ModelTiers.Medium.Providers
+	case "large":
+		providers = cfg.ModelTiers.Large.Providers
+	default:
+		return ""
+	}
+
+	for _, p := range providers {
+		if p.Model == model {
+			return p.Provider
+		}
+	}
+	return ""
 }

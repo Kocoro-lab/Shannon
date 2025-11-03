@@ -27,7 +27,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		SessionID:      "session-456",
 		TaskID:         "task-789",
 		AgentID:        "agent-001",
-		Model:          "gpt-3.5-turbo",
+        Model:          "gpt-5-nano-2025-08-07",
 		Provider:       "openai",
 		InputTokens:    100,
 		OutputTokens:   50,
@@ -64,7 +64,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		userID,           // user_id (UUID)
 		taskID,           // task_id (UUID)
 		"openai",         // provider
-		"gpt-3.5-turbo",  // model
+        "gpt-5-nano-2025-08-07",  // model
 		100,              // prompt_tokens (InputTokens)
 		50,               // completion_tokens (OutputTokens)
 		150,              // total_tokens
@@ -89,7 +89,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		SessionID:      "session-456",
 		TaskID:         "task-789",
 		AgentID:        "agent-001",
-		Model:          "gpt-3.5-turbo",
+        Model:          "gpt-5-nano",
 		Provider:       "openai",
 		InputTokens:    100,
 		OutputTokens:   50,

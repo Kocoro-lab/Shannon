@@ -741,11 +741,11 @@ func generateOpenAPISpec() map[string]interface{} {
                         },
                         "context": map[string]interface{}{
                             "type":        "object",
-                            "description": "Additional context for the task (recognized keys: role, model_tier, model_override, system_prompt, prompt_params, template, template_version, disable_ai, history_window_size, use_case_preset, primers_count, recents_count, compression_trigger_ratio, compression_target_ratio)",
+                            "description": "Additional context for the task (recognized keys: role, model_tier, model_override, provider_override, system_prompt, prompt_params, template, template_name (alias), template_version, disable_ai, history_window_size, use_case_preset, primers_count, recents_count, compression_trigger_ratio, compression_target_ratio)",
                             "example": map[string]interface{}{
                                 "role":               "analysis",
                                 "model_tier":         "large",
-                                "model_override":     "gpt-4.1",
+                                "model_override":     "gpt-5-2025-08-07",
                                 "system_prompt":      "You are a concise assistant.",
                                 "prompt_params":      map[string]interface{}{"profile_id": "49598h6e", "current_date": "2025-09-01"},
                                 "template":           "research_summary",
@@ -760,14 +760,22 @@ func generateOpenAPISpec() map[string]interface{} {
                         },
                         "mode": map[string]interface{}{
                             "type":        "string",
-                            "enum":        []string{"simple", "supervisor"},
-                            "description": "Execution mode hint (supervisor routes via SupervisorWorkflow)",
+                            "enum":        []string{"simple", "standard", "complex", "supervisor"},
+                            "description": "Execution mode (advanced): simple|standard|complex|supervisor. Omit to auto-detect.",
                             "default":     "simple",
                         },
                         "model_tier": map[string]interface{}{
                             "type":        "string",
                             "enum":        []string{"small", "medium", "large"},
                             "description": "Preferred model tier (injects into context.model_tier)",
+                        },
+                        "model_override": map[string]interface{}{
+                            "type":        "string",
+                            "description": "Specific model override (injects into context.model_override, e.g., 'gpt-5-2025-08-07', 'gpt-5-pro-2025-10-06')",
+                        },
+                        "provider_override": map[string]interface{}{
+                            "type":        "string",
+                            "description": "Provider override (injects into context.provider_override, e.g., 'openai', 'anthropic')",
                         },
                     },
                 },
@@ -813,13 +821,24 @@ func generateOpenAPISpec() map[string]interface{} {
 						"task_id": map[string]interface{}{
 							"type": "string",
 						},
+						"status": map[string]interface{}{
+							"type": "string",
+						},
+						"result": map[string]interface{}{
+							"type":        "string",
+							"description": "Raw LLM response (plain text or JSON string)",
+						},
 						"response": map[string]interface{}{
-							"type": "object",
+							"type":        "object",
+							"description": "Parsed JSON response (if result is valid JSON) - for backward compatibility",
 						},
 						"error": map[string]interface{}{
 							"type": "string",
 						},
 						"query": map[string]interface{}{
+							"type": "string",
+						},
+						"session_id": map[string]interface{}{
 							"type": "string",
 						},
 						"mode": map[string]interface{}{

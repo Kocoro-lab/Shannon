@@ -1,13 +1,14 @@
 package patterns
 
 import (
-	"fmt"
-	"sort"
-	"strings"
+    "fmt"
+    "sort"
+    "strings"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+    "go.temporal.io/sdk/workflow"
 )
 
 // TreeOfThoughtsConfig configures the tree-of-thoughts pattern
@@ -560,9 +561,9 @@ func parseBranches(response string, expectedCount int) []string {
 			if len(thoughts) >= expectedCount {
 				break
 			}
-			if len(sent) > 20 && !contains(thoughts, sent) {
-				thoughts = append(thoughts, sent)
-			}
+        if len(sent) > 20 && !util.ContainsString(thoughts, sent) {
+            thoughts = append(thoughts, sent)
+        }
 		}
 	}
 
@@ -574,20 +575,10 @@ func parseBranches(response string, expectedCount int) []string {
 	return thoughts
 }
 
-// contains checks if slice contains string
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
 // min returns minimum of two integers
 func min(a, b int) int {
-	if a < b {
-		return a
-	}
+    if a < b {
+        return a
+    }
 	return b
 }

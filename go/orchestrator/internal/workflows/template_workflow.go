@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
@@ -98,7 +99,15 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 	}
 
 	finalResult := runtime.FinalResult()
-	metadata := runtime.summaryMetadata()
+	resultMetadata := runtime.summaryMetadata()
+
+	// Aggregate agent metadata (model, provider, tokens, cost) from template node executions
+	if len(runtime.AgentResults) > 0 {
+		agentMeta := metadata.AggregateAgentMetadata(runtime.AgentResults, 0)
+		for k, v := range agentMeta {
+			resultMetadata[k] = v
+		}
+	}
 
 	if runtime.Task.SessionID != "" {
 		if err := updateTemplateSession(ctx, runtime.Task, runtime.Plan, finalResult, runtime.TotalTokens, runtime.AgentResults); err != nil {
@@ -115,19 +124,19 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "template",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "template",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
 		TokensUsed: runtime.TotalTokens,
-		Metadata:   metadata,
+		Metadata:   resultMetadata,
 	}, nil
 }
 

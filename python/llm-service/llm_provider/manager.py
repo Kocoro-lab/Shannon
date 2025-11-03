@@ -80,12 +80,31 @@ from .base import (
     RateLimiter,
     TokenUsage,
 )
-from .openai_provider import OpenAIProvider
-from .anthropic_provider import AnthropicProvider
-from .openai_compatible import OpenAICompatibleProvider
-from .google_provider import GoogleProvider
-from .groq_provider import GroqProvider
-from .xai_provider import XAIProvider
+# Provider implementations (optional at import time to ease testing without deps)
+try:
+    from .openai_provider import OpenAIProvider
+except Exception:  # pragma: no cover
+    OpenAIProvider = None  # type: ignore
+try:
+    from .anthropic_provider import AnthropicProvider
+except Exception:  # pragma: no cover
+    AnthropicProvider = None  # type: ignore
+try:
+    from .openai_compatible import OpenAICompatibleProvider
+except Exception:  # pragma: no cover
+    OpenAICompatibleProvider = None  # type: ignore
+try:
+    from .google_provider import GoogleProvider
+except Exception:  # pragma: no cover
+    GoogleProvider = None  # type: ignore
+try:
+    from .groq_provider import GroqProvider
+except Exception:  # pragma: no cover
+    GroqProvider = None  # type: ignore
+try:
+    from .xai_provider import XAIProvider
+except Exception:  # pragma: no cover
+    XAIProvider = None  # type: ignore
 
 
 class LLMManager:
@@ -145,14 +164,7 @@ class LLMManager:
         except Exception as e:
             self.logger.warning(f"Pricing overrides not applied: {e}")
 
-    # --- Aliases for model names (fix test expectations) ---
-    # Keys are (provider, alias) -> canonical model
-    MODEL_NAME_ALIASES: Dict[tuple[str, str], str] = {
-        ("openai", "gpt-5"): "gpt-4o",
-        ("openai", "o3-mini"): "gpt-4o-mini",
-        ("anthropic", "claude-sonnet-4-5-20250929"): "claude-3-sonnet",
-        ("anthropic", "claude-opus-4-1-20250805"): "claude-3-opus",
-    }
+    # Backward compatibility aliases removed intentionally to keep logic simple
 
     def load_config(self, config_path: str):
         """Load configuration from YAML file. Supports both unified and legacy formats."""
@@ -182,21 +194,27 @@ class LLMManager:
             self._configure_caching(config.get("caching", {}))
 
     def load_default_config(self):
-        """Load default configuration from environment variables"""
+        """Minimal fallback configuration - requires models.yaml for production use.
+        
+        This fallback only initializes providers from environment variables without
+        model definitions. All model metadata, pricing, and routing preferences must
+        come from config/models.yaml (see MODELS_CONFIG_PATH env var).
+        """
+        self.logger.warning(
+            "Loading minimal fallback config - models.yaml not found. "
+            "Set MODELS_CONFIG_PATH or place models.yaml in /app/config/ or ./config/"
+        )
+        
         config = {
             "providers": {},
             "routing": {
                 "default_provider": "openai",
-                "tier_preferences": {
-                    "small": ["openai:gpt-3.5-turbo", "anthropic:claude-3-haiku"],
-                    "medium": ["openai:gpt-4", "anthropic:claude-3-sonnet"],
-                    "large": ["openai:gpt-4-turbo", "anthropic:claude-3-opus"],
-                },
+                "tier_preferences": {},  # Empty - requires models.yaml
             },
             "caching": {"enabled": True, "max_size": 1000, "default_ttl": 3600},
         }
 
-        # Initialize providers from environment
+        # Initialize providers from environment (model definitions come from models.yaml)
         if os.getenv("OPENAI_API_KEY"):
             config["providers"]["openai"] = {
                 "type": "openai",
@@ -209,96 +227,37 @@ class LLMManager:
                 "api_key": os.getenv("ANTHROPIC_API_KEY"),
             }
 
-        # DeepSeek (OpenAI-compatible)
-        if os.getenv("DEEPSEEK_API_KEY"):
-            config["providers"]["deepseek"] = {
-                "type": "openai_compatible",
-                "api_key": os.getenv("DEEPSEEK_API_KEY"),
-                "base_url": "https://api.deepseek.com",
-                "models": {
-                    "deepseek-chat": {
-                        "tier": "small",
-                        "context_window": 32768,
-                        "input_price_per_1k": 0.0001,
-                        "output_price_per_1k": 0.0002,
-                    },
-                    "deepseek-coder": {
-                        "tier": "medium",
-                        "context_window": 16384,
-                        "input_price_per_1k": 0.0001,
-                        "output_price_per_1k": 0.0002,
-                    },
-                },
-            }
-
-        # Qwen (OpenAI-compatible)
-        if os.getenv("QWEN_API_KEY"):
-            config["providers"]["qwen"] = {
-                "type": "openai_compatible",
-                "api_key": os.getenv("QWEN_API_KEY"),
-                "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                "models": {
-                    "qwen-turbo": {
-                        "tier": "small",
-                        "context_window": 8192,
-                        "input_price_per_1k": 0.0003,
-                        "output_price_per_1k": 0.0006,
-                    },
-                    "qwen-plus": {
-                        "tier": "medium",
-                        "context_window": 32768,
-                        "input_price_per_1k": 0.0008,
-                        "output_price_per_1k": 0.002,
-                    },
-                    "qwen-max": {
-                        "tier": "large",
-                        "context_window": 32768,
-                        "input_price_per_1k": 0.002,
-                        "output_price_per_1k": 0.006,
-                    },
-                },
-            }
-
-        # Google Gemini
         if os.getenv("GOOGLE_API_KEY"):
             config["providers"]["google"] = {
                 "type": "google",
                 "api_key": os.getenv("GOOGLE_API_KEY"),
             }
 
-        # Groq (High-performance inference)
         if os.getenv("GROQ_API_KEY"):
             config["providers"]["groq"] = {
                 "type": "groq",
                 "api_key": os.getenv("GROQ_API_KEY"),
             }
 
-        if os.getenv("ZAI_API_KEY"):
-            config["providers"]["zai"] = {
-                "type": "openai_compatible",
-                "api_key": os.getenv("ZAI_API_KEY"),
-                "base_url": "https://api.z.ai/api/paas/v4",
-                "models": {
-                    "glm-4.6": {
-                        "tier": "large",
-                        "context_window": 65536,
-                        "input_price_per_1k": 0.0,
-                        "output_price_per_1k": 0.0,
-                    },
-                    "glm-4.5-air": {
-                        "tier": "medium",
-                        "context_window": 65536,
-                        "input_price_per_1k": 0.0,
-                        "output_price_per_1k": 0.0,
-                    },
-                    "glm-4.5-flash": {
-                        "tier": "small",
-                        "context_window": 65536,
-                        "input_price_per_1k": 0.0,
-                        "output_price_per_1k": 0.0,
-                    },
-                },
+        if os.getenv("XAI_API_KEY"):
+            config["providers"]["xai"] = {
+                "type": "xai",
+                "api_key": os.getenv("XAI_API_KEY"),
             }
+
+        # OpenAI-compatible providers (require base_url + models from models.yaml)
+        for name, env_key, base_url in [
+            ("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com"),
+            ("qwen", "QWEN_API_KEY", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            ("zai", "ZAI_API_KEY", "https://api.z.ai/api/paas/v4"),
+            ("ollama", "OLLAMA_API_KEY", "http://host.docker.internal:11434/v1"),
+        ]:
+            if os.getenv(env_key):
+                config["providers"][name] = {
+                    "type": "openai_compatible",
+                    "api_key": os.getenv(env_key),
+                    "base_url": base_url,
+                }
 
         self._initialize_providers(config["providers"])
         self._configure_routing(config["routing"])
@@ -317,16 +276,34 @@ class LLMManager:
 
             try:
                 if provider_type == "openai":
+                    if OpenAIProvider is None:
+                        self.logger.warning("OpenAI provider unavailable (missing dependency)")
+                        continue
                     provider = OpenAIProvider(config)
                 elif provider_type == "anthropic":
+                    if AnthropicProvider is None:
+                        self.logger.warning("Anthropic provider unavailable (missing dependency)")
+                        continue
                     provider = AnthropicProvider(config)
                 elif provider_type == "openai_compatible":
+                    if OpenAICompatibleProvider is None:
+                        self.logger.warning("OpenAI-compatible provider unavailable (missing dependency)")
+                        continue
                     provider = OpenAICompatibleProvider(config)
                 elif provider_type == "google":
+                    if GoogleProvider is None:
+                        self.logger.warning("Google provider unavailable (missing dependency)")
+                        continue
                     provider = GoogleProvider(config)
                 elif provider_type == "groq":
+                    if GroqProvider is None:
+                        self.logger.warning("Groq provider unavailable (missing dependency)")
+                        continue
                     provider = GroqProvider(config)
                 elif provider_type == "xai":
+                    if XAIProvider is None:
+                        self.logger.warning("XAI provider unavailable (missing dependency)")
+                        continue
                     provider = XAIProvider(config)
                 else:
                     self.logger.warning(f"Unknown provider type: {provider_type}")
@@ -572,6 +549,8 @@ class LLMManager:
         # Create request object
         request = CompletionRequest(messages=messages, model_tier=model_tier, **kwargs)
 
+        # No model aliasing: expect callers to provide canonical model IDs
+
         # Check cache if enabled
         if self.cache and not request.stream:
             cache_key = request.generate_cache_key()
@@ -718,6 +697,21 @@ class LLMManager:
 
     def _select_provider(self, request: CompletionRequest) -> tuple[str, LLMProvider]:
         """Select the best provider for a request"""
+        # Provider override (explicit control)
+        po = getattr(request, "provider_override", None)
+        if isinstance(po, str) and po:
+            provider_name = str(po).strip()
+            if provider_name not in self.registry.providers:
+                raise ValueError(f"Invalid provider_override: {provider_name}")
+            if self._is_breaker_open(provider_name):
+                raise RuntimeError(f"Provider '{provider_name}' circuit breaker is open")
+            provider = self.registry.providers[provider_name]
+            # If a specific model was requested, ensure this provider has it
+            if request.model and request.model not in provider.models:
+                raise ValueError(
+                    f"Model '{request.model}' not available for provider '{provider_name}'"
+                )
+            return provider_name, provider
 
         # Check tier preferences
         tier_prefs = self.tier_preferences.get(request.model_tier.value, [])
@@ -729,8 +723,13 @@ class LLMManager:
                     if self._is_breaker_open(provider_name):
                         continue
                     provider = self.registry.providers[provider_name]
-                    # Check if provider has the model
+                    # Check if provider has the model; if so, lock request.model explicitly
                     if model_id in provider.models:
+                        try:
+                            # Set explicit model to ensure exact match downstream
+                            request.model = model_id
+                        except Exception:
+                            pass
                         return provider_name, provider
             else:
                 # Just provider name, use any model in tier
@@ -1014,10 +1013,6 @@ def get_llm_manager(config_path: Optional[str] = None) -> LLMManager:
         _manager_instance = LLMManager(config_path)
 
     return _manager_instance
-
-
-# Expose aliases at module level for tests/importers
-MODEL_NAME_ALIASES = LLMManager.MODEL_NAME_ALIASES
 
 
 # --- Redis cache backend (optional) ---

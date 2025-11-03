@@ -277,11 +277,18 @@ async def agent_query(request: Request, query: AgentQuery):
                 "medium": ModelTier.MEDIUM,
                 "large": ModelTier.LARGE,
             }
-            # Prefer explicit top-level tier; fallback to context.model_tier when provided
-            tier = tier_map.get(query.model_tier, None)
+            # Precedence: top-level query.model_tier > context.model_tier > mode-based default
+            tier = None
+            # Check top-level query.model_tier first
+            if isinstance(query.model_tier, str):
+                tier = tier_map.get(query.model_tier.lower().strip(), None)
+            # Fallback to context.model_tier if top-level not provided
             if tier is None and isinstance(query.context, dict):
-                ctx_tier = str(query.context.get("model_tier", "")).lower().strip()
-                tier = tier_map.get(ctx_tier, None)
+                ctx_tier_raw = query.context.get("model_tier")
+                if isinstance(ctx_tier_raw, str):
+                    ctx_tier = ctx_tier_raw.lower().strip()
+                    tier = tier_map.get(ctx_tier, None)
+            # Final fallback to default
             if tier is None:
                 tier = ModelTier.SMALL
 
@@ -289,6 +296,13 @@ async def agent_query(request: Request, query: AgentQuery):
             model_override = query.model_override or (
                 query.context.get("model_override") if query.context else None
             )
+            # Optional provider override (from context)
+            try:
+                provider_override = (
+                    query.context.get("provider_override") if query.context else None
+                )
+            except Exception:
+                provider_override = None
             # Apply role preset's preferred_model if no explicit override
             if not model_override and preset and "preferred_model" in preset:
                 model_override = preset.get("preferred_model")
@@ -415,6 +429,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         messages=messages,
                         tier=tier,
                         specific_model=model_override,
+                        provider_override=provider_override,
                         max_tokens=max_tokens,
                         temperature=temperature,
                         tools=None,
@@ -462,6 +477,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 messages=messages,
                 tier=tier,
                 specific_model=model_override,
+                provider_override=provider_override,
                 max_tokens=max_tokens,
                 temperature=temperature,
                 tools=tools_param,
@@ -526,6 +542,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             messages=messages,
                             tier=tier,
                             specific_model=model_override,
+                            provider_override=provider_override,
                             max_tokens=max_tokens,
                             temperature=temperature,
                             tools=None,  # No tools for interpretation pass
@@ -657,6 +674,7 @@ async def agent_query(request: Request, query: AgentQuery):
                                 messages=messages,
                                 tier=tier,
                                 specific_model=model_override,
+                                provider_override=provider_override,
                                 max_tokens=max_tokens,
                                 temperature=temperature,
                                 tools=None,
@@ -1385,9 +1403,9 @@ async def list_models(request: Request):
     """List available models and their tiers."""
     return {
         "models": {
-            "small": ["mock-model-v1", "gpt-3.5-turbo"],
-            "medium": ["gpt-4"],
-            "large": ["gpt-4-turbo"],
+            "small": ["mock-model-v1", "gpt-5-nano-2025-08-07"],
+            "medium": ["gpt-5-2025-08-07"],
+            "large": ["gpt-5-pro-2025-10-06"],
         },
         "default_tier": "small",
         "mock_enabled": True,

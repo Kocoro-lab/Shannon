@@ -105,6 +105,8 @@ class CompletionRequest:
     complexity_score: Optional[float] = (
         None  # Optional signal for dynamic API selection
     )
+    # Provider override (e.g., "openai", "anthropic"). Optional.
+    provider_override: Optional[str] = None
 
     def generate_cache_key(self) -> str:
         """Generate a cache key for this request"""

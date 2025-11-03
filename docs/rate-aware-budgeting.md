@@ -34,45 +34,31 @@ Shannon's rate-aware budgeting system provides intelligent rate limit management
 
 ### Provider Rate Limits
 
-Rate limits are configured per provider and tier in `config/models.yaml`:
+Rate limits are configured in `config/models.yaml` under the `rate_limits` section. The Go orchestrator reads this file directly (see `go/orchestrator/internal/ratecontrol/ratecontrol.go`).
+
+Canonical schema:
 
 ```yaml
-providers:
-  openai:
-    models:
-      - name: "gpt-4-turbo"
-        tier: "large"
-        pricing:
-          input: 10.0   # per million tokens
-          output: 30.0  # per million tokens
-        limits:
-          rpm: 500      # requests per minute
-          tpm: 150000   # tokens per minute
-          rpd: 10000    # requests per day (optional)
+rate_limits:
+  default_rpm: 60      # global default requests per minute
+  default_tpm: 100000  # global default tokens per minute
 
-      - name: "gpt-3.5-turbo"
-        tier: "small"
-        pricing:
-          input: 0.5
-          output: 1.5
-        limits:
-          rpm: 3500
-          tpm: 90000
+  # Optional: per-tier overrides
+  tier_overrides:
+    small:  { rpm: 120, tpm: 200000 }
+    medium: { rpm: 60,  tpm: 100000 }
+    large:  { rpm: 30,  tpm: 50000 }
 
-  anthropic:
-    models:
-      - name: "claude-3-opus"
-        tier: "large"
-        limits:
-          rpm: 50
-          tpm: 100000
-
-      - name: "claude-3-sonnet"
-        tier: "medium"
-        limits:
-          rpm: 100
-          tpm: 80000
+  # Optional: per-provider overrides
+  provider_overrides:
+    openai:    { rpm: 30,  tpm: 60000 }
+    anthropic: { rpm: 20,  tpm: 40000 }
+    google:    { rpm: 40,  tpm: 80000 }
 ```
+
+Notes:
+- Tier and provider overrides are combined by taking the most constraining RPM/TPM.
+- If an override is missing, the corresponding default is used.
 
 ### Default Limits
 
