@@ -91,7 +91,15 @@ impl LLMClient {
                     effective_tier = mt_l;
                 }
             }
+            if let Some(po) = obj.get("provider_override").and_then(|v| v.as_str()) {
+                debug!("Provider override present in context: {}", po);
+            }
         }
+
+        debug!(
+            "LLMClient tier selection: mode_default={}, effective_tier={}",
+            tier_from_mode, effective_tier
+        );
 
         let request = AgentQuery {
             query: Cow::Borrowed(query),
@@ -192,32 +200,17 @@ impl LLMClient {
 }
 
 fn calculate_cost(model: &str, tokens: u32) -> f64 {
-    // Try centralized pricing from /app/config/models.yaml
+    // Try centralized pricing from /app/config/models.yaml (returns model price or default)
     if let Some(per_1k) = pricing_cost_per_1k(model) {
         return (tokens as f64 / 1000.0) * per_1k;
     }
-
-    // Fallback rough estimates per 1K tokens
-    let fallback_per_1k = if model.contains("gpt-4-turbo") {
-        0.03
-    } else if model.contains("gpt-4") {
-        0.06
-    } else if model.contains("gpt-3.5") {
-        0.002
-    } else if model.contains("claude-4") || model.contains("claude-opus-4") {
-        // Claude 4 series (expected to be premium tier)
-        0.10
-    } else if model.contains("claude-3-opus") {
-        0.075
-    } else if model.contains("claude-3-sonnet") {
-        0.015
-    } else if model.contains("claude-3-haiku") {
-        0.001
-    } else {
-        // Default for unknown models
-        0.001
-    };
-    (tokens as f64 / 1000.0) * fallback_per_1k
+    // Fallback to 0.0 for self-hosted/custom models without pricing config
+    // warn!(
+    //     "No pricing found for model '{}' in config/models.yaml - defaulting to $0.00 cost. \
+    //      Add pricing configuration if this model should be tracked.",
+    //     model
+    // );
+    0.0
 }
 
 fn pricing_cost_per_1k(model: &str) -> Option<f64> {

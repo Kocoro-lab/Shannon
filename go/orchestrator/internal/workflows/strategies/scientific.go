@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -407,27 +409,52 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "scientific",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "scientific",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
+	// Build metadata with agent information
+	meta := map[string]interface{}{
+		"workflow_type":     "scientific",
+		"patterns_used":     []string{"chain_of_thought", "debate", "tree_of_thoughts", "reflection"},
+		"hypotheses_count":  len(hypotheses),
+		"consensus_reached": debateResult.ConsensusReached,
+		"final_confidence":  finalConfidence,
+		"debate_rounds":     debateResult.Rounds,
+		"exploration_depth": totResult.TreeDepth,
+	}
+
+	// Aggregate agent metadata (model, provider, tokens, cost)
+	// Note: ScientificWorkflow uses multiple patterns without direct agent tracking
+	// Estimate based on total tokens
+	modelTierFromContext := "medium" // Default
+	if tier, ok := input.Context["model_tier"].(string); ok && tier != "" {
+		modelTierFromContext = tier
+	}
+	mockAgentResults := []activities.AgentExecutionResult{
+		{
+			AgentID:      "scientific-agent",
+			ModelUsed:    modelTierFromContext,
+			TokensUsed:   totalTokens,
+			InputTokens:  totalTokens * 6 / 10, // Estimate 60/40 split
+			OutputTokens: totalTokens * 4 / 10,
+			Success:      true,
+		},
+	}
+	agentMeta := metadata.AggregateAgentMetadata(mockAgentResults, 0) // No separate synthesis
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
 
 	return TaskResult{
 		Result:     scientificReport,
 		Success:    true,
 		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"workflow_type":     "scientific",
-			"patterns_used":     []string{"chain_of_thought", "debate", "tree_of_thoughts", "reflection"},
-			"hypotheses_count":  len(hypotheses),
-			"consensus_reached": debateResult.ConsensusReached,
-			"final_confidence":  finalConfidence,
-			"debate_rounds":     debateResult.Rounds,
-			"exploration_depth": totResult.TreeDepth,
-		},
+		Metadata:   meta,
 	}, nil
 }
 
@@ -458,7 +485,7 @@ func extractHypothesesFromSteps(steps []string, finalAnswer string) []string {
 				parts := strings.SplitN(step, ":", 2)
 				if len(parts) == 2 {
 					hypothesis := strings.TrimSpace(parts[1])
-					if hypothesis != "" && !contains(hypotheses, hypothesis) {
+					if hypothesis != "" && !util.ContainsString(hypotheses, hypothesis) {
 						hypotheses = append(hypotheses, hypothesis)
 					}
 				}
@@ -525,16 +552,6 @@ func buildScientificReport(
 	report.WriteString(fmt.Sprintf("**Total Thoughts Explored:** %d\n", totResult.TotalThoughts))
 
 	return report.String()
-}
-
-// contains checks if a string slice contains a string
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
 }
 
 // convertHistoryMapForCompression converts Message history to map format for compression

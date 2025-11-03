@@ -39,14 +39,16 @@ func TestPricePerTokenForModel(t *testing.T) {
 		maxPrice  float64
 	}{
 		// Price ranges based on config/models.yaml (per token, not per 1k)
-		// gpt-3.5-turbo: 0.0005/0.002 per 1k = 0.0000005/0.000002 per token
-		{"gpt-3.5-turbo", true, 0.0000005, 0.000002},
-		// gpt-4-turbo: 0.01/0.03 per 1k = 0.00001/0.00003 per token
-		{"gpt-4-turbo", true, 0.00001, 0.00003},
-		// claude-3-sonnet: 0.003/0.02 per 1k = 0.000003/0.00002 per token
-		{"claude-3-sonnet", true, 0.000003, 0.00002},
-		// claude-3-haiku: 0.0002/0.002 per 1k = 0.0000002/0.000002 per token
-		{"claude-3-haiku", true, 0.0000002, 0.000002},
+		// gpt-5-nano-2025-08-07: 0.0001/0.0004 per 1k = 0.0000001/0.0000004 per token
+		{"gpt-5-nano-2025-08-07", true, 0.0000001, 0.0000004},
+		// gpt-5-2025-08-07: 0.006/0.018 per 1k = 0.000006/0.000018 per token
+		{"gpt-5-2025-08-07", true, 0.000006, 0.000018},
+		// gpt-5-pro-2025-10-06: 0.02/0.08 per 1k = 0.00002/0.00008 per token
+		{"gpt-5-pro-2025-10-06", true, 0.00002, 0.00008},
+		// claude-sonnet-4-5-20250929: 0.003/0.015 per 1k = 0.000003/0.000015 per token
+		{"claude-sonnet-4-5-20250929", true, 0.000003, 0.000015},
+		// claude-haiku-4-5-20251001: 0.001/0.005 per 1k = 0.000001/0.000005 per token
+		{"claude-haiku-4-5-20251001", true, 0.000001, 0.000005},
 		// deepseek-chat: 0.00027/0.0011 per 1k = 0.00000027/0.0000011 per token
 		{"deepseek-chat", true, 0.00000027, 0.0000011},
 		{"unknown-model", false, 0, 0},
@@ -77,12 +79,13 @@ func TestCostForTokens(t *testing.T) {
 		minCost float64
 		maxCost float64
 	}{
-		{"gpt-3.5-turbo", 1000, 0.0005, 0.002},
-		{"gpt-4-turbo", 1000, 0.01, 0.03},
+		{"gpt-5-nano-2025-08-07", 1000, 0.0001, 0.0004},
+		{"gpt-5-2025-08-07", 1000, 0.006, 0.018},
+		{"gpt-5-pro-2025-10-06", 1000, 0.02, 0.08},
 		// Unknown models should use default: 0.005 per 1k
 		{"unknown-model", 1000, 0.005, 0.005},
 		{"", 1000, 0.005, 0.005},
-		{"gpt-3.5-turbo", 0, 0, 0},
+		{"gpt-5-nano-2025-08-07", 0, 0, 0},
 	}
 
 	for _, tt := range tests {

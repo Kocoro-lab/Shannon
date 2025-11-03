@@ -176,6 +176,7 @@ class ProviderManager:
         messages: List[dict],
         tier: LegacyModelTier = None,
         specific_model: str = None,
+        provider_override: Optional[str] = None,
         **kwargs,
     ) -> dict:
         params = dict(kwargs)
@@ -242,6 +243,8 @@ class ProviderManager:
 
         if specific_model:
             manager_kwargs["model"] = specific_model
+        if provider_override:
+            manager_kwargs["provider_override"] = provider_override
 
         response: CompletionResponse = await self._manager.complete(
             messages=messages,

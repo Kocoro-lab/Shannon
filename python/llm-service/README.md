@@ -29,8 +29,8 @@ HTTP API (:8000)
     ↓
 FastAPI Application
     ├── LLM Router → Provider Selection
-    │   ├── OpenAI (GPT-4, GPT-3.5)
-    │   ├── Anthropic (Claude 3)
+    │   ├── OpenAI (GPT‑5 family)
+    │   ├── Anthropic (Claude 4)
     │   └── (Additional providers via library)
     ├── Tools Router → MCP Integration
     │   ├── Tool Registry
@@ -132,7 +132,7 @@ curl -X POST http://localhost:8000/llm/completion \
   -H "Content-Type: application/json" \
   -d '{
     "provider": "openai",
-    "model": "gpt-4",
+    "model": "gpt-5-2025-08-07",
     "messages": [{"role": "user", "content": "Hello"}],
     "temperature": 0.7
   }'
@@ -211,8 +211,8 @@ METRICS_ENABLED=true
 Each provider supports different models. See [providers-models.md](../../docs/providers-models.md) for the complete list.
 
 Common models:
-- **OpenAI**: gpt-4, gpt-4-turbo, gpt-3.5-turbo
-- **Anthropic**: claude-3-opus, claude-3-sonnet, claude-3-haiku
+- **OpenAI**: gpt-5-2025-08-07, gpt-5-pro-2025-10-06, gpt-5-nano-2025-08-07, gpt-5-mini-2025-08-07
+- **Anthropic**: claude-opus-4-1-20250805, claude-sonnet-4-5-20250929, claude-haiku-4-5-20251001
 
 ## 🧪 Testing
 
@@ -248,7 +248,7 @@ curl -X POST http://localhost:8000/tools/execute \
 
 # Test LLM completion
 curl -X POST http://localhost:8000/llm/completion \
-  -d '{"provider": "openai", "model": "gpt-3.5-turbo", "messages": [{"role": "user", "content": "Hi"}]}'
+  -d '{"provider": "openai", "model": "gpt-5-2025-08-07", "messages": [{"role": "user", "content": "Hi"}]}'
 ```
 
 ## 🔧 Key Features

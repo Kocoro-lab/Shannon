@@ -2,11 +2,11 @@ package strategies
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -145,30 +145,7 @@ func extractPersonaHints(context map[string]interface{}) []string {
 }
 
 // parseNumericValue attempts to extract a numeric value from a response string
-func parseNumericValue(response string) (float64, bool) {
-	response = strings.TrimSpace(response)
-	if val, err := strconv.ParseFloat(response, 64); err == nil {
-		return val, true
-	}
-	fields := strings.Fields(response)
-	var numbers []float64
-	for i := 0; i < len(fields); i++ {
-		token := strings.Trim(fields[i], ".,!?:;")
-		if v, err := strconv.ParseFloat(token, 64); err == nil {
-			numbers = append(numbers, v)
-		}
-		if (strings.EqualFold(token, "equals") || strings.EqualFold(token, "is")) && i+1 < len(fields) {
-			next := strings.Trim(fields[i+1], ".,!?:;")
-			if v, err := strconv.ParseFloat(next, 64); err == nil {
-				return v, true
-			}
-		}
-	}
-	if len(numbers) > 0 {
-		return numbers[len(numbers)-1], true
-	}
-	return 0, false
-}
+// parseNumericValue removed; use util.ParseNumericValue at call sites
 
 // shouldReflect determines if reflection should be applied based on complexity
 func shouldReflect(complexity float64, config *activities.WorkflowConfig) bool {
@@ -199,4 +176,20 @@ func emitTaskUpdate(ctx workflow.Context, input TaskInput, eventType activities.
 			Message:    message,
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
+}
+
+// detectProviderFromModel determines the provider based on the model name
+// Delegates to shared models.DetectProvider for consistent provider detection
+func detectProviderFromModel(model string) string {
+	return models.DetectProvider(model)
+}
+
+// aggregateAgentMetadata extracts model, provider, and token information from agent results
+// Returns metadata map with model_used, provider, input_tokens, output_tokens
+// aggregateAgentMetadata removed; use metadata.AggregateAgentMetadata at call sites
+
+// getPriorityModelForTier resolves a tier string to an actual model name using config.
+// Returns the priority-1 model for the tier, or empty string if not found.
+func getPriorityModelForTier(tier string) string {
+	return pricing.GetPriorityOneModel(tier)
 }

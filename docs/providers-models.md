@@ -5,7 +5,7 @@ This page documents the live model registry endpoint exposed by the Python LLM s
 ## Purpose
 
 - Inspect which models are currently available per provider (OpenAI, Anthropic).  
-- Verify dynamic discovery (OpenAI) and configured defaults.  
+- Verify configured models from `config/models.yaml` (model_catalog).  
 - Quickly debug environment issues (e.g., API keys, connectivity).  
 
 ## Endpoint
@@ -30,8 +30,8 @@ Response (shape):
 {
   "openai": [
     {
-      "id": "gpt-4o-mini",
-      "name": "gpt-4o-mini",
+      "id": "gpt-5-mini-2025-08-07",
+      "name": "gpt-5-mini-2025-08-07",
       "tier": "small",
       "context_window": 128000,
       "cost_per_1k_prompt_tokens": 0.0,
@@ -43,12 +43,12 @@ Response (shape):
   ],
   "anthropic": [
     {
-      "id": "claude-3-5-haiku-latest",
-      "name": "claude-3-5-haiku-latest",
+      "id": "claude-haiku-4-5-20251001",
+      "name": "claude-haiku-4-5-20251001",
       "tier": "small",
       "context_window": 200000,
-      "cost_per_1k_prompt_tokens": 0.0,
-      "cost_per_1k_completion_tokens": 0.0,
+      "cost_per_1k_prompt_tokens": 0.001,
+      "cost_per_1k_completion_tokens": 0.005,
       "supports_tools": true,
       "supports_streaming": true,
       "available": true
@@ -58,9 +58,9 @@ Response (shape):
 ```
 
 Notes:
-- OpenAI models include both seeded entries and dynamically discovered IDs from `models.list()` at startup (requires `OPENAI_API_KEY`).
-- Anthropic models use known modern IDs (Claude 3.5 family).
-- **Pricing**: All model costs are centralized in `config/models.yaml`. The LLM service loads pricing from this file for consistent cost tracking across all services.  
+- Models are sourced from `config/models.yaml` (under `model_catalog`) and exposed via this endpoint. Dynamic discovery from provider APIs is not performed.
+- Anthropic models use versioned IDs (Claude 4.5 family with dated releases).
+- Pricing is centralized in `config/models.yaml`. The LLM service loads pricing from this file for consistent cost tracking across all services.  
 
 ## Model Overrides (Per‑Stage)
 
@@ -72,8 +72,8 @@ OPENAI_API_KEY=sk-...
 ANTHROPIC_API_KEY=...
 
 # Stage‑specific overrides
-COMPLEXITY_MODEL_ID=gpt-4o-mini
-DECOMPOSITION_MODEL_ID=gpt-4o
+COMPLEXITY_MODEL_ID=gpt-5-mini-2025-08-07
+DECOMPOSITION_MODEL_ID=gpt-5-2025-08-07
 ```
 
 - `COMPLEXITY_MODEL_ID`: used by `/complexity/analyze`  
@@ -89,7 +89,7 @@ All model pricing is defined in `config/models.yaml` under the `pricing` section
 pricing:
   models:
     openai:
-      gpt-4o-mini:
+      gpt-5-mini:
         input_per_1k: 0.00015
         output_per_1k: 0.0006
 ```
@@ -127,6 +127,19 @@ uvicorn main:app --reload
 
 ## Troubleshooting
 
-- Empty `openai` results: likely missing/invalid `OPENAI_API_KEY`, or network egress blocked.  
-- Only seed models shown: dynamic discovery failed; check logs for `OpenAI dynamic model discovery skipped`.  
-- Anthropic missing: set `ANTHROPIC_API_KEY`.  
+- Empty `openai` results: ensure `OPENAI_API_KEY` is set if you intend to call OpenAI, and verify the OpenAI provider is enabled in your config.  
+- Missing models: check `config/models.yaml` for entries under `model_catalog.openai` (or other providers) and that `MODELS_CONFIG_PATH` points to the intended file.  
+- Anthropic missing: set `ANTHROPIC_API_KEY` if using Anthropic and verify `model_catalog.anthropic` entries exist.  
+
+## Model References
+
+- OpenAI (GPT‑5 family)
+  - GPT‑5: https://platform.openai.com/docs/models/gpt-5
+  - GPT‑5 mini: https://platform.openai.com/docs/models/gpt-5-mini
+  - GPT‑5 nano: https://platform.openai.com/docs/models/gpt-5-nano
+
+- Anthropic (Claude 4.x)
+  - Claude models overview: https://docs.claude.com/en/docs/about-claude/models/overview
+    - Claude Sonnet 4.5
+    - Claude Haiku 4.5
+    - Claude Opus 4.1

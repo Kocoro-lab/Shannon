@@ -23,15 +23,27 @@ class OpenAIProvider(LLMProvider):
         if not api_key:
             raise ValueError("OpenAI API key not provided")
 
-        self.client = AsyncOpenAI(api_key=api_key)
         self.organization = config.get("organization")
-        if self.organization:
-            self.client.organization = self.organization
+        timeout = int(config.get("timeout", 60) or 60)
+
+        # Pass organization and timeout at construction time
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            organization=self.organization,
+            timeout=timeout,
+        )
 
         # Token encoders for different models
         self.encoders = {}
 
         super().__init__(config)
+
+    def _resolve_alias(self, model_id: str) -> str:
+        """Return the configured alias for a given vendor model_id, if any."""
+        for alias, cfg in self.models.items():
+            if getattr(cfg, "model_id", None) == model_id:
+                return alias
+        return model_id
 
     def _initialize_models(self):
         """Load OpenAI model configurations from YAML-driven config."""
@@ -95,13 +107,26 @@ class OpenAIProvider(LLMProvider):
         api_request = {
             "model": model,
             "messages": request.messages,
-            "temperature": request.temperature,
-            "top_p": request.top_p,
-            "frequency_penalty": request.frequency_penalty,
-            "presence_penalty": request.presence_penalty,
         }
+
+        # GPT-5 family (excluding gpt-5-pro) has restricted parameter support
+        is_gpt5_chat = model.startswith("gpt-5") and not model.startswith("gpt-5-pro")
+
+        # Only include sampling parameters if NOT GPT-5 chat models
+        # GPT-5 chat models only support default values (temperature=1, etc)
+        if not is_gpt5_chat:
+            api_request["temperature"] = request.temperature
+            api_request["top_p"] = request.top_p
+            api_request["frequency_penalty"] = request.frequency_penalty
+            api_request["presence_penalty"] = request.presence_penalty
+
+        # GPT-5 family uses max_completion_tokens instead of max_tokens
         if request.max_tokens:
-            api_request["max_tokens"] = request.max_tokens
+            if is_gpt5_chat:
+                api_request["max_completion_tokens"] = request.max_tokens
+            else:
+                api_request["max_tokens"] = request.max_tokens
+
         if request.stop:
             api_request["stop"] = request.stop
         if request.functions:
@@ -143,7 +168,10 @@ class OpenAIProvider(LLMProvider):
             )
             total_tokens = prompt_tokens + completion_tokens
 
-        cost = self.estimate_cost(prompt_tokens, completion_tokens, model)
+        # Use configured alias for cost lookup when available
+        cost = self.estimate_cost(
+            prompt_tokens, completion_tokens, self._resolve_alias(model)
+        )
 
         return CompletionResponse(
             content=message.content or "",
@@ -168,16 +196,43 @@ class OpenAIProvider(LLMProvider):
         model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
-        # Prepare API request
+        # Prepare API request (align parameters with non-streaming variant)
         api_request = {
             "model": model,
             "messages": request.messages,
-            "temperature": request.temperature,
             "stream": True,
         }
 
+        # GPT-5 family (excluding gpt-5-pro) has restricted parameter support
+        is_gpt5_chat = model.startswith("gpt-5") and not model.startswith("gpt-5-pro")
+
+        # Only include sampling parameters if NOT GPT-5 chat models
+        # GPT-5 chat models only support default values (temperature=1, etc)
+        if not is_gpt5_chat:
+            api_request["temperature"] = request.temperature
+            api_request["top_p"] = request.top_p
+            api_request["frequency_penalty"] = request.frequency_penalty
+            api_request["presence_penalty"] = request.presence_penalty
+
+        # GPT-5 family uses max_completion_tokens instead of max_tokens
         if request.max_tokens:
-            api_request["max_tokens"] = request.max_tokens
+            if is_gpt5_chat:
+                api_request["max_completion_tokens"] = request.max_tokens
+            else:
+                api_request["max_tokens"] = request.max_tokens
+
+        if request.stop:
+            api_request["stop"] = request.stop
+        if request.functions:
+            api_request["functions"] = request.functions
+            if request.function_call:
+                api_request["function_call"] = request.function_call
+        if request.seed is not None:
+            api_request["seed"] = request.seed
+        if request.response_format:
+            api_request["response_format"] = request.response_format
+        if request.user:
+            api_request["user"] = request.user
 
         # Make streaming API call
         try:
@@ -204,10 +259,14 @@ class OpenAIProvider(LLMProvider):
     def _choose_api_route(self, request: CompletionRequest, model_config) -> str:
         """Heuristic selection between Responses vs Chat APIs.
 
+        - GPT-5-pro requires Responses API (only available there)
         - Prefer Chat for tool calling and strict JSON mode (more mature behavior).
+        - Prefer Chat for GPT-5 and GPT-4.1 families (standard chat completions).
         - Prefer Responses for reasoning‑heavy tasks when supported and signaled by complexity.
         """
         caps = getattr(model_config, "capabilities", None)
+        model_name = getattr(model_config, "model_id", "")
+
         has_tools = bool(request.functions)
         wants_json = bool(
             request.response_format
@@ -215,14 +274,22 @@ class OpenAIProvider(LLMProvider):
         )
         high_complexity = (request.complexity_score or 0.0) >= 0.7
 
+        # GPT-5-pro only works with Responses API
+        if model_name.startswith("gpt-5-pro"):
+            return "responses"
+
+        # GPT-5 and GPT-4.1 families use standard chat completions API
+        if model_name.startswith("gpt-5") or model_name.startswith("gpt-4."):
+            return "chat"
+
         if has_tools and getattr(caps, "supports_tools", True):
             return "chat"
         if wants_json and getattr(caps, "supports_json_mode", True):
             return "chat"
         if high_complexity and getattr(caps, "supports_reasoning", False):
             return "responses"
-        # Default preference: Responses if available
-        return "responses"
+        # Default preference: Chat Completions API
+        return "chat"
 
     async def _complete_responses_api(
         self, request: CompletionRequest, model: str
@@ -320,7 +387,9 @@ class OpenAIProvider(LLMProvider):
             total_tokens = input_tokens + output_tokens
 
         latency_ms = int((time.time() - start_time) * 1000)
-        cost = self.estimate_cost(input_tokens, output_tokens, model)
+        cost = self.estimate_cost(
+            input_tokens, output_tokens, self._resolve_alias(model)
+        )
 
         return CompletionResponse(
             content=content,

@@ -448,6 +448,55 @@ var (
 		},
 		[]string{"reason"}, // reason: duplicate, low_value, error
 	)
+
+	// Model tier selection metrics (regression prevention)
+	ModelTierRequested = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_model_tier_requested_total",
+			Help: "Total number of times each model tier was requested",
+		},
+		[]string{"tier"}, // tier: small/medium/large
+	)
+
+	ModelTierSelected = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_model_tier_selected_total",
+			Help: "Total number of times each model tier was actually selected",
+		},
+		[]string{"tier", "provider"}, // tier: small/medium/large, provider: openai/anthropic/etc
+	)
+
+	TierSelectionDrift = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_tier_selection_drift_total",
+			Help: "Number of times selected tier differed from requested tier",
+		},
+		[]string{"requested_tier", "selected_tier", "reason"}, // reason: provider_unavailable/tier_unavailable/fallback
+	)
+
+	ProviderOverrideRequested = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_provider_override_requested_total",
+			Help: "Total number of times provider override was requested",
+		},
+		[]string{"provider"}, // provider: openai/anthropic/google/etc
+	)
+
+	ProviderOverrideRespected = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_provider_override_respected_total",
+			Help: "Total number of times provider override was successfully respected",
+		},
+		[]string{"provider"},
+	)
+
+	ProviderSelectionDrift = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_provider_selection_drift_total",
+			Help: "Number of times selected provider differed from requested provider",
+		},
+		[]string{"requested_provider", "selected_provider", "reason"}, // reason: unavailable/rate_limited/fallback
+	)
 )
 
 // RecordWorkflowMetrics records metrics for a completed workflow
@@ -522,5 +571,43 @@ func RecordRetrievalTokens(retrievalType string, tokens int) {
 func RecordChunkAggregation(durationSeconds float64) {
 	if durationSeconds > 0 {
 		ChunkAggregationLatency.Observe(durationSeconds)
+	}
+}
+
+// RecordModelTierRequest records when a specific tier is requested
+func RecordModelTierRequest(tier string) {
+	if tier != "" {
+		ModelTierRequested.WithLabelValues(tier).Inc()
+	}
+}
+
+// RecordModelTierSelection records when a specific tier+provider is selected
+func RecordModelTierSelection(tier, provider string) {
+	if tier != "" && provider != "" {
+		ModelTierSelected.WithLabelValues(tier, provider).Inc()
+	}
+}
+
+// RecordTierDrift records when selected tier differs from requested
+func RecordTierDrift(requestedTier, selectedTier, reason string) {
+	if requestedTier != "" && selectedTier != "" && requestedTier != selectedTier {
+		TierSelectionDrift.WithLabelValues(requestedTier, selectedTier, reason).Inc()
+	}
+}
+
+// RecordProviderOverride records when provider override is requested and respected
+func RecordProviderOverride(provider string, respected bool) {
+	if provider != "" {
+		ProviderOverrideRequested.WithLabelValues(provider).Inc()
+		if respected {
+			ProviderOverrideRespected.WithLabelValues(provider).Inc()
+		}
+	}
+}
+
+// RecordProviderDrift records when selected provider differs from requested
+func RecordProviderDrift(requestedProvider, selectedProvider, reason string) {
+	if requestedProvider != "" && selectedProvider != "" && requestedProvider != selectedProvider {
+		ProviderSelectionDrift.WithLabelValues(requestedProvider, selectedProvider, reason).Inc()
 	}
 }

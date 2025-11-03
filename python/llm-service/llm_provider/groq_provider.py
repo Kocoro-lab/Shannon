@@ -207,30 +207,8 @@ class GroqProvider(LLMProvider):
             self.logger.error(f"Groq streaming failed: {e}")
             raise
 
-    def _select_model_for_tier(self, tier: ModelTier) -> str:
-        """Select appropriate Groq model based on tier"""
-
-        # Tier-based selection with Groq's fastest models
-        tier_models = {
-            ModelTier.SMALL: "llama-3.1-8b-instant",  # Fastest with large context
-            ModelTier.MEDIUM: "mixtral-8x7b-32768",  # Good balance
-            ModelTier.LARGE: "llama-3.1-70b-versatile",  # Most capable
-        }
-
-        model_id = tier_models.get(tier, "mixtral-8x7b-32768")
-
-        # Check if model is available
-        if model_id not in self.models:
-            # Fallback to any available model
-            if self.models:
-                model_id = list(self.models.keys())[0]
-                self.logger.warning(
-                    f"Model for tier {tier} not found, using {model_id}"
-                )
-            else:
-                raise ValueError("No models available")
-
-        return model_id
+    # NOTE: Tier-to-model fallback removed. Selection now relies on resolve_model_config
+    # backed by models.yaml via the manager's configuration.
 
     def _calculate_cost(
         self, input_tokens: int, output_tokens: int, model_config: ModelConfig

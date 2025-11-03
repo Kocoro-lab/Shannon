@@ -90,6 +90,7 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             query, mode, status,
             started_at, completed_at,
             result, error_message,
+            model_used, provider,
             total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
             duration_ms, agents_used, tools_invoked, cache_hits,
             complexity_score, metadata, created_at
@@ -98,15 +99,18 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             $5, $6, $7,
             $8, $9,
             $10, $11,
-            $12, $13, $14, $15,
-            $16, $17, $18, $19,
-            $20, $21, $22
+            $12, $13,
+            $14, $15, $16, $17,
+            $18, $19, $20, $21,
+            $22, $23, $24
         )
         ON CONFLICT (workflow_id) DO UPDATE SET
             status = EXCLUDED.status,
             completed_at = EXCLUDED.completed_at,
             result = EXCLUDED.result,
             error_message = EXCLUDED.error_message,
+            model_used = EXCLUDED.model_used,
+            provider = EXCLUDED.provider,
             total_tokens = EXCLUDED.total_tokens,
             prompt_tokens = EXCLUDED.prompt_tokens,
             completion_tokens = EXCLUDED.completion_tokens,
@@ -124,6 +128,7 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 		task.Query, task.Mode, task.Status,
 		task.StartedAt, task.CompletedAt,
 		task.Result, task.ErrorMessage,
+		task.ModelUsed, task.Provider,
 		task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
 		task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
 		task.ComplexityScore, metadata, task.CreatedAt,
@@ -151,6 +156,7 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 query, mode, status,
                 started_at, completed_at,
                 result, error_message,
+                model_used, provider,
                 total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
                 duration_ms, agents_used, tools_invoked, cache_hits,
                 complexity_score, metadata, created_at
@@ -159,15 +165,18 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 $5, $6, $7,
                 $8, $9,
                 $10, $11,
-                $12, $13, $14, $15,
-                $16, $17, $18, $19,
-                $20, $21, $22
+                $12, $13,
+                $14, $15, $16, $17,
+                $18, $19, $20, $21,
+                $22, $23, $24
             )
             ON CONFLICT (workflow_id) DO UPDATE SET
                 status = EXCLUDED.status,
                 completed_at = EXCLUDED.completed_at,
                 result = EXCLUDED.result,
                 error_message = EXCLUDED.error_message,
+                model_used = EXCLUDED.model_used,
+                provider = EXCLUDED.provider,
                 total_tokens = EXCLUDED.total_tokens,
                 prompt_tokens = EXCLUDED.prompt_tokens,
                 completion_tokens = EXCLUDED.completion_tokens,
@@ -212,6 +221,7 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				task.Query, task.Mode, task.Status,
 				task.StartedAt, task.CompletedAt,
 				task.Result, task.ErrorMessage,
+				task.ModelUsed, task.Provider,
 				task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
 				task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
 				task.ComplexityScore, metadata, task.CreatedAt,

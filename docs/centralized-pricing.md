@@ -38,10 +38,12 @@ pricing:
   - `internal/activities/session.go`: Updates session cost tracking
 
 Hot reload & validation:
+
 - `models.yaml` is watched by the config manager; on change, pricing is reloaded
 - Basic validation ensures no negative values under `pricing` section
 
 Fallback metrics:
+
 - `shannon_pricing_fallback_total{reason="missing_model|unknown_model"}`
   increments whenever defaults are used (missing or unknown model name)
 
@@ -79,8 +81,8 @@ Fallback metrics:
 
 3. **When model is unknown**:
    - Uses `defaults.combined_per_1k`
-   - Falls back to `0.002` per 1K tokens (GPT-3.5 equivalent)
-    - Increments `shannon_pricing_fallback_total`
+   - If config unavailable, falls back to a generic default (e.g., `0.002` per 1K tokens)
+   - Increments `shannon_pricing_fallback_total`
 
 ## Environment Variables
 
@@ -91,6 +93,7 @@ Fallback metrics:
 ## Default Paths
 
 Services look for configuration in this order:
+
 1. `$MODELS_CONFIG_PATH` (if set)
 2. `/app/config/models.yaml` (Docker containers)
 3. `./config/models.yaml` (local development)
@@ -98,13 +101,16 @@ Services look for configuration in this order:
 ## Testing
 
 ### Go Testing
+
 ```bash
 cd go/orchestrator
 go test -v ./internal/pricing/...
 ```
 
 ### Manual Verification
+
 The implementation was verified to:
+
 - Load pricing configuration correctly from `config/models.yaml`
 - Calculate costs accurately for known models
 - Fall back to defaults for unknown models
@@ -113,12 +119,14 @@ The implementation was verified to:
 ## Migration Notes
 
 ### What Changed
+
 - **Go**: Service uses `pricing.CostForTokens()` / `CostForSplit()` instead of inline heuristics
 - **Rust**: `calculate_cost()` checks centralized config before fallback
 - **Python**: Manager applies pricing overrides after provider initialization
 - **Config**: Added `pricing` section to `config/models.yaml`
 
 ### Backward Compatibility
+
 - All services maintain fallback logic for missing configuration
 - Existing provider-specific pricing is preserved unless overridden
 - No changes to activity/proto signatures required
@@ -128,12 +136,12 @@ The implementation was verified to:
 For detailed information on which workflows have true per-model costs vs approximations, see [workflow-pricing-coverage.md](workflow-pricing-coverage.md).
 
 ### Summary
+
 - **Production Ready** (true costs): Simple, DAG v2, Supervisor, React, Streaming (single & parallel)
 - **Using Defaults**: Exploratory, Scientific patterns
 
-## Future Enhancements
+## Enhancements
 
-### Completed ✅
 1. **Split token tracking**: Workflows now track input/output tokens separately
 2. **Price validation**: Non-negative validation implemented
 3. **Hot-reload support**: Pricing reloads on `models.yaml` changes
@@ -141,6 +149,7 @@ For detailed information on which workflows have true per-model costs vs approxi
 5. **Fallback metrics**: `shannon_pricing_fallback_total` tracks coverage
 
 ### Potential Improvements
+
 1. **Cost alerts**: Implement threshold notifications when costs exceed limits
 2. **Usage analytics**: Track model-specific usage patterns and costs
 3. **Pattern extensions**: Add per-agent tracking to Exploratory/Scientific if usage warrants
@@ -155,17 +164,17 @@ pricing:
     combined_per_1k: 0.005
   models:
     openai:
-      gpt-3.5-turbo:
-        input_per_1k: 0.0005
-        output_per_1k: 0.0015
-      gpt-4-turbo:
-        input_per_1k: 0.0100
-        output_per_1k: 0.0300
+      gpt-5-2025-08-07:
+        input_per_1k: 0.0060
+        output_per_1k: 0.0180
+      gpt-5-nano-2025-08-07:
+        input_per_1k: 0.00010
+        output_per_1k: 0.00040
     anthropic:
-      claude-3-sonnet:
+      claude-sonnet-4-5-20250929:
         input_per_1k: 0.0030
         output_per_1k: 0.0150
-      claude-3-haiku:
+      claude-haiku-4-5-20251001:
         input_per_1k: 0.00025
         output_per_1k: 0.00125
     deepseek:

@@ -27,6 +27,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/degradation"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -524,8 +525,9 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 
 	// Determine priority from metadata labels (optional)
 	queue := "shannon-tasks"
-	priority := "normal"   // Track priority for logging
-	workflowOverride := "" // Optional workflow override via label
+    priority := "normal"   // Track priority for logging
+    workflowOverride := "" // Optional workflow override via label
+    forcedModeLabel := ""  // Optional mode override for router (standard|complex)
 
 	// Check if priority queues are enabled
 	priorityQueuesEnabled := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") ||
@@ -569,12 +571,17 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			// Optional workflow override: labels["workflow"] = "supervisor" | "dag"
 			if wf, ok := labels["workflow"]; ok {
 				workflowOverride = strings.ToLower(wf)
-			} else if wf2, ok := labels["mode"]; ok {
-				// Back-compat: accept mode=supervisor as override
-				if strings.EqualFold(wf2, "supervisor") {
-					workflowOverride = "supervisor"
-				}
-			}
+            } else if wf2, ok := labels["mode"]; ok {
+                ml := strings.ToLower(strings.TrimSpace(wf2))
+                switch ml {
+                case "supervisor":
+                    workflowOverride = "supervisor"
+                case "simple":
+                    workflowOverride = "simple"
+                case "complex", "standard":
+                    forcedModeLabel = ml
+                }
+            }
 		}
 	}
 	// Log queue selection for debugging
@@ -592,8 +599,8 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	}
 
 	// Route based on explicit workflow override; otherwise use AgentDAGWorkflow
-	switch workflowOverride {
-	case "supervisor":
+switch workflowOverride {
+case "supervisor":
 		input.Mode = "supervisor"
 		modeStr = "supervisor"
 		memo["mode"] = "supervisor"
@@ -605,17 +612,39 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			workflows.SupervisorWorkflow,
 			input,
 		)
-	case "", "dag":
-		// Default: route through OrchestratorWorkflow
-		if mode == common.ExecutionMode_EXECUTION_MODE_COMPLEX {
-			input.Mode = "complex"
-			modeStr = "complex"
-			memo["mode"] = "complex"
-		} else {
-			input.Mode = "standard"
-			modeStr = "standard"
-			memo["mode"] = "standard"
-		}
+ case "simple":
+    input.Mode = "simple"
+    modeStr = "simple"
+    memo["mode"] = "simple"
+    workflowType = "SimpleTaskWorkflow"
+    s.logger.Info("Starting SimpleTaskWorkflow", zap.String("workflow_id", workflowID))
+    workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+        ctx,
+        workflowOptions,
+        workflows.SimpleTaskWorkflow,
+        input,
+    )
+ case "", "dag":
+    // Default: route through OrchestratorWorkflow
+    if forcedModeLabel == "complex" {
+        input.Mode = "complex"
+        modeStr = "complex"
+        memo["mode"] = "complex"
+    } else if forcedModeLabel == "standard" {
+        input.Mode = "standard"
+        modeStr = "standard"
+        memo["mode"] = "standard"
+    } else {
+        if mode == common.ExecutionMode_EXECUTION_MODE_COMPLEX {
+            input.Mode = "complex"
+            modeStr = "complex"
+            memo["mode"] = "complex"
+        } else {
+            input.Mode = "standard"
+            modeStr = "standard"
+            memo["mode"] = "standard"
+        }
+    }
 		s.logger.Info("Starting OrchestratorWorkflow (router)",
 			zap.String("workflow_id", workflowID),
 			zap.String("initial_mode", modeStr))
@@ -887,6 +916,50 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			if agentsUsed, ok := result.Metadata["num_agents"].(int); ok {
 				taskExecution.AgentsUsed = agentsUsed
 			}
+
+			// Extract model and provider
+			if model, ok := result.Metadata["model"].(string); ok && model != "" {
+				taskExecution.ModelUsed = model
+			} else if model, ok := result.Metadata["model_used"].(string); ok && model != "" {
+				taskExecution.ModelUsed = model
+			}
+
+			if provider, ok := result.Metadata["provider"].(string); ok && provider != "" {
+				taskExecution.Provider = provider
+			} else if taskExecution.ModelUsed != "" {
+				// Fallback: detect provider from model name
+				taskExecution.Provider = detectProviderFromModel(taskExecution.ModelUsed)
+			}
+
+			// Extract token breakdown (prompt vs completion)
+			if inputTokens, ok := result.Metadata["input_tokens"].(float64); ok {
+				taskExecution.PromptTokens = int(inputTokens)
+			} else if inputTokens, ok := result.Metadata["input_tokens"].(int); ok {
+				taskExecution.PromptTokens = inputTokens
+			}
+
+			if outputTokens, ok := result.Metadata["output_tokens"].(float64); ok {
+				taskExecution.CompletionTokens = int(outputTokens)
+			} else if outputTokens, ok := result.Metadata["output_tokens"].(int); ok {
+				taskExecution.CompletionTokens = outputTokens
+			}
+
+			// If breakdown not available but we have total, estimate split (60% prompt, 40% completion)
+			if taskExecution.PromptTokens == 0 && taskExecution.CompletionTokens == 0 && result.TokensUsed > 0 {
+				taskExecution.PromptTokens = result.TokensUsed * 6 / 10
+				taskExecution.CompletionTokens = result.TokensUsed - taskExecution.PromptTokens
+			}
+
+			// Extract cost
+			if cost, ok := result.Metadata["cost_usd"].(float64); ok {
+				taskExecution.TotalCostUSD = cost
+			} else if cost, ok := result.Metadata["total_cost"].(float64); ok {
+				taskExecution.TotalCostUSD = cost
+			} else if result.TokensUsed > 0 {
+				// Fallback: calculate cost from tokens
+				taskExecution.TotalCostUSD = calculateTokenCost(result.TokensUsed, result.Metadata)
+			}
+
 			taskExecution.Metadata = db.JSONB(result.Metadata)
 		}
 
@@ -916,7 +989,7 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		metrics = &common.ExecutionMetrics{
 			TokenUsage: &common.TokenUsage{
 				TotalTokens: int32(result.TokensUsed),
-				// Calculate cost based on model (default to GPT-3.5 pricing)
+				// Calculate cost based on model using centralized pricing
 				CostUsd: calculateTokenCost(result.TokensUsed, result.Metadata),
 			},
 		}
@@ -1611,6 +1684,12 @@ func calculateTokenCost(tokens int, metadata map[string]interface{}) float64 {
 		}
 	}
 	return pricing.CostForTokens(model, tokens)
+}
+
+// detectProviderFromModel determines the provider based on the model name
+// Delegates to shared models.DetectProvider for consistent provider detection
+func detectProviderFromModel(model string) string {
+	return models.DetectProvider(model)
 }
 
 // Helper function to convert session history for workflow

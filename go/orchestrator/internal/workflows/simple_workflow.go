@@ -522,6 +522,28 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		meta["tool_errors"] = toolErrors
 	}
 
+	// Add model and provider information for task persistence
+	if result.ModelUsed != "" {
+		meta["model"] = result.ModelUsed
+		meta["model_used"] = result.ModelUsed
+		meta["provider"] = detectProviderFromModel(result.ModelUsed)
+	}
+
+	// Add token breakdown (60/40 split for prompt/completion)
+	if totalTokens > 0 {
+		inputTokens := totalTokens * 6 / 10
+		outputTokens := totalTokens - inputTokens
+		meta["input_tokens"] = inputTokens
+		meta["output_tokens"] = outputTokens
+		meta["total_tokens"] = totalTokens
+
+		// Calculate cost (rough estimate, actual cost calculated by service layer)
+		if result.ModelUsed != "" {
+			cost := float64(totalTokens) * 0.0000005 // Default fallback rate
+			meta["cost_usd"] = cost
+		}
+	}
+
 	return TaskResult{
 		Result:     finalResult,
 		Success:    true,
@@ -574,25 +596,5 @@ func modelTierFromBudget(budget int) string {
 		return "large" // 128k window models
 	default:
 		return "xlarge" // 200k+ window models
-	}
-}
-
-func detectProviderFromModel(model string) string {
-	ml := strings.ToLower(model)
-	switch {
-	case strings.Contains(ml, "gpt-4"), strings.Contains(ml, "gpt-3"), strings.Contains(ml, "davinci"), strings.Contains(ml, "turbo"), strings.Contains(ml, "o1"):
-		return "openai"
-	case strings.Contains(ml, "claude"), strings.Contains(ml, "opus"), strings.Contains(ml, "sonnet"), strings.Contains(ml, "haiku"):
-		return "anthropic"
-	case strings.Contains(ml, "gemini"), strings.Contains(ml, "palm"), strings.Contains(ml, "bard"):
-		return "google"
-	case strings.Contains(ml, "llama"), strings.Contains(ml, "codellama"):
-		return "meta"
-	case strings.Contains(ml, "mistral"), strings.Contains(ml, "mixtral"):
-		return "mistral"
-	case strings.Contains(ml, "command"), strings.Contains(ml, "cohere"):
-		return "cohere"
-	default:
-		return "unknown"
 	}
 }

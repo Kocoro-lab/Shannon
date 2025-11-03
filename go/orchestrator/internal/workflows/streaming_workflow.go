@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
 )
@@ -172,15 +173,36 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		}
 	}
 
+	// Build metadata and include model/provider + token breakdown (estimated 60/40 if missing)
+	meta := map[string]interface{}{
+		"execution_time_ms": agentState.GetExecutionDuration().Milliseconds(),
+		"checkpoints":       stateChannel.ListCheckpoints(),
+		"final_state":       agentState.ExecutionState.Status,
+	}
+
+	// Prepare a single-agent result for aggregation
+	ar := activities.AgentExecutionResult{
+		AgentID:      "streaming-agent",
+		ModelUsed:    streamRes.ModelUsed,
+		TokensUsed:   streamRes.TokensUsed,
+		InputTokens:  streamRes.InputTokens,
+		OutputTokens: streamRes.OutputTokens,
+		Success:      true,
+	}
+	if ar.InputTokens == 0 && ar.OutputTokens == 0 && ar.TokensUsed > 0 {
+		ar.InputTokens = ar.TokensUsed * 6 / 10
+		ar.OutputTokens = ar.TokensUsed - ar.InputTokens
+	}
+	agentMeta := metadata.AggregateAgentMetadata([]activities.AgentExecutionResult{ar}, 0)
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
+
 	return TaskResult{
 		Result:     streamRes.Response,
 		Success:    true,
 		TokensUsed: streamRes.TokensUsed,
-		Metadata: map[string]interface{}{
-			"execution_time_ms": agentState.GetExecutionDuration().Milliseconds(),
-			"checkpoints":       stateChannel.ListCheckpoints(),
-			"final_state":       agentState.ExecutionState.Status,
-		},
+		Metadata:   meta,
 	}, nil
 }
 
@@ -283,11 +305,11 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
 		} else {
 			var err error
-        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-            Query:        input.Query,
-            AgentResults: agentResults,
-            Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
-        }).Get(ctx, &synthesis)
+			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+				Query:        input.Query,
+				AgentResults: agentResults,
+				Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
+			}).Get(ctx, &synthesis)
 			if err != nil {
 				logger.Error("Result synthesis failed", "error", err)
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -295,11 +317,11 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	} else {
 		var err error
-        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-            Query:        input.Query,
-            AgentResults: agentResults,
-            Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
-        }).Get(ctx, &synthesis)
+		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+			Query:        input.Query,
+			AgentResults: agentResults,
+			Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
+		}).Get(ctx, &synthesis)
 		if err != nil {
 			logger.Error("Result synthesis failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -347,21 +369,38 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventWorkflowCompleted,
-        AgentID:    "streaming",
-        Message:    "All done",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "streaming",
+		Message:    "All done",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
+
+	// Build metadata and include aggregate model/provider + token breakdown across streams
+	meta := map[string]interface{}{
+		"num_streams": len(results),
+		"parallel":    true,
+	}
+	// Ensure each agent has input/output tokens (estimate 60/40 if missing)
+	agentResultsForMeta := make([]activities.AgentExecutionResult, 0, len(agentResults))
+	for _, r := range agentResults {
+		ar := r
+		if (ar.InputTokens == 0 && ar.OutputTokens == 0) && ar.TokensUsed > 0 {
+			ar.InputTokens = ar.TokensUsed * 6 / 10
+			ar.OutputTokens = ar.TokensUsed - ar.InputTokens
+		}
+		agentResultsForMeta = append(agentResultsForMeta, ar)
+	}
+	agentMeta := metadata.AggregateAgentMetadata(agentResultsForMeta, 0)
+	for k, v := range agentMeta {
+		meta[k] = v
+	}
 
 	return TaskResult{
 		Result:     synthesis.FinalResult,
 		Success:    true,
 		TokensUsed: totalTokens,
-		Metadata: map[string]interface{}{
-			"num_streams": len(results),
-			"parallel":    true,
-		},
+		Metadata:   meta,
 	}, nil
 }

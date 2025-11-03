@@ -51,6 +51,10 @@ type TaskExecution struct {
 	Result       *string `db:"result"`
 	ErrorMessage *string `db:"error_message"`
 
+	// Model information
+	ModelUsed string `db:"model_used"`
+	Provider  string `db:"provider"`
+
 	// Token metrics
 	TotalTokens      int     `db:"total_tokens"`
 	PromptTokens     int     `db:"prompt_tokens"`
