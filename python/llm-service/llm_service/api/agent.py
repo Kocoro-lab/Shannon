@@ -297,13 +297,19 @@ async def agent_query(request: Request, query: AgentQuery):
             model_override = query.model_override or (
                 query.context.get("model_override") if query.context else None
             )
-            # Optional provider override (from context)
+            # Optional provider override (from context or role preset)
             try:
                 provider_override = (
                     query.context.get("provider_override") if query.context else None
                 )
             except Exception:
                 provider_override = None
+            # Allow role preset to specify provider preference when not explicitly set
+            if not provider_override and preset and "provider_override" in preset:
+                try:
+                    provider_override = str(preset.get("provider_override")).strip() or None
+                except Exception:
+                    provider_override = None
             # Apply role preset's preferred_model if no explicit override
             if not model_override and preset and "preferred_model" in preset:
                 model_override = preset.get("preferred_model")

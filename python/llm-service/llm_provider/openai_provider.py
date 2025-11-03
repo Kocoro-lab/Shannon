@@ -173,6 +173,45 @@ class OpenAIProvider(LLMProvider):
             prompt_tokens, completion_tokens, self._resolve_alias(model)
         )
 
+        # Normalize function/tool call information to a plain dict for JSON safety
+        normalized_fc = None
+        try:
+            # Newer SDKs expose structured tool calls; prefer those when present
+            if hasattr(message, "tool_calls") and message.tool_calls:
+                # Take the first function tool call for compatibility
+                tc = message.tool_calls[0]
+                fn = getattr(tc, "function", None)
+                if fn is not None:
+                    # Pydantic v2 objects have model_dump(); fall back to attrs
+                    if hasattr(fn, "model_dump"):
+                        data = fn.model_dump()
+                        # Ensure arguments is JSON-string or object as returned by SDK
+                        normalized_fc = {
+                            "name": data.get("name"),
+                            "arguments": data.get("arguments"),
+                        }
+                    else:
+                        normalized_fc = {
+                            "name": getattr(fn, "name", None),
+                            "arguments": getattr(fn, "arguments", None),
+                        }
+            elif hasattr(message, "function_call") and message.function_call:
+                fc = message.function_call
+                if hasattr(fc, "model_dump"):
+                    data = fc.model_dump()
+                    normalized_fc = {
+                        "name": data.get("name"),
+                        "arguments": data.get("arguments"),
+                    }
+                else:
+                    normalized_fc = {
+                        "name": getattr(fc, "name", None),
+                        "arguments": getattr(fc, "arguments", None),
+                    }
+        except Exception:
+            # Be permissive – missing/invalid function call info should not fail the request
+            normalized_fc = None
+
         return CompletionResponse(
             content=message.content or "",
             model=model,
@@ -184,7 +223,7 @@ class OpenAIProvider(LLMProvider):
                 estimated_cost=cost,
             ),
             finish_reason=choice.finish_reason,
-            function_call=getattr(message, "function_call", None),
+            function_call=normalized_fc,
             request_id=response.id,
             latency_ms=latency_ms,
         )

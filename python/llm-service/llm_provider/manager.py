@@ -639,9 +639,17 @@ class LLMManager:
             fallback = self._get_fallback_provider(provider_name, request.model_tier)
             if fallback:
                 self.logger.info(f"Trying fallback provider: {fallback[0]}")
-                return await self._call_provider_with_cb(
-                    fallback[0], fallback[1], request
-                )
+                # Clear model selection so fallback provider can choose its own compatible model
+                original_model = request.model
+                request.model = None
+                try:
+                    return await self._call_provider_with_cb(
+                        fallback[0], fallback[1], request
+                    )
+                except Exception:
+                    # Restore original model before re-raising
+                    request.model = original_model
+                    raise
 
             raise
 
@@ -689,9 +697,17 @@ class LLMManager:
             # Attempt fallback provider for streaming if configured
             fallback = self._get_fallback_provider(provider_name, request.model_tier)
             if fallback:
-                async for chunk in fallback[1].stream_complete(request):
-                    if isinstance(chunk, str) and chunk:
-                        yield chunk
+                # Clear model selection so fallback provider can choose its own compatible model
+                original_model = request.model
+                request.model = None
+                try:
+                    async for chunk in fallback[1].stream_complete(request):
+                        if isinstance(chunk, str) and chunk:
+                            yield chunk
+                except Exception:
+                    # Restore original model before re-raising
+                    request.model = original_model
+                    raise
             else:
                 raise
 

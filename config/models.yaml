@@ -547,6 +547,9 @@ pricing:
       claude-haiku-4-5-20251001:
         input_per_1k: 0.0010
         output_per_1k: 0.0050
+      claude-sonnet-4-20250514:
+        input_per_1k: 0.0030
+        output_per_1k: 0.0150
       claude-sonnet-4-5-20250929:
         input_per_1k: 0.0030
         output_per_1k: 0.0150
