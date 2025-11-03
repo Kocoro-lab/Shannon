@@ -63,6 +63,8 @@ message TokenUsage {
   double cost_usd = 4;
   string model = 5;
   ModelTier tier = 6;
+  // Provider that served the request (e.g., openai, anthropic, google, groq, xai, ollama)
+  string provider = 7;
 }
 
 // Execution metrics
@@ -90,4 +92,3 @@ message ToolResult {
   string error_message = 4;
   int64 execution_time_ms = 5;
 }
-

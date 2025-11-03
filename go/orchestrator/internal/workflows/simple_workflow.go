@@ -48,13 +48,13 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	if len(truncatedQuery) > 80 {
 		truncatedQuery = truncatedQuery[:77] + "..."
 	}
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflowID,
-        EventType:  activities.StreamEventAgentThinking,
-        AgentID:    "simple-agent",
-        Message:    "Thinking: " + truncatedQuery,
-        Timestamp:  workflow.Now(ctx),
-    }).Get(ctx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventAgentThinking,
+		AgentID:    "simple-agent",
+		Message:    "Thinking: " + truncatedQuery,
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
@@ -478,7 +478,11 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		recCtx := workflow.WithActivityOptions(ctx, recOpts)
 		inTok := totalTokens * 6 / 10
 		outTok := totalTokens - inTok
-		provider := detectProviderFromModel(result.ModelUsed)
+		// Prefer provider from activity result; fallback to detection from model name
+		provider := result.Provider
+		if provider == "" {
+			provider = detectProviderFromModel(result.ModelUsed)
+		}
 		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 			UserID:       input.UserID,
 			SessionID:    input.SessionID,
@@ -501,7 +505,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentCompleted,
 		AgentID:    "simple-agent",
-    Message:    "Task done",
+		Message:    "Task done",
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -510,7 +514,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
 		AgentID:    "simple-agent",
-    Message:    "All done",
+		Message:    "All done",
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -526,7 +530,13 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	if result.ModelUsed != "" {
 		meta["model"] = result.ModelUsed
 		meta["model_used"] = result.ModelUsed
-		meta["provider"] = detectProviderFromModel(result.ModelUsed)
+
+		// Prefer provider from activity result; fallback to detection from model name
+		providerForMeta := result.Provider
+		if providerForMeta == "" {
+			providerForMeta = detectProviderFromModel(result.ModelUsed)
+		}
+		meta["provider"] = providerForMeta
 	}
 
 	// Add token breakdown (60/40 split for prompt/completion)

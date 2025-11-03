@@ -1,33 +1,33 @@
 package httpapi
 
 import (
-    "context"
-    "fmt"
-    "net/http"
-    "strconv"
-    "strings"
-    "time"
+	"context"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
-    "go.uber.org/zap"
-    serviceerror "go.temporal.io/api/serviceerror"
-    "go.temporal.io/sdk/client"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
+	serviceerror "go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/client"
+	"go.uber.org/zap"
 )
 
 // StreamingHandler serves SSE endpoints for workflow events.
 type StreamingHandler struct {
-    mgr    *streaming.Manager
-    logger *zap.Logger
-    tclient client.Client
+	mgr     *streaming.Manager
+	logger  *zap.Logger
+	tclient client.Client
 }
 
 func NewStreamingHandler(mgr *streaming.Manager, logger *zap.Logger) *StreamingHandler {
-    return &StreamingHandler{mgr: mgr, logger: logger}
+	return &StreamingHandler{mgr: mgr, logger: logger}
 }
 
 // SetTemporalClient allows wiring the Temporal client after handler construction.
 func (h *StreamingHandler) SetTemporalClient(c client.Client) {
-    h.tclient = c
+	h.tclient = c
 }
 
 // RegisterRoutes registers SSE routes on the provided mux.
@@ -98,22 +98,22 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, ": connected to workflow %s\n\n", wf)
 	flusher.Flush()
 
-    // Track last stream ID for event deduplication
-    var lastSentStreamID string
-    firstEventSeen := false
+	// Track last stream ID for event deduplication
+	var lastSentStreamID string
+	firstEventSeen := false
 
 	// Replay missed events based on resume point
 	if lastStreamID != "" {
 		// Resume from Redis stream ID
 		events := h.mgr.ReplayFromStreamID(wf, lastStreamID)
-        for _, ev := range events {
-            // Mark that at least one event exists (even if filtered)
-            firstEventSeen = true
-            if len(typeFilter) > 0 {
-                if _, ok := typeFilter[ev.Type]; !ok {
-                    continue
-                }
-            }
+		for _, ev := range events {
+			// Mark that at least one event exists (even if filtered)
+			firstEventSeen = true
+			if len(typeFilter) > 0 {
+				if _, ok := typeFilter[ev.Type]; !ok {
+					continue
+				}
+			}
 			// Track last stream ID from replay
 			if ev.StreamID != "" {
 				lastSentStreamID = ev.StreamID
@@ -133,14 +133,14 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	} else if lastSeq > 0 {
 		// Resume from numeric sequence
 		events := h.mgr.ReplaySince(wf, lastSeq)
-        for _, ev := range events {
-            // Mark that at least one event exists (even if filtered)
-            firstEventSeen = true
-            if len(typeFilter) > 0 {
-                if _, ok := typeFilter[ev.Type]; !ok {
-                    continue
-                }
-            }
+		for _, ev := range events {
+			// Mark that at least one event exists (even if filtered)
+			firstEventSeen = true
+			if len(typeFilter) > 0 {
+				if _, ok := typeFilter[ev.Type]; !ok {
+					continue
+				}
+			}
 			// Track last stream ID from replay
 			if ev.StreamID != "" {
 				lastSentStreamID = ev.StreamID
@@ -159,7 +159,7 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-    // Subscribe to live events starting from where replay ended
+	// Subscribe to live events starting from where replay ended
 	// Use last stream ID if available to avoid gaps, otherwise start fresh
 	startFrom := "$" // Default to new messages only
 	if lastSentStreamID != "" {
@@ -173,55 +173,55 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	defer h.mgr.Unsubscribe(wf, ch)
 
 	// Heartbeat ticker (shorter to keep intermediaries happy)
-    hb := time.NewTicker(10 * time.Second)
-    defer hb.Stop()
+	hb := time.NewTicker(10 * time.Second)
+	defer hb.Stop()
 
-    // First-event timeout timer
-    firstEventTimer := time.NewTimer(30 * time.Second)
-    defer firstEventTimer.Stop()
+	// First-event timeout timer
+	firstEventTimer := time.NewTimer(30 * time.Second)
+	defer firstEventTimer.Stop()
 
-    ctx := r.Context()
-    for {
-        select {
-        case <-ctx.Done():
-            h.logger.Info("SSE client disconnected", zap.String("workflow_id", wf))
-            return
-        case <-firstEventTimer.C:
-            if !firstEventSeen {
-                if h.tclient == nil {
-                    h.logger.Warn("First-event timeout but Temporal client not available", zap.String("workflow_id", wf))
-                    fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-                    fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow validation unavailable\"}\n\n", wf)
-                    flusher.Flush()
-                    return
-                }
-                cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-                _, err := h.tclient.DescribeWorkflowExecution(cctx, wf, "")
-                cancel()
-                if err != nil {
-                    if _, ok := err.(*serviceerror.NotFound); ok {
-                        // Emit an error event and close
-                        fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-                        fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found\"}\n\n", wf)
-                        flusher.Flush()
-                        return
-                    }
-                    // Other errors (timeout, etc) also indicate invalid workflow
-                    fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-                    fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found or unavailable\"}\n\n", wf)
-                    flusher.Flush()
-                    return
-                }
-                // Workflow exists but no events yet - reset timer and continue waiting
-                firstEventTimer.Reset(30 * time.Second)
-            }
-        case evt := <-ch:
-            if len(typeFilter) > 0 {
-                if _, ok := typeFilter[evt.Type]; !ok {
-                    continue
-                }
-            }
-            // Write event type and data lines (SSE format)
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			h.logger.Info("SSE client disconnected", zap.String("workflow_id", wf))
+			return
+		case <-firstEventTimer.C:
+			if !firstEventSeen {
+				if h.tclient == nil {
+					h.logger.Warn("First-event timeout but Temporal client not available", zap.String("workflow_id", wf))
+					fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+					fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow validation unavailable\"}\n\n", wf)
+					flusher.Flush()
+					return
+				}
+				cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				_, err := h.tclient.DescribeWorkflowExecution(cctx, wf, "")
+				cancel()
+				if err != nil {
+					if _, ok := err.(*serviceerror.NotFound); ok {
+						// Emit an error event and close
+						fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+						fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found\"}\n\n", wf)
+						flusher.Flush()
+						return
+					}
+					// Other errors (timeout, etc) also indicate invalid workflow
+					fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+					fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found or unavailable\"}\n\n", wf)
+					flusher.Flush()
+					return
+				}
+				// Workflow exists but no events yet - reset timer and continue waiting
+				firstEventTimer.Reset(30 * time.Second)
+			}
+		case evt := <-ch:
+			if len(typeFilter) > 0 {
+				if _, ok := typeFilter[evt.Type]; !ok {
+					continue
+				}
+			}
+			// Write event type and data lines (SSE format)
 			// Prefer stream ID for robustness, fallback to seq for backward compatibility
 			if evt.StreamID != "" {
 				fmt.Fprintf(w, "id: %s\n", evt.StreamID)
@@ -231,16 +231,16 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if evt.Type != "" {
 				fmt.Fprintf(w, "event: %s\n", evt.Type)
 			}
-            fmt.Fprintf(w, "data: %s\n\n", string(evt.Marshal()))
-            flusher.Flush()
+			fmt.Fprintf(w, "data: %s\n\n", string(evt.Marshal()))
+			flusher.Flush()
 
-            if !firstEventSeen {
-                firstEventSeen = true
-            }
-        case <-hb.C:
-            // Heartbeat to keep connections alive through proxies
-            fmt.Fprint(w, ": ping\n\n")
-            flusher.Flush()
-        }
-    }
+			if !firstEventSeen {
+				firstEventSeen = true
+			}
+		case <-hb.C:
+			// Heartbeat to keep connections alive through proxies
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
 }

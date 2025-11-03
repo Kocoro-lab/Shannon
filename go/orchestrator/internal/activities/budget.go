@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/activity"
@@ -283,9 +284,9 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		}, nil
 	}
 
-    // Add budget constraints to context (do not hardcode model/provider)
-    input.AgentInput.Context["max_tokens"] = input.MaxTokens
-    input.AgentInput.Context["model_tier"] = input.ModelTier
+	// Add budget constraints to context (do not hardcode model/provider)
+	input.AgentInput.Context["max_tokens"] = input.MaxTokens
+	input.AgentInput.Context["model_tier"] = input.ModelTier
 
 	// Execute the actual agent using shared helper (not calling activity directly)
 	activity.GetLogger(ctx).Info("Executing agent with budget",
@@ -298,7 +299,7 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
 
-    // Don't override model/provider — rely on downstream selection based on tier
+	// Don't override model/provider — rely on downstream selection based on tier
 
 	// Ensure tokens don't exceed budget
 	if result.TokensUsed > input.MaxTokens {
@@ -311,13 +312,16 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 
 	// Record the actual usage with the model that was actually used
 	// Use the model from result if available, otherwise fall back to what we selected
-    actualModel := result.ModelUsed
-    if actualModel == "" {
-        // If agent didn't report a model, leave it empty to use defaults in pricing
-        actualModel = ""
-    }
-    // Determine actual provider from the reported model (best-effort)
-    actualProvider := detectProviderFromModel(actualModel)
+	actualModel := result.ModelUsed
+	if actualModel == "" {
+		// If agent didn't report a model, leave it empty to use defaults in pricing
+		actualModel = ""
+	}
+	// Determine actual provider. Prefer result.Provider when available; fallback to detection from model.
+	actualProvider := result.Provider
+	if strings.TrimSpace(actualProvider) == "" {
+		actualProvider = detectProviderFromModel(actualModel)
+	}
 
 	// Get activity info for idempotency key
 	info := activity.GetInfo(ctx)
@@ -400,13 +404,13 @@ func (b *BudgetActivities) GenerateUsageReport(ctx context.Context, input UsageR
 
 // UpdateBudgetInput represents input for updating budget policies
 type UpdateBudgetInput struct {
-    UserID           string   `json:"user_id"`
-    SessionID        string   `json:"session_id"`
-    TaskBudget       *int     `json:"task_budget,omitempty"`
-    SessionBudget    *int     `json:"session_budget,omitempty"`
-    HardLimit        *bool    `json:"hard_limit,omitempty"`
-    WarningThreshold *float64 `json:"warning_threshold,omitempty"`
-    RequireApproval  *bool    `json:"require_approval,omitempty"`
+	UserID           string   `json:"user_id"`
+	SessionID        string   `json:"session_id"`
+	TaskBudget       *int     `json:"task_budget,omitempty"`
+	SessionBudget    *int     `json:"session_budget,omitempty"`
+	HardLimit        *bool    `json:"hard_limit,omitempty"`
+	WarningThreshold *float64 `json:"warning_threshold,omitempty"`
+	RequireApproval  *bool    `json:"require_approval,omitempty"`
 }
 
 // UpdateBudgetPolicy updates budget policies for a user/session

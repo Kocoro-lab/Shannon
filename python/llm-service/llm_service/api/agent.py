@@ -117,6 +117,7 @@ class AgentResponse(BaseModel):
     response: str = Field(..., description="The generated response")
     tokens_used: int = Field(..., description="Number of tokens used")
     model_used: str = Field(..., description="Model that was used")
+    provider: str = Field(default="unknown", description="Provider that served the request")
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata"
     )
@@ -455,6 +456,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     response=result["response"],
                     tokens_used=result["tokens_used"],
                     model_used=result["model_used"],
+                    provider=interpretation_result.get("provider") or "unknown",
                     metadata={
                         "agent_id": query.agent_id,
                         "mode": query.mode,
@@ -699,6 +701,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             response=result["response"],
                             tokens_used=result["tokens_used"],
                             model_used=result["model_used"],
+                            provider=interpretation_result.get("provider") or "unknown",
                             metadata={
                                 "agent_id": query.agent_id,
                                 "mode": query.mode,
@@ -722,6 +725,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 response=result["response"],
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
+                provider=result_data.get("provider") or "unknown",
                 metadata={
                     "agent_id": query.agent_id,
                     "mode": query.mode,
@@ -746,6 +750,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 response=result["response"],
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
+                provider="mock",
                 metadata={
                     "agent_id": query.agent_id,
                     "mode": query.mode,

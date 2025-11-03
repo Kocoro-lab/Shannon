@@ -525,9 +525,9 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 
 	// Determine priority from metadata labels (optional)
 	queue := "shannon-tasks"
-    priority := "normal"   // Track priority for logging
-    workflowOverride := "" // Optional workflow override via label
-    forcedModeLabel := ""  // Optional mode override for router (standard|complex)
+	priority := "normal"   // Track priority for logging
+	workflowOverride := "" // Optional workflow override via label
+	forcedModeLabel := ""  // Optional mode override for router (standard|complex)
 
 	// Check if priority queues are enabled
 	priorityQueuesEnabled := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") ||
@@ -571,17 +571,17 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			// Optional workflow override: labels["workflow"] = "supervisor" | "dag"
 			if wf, ok := labels["workflow"]; ok {
 				workflowOverride = strings.ToLower(wf)
-            } else if wf2, ok := labels["mode"]; ok {
-                ml := strings.ToLower(strings.TrimSpace(wf2))
-                switch ml {
-                case "supervisor":
-                    workflowOverride = "supervisor"
-                case "simple":
-                    workflowOverride = "simple"
-                case "complex", "standard":
-                    forcedModeLabel = ml
-                }
-            }
+			} else if wf2, ok := labels["mode"]; ok {
+				ml := strings.ToLower(strings.TrimSpace(wf2))
+				switch ml {
+				case "supervisor":
+					workflowOverride = "supervisor"
+				case "simple":
+					workflowOverride = "simple"
+				case "complex", "standard":
+					forcedModeLabel = ml
+				}
+			}
 		}
 	}
 	// Log queue selection for debugging
@@ -599,8 +599,8 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	}
 
 	// Route based on explicit workflow override; otherwise use AgentDAGWorkflow
-switch workflowOverride {
-case "supervisor":
+	switch workflowOverride {
+	case "supervisor":
 		input.Mode = "supervisor"
 		modeStr = "supervisor"
 		memo["mode"] = "supervisor"
@@ -612,39 +612,39 @@ case "supervisor":
 			workflows.SupervisorWorkflow,
 			input,
 		)
- case "simple":
-    input.Mode = "simple"
-    modeStr = "simple"
-    memo["mode"] = "simple"
-    workflowType = "SimpleTaskWorkflow"
-    s.logger.Info("Starting SimpleTaskWorkflow", zap.String("workflow_id", workflowID))
-    workflowExecution, err = s.temporalClient.ExecuteWorkflow(
-        ctx,
-        workflowOptions,
-        workflows.SimpleTaskWorkflow,
-        input,
-    )
- case "", "dag":
-    // Default: route through OrchestratorWorkflow
-    if forcedModeLabel == "complex" {
-        input.Mode = "complex"
-        modeStr = "complex"
-        memo["mode"] = "complex"
-    } else if forcedModeLabel == "standard" {
-        input.Mode = "standard"
-        modeStr = "standard"
-        memo["mode"] = "standard"
-    } else {
-        if mode == common.ExecutionMode_EXECUTION_MODE_COMPLEX {
-            input.Mode = "complex"
-            modeStr = "complex"
-            memo["mode"] = "complex"
-        } else {
-            input.Mode = "standard"
-            modeStr = "standard"
-            memo["mode"] = "standard"
-        }
-    }
+	case "simple":
+		input.Mode = "simple"
+		modeStr = "simple"
+		memo["mode"] = "simple"
+		workflowType = "SimpleTaskWorkflow"
+		s.logger.Info("Starting SimpleTaskWorkflow", zap.String("workflow_id", workflowID))
+		workflowExecution, err = s.temporalClient.ExecuteWorkflow(
+			ctx,
+			workflowOptions,
+			workflows.SimpleTaskWorkflow,
+			input,
+		)
+	case "", "dag":
+		// Default: route through OrchestratorWorkflow
+		if forcedModeLabel == "complex" {
+			input.Mode = "complex"
+			modeStr = "complex"
+			memo["mode"] = "complex"
+		} else if forcedModeLabel == "standard" {
+			input.Mode = "standard"
+			modeStr = "standard"
+			memo["mode"] = "standard"
+		} else {
+			if mode == common.ExecutionMode_EXECUTION_MODE_COMPLEX {
+				input.Mode = "complex"
+				modeStr = "complex"
+				memo["mode"] = "complex"
+			} else {
+				input.Mode = "standard"
+				modeStr = "standard"
+				memo["mode"] = "standard"
+			}
+		}
 		s.logger.Info("Starting OrchestratorWorkflow (router)",
 			zap.String("workflow_id", workflowID),
 			zap.String("initial_mode", modeStr))
@@ -996,6 +996,15 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 
 		// Extract metadata values if available
 		if result.Metadata != nil {
+			// Populate model/provider into metrics when available
+			if m, ok := result.Metadata["model"].(string); ok && m != "" {
+				metrics.TokenUsage.Model = m
+			} else if mu, ok := result.Metadata["model_used"].(string); ok && mu != "" {
+				metrics.TokenUsage.Model = mu
+			}
+			if p, ok := result.Metadata["provider"].(string); ok && p != "" {
+				metrics.TokenUsage.Provider = p
+			}
 			// Get execution mode (using configurable thresholds)
 			if complexity, ok := result.Metadata["complexity_score"].(float64); ok {
 				simpleThreshold := 0.3 // default
@@ -1091,56 +1100,56 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 
 // CancelTask cancels a running task
 func (s *OrchestratorService) CancelTask(ctx context.Context, req *pb.CancelTaskRequest) (*pb.CancelTaskResponse, error) {
-    s.logger.Info("Received CancelTask request",
-        zap.String("task_id", req.TaskId),
-        zap.String("reason", req.Reason),
-    )
+	s.logger.Info("Received CancelTask request",
+		zap.String("task_id", req.TaskId),
+		zap.String("reason", req.Reason),
+	)
 
-    // Enforce authentication
-    uc, err := auth.GetUserContext(ctx)
-    if err != nil || uc == nil {
-        return nil, status.Error(codes.Unauthenticated, "authentication required")
-    }
+	// Enforce authentication
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
 
-    // Verify ownership/tenancy via workflow memo (atomic with cancel on server side)
-    desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
-    if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-        return nil, status.Error(codes.NotFound, "task not found")
-    }
-    if desc.WorkflowExecutionInfo.Memo != nil {
-        dc := converter.GetDefaultDataConverter()
-        // Check tenant first (primary isolation key)
-        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
-            var memoTenant string
-            _ = dc.FromPayload(f, &memoTenant)
-            if memoTenant != "" && uc.TenantID.String() != memoTenant {
-                // Do not leak existence
-                return nil, status.Error(codes.NotFound, "task not found")
-            }
-        }
-        // Optional: check user ownership when available
-        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
-            var memoUser string
-            _ = dc.FromPayload(f, &memoUser)
-            if memoUser != "" && uc.UserID.String() != memoUser {
-                return nil, status.Error(codes.NotFound, "task not found")
-            }
-        }
-    }
+	// Verify ownership/tenancy via workflow memo (atomic with cancel on server side)
+	desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
+	if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+	if desc.WorkflowExecutionInfo.Memo != nil {
+		dc := converter.GetDefaultDataConverter()
+		// Check tenant first (primary isolation key)
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+			var memoTenant string
+			_ = dc.FromPayload(f, &memoTenant)
+			if memoTenant != "" && uc.TenantID.String() != memoTenant {
+				// Do not leak existence
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+		// Optional: check user ownership when available
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+			var memoUser string
+			_ = dc.FromPayload(f, &memoUser)
+			if memoUser != "" && uc.UserID.String() != memoUser {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+	}
 
-    // Perform cancellation
-    if err := s.temporalClient.CancelWorkflow(ctx, req.TaskId, ""); err != nil {
-        s.logger.Error("Failed to cancel workflow", zap.Error(err))
-        return &pb.CancelTaskResponse{
-            Success: false,
-            Message: fmt.Sprintf("Failed to cancel task: %v", err),
-        }, nil
-    }
+	// Perform cancellation
+	if err := s.temporalClient.CancelWorkflow(ctx, req.TaskId, ""); err != nil {
+		s.logger.Error("Failed to cancel workflow", zap.Error(err))
+		return &pb.CancelTaskResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to cancel task: %v", err),
+		}, nil
+	}
 
-    return &pb.CancelTaskResponse{
-        Success: true,
-        Message: "Task cancelled successfully",
-    }, nil
+	return &pb.CancelTaskResponse{
+		Success: true,
+		Message: "Task cancelled successfully",
+	}, nil
 }
 
 // ListTasks lists tasks for a user/session
@@ -1304,35 +1313,35 @@ func (s *OrchestratorService) GetSessionContext(ctx context.Context, req *pb.Get
 		}
 	}
 
-    if s.dbClient != nil {
-        // Resolve both canonical UUID and external_id for dual-format session IDs
-        sessionIDs := []string{}
-        var dbID string
-        var extID sql.NullString
-        row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+	if s.dbClient != nil {
+		// Resolve both canonical UUID and external_id for dual-format session IDs
+		sessionIDs := []string{}
+		var dbID string
+		var extID sql.NullString
+		row := s.dbClient.Wrapper().QueryRowContext(ctx, `
             SELECT id::text, context->>'external_id'
             FROM sessions
             WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
         `, req.SessionId)
-        if err := row.Scan(&dbID, &extID); err == nil {
-            sessionIDs = append(sessionIDs, dbID)
-            if extID.Valid && extID.String != "" {
-                sessionIDs = append(sessionIDs, extID.String)
-            }
-        } else {
-            // Fallback to the provided session ID if not resolvable in DB
-            sessionIDs = append(sessionIDs, req.SessionId)
-        }
+		if err := row.Scan(&dbID, &extID); err == nil {
+			sessionIDs = append(sessionIDs, dbID)
+			if extID.Valid && extID.String != "" {
+				sessionIDs = append(sessionIDs, extID.String)
+			}
+		} else {
+			// Fallback to the provided session ID if not resolvable in DB
+			sessionIDs = append(sessionIDs, req.SessionId)
+		}
 
-        tasks, err := s.loadRecentSessionTasksByIDs(ctx, sessionIDs, 5)
-        if err != nil {
-            s.logger.Warn("Failed to load recent session tasks",
-                zap.String("session_id", req.SessionId),
-                zap.Error(err))
-        } else if len(tasks) > 0 {
-            response.RecentTasks = tasks
-        }
-    }
+		tasks, err := s.loadRecentSessionTasksByIDs(ctx, sessionIDs, 5)
+		if err != nil {
+			s.logger.Warn("Failed to load recent session tasks",
+				zap.String("session_id", req.SessionId),
+				zap.Error(err))
+		} else if len(tasks) > 0 {
+			response.RecentTasks = tasks
+		}
+	}
 
 	return response, nil
 }
@@ -1427,25 +1436,25 @@ func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessio
 // loadRecentSessionTasksByIDs loads recent tasks for one or two possible session IDs
 // to support dual-format session identifiers (UUID and external string ID).
 func (s *OrchestratorService) loadRecentSessionTasksByIDs(ctx context.Context, sessionIDs []string, limit int) ([]*pb.TaskSummary, error) {
-    // Normalize inputs
-    ids := make([]string, 0, 2)
-    for _, id := range sessionIDs {
-        if id != "" {
-            ids = append(ids, id)
-            if len(ids) == 2 {
-                break
-            }
-        }
-    }
-    if len(ids) == 0 || limit <= 0 || s.dbClient == nil {
-        return nil, nil
-    }
-    if len(ids) == 1 {
-        return s.loadRecentSessionTasks(ctx, ids[0], limit)
-    }
+	// Normalize inputs
+	ids := make([]string, 0, 2)
+	for _, id := range sessionIDs {
+		if id != "" {
+			ids = append(ids, id)
+			if len(ids) == 2 {
+				break
+			}
+		}
+	}
+	if len(ids) == 0 || limit <= 0 || s.dbClient == nil {
+		return nil, nil
+	}
+	if len(ids) == 1 {
+		return s.loadRecentSessionTasks(ctx, ids[0], limit)
+	}
 
-    // Build query for two IDs
-    query := `
+	// Build query for two IDs
+	query := `
         SELECT workflow_id, query, status, mode,
                started_at, completed_at, created_at,
                total_tokens, total_cost_usd
@@ -1454,76 +1463,76 @@ func (s *OrchestratorService) loadRecentSessionTasksByIDs(ctx context.Context, s
         ORDER BY COALESCE(started_at, created_at) DESC
         LIMIT $3`
 
-    rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, ids[0], ids[1], limit)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
+	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, ids[0], ids[1], limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
-    summaries := make([]*pb.TaskSummary, 0, limit)
+	summaries := make([]*pb.TaskSummary, 0, limit)
 
-    for rows.Next() {
-        var (
-            workflowID string
-            queryText  sql.NullString
-            statusStr  sql.NullString
-            modeStr    sql.NullString
-            started    sql.NullTime
-            completed  sql.NullTime
-            created    sql.NullTime
-            tokens     sql.NullInt64
-            costUSD    sql.NullFloat64
-        )
+	for rows.Next() {
+		var (
+			workflowID string
+			queryText  sql.NullString
+			statusStr  sql.NullString
+			modeStr    sql.NullString
+			started    sql.NullTime
+			completed  sql.NullTime
+			created    sql.NullTime
+			tokens     sql.NullInt64
+			costUSD    sql.NullFloat64
+		)
 
-        if err := rows.Scan(
-            &workflowID,
-            &queryText,
-            &statusStr,
-            &modeStr,
-            &started,
-            &completed,
-            &created,
-            &tokens,
-            &costUSD,
-        ); err != nil {
-            return nil, err
-        }
+		if err := rows.Scan(
+			&workflowID,
+			&queryText,
+			&statusStr,
+			&modeStr,
+			&started,
+			&completed,
+			&created,
+			&tokens,
+			&costUSD,
+		); err != nil {
+			return nil, err
+		}
 
-        summary := &pb.TaskSummary{
-            TaskId: workflowID,
-            Query:  queryText.String,
-            Status: mapDBStatusToProto(statusStr.String),
-            Mode:   mapDBModeToProto(modeStr.String),
-        }
+		summary := &pb.TaskSummary{
+			TaskId: workflowID,
+			Query:  queryText.String,
+			Status: mapDBStatusToProto(statusStr.String),
+			Mode:   mapDBModeToProto(modeStr.String),
+		}
 
-        if started.Valid {
-            summary.CreatedAt = timestamppb.New(started.Time)
-        } else if created.Valid {
-            summary.CreatedAt = timestamppb.New(created.Time)
-        }
+		if started.Valid {
+			summary.CreatedAt = timestamppb.New(started.Time)
+		} else if created.Valid {
+			summary.CreatedAt = timestamppb.New(created.Time)
+		}
 
-        if completed.Valid {
-            summary.CompletedAt = timestamppb.New(completed.Time)
-        }
+		if completed.Valid {
+			summary.CompletedAt = timestamppb.New(completed.Time)
+		}
 
-        if tokens.Valid || costUSD.Valid {
-            tokenUsage := &common.TokenUsage{}
-            if tokens.Valid {
-                tokenUsage.TotalTokens = int32(tokens.Int64)
-            }
-            if costUSD.Valid {
-                tokenUsage.CostUsd = costUSD.Float64
-            }
-            summary.TotalTokenUsage = tokenUsage
-        }
+		if tokens.Valid || costUSD.Valid {
+			tokenUsage := &common.TokenUsage{}
+			if tokens.Valid {
+				tokenUsage.TotalTokens = int32(tokens.Int64)
+			}
+			if costUSD.Valid {
+				tokenUsage.CostUsd = costUSD.Float64
+			}
+			summary.TotalTokenUsage = tokenUsage
+		}
 
-        summaries = append(summaries, summary)
-    }
-    if err := rows.Err(); err != nil {
-        return nil, status.Error(codes.Internal, fmt.Sprintf("failed to iterate rows: %v", err))
-    }
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to iterate rows: %v", err))
+	}
 
-    return summaries, nil
+	return summaries, nil
 }
 
 func mapDBStatusToProto(status string) pb.TaskStatus {
@@ -1707,46 +1716,46 @@ func convertHistoryForWorkflow(messages []session.Message) []workflows.Message {
 
 // ApproveTask handles human approval for a task
 func (s *OrchestratorService) ApproveTask(ctx context.Context, req *pb.ApproveTaskRequest) (*pb.ApproveTaskResponse, error) {
-    s.logger.Info("Received ApproveTask request",
-        zap.String("approval_id", req.ApprovalId),
-        zap.String("workflow_id", req.WorkflowId),
-        zap.Bool("approved", req.Approved),
-    )
+	s.logger.Info("Received ApproveTask request",
+		zap.String("approval_id", req.ApprovalId),
+		zap.String("workflow_id", req.WorkflowId),
+		zap.Bool("approved", req.Approved),
+	)
 
-    // Validate input
-    if req.ApprovalId == "" || req.WorkflowId == "" {
-        return &pb.ApproveTaskResponse{
-            Success: false,
-            Message: "approval_id and workflow_id are required",
-        }, nil
-    }
+	// Validate input
+	if req.ApprovalId == "" || req.WorkflowId == "" {
+		return &pb.ApproveTaskResponse{
+			Success: false,
+			Message: "approval_id and workflow_id are required",
+		}, nil
+	}
 
-    // Enforce authentication and ownership
-    uc, err := auth.GetUserContext(ctx)
-    if err != nil || uc == nil {
-        return nil, status.Error(codes.Unauthenticated, "authentication required")
-    }
-    desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.WorkflowId, req.RunId)
-    if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-        return nil, status.Error(codes.NotFound, "workflow not found")
-    }
-    if desc.WorkflowExecutionInfo.Memo != nil {
-        dc := converter.GetDefaultDataConverter()
-        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
-            var memoTenant string
-            _ = dc.FromPayload(f, &memoTenant)
-            if memoTenant != "" && uc.TenantID.String() != memoTenant {
-                return nil, status.Error(codes.NotFound, "workflow not found")
-            }
-        }
-        if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
-            var memoUser string
-            _ = dc.FromPayload(f, &memoUser)
-            if memoUser != "" && uc.UserID.String() != memoUser {
-                return nil, status.Error(codes.NotFound, "workflow not found")
-            }
-        }
-    }
+	// Enforce authentication and ownership
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+	desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.WorkflowId, req.RunId)
+	if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		return nil, status.Error(codes.NotFound, "workflow not found")
+	}
+	if desc.WorkflowExecutionInfo.Memo != nil {
+		dc := converter.GetDefaultDataConverter()
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+			var memoTenant string
+			_ = dc.FromPayload(f, &memoTenant)
+			if memoTenant != "" && uc.TenantID.String() != memoTenant {
+				return nil, status.Error(codes.NotFound, "workflow not found")
+			}
+		}
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+			var memoUser string
+			_ = dc.FromPayload(f, &memoUser)
+			if memoUser != "" && uc.UserID.String() != memoUser {
+				return nil, status.Error(codes.NotFound, "workflow not found")
+			}
+		}
+	}
 
 	// Create the approval result
 	approvalResult := activities.HumanApprovalResult{

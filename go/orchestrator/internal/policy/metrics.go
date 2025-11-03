@@ -1,11 +1,11 @@
 package policy
 
 import (
-    "crypto/sha1"
-    "fmt"
-    "github.com/prometheus/client_golang/prometheus"
-    "github.com/prometheus/client_golang/prometheus/promauto"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+	"crypto/sha1"
+	"fmt"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
 var (
@@ -192,7 +192,7 @@ func RecordCanaryDecision(configuredMode, effectiveMode, routingReason, decision
 func RecordDenyReason(reason, mode string) {
 	// Hash the reason for consistent labeling while limiting cardinality
 	reasonHash := hashString(reason)
-    truncatedReason := util.TruncateString(reason, 50, true) // Limit label size
+	truncatedReason := util.TruncateString(reason, 50, true) // Limit label size
 	policyDenyReasons.WithLabelValues(reasonHash, mode, truncatedReason).Inc()
 }
 

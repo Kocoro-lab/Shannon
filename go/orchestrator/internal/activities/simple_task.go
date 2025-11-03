@@ -29,6 +29,7 @@ type ExecuteSimpleTaskResult struct {
 	Success        bool            `json:"success"`
 	Error          string          `json:"error,omitempty"`
 	ModelUsed      string          `json:"model_used,omitempty"`
+	Provider       string          `json:"provider,omitempty"`
 	DurationMs     int64           `json:"duration_ms,omitempty"`
 	ToolExecutions []ToolExecution `json:"tool_executions,omitempty"`
 }
@@ -42,6 +43,7 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		"query", input.Query,
 		"session_id", input.SessionID,
 	)
+
 	// Use zap logger for the core logic which needs *zap.Logger
 	logger := zap.L()
 	if logger == nil {
@@ -87,6 +89,7 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		TokensUsed:     agentResult.TokensUsed,
 		Success:        true,
 		ModelUsed:      agentResult.ModelUsed,
+		Provider:       agentResult.Provider,
 		DurationMs:     agentResult.DurationMs,
 		ToolExecutions: agentResult.ToolExecutions,
 	}, nil

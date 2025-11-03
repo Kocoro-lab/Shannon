@@ -607,7 +607,7 @@ func generateOpenAPISpec() map[string]interface{} {
 							"description": "Session ID (UUID or external_id)",
 							"required":    true,
 							"schema": map[string]interface{}{
-								"type":   "string",
+								"type": "string",
 							},
 						},
 						{
@@ -727,58 +727,58 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 					},
 				},
-                "TaskRequest": map[string]interface{}{
-                    "type":     "object",
-                    "required": []string{"query"},
-                    "properties": map[string]interface{}{
-                        "query": map[string]interface{}{
-                            "type":        "string",
-                            "description": "The task query or command",
-                        },
-                        "session_id": map[string]interface{}{
-                            "type":        "string",
-                            "description": "Session ID for continuity (UUID or custom string)",
-                        },
-                        "context": map[string]interface{}{
-                            "type":        "object",
-                            "description": "Additional context for the task (recognized keys: role, model_tier, model_override, provider_override, system_prompt, prompt_params, template, template_name (alias), template_version, disable_ai, history_window_size, use_case_preset, primers_count, recents_count, compression_trigger_ratio, compression_target_ratio)",
-                            "example": map[string]interface{}{
-                                "role":               "analysis",
-                                "model_tier":         "large",
-                                "model_override":     "gpt-5-2025-08-07",
-                                "system_prompt":      "You are a concise assistant.",
-                                "prompt_params":      map[string]interface{}{"profile_id": "49598h6e", "current_date": "2025-09-01"},
-                                "template":           "research_summary",
-                                "template_version":   "1.0.0",
-                                "disable_ai":         true,
-                                "history_window_size": 75,
-                                "primers_count":       3,
-                                "recents_count":       20,
-                                "compression_trigger_ratio": 0.75,
-                                "compression_target_ratio":  0.375,
-                            },
-                        },
-                        "mode": map[string]interface{}{
-                            "type":        "string",
-                            "enum":        []string{"simple", "standard", "complex", "supervisor"},
-                            "description": "Execution mode (advanced): simple|standard|complex|supervisor. Omit to auto-detect.",
-                            "default":     "simple",
-                        },
-                        "model_tier": map[string]interface{}{
-                            "type":        "string",
-                            "enum":        []string{"small", "medium", "large"},
-                            "description": "Preferred model tier (injects into context.model_tier)",
-                        },
-                        "model_override": map[string]interface{}{
-                            "type":        "string",
-                            "description": "Specific model override (injects into context.model_override, e.g., 'gpt-5-2025-08-07', 'gpt-5-pro-2025-10-06')",
-                        },
-                        "provider_override": map[string]interface{}{
-                            "type":        "string",
-                            "description": "Provider override (injects into context.provider_override, e.g., 'openai', 'anthropic')",
-                        },
-                    },
-                },
+				"TaskRequest": map[string]interface{}{
+					"type":     "object",
+					"required": []string{"query"},
+					"properties": map[string]interface{}{
+						"query": map[string]interface{}{
+							"type":        "string",
+							"description": "The task query or command",
+						},
+						"session_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Session ID for continuity (UUID or custom string)",
+						},
+						"context": map[string]interface{}{
+							"type":        "object",
+							"description": "Additional context for the task (recognized keys: role, model_tier, model_override, provider_override, system_prompt, prompt_params, template, template_name (alias), template_version, disable_ai, history_window_size, use_case_preset, primers_count, recents_count, compression_trigger_ratio, compression_target_ratio)",
+							"example": map[string]interface{}{
+								"role":                      "analysis",
+								"model_tier":                "large",
+								"model_override":            "gpt-5-2025-08-07",
+								"system_prompt":             "You are a concise assistant.",
+								"prompt_params":             map[string]interface{}{"profile_id": "49598h6e", "current_date": "2025-09-01"},
+								"template":                  "research_summary",
+								"template_version":          "1.0.0",
+								"disable_ai":                true,
+								"history_window_size":       75,
+								"primers_count":             3,
+								"recents_count":             20,
+								"compression_trigger_ratio": 0.75,
+								"compression_target_ratio":  0.375,
+							},
+						},
+						"mode": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"simple", "standard", "complex", "supervisor"},
+							"description": "Execution mode (advanced): simple|standard|complex|supervisor. Omit to auto-detect.",
+							"default":     "simple",
+						},
+						"model_tier": map[string]interface{}{
+							"type":        "string",
+							"enum":        []string{"small", "medium", "large"},
+							"description": "Preferred model tier (injects into context.model_tier)",
+						},
+						"model_override": map[string]interface{}{
+							"type":        "string",
+							"description": "Specific model override (injects into context.model_override, e.g., 'gpt-5-2025-08-07', 'gpt-5-pro-2025-10-06')",
+						},
+						"provider_override": map[string]interface{}{
+							"type":        "string",
+							"description": "Provider override (injects into context.provider_override, e.g., 'openai', 'anthropic')",
+						},
+					},
+				},
 				"TaskResponse": map[string]interface{}{
 					"type": "object",
 					"properties": map[string]interface{}{
@@ -795,7 +795,7 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 				"TaskStreamResponse": map[string]interface{}{
-					"type": "object",
+					"type":     "object",
 					"required": []string{"workflow_id", "task_id", "stream_url"},
 					"properties": map[string]interface{}{
 						"workflow_id": map[string]interface{}{
@@ -886,7 +886,7 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 				"ListSessionsResponse": map[string]interface{}{
-					"type": "object",
+					"type":     "object",
 					"required": []string{"sessions", "total_count"},
 					"properties": map[string]interface{}{
 						"sessions": map[string]interface{}{
@@ -1115,22 +1115,22 @@ func generateOpenAPISpec() map[string]interface{} {
 					"type":     "object",
 					"required": []string{"turn", "task_id", "user_query", "final_output", "timestamp", "events", "metadata"},
 					"properties": map[string]interface{}{
-						"turn":        map[string]interface{}{"type": "integer"},
-						"task_id":     map[string]interface{}{"type": "string"},
-						"user_query":  map[string]interface{}{"type": "string"},
+						"turn":         map[string]interface{}{"type": "integer"},
+						"task_id":      map[string]interface{}{"type": "string"},
+						"user_query":   map[string]interface{}{"type": "string"},
 						"final_output": map[string]interface{}{"type": "string"},
-						"timestamp":   map[string]interface{}{"type": "string", "format": "date-time"},
-						"events":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskEvent"}},
-						"metadata":    map[string]interface{}{"$ref": "#/components/schemas/TurnMetadata"},
+						"timestamp":    map[string]interface{}{"type": "string", "format": "date-time"},
+						"events":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"$ref": "#/components/schemas/TaskEvent"}},
+						"metadata":     map[string]interface{}{"$ref": "#/components/schemas/TurnMetadata"},
 					},
 				},
 				"TurnMetadata": map[string]interface{}{
 					"type":     "object",
 					"required": []string{"tokens_used", "execution_time_ms", "agents_involved"},
 					"properties": map[string]interface{}{
-						"tokens_used":      map[string]interface{}{"type": "integer"},
+						"tokens_used":       map[string]interface{}{"type": "integer"},
 						"execution_time_ms": map[string]interface{}{"type": "integer"},
-						"agents_involved":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+						"agents_involved":   map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
 					},
 				},
 				"CancelTaskRequest": map[string]interface{}{

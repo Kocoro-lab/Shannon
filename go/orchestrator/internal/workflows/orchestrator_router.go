@@ -244,11 +244,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if input.UserID != "" { // Only check when we have a user scope
 		est := EstimateTokensWithConfig(decomp, &cfg)
 		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
-				if !res.CanProceed {
-					// Best-effort title generation even when budget preflight blocks execution
-					scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-					return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
-				}
+			if !res.CanProceed {
+				// Best-effort title generation even when budget preflight blocks execution
+				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
+			}
 			// Pass budget info to child workflows via context
 			if input.Context == nil {
 				input.Context = map[string]interface{}{}
@@ -288,19 +288,19 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			RequireForTools:     cfg.ApprovalDangerousTools,
 		}
 		if need, reason := CheckApprovalPolicyWith(pol, input, decomp); need {
-				if ar, err := RequestAndWaitApproval(ctx, input, reason); err != nil {
-					// Best-effort title generation even on approval flow errors
-					scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-					return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}, err
-				} else if ar == nil || !ar.Approved {
-					msg := reason
-					if ar != nil && ar.Feedback != "" {
-						msg = ar.Feedback
-					}
-					// Best-effort title generation even when approval is denied
-					scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-					return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}, nil
+			if ar, err := RequestAndWaitApproval(ctx, input, reason); err != nil {
+				// Best-effort title generation even on approval flow errors
+				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}, err
+			} else if ar == nil || !ar.Approved {
+				msg := reason
+				if ar != nil && ar.Feedback != "" {
+					msg = ar.Feedback
 				}
+				// Best-effort title generation even when approval is denied
+				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}, nil
+			}
 		}
 	}
 
@@ -443,20 +443,20 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 // This is called after the first task completes, regardless of success or failure.
 // The activity is best-effort with a short timeout and no retries.
 func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query string) {
-    // Version gate for deterministic replay
-    titleVersion := workflow.GetVersion(ctx, "session_title_v1", workflow.DefaultVersion, 1)
-    if titleVersion < 1 {
-        return
-    }
-    // Skip when sessionID is empty
-    if sessionID == "" {
-        return
-    }
+	// Version gate for deterministic replay
+	titleVersion := workflow.GetVersion(ctx, "session_title_v1", workflow.DefaultVersion, 1)
+	if titleVersion < 1 {
+		return
+	}
+	// Skip when sessionID is empty
+	if sessionID == "" {
+		return
+	}
 
-    // Use a short timeout and no retries for best-effort execution
-    titleOpts := workflow.ActivityOptions{
-        StartToCloseTimeout: 10 * time.Second,
-        RetryPolicy: &temporal.RetryPolicy{
+	// Use a short timeout and no retries for best-effort execution
+	titleOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 10 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 1, // Best-effort, don't retry on failure
 		},
 	}
@@ -514,26 +514,26 @@ func convertFromStrategiesResult(result strategies.TaskResult) TaskResult {
 }
 
 func extractTemplateRequest(input TaskInput) (string, string) {
-    name := strings.TrimSpace(input.TemplateName)
-    version := strings.TrimSpace(input.TemplateVersion)
+	name := strings.TrimSpace(input.TemplateName)
+	version := strings.TrimSpace(input.TemplateVersion)
 
-    if name == "" && input.Context != nil {
-        if v, ok := input.Context["template"].(string); ok {
-            name = strings.TrimSpace(v)
-        }
-        // Accept legacy/alias key: template_name
-        if name == "" {
-            if v2, ok2 := input.Context["template_name"].(string); ok2 {
-                name = strings.TrimSpace(v2)
-            }
-        }
-    }
-    if version == "" && input.Context != nil {
-        if v, ok := input.Context["template_version"].(string); ok {
-            version = strings.TrimSpace(v)
-        }
-    }
-    return name, version
+	if name == "" && input.Context != nil {
+		if v, ok := input.Context["template"].(string); ok {
+			name = strings.TrimSpace(v)
+		}
+		// Accept legacy/alias key: template_name
+		if name == "" {
+			if v2, ok2 := input.Context["template_name"].(string); ok2 {
+				name = strings.TrimSpace(v2)
+			}
+		}
+	}
+	if version == "" && input.Context != nil {
+		if v, ok := input.Context["template_version"].(string); ok {
+			version = strings.TrimSpace(v)
+		}
+	}
+	return name, version
 }
 
 func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy string, mode string, emitCtx workflow.Context) (TaskResult, bool, error) {

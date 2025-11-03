@@ -16,6 +16,8 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 
 	// Find the primary model (from first successful agent or most used model)
 	var primaryModel string
+	// Track providers reported by agents (prefer real provider over detection)
+	providerCounts := make(map[string]int)
 	totalInputTokens := 0
 	totalOutputTokens := 0
 	totalTokensUsed := 0
@@ -29,6 +31,12 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 			modelCounts[result.ModelUsed]++
 			if primaryModel == "" {
 				primaryModel = result.ModelUsed
+			}
+		}
+		// Count provider if present
+		if result.Success {
+			if p := result.Provider; p != "" {
+				providerCounts[p]++
 			}
 		}
 		totalInputTokens += result.InputTokens
@@ -67,7 +75,20 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 	if primaryModel != "" {
 		meta["model"] = primaryModel
 		meta["model_used"] = primaryModel
-		meta["provider"] = models.DetectProvider(primaryModel)
+		// Prefer the most frequent non-empty provider from agent results; fallback to detection
+		topProvider := ""
+		maxProv := 0
+		for prov, c := range providerCounts {
+			if c > maxProv {
+				maxProv = c
+				topProvider = prov
+			}
+		}
+		if topProvider != "" {
+			meta["provider"] = topProvider
+		} else {
+			meta["provider"] = models.DetectProvider(primaryModel)
+		}
 	}
 
 	// Add token breakdown

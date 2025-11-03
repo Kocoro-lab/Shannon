@@ -1,21 +1,22 @@
 """
 Groq Provider Implementation
-High-performance LLM inference using Groq's LPU (Language Processing Unit)
+High-performance LLM inference using Groq's LPU (Language Processing Unit).
+Aligned with OpenAI, xAI, and Google provider patterns for consistency.
 """
 
 import os
-from typing import Dict, Any, Optional, AsyncIterator
+import time
+from typing import Dict, List, Any, AsyncIterator
 from tenacity import retry, stop_after_attempt, wait_exponential
 import logging
 from openai import AsyncOpenAI
 
 from .base import (
     LLMProvider,
-    ModelConfig,
-    ModelTier,
     CompletionRequest,
     CompletionResponse,
     TokenUsage,
+    TokenCounter,
 )
 
 
@@ -46,18 +47,29 @@ class GroqProvider(LLMProvider):
 
     def _initialize_models(self):
         """Initialize available Groq models from configuration."""
-
         self._load_models_from_config()
+
+    def _resolve_alias(self, model_id: str) -> str:
+        """Return the configured alias for a given vendor model_id, if any."""
+        for alias, cfg in self.models.items():
+            if cfg.model_id == model_id:
+                return alias
+        return model_id
+
+    def count_tokens(self, messages: List[Dict[str, Any]], model: str) -> int:
+        """Count tokens for messages using TokenCounter."""
+        return TokenCounter.count_messages_tokens(messages, model)
 
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, min=1, max=8)
     )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
-        """Execute a completion request using Groq"""
+        """Execute a completion request using Groq with native async support."""
 
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
         model_id = model_config.model_id
+        model_alias = self._resolve_alias(model_id)
 
         # Prepare OpenAI-compatible request
         completion_params = {
@@ -86,49 +98,63 @@ class GroqProvider(LLMProvider):
             if request.function_call:
                 completion_params["function_call"] = request.function_call
 
+        start_time = time.time()
         try:
             # Execute completion
             response = await self.client.chat.completions.create(**completion_params)
+            
+            latency_ms = int((time.time() - start_time) * 1000)
 
             # Extract response
             choice = response.choices[0]
-            content = choice.message.content or ""
+            message = choice.message
+            content = message.content or ""
 
             # Handle function calls if present
-            if (
-                hasattr(choice.message, "function_call")
-                and choice.message.function_call
-            ):
-                content = {
-                    "function_call": {
-                        "name": choice.message.function_call.name,
-                        "arguments": choice.message.function_call.arguments,
-                    }
+            function_call = None
+            if hasattr(message, "function_call") and message.function_call:
+                function_call = {
+                    "name": message.function_call.name,
+                    "arguments": message.function_call.arguments,
                 }
 
-            # Calculate usage
-            usage = TokenUsage(
-                input_tokens=response.usage.prompt_tokens,
-                output_tokens=response.usage.completion_tokens,
-                total_tokens=response.usage.total_tokens,
-                estimated_cost=self._calculate_cost(
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                    model_config,
-                ),
-            )
+            # Extract token usage from response
+            try:
+                prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0))
+                completion_tokens = int(getattr(response.usage, "completion_tokens", 0))
+                total_tokens = int(
+                    getattr(response.usage, "total_tokens", prompt_tokens + completion_tokens)
+                )
+            except Exception:
+                # Fallback to estimation if usage not provided
+                prompt_tokens = self.count_tokens(request.messages, model_id)
+                completion_tokens = self.count_tokens(
+                    [{"role": "assistant", "content": content}], model_id
+                )
+                total_tokens = prompt_tokens + completion_tokens
+
+            # Use base class estimate_cost with alias for proper lookup
+            cost = self.estimate_cost(prompt_tokens, completion_tokens, model_alias)
 
             return CompletionResponse(
                 content=content,
                 model=model_id,
-                usage=usage,
-                finish_reason=choice.finish_reason,
-                raw_response=response,
+                provider="groq",
+                usage=TokenUsage(
+                    input_tokens=prompt_tokens,
+                    output_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    estimated_cost=cost,
+                ),
+                finish_reason=choice.finish_reason or "stop",
+                function_call=function_call,
+                request_id=getattr(response, "id", None),
+                latency_ms=latency_ms,
             )
 
         except Exception as e:
             self.logger.error(f"Groq completion failed: {e}")
-            raise
+            raise Exception(f"Groq API error: {e}")
 
     async def complete_stream(
         self, request: CompletionRequest
@@ -138,6 +164,7 @@ class GroqProvider(LLMProvider):
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
         model_id = model_config.model_id
+        model_alias = self._resolve_alias(model_id)
 
         # Prepare request
         completion_params = {
@@ -174,9 +201,17 @@ class GroqProvider(LLMProvider):
                     yield CompletionResponse(
                         content=chunk.choices[0].delta.content,
                         model=model_id,
-                        usage=None,
+                        provider="groq",
+                        usage=TokenUsage(
+                            input_tokens=0,
+                            output_tokens=0,
+                            total_tokens=0,
+                            estimated_cost=0.0,
+                        ),
                         finish_reason=None,
-                        raw_response=chunk,
+                        function_call=None,
+                        request_id=None,
+                        latency_ms=None,
                     )
 
                 # Track token usage from chunks if available
@@ -186,43 +221,31 @@ class GroqProvider(LLMProvider):
 
             # Final response with usage
             if input_tokens > 0 or output_tokens > 0:
-                usage = TokenUsage(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    total_tokens=input_tokens + output_tokens,
-                    estimated_cost=self._calculate_cost(
-                        input_tokens, output_tokens, model_config
-                    ),
-                )
+                total_tokens = input_tokens + output_tokens
+                cost = self.estimate_cost(input_tokens, output_tokens, model_alias)
 
                 yield CompletionResponse(
                     content="",
                     model=model_id,
-                    usage=usage,
+                    provider="groq",
+                    usage=TokenUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=total_tokens,
+                        estimated_cost=cost,
+                    ),
                     finish_reason="stop",
-                    raw_response=None,
+                    function_call=None,
+                    request_id=None,
+                    latency_ms=None,
                 )
 
         except Exception as e:
             self.logger.error(f"Groq streaming failed: {e}")
-            raise
+            raise Exception(f"Groq streaming error: {e}")
 
     # NOTE: Tier-to-model fallback removed. Selection now relies on resolve_model_config
     # backed by models.yaml via the manager's configuration.
-
-    def _calculate_cost(
-        self, input_tokens: int, output_tokens: int, model_config: ModelConfig
-    ) -> float:
-        """Calculate cost based on token usage"""
-        input_cost = (input_tokens / 1000) * model_config.input_price_per_1k
-        output_cost = (output_tokens / 1000) * model_config.output_price_per_1k
-        return input_cost + output_cost
-
-    def count_tokens(self, text: str, model: Optional[str] = None) -> int:
-        """Count tokens in text - uses estimation for Groq"""
-        # Groq uses similar tokenization to Llama models
-        # Rough estimation: 1 token per 4 characters
-        return len(text) // 4
 
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
         """Normalized streaming: yield text chunks only."""

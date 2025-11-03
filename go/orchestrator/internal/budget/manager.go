@@ -477,78 +477,78 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 		}
 	}
 
-    // Handle task_id - convert to UUID, verify existence, or resolve by workflow_id; otherwise store NULL
-    var taskUUID *uuid.UUID
-    if usage.TaskID != "" {
-        if parsed, err := uuid.Parse(usage.TaskID); err == nil {
-            // Parsed as UUID; verify it exists in task_executions
-            exists := false
-            if bm.db != nil {
-                if err := bm.db.QueryRowContext(ctx,
-                    "SELECT EXISTS(SELECT 1 FROM task_executions WHERE id = $1)",
-                    parsed,
-                ).Scan(&exists); err != nil {
-                    bm.logger.Warn("Failed to verify task_id UUID existence",
-                        zap.String("task_id", usage.TaskID),
-                        zap.Error(err))
-                }
-            }
-            if exists {
-                taskUUID = &parsed
-                bm.logger.Debug("Successfully verified task_id UUID",
-                    zap.String("task_id", parsed.String()))
-            } else if bm.db != nil {
-                // Might actually be a workflow_id that looks like a UUID; try resolving by workflow_id
-                bm.logger.Debug("task_id UUID not found in task_executions; attempting workflow_id resolution",
-                    zap.String("task_id", usage.TaskID))
-                var resolved uuid.UUID
-                if err2 := bm.db.QueryRowContext(ctx,
-                    "SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
-                    usage.TaskID,
-                ).Scan(&resolved); err2 == nil {
-                    taskUUID = &resolved
-                    bm.logger.Info("Resolved task_id by workflow_id after UUID check failed",
-                        zap.String("workflow_id", usage.TaskID),
-                        zap.String("resolved_task_id", resolved.String()))
-                } else {
-                    bm.logger.Warn("task_id UUID not found and no matching workflow_id; storing NULL",
-                        zap.String("task_id", usage.TaskID),
-                        zap.String("user_id", usage.UserID),
-                        zap.String("model", usage.Model),
-                        zap.Error(err2))
-                }
-            } else {
-                bm.logger.Warn("task_id UUID provided but DB unavailable; storing NULL",
-                    zap.String("task_id", usage.TaskID))
-            }
-        } else if bm.db != nil {
-            // Not a UUID: attempt to resolve by workflow_id -> task_executions.id
-            bm.logger.Debug("task_id is not a UUID; attempting workflow_id resolution",
-                zap.String("task_id", usage.TaskID),
-                zap.Error(err))
-            var resolved uuid.UUID
-            if err2 := bm.db.QueryRowContext(ctx,
-                "SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
-                usage.TaskID,
-            ).Scan(&resolved); err2 == nil {
-                taskUUID = &resolved
-                bm.logger.Info("Successfully resolved task_id by workflow_id",
-                    zap.String("workflow_id", usage.TaskID),
-                    zap.String("resolved_task_id", resolved.String()))
-            } else {
-                bm.logger.Warn("Invalid task_id format and no matching workflow_id; storing NULL",
-                    zap.String("task_id", usage.TaskID),
-                    zap.String("user_id", usage.UserID),
-                    zap.String("model", usage.Model),
-                    zap.String("parse_error", err.Error()),
-                    zap.Error(err2))
-            }
-        } else {
-            bm.logger.Warn("Invalid task_id format and DB unavailable; storing NULL",
-                zap.String("task_id", usage.TaskID),
-                zap.Error(err))
-        }
-    }
+	// Handle task_id - convert to UUID, verify existence, or resolve by workflow_id; otherwise store NULL
+	var taskUUID *uuid.UUID
+	if usage.TaskID != "" {
+		if parsed, err := uuid.Parse(usage.TaskID); err == nil {
+			// Parsed as UUID; verify it exists in task_executions
+			exists := false
+			if bm.db != nil {
+				if err := bm.db.QueryRowContext(ctx,
+					"SELECT EXISTS(SELECT 1 FROM task_executions WHERE id = $1)",
+					parsed,
+				).Scan(&exists); err != nil {
+					bm.logger.Warn("Failed to verify task_id UUID existence",
+						zap.String("task_id", usage.TaskID),
+						zap.Error(err))
+				}
+			}
+			if exists {
+				taskUUID = &parsed
+				bm.logger.Debug("Successfully verified task_id UUID",
+					zap.String("task_id", parsed.String()))
+			} else if bm.db != nil {
+				// Might actually be a workflow_id that looks like a UUID; try resolving by workflow_id
+				bm.logger.Debug("task_id UUID not found in task_executions; attempting workflow_id resolution",
+					zap.String("task_id", usage.TaskID))
+				var resolved uuid.UUID
+				if err2 := bm.db.QueryRowContext(ctx,
+					"SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
+					usage.TaskID,
+				).Scan(&resolved); err2 == nil {
+					taskUUID = &resolved
+					bm.logger.Info("Resolved task_id by workflow_id after UUID check failed",
+						zap.String("workflow_id", usage.TaskID),
+						zap.String("resolved_task_id", resolved.String()))
+				} else {
+					bm.logger.Warn("task_id UUID not found and no matching workflow_id; storing NULL",
+						zap.String("task_id", usage.TaskID),
+						zap.String("user_id", usage.UserID),
+						zap.String("model", usage.Model),
+						zap.Error(err2))
+				}
+			} else {
+				bm.logger.Warn("task_id UUID provided but DB unavailable; storing NULL",
+					zap.String("task_id", usage.TaskID))
+			}
+		} else if bm.db != nil {
+			// Not a UUID: attempt to resolve by workflow_id -> task_executions.id
+			bm.logger.Debug("task_id is not a UUID; attempting workflow_id resolution",
+				zap.String("task_id", usage.TaskID),
+				zap.Error(err))
+			var resolved uuid.UUID
+			if err2 := bm.db.QueryRowContext(ctx,
+				"SELECT id FROM task_executions WHERE workflow_id = $1 LIMIT 1",
+				usage.TaskID,
+			).Scan(&resolved); err2 == nil {
+				taskUUID = &resolved
+				bm.logger.Info("Successfully resolved task_id by workflow_id",
+					zap.String("workflow_id", usage.TaskID),
+					zap.String("resolved_task_id", resolved.String()))
+			} else {
+				bm.logger.Warn("Invalid task_id format and no matching workflow_id; storing NULL",
+					zap.String("task_id", usage.TaskID),
+					zap.String("user_id", usage.UserID),
+					zap.String("model", usage.Model),
+					zap.String("parse_error", err.Error()),
+					zap.Error(err2))
+			}
+		} else {
+			bm.logger.Warn("Invalid task_id format and DB unavailable; storing NULL",
+				zap.String("task_id", usage.TaskID),
+				zap.Error(err))
+		}
+	}
 
 	// Store using schema that matches migration: prompt_tokens, completion_tokens, created_at
 	_, err := bm.db.ExecContext(ctx, `

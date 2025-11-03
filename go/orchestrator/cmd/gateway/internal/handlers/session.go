@@ -1,20 +1,20 @@
 package handlers
 
 import (
-    "database/sql"
-    "encoding/json"
-    "fmt"
-    "net/http"
-    "sort"
-    "strconv"
-    "strings"
-    "time"
-    "unicode"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
-    "github.com/jmoiron/sqlx"
-    "github.com/redis/go-redis/v9"
-    "go.uber.org/zap"
+	"github.com/jmoiron/sqlx"
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 )
 
 const (
@@ -44,22 +44,22 @@ func NewSessionHandler(
 
 // SessionResponse represents a session metadata response
 type SessionResponse struct {
-	SessionID     string                 `json:"session_id"`
-	UserID        string                 `json:"user_id"`
-	Context       map[string]interface{} `json:"context,omitempty"`
-	TokenBudget   int                    `json:"token_budget,omitempty"`
-	TokensUsed    int                    `json:"tokens_used"`
-	TaskCount     int                    `json:"task_count"`
-	CreatedAt     time.Time              `json:"created_at"`
-	UpdatedAt     *time.Time             `json:"updated_at,omitempty"`
-	ExpiresAt     *time.Time             `json:"expires_at,omitempty"`
+	SessionID   string                 `json:"session_id"`
+	UserID      string                 `json:"user_id"`
+	Context     map[string]interface{} `json:"context,omitempty"`
+	TokenBudget int                    `json:"token_budget,omitempty"`
+	TokensUsed  int                    `json:"tokens_used"`
+	TaskCount   int                    `json:"task_count"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   *time.Time             `json:"updated_at,omitempty"`
+	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
 }
 
 // SessionHistoryResponse represents session task history
 type SessionHistoryResponse struct {
-    SessionID string        `json:"session_id"`
-    Tasks     []TaskHistory `json:"tasks"`
-    Total     int           `json:"total"`
+	SessionID string        `json:"session_id"`
+	Tasks     []TaskHistory `json:"tasks"`
+	Total     int           `json:"total"`
 }
 
 // ListSessionsResponse represents the list sessions response
@@ -83,21 +83,21 @@ type SessionSummary struct {
 
 // TaskHistory represents a task in session history
 type TaskHistory struct {
-	TaskID          string                 `json:"task_id"`
-	WorkflowID      string                 `json:"workflow_id"`
-	Query           string                 `json:"query"`
-	Status          string                 `json:"status"`
-	Mode            string                 `json:"mode,omitempty"`
-	Result          string                 `json:"result,omitempty"`
-	ErrorMessage    string                 `json:"error_message,omitempty"`
-	TotalTokens     int                    `json:"total_tokens"`
-	TotalCostUSD    float64                `json:"total_cost_usd"`
-	DurationMs      int                    `json:"duration_ms,omitempty"`
-	AgentsUsed      int                    `json:"agents_used"`
-	ToolsInvoked    int                    `json:"tools_invoked"`
-	StartedAt       time.Time              `json:"started_at"`
-	CompletedAt     *time.Time             `json:"completed_at,omitempty"`
-	Metadata        map[string]interface{} `json:"metadata,omitempty"`
+	TaskID       string                 `json:"task_id"`
+	WorkflowID   string                 `json:"workflow_id"`
+	Query        string                 `json:"query"`
+	Status       string                 `json:"status"`
+	Mode         string                 `json:"mode,omitempty"`
+	Result       string                 `json:"result,omitempty"`
+	ErrorMessage string                 `json:"error_message,omitempty"`
+	TotalTokens  int                    `json:"total_tokens"`
+	TotalCostUSD float64                `json:"total_cost_usd"`
+	DurationMs   int                    `json:"duration_ms,omitempty"`
+	AgentsUsed   int                    `json:"agents_used"`
+	ToolsInvoked int                    `json:"tools_invoked"`
+	StartedAt    time.Time              `json:"started_at"`
+	CompletedAt  *time.Time             `json:"completed_at,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // GetSession handles GET /api/v1/sessions/{sessionId}
@@ -120,17 +120,17 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 
 	// Get session metadata from database
 	var session struct {
-		ID          string         `db:"id"`
-		UserID      string         `db:"user_id"`
-		Context     []byte         `db:"context"`
-		TokenBudget sql.NullInt32  `db:"token_budget"`
-		TokensUsed  sql.NullInt32  `db:"tokens_used"`
-		CreatedAt   time.Time      `db:"created_at"`
-		UpdatedAt   sql.NullTime   `db:"updated_at"`
-		ExpiresAt   sql.NullTime   `db:"expires_at"`
+		ID          string        `db:"id"`
+		UserID      string        `db:"user_id"`
+		Context     []byte        `db:"context"`
+		TokenBudget sql.NullInt32 `db:"token_budget"`
+		TokensUsed  sql.NullInt32 `db:"tokens_used"`
+		CreatedAt   time.Time     `db:"created_at"`
+		UpdatedAt   sql.NullTime  `db:"updated_at"`
+		ExpiresAt   sql.NullTime  `db:"expires_at"`
 	}
 
-    err := h.db.GetContext(ctx, &session, `
+	err := h.db.GetContext(ctx, &session, `
             SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
             FROM sessions
             WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
@@ -203,12 +203,12 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 
 	// Build response
 	resp := SessionResponse{
-		SessionID:   session.ID,
-		UserID:      session.UserID,
-		Context:     contextData,
-		TokensUsed:  tokensUsed,
-		TaskCount:   taskCount,
-		CreatedAt:   session.CreatedAt,
+		SessionID:  session.ID,
+		UserID:     session.UserID,
+		Context:    contextData,
+		TokensUsed: tokensUsed,
+		TaskCount:  taskCount,
+		CreatedAt:  session.CreatedAt,
 	}
 
 	if session.TokenBudget.Valid {
@@ -251,13 +251,13 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-    // Verify session exists and user has access (also get id and external_id for task query)
-    var sessionData struct {
-        ID         string  `db:"id"`
-        UserID     string  `db:"user_id"`
-        ExternalID *string `db:"external_id"`
-    }
-    err := h.db.GetContext(ctx, &sessionData, `
+	// Verify session exists and user has access (also get id and external_id for task query)
+	var sessionData struct {
+		ID         string  `db:"id"`
+		UserID     string  `db:"user_id"`
+		ExternalID *string `db:"external_id"`
+	}
+	err := h.db.GetContext(ctx, &sessionData, `
         SELECT id, user_id, context->>'external_id' as external_id
         FROM sessions
         WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
@@ -340,21 +340,21 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 	tasks := make([]TaskHistory, 0)
 	for rows.Next() {
 		var task struct {
-			ID           string         `db:"id"`
-			WorkflowID   string         `db:"workflow_id"`
-			Query        string         `db:"query"`
-			Status       string         `db:"status"`
-			Mode         string         `db:"mode"`
-			Result       string         `db:"result"`
-			ErrorMessage string         `db:"error_message"`
-			TotalTokens  int            `db:"total_tokens"`
-			TotalCostUSD float64        `db:"total_cost_usd"`
-			DurationMs   int            `db:"duration_ms"`
-			AgentsUsed   int            `db:"agents_used"`
-			ToolsInvoked int            `db:"tools_invoked"`
-			StartedAt    time.Time      `db:"started_at"`
-			CompletedAt  sql.NullTime   `db:"completed_at"`
-			Metadata     []byte         `db:"metadata"`
+			ID           string       `db:"id"`
+			WorkflowID   string       `db:"workflow_id"`
+			Query        string       `db:"query"`
+			Status       string       `db:"status"`
+			Mode         string       `db:"mode"`
+			Result       string       `db:"result"`
+			ErrorMessage string       `db:"error_message"`
+			TotalTokens  int          `db:"total_tokens"`
+			TotalCostUSD float64      `db:"total_cost_usd"`
+			DurationMs   int          `db:"duration_ms"`
+			AgentsUsed   int          `db:"agents_used"`
+			ToolsInvoked int          `db:"tools_invoked"`
+			StartedAt    time.Time    `db:"started_at"`
+			CompletedAt  sql.NullTime `db:"completed_at"`
+			Metadata     []byte       `db:"metadata"`
 		}
 
 		if err := rows.StructScan(&task); err != nil {
@@ -420,120 +420,120 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 // GetSessionEvents handles GET /api/v1/sessions/{sessionId}/events
 // Returns grouped turns (one per task) including full events per turn.
 func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
+	ctx := r.Context()
 
-    // Get user context from auth middleware
-    userCtx, ok := ctx.Value("user").(*auth.UserContext)
-    if !ok {
-        h.sendError(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+	// Get user context from auth middleware
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    // Extract session ID from path
-    sessionID := r.PathValue("sessionId")
-    if sessionID == "" {
-        h.sendError(w, "Session ID is required", http.StatusBadRequest)
-        return
-    }
+	// Extract session ID from path
+	sessionID := r.PathValue("sessionId")
+	if sessionID == "" {
+		h.sendError(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
 
-    // Verify session exists and user has access (also get id and external_id)
-    var sessionData struct {
-        ID         string  `db:"id"`
-        UserID     string  `db:"user_id"`
-        ExternalID *string `db:"external_id"`
-    }
-    err := h.db.GetContext(ctx, &sessionData, `
+	// Verify session exists and user has access (also get id and external_id)
+	var sessionData struct {
+		ID         string  `db:"id"`
+		UserID     string  `db:"user_id"`
+		ExternalID *string `db:"external_id"`
+	}
+	err := h.db.GetContext(ctx, &sessionData, `
         SELECT id, user_id, context->>'external_id' as external_id
         FROM sessions
         WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
     `, sessionID)
-    if err == sql.ErrNoRows {
-        h.sendError(w, "Session not found", http.StatusNotFound)
-        return
-    }
-    if err != nil {
-        h.logger.Error("Failed to query session", zap.Error(err))
-        h.sendError(w, "Failed to retrieve session", http.StatusInternalServerError)
-        return
-    }
-    if sessionData.UserID != userCtx.UserID.String() {
-        h.sendError(w, "Forbidden", http.StatusForbidden)
-        return
-    }
+	if err == sql.ErrNoRows {
+		h.sendError(w, "Session not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to query session", zap.Error(err))
+		h.sendError(w, "Failed to retrieve session", http.StatusInternalServerError)
+		return
+	}
+	if sessionData.UserID != userCtx.UserID.String() {
+		h.sendError(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
-    // Pagination params (turns)
-    q := r.URL.Query()
-    limit := 10
-    if v := q.Get("limit"); v != "" {
-        if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
-            limit = n
-        }
-    }
-    offset := 0
-    if v := q.Get("offset"); v != "" {
-        if n, err := strconv.Atoi(v); err == nil && n >= 0 {
-            offset = n
-        }
-    }
+	// Pagination params (turns)
+	q := r.URL.Query()
+	limit := 10
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	offset := 0
+	if v := q.Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
 
-    // Shapes
-    type Event struct {
-        WorkflowID string    `json:"workflow_id"`
-        Type       string    `json:"type"`
-        AgentID    string    `json:"agent_id,omitempty"`
-        Message    string    `json:"message,omitempty"`
-        Timestamp  time.Time `json:"timestamp"`
-        Seq        uint64    `json:"seq"`
-        StreamID   string    `json:"stream_id,omitempty"`
-    }
-    type Turn struct {
-        Turn       int         `json:"turn"`
-        TaskID     string      `json:"task_id"`
-        UserQuery  string      `json:"user_query"`
-        FinalOutput string     `json:"final_output"`
-        Timestamp  time.Time   `json:"timestamp"`
-        Events     []Event     `json:"events"`
-        Metadata   struct {
-            TokensUsed       int      `json:"tokens_used"`
-            ExecutionTimeMs  int      `json:"execution_time_ms"`
-            AgentsInvolved   []string `json:"agents_involved"`
-        } `json:"metadata"`
-    }
+	// Shapes
+	type Event struct {
+		WorkflowID string    `json:"workflow_id"`
+		Type       string    `json:"type"`
+		AgentID    string    `json:"agent_id,omitempty"`
+		Message    string    `json:"message,omitempty"`
+		Timestamp  time.Time `json:"timestamp"`
+		Seq        uint64    `json:"seq"`
+		StreamID   string    `json:"stream_id,omitempty"`
+	}
+	type Turn struct {
+		Turn        int       `json:"turn"`
+		TaskID      string    `json:"task_id"`
+		UserQuery   string    `json:"user_query"`
+		FinalOutput string    `json:"final_output"`
+		Timestamp   time.Time `json:"timestamp"`
+		Events      []Event   `json:"events"`
+		Metadata    struct {
+			TokensUsed      int      `json:"tokens_used"`
+			ExecutionTimeMs int      `json:"execution_time_ms"`
+			AgentsInvolved  []string `json:"agents_involved"`
+		} `json:"metadata"`
+	}
 
-    // Count total turns (tasks)
-    var total int
-    if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
-        err = h.db.GetContext(ctx, &total, `
+	// Count total turns (tasks)
+	var total int
+	if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
+		err = h.db.GetContext(ctx, &total, `
             SELECT COUNT(*) FROM task_executions
             WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
         `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID)
-    } else {
-        err = h.db.GetContext(ctx, &total, `
+	} else {
+		err = h.db.GetContext(ctx, &total, `
             SELECT COUNT(*) FROM task_executions
             WHERE session_id = $1 AND user_id = $2
         `, sessionData.ID, sessionData.UserID)
-    }
-    if err != nil {
-        h.logger.Error("Failed to count session turns", zap.Error(err))
-        h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
-        return
-    }
+	}
+	if err != nil {
+		h.logger.Error("Failed to count session turns", zap.Error(err))
+		h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
+		return
+	}
 
-    // Fetch turns ordered by started_at
-    type turnRow struct {
-        TaskID      string         `db:"id"`
-        WorkflowID  string         `db:"workflow_id"`
-        Query       string         `db:"query"`
-        Result      sql.NullString `db:"result"`
-        StartedAt   time.Time      `db:"started_at"`
-        CompletedAt sql.NullTime   `db:"completed_at"`
-        TotalTokens sql.NullInt32  `db:"total_tokens"`
-        DurationMs  sql.NullInt32  `db:"duration_ms"`
-    }
+	// Fetch turns ordered by started_at
+	type turnRow struct {
+		TaskID      string         `db:"id"`
+		WorkflowID  string         `db:"workflow_id"`
+		Query       string         `db:"query"`
+		Result      sql.NullString `db:"result"`
+		StartedAt   time.Time      `db:"started_at"`
+		CompletedAt sql.NullTime   `db:"completed_at"`
+		TotalTokens sql.NullInt32  `db:"total_tokens"`
+		DurationMs  sql.NullInt32  `db:"duration_ms"`
+	}
 
-    var turnRows []turnRow
-    if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
-        err = h.db.SelectContext(ctx, &turnRows, `
+	var turnRows []turnRow
+	if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
+		err = h.db.SelectContext(ctx, &turnRows, `
             SELECT id, workflow_id, query, result, started_at, completed_at,
                    COALESCE(total_tokens,0) as total_tokens,
                    COALESCE(duration_ms,0) as duration_ms
@@ -542,8 +542,8 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
             ORDER BY started_at ASC
             LIMIT $4 OFFSET $5
         `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, limit, offset)
-    } else {
-        err = h.db.SelectContext(ctx, &turnRows, `
+	} else {
+		err = h.db.SelectContext(ctx, &turnRows, `
             SELECT id, workflow_id, query, result, started_at, completed_at,
                    COALESCE(total_tokens,0) as total_tokens,
                    COALESCE(duration_ms,0) as duration_ms
@@ -552,140 +552,140 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
             ORDER BY started_at ASC
             LIMIT $3 OFFSET $4
         `, sessionData.ID, sessionData.UserID, limit, offset)
-    }
-    if err != nil {
-        h.logger.Error("Failed to query session turns", zap.Error(err))
-        h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
-        return
-    }
+	}
+	if err != nil {
+		h.logger.Error("Failed to query session turns", zap.Error(err))
+		h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
+		return
+	}
 
-    // Build IN clause for workflows
-    wfIDs := make([]string, 0, len(turnRows))
-    for _, t := range turnRows {
-        wfIDs = append(wfIDs, t.WorkflowID)
-    }
+	// Build IN clause for workflows
+	wfIDs := make([]string, 0, len(turnRows))
+	for _, t := range turnRows {
+		wfIDs = append(wfIDs, t.WorkflowID)
+	}
 
-    // Map of workflow_id -> []Event
-    eventsByWF := make(map[string][]Event, len(wfIDs))
-    if len(wfIDs) > 0 {
-        // Safe IN expansion using sqlx.In and rebind for Postgres
-        baseQuery := `
+	// Map of workflow_id -> []Event
+	eventsByWF := make(map[string][]Event, len(wfIDs))
+	if len(wfIDs) > 0 {
+		// Safe IN expansion using sqlx.In and rebind for Postgres
+		baseQuery := `
             SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,'')
             FROM event_logs
             WHERE workflow_id IN (?) AND type <> 'LLM_PARTIAL'
             ORDER BY timestamp ASC`
-        inQuery, args, inErr := sqlx.In(baseQuery, wfIDs)
-        if inErr != nil {
-            h.logger.Error("Failed to build IN query for workflows", zap.Error(inErr))
-            h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
-            return
-        }
-        // Force PostgreSQL-style bindvars for predictable queries
-        inQuery = sqlx.Rebind(sqlx.DOLLAR, inQuery)
+		inQuery, args, inErr := sqlx.In(baseQuery, wfIDs)
+		if inErr != nil {
+			h.logger.Error("Failed to build IN query for workflows", zap.Error(inErr))
+			h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
+			return
+		}
+		// Force PostgreSQL-style bindvars for predictable queries
+		inQuery = sqlx.Rebind(sqlx.DOLLAR, inQuery)
 
-        rows, qerr := h.db.QueryxContext(ctx, inQuery, args...)
-        if qerr != nil {
-            h.logger.Error("Failed to query events for workflows", zap.Error(qerr))
-            h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
-            return
-        }
-        defer rows.Close()
-        // Safety: cap total events to avoid excessive memory usage per request
-        const maxEventsPerRequest = 5000
-        totalEvents := 0
-        for rows.Next() {
-            if totalEvents >= maxEventsPerRequest {
-                h.logger.Error("Session exceeds event limit",
-                    zap.Int("max", maxEventsPerRequest),
-                    zap.Strings("workflow_ids", wfIDs))
-                h.sendError(w, "Session has too many events. Please use pagination with smaller turn limits.", http.StatusRequestEntityTooLarge)
-                return
-            }
-            var e Event
-            if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
-                h.logger.Error("Failed to scan event row", zap.Error(err), zap.Strings("workflow_ids", wfIDs))
-                h.sendError(w, "Failed to read events", http.StatusInternalServerError)
-                return
-            }
-            eventsByWF[e.WorkflowID] = append(eventsByWF[e.WorkflowID], e)
-            totalEvents++
-        }
-        if err := rows.Err(); err != nil {
-            h.sendError(w, "Failed to read events", http.StatusInternalServerError)
-            return
-        }
-    }
+		rows, qerr := h.db.QueryxContext(ctx, inQuery, args...)
+		if qerr != nil {
+			h.logger.Error("Failed to query events for workflows", zap.Error(qerr))
+			h.sendError(w, "Failed to retrieve session events", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		// Safety: cap total events to avoid excessive memory usage per request
+		const maxEventsPerRequest = 5000
+		totalEvents := 0
+		for rows.Next() {
+			if totalEvents >= maxEventsPerRequest {
+				h.logger.Error("Session exceeds event limit",
+					zap.Int("max", maxEventsPerRequest),
+					zap.Strings("workflow_ids", wfIDs))
+				h.sendError(w, "Session has too many events. Please use pagination with smaller turn limits.", http.StatusRequestEntityTooLarge)
+				return
+			}
+			var e Event
+			if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
+				h.logger.Error("Failed to scan event row", zap.Error(err), zap.Strings("workflow_ids", wfIDs))
+				h.sendError(w, "Failed to read events", http.StatusInternalServerError)
+				return
+			}
+			eventsByWF[e.WorkflowID] = append(eventsByWF[e.WorkflowID], e)
+			totalEvents++
+		}
+		if err := rows.Err(); err != nil {
+			h.sendError(w, "Failed to read events", http.StatusInternalServerError)
+			return
+		}
+	}
 
-    // Build turns with metadata and fallback logic
-    turns := make([]Turn, 0, len(turnRows))
-    globalStart := offset + 1
-    for i, t := range turnRows {
-        evs := eventsByWF[t.WorkflowID]
-        // Final output fallback: result -> first LLM_OUTPUT message -> ""
-        final := strings.TrimSpace(t.Result.String)
-        if final == "" {
-            for _, e := range evs {
-                if e.Type == "LLM_OUTPUT" && strings.TrimSpace(e.Message) != "" {
-                    final = e.Message
-                    break
-                }
-            }
-        }
-        // Execution time
-        execMs := 0
-        if t.DurationMs.Valid && t.DurationMs.Int32 > 0 {
-            execMs = int(t.DurationMs.Int32)
-        } else if t.CompletedAt.Valid {
-            ms := int(t.CompletedAt.Time.Sub(t.StartedAt).Milliseconds())
-            if ms > 0 {
-                execMs = ms
-            }
-        } else {
-            // Still running: compute duration up to now
-            ms := int(time.Since(t.StartedAt).Milliseconds())
-            if ms > 0 {
-                execMs = ms
-            }
-        }
-        // Agents involved (distinct agent_id from events)
-        agentSet := map[string]struct{}{}
-        for _, e := range evs {
-            if e.AgentID != "" {
-                agentSet[e.AgentID] = struct{}{}
-            }
-        }
-        agents := make([]string, 0, len(agentSet))
-        for a := range agentSet {
-            agents = append(agents, a)
-        }
-        sort.Strings(agents) // Sort for deterministic output
+	// Build turns with metadata and fallback logic
+	turns := make([]Turn, 0, len(turnRows))
+	globalStart := offset + 1
+	for i, t := range turnRows {
+		evs := eventsByWF[t.WorkflowID]
+		// Final output fallback: result -> first LLM_OUTPUT message -> ""
+		final := strings.TrimSpace(t.Result.String)
+		if final == "" {
+			for _, e := range evs {
+				if e.Type == "LLM_OUTPUT" && strings.TrimSpace(e.Message) != "" {
+					final = e.Message
+					break
+				}
+			}
+		}
+		// Execution time
+		execMs := 0
+		if t.DurationMs.Valid && t.DurationMs.Int32 > 0 {
+			execMs = int(t.DurationMs.Int32)
+		} else if t.CompletedAt.Valid {
+			ms := int(t.CompletedAt.Time.Sub(t.StartedAt).Milliseconds())
+			if ms > 0 {
+				execMs = ms
+			}
+		} else {
+			// Still running: compute duration up to now
+			ms := int(time.Since(t.StartedAt).Milliseconds())
+			if ms > 0 {
+				execMs = ms
+			}
+		}
+		// Agents involved (distinct agent_id from events)
+		agentSet := map[string]struct{}{}
+		for _, e := range evs {
+			if e.AgentID != "" {
+				agentSet[e.AgentID] = struct{}{}
+			}
+		}
+		agents := make([]string, 0, len(agentSet))
+		for a := range agentSet {
+			agents = append(agents, a)
+		}
+		sort.Strings(agents) // Sort for deterministic output
 
-        var turn Turn
-        turn.Turn = globalStart + i
-        turn.TaskID = t.TaskID
-        turn.UserQuery = t.Query
-        turn.FinalOutput = final
-        turn.Timestamp = t.StartedAt
-        turn.Events = evs
-        turn.Metadata.TokensUsed = int(t.TotalTokens.Int32)
-        turn.Metadata.ExecutionTimeMs = execMs
-        turn.Metadata.AgentsInvolved = agents
-        turns = append(turns, turn)
-    }
+		var turn Turn
+		turn.Turn = globalStart + i
+		turn.TaskID = t.TaskID
+		turn.UserQuery = t.Query
+		turn.FinalOutput = final
+		turn.Timestamp = t.StartedAt
+		turn.Events = evs
+		turn.Metadata.TokensUsed = int(t.TotalTokens.Int32)
+		turn.Metadata.ExecutionTimeMs = execMs
+		turn.Metadata.AgentsInvolved = agents
+		turns = append(turns, turn)
+	}
 
-    h.logger.Debug("Session turns retrieved",
-        zap.String("session_id", sessionID),
-        zap.String("user_id", userCtx.UserID.String()),
-        zap.Int("turns", len(turns)),
-        zap.Int("total", total),
-    )
+	h.logger.Debug("Session turns retrieved",
+		zap.String("session_id", sessionID),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.Int("turns", len(turns)),
+		zap.Int("total", total),
+	)
 
-    w.Header().Set("Content-Type", "application/json")
-    _ = json.NewEncoder(w).Encode(map[string]any{
-        "session_id": sessionID,
-        "count":      total,
-        "turns":      turns,
-    })
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"session_id": sessionID,
+		"count":      total,
+		"turns":      turns,
+	})
 }
 
 // ListSessions handles GET /api/v1/sessions
@@ -716,7 +716,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Query sessions for this user
 	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - match by id or external_id
-    rows, err := h.db.QueryxContext(ctx, `
+	rows, err := h.db.QueryxContext(ctx, `
         SELECT
             s.id,
             s.user_id,
@@ -793,7 +793,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Get total count for pagination
 	var totalCount int
-    err = h.db.GetContext(ctx, &totalCount, `
+	err = h.db.GetContext(ctx, &totalCount, `
         SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND deleted_at IS NULL
     `, userCtx.UserID.String())
 	if err != nil {
@@ -821,11 +821,11 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 // sendError sends an error response
 func (h *SessionHandler) sendError(w http.ResponseWriter, message string, code int) {
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(code)
-    json.NewEncoder(w).Encode(map[string]string{
-        "error": message,
-    })
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error": message,
+	})
 }
 
 // UpdateSessionTitle handles PATCH /api/v1/sessions/{sessionId}
@@ -946,8 +946,8 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 	if h.redis != nil {
 		// Try multiple possible Redis keys: input sessionID, DB UUID, and external_id
 		keysToTry := []string{
-			fmt.Sprintf("session:%s", sessionID),     // Original input (could be UUID or external_id)
-			fmt.Sprintf("session:%s", session.ID),    // Database UUID
+			fmt.Sprintf("session:%s", sessionID),  // Original input (could be UUID or external_id)
+			fmt.Sprintf("session:%s", session.ID), // Database UUID
 		}
 		// Also add external_id if present
 		if extID, ok := contextData["external_id"].(string); ok && extID != "" {
@@ -1016,70 +1016,70 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 
 // DeleteSession handles DELETE /api/v1/sessions/{sessionId}
 func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
+	ctx := r.Context()
 
-    // Get user context
-    userCtx, ok := ctx.Value("user").(*auth.UserContext)
-    if !ok {
-        h.sendError(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
+	// Get user context
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-    // Extract session ID (accepts both UUID and external_id for consistency)
-    sessionID := r.PathValue("sessionId")
-    if sessionID == "" {
-        h.sendError(w, "Session ID is required", http.StatusBadRequest)
-        return
-    }
+	// Extract session ID (accepts both UUID and external_id for consistency)
+	sessionID := r.PathValue("sessionId")
+	if sessionID == "" {
+		h.sendError(w, "Session ID is required", http.StatusBadRequest)
+		return
+	}
 
-    // Ownership check and fetch canonical/id mapping (do not filter on deleted_at to keep idempotency)
-    var sessMeta struct {
-        ID         string  `db:"id"`
-        UserID     string  `db:"user_id"`
-        ExternalID *string `db:"external_id"`
-    }
-    if err := h.db.GetContext(ctx, &sessMeta, `
+	// Ownership check and fetch canonical/id mapping (do not filter on deleted_at to keep idempotency)
+	var sessMeta struct {
+		ID         string  `db:"id"`
+		UserID     string  `db:"user_id"`
+		ExternalID *string `db:"external_id"`
+	}
+	if err := h.db.GetContext(ctx, &sessMeta, `
         SELECT id, user_id, context->>'external_id' as external_id
         FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1)
     `, sessionID); err != nil {
-        if err == sql.ErrNoRows {
-            h.sendError(w, "Session not found", http.StatusNotFound)
-            return
-        }
-        h.logger.Error("Failed to query session for delete", zap.Error(err), zap.String("session_id", sessionID))
-        h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
-        return
-    }
-    if sessMeta.UserID != userCtx.UserID.String() {
-        h.sendError(w, "Forbidden", http.StatusForbidden)
-        return
-    }
+		if err == sql.ErrNoRows {
+			h.sendError(w, "Session not found", http.StatusNotFound)
+			return
+		}
+		h.logger.Error("Failed to query session for delete", zap.Error(err), zap.String("session_id", sessionID))
+		h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
+		return
+	}
+	if sessMeta.UserID != userCtx.UserID.String() {
+		h.sendError(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
-    // Soft delete (idempotent)
-    if _, err := h.db.ExecContext(ctx, `
+	// Soft delete (idempotent)
+	if _, err := h.db.ExecContext(ctx, `
         UPDATE sessions
         SET deleted_at = NOW(), deleted_by = $2, updated_at = NOW()
         WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
     `, sessionID, userCtx.UserID.String()); err != nil {
-        h.logger.Error("Failed to soft delete session", zap.Error(err), zap.String("session_id", sessionID))
-        h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
-        return
-    }
+		h.logger.Error("Failed to soft delete session", zap.Error(err), zap.String("session_id", sessionID))
+		h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
+		return
+	}
 
-    // Clear Redis cache for this session (best-effort)
-    if h.redis != nil {
-        // Try all possible keys: original input, DB UUID, and external_id (if present)
-        keys := []string{fmt.Sprintf("session:%s", sessionID), fmt.Sprintf("session:%s", sessMeta.ID)}
-        if sessMeta.ExternalID != nil && *sessMeta.ExternalID != "" {
-            keys = append(keys, fmt.Sprintf("session:%s", *sessMeta.ExternalID))
-        }
-        for _, key := range keys {
-            if err := h.redis.Del(ctx, key).Err(); err != nil {
-                h.logger.Warn("Failed to clear session cache", zap.Error(err), zap.String("redis_key", key))
-            }
-        }
-    }
+	// Clear Redis cache for this session (best-effort)
+	if h.redis != nil {
+		// Try all possible keys: original input, DB UUID, and external_id (if present)
+		keys := []string{fmt.Sprintf("session:%s", sessionID), fmt.Sprintf("session:%s", sessMeta.ID)}
+		if sessMeta.ExternalID != nil && *sessMeta.ExternalID != "" {
+			keys = append(keys, fmt.Sprintf("session:%s", *sessMeta.ExternalID))
+		}
+		for _, key := range keys {
+			if err := h.redis.Del(ctx, key).Err(); err != nil {
+				h.logger.Warn("Failed to clear session cache", zap.Error(err), zap.String("redis_key", key))
+			}
+		}
+	}
 
-    // No content, idempotent
-    w.WriteHeader(http.StatusNoContent)
+	// No content, idempotent
+	w.WriteHeader(http.StatusNoContent)
 }

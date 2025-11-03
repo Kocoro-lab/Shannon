@@ -176,13 +176,13 @@ func TestDependentMath_NoPlaceholdersAndNumericValuePropagation(t *testing.T) {
 		},
 		activity.RegisterOptions{Name: "RecordLearningRouterMetrics"},
 	)
-    // Register EmitTaskUpdate (streaming events)
-    env.RegisterActivityWithOptions(
-        func(ctx context.Context, in activities.EmitTaskUpdateInput) error {
-            return nil
-        },
-        activity.RegisterOptions{Name: "EmitTaskUpdate"},
-    )
+	// Register EmitTaskUpdate (streaming events)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in activities.EmitTaskUpdateInput) error {
+			return nil
+		},
+		activity.RegisterOptions{Name: "EmitTaskUpdate"},
+	)
 	// Register CheckTokenBudgetWithBackpressure
 	env.RegisterActivityWithOptions(
 		func(ctx context.Context, in map[string]interface{}) (map[string]interface{}, error) {

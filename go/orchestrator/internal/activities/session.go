@@ -1,15 +1,15 @@
 package activities
 
 import (
-    "context"
-    "fmt"
-    "time"
+	"context"
+	"fmt"
+	"time"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
-    "go.uber.org/zap"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+	"go.uber.org/zap"
 )
 
 // UpdateSessionResult updates the session with final results from workflow execution
@@ -102,16 +102,16 @@ func (a *Activities) UpdateSessionResult(ctx context.Context, input SessionUpdat
 	if input.AgentsUsed > 0 {
 		sess.SetContextValue("last_agents_used", input.AgentsUsed)
 	}
-    if input.Result != "" {
-        sess.SetContextValue("last_response", util.TruncateString(input.Result, 500, false))
-    }
+	if input.Result != "" {
+		sess.SetContextValue("last_response", util.TruncateString(input.Result, 500, false))
+	}
 
 	// Update session metadata
 	if sess.Metadata == nil {
 		sess.Metadata = make(map[string]interface{})
 	}
 	sess.Metadata["last_agents_used"] = input.AgentsUsed
-    sess.Metadata["last_workflow_result"] = util.TruncateString(input.Result, 200, false)
+	sess.Metadata["last_workflow_result"] = util.TruncateString(input.Result, 200, false)
 
 	// Save session back to Redis
 	if err := a.sessionManager.UpdateSession(ctx, sess); err != nil {

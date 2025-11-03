@@ -96,6 +96,7 @@ type TokenUsage struct {
 	CostUSD          float64 `json:"cost_usd"`
 	Model            string  `json:"model"`
 	Tier             string  `json:"tier"`
+	Provider         string  `json:"provider,omitempty"`
 }
 
 // SessionContext maintains context across requests

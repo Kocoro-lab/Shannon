@@ -975,15 +975,15 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			wfID = info.WorkflowExecution.ID
 		}
 	}
-    if wfID != "" {
-        streaming.Get().Publish(wfID, streaming.Event{
-            WorkflowID: wfID,
-            Type:       string(StreamEventLLMPrompt),
-            AgentID:    input.AgentID,
-            Message:    truncateQuery(input.Query, MaxPromptChars),
-            Timestamp:  time.Now(),
-        })
-    }
+	if wfID != "" {
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMPrompt),
+			AgentID:    input.AgentID,
+			Message:    truncateQuery(input.Query, MaxPromptChars),
+			Timestamp:  time.Now(),
+		})
+	}
 
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
@@ -1031,13 +1031,13 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					})
 				}
 			}
-            streaming.Get().Publish(wfID, streaming.Event{
-                WorkflowID: wfID,
-                Type:       string(StreamEventLLMOutput),
-                AgentID:    input.AgentID,
-                Message:    truncateQuery(out, MaxLLMOutputChars),
-                Timestamp:  time.Now(),
-            })
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    input.AgentID,
+				Message:    truncateQuery(out, MaxLLMOutputChars),
+				Timestamp:  time.Now(),
+			})
 		}
 	}
 
@@ -1045,12 +1045,18 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 	tokens := 0
 	model := ""
+	provider := ""
 	promptTokens := 0
 	completionTokens := 0
 	var costUsd float64
+
 	if resp.Metrics != nil && resp.Metrics.TokenUsage != nil {
 		tokens = int(resp.Metrics.TokenUsage.TotalTokens)
 		model = resp.Metrics.TokenUsage.Model
+		// Provider becomes available via proto TokenUsage (option C)
+		if p := resp.Metrics.TokenUsage.Provider; p != "" {
+			provider = p
+		}
 		costUsd = resp.Metrics.TokenUsage.CostUsd
 		promptTokens = int(resp.Metrics.TokenUsage.PromptTokens)
 		completionTokens = int(resp.Metrics.TokenUsage.CompletionTokens)
@@ -1061,7 +1067,17 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			zap.Int("total_tokens", tokens),
 			zap.Float64("cost_usd", costUsd),
 			zap.String("model", model),
+			zap.String("provider", provider),
 		)
+	}
+
+	// Fallback: if provider is still empty, use provider_override from context when present
+	if provider == "" && input.Context != nil {
+		if v, ok := input.Context["provider_override"].(string); ok {
+			if pv := strings.TrimSpace(strings.ToLower(v)); pv != "" {
+				provider = pv
+			}
+		}
 	}
 
 	// Capture tool usage and outputs if present
@@ -1176,6 +1192,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		Response:       resp.Result,
 		TokensUsed:     tokens,
 		ModelUsed:      model,
+		Provider:       provider,
 		InputTokens:    promptTokens,
 		OutputTokens:   completionTokens,
 		DurationMs:     duration,
@@ -1536,7 +1553,7 @@ func getenvInt(key string, def int) int {
 // emitAgentThinkingEvent emits a human-readable thinking event
 func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-    message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
+		message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
 		eventData := EmitTaskUpdateInput{
 			WorkflowID: info.WorkflowExecution.ID,
 			EventType:  StreamEventAgentThinking,
