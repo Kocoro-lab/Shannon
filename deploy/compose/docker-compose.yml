@@ -106,10 +106,18 @@ services:
       - TOOL_PARALLELISM=${TOOL_PARALLELISM:-1}
       # Optional distributed rate limiting (leave empty to use in-memory limiter)
       - ENFORCE_RATE_REDIS_URL=${ENFORCE_RATE_REDIS_URL:-}
+      - ENFORCE_TIMEOUT_SECONDS=${ENFORCE_TIMEOUT_SECONDS:-90}
+      - ENFORCE_MAX_TOKENS=${ENFORCE_MAX_TOKENS:-32768}
+      - ENFORCE_RATE_RPS=${ENFORCE_RATE_RPS:-20}
+      - ENFORCE_CB_ERROR_THRESHOLD=${ENFORCE_CB_ERROR_THRESHOLD:-0.5}
+      - ENFORCE_CB_WINDOW_SECONDS=${ENFORCE_CB_WINDOW_SECONDS:-30}
+      - ENFORCE_CB_MIN_REQUESTS=${ENFORCE_CB_MIN_REQUESTS:-20}
+      - LLM_SERVICE_URL=${LLM_SERVICE_URL:-http://llm-service:8000}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
       # Python WASI interpreter configuration
       - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
-      - WASI_MEMORY_LIMIT_MB=512
-      - WASI_TIMEOUT_SECONDS=60
+      - WASI_MEMORY_LIMIT_MB=${WASI_MEMORY_LIMIT_MB:-512}
+      - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
     depends_on:
       temporal:
         condition: service_started
@@ -139,9 +147,12 @@ services:
       - POSTGRES_USER=shannon
       - POSTGRES_PASSWORD=shannon
       - POSTGRES_DB=shannon
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
       - CONFIG_PATH=/app/config/features.yaml
+      - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/app/config/models.yaml}
       - METRICS_PORT=${ORCHESTRATOR_METRICS_PORT:-2112}
-      - AGENT_TIMEOUT_SECONDS=600  # 10 minutes for complex tasks (10+ LLM calls)
+      - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-600}
       # Optional: Account MCP tool costs in tokens (cost*1000); default off
       - MCP_COST_TO_TOKENS=${MCP_COST_TO_TOKENS:-0}
       # Priority-based task queues: set to 'on' to enable separate workers per priority
@@ -153,6 +164,18 @@ services:
       - PARTIAL_CHUNK_CHARS=${PARTIAL_CHUNK_CHARS:-512}
       - EVENTLOG_BATCH_SIZE=${EVENTLOG_BATCH_SIZE:-100}
       - EVENTLOG_BATCH_INTERVAL_MS=${EVENTLOG_BATCH_INTERVAL_MS:-100}
+      # Budget and rate limiting
+      - BACKPRESSURE_THRESHOLD=${BACKPRESSURE_THRESHOLD:-}
+      - MAX_BACKPRESSURE_DELAY_MS=${MAX_BACKPRESSURE_DELAY_MS:-}
+      - CIRCUIT_FAILURE_THRESHOLD=${CIRCUIT_FAILURE_THRESHOLD:-}
+      - CIRCUIT_HALF_OPEN_REQUESTS=${CIRCUIT_HALF_OPEN_REQUESTS:-}
+      - CIRCUIT_RESET_TIMEOUT_MS=${CIRCUIT_RESET_TIMEOUT_MS:-}
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-}
+      - RATE_LIMIT_INTERVAL_MS=${RATE_LIMIT_INTERVAL_MS:-}
+      # Workflow synthesis bypass
+      - WORKFLOW_SYNTH_BYPASS_SINGLE=${WORKFLOW_SYNTH_BYPASS_SINGLE:-true}
+      # Provider rate control
+      - PROVIDER_RATE_CONTROL_ENABLED=${PROVIDER_RATE_CONTROL_ENABLED:-false}
       # Priority worker concurrency (optional; defaults shown)
       - WORKER_ACT_CRITICAL=${WORKER_ACT_CRITICAL:-12}
       - WORKER_WF_CRITICAL=${WORKER_WF_CRITICAL:-12}
@@ -170,8 +193,12 @@ services:
       - APPROVAL_COMPLEXITY_THRESHOLD=${APPROVAL_COMPLEXITY_THRESHOLD:-0.5}
       - APPROVAL_DANGEROUS_TOOLS=${APPROVAL_DANGEROUS_TOOLS:-file_system,code_execution}
       - APPROVAL_TIMEOUT_SECONDS=${APPROVAL_TIMEOUT_SECONDS:-1800}
+      - APPROVALS_AUTH_TOKEN=${APPROVALS_AUTH_TOKEN:-}
+      # Events ingestion
+      - EVENTS_INGEST_URL=${EVENTS_INGEST_URL:-http://orchestrator:8081/events}
+      - EVENTS_AUTH_TOKEN=${EVENTS_AUTH_TOKEN:-}
       # Template configuration
-      - TEMPLATES_PATH=/app/config/workflows/examples:/app/config/workflows/user
+      - TEMPLATES_PATH=${TEMPLATES_PATH:-/app/config/workflows/examples:/app/config/workflows/user}
     depends_on:
       temporal:
         condition: service_started
@@ -202,12 +229,42 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_ADDR=${REDIS_ADDR:-redis:6379}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - REDIS_TTL_SECONDS=${REDIS_TTL_SECONDS:-3600}
+      - LLM_REDIS_URL=${LLM_REDIS_URL:-}
       - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_USER=shannon
       - POSTGRES_PASSWORD=shannon
       - POSTGRES_DB=shannon
-      - DEBUG=false
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
+      - DEBUG=${DEBUG:-false}
+      - ENVIRONMENT=${ENVIRONMENT:-dev}
+      - SERVICE_NAME=${SERVICE_NAME:-shannon-llm-service}
       - LLM_CONFIG_PATH=/app/config
+      - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/app/config/models.yaml}
+      # Model routing and budgets
+      - DEFAULT_MODEL_TIER=${DEFAULT_MODEL_TIER:-small}
+      - COMPLEXITY_MODEL_ID=${COMPLEXITY_MODEL_ID:-}
+      - DECOMPOSITION_MODEL_ID=${DECOMPOSITION_MODEL_ID:-}
+      - MAX_TOKENS=${MAX_TOKENS:-2000}
+      - TEMPERATURE=${TEMPERATURE:-0.7}
+      - MAX_TOKENS_PER_REQUEST=${MAX_TOKENS_PER_REQUEST:-10000}
+      - MAX_COST_PER_REQUEST=${MAX_COST_PER_REQUEST:-0.50}
+      - LLM_DISABLE_BUDGETS=${LLM_DISABLE_BUDGETS:-1}
+      - HISTORY_WINDOW_MESSAGES=${HISTORY_WINDOW_MESSAGES:-50}
+      - HISTORY_WINDOW_DEBUG_MESSAGES=${HISTORY_WINDOW_DEBUG_MESSAGES:-75}
+      # Cache configuration
+      - ENABLE_CACHE=${ENABLE_CACHE:-true}
+      - CACHE_SIMILARITY_THRESHOLD=${CACHE_SIMILARITY_THRESHOLD:-0.95}
+      # Rate limiting
+      - RATE_LIMIT_REQUESTS=${RATE_LIMIT_REQUESTS:-100}
+      - RATE_LIMIT_WINDOW=${RATE_LIMIT_WINDOW:-60}
+      - WEB_SEARCH_RATE_LIMIT=${WEB_SEARCH_RATE_LIMIT:-120}
+      - CALCULATOR_RATE_LIMIT=${CALCULATOR_RATE_LIMIT:-2000}
+      - PYTHON_EXECUTOR_RATE_LIMIT=${PYTHON_EXECUTOR_RATE_LIMIT:-60}
       # Web Search Configuration
       - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-google}
       - GOOGLE_SEARCH_API_KEY=${GOOGLE_SEARCH_API_KEY}
@@ -216,6 +273,12 @@ services:
       - BING_API_KEY=${BING_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+      # OpenAPI hardening
+      - OPENAPI_ALLOWED_DOMAINS=${OPENAPI_ALLOWED_DOMAINS:-*}
+      - OPENAPI_MAX_SPEC_SIZE=${OPENAPI_MAX_SPEC_SIZE:-5242880}
+      - OPENAPI_FETCH_TIMEOUT=${OPENAPI_FETCH_TIMEOUT:-30}
+      - OPENAPI_RETRIES=${OPENAPI_RETRIES:-3}
+      - OPENAPI_LOG_REQUESTS=${OPENAPI_LOG_REQUESTS:-1}
       # MCP hardening (developer preview)
       - MCP_ALLOWED_DOMAINS=${MCP_ALLOWED_DOMAINS:-*}
       - MCP_MAX_RESPONSE_BYTES=${MCP_MAX_RESPONSE_BYTES:-10485760}
@@ -225,10 +288,20 @@ services:
       - MCP_RATE_LIMIT_DEFAULT=${MCP_RATE_LIMIT_DEFAULT:-60}
       - MCP_CB_FAILURES=${MCP_CB_FAILURES:-5}
       - MCP_CB_RECOVERY_SECONDS=${MCP_CB_RECOVERY_SECONDS:-60}
-      # Python WASI interpreter path
+      # Python WASI interpreter configuration
       - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
+      - PYTHON_WASI_SESSION_TIMEOUT=${PYTHON_WASI_SESSION_TIMEOUT:-3600}
+      - WASI_MEMORY_LIMIT_MB=${WASI_MEMORY_LIMIT_MB:-512}
+      - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
       # Agent Core address for WASI execution
       - AGENT_CORE_ADDR=agent-core:50051
+      # Observability
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-shannon-llm-service}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-localhost:4317}
+      - OTEL_ENABLED=${OTEL_ENABLED:-false}
+      # Events ingestion
+      - EVENTS_INGEST_URL=${EVENTS_INGEST_URL:-http://orchestrator:8081/events}
+      - EVENTS_AUTH_TOKEN=${EVENTS_AUTH_TOKEN:-}
     depends_on:
       redis:
         condition: service_healthy
@@ -257,19 +330,20 @@ services:
     env_file:
       - ../../.env
     environment:
-      - PORT=8080
-      - ORCHESTRATOR_GRPC=orchestrator:50052
-      - ADMIN_SERVER=http://orchestrator:8081
+      - PORT=${GATEWAY_PORT:-8080}
+      - ORCHESTRATOR_GRPC=${ORCHESTRATOR_GRPC:-orchestrator:50052}
+      - ADMIN_SERVER=${ADMIN_SERVER:-http://orchestrator:8081}
       - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_USER=shannon
       - POSTGRES_PASSWORD=shannon
       - POSTGRES_DB=shannon
-      - REDIS_URL=redis://redis:6379
+      - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
       # IMPORTANT: Change JWT_SECRET in production! Use a strong, random secret.
       # Generate one with: openssl rand -hex 32
       - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
-      - GATEWAY_SKIP_AUTH=${GATEWAY_SKIP_AUTH:-1}  # Default to 1 for easy open-source adoption
+      - GATEWAY_SKIP_AUTH=${GATEWAY_SKIP_AUTH:-1}
     depends_on:
       orchestrator:
         condition: service_started
@@ -293,8 +367,8 @@ services:
     restart: unless-stopped
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://gateway:8080
-      - NEXT_PUBLIC_ORCHESTRATOR_URL=http://orchestrator:8081
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://gateway:8080}
+      - NEXT_PUBLIC_ORCHESTRATOR_URL=${NEXT_PUBLIC_ORCHESTRATOR_URL:-http://orchestrator:8081}
       - NEXT_PUBLIC_REFRESH_INTERVAL=${DASHBOARD_REFRESH_INTERVAL:-5000}
     depends_on:
       gateway:

@@ -347,8 +347,11 @@ func summarizeFailure(f *failurepb.Failure, includePayloads bool) string {
 		return "unknown"
 	}
 	reason := f.GetMessage()
-	if !includePayloads && len(reason) > 200 {
-		reason = reason[:200] + "…"
+	if !includePayloads {
+		runes := []rune(reason)
+		if len(runes) > 200 {
+			reason = string(runes[:200]) + "..."
+		}
 	}
 	return reason
 }

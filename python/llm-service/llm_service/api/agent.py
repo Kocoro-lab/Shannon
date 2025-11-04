@@ -219,7 +219,7 @@ async def agent_query(request: Request, query: AgentQuery):
             # Rehydrate history from context if present
             history_rehydrated = False
             logger.info(
-                f"Context keys: {list(query.context.keys()) if query.context else 'No context'}"
+                f"Context keys: {list(query.context.keys()) if isinstance(query.context, dict) else 'Invalid context type'}"
             )
             if query.context and "history" in query.context:
                 history_str = str(query.context.get("history", ""))
@@ -505,9 +505,17 @@ async def agent_query(request: Request, query: AgentQuery):
                 name = function_call.get("name")
                 if name:
                     args = function_call.get("arguments") or {}
+                    # Handle JSON string arguments from some providers
+                    if isinstance(args, str):
+                        import json
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse arguments as JSON: {args}")
+                            args = {}
                     tool_calls_from_output.append({"name": name, "arguments": args})
                     logger.info(
-                        f"✅ Parsed tool call: {name} with args: {list(args.keys())}"
+                        f"✅ Parsed tool call: {name} with args: {list(args.keys()) if isinstance(args, dict) else 'N/A'}"
                     )
                 else:
                     logger.warning(
@@ -768,7 +776,8 @@ async def agent_query(request: Request, query: AgentQuery):
             )
 
     except Exception as e:
-        logger.error(f"Error processing agent query: {e}")
+        import traceback
+        logger.error(f"Error processing agent query: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -867,7 +876,7 @@ async def _execute_and_format_tools(
                 sanitized_context = None
 
             logger.info(
-                f"Executing tool {tool_name} with context keys: {list(sanitized_context.keys()) if sanitized_context else 'None'}, args: {args}"
+                f"Executing tool {tool_name} with context keys: {list(sanitized_context.keys()) if isinstance(sanitized_context, dict) else 'None'}, args: {args}"
             )
             result = await tool.execute(session_context=sanitized_context, **args)
 
@@ -1241,7 +1250,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                             history_rehydrated = True
 
         # Add the current query
-        ctx_keys = list((query.context or {}).keys())[:5]
+        ctx_keys = list(query.context.keys())[:5] if isinstance(query.context, dict) else []
         tools = ",".join(query.allowed_tools or [])
         user = (
             f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"

@@ -429,8 +429,9 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	for i, st := range decomp.Subtasks {
 		// Emit progress event for this subtask
 		progressMessage := fmt.Sprintf("Starting subtask %d of %d: %s", i+1, len(decomp.Subtasks), st.Description)
-		if len(st.Description) > 50 {
-			progressMessage = fmt.Sprintf("Starting subtask %d of %d: %s...", i+1, len(decomp.Subtasks), st.Description[:47])
+		runes := []rune(st.Description)
+		if len(runes) > 50 {
+			progressMessage = fmt.Sprintf("Starting subtask %d of %d: %s...", i+1, len(decomp.Subtasks), string(runes[:47]))
 		}
 		emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 			StartToCloseTimeout: 30 * time.Second,
