@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
 	"github.com/go-redis/redis/v8"
@@ -342,7 +344,15 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 	// Persist to DB if configured (best-effort, non-blocking)
 	if m.dbClient != nil && m.persistCh != nil {
 		// Non-blocking enqueue; drop if full (we never block streaming)
-		el := db.EventLog{WorkflowID: evt.WorkflowID, Type: evt.Type, AgentID: evt.AgentID, Message: evt.Message, Timestamp: evt.Timestamp, Seq: evt.Seq, StreamID: evt.StreamID}
+		el := db.EventLog{
+			WorkflowID: evt.WorkflowID,
+			Type:       evt.Type,
+			AgentID:    evt.AgentID,
+			Message:    sanitizeUTF8(evt.Message),
+			Timestamp:  evt.Timestamp,
+			Seq:        evt.Seq,
+			StreamID:   evt.StreamID,
+		}
 		if evt.Payload != nil {
 			el.Payload = db.JSONB(evt.Payload)
 		}
@@ -376,6 +386,26 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 func (e Event) Marshal() []byte {
 	b, _ := json.Marshal(e)
 	return b
+}
+
+// sanitizeUTF8 ensures invalid UTF-8 bytes are removed before persistence.
+func sanitizeUTF8(s string) string {
+	if s == "" || utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			// Skip invalid byte; Postgres rejects malformed UTF-8.
+			s = s[size:]
+			continue
+		}
+		b.WriteRune(r)
+		s = s[size:]
+	}
+	return b.String()
 }
 
 // persistWorker batches event logs and writes them asynchronously.

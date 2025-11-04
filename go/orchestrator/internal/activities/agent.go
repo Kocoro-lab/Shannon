@@ -1149,16 +1149,17 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				chunk = 512
 			}
 			if getenvInt("ENABLE_LLM_PARTIALS", 1) == 1 {
-				for i := 0; i < len(out); i += chunk {
+				runes := []rune(out)
+				for i := 0; i < len(runes); i += chunk {
 					j := i + chunk
-					if j > len(out) {
-						j = len(out)
+					if j > len(runes) {
+						j = len(runes)
 					}
 					streaming.Get().Publish(wfID, streaming.Event{
 						WorkflowID: wfID,
 						Type:       string(StreamEventLLMPartial),
 						AgentID:    input.AgentID,
-						Message:    out[i:j],
+						Message:    string(runes[i:j]),
 						Timestamp:  time.Now(),
 					})
 				}
