@@ -157,7 +157,14 @@ func sanitizeContextValue(value interface{}, key string, logger *zap.Logger) int
 		return sanitizeSlice(v, key, logger)
 	default:
 		reflected := reflect.ValueOf(v)
+		// Security: Filter out unsafe types that could cause panics or security issues
 		switch reflected.Kind() {
+		case reflect.Chan, reflect.Func, reflect.UnsafePointer:
+			logger.Warn("Filtering unsafe type from context (security)",
+				zap.String("key", key),
+				zap.String("type", fmt.Sprintf("%T", v)),
+				zap.String("kind", reflected.Kind().String()))
+			return nil
 		case reflect.Slice, reflect.Array:
 			return sanitizeReflectedSlice(reflected, key, logger)
 		case reflect.Map:
