@@ -191,7 +191,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
 		Query:          input.Query,
 		Context:        decompContext,
-		AvailableTools: []string{},
+		AvailableTools: nil, // Let llm-service derive tools from registry + role preset
 	}).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
 		// Emit error event

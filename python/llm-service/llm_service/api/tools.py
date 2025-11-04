@@ -318,6 +318,22 @@ async def startup_event():
     # Load OpenAPI tools from config
     _load_openapi_tools_from_config()
 
+    # Load GA4 tools (optional registry wrappers)
+    try:
+        from ..tools.ga4_tools import (
+            GA4RunReportTool,
+            GA4RunRealtimeReportTool,
+            GA4GetMetadataTool,
+        )
+        registry.register(GA4RunReportTool, override=True)
+        registry.register(GA4RunRealtimeReportTool, override=True)
+        registry.register(GA4GetMetadataTool, override=True)
+        logger.info(
+            "Registered GA4 tools (ga4_run_report, ga4_run_realtime_report, ga4_get_metadata)"
+        )
+    except Exception as e:
+        logger.warning(f"GA4 tools not available: {e}")
+
     logger.info(f"Tool registry initialized with {len(registry.list_tools())} tools")
 
 

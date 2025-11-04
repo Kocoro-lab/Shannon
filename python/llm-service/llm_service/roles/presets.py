@@ -56,6 +56,14 @@ try:
 except Exception:
     pass
 
+# GA4 analytics role (graceful fallback if module not available)
+try:
+    from .ga4.analytics_agent import GA4_ANALYTICS_PRESET
+
+    _PRESETS["ga4_analytics"] = GA4_ANALYTICS_PRESET
+except Exception:
+    pass
+
 
 def get_role_preset(name: str) -> Dict[str, object]:
     """Return a role preset by name with safe default fallback.

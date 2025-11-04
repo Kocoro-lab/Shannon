@@ -28,7 +28,7 @@ services:
     networks: [shannon-net]
 
   temporal-ui:
-    image: temporalio/ui:latest
+    image: temporalio/ui:2.40.1
     restart: unless-stopped
     environment:
       - TEMPORAL_ADDRESS=temporal:7233

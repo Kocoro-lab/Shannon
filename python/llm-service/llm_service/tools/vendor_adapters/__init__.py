@@ -23,7 +23,7 @@ To register a vendor adapter:
 
     def get_vendor_adapter(name: str):
         if name.lower() == "myvendor":
-            from .myvendor import MyVendorAdapter
+            from .myvendor.adapter import MyVendorAdapter
             return MyVendorAdapter()
         return None
 
@@ -68,7 +68,8 @@ def get_vendor_adapter(name: str):
     ALLOWED_VENDORS = {
         # Add your vendor names here as you implement them
         # "myvendor",
-        "ptengine",  # PTEngine analytics adapter
+        "ptengine",  # PTEngine analytics adapter (OpenAPI-based)
+        # Note: GA4 uses custom Python tools (not OpenAPI adapter)
         # "datainsight",
     }
 
@@ -79,12 +80,12 @@ def get_vendor_adapter(name: str):
     try:
         # PTEngine vendor adapter
         if vendor_name == "ptengine":
-            from .ptengine import PTEngineAdapter
+            from .ptengine.adapter import PTEngineAdapter
             return PTEngineAdapter()
 
         # Example vendor adapter registration:
         # if vendor_name == "myvendor":
-        #     from .myvendor import MyVendorAdapter
+        #     from .myvendor.adapter import MyVendorAdapter
         #     return MyVendorAdapter()
 
         # Add your vendor adapters here

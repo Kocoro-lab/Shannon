@@ -176,10 +176,18 @@ config/development/
 # Vendor-specific integrations (see docs/vendor-adapters.md)
 config/overlays/shannon.*.yaml
 !config/overlays/shannon.example.yaml
+config/overlays/ga4-service-account-key.json
 config/openapi_specs/ptengine*
 config/openapi_specs/schema_query_processor.*
-python/llm-service/llm_service/tools/vendor_adapters/ptengine.py
 python/llm-service/llm_service/roles/ptengine/
+python/llm-service/llm_service/tools/vendor_adapters/ptengine/
+
+# GA4 vendor integration (exclude from public repo)
+python/llm-service/llm_service/tools/vendor_adapters/ga4/
+python/llm-service/llm_service/roles/ga4/
+python/llm-service/llm_service/tools/ga4_tools.py
+config/openapi_specs/ga4*
+*.ga4-credentials.json
 
 # Build artifacts
 build/
