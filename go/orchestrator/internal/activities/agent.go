@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,7 +103,12 @@ func validateContext(ctx map[string]interface{}, logger *zap.Logger) map[string]
 			continue
 		}
 		if len(key) > 100 {
-			logger.Warn("Skipping context key exceeding length", zap.String("key", key[:100]))
+			keyRunes := []rune(key)
+			truncatedKey := key
+			if len(keyRunes) > 100 {
+				truncatedKey = string(keyRunes[:100])
+			}
+			logger.Warn("Skipping context key exceeding length", zap.String("key", truncatedKey))
 			continue
 		}
 
@@ -125,10 +131,11 @@ func sanitizeContextValue(value interface{}, key string, logger *zap.Logger) int
 	case bool:
 		return v
 	case string:
-		// Limit string length to prevent DoS
-		if len(v) > 10000 {
-			logger.Warn("Truncating oversized string value", zap.String("key", key), zap.Int("original_length", len(v)))
-			return v[:10000]
+		// Limit string length to prevent DoS (UTF-8 safe)
+		runes := []rune(v)
+		if len(runes) > 10000 {
+			logger.Warn("Truncating oversized string value", zap.String("key", key), zap.Int("original_length", len(runes)))
+			return string(runes[:10000])
 		}
 		return v
 	case int, int32, int64, float32, float64:
@@ -147,23 +154,27 @@ func sanitizeContextValue(value interface{}, key string, logger *zap.Logger) int
 		}
 		return sanitized
 	case []interface{}:
-		// Validate arrays with size limits
-		if len(v) > 100 {
-			logger.Warn("Truncating oversized array", zap.String("key", key), zap.Int("original_length", len(v)))
-			v = v[:100]
-		}
-		sanitized := make([]interface{}, 0, len(v))
-		for i, item := range v {
-			if sanitizedItem := sanitizeContextValue(item, fmt.Sprintf("%s[%d]", key, i), logger); sanitizedItem != nil {
-				sanitized = append(sanitized, sanitizedItem)
-			}
-		}
-		return sanitized
+		return sanitizeSlice(v, key, logger)
 	default:
-		logger.Warn("Filtering out unsupported context value type",
-			zap.String("key", key),
-			zap.String("type", fmt.Sprintf("%T", v)))
-		return nil
+		reflected := reflect.ValueOf(v)
+		// Security: Filter out unsafe types that could cause panics or security issues
+		switch reflected.Kind() {
+		case reflect.Chan, reflect.Func, reflect.UnsafePointer:
+			logger.Warn("Filtering unsafe type from context (security)",
+				zap.String("key", key),
+				zap.String("type", fmt.Sprintf("%T", v)),
+				zap.String("kind", reflected.Kind().String()))
+			return nil
+		case reflect.Slice, reflect.Array:
+			return sanitizeReflectedSlice(reflected, key, logger)
+		case reflect.Map:
+			return sanitizeReflectedMap(reflected, key, logger)
+		default:
+			logger.Warn("Filtering out unsupported context value type",
+				zap.String("key", key),
+				zap.String("type", fmt.Sprintf("%T", v)))
+			return nil
+		}
 	}
 }
 
@@ -246,8 +257,16 @@ func sanitizeToolParameters(params interface{}, logger *zap.Logger) interface{} 
 
 		sanitized := make(map[string]interface{})
 		for k, v := range p {
+			if k == "" {
+				continue
+			}
 			if len(k) > 100 {
-				logger.Warn("Tool parameter key too long, skipping", zap.String("key", k[:50]+"..."))
+				runes := []rune(k)
+				truncated := k
+				if len(runes) > 50 {
+					truncated = string(runes[:50]) + "..."
+				}
+				logger.Warn("Tool parameter key too long, skipping", zap.String("key", truncated))
 				continue
 			}
 			if sanitizedValue := sanitizeToolParameters(v, logger); sanitizedValue != nil {
@@ -256,21 +275,134 @@ func sanitizeToolParameters(params interface{}, logger *zap.Logger) interface{} 
 		}
 		return sanitized
 	case []interface{}:
-		if len(p) > 50 {
-			logger.Warn("Tool parameters array too large, truncating", zap.Int("size", len(p)))
-			p = p[:50]
-		}
-		sanitized := make([]interface{}, 0, len(p))
-		for _, item := range p {
-			if sanitizedItem := sanitizeToolParameters(item, logger); sanitizedItem != nil {
-				sanitized = append(sanitized, sanitizedItem)
-			}
-		}
-		return sanitized
+		return sanitizeToolSlice(p, logger)
 	default:
-		logger.Warn("Unsupported tool parameter type", zap.String("type", fmt.Sprintf("%T", p)))
+		reflected := reflect.ValueOf(p)
+		switch reflected.Kind() {
+		case reflect.Slice, reflect.Array:
+			return sanitizeToolReflectedSlice(reflected, logger)
+		case reflect.Map:
+			return sanitizeToolReflectedMap(reflected, logger)
+		default:
+			logger.Warn("Unsupported tool parameter type", zap.String("type", fmt.Sprintf("%T", p)))
+			return nil
+		}
+	}
+}
+
+func sanitizeSlice(values []interface{}, key string, logger *zap.Logger) []interface{} {
+	if len(values) > 100 {
+		logger.Warn("Truncating oversized array", zap.String("key", key), zap.Int("original_length", len(values)))
+		values = values[:100]
+	}
+	sanitized := make([]interface{}, 0, len(values))
+	for idx, item := range values {
+		if sanitizedItem := sanitizeContextValue(item, fmt.Sprintf("%s[%d]", key, idx), logger); sanitizedItem != nil {
+			sanitized = append(sanitized, sanitizedItem)
+		}
+	}
+	return sanitized
+}
+
+func sanitizeReflectedSlice(reflected reflect.Value, key string, logger *zap.Logger) []interface{} {
+	length := reflected.Len()
+	if length > 100 {
+		logger.Warn("Truncating oversized array", zap.String("key", key), zap.Int("original_length", length))
+		length = 100
+	}
+	sanitized := make([]interface{}, 0, length)
+	for idx := 0; idx < length; idx++ {
+		item := reflected.Index(idx).Interface()
+		if sanitizedItem := sanitizeContextValue(item, fmt.Sprintf("%s[%d]", key, idx), logger); sanitizedItem != nil {
+			sanitized = append(sanitized, sanitizedItem)
+		}
+	}
+	return sanitized
+}
+
+func sanitizeReflectedMap(reflected reflect.Value, key string, logger *zap.Logger) map[string]interface{} {
+	if reflected.Type().Key().Kind() != reflect.String {
+		logger.Warn("Skipping map with non-string keys", zap.String("key", key), zap.String("type", reflected.Type().String()))
 		return nil
 	}
+	sanitized := make(map[string]interface{}, reflected.Len())
+	iter := reflected.MapRange()
+	for iter.Next() {
+		mapKey := iter.Key().String()
+		if mapKey == "" {
+			continue
+		}
+		if len(mapKey) > 100 {
+			runes := []rune(mapKey)
+			truncated := mapKey
+			if len(runes) > 50 {
+				truncated = string(runes[:50]) + "..."
+			}
+			logger.Warn("Map key too long, skipping", zap.String("parent_key", key), zap.String("key", truncated))
+			continue
+		}
+		if sanitizedValue := sanitizeContextValue(iter.Value().Interface(), mapKey, logger); sanitizedValue != nil {
+			sanitized[mapKey] = sanitizedValue
+		}
+	}
+	return sanitized
+}
+
+func sanitizeToolSlice(values []interface{}, logger *zap.Logger) []interface{} {
+	if len(values) > 50 {
+		logger.Warn("Tool parameters array too large, truncating", zap.Int("size", len(values)))
+		values = values[:50]
+	}
+	sanitized := make([]interface{}, 0, len(values))
+	for _, item := range values {
+		if sanitizedItem := sanitizeToolParameters(item, logger); sanitizedItem != nil {
+			sanitized = append(sanitized, sanitizedItem)
+		}
+	}
+	return sanitized
+}
+
+func sanitizeToolReflectedSlice(reflected reflect.Value, logger *zap.Logger) []interface{} {
+	length := reflected.Len()
+	if length > 50 {
+		logger.Warn("Tool parameters array too large, truncating", zap.Int("size", length))
+		length = 50
+	}
+	sanitized := make([]interface{}, 0, length)
+	for idx := 0; idx < length; idx++ {
+		if sanitizedItem := sanitizeToolParameters(reflected.Index(idx).Interface(), logger); sanitizedItem != nil {
+			sanitized = append(sanitized, sanitizedItem)
+		}
+	}
+	return sanitized
+}
+
+func sanitizeToolReflectedMap(reflected reflect.Value, logger *zap.Logger) map[string]interface{} {
+	if reflected.Type().Key().Kind() != reflect.String {
+		logger.Warn("Unsupported tool parameter map type", zap.String("type", reflected.Type().String()))
+		return nil
+	}
+	sanitized := make(map[string]interface{}, reflected.Len())
+	iter := reflected.MapRange()
+	for iter.Next() {
+		k := iter.Key().String()
+		if k == "" {
+			continue
+		}
+		if len(k) > 100 {
+			runes := []rune(k)
+			truncated := k
+			if len(runes) > 50 {
+				truncated = string(runes[:50]) + "..."
+			}
+			logger.Warn("Tool parameter key too long, skipping", zap.String("key", truncated))
+			continue
+		}
+		if sanitizedValue := sanitizeToolParameters(iter.Value().Interface(), logger); sanitizedValue != nil {
+			sanitized[k] = sanitizedValue
+		}
+	}
+	return sanitized
 }
 
 // InitializePolicyEngine initializes the global policy engine
@@ -1636,22 +1768,28 @@ func humanizeToolCall(toolName string, params interface{}) string {
 	}
 }
 
-// truncateQuery truncates a query to a specified length
+// truncateQuery truncates a query to a specified length (UTF-8 safe)
 func truncateQuery(query string, maxLen int) string {
-	if len(query) <= maxLen {
+	runes := []rune(query)
+	if len(runes) <= maxLen {
 		return query
 	}
-	return query[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }
 
-// truncateURL shortens a URL for display
+// truncateURL shortens a URL for display (UTF-8 safe)
 func truncateURL(url string) string {
-	if len(url) <= 50 {
+	runes := []rune(url)
+	if len(runes) <= 50 {
 		return url
 	}
-	// Try to preserve domain
-	if idx := strings.Index(url, "?"); idx > 0 && idx < 50 {
-		return url[:idx] + "?..."
+	// Try to preserve domain by cutting at query parameter boundary
+	if idx := strings.Index(url, "?"); idx > 0 {
+		runesBeforeQuery := []rune(url[:idx])
+		if len(runesBeforeQuery) < 50 {
+			return url[:idx] + "?..."
+		}
 	}
-	return url[:47] + "..."
+	// Otherwise truncate at character boundary
+	return string(runes[:47]) + "..."
 }

@@ -105,10 +105,13 @@ func FetchHierarchicalMemory(ctx context.Context, in FetchHierarchicalMemoryInpu
 				if q, ok := item["query"].(string); ok {
 					key = q
 				}
-				if a, ok := item["answer"].(string); ok && len(a) > 100 {
-					key += "_" + a[:100]
-				} else if a, ok := item["answer"].(string); ok {
-					key += "_" + a
+				if a, ok := item["answer"].(string); ok {
+					runes := []rune(a)
+					if len(runes) > 100 {
+						key += "_" + string(runes[:100])
+					} else {
+						key += "_" + a
+					}
 				}
 			}
 			if key != "" {
@@ -129,10 +132,13 @@ func FetchHierarchicalMemory(ctx context.Context, in FetchHierarchicalMemoryInpu
 					if q, ok := item["query"].(string); ok {
 						key = q
 					}
-					if a, ok := item["answer"].(string); ok && len(a) > 100 {
-						key += "_" + a[:100]
-					} else if a, ok := item["answer"].(string); ok {
-						key += "_" + a
+					if a, ok := item["answer"].(string); ok {
+						runes := []rune(a)
+						if len(runes) > 100 {
+							key += "_" + string(runes[:100])
+						} else {
+							key += "_" + a
+						}
 					}
 				}
 
@@ -178,8 +184,13 @@ func FetchHierarchicalMemory(ctx context.Context, in FetchHierarchicalMemoryInpu
 						key := ""
 						if id, ok := summary.Payload["summary_id"].(string); ok && id != "" {
 							key = "summary_" + id
-						} else if content, ok := summary.Payload["content"].(string); ok && len(content) > 50 {
-							key = "summary_" + content[:50]
+						} else if content, ok := summary.Payload["content"].(string); ok {
+							runes := []rune(content)
+							if len(runes) > 50 {
+								key = "summary_" + string(runes[:50])
+							} else {
+								key = "summary_" + content
+							}
 						}
 
 						// Skip if already seen

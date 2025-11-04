@@ -26,7 +26,7 @@ func TestBodyFieldMirroring(t *testing.T) {
 			expectedParams: map[string]interface{}{
 				"profile_id": "test_profile",
 				"aid":        "test_aid",
-				"metrics":    []interface{}{"users", "sessions"},
+				"metrics":    []string{"users", "sessions"},
 			},
 		},
 		{

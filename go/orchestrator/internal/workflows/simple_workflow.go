@@ -45,8 +45,9 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Emit thinking event
 	truncatedQuery := input.Query
-	if len(truncatedQuery) > 80 {
-		truncatedQuery = truncatedQuery[:77] + "..."
+	queryRunes := []rune(truncatedQuery)
+	if len(queryRunes) > 80 {
+		truncatedQuery = string(queryRunes[:77]) + "..."
 	}
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,

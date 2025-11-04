@@ -99,11 +99,12 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// sanitizeErr trims error messages for safe client output.
+// sanitizeErr trims error messages for safe client output (UTF-8 safe).
 func sanitizeErr(s string) string {
 	// Keep it simple: don't leak internals
-	if len(s) > 200 {
-		return s[:200]
+	runes := []rune(s)
+	if len(runes) > 200 {
+		return string(runes[:200])
 	}
 	return s
 }

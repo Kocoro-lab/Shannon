@@ -42,13 +42,14 @@ func ParseNumericValue(response string) (float64, bool) {
 	return 0, false
 }
 
-// TruncateString truncates s to maxLen and appends "..." if truncated.
+// TruncateString truncates s to maxLen and appends "..." if truncated (UTF-8 safe).
 // If preserveWords is true, truncates at the last space before maxLen when possible.
 func TruncateString(s string, maxLen int, preserveWords bool) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
 	// Reserve space for ellipsis
@@ -57,12 +58,12 @@ func TruncateString(s string, maxLen int, preserveWords bool) string {
 	}
 	cut := maxLen - 3
 	if preserveWords {
-		// Find last space before cut
-		if idx := lastSpaceBefore(s, cut); idx > 0 {
+		// Find last space before cut (in rune positions)
+		if idx := lastSpaceBeforeRune(s, cut); idx > 0 {
 			cut = idx
 		}
 	}
-	return s[:cut] + "..."
+	return string(runes[:cut]) + "..."
 }
 
 func lastSpaceBefore(s string, pos int) int {
@@ -71,6 +72,20 @@ func lastSpaceBefore(s string, pos int) int {
 	}
 	for i := pos - 1; i >= 0; i-- {
 		if s[i] == ' ' || s[i] == '\t' || s[i] == '\n' {
+			return i
+		}
+	}
+	return -1
+}
+
+// lastSpaceBeforeRune finds the last space before pos (in rune count, UTF-8 safe)
+func lastSpaceBeforeRune(s string, pos int) int {
+	runes := []rune(s)
+	if pos > len(runes) {
+		pos = len(runes)
+	}
+	for i := pos - 1; i >= 0; i-- {
+		if runes[i] == ' ' || runes[i] == '\t' || runes[i] == '\n' {
 			return i
 		}
 	}

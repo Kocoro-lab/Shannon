@@ -145,10 +145,11 @@ func extractToolErrors(result workflows.TaskResult) []ToolError {
 // truncateError limits error messages to 500 characters to prevent response bloat
 func truncateError(msg string) string {
 	const maxLen = 500
-	if len(msg) <= maxLen {
+	runes := []rune(msg)
+	if len(runes) <= maxLen {
 		return msg
 	}
-	return msg[:maxLen] + "... (truncated)"
+	return string(runes[:maxLen]) + "... (truncated)"
 }
 
 func extractMetadata(result workflows.TaskResult) ResponseMetadata {

@@ -145,8 +145,8 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			continue
 		}
 		trimmed := r.Response
-		if len(trimmed) > maxPerAgentChars {
-			trimmed = trimmed[:maxPerAgentChars] + "..."
+		if len([]rune(trimmed)) > maxPerAgentChars {
+			trimmed = string([]rune(trimmed)[:maxPerAgentChars]) + "..."
 		}
 		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, trimmed)
 		count++
@@ -468,10 +468,11 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 // truncateForLog returns s truncated to max characters for safe logging
 func truncateForLog(s string, max int) string {
-	if len(s) <= max {
+	runes := []rune(s)
+	if len(runes) <= max {
 		return s
 	}
-	return s[:max] + "...(truncated)"
+	return string(runes[:max]) + "...(truncated)"
 }
 
 // simpleSynthesis concatenates successful agent outputs with light formatting
