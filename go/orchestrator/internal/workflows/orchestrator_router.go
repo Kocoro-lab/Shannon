@@ -468,6 +468,19 @@ func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query strin
 		SessionID: sessionID,
 		Query:     query,
 	}).Get(titleCtx, nil)
+
+	// Emit STREAM_END to explicitly signal the end of post-completion processing
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+        WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+        EventType:  activities.StreamEventStreamEnd,
+        AgentID:    "orchestrator",
+        Message:    "Stream end",
+        Timestamp:  workflow.Now(ctx),
+    }).Get(emitCtx, nil)
 }
 
 // convertToStrategiesInput converts workflows.TaskInput to strategies.TaskInput

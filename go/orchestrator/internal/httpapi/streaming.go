@@ -172,75 +172,117 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	ch := h.mgr.SubscribeFrom(wf, 256, startFrom)
 	defer h.mgr.Unsubscribe(wf, ch)
 
-	// Heartbeat ticker (shorter to keep intermediaries happy)
-	hb := time.NewTicker(10 * time.Second)
-	defer hb.Stop()
+    // Heartbeat ticker (shorter to keep intermediaries happy)
+    hb := time.NewTicker(10 * time.Second)
+    defer hb.Stop()
 
-	// First-event timeout timer
-	firstEventTimer := time.NewTimer(30 * time.Second)
-	defer firstEventTimer.Stop()
+    // First-event timeout timer
+    firstEventTimer := time.NewTimer(30 * time.Second)
+    defer firstEventTimer.Stop()
 
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			h.logger.Info("SSE client disconnected", zap.String("workflow_id", wf))
-			return
-		case <-firstEventTimer.C:
-			if !firstEventSeen {
-				if h.tclient == nil {
-					h.logger.Warn("First-event timeout but Temporal client not available", zap.String("workflow_id", wf))
-					fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-					fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow validation unavailable\"}\n\n", wf)
-					flusher.Flush()
-					return
-				}
-				cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-				_, err := h.tclient.DescribeWorkflowExecution(cctx, wf, "")
-				cancel()
-				if err != nil {
-					if _, ok := err.(*serviceerror.NotFound); ok {
-						// Emit an error event and close
-						fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-						fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found\"}\n\n", wf)
-						flusher.Flush()
-						return
-					}
-					// Other errors (timeout, etc) also indicate invalid workflow
-					fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-					fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found or unavailable\"}\n\n", wf)
-					flusher.Flush()
-					return
-				}
-				// Workflow exists but no events yet - reset timer and continue waiting
-				firstEventTimer.Reset(30 * time.Second)
-			}
-		case evt := <-ch:
-			if len(typeFilter) > 0 {
-				if _, ok := typeFilter[evt.Type]; !ok {
-					continue
-				}
-			}
-			// Write event type and data lines (SSE format)
-			// Prefer stream ID for robustness, fallback to seq for backward compatibility
-			if evt.StreamID != "" {
-				fmt.Fprintf(w, "id: %s\n", evt.StreamID)
-			} else if evt.Seq > 0 {
-				fmt.Fprintf(w, "id: %d\n", evt.Seq)
-			}
-			if evt.Type != "" {
-				fmt.Fprintf(w, "event: %s\n", evt.Type)
-			}
-			fmt.Fprintf(w, "data: %s\n\n", string(evt.Marshal()))
-			flusher.Flush()
+    // Post-completion inactivity timer (starts after WORKFLOW_COMPLETED)
+    var postCompleteTimer *time.Timer
+    var postCompleteCh <-chan time.Time
+    completedSeen := false
+    // Ensure timer is stopped on all exits to avoid leaks
+    defer func() {
+        if postCompleteTimer != nil {
+            postCompleteTimer.Stop()
+        }
+    }()
 
-			if !firstEventSeen {
-				firstEventSeen = true
-			}
-		case <-hb.C:
-			// Heartbeat to keep connections alive through proxies
-			fmt.Fprint(w, ": ping\n\n")
-			flusher.Flush()
-		}
-	}
+    ctx := r.Context()
+    for {
+        select {
+        case <-ctx.Done():
+            h.logger.Info("SSE client disconnected", zap.String("workflow_id", wf))
+            return
+        case <-firstEventTimer.C:
+            if !firstEventSeen {
+                if h.tclient == nil {
+                    h.logger.Warn("First-event timeout but Temporal client not available", zap.String("workflow_id", wf))
+                    fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+                    fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow validation unavailable\"}\n\n", wf)
+                    flusher.Flush()
+                    return
+                }
+                cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+                _, err := h.tclient.DescribeWorkflowExecution(cctx, wf, "")
+                cancel()
+                if err != nil {
+                    if _, ok := err.(*serviceerror.NotFound); ok {
+                        // Emit an error event and close
+                        fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+                        fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found\"}\n\n", wf)
+                        flusher.Flush()
+                        return
+                    }
+                    // Other errors (timeout, etc) also indicate invalid workflow
+                    fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+                    fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found or unavailable\"}\n\n", wf)
+                    flusher.Flush()
+                    return
+                }
+                // Workflow exists but no events yet - reset timer and continue waiting
+                firstEventTimer.Reset(30 * time.Second)
+            }
+        case <-postCompleteCh:
+            // Close after inactivity window following completion
+            return
+        case evt := <-ch:
+            // Detect completion and stream end ahead of filtering
+            isCompleted := evt.Type == "WORKFLOW_COMPLETED"
+            isStreamEnd := evt.Type == "STREAM_END"
+
+            // Any incoming event means the workflow exists; disable first-event detection
+            if !firstEventSeen {
+                firstEventSeen = true
+            }
+
+            // Start/reset post-completion inactivity timer
+            if isCompleted || completedSeen {
+                completedSeen = true
+                if postCompleteTimer == nil {
+                    postCompleteTimer = time.NewTimer(30 * time.Second)
+                    postCompleteCh = postCompleteTimer.C
+                } else {
+                    if !postCompleteTimer.Stop() {
+                        select { case <-postCompleteCh: default: }
+                    }
+                    postCompleteTimer.Reset(30 * time.Second)
+                }
+            }
+
+            // Apply type filter, but still close on terminal events even if filtered
+            if len(typeFilter) > 0 {
+                if _, ok := typeFilter[evt.Type]; !ok {
+                    if isStreamEnd || isCompleted {
+                        return
+                    }
+                    continue
+                }
+            }
+
+            // Write event
+            if evt.StreamID != "" {
+                fmt.Fprintf(w, "id: %s\n", evt.StreamID)
+            } else if evt.Seq > 0 {
+                fmt.Fprintf(w, "id: %d\n", evt.Seq)
+            }
+            if evt.Type != "" {
+                fmt.Fprintf(w, "event: %s\n", evt.Type)
+            }
+            fmt.Fprintf(w, "data: %s\n\n", string(evt.Marshal()))
+            flusher.Flush()
+
+            // Close immediately on STREAM_END
+            if isStreamEnd {
+                return
+            }
+        case <-hb.C:
+            // Heartbeat to keep connections alive through proxies
+            fmt.Fprint(w, ": ping\n\n")
+            flusher.Flush()
+        }
+    }
 }

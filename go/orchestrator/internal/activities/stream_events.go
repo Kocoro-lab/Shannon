@@ -42,6 +42,9 @@ const (
 	StreamEventLLMOutput  StreamEventType = "LLM_OUTPUT"  // Final output for a step
 	StreamEventToolObs    StreamEventType = "TOOL_OBSERVATION"
 
+	// Stream lifecycle
+	StreamEventStreamEnd StreamEventType = "STREAM_END" // Explicit end-of-stream signal
+
 	// Human approval
 	StreamEventApprovalRequested StreamEventType = "APPROVAL_REQUESTED"
 	StreamEventApprovalDecision  StreamEventType = "APPROVAL_DECISION"

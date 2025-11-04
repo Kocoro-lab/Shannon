@@ -374,8 +374,8 @@ func main() {
 		Addr:         ":" + strconv.Itoa(port),
 		Handler:      corsHandler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		WriteTimeout: 0,  // No write timeout for SSE/streaming support
+		IdleTimeout:  300 * time.Second, // 5 minutes idle for long-lived SSE connections
 	}
 
 	// Start server in goroutine

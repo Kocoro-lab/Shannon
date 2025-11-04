@@ -326,6 +326,38 @@ class ProviderManager:
             "cost_usd": usage.estimated_cost,
         }
 
+    def _extract_user_query(self, content: str) -> str:
+        """Extract user query from message content, omitting tools.
+
+        Industry best practice: Don't stream input prompts or tool definitions.
+        Only extract the actual user query for display purposes.
+
+        Args:
+            content: Message content (plain string or JSON-serialized dict)
+
+        Returns:
+            User query text, or empty string to skip emission
+        """
+        import json
+
+        # Try to parse as JSON (agent execution request)
+        try:
+            data = json.loads(content) if isinstance(content, str) and content.strip().startswith("{") else None
+            if isinstance(data, dict):
+                # Skip agent execution requests with tools entirely
+                if "tools" in data:
+                    return ""
+                # Extract task field if present
+                if "task" in data:
+                    return str(data["task"])
+                # Otherwise skip
+                return ""
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Plain string content - return as-is
+        return content if isinstance(content, str) else ""
+
     def _emit_events(
         self,
         workflow_id: str,
@@ -346,20 +378,25 @@ class ProviderManager:
             last_user = ""
 
         if last_user:
-            payload = {
-                "provider": response.get("provider"),
-                "model": response.get("model"),
-            }
-            try:
-                self._emitter.emit(
-                    workflow_id,
-                    "LLM_PROMPT",
-                    agent_id=agent_id,
-                    message=last_user[:2000],
-                    payload=payload,
-                )
-            except Exception:
-                logger.debug("Failed to emit LLM_PROMPT", exc_info=True)
+            # Extract user query only, omit tools (industry best practice)
+            prompt_text = self._extract_user_query(last_user)
+
+            # Only emit LLM_PROMPT if we have valid query text
+            if prompt_text:
+                payload = {
+                    "provider": response.get("provider"),
+                    "model": response.get("model"),
+                }
+                try:
+                    self._emitter.emit(
+                        workflow_id,
+                        "LLM_PROMPT",
+                        agent_id=agent_id,
+                        message=prompt_text[:500],  # Industry standard: 500 chars max
+                        payload=payload,
+                    )
+                except Exception:
+                    logger.debug("Failed to emit LLM_PROMPT", exc_info=True)
 
         output_text = response.get("output_text") or ""
         if not output_text:

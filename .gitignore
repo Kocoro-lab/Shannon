@@ -177,6 +177,7 @@ config/development/
 config/overlays/shannon.*.yaml
 !config/overlays/shannon.example.yaml
 config/overlays/ga4-service-account-key.json
+config/overlays/ga4-usage-examples.md
 config/openapi_specs/ptengine*
 config/openapi_specs/schema_query_processor.*
 python/llm-service/llm_service/roles/ptengine/
