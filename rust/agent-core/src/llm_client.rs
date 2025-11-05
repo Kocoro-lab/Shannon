@@ -12,6 +12,7 @@ pub struct AgentQuery<'a> {
     pub context: serde_json::Value,
     pub agent_id: Cow<'a, str>,
     pub mode: Cow<'a, str>,
+    #[serde(rename = "allowed_tools")]
     pub tools: Vec<Cow<'a, str>>,
     pub max_tokens: u32,
     pub temperature: f32,
