@@ -245,6 +245,34 @@ class OpenAICompatibleProvider(LLMProvider):
         choice = response.choices[0]
         message = choice.message
 
+        # Normalize content: some compatible providers may return a list of
+        # content parts rather than a plain string. Extract text segments.
+        def _extract_text_from_message(msg) -> str:
+            try:
+                content = getattr(msg, "content", None)
+                if isinstance(content, str):
+                    return content or ""
+                if isinstance(content, list):
+                    parts: List[str] = []
+                    for part in content:
+                        try:
+                            text = getattr(part, "text", None)
+                            if not text and isinstance(part, dict):
+                                text = part.get("text")
+                            if isinstance(text, str) and text.strip():
+                                parts.append(text.strip())
+                        except Exception:
+                            pass
+                    return "\n\n".join(parts).strip()
+                if hasattr(content, "text"):
+                    txt = getattr(content, "text", "")
+                    return txt or ""
+            except Exception:
+                pass
+            return ""
+
+        content_text = _extract_text_from_message(message)
+
         # Handle token usage (some providers might not return this)
         prompt_tokens = 0
         completion_tokens = 0
@@ -268,7 +296,7 @@ class OpenAICompatibleProvider(LLMProvider):
             # Estimate if not provided
             prompt_tokens = self.count_tokens(request.messages, model)
             completion_tokens = self.count_tokens(
-                [{"role": "assistant", "content": message.content or ""}], model
+                [{"role": "assistant", "content": content_text}], model
             )
             total_tokens = prompt_tokens + completion_tokens
 
@@ -277,7 +305,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
         # Build response
         return CompletionResponse(
-            content=message.content or "",
+            content=content_text,
             model=model,
             provider=self.config.get("name", "openai_compatible"),
             usage=TokenUsage(

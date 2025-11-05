@@ -151,6 +151,39 @@ class OpenAIProvider(LLMProvider):
         choice = response.choices[0]
         message = choice.message
 
+        # Normalize message content: some models (e.g., GPT‑5/4.1) may return
+        # content as a list of parts instead of a plain string. Extract the
+        # text segments to avoid returning an empty string with non‑zero tokens.
+        def _extract_text_from_message(msg) -> str:
+            try:
+                content = getattr(msg, "content", None)
+                # Plain string content
+                if isinstance(content, str):
+                    return content or ""
+                # List of content parts (each may have a .text attribute or be a dict)
+                if isinstance(content, list):
+                    parts: List[str] = []
+                    for part in content:
+                        try:
+                            text = getattr(part, "text", None)
+                            if not text and isinstance(part, dict):
+                                text = part.get("text")
+                            if isinstance(text, str) and text.strip():
+                                parts.append(text.strip())
+                        except Exception:
+                            # Be permissive; ignore malformed parts
+                            pass
+                    return "\n\n".join(parts).strip()
+                # Some SDK variants expose a single object with .text
+                if hasattr(content, "text"):
+                    txt = getattr(content, "text", "")
+                    return txt or ""
+            except Exception:
+                pass
+            return ""
+
+        content_text = _extract_text_from_message(message)
+
         # Prefer provider usage for tokens
         try:
             prompt_tokens = int(getattr(response.usage, "prompt_tokens", 0))
@@ -164,7 +197,7 @@ class OpenAIProvider(LLMProvider):
             # Fallback to estimation only if needed
             prompt_tokens = self.count_tokens(request.messages, model)
             completion_tokens = self.count_tokens(
-                [{"role": "assistant", "content": message.content or ""}], model
+                [{"role": "assistant", "content": content_text}], model
             )
             total_tokens = prompt_tokens + completion_tokens
 
@@ -213,7 +246,7 @@ class OpenAIProvider(LLMProvider):
             normalized_fc = None
 
         return CompletionResponse(
-            content=message.content or "",
+            content=content_text,
             model=model,
             provider="openai",
             usage=TokenUsage(
