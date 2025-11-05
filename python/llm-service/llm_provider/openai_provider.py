@@ -317,8 +317,12 @@ class OpenAIProvider(LLMProvider):
         if model_name.startswith("gpt-5-pro"):
             return "responses"
 
-        # GPT-5 and GPT-4.1 families use standard chat completions API
-        if model_name.startswith("gpt-5") or model_name.startswith("gpt-4."):
+        # GPT-5 family works best with Responses API
+        if model_name.startswith("gpt-5"):
+            return "responses"
+
+        # GPT-4.1 family uses standard chat completions API
+        if model_name.startswith("gpt-4."):
             return "chat"
 
         if has_tools and getattr(caps, "supports_tools", True):
@@ -351,9 +355,8 @@ class OpenAIProvider(LLMProvider):
             "input": inputs,
             "max_output_tokens": request.max_tokens or 2048,
         }
-        # Responses API ignores temperature for some models – set if provided
-        if request.temperature is not None:
-            params["temperature"] = request.temperature
+        # Limit reasoning budget so the model produces actual output text
+        params["reasoning"] = {"effort": "low"}
         # Tools / response_format are not fully aligned; pass through best‑effort
         if request.response_format:
             params["response_format"] = request.response_format
@@ -380,37 +383,51 @@ class OpenAIProvider(LLMProvider):
         start_time = time.time()
         response = await self.client.responses.create(**params)
 
-        # Extract text blocks; usage may be a dict-like
-        text_parts: List[str] = []
-        try:
-            raw = response.model_dump()
-        except Exception:
-            raw = {
-                "output": getattr(response, "output", None),
-                "usage": getattr(response, "usage", None),
-                "id": getattr(response, "id", None),
-                "model": getattr(response, "model", model),
-            }
+        # Prefer output_text when Responses API provides it directly
+        direct_text = getattr(response, "output_text", None)
+        if isinstance(direct_text, str) and direct_text.strip():
+            content = direct_text.strip()
+            try:
+                raw = response.model_dump()
+            except Exception:
+                raw = {
+                    "output": getattr(response, "output", None),
+                    "usage": getattr(response, "usage", None),
+                    "id": getattr(response, "id", None),
+                    "model": getattr(response, "model", model),
+                }
+        else:
+            # Extract text blocks; usage may be a dict-like
+            text_parts: List[str] = []
+            try:
+                raw = response.model_dump()
+            except Exception:
+                raw = {
+                    "output": getattr(response, "output", None),
+                    "usage": getattr(response, "usage", None),
+                    "id": getattr(response, "id", None),
+                    "model": getattr(response, "model", model),
+                }
 
-        out = raw.get("output") or []
-        if isinstance(out, list):
-            for item in out:
-                if isinstance(item, dict):
-                    if item.get("type") in ("output_text", "text"):
-                        val = item.get("content") or item.get("text")
-                        if isinstance(val, str) and val.strip():
-                            text_parts.append(val.strip())
-                    elif item.get("type") == "message":
-                        for block in item.get("content", []) or []:
-                            if isinstance(block, dict) and block.get("type") in (
-                                "output_text",
-                                "text",
-                            ):
-                                val = block.get("text")
-                                if isinstance(val, str) and val.strip():
-                                    text_parts.append(val.strip())
+            out = raw.get("output") or []
+            if isinstance(out, list):
+                for item in out:
+                    if isinstance(item, dict):
+                        if item.get("type") in ("output_text", "text"):
+                            val = item.get("content") or item.get("text")
+                            if isinstance(val, str) and val.strip():
+                                text_parts.append(val.strip())
+                        elif item.get("type") == "message":
+                            for block in item.get("content", []) or []:
+                                if isinstance(block, dict) and block.get("type") in (
+                                    "output_text",
+                                    "text",
+                                ):
+                                    val = block.get("text")
+                                    if isinstance(val, str) and val.strip():
+                                        text_parts.append(val.strip())
 
-        content = "\n\n".join(text_parts).strip()
+            content = "\n\n".join(text_parts).strip()
 
         usage = raw.get("usage") or {}
         try:
