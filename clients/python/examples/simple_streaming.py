@@ -38,7 +38,7 @@ for event in client.stream(
 print("-" * 60)
 
 # Get final result
-status = client.get_status(handle.task_id)
-print(f"\nFinal result:\n{status.result}")
+final = client.wait(handle.task_id, timeout=120)
+print(f"\nFinal result:\n{final.result}")
 
 client.close()
