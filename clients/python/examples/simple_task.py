@@ -32,10 +32,12 @@ print()
 if status.status == TaskStatusEnum.COMPLETED:
     print("✓ Task completed successfully!")
     print(f"  Result: {status.result}")
-    if status.metrics:
-        print(f"  Tokens used: {status.metrics.tokens_used}")
-        print(f"  Cost: ${status.metrics.cost_usd:.4f}")
-        print(f"  Duration: {status.metrics.duration_seconds:.2f}s")
+    # Optional: fetch usage totals from task listings
+    tasks, _ = client.list_tasks(limit=50)
+    usage = next((t.total_token_usage for t in tasks if t.task_id == handle.task_id), None)
+    if usage:
+        print(f"  Tokens: total={usage.total_tokens}, prompt={usage.prompt_tokens}, completion={usage.completion_tokens}")
+        print(f"  Cost: ${usage.cost_usd:.6f}")
 elif status.status == TaskStatusEnum.FAILED:
     print("✗ Task failed!")
     print(f"  Error: {status.error_message}")

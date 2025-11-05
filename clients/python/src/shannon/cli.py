@@ -36,6 +36,18 @@ def main():
     submit_parser.add_argument("--wait", action="store_true", help="Wait for completion")
     submit_parser.add_argument("--idempotency-key", help="Idempotency key for deduplicated submission")
     submit_parser.add_argument("--traceparent", help="W3C traceparent header for distributed tracing")
+    submit_parser.add_argument("--model-tier", choices=["small", "medium", "large"], help="Model tier selection")
+    submit_parser.add_argument("--model-override", help="Specific model override (e.g., gpt-5-nano-2025-08-07)")
+    submit_parser.add_argument(
+        "--provider-override",
+        choices=["openai", "anthropic", "google", "groq", "xai", "deepseek", "qwen", "zai", "ollama", "mistral", "cohere"],
+        help="Force a specific provider",
+    )
+    submit_parser.add_argument(
+        "--mode",
+        choices=["simple", "standard", "complex", "supervisor"],
+        help="Execution mode hint",
+    )
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Get task status")
@@ -101,6 +113,10 @@ def main():
                 session_id=args.session_id,
                 idempotency_key=args.idempotency_key,
                 traceparent=args.traceparent,
+                model_tier=args.model_tier,
+                model_override=args.model_override,
+                provider_override=args.provider_override,
+                mode=args.mode,
             )
             print(f"Task submitted:")
             print(f"  Task ID: {handle.task_id}")

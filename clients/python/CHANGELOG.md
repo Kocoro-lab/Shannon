@@ -27,3 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Approval workflow support
 - Template-based task execution
 - Custom labels and context overrides
+
+## [0.2.0] - 2025-11-05
+
+### Added
+- Model selection parameters to both async and sync clients:
+  - `model_tier` (small|medium|large)
+  - `model_override`
+  - `provider_override`
+  - `mode` (simple|standard|complex|supervisor)
+- CLI flags for model selection (`--model-tier`, `--model-override`, `--provider-override`, `--mode`).
+- Completed `EventType` enum with additional event types (e.g., `AGENT_THINKING`, `PROGRESS`, `DATA_PROCESSING`, `TEAM_STATUS`, etc.).
+- Optional WebSocket streaming helper: `AsyncShannonClient.stream_ws()` and `ShannonClient.stream_ws()` (requires `websockets`).
+
+### Changed
+- Type hints: use `Literal` for `model_tier` and `mode` for better editor support.

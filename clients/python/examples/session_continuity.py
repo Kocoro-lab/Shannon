@@ -27,6 +27,8 @@ handle1 = client.submit_task(
     "My name is Alice and I'm working on a Python analytics dashboard. "
     "I need help optimizing database queries.",
     session_id=session_id,
+    model_tier="small",
+    mode="simple",
 )
 print(f"Task 1 ID: {handle1.task_id}")
 print(handle1.result(timeout=60))

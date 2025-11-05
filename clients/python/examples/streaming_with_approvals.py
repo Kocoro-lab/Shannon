@@ -91,8 +91,11 @@ status = client.get_status(handle.task_id)
 print(f"Final status: {status.status.value}")
 if status.result:
     print(f"Result: {status.result}")
-if status.metrics:
-    print(f"Tokens used: {status.metrics.tokens_used}")
-    print(f"Cost: ${status.metrics.cost_usd:.4f}")
+# Optional: fetch usage totals from task listings
+tasks, _ = client.list_tasks(limit=50)
+usage = next((t.total_token_usage for t in tasks if t.task_id == handle.task_id), None)
+if usage:
+    print(f"Tokens: total={usage.total_tokens}, prompt={usage.prompt_tokens}, completion={usage.completion_tokens}")
+    print(f"Cost: ${usage.cost_usd:.6f}")
 
 client.close()

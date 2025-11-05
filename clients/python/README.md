@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.2.0a1 (Alpha)
+**Version:** 0.2.0
 
 ## Installation
 
@@ -45,6 +45,28 @@ print(f"Progress: {status.progress:.1%}")
 client.close()
 ```
 
+### Model Selection (cost/control)
+
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+
+# Choose by tier (small|medium|large), or override model/provider explicitly
+handle = client.submit_task(
+    "Summarize this document",
+    model_tier="small",
+    # model_override="gpt-5-nano-2025-08-07",
+    # provider_override="openai",
+    # mode="standard",  # simple|standard|complex|supervisor
+)
+
+final = client.wait(handle.task_id)
+print(final.result)
+
+client.close()
+```
+
 ## CLI Examples
 
 ```bash
@@ -64,6 +86,7 @@ Global flags:
 | Command | Arguments | Description | HTTP Endpoint |
 |--------|-----------|-------------|---------------|
 | `submit` | `query` `--session-id` `--wait` `--idempotency-key` `--traceparent` | Submit a task (optionally wait) | `POST /api/v1/tasks` |
+|          | `--model-tier` `--model-override` `--provider-override` `--mode` | Model selection and routing | |
 | `status` | `task_id` | Get task status | `GET /api/v1/tasks/{id}` |
 | `cancel` | `task_id` `--reason` | Cancel a running or queued task | `POST /api/v1/tasks/{id}/cancel` |
 | `stream` | `workflow_id` `--types=a,b,c` `--traceparent` | Stream events via SSE (optionally filter types) | `GET /api/v1/stream/sse?workflow_id=...` |
@@ -76,6 +99,7 @@ Global flags:
 One‑line examples:
 
 - `submit`: `python -m shannon.cli --base-url http://localhost:8080 submit "Analyze quarterly revenue" --session-id my-session --wait`
+- `submit` (with model selection): `python -m shannon.cli --base-url http://localhost:8080 submit "Summarize" --model-tier small --mode simple`
 - `status`: `python -m shannon.cli --base-url http://localhost:8080 status task-123`
 - `cancel`: `python -m shannon.cli --base-url http://localhost:8080 cancel task-123 --reason "No longer needed"`
 - `stream`: `python -m shannon.cli --base-url http://localhost:8080 stream workflow-123 --types WORKFLOW_STARTED,LLM_OUTPUT,WORKFLOW_COMPLETED`
@@ -108,12 +132,31 @@ asyncio.run(main())
 - ✅ HTTP-only client using httpx
 - ✅ Task submission, status, wait, cancel
 - ✅ Event streaming via HTTP SSE (resume + filtering)
+- ✅ Optional WebSocket streaming helper (`client.stream_ws`) — requires `pip install websockets`
 - ✅ Approval decision endpoint
 - ✅ Session endpoints: list/get/history/events/update title/delete
 - ✅ CLI tool (submit, status, stream, approve, sessions)
 - ✅ Async-first design with sync wrapper
 - ✅ Type-safe enums (EventType, TaskStatusEnum)
 - ✅ Error mapping for common HTTP codes
+
+## Usage and Cost
+
+Token usage and cost aggregates are available from task listings. Use `list_tasks()` and read `total_token_usage` for each task.
+
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+tasks, total = client.list_tasks(limit=10)
+
+for t in tasks:
+    tu = t.total_token_usage
+    if tu:
+        print(f"{t.task_id}: total={tu.total_tokens}, prompt={tu.prompt_tokens}, completion={tu.completion_tokens}, cost=${tu.cost_usd:.6f}")
+```
+
+Note: `get_status()` returns status/result; it does not include usage totals.
 
 ## Examples
 

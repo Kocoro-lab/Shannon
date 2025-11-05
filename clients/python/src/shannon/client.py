@@ -7,7 +7,7 @@ import json
 from datetime import datetime
 import logging
 import re
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union, Literal
 
 import httpx
 
@@ -164,6 +164,10 @@ class AsyncShannonClient:
         context: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         traceparent: Optional[str] = None,
+        model_tier: Optional[Literal["small", "medium", "large"]] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """
@@ -198,6 +202,14 @@ class AsyncShannonClient:
             payload["session_id"] = session_id
         if context:
             payload["context"] = context
+        if mode:
+            payload["mode"] = mode
+        if model_tier:
+            payload["model_tier"] = model_tier
+        if model_override:
+            payload["model_override"] = model_override
+        if provider_override:
+            payload["provider_override"] = provider_override
 
         try:
             extra_headers: Dict[str, str] = {}
@@ -241,6 +253,10 @@ class AsyncShannonClient:
         context: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         traceparent: Optional[str] = None,
+        model_tier: Optional[Literal["small", "medium", "large"]] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
         timeout: Optional[float] = None,
     ) -> tuple[TaskHandle, str]:
         """
@@ -274,6 +290,14 @@ class AsyncShannonClient:
             payload["session_id"] = session_id
         if context:
             payload["context"] = context
+        if mode:
+            payload["mode"] = mode
+        if model_tier:
+            payload["model_tier"] = model_tier
+        if model_override:
+            payload["model_override"] = model_override
+        if provider_override:
+            payload["provider_override"] = provider_override
 
         try:
             extra_headers: Dict[str, str] = {}
@@ -350,9 +374,13 @@ class AsyncShannonClient:
             except KeyError:
                 status = TaskStatusEnum.FAILED
 
-            # Parse result
+            # Parse result (check both result and response fields)
             result = None
-            if data.get("response"):
+            # Prioritize direct result field (current API format)
+            if data.get("result"):
+                result = data["result"]
+            # Fall back to response field for backward compatibility
+            elif data.get("response"):
                 if isinstance(data["response"], dict):
                     result = data["response"].get("result")
                 else:
@@ -978,6 +1006,101 @@ class AsyncShannonClient:
                 f"Failed to delete session: {str(e)}", details={"http_error": str(e)}
             )
 
+    # ===== Health & Discovery =====
+
+    async def health(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Check service health status.
+
+        Args:
+            timeout: Request timeout
+
+        Returns:
+            Health status dictionary
+
+        Raises:
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/health",
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get health status: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def readiness(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Check service readiness status.
+
+        Args:
+            timeout: Request timeout
+
+        Returns:
+            Readiness status dictionary
+
+        Raises:
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/readiness",
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get readiness status: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_openapi_spec(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """
+        Get OpenAPI 3.0 specification.
+
+        Args:
+            timeout: Request timeout
+
+        Returns:
+            OpenAPI spec dictionary
+
+        Raises:
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/openapi.json",
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get OpenAPI spec: {str(e)}", details={"http_error": str(e)}
+            )
+
     # ===== Streaming (SSE and WebSocket) =====
 
     async def stream(
@@ -1182,6 +1305,62 @@ class AsyncShannonClient:
             stream_id=data.get("stream_id") or event_id,
         )
 
+    async def stream_ws(
+        self,
+        workflow_id: str,
+        *,
+        types: Optional[List[Union[str, EventType]]] = None,
+        last_event_id: Optional[str] = None,
+        traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[Event]:
+        """
+        Stream events via WebSocket if the optional 'websockets' package is installed.
+
+        Note: SSE is the preferred and default streaming mechanism. WebSocket is
+        provided for environments that need WS specifically.
+        """
+        try:
+            import websockets  # type: ignore
+        except Exception:
+            raise errors.ValidationError(
+                "WebSocket streaming requires 'websockets'. Install with: pip install websockets",
+                code="MISSING_DEP",
+            )
+
+        # Build ws url
+        base = self.base_url.replace("https://", "wss://").replace("http://", "ws://")
+        params: List[str] = [f"workflow_id={workflow_id}"]
+        if types:
+            t = [t.value if isinstance(t, EventType) else t for t in types]
+            params.append("types=" + ",".join(t))
+        if last_event_id:
+            params.append(f"last_event_id={last_event_id}")
+        qs = "&".join(params)
+        uri = f"{base}/api/v1/stream/ws?{qs}"
+
+        # Headers
+        headers: List[tuple[str, str]] = []
+        if self.bearer_token:
+            headers.append(("Authorization", f"Bearer {self.bearer_token}"))
+        elif self.api_key:
+            headers.append(("X-API-Key", self.api_key))
+        if traceparent:
+            headers.append(("traceparent", traceparent))
+
+        # Timeout handling: websockets.connect has 'open_timeout' and 'close_timeout'
+        connect_kwargs = {}
+        if timeout is not None:
+            connect_kwargs["open_timeout"] = timeout
+
+        async with websockets.connect(uri, extra_headers=headers, **connect_kwargs) as ws:
+            async for message in ws:
+                try:
+                    data = json.loads(message)
+                except Exception:
+                    continue
+                yield self._parse_sse_event(data)
+
     async def close(self):
         """Close HTTP client."""
         if self._http_client:
@@ -1243,6 +1422,10 @@ class ShannonClient:
         context: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         traceparent: Optional[str] = None,
+        model_tier: Optional[Literal["small", "medium", "large"]] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """Submit a task (blocking)."""
@@ -1253,6 +1436,10 @@ class ShannonClient:
                 context=context,
                 idempotency_key=idempotency_key,
                 traceparent=traceparent,
+                model_tier=model_tier,
+                model_override=model_override,
+                provider_override=provider_override,
+                mode=mode,
                 timeout=timeout,
             )
         )
@@ -1267,6 +1454,10 @@ class ShannonClient:
         context: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         traceparent: Optional[str] = None,
+        model_tier: Optional[Literal["small", "medium", "large"]] = None,
+        model_override: Optional[str] = None,
+        provider_override: Optional[str] = None,
+        mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
         timeout: Optional[float] = None,
     ) -> tuple[TaskHandle, str]:
         """Submit task and get stream URL (blocking)."""
@@ -1277,6 +1468,10 @@ class ShannonClient:
                 context=context,
                 idempotency_key=idempotency_key,
                 traceparent=traceparent,
+                model_tier=model_tier,
+                model_override=model_override,
+                provider_override=provider_override,
+                mode=mode,
                 timeout=timeout,
             )
         )
@@ -1399,6 +1594,19 @@ class ShannonClient:
         """Delete session (blocking)."""
         return self._run(self._async_client.delete_session(session_id, timeout))
 
+    # Health & Discovery
+    def health(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Get health status (blocking)."""
+        return self._run(self._async_client.health(timeout))
+
+    def readiness(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Get readiness status (blocking)."""
+        return self._run(self._async_client.readiness(timeout))
+
+    def get_openapi_spec(self, timeout: Optional[float] = None) -> Dict[str, Any]:
+        """Get OpenAPI spec (blocking)."""
+        return self._run(self._async_client.get_openapi_spec(timeout))
+
     # Streaming
     def stream(
         self,
@@ -1433,6 +1641,38 @@ class ShannonClient:
                 yield event
 
         # Convert async generator to sync iterator
+        async_gen = _async_gen()
+        try:
+            while True:
+                try:
+                    yield loop.run_until_complete(async_gen.__anext__())
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.run_until_complete(async_gen.aclose())
+
+    def stream_ws(
+        self,
+        workflow_id: str,
+        *,
+        types: Optional[List[Union[str, EventType]]] = None,
+        last_event_id: Optional[str] = None,
+        traceparent: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> Iterator[Event]:
+        """WebSocket streaming (blocking iterator). Requires 'websockets'."""
+        loop = self._get_loop()
+
+        async def _async_gen():
+            async for event in self._async_client.stream_ws(
+                workflow_id,
+                types=types,
+                last_event_id=last_event_id,
+                traceparent=traceparent,
+                timeout=timeout,
+            ):
+                yield event
+
         async_gen = _async_gen()
         try:
             while True:
