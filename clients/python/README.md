@@ -127,6 +127,26 @@ async def main():
 asyncio.run(main())
 ```
 
+### Async streaming (tip)
+
+When streaming events asynchronously, break out of the `async for` before calling other client methods (don’t `await` inside the loop):
+
+```python
+import asyncio
+from shannon import AsyncShannonClient, EventType
+
+async def main():
+    async with AsyncShannonClient(base_url="http://localhost:8080") as client:
+        h = await client.submit_task("Complex analysis")
+        async for e in client.stream(h.workflow_id, types=[EventType.LLM_OUTPUT, EventType.WORKFLOW_COMPLETED]):
+            if e.type == EventType.WORKFLOW_COMPLETED:
+                break
+        final = await client.wait(h.task_id)
+        print(f"Result: {final.result}")
+
+asyncio.run(main())
+```
+
 ## Features
 
 - ✅ HTTP-only client using httpx

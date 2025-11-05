@@ -160,41 +160,41 @@ func (vm *ValidationMiddleware) validateOptionalStatus(w http.ResponseWriter, r 
 	return true
 }
 
-var allowedEventTypes = map[string]struct{}{
-	"WORKFLOW_STARTED": {},
-	"AGENT_STARTED":    {},
-	"AGENT_COMPLETED":  {},
-	"ERROR_OCCURRED":   {},
-}
-
 func (vm *ValidationMiddleware) validateOptionalTypes(w http.ResponseWriter, r *http.Request) bool {
-	t := r.URL.Query().Get("types")
-	if t == "" {
-		return true
-	}
-	for _, typ := range strings.Split(t, ",") {
-		typ = strings.TrimSpace(typ)
-		if typ == "" {
-			continue
-		}
-		if _, ok := allowedEventTypes[typ]; !ok {
-			vm.sendBadRequest(w, "Invalid event type in types")
-			return false
-		}
-	}
-	return true
+    // Do not enforce a static allowlist here.
+    // The orchestrator/admin server performs filtering; unknown types simply yield no events.
+    // Accept any non-empty comma-separated tokens and let downstream handle semantics.
+    _ = r.URL.Query().Get("types")
+    return true
 }
 
 func (vm *ValidationMiddleware) validateOptionalLastEventID(w http.ResponseWriter, r *http.Request) bool {
-	v := r.URL.Query().Get("last_event_id")
-	if v == "" {
-		return true
-	}
-	if n, err := strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
-		vm.sendBadRequest(w, "Invalid last_event_id")
-		return false
-	}
-	return true
+    v := r.URL.Query().Get("last_event_id")
+    if v == "" {
+        return true
+    }
+    // Accept either a numeric sequence or a Redis stream ID (e.g., 1700000000000-0)
+    if strings.Contains(v, "-") {
+        parts := strings.SplitN(v, "-", 2)
+        if len(parts) != 2 {
+            vm.sendBadRequest(w, "Invalid last_event_id")
+            return false
+        }
+        if _, err := strconv.ParseInt(parts[0], 10, 64); err != nil {
+            vm.sendBadRequest(w, "Invalid last_event_id")
+            return false
+        }
+        if _, err := strconv.ParseInt(parts[1], 10, 64); err != nil {
+            vm.sendBadRequest(w, "Invalid last_event_id")
+            return false
+        }
+        return true
+    }
+    if n, err := strconv.ParseInt(v, 10, 64); err != nil || n < 0 {
+        vm.sendBadRequest(w, "Invalid last_event_id")
+        return false
+    }
+    return true
 }
 
 func (vm *ValidationMiddleware) sendBadRequest(w http.ResponseWriter, msg string) {

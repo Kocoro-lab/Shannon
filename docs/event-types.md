@@ -594,13 +594,15 @@ Some event types require feature gates to be enabled:
 
 **SSE:**
 ```bash
-GET /stream/sse?workflow_id={id}&types={csv}&last_event_id={n}
+GET /stream/sse?workflow_id={id}&types={csv}&last_event_id={id-or-seq}
 ```
 
 **WebSocket:**
 ```bash
-GET /stream/ws?workflow_id={id}&types={csv}&last_event_id={n}
+GET /stream/ws?workflow_id={id}&types={csv}&last_event_id={id-or-seq}
 ```
+
+Note: `last_event_id` accepts either a Redis stream ID (e.g., `1700000000000-0`) or a numeric sequence. When numeric, replay includes events with `seq > last_event_id`.
 
 **gRPC:**
 ```protobuf

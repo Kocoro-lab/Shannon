@@ -215,13 +215,25 @@ The gateway enforces per-user fixed-window rate limits:
 
 ### SSE Streaming
 
-Stream real-time events for a task:
+Stream real-time events for a task (with optional filters and resume):
 
 ```bash
-# Stream task events via SSE
-curl -N -H "X-API-Key: sk_test_123456" \
+# Unfiltered
+curl -N -H "X-API-Key: $API_KEY" \
   "http://localhost:8080/api/v1/stream/sse?workflow_id={task_id}"
+
+# Filter by event types
+curl -N -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/stream/sse?workflow_id={task_id}&types=LLM_OUTPUT,WORKFLOW_COMPLETED"
+
+# Resume using Last-Event-ID (Redis stream ID or numeric seq)
+curl -N -H "X-API-Key: $API_KEY" \
+  "http://localhost:8080/api/v1/stream/sse?workflow_id={task_id}&last_event_id=1700000000000-0"
 ```
+
+Notes:
+- The gateway forwards filters and accepts any event types; unknown types simply yield no events.
+- `last_event_id` supports both Redis stream IDs and numeric sequences.
 
 ### Environment Variables
 

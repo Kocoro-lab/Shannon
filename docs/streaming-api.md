@@ -16,7 +16,7 @@ This document describes the minimal, deterministic streaming interfaces exposed 
 - Request fields:
   - `workflow_id` (required)
   - `types[]` (optional) — filter by event types
-  - `last_event_id` (optional) — resume with events where `seq > last_event_id`
+  - `last_event_id` (optional) — resume point; accepts either a Redis `stream_id` (preferred) or a numeric `seq`. When a numeric value is used, replay includes events where `seq > last_event_id`.
 - Response: `TaskUpdate` mirrors the event model.
 
 Example (pseudo‑Go):
@@ -37,7 +37,7 @@ for {
 
 ## SSE: HTTP `/stream/sse`
 
-- Method: `GET /stream/sse?workflow_id=<id>&types=<csv>&last_event_id=<n>`
+- Method: `GET /stream/sse?workflow_id=<id>&types=<csv>&last_event_id=<id-or-seq>`
 - Headers: supports `Last-Event-ID` for browser auto‑resume.
 - CORS: `Access-Control-Allow-Origin: *` (dev‑friendly; front door should enforce auth in prod).
 
@@ -48,12 +48,12 @@ curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=AGENT_STARTED,AG
 ```
 
 Notes:
-- Server emits `id` as the Redis `stream_id` when available (preferred) or falls back to numeric `seq`; browsers can reconnect using `Last-Event-ID`.
+- Server emits `id` as the Redis `stream_id` when available (preferred) or falls back to numeric `seq`. You can reconnect using the `Last-Event-ID` header or `last_event_id` query param with either form.
 - Heartbeats are sent as SSE comments every ~10s to keep intermediaries alive.
 
 ## WebSocket: HTTP `/stream/ws`
 
-- Method: `GET /stream/ws?workflow_id=<id>&types=<csv>&last_event_id=<n>`
+- Method: `GET /stream/ws?workflow_id=<id>&types=<csv>&last_event_id=<id-or-seq>`
 - Messages: JSON objects matching the event model.
 - Heartbeats: server pings every ~20s; client should reply with pong.
 
@@ -117,6 +117,11 @@ shannon stream "task-user-1234567890"
 - This prevents indefinite hanging when streaming non-existent workflows
 - The 30s timeout balances responsiveness with allowing slow workflow startup
 - Heartbeats keep connections alive through proxies during validation period
+
+### Gateway Behavior
+
+- The HTTP gateway forwards streaming filters to the orchestrator and accepts any event types. Unknown types simply yield no events.
+- `last_event_id` accepts both numeric sequences and Redis stream IDs (e.g., `1700000000000-0`).
 
 ## Dynamic Teams (Signals) + Team Events
 
@@ -262,10 +267,24 @@ function WorkflowStream({ workflowId }) {
 - Verify workflow_id exists and is running
 - Check that `streaming_v1` version gate is enabled in the workflow
 - Ensure admin HTTP port (8081) is accessible
+- If using `types`, make sure the workflow actually emits those event types
 
 **"Events missing after reconnect"**
 - Use `last_event_id` parameter or `Last-Event-ID` header
 - Replay reads from the bounded Redis Stream; very old events may be pruned once the stream (~256 items) evicts them
+
+**Python async: RuntimeError when awaiting inside async-for**
+- Do not `await` other client calls inside the `async for` over the stream. Break out first, then `await`:
+
+```python
+async with AsyncShannonClient() as client:
+    h = await client.submit_task("Complex analysis")
+    async for e in client.stream(h.workflow_id, types=["LLM_OUTPUT","WORKFLOW_COMPLETED"]):
+        if e.type == "WORKFLOW_COMPLETED":
+            break
+    final = await client.wait(h.task_id)
+    print(final.result)
+```
 
 **"High memory usage"**
 - Reduce ring buffer capacity in config
