@@ -18,6 +18,7 @@ func (a *Activities) UpdateSessionResult(ctx context.Context, input SessionUpdat
 		zap.String("session_id", input.SessionID),
 		zap.Int("tokens_used", input.TokensUsed),
 		zap.Int("agents_used", input.AgentsUsed),
+		zap.Int("result_length", len(input.Result)),
 	)
 
 	// Validate input
@@ -77,7 +78,7 @@ func (a *Activities) UpdateSessionResult(ctx context.Context, input SessionUpdat
 	// Record metrics
 	metrics.RecordSessionTokens(input.TokensUsed)
 
-	// Add assistant message to history
+	// Add assistant message to history directly on sess to avoid stale overwrite
 	if input.Result != "" {
 		message := session.Message{
 			ID:         fmt.Sprintf("msg-%d", time.Now().UnixNano()),
@@ -87,8 +88,12 @@ func (a *Activities) UpdateSessionResult(ctx context.Context, input SessionUpdat
 			TokensUsed: input.TokensUsed,
 			CostUSD:    costUSD,
 		}
-		if err := a.sessionManager.AddMessage(ctx, input.SessionID, message); err != nil {
-			a.logger.Warn("Failed to add message to history", zap.Error(err))
+		sess.History = append(sess.History, message)
+
+		// Enforce max history limit (default 500)
+		const maxHistory = 500
+		if len(sess.History) > maxHistory {
+			sess.History = sess.History[len(sess.History)-maxHistory:]
 		}
 	}
 
