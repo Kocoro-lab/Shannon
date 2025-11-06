@@ -38,6 +38,11 @@ aiohttp==3.11.11
 aiofiles==24.1.0
 watchdog==6.0.0
 
+# Web content extraction
+beautifulsoup4==4.12.3
+html2text==2024.2.26
+lxml==5.1.0
+
 # Observability
 opentelemetry-api==1.29.0
 opentelemetry-sdk==1.29.0

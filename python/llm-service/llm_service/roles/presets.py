@@ -64,6 +64,14 @@ try:
 except Exception:
     pass
 
+# Angfa Store GA4 analytics role (vendor-specific, not committed)
+try:
+    from .vendor.angfa_analytics import ANGFA_GA4_ANALYTICS_PRESET
+
+    _PRESETS["angfa_ga4_analytics"] = ANGFA_GA4_ANALYTICS_PRESET
+except Exception:
+    pass
+
 
 def get_role_preset(name: str) -> Dict[str, object]:
     """Return a role preset by name with safe default fallback.

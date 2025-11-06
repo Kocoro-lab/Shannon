@@ -96,14 +96,30 @@ class ExaSearchProvider(WebSearchProvider):
         self.api_key = api_key
         self.base_url = "https://api.exa.ai/search"
 
-    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        search_type: str = "auto",
+        category: str = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Search using Exa AI.
+
+        Args:
+            query: Search query
+            max_results: Number of results (1-100)
+            search_type: "neural" (semantic), "keyword" (exact), or "auto" (intelligent blend)
+            category: Optional filter - "company", "research paper", "news", "pdf",
+                     "github", "tweet", "personal site", "linkedin", "financial report"
+        """
         headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
 
         # Use Exa's latest API parameters with proper text content extraction
         payload = {
             "query": query,
             "numResults": max_results,
-            "type": "auto",  # Let Exa choose between neural and keyword search
+            "type": search_type,  # neural, keyword, or auto
             "useAutoprompt": True,  # Enhance query for better results
             "contents": {
                 "text": {
@@ -117,6 +133,10 @@ class ExaSearchProvider(WebSearchProvider):
             },
             "liveCrawl": "fallback",  # Use live crawl if cached results are stale
         }
+
+        # Add category filter if specified
+        if category:
+            payload["category"] = category
 
         async with aiohttp.ClientSession() as session:
             timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
@@ -612,11 +632,26 @@ class WebSearchTool(Tool):
             ToolParameter(
                 name="max_results",
                 type=ToolParameterType.INTEGER,
-                description="Maximum number of results to return",
+                description="Maximum number of results to return (Exa: up to 100 for neural search, 10 for keyword)",
                 required=False,
-                default=5,
+                default=10,
                 min_value=1,
-                max_value=20,
+                max_value=100,
+            ),
+            ToolParameter(
+                name="search_type",
+                type=ToolParameterType.STRING,
+                description="Search type (Exa only): 'neural' for semantic search, 'keyword' for exact match, 'auto' for intelligent blend",
+                required=False,
+                default="auto",
+                enum=["neural", "keyword", "auto"],
+            ),
+            ToolParameter(
+                name="category",
+                type=ToolParameterType.STRING,
+                description="Content category filter (Exa only): company, research paper, news, pdf, github, tweet, personal site, linkedin, financial report",
+                required=False,
+                enum=["company", "research paper", "news", "pdf", "github", "tweet", "personal site", "linkedin", "financial report"],
             ),
         ]
 
@@ -639,7 +674,9 @@ class WebSearchTool(Tool):
             )
 
         query = kwargs["query"]
-        max_results = kwargs.get("max_results", 5)
+        max_results = kwargs.get("max_results", 10)
+        search_type = kwargs.get("search_type", "auto")
+        category = kwargs.get("category")
 
         # Validate max_results parameter
         try:
@@ -653,7 +690,14 @@ class WebSearchTool(Tool):
             logger.info(
                 f"Executing web search with {self.provider.__class__.__name__}: {query}"
             )
-            results = await self.provider.search(query, max_results)
+
+            # Pass Exa-specific parameters if using ExaSearchProvider
+            if isinstance(self.provider, ExaSearchProvider):
+                results = await self.provider.search(
+                    query, max_results, search_type=search_type, category=category
+                )
+            else:
+                results = await self.provider.search(query, max_results)
 
             if not results:
                 return ToolResult(
