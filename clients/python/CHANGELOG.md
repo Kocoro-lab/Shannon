@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Template-based task execution
 - Custom labels and context overrides
 
+## [0.2.1] - 2025-11-06
+
+### Fixed
+- WebSocket streaming compatibility with websockets 15.x (changed `extra_headers` to `additional_headers` parameter)
+
 ## [0.2.0] - 2025-11-05
 
 ### Added

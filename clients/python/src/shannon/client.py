@@ -1353,7 +1353,7 @@ class AsyncShannonClient:
         if timeout is not None:
             connect_kwargs["open_timeout"] = timeout
 
-        async with websockets.connect(uri, extra_headers=headers, **connect_kwargs) as ws:
+        async with websockets.connect(uri, additional_headers=headers, **connect_kwargs) as ws:
             async for message in ws:
                 try:
                     data = json.loads(message)
