@@ -27,6 +27,33 @@ Response headers include `X-Workflow-ID` and `X-Session-ID`.
 - `provider_override` (string, optional) — force specific provider (e.g., `openai`, `anthropic`)
   - Top-level alternative to `context.provider_override`
 
+### Research Strategy Controls (mapped into context)
+
+These optional fields are validated by the Gateway and then added to the workflow `context`:
+
+- `research_strategy` — `quick | standard | deep | academic`
+- `max_iterations` — integer (1..50)
+- `max_concurrent_agents` — integer (1..20)
+- `enable_verification` — boolean (enables claim verification when citations exist)
+- `report_mode` — boolean (formatting hints for synthesis/reporting)
+
+Example:
+
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "Weekly research briefing",
+    "research_strategy": "deep",
+    "max_iterations": 10,
+    "max_concurrent_agents": 5,
+    "enable_verification": true,
+    "report_mode": true
+  }'
+```
+
+Note: Verification effectiveness depends on passing citation content/snippets; see `docs/deep-research.md` for current limitations.
+
 Example:
 
 ```bash

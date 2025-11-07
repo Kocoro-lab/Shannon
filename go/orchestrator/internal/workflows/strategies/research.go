@@ -1,8 +1,9 @@
 package strategies
 
 import (
-	"fmt"
-	"time"
+    "fmt"
+    "strings"
+    "time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -211,14 +212,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			}, err
 		}
 
-		// Convert React result to agent result for synthesis
-		agentResults = append(agentResults, activities.AgentExecutionResult{
-			AgentID:    "react-researcher",
-			Response:   reactResult.FinalResult,
-			TokensUsed: reactResult.TotalTokens,
-			Success:    true,
-			ModelUsed:  modelTier,
-		})
+		// Use the actual agent results from ReAct (includes tool executions for citation collection)
+		agentResults = append(agentResults, reactResult.AgentResults...)
 		totalTokens = reactResult.TotalTokens
 
 	} else {
@@ -347,14 +342,65 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		"agent_count", len(agentResults),
 	)
 
-	var synthesis activities.SynthesisResult
-	err = workflow.ExecuteActivity(ctx,
-		activities.SynthesizeResultsLLM,
-		activities.SynthesisInput{
-			Query:        input.Query,
-			AgentResults: agentResults,
-			Context:      baseContext,
-		}).Get(ctx, &synthesis)
+    // Collect citations from agent tool outputs and inject into context for synthesis/formatting
+    // Also retain them for metadata/verification.
+    var collectedCitations []metadata.Citation
+    // Build lightweight results array with tool_executions to feed metadata.CollectCitations
+    {
+        var resultsForCitations []interface{}
+        for _, ar := range agentResults {
+            // Build tool_executions payload compatible with citations extractor
+            var toolExecs []interface{}
+            if len(ar.ToolExecutions) > 0 {
+                for _, te := range ar.ToolExecutions {
+                    toolExecs = append(toolExecs, map[string]interface{}{
+                        "tool":    te.Tool,
+                        "success": te.Success,
+                        "output":  te.Output,
+                        "error":   te.Error,
+                    })
+                }
+            }
+            resultsForCitations = append(resultsForCitations, map[string]interface{}{
+                "agent_id":        ar.AgentID,
+                "tool_executions": toolExecs,
+                "response":        ar.Response,
+            })
+        }
+
+        // Use workflow timestamp for determinism; let collector default max to 15
+        now := workflow.Now(ctx)
+        citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+        if len(citations) > 0 {
+            collectedCitations = citations
+            // Format into numbered list lines expected by FormatReportWithCitations
+            var b strings.Builder
+            for i, c := range citations {
+                idx := i + 1
+                title := c.Title
+                if title == "" {
+                    title = c.Source
+                }
+                if c.PublishedDate != nil {
+                    fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+                } else {
+                    fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+                }
+            }
+            baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
+            baseContext["citation_count"] = len(citations)
+        }
+    }
+
+    var synthesis activities.SynthesisResult
+    err = workflow.ExecuteActivity(ctx,
+        activities.SynthesizeResultsLLM,
+        activities.SynthesisInput{
+            Query:            input.Query,
+            AgentResults:     agentResults,
+            Context:          baseContext,
+            ParentWorkflowID: input.ParentWorkflowID,
+        }).Get(ctx, &synthesis)
 
 	if err != nil {
 		logger.Error("Synthesis failed", "error", err)
@@ -397,7 +443,32 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		qualityScore = 0.5
 	}
 
-	totalTokens += reflectionTokens
+    totalTokens += reflectionTokens
+
+    // Optional: verify claims if enabled and we have citations
+    var verification activities.VerificationResult
+    verifyEnabled := false
+    if v, ok := baseContext["enable_verification"].(bool); ok {
+        verifyEnabled = v
+    }
+    if verifyEnabled && len(collectedCitations) > 0 {
+        // Convert citations to []interface{} of maps for VerifyClaimsActivity
+        var verCitations []interface{}
+        for _, c := range collectedCitations {
+            m := map[string]interface{}{
+                "url":               c.URL,
+                "title":             c.Title,
+                "source":            c.Source,
+                "credibility_score": c.CredibilityScore,
+                "quality_score":     c.QualityScore,
+            }
+            verCitations = append(verCitations, m)
+        }
+        _ = workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
+            Answer:    finalResult,
+            Citations: verCitations,
+        }).Get(ctx, &verification)
+    }
 
 	// Step 5: Update session and persist results
 	if input.SessionID != "" {
@@ -459,13 +530,30 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
-	meta := map[string]interface{}{
-		"version":       "v2",
-		"complexity":    decomp.ComplexityScore,
-		"quality_score": qualityScore,
-		"agent_count":   len(agentResults),
-		"patterns_used": []string{"react", "parallel", "reflection"},
-	}
+    meta := map[string]interface{}{
+        "version":       "v2",
+        "complexity":    decomp.ComplexityScore,
+        "quality_score": qualityScore,
+        "agent_count":   len(agentResults),
+        "patterns_used": []string{"react", "parallel", "reflection"},
+    }
+    if len(collectedCitations) > 0 {
+        // Export a light citation struct to metadata
+        out := make([]map[string]interface{}, 0, len(collectedCitations))
+        for _, c := range collectedCitations {
+            out = append(out, map[string]interface{}{
+                "url":               c.URL,
+                "title":             c.Title,
+                "source":            c.Source,
+                "credibility_score": c.CredibilityScore,
+                "quality_score":     c.QualityScore,
+            })
+        }
+        meta["citations"] = out
+    }
+    if verification.TotalClaims > 0 || verification.OverallConfidence > 0 {
+        meta["verification"] = verification
+    }
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
 	}

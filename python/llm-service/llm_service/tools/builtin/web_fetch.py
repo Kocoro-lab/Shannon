@@ -14,7 +14,7 @@ Security features:
 import aiohttp
 import os
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Optional, List
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 import html2text

@@ -320,12 +320,27 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
 	isSimple := decomp.ComplexityScore < simpleThreshold && simpleByShape
 
+	// Set parent workflow ID for child workflows to use for unified event streaming
+	// MUST be set BEFORE any strategy workflow routing to ensure events go to parent
+	parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	input.ParentWorkflowID = parentWorkflowID
+
 	// Cognitive program takes precedence if specified
 	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
 		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx); handled {
 			return result, err
 		}
 		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
+	}
+
+	// TEST ONLY: Force ResearchWorkflow via context flag (for citation testing)
+	if v, ok := input.Context["force_research"]; ok {
+		if b, ok := v.(bool); ok && b {
+			logger.Info("Forcing ResearchWorkflow via context flag (test mode)")
+			if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx); handled {
+				return result, err
+			}
+		}
 	}
 
 	// Check if P2P is forced via context
@@ -352,10 +367,6 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			}
 		}
 	}
-
-	// Set parent workflow ID for child workflows to use for unified event streaming
-	parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	input.ParentWorkflowID = parentWorkflowID
 
 	switch {
 	case isSimple && !forceP2P:

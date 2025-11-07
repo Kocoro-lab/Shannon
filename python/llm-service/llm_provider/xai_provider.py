@@ -363,7 +363,8 @@ class XAIProvider(LLMProvider):
         try:
             response = await self.client.responses.create(**params)
         except Exception as exc:
-            import json, logging
+            import json
+            import logging
             logger = logging.getLogger(__name__)
             try:
                 logger.error(

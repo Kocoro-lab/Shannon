@@ -265,15 +265,15 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 			},
 		}
 
-		reflectedResult, reflectedConfidence, reflectionTokens, err := patterns.ReflectOnResult(
-			ctx,
-			input.Query,
-			finalResult,
-			agentResults,
-			input.Context,
-			reflectionConfig,
-			opts,
-		)
+        reflectedResult, reflectedConfidence, reflectionTokens, err := patterns.ReflectOnResult(
+            ctx,
+            input.Query,
+            finalResult,
+            agentResults,
+            ctxMap,
+            reflectionConfig,
+            opts,
+        )
 
 		if err == nil {
 			finalResult = reflectedResult

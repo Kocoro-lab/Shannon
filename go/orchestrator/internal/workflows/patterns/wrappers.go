@@ -154,42 +154,56 @@ func (reflectionPattern) EstimateTokens(input PatternInput) int {
 func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*PatternResult, error) {
 	// Get initial result via a single agent call
 	var initial activities.AgentExecutionResult
-	if input.BudgetMax > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		err := workflow.ExecuteActivity(ctx,
-			constants.ExecuteAgentWithBudgetActivity,
-			activities.BudgetedAgentInput{
-				AgentInput: activities.AgentExecutionInput{
-					Query:     input.Query,
-					AgentID:   "reflection-initial",
-					Context:   input.Context,
-					Mode:      "standard",
-					SessionID: input.SessionID,
-					History:   input.History,
-				},
-				MaxTokens: input.BudgetMax,
-				UserID:    input.UserID,
-				TaskID:    wid,
-				ModelTier: input.ModelTier,
-			},
-		).Get(ctx, &initial)
+    if input.BudgetMax > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if input.Context != nil {
+            if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
+                AgentInput: activities.AgentExecutionInput{
+                    Query:     input.Query,
+                    AgentID:   "reflection-initial",
+                    Context:   input.Context,
+                    Mode:      "standard",
+                    SessionID: input.SessionID,
+                    History:   input.History,
+                    ParentWorkflowID: wid,
+                },
+                MaxTokens: input.BudgetMax,
+                UserID:    input.UserID,
+                TaskID:    wid,
+                ModelTier: input.ModelTier,
+            },
+        ).Get(ctx, &initial)
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		if err := workflow.ExecuteActivity(ctx,
-			activities.ExecuteAgent,
-			activities.AgentExecutionInput{
-				Query:     input.Query,
-				AgentID:   "reflection-initial",
-				Context:   input.Context,
-				Mode:      "standard",
-				SessionID: input.SessionID,
-				History:   input.History,
-			},
-		).Get(ctx, &initial); err != nil {
-			return nil, err
-		}
+        if err := workflow.ExecuteActivity(ctx,
+            activities.ExecuteAgent,
+            activities.AgentExecutionInput{
+                Query:     input.Query,
+                AgentID:   "reflection-initial",
+                Context:   input.Context,
+                Mode:      "standard",
+                SessionID: input.SessionID,
+                History:   input.History,
+                ParentWorkflowID: func() string {
+                    if input.Context != nil {
+                        if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+                            return p
+                        }
+                    }
+                    return ""
+                }(),
+            },
+        ).Get(ctx, &initial); err != nil {
+            return nil, err
+        }
 	}
 
 	// Apply reflection with defaults

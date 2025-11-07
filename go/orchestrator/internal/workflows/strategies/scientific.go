@@ -355,15 +355,15 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		},
 	}
 
-	finalResult, finalConfidence, reflectionTokens, err := patterns.ReflectOnResult(
-		ctx,
-		input.Query,
-		comprehensiveResult,
-		agentResults,
-		input.Context,
-		reflectionConfig,
-		opts,
-	)
+    finalResult, finalConfidence, reflectionTokens, err := patterns.ReflectOnResult(
+        ctx,
+        input.Query,
+        comprehensiveResult,
+        agentResults,
+        totContext,
+        reflectionConfig,
+        opts,
+    )
 
 	if err != nil {
 		logger.Warn("Reflection failed, using synthesis result", "error", err)

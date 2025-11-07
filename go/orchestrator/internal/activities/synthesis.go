@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
@@ -18,13 +19,19 @@ import (
 
 // SynthesizeResults synthesizes results from multiple agents (baseline concatenation)
 func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
-	// Emit synthesis start once for the simple (non-LLM) path
-	wfID := input.ParentWorkflowID
-	if wfID == "" {
-		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-			wfID = info.WorkflowExecution.ID
-		}
-	}
+    // Emit synthesis start once for the simple (non-LLM) path
+    wfID := input.ParentWorkflowID
+    // Fallback to context-provided parent_workflow_id for correlation
+    if wfID == "" && input.Context != nil {
+        if v, ok := input.Context["parent_workflow_id"].(string); ok && v != "" {
+            wfID = v
+        }
+    }
+    if wfID == "" {
+        if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+            wfID = info.WorkflowExecution.ID
+        }
+    }
 	if wfID != "" {
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
@@ -51,6 +58,9 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 			Type:       string(StreamEventLLMOutput),
 			AgentID:    "synthesis",
 			Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+			Payload: map[string]interface{}{
+				"tokens_used": res.TokensUsed,
+			},
 			Timestamp:  time.Now(),
 		})
 		// Event 2: Lightweight tokens summary
@@ -90,12 +100,18 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// LLM-first; fallback to simple synthesis on any failure
 
 	// Emit synthesis start once at the beginning of the LLM attempt
-	wfID := input.ParentWorkflowID
-	if wfID == "" {
-		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-			wfID = info.WorkflowExecution.ID
-		}
-	}
+    wfID := input.ParentWorkflowID
+    // Fallback to context-provided parent_workflow_id for correlation
+    if wfID == "" && input.Context != nil {
+        if v, ok := input.Context["parent_workflow_id"].(string); ok && v != "" {
+            wfID = v
+        }
+    }
+    if wfID == "" {
+        if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+            wfID = info.WorkflowExecution.ID
+        }
+    }
 	if wfID != "" {
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
@@ -120,6 +136,12 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
+	// Ensure synthesis uses capable model tier for high-quality output
+	// Default to "large" if not specified, since synthesis is the final user-facing output
+	if _, hasModelTier := contextMap["model_tier"]; !hasModelTier {
+		contextMap["model_tier"] = "large"
+	}
+
 	// Build synthesis query that includes agent results
 	const maxAgents = 6
 	const maxPerAgentChars = 10000 // Increased for data-heavy responses (analytics, structured data)
@@ -137,6 +159,95 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	fmt.Fprintf(&b, "Please synthesize the following agent results for the query: %s\n\n", input.Query)
+
+	// Add citation instructions for research workflows
+	// Calculate minimum citations required (default to 6, clamp by available citations)
+	minCitations := 6
+	// Derive citation count from context if available
+	if input.Context != nil {
+		if v, ok := input.Context["citation_count"]; ok {
+			switch t := v.(type) {
+			case int:
+				if t < minCitations {
+					minCitations = t
+				}
+			case int32:
+				if int(t) < minCitations {
+					minCitations = int(t)
+				}
+			case int64:
+				if int(t) < minCitations {
+					minCitations = int(t)
+				}
+			case float64:
+				// JSON numbers may be float64; clamp safely
+				if int(t) < minCitations {
+					minCitations = int(t)
+				}
+			}
+		} else if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+			// Fallback: count non-empty lines
+			lines := strings.Split(citationList, "\n")
+			count := 0
+			for _, ln := range lines {
+				if strings.TrimSpace(ln) != "" {
+					count++
+				}
+			}
+			if count > 0 && count < minCitations {
+				minCitations = count
+			}
+		}
+	}
+	if minCitations < 3 {
+		minCitations = 3 // Minimum floor for research synthesis
+	}
+
+    // Detect language from query for language matching
+    queryLanguage := detectLanguage(input.Query)
+    // Keep instruction generic to avoid brittle per-language templates
+    languageInstruction := fmt.Sprintf(
+        "Respond in the same language as the user's query (detected: %s).",
+        queryLanguage,
+    )
+
+	fmt.Fprintf(&b, `# Synthesis Requirements:
+
+	## CRITICAL - Language Matching:
+	%s
+	The user's query is in %s. You MUST respond in the SAME language.
+	DO NOT translate or switch to English unless the query is in English.
+
+	## Citation Integration:
+	- You MUST use AT LEAST %d inline citations from Available Citations
+	- Use inline citations [1], [2] for ALL factual claims
+	- Number sources sequentially WITHOUT GAPS (1, 2, 3, 4... not 1, 3, 5...)
+	- Each unique URL gets ONE citation number only
+
+	## Preserve Source Integrity:
+	- Keep findings VERBATIM when referencing specific data/quotes
+	- Synthesize patterns across sources, but don't paraphrase individual claims
+
+	## Output Structure:
+	1. Executive Summary (2-3 sentences)
+	2. Detailed Findings (with inline citations)
+	3. ## Sources (numbered list at end with format: [1] Title (URL))
+
+	## Quality Standards:
+	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
+	- Flag gaps: "Limited information available on [aspect]"
+	- NEVER fabricate or hallucinate sources
+	- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+
+	`, languageInstruction, queryLanguage, minCitations)
+
+	// Include available citations if present (Phase 2.5 fix)
+	if input.Context != nil {
+		if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+			fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
+		}
+	}
+
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
 
 	count := 0
@@ -169,6 +280,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used": res.TokensUsed,
+				},
 				Timestamp:  time.Now(),
 			})
 			// Emit friendly summary with tokens
@@ -193,11 +307,22 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	// Use /agent/query to leverage role presets and proper model selection
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+
+    // Calculate max_tokens for synthesis without a hard ceiling.
+    // Industry practice: do not truncate final, user-facing output; guide length via prompt.
+    // Base: 4096, plus 1024 per agent result, no artificial cap.
+    maxTokens := 4096 + (len(input.AgentResults) * 1024)
+    logger.Info("Synthesis max_tokens calculated",
+        zap.Int("agent_count", len(input.AgentResults)),
+        zap.Int("max_tokens", maxTokens),
+    )
+
 	reqBody := map[string]interface{}{
 		"query":         b.String(),
 		"context":       contextMap,
 		"allowed_tools": []string{},  // Disable tools during synthesis - we only want formatting
 		"agent_id":      "synthesis", // For observability
+		"max_tokens":    maxTokens,   // Scale with agent count to avoid truncation
 	}
 
 	// If role is present, ensure it's in context
@@ -223,9 +348,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		return simpleSynthesis(ctx, input)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if input.ParentWorkflowID != "" {
-		req.Header.Set("X-Parent-Workflow-ID", input.ParentWorkflowID)
-	}
+    if wfID != "" {
+        req.Header.Set("X-Parent-Workflow-ID", wfID)
+    }
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -241,6 +366,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used": res.TokensUsed,
+				},
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -274,6 +402,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used": res.TokensUsed,
+				},
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -309,6 +440,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used": res.TokensUsed,
+				},
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -351,6 +485,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used": res.TokensUsed,
+				},
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -386,6 +523,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used": res.TokensUsed,
+				},
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -424,20 +564,60 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		zap.String("role", role),
 	)
 
+	// Apply report formatting to ensure all citations appear in Sources
+	finalResponse := out.Response
+	if input.Context != nil {
+		if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+			finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
+		}
+	}
+
+	// Extract usage metadata for event payload
+	provider := ""
+	inputTokens := 0
+	outputTokens := 0
+	costUsd := 0.0
+	if out.Metadata != nil {
+		if p, ok := out.Metadata["provider"].(string); ok {
+			provider = p
+		}
+		if it, ok := out.Metadata["input_tokens"].(float64); ok {
+			inputTokens = int(it)
+		} else if it, ok := out.Metadata["input_tokens"].(int); ok {
+			inputTokens = it
+		}
+		if ot, ok := out.Metadata["output_tokens"].(float64); ok {
+			outputTokens = int(ot)
+		} else if ot, ok := out.Metadata["output_tokens"].(int); ok {
+			outputTokens = ot
+		}
+		if cost, ok := out.Metadata["cost_usd"].(float64); ok {
+			costUsd = cost
+		}
+	}
+
 	// Emit 3-event sequence for synthesis completion:
 	// 1. LLM_OUTPUT (content) - shows synthesized result to user
 	// 2. DATA_PROCESSING (summary) - shows model and token usage metadata
 	// 3. DATA_PROCESSING (completion) - final status message "Final answer ready"
 	// This ordering ensures content is visible before status changes to "ready"
 	if wfID != "" {
-		// Event 1: LLM_OUTPUT with final content (LLM path)
-		streaming.Get().Publish(wfID, streaming.Event{
-			WorkflowID: wfID,
-			Type:       string(StreamEventLLMOutput),
-			AgentID:    "synthesis",
-			Message:    truncateQuery(out.Response, MaxSynthesisOutputChars),
-			Timestamp:  time.Now(),
-		})
+			// Event 1: LLM_OUTPUT with final content (LLM path)
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    "synthesis",
+				Message:    truncateQuery(finalResponse, MaxSynthesisOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used":   out.TokensUsed,
+					"model_used":    model,
+					"provider":      provider,
+					"input_tokens":  inputTokens,
+					"output_tokens": outputTokens,
+					"cost_usd":      costUsd,
+				},
+				Timestamp:  time.Now(),
+			})
 		// Event 2: Synthesis summary with model and token usage (omit model if unknown)
 		summary := fmt.Sprintf("~%d tokens", out.TokensUsed)
 		if model != "" && model != "unknown" {
@@ -460,10 +640,99 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		})
 	}
 
+	// Extract finish_reason safely from metadata
+	finishReason := "stop"
+	if fr, ok := out.Metadata["finish_reason"].(string); ok && fr != "" {
+		finishReason = fr
+	}
+
 	return SynthesisResult{
-		FinalResult: out.Response,
-		TokensUsed:  out.TokensUsed,
+		FinalResult:  finalResponse,
+		TokensUsed:   out.TokensUsed,
+		FinishReason: finishReason,
 	}, nil
+}
+
+// detectLanguage performs simple heuristic language detection based on character ranges
+func detectLanguage(query string) string {
+	if query == "" {
+		return "English"
+	}
+
+	// Count characters by Unicode range
+	var cjk, cyrillic, arabic, latin int
+	for _, r := range query {
+		switch {
+		case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+			cjk++
+		case r >= 0x3040 && r <= 0x309F: // Hiragana
+			cjk++
+		case r >= 0x30A0 && r <= 0x30FF: // Katakana
+			cjk++
+		case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
+			cjk++
+		case r >= 0x0400 && r <= 0x04FF: // Cyrillic
+			cyrillic++
+		case r >= 0x0600 && r <= 0x06FF: // Arabic
+			arabic++
+		case (r >= 0x0041 && r <= 0x005A) || (r >= 0x0061 && r <= 0x007A): // Latin
+			latin++
+		}
+	}
+
+	total := cjk + cyrillic + arabic + latin
+	if total == 0 {
+		return "English" // Default if no recognized characters
+	}
+
+	// Determine language based on character composition
+	cjkPercent := float64(cjk) / float64(total)
+	if cjkPercent > 0.3 {
+		// Distinguish Chinese/Japanese/Korean by character patterns
+		var hiragana, katakana, hangul int
+		for _, r := range query {
+			if r >= 0x3040 && r <= 0x309F {
+				hiragana++
+			}
+			if r >= 0x30A0 && r <= 0x30FF {
+				katakana++
+			}
+			if r >= 0xAC00 && r <= 0xD7AF {
+				hangul++
+			}
+		}
+		if hangul > 0 {
+			return "Korean"
+		}
+		if hiragana > 0 || katakana > 0 {
+			return "Japanese"
+		}
+		return "Chinese"
+	}
+
+	cyrillicPercent := float64(cyrillic) / float64(total)
+	if cyrillicPercent > 0.3 {
+		return "Russian"
+	}
+
+	arabicPercent := float64(arabic) / float64(total)
+	if arabicPercent > 0.3 {
+		return "Arabic"
+	}
+
+	// Check for common non-English Latin script patterns
+	lowerQuery := strings.ToLower(query)
+	if strings.Contains(lowerQuery, "ñ") || strings.Contains(lowerQuery, "¿") || strings.Contains(lowerQuery, "¡") {
+		return "Spanish"
+	}
+	if strings.Contains(lowerQuery, "ç") || strings.Contains(lowerQuery, "à") || strings.Contains(lowerQuery, "è") {
+		return "French"
+	}
+	if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
+		return "German"
+	}
+
+	return "English" // Default for Latin scripts
 }
 
 // truncateForLog returns s truncated to max characters for safe logging
@@ -516,8 +785,9 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 	)
 
 	return SynthesisResult{
-		FinalResult: finalResult,
-		TokensUsed:  totalTokens,
+		FinalResult:  finalResult,
+		TokensUsed:   totalTokens,
+		FinishReason: "stop", // Simple synthesis always completes
 	}, nil
 }
 
@@ -540,6 +810,9 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 			Type:       string(StreamEventLLMOutput),
 			AgentID:    "synthesis",
 			Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
+			Payload: map[string]interface{}{
+				"tokens_used": res.TokensUsed,
+			},
 			Timestamp:  time.Now(),
 		})
 		// Emit a simple summary with tokens

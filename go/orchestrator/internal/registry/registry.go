@@ -84,6 +84,8 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivity(activities.SynthesizeResultsLLM)
 	// Reflection activity for quality evaluation
 	w.RegisterActivity(acts.EvaluateResult)
+	// Claim verification activity (Phase 4)
+	w.RegisterActivityWithOptions(acts.VerifyClaimsActivity, activity.RegisterOptions{Name: "VerifyClaimsActivity"})
 	// Configuration activity
 	w.RegisterActivity(activities.GetWorkflowConfig)
 	// Context compression + store

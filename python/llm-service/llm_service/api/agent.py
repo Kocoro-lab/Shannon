@@ -118,6 +118,7 @@ class AgentResponse(BaseModel):
     tokens_used: int = Field(..., description="Number of tokens used")
     model_used: str = Field(..., description="Model that was used")
     provider: str = Field(default="unknown", description="Provider that served the request")
+    finish_reason: str = Field(default="stop", description="Reason the model stopped generating (stop, length, content_filter, etc.)")
     metadata: Dict[str, Any] = Field(
         default_factory=dict, description="Additional metadata"
     )
@@ -463,6 +464,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     tokens_used=result["tokens_used"],
                     model_used=result["model_used"],
                     provider=interpretation_result.get("provider") or "unknown",
+                    finish_reason=interpretation_result.get("finish_reason", "stop"),
                     metadata={
                         "agent_id": query.agent_id,
                         "mode": query.mode,
@@ -470,6 +472,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         "role": (query.context or {}).get("role")
                         if isinstance(query.context, dict)
                         else None,
+                        "finish_reason": interpretation_result.get("finish_reason", "stop"),
                     },
                 )
 
@@ -716,6 +719,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             tokens_used=result["tokens_used"],
                             model_used=result["model_used"],
                             provider=interpretation_result.get("provider") or "unknown",
+                            finish_reason=interpretation_result.get("finish_reason", "stop"),
                             metadata={
                                 "agent_id": query.agent_id,
                                 "mode": query.mode,
@@ -723,6 +727,7 @@ async def agent_query(request: Request, query: AgentQuery):
                                 "role": (query.context or {}).get("role")
                                 if isinstance(query.context, dict)
                                 else None,
+                                "finish_reason": interpretation_result.get("finish_reason", "stop"),
                             },
                         )
                 except Exception as e:
@@ -740,6 +745,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
                 provider=result_data.get("provider") or "unknown",
+                finish_reason=result_data.get("finish_reason", "stop"),
                 metadata={
                     "agent_id": query.agent_id,
                     "mode": query.mode,
@@ -747,6 +753,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     "role": (query.context or {}).get("role")
                     if isinstance(query.context, dict)
                     else None,
+                    "finish_reason": result_data.get("finish_reason", "stop"),
                 },
             )
         else:
@@ -765,6 +772,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
                 provider="mock",
+                finish_reason="stop",
                 metadata={
                     "agent_id": query.agent_id,
                     "mode": query.mode,
@@ -772,6 +780,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     "role": (query.context or {}).get("role")
                     if isinstance(query.context, dict)
                     else None,
+                    "finish_reason": "stop",
                 },
             )
 
@@ -1133,10 +1142,19 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # System prompt for pure LLM-driven decomposition
         sys = (
-            "You are a planning assistant. Analyze the user's task and determine if it needs decomposition.\n"
-            "IMPORTANT: Process queries in ANY language including English, Chinese, Japanese, Korean, etc.\n"
-            "For SIMPLE queries (single action, direct answer, or basic calculation), set complexity_score < 0.3 and provide a single subtask.\n"
-            "For COMPLEX queries (multiple steps, dependencies), set complexity_score >= 0.3 and decompose into multiple subtasks.\n\n"
+            "You are the lead research supervisor planning a comprehensive strategy.\n"
+            "IMPORTANT: Process queries in ANY language including English, Chinese, Japanese, Korean, etc.\n\n"
+            "# Planning Phase:\n"
+            "1. Analyze the research brief carefully\n"
+            "2. Break down into clear, SPECIFIC subtasks (avoid acronyms)\n"
+            "3. Bias toward SINGLE subtask workflow unless clear parallelization opportunity exists\n"
+            "4. Each subtask gets COMPLETE STANDALONE INSTRUCTIONS\n\n"
+            "# Research Breakdown Guidelines:\n"
+            "- Simple queries (factual, narrow scope): 1-2 subtasks, complexity_score < 0.3\n"
+            "- Complex queries (multi-faceted, analytical): 3-5 subtasks, complexity_score >= 0.3\n"
+            "- Ensure logical dependencies are clear\n"
+            "- Prioritize high-value information sources\n"
+            "- Quality over quantity: Focus on tasks yielding authoritative, relevant sources\n\n"
             "CRITICAL: Each subtask MUST have these EXACT fields: id, description, dependencies, estimated_tokens, suggested_tools, tool_parameters\n"
             "NEVER return null for subtasks field - always provide at least one subtask.\n\n"
             "TOOL SELECTION GUIDELINES:\n"

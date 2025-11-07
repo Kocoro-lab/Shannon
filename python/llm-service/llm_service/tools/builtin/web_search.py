@@ -115,6 +115,17 @@ class ExaSearchProvider(WebSearchProvider):
         """
         headers = {"x-api-key": self.api_key, "Content-Type": "application/json"}
 
+        # Guard against invalid search_type values (LLM/tooling may send non-enum)
+        if not isinstance(search_type, str) or search_type.strip().lower() not in (
+            "neural",
+            "keyword",
+            "auto",
+        ):
+            logger.warning(
+                f"Exa: invalid search_type '{search_type}', normalizing to 'auto'"
+            )
+            search_type = "auto"
+
         # Use Exa's latest API parameters with proper text content extraction
         payload = {
             "query": query,
@@ -641,10 +652,13 @@ class WebSearchTool(Tool):
             ToolParameter(
                 name="search_type",
                 type=ToolParameterType.STRING,
-                description="Search type (Exa only): 'neural' for semantic search, 'keyword' for exact match, 'auto' for intelligent blend",
+                description=(
+                    "Search mode (Exa only). Preferred values: "
+                    "'neural' (semantic search), 'keyword' (exact match), or 'auto' (automatic selection). "
+                    "Invalid values will automatically fall back to 'auto'. Default: 'auto'"
+                ),
                 required=False,
                 default="auto",
-                enum=["neural", "keyword", "auto"],
             ),
             ToolParameter(
                 name="category",
@@ -676,6 +690,17 @@ class WebSearchTool(Tool):
         query = kwargs["query"]
         max_results = kwargs.get("max_results", 10)
         search_type = kwargs.get("search_type", "auto")
+        # Sanitize/normalize search_type to avoid hard failures from invalid values
+        if not isinstance(search_type, str) or search_type.strip() == "":
+            logger.warning("Missing or empty search_type, falling back to 'auto'")
+            search_type = "auto"
+        else:
+            search_type = search_type.strip().lower()
+            if search_type not in ("neural", "keyword", "auto"):
+                logger.warning(
+                    f"Invalid search_type '{search_type}', falling back to 'auto'"
+                )
+                search_type = "auto"
         category = kwargs.get("category")
 
         # Validate max_results parameter

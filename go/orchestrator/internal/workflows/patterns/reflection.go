@@ -92,12 +92,20 @@ func ReflectOnResult(
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
 		})
 
-		err = workflow.ExecuteActivity(synthCtx, "SynthesizeResultsLLM",
-			activities.SynthesisInput{
-				Query:        query,
-				AgentResults: agentResults,
-				Context:      reflectionContext,
-			}).Get(ctx, &improvedSynthesis)
+    // Preserve top-level correlation for streaming by forwarding parent_workflow_id if present
+    parentID := ""
+    if baseContext != nil {
+        if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+            parentID = p
+        }
+    }
+    err = workflow.ExecuteActivity(synthCtx, "SynthesizeResultsLLM",
+        activities.SynthesisInput{
+            Query:            query,
+            AgentResults:     agentResults,
+            Context:          reflectionContext,
+            ParentWorkflowID: parentID,
+        }).Get(ctx, &improvedSynthesis)
 
 		if err != nil {
 			logger.Warn("Reflection re-synthesis failed, keeping previous result", "error", err)

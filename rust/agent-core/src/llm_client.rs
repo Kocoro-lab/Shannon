@@ -27,6 +27,12 @@ pub struct AgentResponse {
     pub model_used: String,
     #[serde(default)]
     pub provider: String,
+    #[serde(default = "default_finish_reason")]
+    pub finish_reason: String,
+}
+
+fn default_finish_reason() -> String {
+    "stop".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

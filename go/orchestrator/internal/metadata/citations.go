@@ -1,0 +1,841 @@
+package metadata
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/url"
+	"os"
+    "regexp"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Citation represents a single source citation with quality metrics
+type Citation struct {
+	URL              string     `json:"url"`
+	Title            string     `json:"title"`
+	Source           string     `json:"source"`            // domain name
+	SourceType       string     `json:"source_type"`       // web|news|academic|social
+	RetrievedAt      time.Time  `json:"retrieved_at"`
+	PublishedDate    *time.Time `json:"published_date,omitempty"`
+	RelevanceScore   float64    `json:"relevance_score"`   // from search tool
+	QualityScore     float64    `json:"quality_score"`     // recency + completeness
+	CredibilityScore float64    `json:"credibility_score"` // domain reputation
+	AgentID          string     `json:"agent_id"`
+	Snippet          string     `json:"snippet"`
+}
+
+// CitationStats provides aggregate metrics for collected citations
+type CitationStats struct {
+	TotalSources    int     `json:"total_sources"`
+	UniqueDomains   int     `json:"unique_domains"`
+	AvgQuality      float64 `json:"avg_quality"`
+	AvgCredibility  float64 `json:"avg_credibility"`
+	SourceDiversity float64 `json:"source_diversity"` // unique_domains / total_sources
+}
+
+// CredibilityConfig holds domain credibility scoring rules
+type CredibilityConfig struct {
+	CredibilityRules struct {
+		TLDPatterns []struct {
+			Suffix      string  `yaml:"suffix"`
+			Score       float64 `yaml:"score"`
+			Description string  `yaml:"description"`
+		} `yaml:"tld_patterns"`
+
+		DomainGroups []struct {
+			Category    string   `yaml:"category"`
+			Score       float64  `yaml:"score"`
+			Description string   `yaml:"description"`
+			Domains     []string `yaml:"domains"`
+		} `yaml:"domain_groups"`
+
+		DefaultScore float64 `yaml:"default_score"`
+	} `yaml:"credibility_rules"`
+
+	QualityGates struct {
+		MinCredibilityScore float64 `yaml:"min_credibility_score"`
+		PreferredScore      float64 `yaml:"preferred_score"`
+		HighQualityScore    float64 `yaml:"high_quality_score"`
+	} `yaml:"quality_gates"`
+
+	DiversityRules struct {
+		MaxPerDomain      int     `yaml:"max_per_domain"`
+		MinUniqueDomains  int     `yaml:"min_unique_domains"`
+		DiversityBonus    float64 `yaml:"diversity_bonus"`
+	} `yaml:"diversity_rules"`
+}
+
+var (
+	credibilityConfig     *CredibilityConfig
+	credibilityConfigOnce sync.Once
+)
+
+// GetCredibilityConfigPath returns the config path, checking env var first
+func GetCredibilityConfigPath() string {
+	if envPath := os.Getenv("CITATION_CREDIBILITY_CONFIG"); envPath != "" {
+		return envPath
+	}
+	return "/app/config/citation_credibility.yaml"
+}
+
+// LoadCredibilityConfig loads credibility scoring rules from config file
+func LoadCredibilityConfig() *CredibilityConfig {
+	credibilityConfigOnce.Do(func() {
+		configPath := GetCredibilityConfigPath()
+
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			log.Printf("Warning: Failed to load citation credibility config from %s: %v. Using defaults.", configPath, err)
+			credibilityConfig = getDefaultCredibilityConfig()
+			return
+		}
+
+		var config CredibilityConfig
+		if err := yaml.Unmarshal(data, &config); err != nil {
+			log.Printf("Warning: Failed to parse citation credibility config: %v. Using defaults.", err)
+			credibilityConfig = getDefaultCredibilityConfig()
+			return
+		}
+
+		credibilityConfig = &config
+		log.Printf("Loaded citation credibility config from %s", configPath)
+	})
+
+	return credibilityConfig
+}
+
+// isCitationsDebugEnabled returns true when verbose citation debug logging is enabled
+func isCitationsDebugEnabled() bool {
+    v := os.Getenv("CITATIONS_DEBUG")
+    if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") {
+        return true
+    }
+    return false
+}
+
+// ResetCredibilityConfigForTest resets the singleton for testing purposes
+// This should only be called from test code
+func ResetCredibilityConfigForTest() {
+	credibilityConfigOnce = sync.Once{}
+	credibilityConfig = nil
+}
+
+// getDefaultCredibilityConfig returns fallback config when file is unavailable
+func getDefaultCredibilityConfig() *CredibilityConfig {
+	return &CredibilityConfig{
+		CredibilityRules: struct {
+			TLDPatterns []struct {
+				Suffix      string  `yaml:"suffix"`
+				Score       float64 `yaml:"score"`
+				Description string  `yaml:"description"`
+			} `yaml:"tld_patterns"`
+			DomainGroups []struct {
+				Category    string   `yaml:"category"`
+				Score       float64  `yaml:"score"`
+				Description string   `yaml:"description"`
+				Domains     []string `yaml:"domains"`
+			} `yaml:"domain_groups"`
+			DefaultScore float64 `yaml:"default_score"`
+		}{
+			TLDPatterns: []struct {
+				Suffix      string  `yaml:"suffix"`
+				Score       float64 `yaml:"score"`
+				Description string  `yaml:"description"`
+			}{
+				{Suffix: ".edu", Score: 0.85, Description: "Educational"},
+				{Suffix: ".gov", Score: 0.80, Description: "Government"},
+			},
+			DomainGroups: []struct {
+				Category    string   `yaml:"category"`
+				Score       float64  `yaml:"score"`
+				Description string   `yaml:"description"`
+				Domains     []string `yaml:"domains"`
+			}{},
+			DefaultScore: 0.60,
+		},
+	}
+}
+
+// NormalizeURL cleans and normalizes a URL for deduplication
+// - Converts to lowercase
+// - Removes trailing slashes
+// - Removes common query parameters (utm_*, fbclid, etc.)
+// - Removes fragment identifiers (#)
+func NormalizeURL(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	// Normalize scheme to lowercase
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+
+	// Normalize host to lowercase
+	parsed.Host = strings.ToLower(parsed.Host)
+
+	// Remove www. prefix for consistency
+	if strings.HasPrefix(parsed.Host, "www.") {
+		parsed.Host = parsed.Host[4:]
+	}
+
+	// Remove fragment
+	parsed.Fragment = ""
+
+	// Remove tracking query parameters
+	if parsed.RawQuery != "" {
+		q := parsed.Query()
+		trackingParams := []string{
+			"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+			"fbclid", "gclid", "msclkid",
+			"ref", "source",
+		}
+		for _, param := range trackingParams {
+			q.Del(param)
+		}
+		parsed.RawQuery = q.Encode()
+	}
+
+	// Remove trailing slash from path
+	if len(parsed.Path) > 1 && strings.HasSuffix(parsed.Path, "/") {
+		parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+	}
+
+	return parsed.String(), nil
+}
+
+// ExtractDomain returns the lowercase host from a URL, removing any port and a
+// leading "www." but preserving other subdomains when present.
+// Example: "https://blog.example.com/path" -> "blog.example.com"
+func ExtractDomain(rawURL string) (string, error) {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+
+	host := strings.ToLower(parsed.Host)
+
+	// Remove port if present
+	if colonIndex := strings.Index(host, ":"); colonIndex != -1 {
+		host = host[:colonIndex]
+	}
+
+	// Remove www. prefix
+	if strings.HasPrefix(host, "www.") {
+		host = host[4:]
+	}
+
+	return host, nil
+}
+
+// ScoreQuality calculates quality score based on recency and completeness
+// Formula: relevance * 0.7 + recency * 0.3 + completeness bonus
+//
+// Recency scoring (30-day decay):
+// - < 7 days: 1.0
+// - 7-30 days: 0.7
+// - 30-90 days: 0.4
+// - > 90 days: 0.2
+//
+// Completeness bonus (+0.1 if has published_date, title, snippet)
+func ScoreQuality(relevance float64, publishedDate *time.Time, hasTitle, hasSnippet bool, now time.Time) float64 {
+	// Base score from relevance (70% weight)
+	score := relevance * 0.7
+
+	// Recency score (30% weight)
+	recencyScore := 0.2 // default for old/unknown dates
+	if publishedDate != nil {
+		daysSincePublished := now.Sub(*publishedDate).Hours() / 24
+		switch {
+		case daysSincePublished < 7:
+			recencyScore = 1.0
+		case daysSincePublished < 30:
+			recencyScore = 0.7
+		case daysSincePublished < 90:
+			recencyScore = 0.4
+		default:
+			recencyScore = 0.2
+		}
+	}
+	score += recencyScore * 0.3
+
+	// Completeness bonus
+	completeness := 0.0
+	if publishedDate != nil {
+		completeness += 0.033
+	}
+	if hasTitle {
+		completeness += 0.033
+	}
+	if hasSnippet {
+		completeness += 0.034
+	}
+	score += completeness
+
+	// Cap at 1.0
+	if score > 1.0 {
+		score = 1.0
+	}
+
+	return score
+}
+
+// ScoreCredibility calculates credibility score based on domain reputation
+// Loads rules from config/citation_credibility.yaml
+// Falls back to hardcoded defaults if config unavailable
+func ScoreCredibility(domain string) float64 {
+    config := LoadCredibilityConfig()
+    domain = strings.ToLower(domain)
+
+	// Check TLD patterns first (highest priority)
+	for _, tldPattern := range config.CredibilityRules.TLDPatterns {
+		if strings.HasSuffix(domain, tldPattern.Suffix) {
+			return tldPattern.Score
+		}
+	}
+
+    // Helper for safe domain matching (exact match or subdomain boundary)
+    domainMatches := func(host, pattern string) bool {
+        host = strings.ToLower(host)
+        pattern = strings.ToLower(pattern)
+        if host == pattern {
+            return true
+        }
+        // Allow subdomains (e.g., docs.github.com matches github.com)
+        if strings.HasSuffix(host, "."+pattern) {
+            return true
+        }
+        return false
+    }
+
+    // Check domain groups
+    for _, group := range config.CredibilityRules.DomainGroups {
+        for _, knownDomain := range group.Domains {
+            if domainMatches(domain, knownDomain) {
+                return group.Score
+            }
+        }
+    }
+
+	// Return default score
+	if config.CredibilityRules.DefaultScore > 0 {
+		return config.CredibilityRules.DefaultScore
+	}
+	return 0.60
+}
+
+// CalculateSourceDiversity calculates diversity metric
+// Formula: unique_domains / total_sources
+// Higher is better (more diverse sources)
+func CalculateSourceDiversity(citations []Citation) float64 {
+	if len(citations) == 0 {
+		return 0.0
+	}
+
+	domainSet := make(map[string]bool)
+	for _, c := range citations {
+		domainSet[c.Source] = true
+	}
+
+	return float64(len(domainSet)) / float64(len(citations))
+}
+
+// extractCitationFromSearchResult extracts a Citation from a web_search result
+func extractCitationFromSearchResult(result map[string]interface{}, agentID string, now time.Time) (*Citation, error) {
+	// Extract required fields
+	urlStr, ok := result["url"].(string)
+	if !ok || urlStr == "" {
+		return nil, fmt.Errorf("missing or invalid url")
+	}
+
+	title, _ := result["title"].(string)
+	snippet, _ := result["text"].(string)
+	if snippet == "" {
+		snippet, _ = result["snippet"].(string)
+	}
+
+	// Normalize URL for deduplication
+	normalizedURL, err := NormalizeURL(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize URL: %w", err)
+	}
+
+	// Extract domain
+	domain, err := ExtractDomain(normalizedURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract domain: %w", err)
+	}
+
+	// Extract scores and metadata
+	relevanceScore := 0.5 // default
+	if score, ok := result["score"].(float64); ok {
+		relevanceScore = score
+	}
+
+	// Try to parse published date
+	var publishedDate *time.Time
+	if pubDateStr, ok := result["published_date"].(string); ok && pubDateStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, pubDateStr); err == nil {
+			publishedDate = &parsed
+		}
+	}
+
+	// Determine source type from domain or category
+	sourceType := "web"
+	if category, ok := result["category"].(string); ok {
+		sourceType = category
+	}
+
+	// Calculate quality and credibility scores
+	qualityScore := ScoreQuality(relevanceScore, publishedDate, title != "", snippet != "", now)
+	credibilityScore := ScoreCredibility(domain)
+
+	return &Citation{
+		URL:              normalizedURL,
+		Title:            title,
+		Source:           domain,
+		SourceType:       sourceType,
+		RetrievedAt:      now,
+		PublishedDate:    publishedDate,
+		RelevanceScore:   relevanceScore,
+		QualityScore:     qualityScore,
+		CredibilityScore: credibilityScore,
+		AgentID:          agentID,
+		Snippet:          snippet,
+	}, nil
+}
+
+// extractCitationFromFetchResult extracts a Citation from a web_fetch result
+func extractCitationFromFetchResult(result map[string]interface{}, agentID string, now time.Time) (*Citation, error) {
+	// Extract required fields
+	urlStr, ok := result["url"].(string)
+	if !ok || urlStr == "" {
+		return nil, fmt.Errorf("missing or invalid url")
+	}
+
+	title, _ := result["title"].(string)
+
+    // For web_fetch, use first 200 characters of content as snippet (UTF-8 safe)
+    snippet := ""
+    if content, ok := result["content"].(string); ok && len(content) > 0 {
+        snippet = truncateRunes(content, 200)
+    }
+
+	// Normalize URL
+	normalizedURL, err := NormalizeURL(urlStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to normalize URL: %w", err)
+	}
+
+	// Extract domain
+	domain, err := ExtractDomain(normalizedURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to extract domain: %w", err)
+	}
+
+	// Try to parse published date
+	var publishedDate *time.Time
+	if pubDateStr, ok := result["published_date"].(string); ok && pubDateStr != "" {
+		if parsed, err := time.Parse(time.RFC3339, pubDateStr); err == nil {
+			publishedDate = &parsed
+		}
+	}
+
+	// web_fetch results are fetched for detailed analysis, give higher relevance
+	relevanceScore := 0.8
+
+	// Calculate quality and credibility scores
+	qualityScore := ScoreQuality(relevanceScore, publishedDate, title != "", snippet != "", now)
+	credibilityScore := ScoreCredibility(domain)
+
+	return &Citation{
+		URL:              normalizedURL,
+		Title:            title,
+		Source:           domain,
+		SourceType:       "web",
+		RetrievedAt:      now,
+		PublishedDate:    publishedDate,
+		RelevanceScore:   relevanceScore,
+		QualityScore:     qualityScore,
+		CredibilityScore: credibilityScore,
+		AgentID:          agentID,
+		Snippet:          snippet,
+	}, nil
+}
+
+// extractCitationsFromResponse attempts to parse citations from agent response text
+// This is a fallback when tool_executions are missing but the response contains structured search results
+func extractCitationsFromResponse(response string, agentID string, now time.Time) []Citation {
+	var citations []Citation
+
+	// Try to parse response as JSON array of search results
+	// Common format: [{"url": "...", "title": "...", "snippet": "...", ...}, ...]
+	var results []map[string]interface{}
+	if err := json.Unmarshal([]byte(response), &results); err != nil {
+		return citations // Not JSON array, no fallback possible
+	}
+
+	// Extract citations from parsed results
+	for _, result := range results {
+		if citation, err := extractCitationFromSearchResult(result, agentID, now); err == nil {
+			citations = append(citations, *citation)
+		}
+	}
+
+	return citations
+}
+
+// extractCitationsFromToolOutput extracts citations from a tool execution output
+func extractCitationsFromToolOutput(toolName string, output interface{}, agentID string, now time.Time) []Citation {
+    var citations []Citation
+
+    if isCitationsDebugEnabled() {
+        log.Printf("[citations] tool=%s output_type=%T", toolName, output)
+    }
+
+    switch toolName {
+    case "web_search":
+        // Case 1: Direct array (proto sometimes returns []interface{} directly)
+        if arr, ok := output.([]interface{}); ok {
+            for _, item := range arr {
+                if resultMap, ok := item.(map[string]interface{}); ok {
+                    if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+                        citations = append(citations, *citation)
+                    }
+                }
+            }
+        // Case 2: Wrapped in map {"results": [...]}
+        } else if outputMap, ok := output.(map[string]interface{}); ok {
+            if results, ok := outputMap["results"].([]interface{}); ok {
+                for _, resultInterface := range results {
+                    if resultMap, ok := resultInterface.(map[string]interface{}); ok {
+                        if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+                            citations = append(citations, *citation)
+                        }
+                    }
+                }
+            }
+        // Case 3: JSON string
+        } else if s, ok := output.(string); ok && s != "" {
+            // Fallback: output encoded as JSON string
+            var decoded interface{}
+            if err := json.Unmarshal([]byte(s), &decoded); err == nil {
+                if arr, ok := decoded.([]interface{}); ok {
+                    for _, item := range arr {
+                        if resultMap, ok := item.(map[string]interface{}); ok {
+                            if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+                                citations = append(citations, *citation)
+                            }
+                        }
+                    }
+                } else if m, ok := decoded.(map[string]interface{}); ok {
+                    if results, ok := m["results"].([]interface{}); ok {
+                        for _, item := range results {
+                            if resultMap, ok := item.(map[string]interface{}); ok {
+                                if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+                                    citations = append(citations, *citation)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    case "web_fetch":
+        // web_fetch returns direct result object {url, title, content, ...}
+        if outputMap, ok := output.(map[string]interface{}); ok {
+            if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
+                citations = append(citations, *citation)
+            }
+        } else if s, ok := output.(string); ok && s != "" {
+            var m map[string]interface{}
+            if err := json.Unmarshal([]byte(s), &m); err == nil {
+                if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
+                    citations = append(citations, *citation)
+                }
+            }
+        }
+    }
+
+    if isCitationsDebugEnabled() {
+        log.Printf("[citations] tool=%s extracted=%d", toolName, len(citations))
+    }
+    return citations
+}
+
+// CollectCitations extracts, deduplicates, scores, and ranks citations from agent execution results
+// Returns top N citations with aggregate statistics
+func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([]Citation, CitationStats) {
+	if maxCitations <= 0 {
+		maxCitations = 15 // default
+	}
+
+	var allCitations []Citation
+
+	// Step 1: Extract from tool executions
+	for _, resultInterface := range results {
+		// Try to cast to map[string]interface{} first (common case)
+		resultMap, ok := resultInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		agentID, _ := resultMap["agent_id"].(string)
+		if agentID == "" {
+			agentID = "unknown"
+		}
+
+		// Extract tool_executions array
+		toolExecutions, ok := resultMap["tool_executions"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, toolExecInterface := range toolExecutions {
+			toolExecMap, ok := toolExecInterface.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			toolName, _ := toolExecMap["tool"].(string)
+			success, _ := toolExecMap["success"].(bool)
+			output := toolExecMap["output"]
+
+			// Only process successful executions of web_search or web_fetch
+			if !success || (toolName != "web_search" && toolName != "web_fetch") {
+				continue
+			}
+
+			citations := extractCitationsFromToolOutput(toolName, output, agentID, now)
+			allCitations = append(allCitations, citations...)
+		}
+
+		// Fallback: If tool_executions was empty or didn't yield citations, try parsing from response text
+		if len(toolExecutions) == 0 && len(allCitations) == 0 {
+			if responseStr, ok := resultMap["response"].(string); ok && responseStr != "" {
+				fallbackCitations := extractCitationsFromResponse(responseStr, agentID, now)
+				allCitations = append(allCitations, fallbackCitations...)
+			}
+		}
+	}
+
+    if isCitationsDebugEnabled() {
+        log.Printf("[citations] raw_extracted=%d", len(allCitations))
+    }
+
+    // Sanitize citation titles/metadata (e.g., fix arXiv reCAPTCHA titles)
+    allCitations = sanitizeCitations(allCitations)
+
+    // Step 2: Deduplicate by normalized URL
+    dedupedCitations := deduplicateCitations(allCitations)
+
+	// Step 3: Enforce diversity (max N per domain)
+	config := LoadCredibilityConfig()
+	maxPerDomain := 3
+	if config.DiversityRules.MaxPerDomain > 0 {
+		maxPerDomain = config.DiversityRules.MaxPerDomain
+	}
+	diverseCitations := enforceDiversity(dedupedCitations, maxPerDomain)
+
+	// Step 4: Rank by combined score and limit to top N
+	rankedCitations := rankAndLimit(diverseCitations, maxCitations)
+
+    // Step 5: Calculate aggregate stats
+    stats := calculateCitationStats(rankedCitations)
+
+    if isCitationsDebugEnabled() {
+        log.Printf("[citations] final_total=%d unique_domains=%d avg_quality=%.2f avg_cred=%.2f", len(rankedCitations), stats.UniqueDomains, stats.AvgQuality, stats.AvgCredibility)
+    }
+
+    return rankedCitations, stats
+}
+
+// deduplicateCitations removes duplicate citations by normalized URL (keeping first occurrence)
+func deduplicateCitations(citations []Citation) []Citation {
+    seen := make(map[string]bool)
+    var deduped []Citation
+
+    for _, citation := range citations {
+        key := citation.URL
+        // Prefer DOI-based key for cross-domain canonicalization
+        if parsed, err := url.Parse(citation.URL); err == nil {
+            if doi := extractDOIFromURL(parsed); doi != "" {
+                key = "doi:" + strings.ToLower(doi)
+            } else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
+                key = norm
+            }
+        } else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
+            key = norm
+        }
+        if !seen[key] {
+            seen[key] = true
+            deduped = append(deduped, citation)
+        }
+    }
+
+    return deduped
+}
+
+// sanitizeCitations performs light cleanup on citation metadata
+func sanitizeCitations(citations []Citation) []Citation {
+    for i := range citations {
+        citations[i].Title = sanitizeTitle(citations[i].Title, citations[i].URL, citations[i].Source)
+    }
+    return citations
+}
+
+func sanitizeTitle(title, rawURL, source string) string {
+    t := strings.TrimSpace(title)
+    lower := strings.ToLower(t)
+    if strings.EqualFold(source, "arxiv.org") {
+        if t == "" || strings.Contains(lower, "recaptcha") {
+            if id := extractArxivID(rawURL); id != "" {
+                return "arXiv:" + id
+            }
+            return "arXiv"
+        }
+    }
+    return t
+}
+
+// extractArxivID returns the arXiv identifier from common arxiv.org URLs
+// Examples: https://arxiv.org/abs/2408.13687 -> 2408.13687
+//           https://arxiv.org/pdf/2408.13687.pdf -> 2408.13687
+func extractArxivID(rawURL string) string {
+    u, err := url.Parse(rawURL)
+    if err != nil {
+        return ""
+    }
+    if !strings.Contains(strings.ToLower(u.Host), "arxiv.org") {
+        return ""
+    }
+    p := strings.Trim(u.Path, "/")
+    parts := strings.Split(p, "/")
+    if len(parts) == 0 {
+        return ""
+    }
+    last := parts[len(parts)-1]
+    // Strip .pdf if present
+    if strings.HasSuffix(last, ".pdf") {
+        last = strings.TrimSuffix(last, ".pdf")
+    }
+    // abs/<id> or pdf/<id>
+    if len(parts) >= 2 {
+        return last
+    }
+    return ""
+}
+
+// extractDOIFromURL attempts to extract a DOI from the URL or query
+// Recognizes: host contains doi.org, query param "doi", or DOI pattern in path
+func extractDOIFromURL(u *url.URL) string {
+    // doi.org host
+    if strings.Contains(strings.ToLower(u.Host), "doi.org") {
+        doi := strings.Trim(u.Path, "/")
+        if doi != "" {
+            return doi
+        }
+    }
+    // doi param in query (e.g., crossmark)
+    if q := u.Query().Get("doi"); q != "" {
+        return q
+    }
+    // DOI pattern in path (case-insensitive)
+    // 10.XXXX/...
+    re := regexp.MustCompile(`(?i)10\.[0-9]{4,9}/[-._;()/:A-Z0-9]+`)
+    if m := re.FindString(u.Path); m != "" {
+        return m
+    }
+    return ""
+}
+
+// truncateRunes returns s truncated to at most max runes, appending "..." when truncated.
+func truncateRunes(s string, max int) string {
+    if max <= 0 || s == "" {
+        return ""
+    }
+    r := []rune(s)
+    if len(r) <= max {
+        return s
+    }
+    return string(r[:max]) + "..."
+}
+
+// enforceDiversity limits citations per domain to maintain source diversity
+func enforceDiversity(citations []Citation, maxPerDomain int) []Citation {
+	domainCount := make(map[string]int)
+	var diverse []Citation
+
+	// Sort by quality * credibility first to keep best sources per domain
+	sorted := make([]Citation, len(citations))
+	copy(sorted, citations)
+	sortByScore(sorted)
+
+	for _, citation := range sorted {
+		if domainCount[citation.Source] < maxPerDomain {
+			domainCount[citation.Source]++
+			diverse = append(diverse, citation)
+		}
+	}
+
+	return diverse
+}
+
+// rankAndLimit sorts citations by combined score and returns top N
+func rankAndLimit(citations []Citation, limit int) []Citation {
+	if len(citations) == 0 {
+		return citations
+	}
+
+	// Sort by combined score (quality * credibility)
+	sorted := make([]Citation, len(citations))
+	copy(sorted, citations)
+	sortByScore(sorted)
+
+	// Limit to top N
+	if len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+
+	return sorted
+}
+
+// sortByScore sorts citations by combined score (quality * credibility) descending
+func sortByScore(citations []Citation) {
+	sort.Slice(citations, func(i, j int) bool {
+		scoreI := citations[i].QualityScore * citations[i].CredibilityScore
+		scoreJ := citations[j].QualityScore * citations[j].CredibilityScore
+		return scoreI > scoreJ // descending order
+	})
+}
+
+// calculateCitationStats computes aggregate statistics
+func calculateCitationStats(citations []Citation) CitationStats {
+	if len(citations) == 0 {
+		return CitationStats{}
+	}
+
+	uniqueDomains := make(map[string]bool)
+	totalQuality := 0.0
+	totalCredibility := 0.0
+
+	for _, c := range citations {
+		uniqueDomains[c.Source] = true
+		totalQuality += c.QualityScore
+		totalCredibility += c.CredibilityScore
+	}
+
+	return CitationStats{
+		TotalSources:    len(citations),
+		UniqueDomains:   len(uniqueDomains),
+		AvgQuality:      totalQuality / float64(len(citations)),
+		AvgCredibility:  totalCredibility / float64(len(citations)),
+		SourceDiversity: CalculateSourceDiversity(citations),
+	}
+}

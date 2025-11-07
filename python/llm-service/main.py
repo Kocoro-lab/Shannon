@@ -14,6 +14,7 @@ from llm_service.api import (
     agent,
     tools,
     evaluate,
+    verify,
     context as context_api,
     providers as providers_api,
 )
@@ -140,6 +141,7 @@ app.include_router(complexity.router, prefix="/complexity", tags=["complexity"])
 app.include_router(agent.router, tags=["agent"])
 app.include_router(tools.router, tags=["tools"])
 app.include_router(evaluate.router, tags=["evaluate"])
+app.include_router(verify.router, tags=["verify"])
 app.include_router(context_api.router, tags=["context"])
 app.include_router(providers_api.router, tags=["providers"])
 app.include_router(mcp_mock.router, tags=["mcp-mock"])

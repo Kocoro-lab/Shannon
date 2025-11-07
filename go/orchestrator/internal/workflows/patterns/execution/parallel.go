@@ -128,49 +128,67 @@ func ExecuteParallel(
 			// Execute agent
 			var future workflow.Future
 
-			if budgetPerAgent > 0 {
-				// Execute with budget
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				// Extract base UUID from workflow ID (remove suffix like "_23")
-				taskID := wid
-				if idx := strings.LastIndex(wid, "_"); idx > 0 {
-					taskID = wid[:idx]
-				}
+            if budgetPerAgent > 0 {
+                // Execute with budget
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                // Prefer parent workflow ID for budget tracking and persistence
+                parentWid := ""
+                if config.Context != nil {
+                    if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                        parentWid = p
+                    }
+                }
+                // Use parent workflow ID when available, otherwise fallback to child ID (trim suffix if present)
+                taskID := wid
+                if parentWid != "" {
+                    taskID = parentWid
+                } else if idx := strings.LastIndex(wid, "_"); idx > 0 {
+                    taskID = wid[:idx]
+                }
 				future = workflow.ExecuteActivity(ctx,
 					constants.ExecuteAgentWithBudgetActivity,
 					activities.BudgetedAgentInput{
-						AgentInput: activities.AgentExecutionInput{
-							Query:          task.Description,
-							AgentID:        fmt.Sprintf("agent-%s", task.ID),
-							Context:        taskContext,
-							Mode:           "standard",
-							SessionID:      sessionID,
-							History:        history,
-							SuggestedTools: task.SuggestedTools,
-							ToolParameters: task.ToolParameters,
-							PersonaID:      task.PersonaID,
-						},
-						MaxTokens: budgetPerAgent,
-						UserID:    userID,
-						TaskID:    taskID,
-						ModelTier: modelTier,
-					})
-			} else {
-				// Execute without budget
-				future = workflow.ExecuteActivity(ctx,
-					activities.ExecuteAgent,
-					activities.AgentExecutionInput{
-						Query:          task.Description,
-						AgentID:        fmt.Sprintf("agent-%s", task.ID),
-						Context:        taskContext,
-						Mode:           "standard",
-						SessionID:      sessionID,
-						History:        history,
-						SuggestedTools: task.SuggestedTools,
-						ToolParameters: task.ToolParameters,
-						PersonaID:      task.PersonaID,
-					})
-			}
+                    AgentInput: activities.AgentExecutionInput{
+                        Query:          task.Description,
+                        AgentID:        fmt.Sprintf("agent-%s", task.ID),
+                        Context:        taskContext,
+                        Mode:           "standard",
+                        SessionID:      sessionID,
+                        History:        history,
+                        SuggestedTools: task.SuggestedTools,
+                        ToolParameters: task.ToolParameters,
+                        PersonaID:      task.PersonaID,
+                        ParentWorkflowID: parentWid,
+                    },
+                    MaxTokens: budgetPerAgent,
+                    UserID:    userID,
+                    TaskID:    taskID,
+                    ModelTier: modelTier,
+                })
+            } else {
+                // Execute without budget
+                // Determine parent workflow if available for streaming correlation
+                parentWid := ""
+                if config.Context != nil {
+                    if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                        parentWid = p
+                    }
+                }
+                future = workflow.ExecuteActivity(ctx,
+                    activities.ExecuteAgent,
+                    activities.AgentExecutionInput{
+                        Query:             task.Description,
+                        AgentID:           fmt.Sprintf("agent-%s", task.ID),
+                        Context:           taskContext,
+                        Mode:              "standard",
+                        SessionID:         sessionID,
+                        History:           history,
+                        SuggestedTools:    task.SuggestedTools,
+                        ToolParameters:    task.ToolParameters,
+                        PersonaID:         task.PersonaID,
+                        ParentWorkflowID:  parentWid,
+                    })
+            }
 
 			futuresChan.Send(ctx, futureWithIndex{Index: i, Future: future, Release: rel})
 
@@ -237,9 +255,14 @@ func ExecuteParallel(
 						totalTokens += result.TokensUsed
 						successCount++
 
-						// Persist agent execution (fire-and-forget)
-						workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-						persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
+                // Persist agent execution (fire-and-forget). Use parent workflow ID when available.
+                workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if config.Context != nil {
+                    if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                        workflowID = p
+                    }
+                }
+                persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
 
 						// Emit completion event (parent workflow when available)
 						if config.EmitEvents {

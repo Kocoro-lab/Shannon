@@ -904,6 +904,56 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// Synthesize results using configured mode
 	var synth activities.SynthesisResult
 
+	// Prepare synthesis context with collected citations from child results
+	ctxForSynth := make(map[string]interface{})
+	if input.Context != nil {
+		for k, v := range input.Context {
+			ctxForSynth[k] = v
+		}
+	}
+    var collectedCitations []metadata.Citation
+    {
+		var resultsForCitations []interface{}
+		for _, ar := range childResults {
+			var toolExecs []interface{}
+			if len(ar.ToolExecutions) > 0 {
+				for _, te := range ar.ToolExecutions {
+					toolExecs = append(toolExecs, map[string]interface{}{
+						"tool":    te.Tool,
+						"success": te.Success,
+						"output":  te.Output,
+						"error":   te.Error,
+					})
+				}
+			}
+			resultsForCitations = append(resultsForCitations, map[string]interface{}{
+				"agent_id":        ar.AgentID,
+				"tool_executions": toolExecs,
+				"response":        ar.Response,
+			})
+		}
+		now := workflow.Now(ctx)
+        citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+        if len(citations) > 0 {
+            collectedCitations = citations
+            var b strings.Builder
+            for i, c := range citations {
+                idx := i + 1
+                title := c.Title
+                if title == "" {
+                    title = c.Source
+                }
+                if c.PublishedDate != nil {
+                    fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+                } else {
+                    fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+                }
+            }
+            ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
+            ctxForSynth["citation_count"] = len(citations)
+        }
+    }
+
 	// Check if the decomposition included a synthesis/summarization subtask
 	// This commonly happens when users request specific output formats (e.g., "summarize in Chinese")
 	// Following SOTA patterns: if decomposition includes synthesis, use that instead of duplicating
@@ -943,6 +993,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 		}
 
+		// Avoid bypass when citations are available; they require synthesis for inline formatting
+		if shouldBypass && len(collectedCitations) > 0 {
+			shouldBypass = false
+		}
+
 		if shouldBypass {
 			synth = activities.SynthesisResult{FinalResult: childResults[0].Response, TokensUsed: childResults[0].TokensUsed}
 		} else {
@@ -951,15 +1006,15 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
 				Query:            input.Query,
 				AgentResults:     childResults,
-				Context:          input.Context,
+				Context:          ctxForSynth,
 				ParentWorkflowID: workflowID,
 			}).Get(ctx, &synth); err != nil {
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
 		}
-	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success {
-		// Use the synthesis subtask's result as the final result
-		// This prevents double synthesis and respects the user's requested format
+	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success && len(collectedCitations) == 0 {
+		// Use the synthesis subtask's result as the final result ONLY if no citations
+		// If citations exist, we need to re-run synthesis to inject inline citation numbers
 		synthesisResult := childResults[synthesisTaskIdx]
 		synth = activities.SynthesisResult{
 			FinalResult: synthesisResult.Response,
@@ -970,12 +1025,18 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"response_length", len(synthesisResult.Response),
 		)
 	} else {
-		// No synthesis subtask in decomposition, perform standard synthesis
-		logger.Info("Performing standard synthesis of agent results")
+		// Perform synthesis: either no synthesis subtask, or we have citations that need formatting
+		if len(collectedCitations) > 0 {
+			logger.Info("Re-running synthesis to inject inline citations",
+				"citation_count", len(collectedCitations),
+			)
+		} else {
+			logger.Info("Performing standard synthesis of agent results")
+		}
 		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
 			Query:            input.Query,
 			AgentResults:     childResults,
-			Context:          input.Context, // Pass role/prompt_params for role-aware synthesis
+			Context:          ctxForSynth, // Pass role/prompt_params for role-aware synthesis
 			ParentWorkflowID: workflowID,    // For observability correlation
 		}).Get(ctx, &synth); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -1077,11 +1138,53 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 		}
 	}
+
+	// Optional: verify claims if enabled and we have citations
+	var verification activities.VerificationResult
+	verifyEnabled := false
+	if input.Context != nil {
+		if v, ok := input.Context["enable_verification"].(bool); ok {
+			verifyEnabled = v
+		}
+	}
+	if verifyEnabled && len(collectedCitations) > 0 {
+		var verCitations []interface{}
+		for _, c := range collectedCitations {
+			m := map[string]interface{}{
+				"url":               c.URL,
+				"title":             c.Title,
+				"source":            c.Source,
+				"credibility_score": c.CredibilityScore,
+				"quality_score":     c.QualityScore,
+			}
+			verCitations = append(verCitations, m)
+		}
+		_ = workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
+			Answer:    synth.FinalResult,
+			Citations: verCitations,
+		}).Get(ctx, &verification)
+	}
 	meta := map[string]interface{}{
 		"num_children": len(childResults),
 	}
+    if len(collectedCitations) > 0 {
+        out := make([]map[string]interface{}, 0, len(collectedCitations))
+        for _, c := range collectedCitations {
+            out = append(out, map[string]interface{}{
+                "url":               c.URL,
+                "title":             c.Title,
+                "source":            c.Source,
+                "credibility_score": c.CredibilityScore,
+                "quality_score":     c.QualityScore,
+            })
+        }
+        meta["citations"] = out
+    }
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
+	}
+	if verification.TotalClaims > 0 || verification.OverallConfidence > 0 {
+		meta["verification"] = verification
 	}
 
 	// Aggregate agent metadata (model, provider, tokens, cost)

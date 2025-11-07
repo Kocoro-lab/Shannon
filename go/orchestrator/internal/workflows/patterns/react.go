@@ -91,36 +91,50 @@ func ReactLoop(
 		var err error
 
 		// Execute reasoning with optional budget
-		if opts.BudgetAgentMax > 0 {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			err = workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
-					AgentInput: activities.AgentExecutionInput{
-						Query:     reasonQuery,
-						AgentID:   fmt.Sprintf("reasoner-%d", iteration),
-						Context:   reasonContext,
-						Mode:      "standard",
-						SessionID: sessionID,
-						History:   history,
-					},
-					MaxTokens: opts.BudgetAgentMax,
-					UserID:    opts.UserID,
-					TaskID:    wid,
-					ModelTier: opts.ModelTier,
-				}).Get(ctx, &reasonResult)
-		} else {
-			err = workflow.ExecuteActivity(ctx,
-				"ExecuteAgent",
-				activities.AgentExecutionInput{
-					Query:     reasonQuery,
-					AgentID:   fmt.Sprintf("reasoner-%d", iteration),
-					Context:   reasonContext,
-					Mode:      "standard",
-					SessionID: sessionID,
-					History:   history,
-				}).Get(ctx, &reasonResult)
-		}
+        if opts.BudgetAgentMax > 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if reasonContext != nil {
+                if p, ok := reasonContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            err = workflow.ExecuteActivity(ctx,
+                constants.ExecuteAgentWithBudgetActivity,
+                activities.BudgetedAgentInput{
+                    AgentInput: activities.AgentExecutionInput{
+                        Query:     reasonQuery,
+                        AgentID:   fmt.Sprintf("reasoner-%d", iteration),
+                        Context:   reasonContext,
+                        Mode:      "standard",
+                        SessionID: sessionID,
+                        History:   history,
+                        ParentWorkflowID: wid,
+                    },
+                    MaxTokens: opts.BudgetAgentMax,
+                    UserID:    opts.UserID,
+                    TaskID:    wid,
+                    ModelTier: opts.ModelTier,
+                }).Get(ctx, &reasonResult)
+        } else {
+            // Determine parent workflow for streaming correlation
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if reasonContext != nil {
+                if p, ok := reasonContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            err = workflow.ExecuteActivity(ctx,
+                "ExecuteAgent",
+                activities.AgentExecutionInput{
+                    Query:     reasonQuery,
+                    AgentID:   fmt.Sprintf("reasoner-%d", iteration),
+                    Context:   reasonContext,
+                    Mode:      "standard",
+                    SessionID: sessionID,
+                    History:   history,
+                    ParentWorkflowID: wid,
+                }).Get(ctx, &reasonResult)
+        }
 
 		if err != nil {
 			logger.Error("Reasoning failed", "error", err)
@@ -151,50 +165,82 @@ func ReactLoop(
 		actionContext["current_thought"] = reasonResult.Response
 		actionContext["observations"] = getRecentObservations(observations, config.ObservationWindow)
 
-		// Let LLM decide tools - no pattern matching
-		// The agent will select appropriate tools based on the action query
-		var suggestedTools []string
+        // Let LLM decide tools - no pattern matching
+        // The agent will select appropriate tools based on the action query
+        var suggestedTools []string
+        // Bias toward web_search when running in research mode to ensure citations
+        if baseContext != nil {
+            if fr, ok := baseContext["force_research"].(bool); ok && fr {
+                suggestedTools = []string{"web_search"}
+            } else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+                suggestedTools = []string{"web_search"}
+            }
+        }
 
-		actionQuery := fmt.Sprintf(
-			"ACT on this plan: %s\nExecute the next step with available tools.",
-			reasonResult.Response,
-		)
+        actionQuery := ""
+        if len(suggestedTools) > 0 {
+            // Research mode: be explicit about tool usage
+            actionQuery = fmt.Sprintf(
+                "ACT on this plan: %s\n\nIMPORTANT: Use web_search to find authoritative information about: %s\nExecute the search NOW and report findings.",
+                reasonResult.Response,
+                query,
+            )
+        } else {
+            actionQuery = fmt.Sprintf(
+                "ACT on this plan: %s\nExecute the next step with available tools.",
+                reasonResult.Response,
+            )
+        }
 
 		var actionResult activities.AgentExecutionResult
 
 		// Execute action with optional budget
-		if opts.BudgetAgentMax > 0 {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			err = workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
-					AgentInput: activities.AgentExecutionInput{
-						Query:          actionQuery,
-						AgentID:        fmt.Sprintf("actor-%d", iteration),
-						Context:        actionContext,
-						Mode:           "standard",
-						SessionID:      sessionID,
-						History:        history,
-						SuggestedTools: suggestedTools,
-					},
-					MaxTokens: opts.BudgetAgentMax,
-					UserID:    opts.UserID,
-					TaskID:    wid,
-					ModelTier: opts.ModelTier,
-				}).Get(ctx, &actionResult)
-		} else {
-			err = workflow.ExecuteActivity(ctx,
-				"ExecuteAgent",
-				activities.AgentExecutionInput{
-					Query:          actionQuery,
-					AgentID:        fmt.Sprintf("actor-%d", iteration),
-					Context:        actionContext,
-					Mode:           "standard",
-					SessionID:      sessionID,
-					History:        history,
-					SuggestedTools: suggestedTools,
-				}).Get(ctx, &actionResult)
-		}
+        if opts.BudgetAgentMax > 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if actionContext != nil {
+                if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            err = workflow.ExecuteActivity(ctx,
+                constants.ExecuteAgentWithBudgetActivity,
+                activities.BudgetedAgentInput{
+                    AgentInput: activities.AgentExecutionInput{
+                        Query:          actionQuery,
+                        AgentID:        fmt.Sprintf("actor-%d", iteration),
+                        Context:        actionContext,
+                        Mode:           "standard",
+                        SessionID:      sessionID,
+                        History:        history,
+                        SuggestedTools: suggestedTools,
+                        ParentWorkflowID: wid,
+                    },
+                    MaxTokens: opts.BudgetAgentMax,
+                    UserID:    opts.UserID,
+                    TaskID:    wid,
+                    ModelTier: opts.ModelTier,
+                }).Get(ctx, &actionResult)
+        } else {
+            // Determine parent workflow for streaming correlation
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if actionContext != nil {
+                if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            err = workflow.ExecuteActivity(ctx,
+                "ExecuteAgent",
+                activities.AgentExecutionInput{
+                    Query:          actionQuery,
+                    AgentID:        fmt.Sprintf("actor-%d", iteration),
+                    Context:        actionContext,
+                    Mode:           "standard",
+                    SessionID:      sessionID,
+                    History:        history,
+                    SuggestedTools: suggestedTools,
+                    ParentWorkflowID: wid,
+                }).Get(ctx, &actionResult)
+        }
 
 		if err != nil {
 			logger.Error("Action execution failed", "error", err)
@@ -207,6 +253,9 @@ func ReactLoop(
 				actions = actions[len(actions)-config.MaxActions:]
 			}
 			totalTokens += actionResult.TokensUsed
+
+			// Collect actor results for citation extraction
+			agentResults = append(agentResults, actionResult)
 
 			// Phase 3: OBSERVE - Record and analyze the result
 			observation := fmt.Sprintf("Action result: %s", actionResult.Response)
@@ -251,39 +300,53 @@ func ReactLoop(
 	var finalResult activities.AgentExecutionResult
 
 	// Execute final synthesis with optional budget
-	if opts.BudgetAgentMax > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		err := workflow.ExecuteActivity(ctx,
-			constants.ExecuteAgentWithBudgetActivity,
-			activities.BudgetedAgentInput{
-				AgentInput: activities.AgentExecutionInput{
-					Query:     synthesisQuery,
-					AgentID:   "react-synthesizer",
-					Context:   baseContext,
-					Mode:      "standard",
-					SessionID: sessionID,
-					History:   history,
-				},
-				MaxTokens: opts.BudgetAgentMax,
-				UserID:    opts.UserID,
-				TaskID:    wid,
-				ModelTier: opts.ModelTier,
-			}).Get(ctx, &finalResult)
+    if opts.BudgetAgentMax > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if baseContext != nil {
+            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
+                AgentInput: activities.AgentExecutionInput{
+                    Query:     synthesisQuery,
+                    AgentID:   "react-synthesizer",
+                    Context:   baseContext,
+                    Mode:      "standard",
+                    SessionID: sessionID,
+                    History:   history,
+                    ParentWorkflowID: wid,
+                },
+                MaxTokens: opts.BudgetAgentMax,
+                UserID:    opts.UserID,
+                TaskID:    wid,
+                ModelTier: opts.ModelTier,
+            }).Get(ctx, &finalResult)
 
 		if err != nil {
 			return nil, fmt.Errorf("final synthesis failed: %w", err)
 		}
-	} else {
-		err := workflow.ExecuteActivity(ctx,
-			"ExecuteAgent",
-			activities.AgentExecutionInput{
-				Query:     synthesisQuery,
-				AgentID:   "react-synthesizer",
-				Context:   baseContext,
-				Mode:      "standard",
-				SessionID: sessionID,
-				History:   history,
-			}).Get(ctx, &finalResult)
+    } else {
+        // Determine parent workflow for streaming correlation
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if baseContext != nil {
+            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            "ExecuteAgent",
+            activities.AgentExecutionInput{
+                Query:     synthesisQuery,
+                AgentID:   "react-synthesizer",
+                Context:   baseContext,
+                Mode:      "standard",
+                SessionID: sessionID,
+                History:   history,
+                ParentWorkflowID: wid,
+            }).Get(ctx, &finalResult)
 
 		if err != nil {
 			return nil, fmt.Errorf("final synthesis failed: %w", err)

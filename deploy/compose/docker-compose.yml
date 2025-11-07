@@ -164,6 +164,8 @@ services:
       - PARTIAL_CHUNK_CHARS=${PARTIAL_CHUNK_CHARS:-512}
       - EVENTLOG_BATCH_SIZE=${EVENTLOG_BATCH_SIZE:-100}
       - EVENTLOG_BATCH_INTERVAL_MS=${EVENTLOG_BATCH_INTERVAL_MS:-100}
+      # Enable detailed citation extraction logs in orchestrator (set to 0 to disable)
+      - CITATIONS_DEBUG=${CITATIONS_DEBUG:-1}
       # Budget and rate limiting
       - BACKPRESSURE_THRESHOLD=${BACKPRESSURE_THRESHOLD:-}
       - MAX_BACKPRESSURE_DELAY_MS=${MAX_BACKPRESSURE_DELAY_MS:-}

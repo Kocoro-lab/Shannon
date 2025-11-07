@@ -119,36 +119,58 @@ func Debate(
 			query,
 		)
 
-		if opts.BudgetAgentMax > 0 {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			futures[i] = workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
+        if opts.BudgetAgentMax > 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if debateContext != nil {
+                if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            } else if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            futures[i] = workflow.ExecuteActivity(ctx,
+                constants.ExecuteAgentWithBudgetActivity,
+                activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
-						Query:     initialPrompt,
-						AgentID:   agentID,
-						Context:   debateContext,
-						Mode:      "debate",
-						SessionID: sessionID,
-						History:   history,
+						Query:             initialPrompt,
+						AgentID:           agentID,
+						Context:           debateContext,
+						Mode:              "debate",
+						SessionID:         sessionID,
+						History:           history,
+                            ParentWorkflowID: wid,
 					},
 					MaxTokens: opts.BudgetAgentMax / config.NumDebaters,
 					UserID:    opts.UserID,
 					TaskID:    wid,
 					ModelTier: config.ModelTier,
 				})
-		} else {
-			futures[i] = workflow.ExecuteActivity(ctx,
-				activities.ExecuteAgent,
-				activities.AgentExecutionInput{
-					Query:     initialPrompt,
-					AgentID:   agentID,
-					Context:   debateContext,
-					Mode:      "debate",
-					SessionID: sessionID,
-					History:   history,
-				})
-		}
+        } else {
+            // Determine parent workflow for streaming correlation
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if debateContext != nil {
+                if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            } else if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            futures[i] = workflow.ExecuteActivity(ctx,
+                activities.ExecuteAgent,
+                activities.AgentExecutionInput{
+                    Query:             initialPrompt,
+                    AgentID:           agentID,
+                    Context:           debateContext,
+                    Mode:              "debate",
+                    SessionID:         sessionID,
+                    History:           history,
+                    ParentWorkflowID:  wid,
+                })
+        }
 	}
 
 	// Collect initial positions
@@ -211,36 +233,58 @@ func Debate(
 				"other_positions": othersPositions,
 			}
 
-			if opts.BudgetAgentMax > 0 {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				roundFutures[i] = workflow.ExecuteActivity(ctx,
-					constants.ExecuteAgentWithBudgetActivity,
-					activities.BudgetedAgentInput{
+            if opts.BudgetAgentMax > 0 {
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if debateContext != nil {
+                    if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                } else if context != nil {
+                    if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                }
+                roundFutures[i] = workflow.ExecuteActivity(ctx,
+                    constants.ExecuteAgentWithBudgetActivity,
+                    activities.BudgetedAgentInput{
 						AgentInput: activities.AgentExecutionInput{
-							Query:     responsePrompt,
-							AgentID:   debater.AgentID,
-							Context:   debateContext,
-							Mode:      "debate",
-							SessionID: sessionID,
-							History:   append(history, debateHistory...),
+							Query:             responsePrompt,
+							AgentID:           debater.AgentID,
+							Context:           debateContext,
+							Mode:              "debate",
+							SessionID:         sessionID,
+							History:           append(history, debateHistory...),
+                                ParentWorkflowID: wid,
 						},
 						MaxTokens: opts.BudgetAgentMax / (config.NumDebaters * config.MaxRounds),
 						UserID:    opts.UserID,
 						TaskID:    wid,
 						ModelTier: config.ModelTier,
 					})
-			} else {
-				roundFutures[i] = workflow.ExecuteActivity(ctx,
-					activities.ExecuteAgent,
-					activities.AgentExecutionInput{
-						Query:     responsePrompt,
-						AgentID:   debater.AgentID,
-						Context:   debateContext,
-						Mode:      "debate",
-						SessionID: sessionID,
-						History:   append(history, debateHistory...),
-					})
-			}
+            } else {
+                // Determine parent workflow for streaming correlation
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if debateContext != nil {
+                    if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                } else if context != nil {
+                    if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                }
+                roundFutures[i] = workflow.ExecuteActivity(ctx,
+                    activities.ExecuteAgent,
+                    activities.AgentExecutionInput{
+                        Query:             responsePrompt,
+                        AgentID:           debater.AgentID,
+                        Context:           debateContext,
+                        Mode:              "debate",
+                        SessionID:         sessionID,
+                        History:           append(history, debateHistory...),
+                        ParentWorkflowID:  wid,
+                    })
+            }
 		}
 
 		// Collect round responses

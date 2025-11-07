@@ -267,44 +267,58 @@ Format each as a clear, concise thought.`,
 
 	// Generate branches
 	var branchResult activities.AgentExecutionResult
-	if tokenBudget > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		err := workflow.ExecuteActivity(ctx,
-			constants.ExecuteAgentWithBudgetActivity,
-			activities.BudgetedAgentInput{
+    if tokenBudget > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
 				AgentInput: activities.AgentExecutionInput{
-					Query:     branchPrompt,
-					AgentID:   fmt.Sprintf("tot-generator-%s", parent.ID),
-					Context:   context,
-					Mode:      "exploration",
-					SessionID: sessionID,
-					History:   history,
+					Query:             branchPrompt,
+					AgentID:           fmt.Sprintf("tot-generator-%s", parent.ID),
+					Context:           context,
+					Mode:              "exploration",
+					SessionID:         sessionID,
+					History:           history,
+                        ParentWorkflowID: wid,
 				},
 				MaxTokens: tokenBudget,
 				UserID:    opts.UserID,
 				TaskID:    wid,
 				ModelTier: modelTier,
 			}).Get(ctx, &branchResult)
-		if err != nil {
-			logger.Warn("Failed to generate branches", "error", err)
-			return branches
-		}
-	} else {
-		err := workflow.ExecuteActivity(ctx,
-			activities.ExecuteAgent,
-			activities.AgentExecutionInput{
-				Query:     branchPrompt,
-				AgentID:   fmt.Sprintf("tot-generator-%s", parent.ID),
-				Context:   context,
-				Mode:      "exploration",
-				SessionID: sessionID,
-				History:   history,
-			}).Get(ctx, &branchResult)
-		if err != nil {
-			logger.Warn("Failed to generate branches", "error", err)
-			return branches
-		}
-	}
+        if err != nil {
+            logger.Warn("Failed to generate branches", "error", err)
+            return branches
+        }
+    } else {
+        // Determine parent workflow for streaming correlation
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            activities.ExecuteAgent,
+            activities.AgentExecutionInput{
+                Query:             branchPrompt,
+                AgentID:           fmt.Sprintf("tot-generator-%s", parent.ID),
+                Context:           context,
+                Mode:              "exploration",
+                SessionID:         sessionID,
+                History:           history,
+                ParentWorkflowID:  wid,
+            }).Get(ctx, &branchResult)
+        if err != nil {
+            logger.Warn("Failed to generate branches", "error", err)
+            return branches
+        }
+    }
 
 	// Parse generated branches
 	thoughts := parseBranches(branchResult.Response, branchingFactor)

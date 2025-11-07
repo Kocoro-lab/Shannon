@@ -24,8 +24,8 @@ session:
   max_history: 1000  # Maximum messages to keep in Redis per session
   ttl: "720h"        # Session expiry time (30 days)
   cache_size: 20000  # Max sessions to keep in local cache
-  token_budget_per_task: 5000000    # Token budget per task (5M)
-  token_budget_per_agent: 200000    # Token budget per agent (200K)
+  token_budget_per_task: 10000000   # Token budget per task (10M)
+  token_budget_per_agent: 500000    # Token budget per agent (500K)
 
 circuit_breakers:
   redis:

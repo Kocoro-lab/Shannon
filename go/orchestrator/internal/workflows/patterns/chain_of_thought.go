@@ -82,43 +82,58 @@ func ChainOfThought(
 	// Execute chain-of-thought reasoning
 	startTime := workflow.Now(ctx)
 
-	var cotResult activities.AgentExecutionResult
-	if opts.BudgetAgentMax > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		err := workflow.ExecuteActivity(ctx,
-			constants.ExecuteAgentWithBudgetActivity,
-			activities.BudgetedAgentInput{
-				AgentInput: activities.AgentExecutionInput{
-					Query:     cotPrompt,
-					AgentID:   "cot-reasoner",
-					Context:   context,
-					Mode:      "reasoning",
-					SessionID: sessionID,
-					History:   history,
+    var cotResult activities.AgentExecutionResult
+    if opts.BudgetAgentMax > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        // Prefer parent workflow ID from context when available for budget tracking and streaming
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
+                AgentInput: activities.AgentExecutionInput{
+                    Query:             cotPrompt,
+					AgentID:           "cot-reasoner",
+					Context:           context,
+					Mode:              "reasoning",
+					SessionID:         sessionID,
+					History:           history,
+                    ParentWorkflowID: wid,
 				},
 				MaxTokens: opts.BudgetAgentMax,
 				UserID:    opts.UserID,
 				TaskID:    wid,
 				ModelTier: config.ModelTier,
 			}).Get(ctx, &cotResult)
-		if err != nil {
-			return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
-		}
-	} else {
-		err := workflow.ExecuteActivity(ctx,
-			activities.ExecuteAgent,
-			activities.AgentExecutionInput{
-				Query:     cotPrompt,
-				AgentID:   "cot-reasoner",
-				Context:   context,
-				Mode:      "reasoning",
-				SessionID: sessionID,
-				History:   history,
-			}).Get(ctx, &cotResult)
-		if err != nil {
-			return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
-		}
-	}
+        if err != nil {
+            return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
+        }
+    } else {
+        // Determine parent workflow for streaming correlation
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            activities.ExecuteAgent,
+            activities.AgentExecutionInput{
+                Query:             cotPrompt,
+                AgentID:           "cot-reasoner",
+                Context:           context,
+                Mode:              "reasoning",
+                SessionID:         sessionID,
+                History:           history,
+                ParentWorkflowID:  wid,
+            }).Get(ctx, &cotResult)
+        if err != nil {
+            return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
+        }
+    }
 
 	duration := workflow.Now(ctx).Sub(startTime)
 	result.StepDurations = append(result.StepDurations, duration)
@@ -145,24 +160,30 @@ func ChainOfThought(
 		)
 
 		var clarifyResult activities.AgentExecutionResult
-		if opts.BudgetAgentMax > 0 {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			err := workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
-					AgentInput: activities.AgentExecutionInput{
-						Query:     clarificationPrompt,
-						AgentID:   "cot-clarifier",
-						Context:   context,
-						Mode:      "reasoning",
-						SessionID: sessionID,
-						History:   append(history, fmt.Sprintf("Previous: %s", cotResult.Response)),
+        if opts.BudgetAgentMax > 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            err := workflow.ExecuteActivity(ctx,
+                constants.ExecuteAgentWithBudgetActivity,
+                activities.BudgetedAgentInput{
+                    AgentInput: activities.AgentExecutionInput{
+						Query:             clarificationPrompt,
+						AgentID:           "cot-clarifier",
+						Context:           context,
+						Mode:              "reasoning",
+						SessionID:         sessionID,
+						History:           append(history, fmt.Sprintf("Previous: %s", cotResult.Response)),
+                        ParentWorkflowID: wid,
 					},
-					MaxTokens: opts.BudgetAgentMax / 2, // Use less budget for clarification
-					UserID:    opts.UserID,
-					TaskID:    wid,
-					ModelTier: config.ModelTier,
-				}).Get(ctx, &clarifyResult)
+                    MaxTokens: opts.BudgetAgentMax / 2, // Use less budget for clarification
+                    UserID:    opts.UserID,
+                    TaskID:    wid,
+                    ModelTier: config.ModelTier,
+                }).Get(ctx, &clarifyResult)
 			if err == nil {
 				// Update with clarified reasoning
 				clarifiedSteps := parseReasoningSteps(clarifyResult.Response, config.StepDelimiter)

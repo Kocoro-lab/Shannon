@@ -214,6 +214,13 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		"user_id", input.UserID,
 	)
 
+	// Determine workflow ID for event streaming
+	// Use parent workflow ID if this is a child workflow, otherwise use own ID
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
@@ -306,9 +313,10 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		} else {
 			var err error
 			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-				Query:        input.Query,
-				AgentResults: agentResults,
-				Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
+				Query:            input.Query,
+				AgentResults:     agentResults,
+				Context:          input.Context, // Pass role/prompt_params for role-aware synthesis
+				ParentWorkflowID: workflowID,
 			}).Get(ctx, &synthesis)
 			if err != nil {
 				logger.Error("Result synthesis failed", "error", err)
@@ -318,9 +326,10 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	} else {
 		var err error
 		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-			Query:        input.Query,
-			AgentResults: agentResults,
-			Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
+			Query:            input.Query,
+			AgentResults:     agentResults,
+			Context:          input.Context, // Pass role/prompt_params for role-aware synthesis
+			ParentWorkflowID: workflowID,
 		}).Get(ctx, &synthesis)
 		if err != nil {
 			logger.Error("Result synthesis failed", "error", err)
@@ -360,11 +369,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	}
 
-	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
-	}
+	// Emit WORKFLOW_COMPLETED before returning (workflowID already set at line 219)
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
