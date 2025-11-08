@@ -47,7 +47,11 @@ func (a *Activities) RefineResearchQuery(ctx context.Context, in RefineResearchQ
 	url := fmt.Sprintf("%s/agent/query", base)
 
 	// Build prompt for query refinement
-    refinementPrompt := fmt.Sprintf(`You are a research query expansion expert. Your task is to take a vague or broad query and expand it into a comprehensive research plan.
+    refinementPrompt := fmt.Sprintf(`You are a research query expansion expert.
+
+IMPORTANT: This is the PLANNING stage only. Plan first; do NOT start writing the final report or conducting searches. Return ONLY a structured plan.
+
+Your task is to take a vague or broad query and expand it into a comprehensive research plan.
 
 Original query: %s
 

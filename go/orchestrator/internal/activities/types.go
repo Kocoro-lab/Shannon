@@ -92,6 +92,11 @@ type SynthesisResult struct {
     RequestedMaxTokens int // Max completion tokens requested from provider for this synthesis
     CompletionTokens int // Output tokens (excludes prompt)
     EffectiveMaxCompletion int // Actual max completion after provider headroom clamp
+    // Added for accurate cost tracking
+    InputTokens int    // Prompt tokens (when available or inferred)
+    ModelUsed   string // Model used for synthesis
+    Provider    string // Provider used for synthesis
+    CostUsd     float64 // Reported cost from provider metadata when available
 }
 
 // EvaluateResultInput carries data for reflection/quality checks

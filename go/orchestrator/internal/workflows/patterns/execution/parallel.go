@@ -1,16 +1,18 @@
 package execution
 
 import (
-	"encoding/json"
-	"fmt"
-	"strings"
-	"time"
+    "encoding/json"
+    "fmt"
+    "strings"
+    "time"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 )
 
 // ParallelConfig controls parallel execution behavior
@@ -255,9 +257,49 @@ func ExecuteParallel(
 								}).Get(ctx, nil)
 						}
 					} else {
-						results[fwi.Index] = result
-						totalTokens += result.TokensUsed
-						successCount++
+                    results[fwi.Index] = result
+                    totalTokens += result.TokensUsed
+                    successCount++
+
+                    // Record token usage for this parallel task
+                    // Important: Avoid double-recording when running budgeted agents.
+                    // ExecuteAgentWithBudget already records usage inside the activity.
+                    if budgetPerAgent <= 0 {
+                        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                        if config.Context != nil {
+                            if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                                wid = p
+                            }
+                        }
+                        inTok := result.InputTokens
+                        outTok := result.OutputTokens
+                        if inTok == 0 && outTok == 0 && result.TokensUsed > 0 {
+                            inTok = result.TokensUsed * 6 / 10
+                            outTok = result.TokensUsed - inTok
+                        }
+                        // Fallbacks for missing model/provider
+                        model := result.ModelUsed
+                        if strings.TrimSpace(model) == "" {
+                            if m := pricing.GetPriorityOneModel(modelTier); m != "" {
+                                model = m
+                            }
+                        }
+                        provider := result.Provider
+                        if strings.TrimSpace(provider) == "" {
+                            provider = imodels.DetectProvider(model)
+                        }
+                        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                            UserID:       userID,
+                            SessionID:    sessionID,
+                            TaskID:       wid,
+                            AgentID:      result.AgentID,
+                            Model:        model,
+                            Provider:     provider,
+                            InputTokens:  inTok,
+                            OutputTokens: outTok,
+                            Metadata:     map[string]interface{}{"phase": "parallel"},
+                        }).Get(ctx, nil)
+                    }
 
                 // Persist agent execution (fire-and-forget). Use parent workflow ID when available.
                 workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
@@ -339,15 +381,18 @@ func ExecuteParallel(
 		"total_tokens", totalTokens,
 	)
 
-	return &ParallelResult{
-		Results:     results,
-		TotalTokens: totalTokens,
-		Metadata: map[string]interface{}{
-			"total_tasks": len(tasks),
-			"successful":  successCount,
-			"failed":      errorCount,
-		},
-	}, nil
+    // Build metadata summary
+    md := map[string]interface{}{
+        "total_tasks": len(tasks),
+        "successful":  successCount,
+        "failed":      errorCount,
+    }
+
+    return &ParallelResult{
+        Results:     results,
+        TotalTokens: totalTokens,
+        Metadata:    md,
+    }, nil
 }
 
 // persistAgentExecutionLocal is a local helper to avoid circular imports

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -277,26 +278,50 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
             // Calculate target based on research areas (150-250 words per area)
             targetWords = len(areas) * 200
         }
-        outputStructure = fmt.Sprintf(`## Output Structure:
-    1. Executive Summary (150–250 words; capture key insights and main conclusions)
-      2. Detailed Findings (%d–%d words total, organized by research areas as subsections):
-         - MUST cover ALL research areas specified below with roughly equal depth
-       - Present findings comprehensively with inline citations
-       - Include quantitative data, timelines, key developments
-       - Discuss implications and cross-cutting themes
-       - Address contradictions explicitly
-    3. Limitations and Uncertainties (100–150 words)
-    `, targetWords, targetWords+600)
+        // Use explicit top-level headings and forbid copying instruction text into the answer
+        outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+
+Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
+
+## Executive Summary
+## Detailed Findings
+## Limitations and Uncertainties
+
+Section requirements:
+- Executive Summary: 150–250 words; capture key insights and conclusions
+- Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
+- Limitations and Uncertainties: 100–150 words
+`, targetWords, targetWords+600)
     } else {
         // Default: concise synthesis (no Sources section; system appends it)
-        outputStructure = `## Output Structure:
-    1. Executive Summary (2–3 sentences)
-    2. Detailed Findings (with inline citations)
-    3. Limitations and Uncertainties (bullet list)
-    `
+        outputStructure = `## Output Format (do NOT include this section in the final answer):
+
+Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
+
+## Executive Summary
+## Detailed Findings
+## Limitations and Uncertainties
+
+Section requirements:
+- Executive Summary: 2–3 sentences
+- Detailed Findings: include inline citations
+- Limitations and Uncertainties: bullet list
+`
     }
 
     fmt.Fprintf(&b, `# Synthesis Requirements:
+
+    IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with the "## Executive Summary" heading.
+
+    ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
+    ✓ Each of the %d research areas has a dedicated subsection (### heading)
+    ✓ Each subsection contains 150–250 words minimum
+    ✓ Each subsection includes ≥2 inline citations [n]
+    ✓ Executive Summary captures key insights (150–250 words)
+    ✓ Limitations section addresses gaps and conflicts
+    ✓ ALL claims supported by Available Citations (no fabrication)
+    ✓ Conflicting sources explicitly noted: "[1] says X, [2] says Y"
+    ✓ Response written in the SAME language as the query
 
     ## CRITICAL - Language Matching:
     %s
@@ -325,7 +350,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
     - NEVER fabricate or hallucinate sources
     - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
-    `, languageInstruction, queryLanguage, minCitations, outputStructure, areasInstruction)
+    `, len(areas), languageInstruction, queryLanguage, minCitations, outputStructure, areasInstruction)
 
 	// Include available citations if present (Phase 2.5 fix)
 	if input.Context != nil {
@@ -721,13 +746,26 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
                         }
                         // Find content after this heading (before next ### or ## or end)
                         content := txt[idx+len(areaHeading):]
-                        nextSectionIdx := strings.Index(content, "\n##")
+
+                        // IMPROVED: Use ### for subsections first, ## as fallback
+                        nextSectionIdx := strings.Index(content, "\n### ")
+                        if nextSectionIdx == -1 {
+                            nextSectionIdx = strings.Index(content, "\n## ")
+                        }
                         if nextSectionIdx == -1 {
                             nextSectionIdx = len(content)
                         }
                         sectionContent := strings.TrimSpace(content[:nextSectionIdx])
-                        if len([]rune(sectionContent)) < 100 {
-                            // Section too short (< 100 chars)
+
+                        if len([]rune(sectionContent)) < 600 {
+                            // Section too short (< 600 chars, ~150 words minimum)
+                            return false
+                        }
+
+                        // Check minimum citations per section (≥2)
+                        citationCount := countInlineCitations(sectionContent)
+                        if citationCount < 2 {
+                            // Section needs more citations
                             return false
                         }
                     }
@@ -857,10 +895,10 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
         )
     }
 
-	// Extract usage metadata for event payload (finishReason, outputTokens, effectiveMaxCompletion already extracted above)
-	provider := ""
-	inputTokens := 0
-	costUsd := 0.0
+    // Extract usage metadata for event payload (finishReason, outputTokens, effectiveMaxCompletion already extracted above)
+    provider := ""
+    inputTokens := 0
+    costUsd := 0.0
 	if out.Metadata != nil {
 		if p, ok := out.Metadata["provider"].(string); ok {
 			provider = p
@@ -928,6 +966,14 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	// effectiveMaxCompletion, outputTokens already extracted above for continuation trigger
 
+    // Infer input tokens if not present in metadata
+    if inputTokens == 0 && out.TokensUsed > 0 && outputTokens > 0 {
+        est := out.TokensUsed - outputTokens
+        if est > 0 {
+            inputTokens = est
+        }
+    }
+
     return SynthesisResult{
         FinalResult:        finalResponse,
         TokensUsed:         out.TokensUsed,
@@ -935,6 +981,10 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
         RequestedMaxTokens: maxTokens,
         CompletionTokens:   outputTokens,
         EffectiveMaxCompletion: effectiveMaxCompletion,
+        InputTokens:        inputTokens,
+        ModelUsed:          model,
+        Provider:           provider,
+        CostUsd:            costUsd,
     }, nil
 }
 
@@ -1143,4 +1193,17 @@ func cleanAgentOutput(response string) string {
 
 	// Return as-is if not JSON or already clean text
 	return response
+}
+
+// countInlineCitations counts unique inline citation references [n] in text.
+// Returns the number of distinct citation numbers found.
+func countInlineCitations(text string) int {
+	re := regexp.MustCompile(`\[\d+\]`)
+	matches := re.FindAllString(text, -1)
+	// Deduplicate (same citation can appear multiple times)
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		seen[m] = true
+	}
+	return len(seen)
 }

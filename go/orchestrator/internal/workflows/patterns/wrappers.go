@@ -1,9 +1,13 @@
 package patterns
 
 import (
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"go.temporal.io/sdk/workflow"
+    "strings"
+
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "go.temporal.io/sdk/workflow"
 )
 
 // reactPattern wraps ReactLoop to satisfy the Pattern interface
@@ -182,7 +186,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 		if err != nil {
 			return nil, err
 		}
-	} else {
+    } else {
         if err := workflow.ExecuteActivity(ctx,
             activities.ExecuteAgent,
             activities.AgentExecutionInput{
@@ -204,7 +208,42 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
         ).Get(ctx, &initial); err != nil {
             return nil, err
         }
-	}
+
+        // Record initial reflection usage when not budgeted (avoid double-recording)
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if input.Context != nil {
+            if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        inTok := initial.InputTokens
+        outTok := initial.OutputTokens
+        if inTok == 0 && outTok == 0 && initial.TokensUsed > 0 {
+            inTok = initial.TokensUsed * 6 / 10
+            outTok = initial.TokensUsed - inTok
+        }
+        model := initial.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(input.ModelTier); m != "" {
+                model = m
+            }
+        }
+        provider := initial.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       input.UserID,
+            SessionID:    input.SessionID,
+            TaskID:       wid,
+            AgentID:      "reflection-initial",
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "reflection_initial"},
+        }).Get(ctx, nil)
+    }
 
 	// Apply reflection with defaults
 	rcfg := ReflectionConfig{Enabled: true, MaxRetries: 1, ConfidenceThreshold: 0.7, Criteria: []string{"completeness", "correctness", "clarity"}, TimeoutMs: 30000}

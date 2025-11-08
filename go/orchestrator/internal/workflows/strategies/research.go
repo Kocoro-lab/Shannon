@@ -2,6 +2,7 @@ package strategies
 
 import (
     "fmt"
+    "regexp"
     "strings"
     "time"
 
@@ -10,7 +11,9 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
@@ -157,13 +160,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
     var totalTokens int
     var refineResult activities.RefineResearchQueryResult
     refinedQuery := input.Query // Default to original query
-	err := workflow.ExecuteActivity(ctx, constants.RefineResearchQueryActivity,
-		activities.RefineResearchQueryInput{
-			Query:   input.Query,
-			Context: baseContext,
-		}).Get(ctx, &refineResult)
+err := workflow.ExecuteActivity(ctx, constants.RefineResearchQueryActivity,
+    activities.RefineResearchQueryInput{
+        Query:   input.Query,
+        Context: baseContext,
+    }).Get(ctx, &refineResult)
 
-    if err == nil && refineResult.RefinedQuery != "" {
+if err == nil && refineResult.RefinedQuery != "" {
         logger.Info("Query refined for research",
             "original", input.Query,
             "refined", refineResult.RefinedQuery,
@@ -189,6 +192,27 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
         }
         // Account for refinement tokens in the workflow total
         totalTokens += refineResult.TokensUsed
+
+        // Record refinement token usage for accurate cost tracking
+        if refineResult.TokensUsed > 0 {
+            inTok := 0
+            // We only have a total for refinement; approximate split 60/40
+            if refineResult.TokensUsed > 0 {
+                inTok = int(float64(refineResult.TokensUsed) * 0.6)
+            }
+            outTok := refineResult.TokensUsed - inTok
+            _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                UserID:       input.UserID,
+                SessionID:    input.SessionID,
+                TaskID:       workflowID,
+                AgentID:      "research-refiner",
+                Model:        refineResult.ModelUsed,
+                Provider:     refineResult.Provider,
+                InputTokens:  inTok,
+                OutputTokens: outTok,
+                Metadata:     map[string]interface{}{"phase": "refine"},
+            }).Get(ctx, nil)
+        }
 
         // Emit refinement complete event with details (include canonical/entity hints for diagnostics)
         emitTaskUpdatePayload(ctx, input, activities.StreamEventProgress, "research-refiner",
@@ -222,13 +246,34 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
             AvailableTools: []string{},
         }).Get(ctx, &decomp)
 
-	if err != nil {
-		logger.Error("Task decomposition failed", "error", err)
-		return TaskResult{
-			Success:      false,
-			ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
-		}, err
-	}
+		if err != nil {
+			logger.Error("Task decomposition failed", "error", err)
+			return TaskResult{
+				Success:      false,
+				ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
+			}, err
+		}
+
+		// Record decomposition token usage for accurate cost tracking (if provided)
+		if decomp.TokensUsed > 0 || decomp.InputTokens > 0 || decomp.OutputTokens > 0 {
+			inTok := decomp.InputTokens
+			outTok := decomp.OutputTokens
+			if inTok == 0 && outTok == 0 && decomp.TokensUsed > 0 {
+				inTok = int(float64(decomp.TokensUsed) * 0.6)
+				outTok = decomp.TokensUsed - inTok
+			}
+			_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:       input.UserID,
+				SessionID:    input.SessionID,
+				TaskID:       workflowID,
+				AgentID:      "decompose",
+				Model:        decomp.ModelUsed,
+				Provider:     decomp.Provider,
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+				Metadata:     map[string]interface{}{"phase": "decompose"},
+			}).Get(ctx, nil)
+		}
 
 	// Check for budget configuration
 	agentMaxTokens := 0
@@ -249,13 +294,26 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			"complexity", decomp.ComplexityScore,
 		)
 
-		reactConfig := patterns.ReactConfig{
-			MaxIterations:     5,
-			ObservationWindow: 3,
-			MaxObservations:   20,
-			MaxThoughts:       10,
-			MaxActions:        10,
-		}
+        // Allow tuning ReAct iterations via context with safe clamp (2..8)
+        reactMaxIterations := 5
+        if v, ok := baseContext["react_max_iterations"]; ok {
+            switch t := v.(type) {
+            case int:
+                reactMaxIterations = t
+            case float64:
+                reactMaxIterations = int(t)
+            }
+            if reactMaxIterations < 2 { reactMaxIterations = 2 }
+            if reactMaxIterations > 8 { reactMaxIterations = 8 }
+        }
+
+        reactConfig := patterns.ReactConfig{
+            MaxIterations:     reactMaxIterations,
+            ObservationWindow: 3,
+            MaxObservations:   20,
+            MaxThoughts:       10,
+            MaxActions:        10,
+        }
 
 		reactOpts := patterns.Options{
 			BudgetAgentMax: agentMaxTokens,
@@ -288,22 +346,213 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		totalTokens = reactResult.TotalTokens
 
 	} else {
-		// Complex research - use parallel/hybrid execution
-		logger.Info("Using parallel execution for complex research",
-			"complexity", decomp.ComplexityScore,
-			"subtasks", len(decomp.Subtasks),
-		)
+        // Complex research - check if we should use ReAct per task for deeper reasoning
+        useReactPerTask := false
+        if v, ok := baseContext["react_per_task"].(bool); ok && v {
+            useReactPerTask = true
+            logger.Info("react_per_task enabled via context flag")
+        }
+        // Auto-enable for high complexity only when strategy is deep/academic
+        if !useReactPerTask && decomp.ComplexityScore > 0.7 {
+            strategy := ""
+            if sv, ok := baseContext["research_strategy"].(string); ok {
+                strategy = strings.ToLower(strings.TrimSpace(sv))
+            }
+            if strategy == "deep" || strategy == "academic" {
+                useReactPerTask = true
+                logger.Info("Auto-enabling react_per_task due to high complexity",
+                    "complexity", decomp.ComplexityScore,
+                    "strategy", strategy,
+                )
+            }
+        }
 
-		// Determine execution strategy
-		hasDepencies := false
-		for _, subtask := range decomp.Subtasks {
-			if len(subtask.Dependencies) > 0 {
-				hasDepencies = true
-				break
+		if useReactPerTask {
+			// Use ReAct loop per subtask for deeper reasoning
+			logger.Info("Using ReAct per subtask for deep research",
+				"complexity", decomp.ComplexityScore,
+				"subtasks", len(decomp.Subtasks),
+			)
+
+            // Determine execution strategy
+            hasDependencies := false
+            for _, subtask := range decomp.Subtasks {
+                if len(subtask.Dependencies) > 0 {
+                    hasDependencies = true
+                    break
+                }
+            }
+
+            if hasDependencies {
+                // Sequential execution with ReAct per subtask, respecting dependencies
+                logger.Info("Using sequential ReAct execution due to dependencies")
+
+				// Build execution order via topological sort
+				executionOrder := topologicalSort(decomp.Subtasks)
+				previousResults := make(map[string]string)
+
+				for _, subtaskID := range executionOrder {
+					// Find the subtask
+					var subtask activities.Subtask
+					for _, st := range decomp.Subtasks {
+						if st.ID == subtaskID {
+							subtask = st
+							break
+						}
+					}
+
+					// Build context with dependency results
+					subtaskContext := make(map[string]interface{})
+					for k, v := range baseContext {
+						subtaskContext[k] = v
+					}
+					if len(subtask.Dependencies) > 0 {
+						depResults := make(map[string]string)
+						for _, depID := range subtask.Dependencies {
+							if res, ok := previousResults[depID]; ok {
+								depResults[depID] = res
+							}
+						}
+						subtaskContext["previous_results"] = depResults
+					}
+
+                    // Execute this subtask with ReAct
+                    // Allow tuning ReAct iterations via context with safe clamp (2..8)
+                    reactMaxIterations := 5
+                    if v, ok := baseContext["react_max_iterations"]; ok {
+                        switch t := v.(type) {
+                        case int:
+                            reactMaxIterations = t
+                        case float64:
+                            reactMaxIterations = int(t)
+                        }
+                        if reactMaxIterations < 2 { reactMaxIterations = 2 }
+                        if reactMaxIterations > 8 { reactMaxIterations = 8 }
+                    }
+                    reactConfig := patterns.ReactConfig{
+                        MaxIterations:     reactMaxIterations,
+                        ObservationWindow: 3,
+                        MaxObservations:   20,
+                        MaxThoughts:       10,
+                        MaxActions:        10,
+                    }
+
+					reactOpts := patterns.Options{
+						BudgetAgentMax: agentMaxTokens,
+						SessionID:      input.SessionID,
+						UserID:         input.UserID,
+						EmitEvents:     true,
+						ModelTier:      modelTier,
+						Context:        subtaskContext,
+					}
+
+					reactResult, err := patterns.ReactLoop(
+						ctx,
+						subtask.Description,
+						subtaskContext,
+						input.SessionID,
+						convertHistoryForAgent(input.History),
+						reactConfig,
+						reactOpts,
+					)
+
+					if err == nil {
+						agentResults = append(agentResults, reactResult.AgentResults...)
+						totalTokens += reactResult.TotalTokens
+						previousResults[subtaskID] = reactResult.FinalResult
+					} else {
+						logger.Warn("ReAct loop failed for subtask, continuing", "subtask_id", subtaskID, "error", err)
+					}
+				}
+
+            } else {
+                // Parallel execution with ReAct per subtask
+                logger.Info("Using parallel ReAct execution (no dependencies)")
+
+				// Use channels to collect results from parallel executions
+				resultsChan := workflow.NewChannel(ctx)
+
+				for _, subtask := range decomp.Subtasks {
+					st := subtask // Capture for goroutine
+
+                    workflow.Go(ctx, func(gctx workflow.Context) {
+                        // Allow tuning ReAct iterations via context with safe clamp (2..8)
+                        reactMaxIterations := 5
+                        if v, ok := baseContext["react_max_iterations"]; ok {
+                            switch t := v.(type) {
+                            case int:
+                                reactMaxIterations = t
+                            case float64:
+                                reactMaxIterations = int(t)
+                            }
+                            if reactMaxIterations < 2 { reactMaxIterations = 2 }
+                            if reactMaxIterations > 8 { reactMaxIterations = 8 }
+                        }
+                        reactConfig := patterns.ReactConfig{
+                            MaxIterations:     reactMaxIterations,
+                            ObservationWindow: 3,
+                            MaxObservations:   20,
+                            MaxThoughts:       10,
+                            MaxActions:        10,
+                        }
+
+						reactOpts := patterns.Options{
+							BudgetAgentMax: agentMaxTokens,
+							SessionID:      input.SessionID,
+							UserID:         input.UserID,
+							EmitEvents:     true,
+							ModelTier:      modelTier,
+							Context:        baseContext,
+						}
+
+						reactResult, err := patterns.ReactLoop(
+							gctx,
+							st.Description,
+							baseContext,
+							input.SessionID,
+							convertHistoryForAgent(input.History),
+							reactConfig,
+							reactOpts,
+						)
+
+						if err == nil {
+							resultsChan.Send(gctx, reactResult)
+						} else {
+							logger.Warn("ReAct loop failed for parallel subtask", "subtask_id", st.ID, "error", err)
+							// Send nil to indicate failure
+							resultsChan.Send(gctx, (*patterns.ReactLoopResult)(nil))
+						}
+					})
+				}
+
+				// Collect all results
+				for i := 0; i < len(decomp.Subtasks); i++ {
+					var result *patterns.ReactLoopResult
+					resultsChan.Receive(ctx, &result)
+					if result != nil {
+						agentResults = append(agentResults, result.AgentResults...)
+						totalTokens += result.TotalTokens
+					}
+				}
 			}
-		}
 
-		if hasDepencies {
+		} else {
+			// Complex research - use parallel/hybrid execution with simple agents
+			logger.Info("Using parallel execution for complex research",
+				"complexity", decomp.ComplexityScore,
+				"subtasks", len(decomp.Subtasks),
+			)
+
+			// Determine execution strategy
+			hasDependencies := false
+			for _, subtask := range decomp.Subtasks {
+				if len(subtask.Dependencies) > 0 {
+					hasDependencies = true
+					break
+				}
+			}
+
+			if hasDependencies {
 			// Use hybrid execution for dependency management
 			logger.Info("Using hybrid execution due to dependencies")
 
@@ -407,6 +656,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 			agentResults = parallelResult.Results
 			totalTokens = parallelResult.TotalTokens
+			}
 		}
 	}
 
@@ -477,6 +727,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
     logger.Info("Synthesizing research results",
         "agent_count", len(agentResults),
     )
+
+    // Per-agent token usage is recorded inside execution patterns (ReactLoop/Parallel/Hybrid).
+    // Avoid double-counting here to prevent duplicate token_usage rows.
 
     // Collect citations from agent tool outputs and inject into context for synthesis/formatting
     // Also retain them for metadata/verification.
@@ -559,7 +812,187 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}, err
 	}
 
-	totalTokens += synthesis.TokensUsed
+    totalTokens += synthesis.TokensUsed
+
+    // Record synthesis token usage
+    if synthesis.TokensUsed > 0 {
+        inTok := synthesis.InputTokens
+        outTok := synthesis.CompletionTokens
+        if inTok == 0 && outTok > 0 {
+            // Infer if needed
+            est := synthesis.TokensUsed - outTok
+            if est > 0 { inTok = est }
+        }
+        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       input.UserID,
+            SessionID:    input.SessionID,
+            TaskID:       workflowID,
+            AgentID:      "synthesis",
+            Model:        synthesis.ModelUsed,
+            Provider:     synthesis.Provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata: map[string]interface{}{
+                "phase": "synthesis",
+            },
+        }).Get(ctx, nil)
+    }
+
+	// Step 3.5: Gap-filling loop (iterative re-search for undercovered areas)
+	// Version-gated for safe rollout and Temporal determinism
+	gapFillingVersion := workflow.GetVersion(ctx, "gap_filling_v1", workflow.DefaultVersion, 1)
+	if gapFillingVersion >= 1 {
+		// Check iteration count from context (prevents infinite loops)
+		iterationCount := 0
+		if baseContext != nil {
+			if v, ok := baseContext["gap_iteration"].(int); ok {
+				iterationCount = v
+			}
+		}
+
+		// Only attempt gap-filling if we haven't exceeded max iterations
+		const maxGapIterations = 2
+		if iterationCount < maxGapIterations {
+			gapAnalysis := analyzeGaps(synthesis.FinalResult, refineResult.ResearchAreas)
+
+			if len(gapAnalysis.UndercoveredAreas) > 0 {
+				logger.Info("Detected coverage gaps; triggering targeted re-search",
+					"gaps", gapAnalysis.UndercoveredAreas,
+					"iteration", iterationCount,
+				)
+
+				// Build targeted search queries for gaps
+				gapQueries := buildGapQueries(gapAnalysis.UndercoveredAreas, input.Query)
+
+				// Execute targeted searches using ReAct pattern
+				var allGapResults []activities.AgentExecutionResult
+				for _, gapQuery := range gapQueries {
+					gapContext := make(map[string]interface{})
+					for k, v := range baseContext {
+						gapContext[k] = v
+					}
+					gapContext["research_mode"] = "gap_fill"
+					gapContext["target_area"] = gapQuery.TargetArea
+					gapContext["gap_iteration"] = iterationCount + 1
+
+				reactConfig := patterns.ReactConfig{
+					MaxIterations:     3,  // Focused search
+					ObservationWindow: 3,  // Keep last 3 observations in context
+					MaxObservations:   20, // Prevent unbounded growth
+					MaxThoughts:       10,
+					MaxActions:        10,
+				}
+					reactOpts := patterns.Options{
+						BudgetAgentMax: agentMaxTokens,
+						SessionID:      input.SessionID,
+						ModelTier:      modelTier,
+						Context:        gapContext,
+					}
+
+					gapResult, err := patterns.ReactLoop(
+						ctx,
+						gapQuery.Query,
+						gapContext,
+						input.SessionID,
+						[]string{}, // No history for gap queries
+						reactConfig,
+						reactOpts,
+					)
+
+					if err == nil && len(gapResult.AgentResults) > 0 {
+						allGapResults = append(allGapResults, gapResult.AgentResults...)
+						totalTokens += gapResult.TotalTokens
+					}
+				}
+
+				// If we got new evidence, re-collect citations and re-synthesize
+				if len(allGapResults) > 0 {
+					logger.Info("Gap-filling search completed",
+						"gap_results", len(allGapResults),
+						"iteration", iterationCount+1,
+					)
+
+					// Combine all agent results (original + gap results) and recompute citations
+					// This ensures global deduplication and consistent numbering
+					combinedAgentResults := append(agentResults, allGapResults...)
+
+					var resultsForCitations []interface{}
+					for _, ar := range combinedAgentResults {
+						var toolExecs []interface{}
+						if len(ar.ToolExecutions) > 0 {
+							for _, te := range ar.ToolExecutions {
+								toolExecs = append(toolExecs, map[string]interface{}{
+									"tool":    te.Tool,
+									"success": te.Success,
+									"output":  te.Output,
+									"error":   te.Error,
+								})
+							}
+						}
+						resultsForCitations = append(resultsForCitations, map[string]interface{}{
+							"agent_id":        ar.AgentID,
+							"tool_executions": toolExecs,
+							"response":        ar.Response,
+						})
+					}
+
+					now := workflow.Now(ctx)
+					allCitations, _ := metadata.CollectCitations(resultsForCitations, now, 0) // Use 0 for default max (15)
+
+					if len(allCitations) > 0 {
+
+						// Re-synthesize with augmented evidence
+						var enhancedSynthesis activities.SynthesisResult
+
+						// Build enhanced context with new citations
+						enhancedContext := make(map[string]interface{})
+						for k, v := range baseContext {
+							enhancedContext[k] = v
+						}
+						enhancedContext["research_areas"] = refineResult.ResearchAreas
+						enhancedContext["gap_iteration"] = iterationCount + 1
+
+						// Format citations for synthesis
+						if len(allCitations) > 0 {
+							var b strings.Builder
+							for idx, c := range allCitations {
+								title := c.Title
+								if title == "" {
+									title = c.Source
+								}
+								if c.PublishedDate != nil {
+									fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx+1, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+								} else {
+									fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx+1, title, c.URL, c.Source)
+								}
+							}
+							enhancedContext["available_citations"] = strings.TrimRight(b.String(), "\n")
+							enhancedContext["citation_count"] = len(allCitations)
+						}
+
+						err = workflow.ExecuteActivity(ctx,
+							activities.SynthesizeResultsLLM,
+							activities.SynthesisInput{
+								Query:            input.Query,
+								AgentResults:     combinedAgentResults, // Combined results with global dedup
+								Context:          enhancedContext,
+								ParentWorkflowID: input.ParentWorkflowID,
+							}).Get(ctx, &enhancedSynthesis)
+
+						if err == nil {
+							synthesis = enhancedSynthesis
+							collectedCitations = allCitations
+							totalTokens += enhancedSynthesis.TokensUsed
+							logger.Info("Gap-filling synthesis completed",
+								"iteration", iterationCount+1,
+								"total_citations", len(allCitations),
+							)
+						}
+					}
+				}
+			}
+		}
+	}
 
 	// Step 4: Apply reflection pattern for quality improvement
 	reflectionConfig := patterns.ReflectionConfig{
@@ -707,10 +1140,66 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		meta["tool_errors"] = toolErrors
 	}
 
-    // Aggregate agent metadata (model, provider, tokens, cost)
+    // Aggregate agent metadata (model, provider, tokens)
     agentMeta := metadata.AggregateAgentMetadata(agentResults, synthesis.TokensUsed+reflectionTokens)
     for k, v := range agentMeta {
         meta[k] = v
+    }
+
+    // Compute cost estimate from per-phase tokens using centralized pricing
+    // Sum per-agent usage using splits; then add synthesis using model from synthesis result
+    var estCost float64
+    for _, ar := range agentResults {
+        if ar.InputTokens > 0 || ar.OutputTokens > 0 {
+            estCost += pricing.CostForSplit(ar.ModelUsed, ar.InputTokens, ar.OutputTokens)
+        } else if ar.TokensUsed > 0 {
+            estCost += pricing.CostForTokens(ar.ModelUsed, ar.TokensUsed)
+        }
+    }
+    if synthesis.TokensUsed > 0 {
+        inTok := synthesis.InputTokens
+        outTok := synthesis.CompletionTokens
+        if inTok == 0 && outTok > 0 {
+            est := synthesis.TokensUsed - outTok
+            if est > 0 { inTok = est }
+        }
+        if synthesis.ModelUsed != "" {
+            if inTok > 0 || outTok > 0 {
+                estCost += pricing.CostForSplit(synthesis.ModelUsed, inTok, outTok)
+            } else {
+                estCost += pricing.CostForTokens(synthesis.ModelUsed, synthesis.TokensUsed)
+            }
+        } else {
+            estCost += pricing.CostForTokens("", synthesis.TokensUsed)
+        }
+    }
+    if estCost > 0 {
+        meta["cost_usd"] = estCost
+    }
+
+    // Finalize accurate cost by aggregating recorded token usage for this task
+    // Ensures task_executions.total_cost_usd reflects sum of per-agent and synthesis usage
+    {
+        var report *budget.UsageReport
+        err := workflow.ExecuteActivity(ctx, constants.GenerateUsageReportActivity, activities.UsageReportInput{
+            // Aggregate by task_id across all user_id records to avoid partial sums
+            UserID:    "",
+            SessionID: input.SessionID,
+            TaskID:    workflowID,
+            // Time range left empty; activity defaults to last 24h
+        }).Get(ctx, &report)
+        if err == nil && report != nil {
+            if report.TotalCostUSD > 0 {
+                meta["cost_usd"] = report.TotalCostUSD
+            }
+            if report.TotalTokens > 0 {
+                if totalTokens < report.TotalTokens {
+                    totalTokens = report.TotalTokens
+                }
+            }
+        } else if err != nil {
+            logger.Warn("Usage report aggregation failed", "error", err)
+        }
     }
 
     // Include synthesis finish_reason and requested_max_tokens for observability/debugging
@@ -742,4 +1231,149 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		TokensUsed: totalTokens,
 		Metadata:   meta,
 	}, nil
+}
+
+// GapAnalysis holds information about undercovered research areas
+type GapAnalysis struct {
+	UndercoveredAreas []string
+}
+
+// GapQuery represents a targeted search query for a gap area
+type GapQuery struct {
+	Query      string
+	TargetArea string
+}
+
+// analyzeGaps detects which research areas are undercovered in the synthesis
+func analyzeGaps(synthesisText string, researchAreas []string) GapAnalysis {
+	gaps := GapAnalysis{
+		UndercoveredAreas: []string{},
+	}
+
+	for _, area := range researchAreas {
+		areaHeading := "### " + area
+		idx := strings.Index(synthesisText, areaHeading)
+		if idx == -1 {
+			// Missing section heading
+			gaps.UndercoveredAreas = append(gaps.UndercoveredAreas, area)
+			continue
+		}
+
+		// Extract section content
+		content := synthesisText[idx+len(areaHeading):]
+		nextSectionIdx := strings.Index(content, "\n### ") // Use ### for subsections
+		if nextSectionIdx == -1 {
+			nextSectionIdx = strings.Index(content, "\n## ") // Fallback to ## for main sections
+		}
+		if nextSectionIdx == -1 {
+			nextSectionIdx = len(content)
+		}
+		sectionContent := strings.TrimSpace(content[:nextSectionIdx])
+
+		// Check for gap indicator phrases
+		gapPhrases := []string{
+			"limited information available",
+			"insufficient data",
+			"not enough information",
+			"no clear evidence",
+			"data unavailable",
+			"no information found",
+			"未找到足够信息", // Chinese
+			"情報が不足",     // Japanese
+		}
+
+		for _, phrase := range gapPhrases {
+			if strings.Contains(strings.ToLower(sectionContent), phrase) {
+				gaps.UndercoveredAreas = append(gaps.UndercoveredAreas, area)
+				break
+			}
+		}
+
+		// Also check citation density (if < 2 citations, might be weak)
+		citationCount := countInlineCitationsInSection(sectionContent)
+		if citationCount < 2 {
+			gaps.UndercoveredAreas = append(gaps.UndercoveredAreas, area)
+		}
+	}
+
+	return gaps
+}
+
+// buildGapQueries creates targeted queries for gap areas
+func buildGapQueries(gaps []string, originalQuery string) []GapQuery {
+	queries := make([]GapQuery, 0, len(gaps))
+	for _, area := range gaps {
+		queries = append(queries, GapQuery{
+			Query:      fmt.Sprintf("Find detailed information about: %s (related to: %s)", area, originalQuery),
+			TargetArea: area,
+		})
+	}
+	return queries
+}
+
+// countInlineCitationsInSection counts unique inline citation references [n] in text
+func countInlineCitationsInSection(text string) int {
+	re := regexp.MustCompile(`\[\d+\]`)
+	matches := re.FindAllString(text, -1)
+	// Deduplicate (same citation can appear multiple times)
+	seen := make(map[string]bool)
+	for _, m := range matches {
+		seen[m] = true
+	}
+	return len(seen)
+}
+
+// topologicalSort performs topological sort on subtasks based on dependencies
+// Returns execution order (list of subtask IDs)
+func topologicalSort(subtasks []activities.Subtask) []string {
+	// Build adjacency list and in-degree map
+	adjList := make(map[string][]string)
+	inDegree := make(map[string]int)
+
+	// Initialize all subtasks
+	for _, st := range subtasks {
+		if _, ok := inDegree[st.ID]; !ok {
+			inDegree[st.ID] = 0
+		}
+		for _, dep := range st.Dependencies {
+			adjList[dep] = append(adjList[dep], st.ID)
+			inDegree[st.ID]++
+		}
+	}
+
+	// Find all nodes with in-degree 0
+	queue := make([]string, 0)
+	for id, degree := range inDegree {
+		if degree == 0 {
+			queue = append(queue, id)
+		}
+	}
+
+	// Process queue
+	result := make([]string, 0, len(subtasks))
+	for len(queue) > 0 {
+		// Pop first element
+		current := queue[0]
+		queue = queue[1:]
+		result = append(result, current)
+
+		// Reduce in-degree of neighbors
+		for _, neighbor := range adjList[current] {
+			inDegree[neighbor]--
+			if inDegree[neighbor] == 0 {
+				queue = append(queue, neighbor)
+			}
+		}
+	}
+
+	// If result doesn't contain all subtasks, there's a cycle
+	// Fall back to original order
+	if len(result) != len(subtasks) {
+		result = make([]string, 0, len(subtasks))
+		for _, st := range subtasks {
+			result = append(result, st.ID)
+		}
+	}
+
+	return result
 }

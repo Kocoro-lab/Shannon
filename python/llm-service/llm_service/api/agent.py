@@ -1091,6 +1091,13 @@ class DecompositionResponse(BaseModel):
     fallback_strategy: str = Field(
         default="decompose", description="Fallback if primary strategy fails"
     )
+    # Usage and provider/model metadata (optional; used for accurate cost tracking)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    model_used: str = ""
+    provider: str = ""
 
 
 @router.post("/agent/decompose", response_model=DecompositionResponse)
@@ -1479,6 +1486,14 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             confidence = data.get("confidence", 0.8)
             fallback_strategy = data.get("fallback_strategy", "decompose")
 
+            usage = result.get("usage") or {}
+            in_tok = int(usage.get("input_tokens") or 0)
+            out_tok = int(usage.get("output_tokens") or 0)
+            tot_tok = int(usage.get("total_tokens") or (in_tok + out_tok))
+            cost_usd = float(usage.get("cost_usd") or 0.0)
+            model_used = str(result.get("model") or "")
+            provider = str(result.get("provider") or "unknown")
+
             return DecompositionResponse(
                 mode=mode,
                 complexity_score=score,
@@ -1491,6 +1506,12 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 cognitive_strategy=cognitive_strategy,
                 confidence=confidence,
                 fallback_strategy=fallback_strategy,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                total_tokens=tot_tok,
+                cost_usd=cost_usd,
+                model_used=model_used,
+                provider=provider,
             )
 
         except Exception as e:

@@ -107,12 +107,7 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 		meta["total_tokens"] = totalTokens
 	}
 
-	// Add cost estimate if we have tokens
-	if totalTokens, ok := meta["total_tokens"].(int); ok && totalTokens > 0 && primaryModel != "" {
-		// Rough cost estimate (will be calculated properly by service layer)
-		// Using a conservative average rate
-		meta["cost_usd"] = float64(totalTokens) * 0.0000005
-	}
+    // Do not set cost_usd here; server or workflow computes accurately from pricing
 
 	// Include per-agent usage details if we have multiple agents
 	if len(agentUsages) > 1 {

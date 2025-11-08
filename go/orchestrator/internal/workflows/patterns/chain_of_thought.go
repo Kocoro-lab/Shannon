@@ -1,14 +1,16 @@
 package patterns
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "strings"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 )
 
 // ChainOfThoughtConfig configures the chain-of-thought pattern
@@ -137,7 +139,44 @@ func ChainOfThought(
 
 	duration := workflow.Now(ctx).Sub(startTime)
 	result.StepDurations = append(result.StepDurations, duration)
-	result.TotalTokens = cotResult.TokensUsed
+    result.TotalTokens = cotResult.TokensUsed
+
+    // Record token usage for the main CoT reasoning step when not budgeted
+    if opts.BudgetAgentMax <= 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        inTok := cotResult.InputTokens
+        outTok := cotResult.OutputTokens
+        if inTok == 0 && outTok == 0 && cotResult.TokensUsed > 0 {
+            inTok = cotResult.TokensUsed * 6 / 10
+            outTok = cotResult.TokensUsed - inTok
+        }
+        model := cotResult.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(config.ModelTier); m != "" {
+                model = m
+            }
+        }
+        provider := cotResult.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       opts.UserID,
+            SessionID:    sessionID,
+            TaskID:       wid,
+            AgentID:      "cot-reasoner",
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "chain_of_thought"},
+        }).Get(ctx, nil)
+    }
 
 	// Parse reasoning steps from response
 	steps := parseReasoningSteps(cotResult.Response, config.StepDelimiter)
@@ -159,7 +198,7 @@ func ChainOfThought(
 			strings.Join(steps, config.StepDelimiter),
 		)
 
-		var clarifyResult activities.AgentExecutionResult
+        var clarifyResult activities.AgentExecutionResult
         if opts.BudgetAgentMax > 0 {
             wid := workflow.GetInfo(ctx).WorkflowExecution.ID
             if context != nil {
@@ -184,17 +223,53 @@ func ChainOfThought(
                     TaskID:    wid,
                     ModelTier: config.ModelTier,
                 }).Get(ctx, &clarifyResult)
-			if err == nil {
-				// Update with clarified reasoning
-				clarifiedSteps := parseReasoningSteps(clarifyResult.Response, config.StepDelimiter)
-				if len(clarifiedSteps) > 0 {
-					result.ReasoningSteps = clarifiedSteps
-					result.FinalAnswer = extractFinalAnswer(clarifyResult.Response, clarifiedSteps)
-					result.Confidence = calculateReasoningConfidence(clarifiedSteps, clarifyResult.Response)
-				}
-				result.TotalTokens += clarifyResult.TokensUsed
-			}
-		}
+            if err == nil {
+                // Update with clarified reasoning
+                clarifiedSteps := parseReasoningSteps(clarifyResult.Response, config.StepDelimiter)
+                if len(clarifiedSteps) > 0 {
+                    result.ReasoningSteps = clarifiedSteps
+                    result.FinalAnswer = extractFinalAnswer(clarifyResult.Response, clarifiedSteps)
+                    result.Confidence = calculateReasoningConfidence(clarifiedSteps, clarifyResult.Response)
+                }
+                result.TotalTokens += clarifyResult.TokensUsed
+                // Record clarification usage when not budgeted
+                if opts.BudgetAgentMax <= 0 {
+                    wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                    if context != nil {
+                        if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                            wid = p
+                        }
+                    }
+                    inTok := clarifyResult.InputTokens
+                    outTok := clarifyResult.OutputTokens
+                    if inTok == 0 && outTok == 0 && clarifyResult.TokensUsed > 0 {
+                        inTok = clarifyResult.TokensUsed * 6 / 10
+                        outTok = clarifyResult.TokensUsed - inTok
+                    }
+                    model := clarifyResult.ModelUsed
+                    if strings.TrimSpace(model) == "" {
+                        if m := pricing.GetPriorityOneModel(config.ModelTier); m != "" {
+                            model = m
+                        }
+                    }
+                    provider := clarifyResult.Provider
+                    if strings.TrimSpace(provider) == "" {
+                        provider = imodels.DetectProvider(model)
+                    }
+                    _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                        UserID:       opts.UserID,
+                        SessionID:    sessionID,
+                        TaskID:       wid,
+                        AgentID:      "cot-clarifier",
+                        Model:        model,
+                        Provider:     provider,
+                        InputTokens:  inTok,
+                        OutputTokens: outTok,
+                        Metadata:     map[string]interface{}{"phase": "chain_of_thought_clarify"},
+                    }).Get(ctx, nil)
+                }
+            }
+        }
 	}
 
 	// Format the result based on configuration

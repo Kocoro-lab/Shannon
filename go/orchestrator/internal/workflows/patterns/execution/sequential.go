@@ -12,6 +12,8 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 )
 
 // SequentialConfig controls sequential execution behavior
@@ -279,10 +281,48 @@ func ExecuteSequential(
         }
         persistAgentExecution(ctx, workflowID, fmt.Sprintf("agent-%s", task.ID), task.Description, result)
 
-		// Success
-		results = append(results, result)
-		totalTokens += result.TokensUsed
-		successCount++
+			// Success
+			results = append(results, result)
+			totalTokens += result.TokensUsed
+			successCount++
+
+			// Record token usage for this sequential task when not budgeted
+			// Avoid double-recording: budgeted path already records inside the activity
+			if budgetPerAgent <= 0 {
+				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+				if config.Context != nil {
+					if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+						wid = p
+					}
+				}
+				inTok := result.InputTokens
+				outTok := result.OutputTokens
+				if inTok == 0 && outTok == 0 && result.TokensUsed > 0 {
+					inTok = result.TokensUsed * 6 / 10
+					outTok = result.TokensUsed - inTok
+				}
+				model := result.ModelUsed
+				if strings.TrimSpace(model) == "" {
+					if m := pricing.GetPriorityOneModel(modelTier); m != "" {
+						model = m
+					}
+				}
+				provider := result.Provider
+				if strings.TrimSpace(provider) == "" {
+					provider = imodels.DetectProvider(model)
+				}
+				_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       userID,
+					SessionID:    sessionID,
+					TaskID:       wid,
+					AgentID:      result.AgentID,
+					Model:        model,
+					Provider:     provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata:     map[string]interface{}{"phase": "sequential"},
+				}).Get(ctx, nil)
+			}
 
 		// Emit completion event (parent workflow when available)
 		if config.EmitEvents {

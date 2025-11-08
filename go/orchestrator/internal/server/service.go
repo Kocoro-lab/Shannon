@@ -963,8 +963,31 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			taskExecution.Metadata = db.JSONB(result.Metadata)
 		}
 
-		// Queue async write to database
-		err := s.dbClient.QueueWrite(db.WriteTypeTaskExecution, taskExecution, func(err error) {
+        // As a safety net, if cost wasn't provided or computed, aggregate from token_usage
+        if (taskExecution.TotalCostUSD == 0) && s.dbClient != nil {
+            var aggCost sql.NullFloat64
+            var aggTokens sql.NullInt64
+            row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+                SELECT COALESCE(SUM(tu.cost_usd), 0), COALESCE(SUM(tu.total_tokens), 0)
+                FROM token_usage tu
+                JOIN task_executions te ON tu.task_id = te.id
+                WHERE te.workflow_id = $1`, workflowID)
+            if err := row.Scan(&aggCost, &aggTokens); err == nil {
+                if aggCost.Valid && aggCost.Float64 > 0 {
+                    taskExecution.TotalCostUSD = aggCost.Float64
+                }
+                if aggTokens.Valid && taskExecution.TotalTokens == 0 {
+                    taskExecution.TotalTokens = int(aggTokens.Int64)
+                }
+            } else {
+                s.logger.Warn("Cost aggregation fallback failed",
+                    zap.String("workflow_id", workflowID),
+                    zap.Error(err))
+            }
+        }
+
+        // Queue async write to database
+        err := s.dbClient.QueueWrite(db.WriteTypeTaskExecution, taskExecution, func(err error) {
 			if err != nil {
 				s.logger.Error("Failed to persist task execution",
 					zap.String("workflow_id", workflowID),

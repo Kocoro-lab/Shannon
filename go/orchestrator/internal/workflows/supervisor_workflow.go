@@ -324,6 +324,28 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			logger.Error("Task decomposition failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("decomposition failed: %v", err)}, err
 		}
+
+		// Record decomposition usage if provided
+		if decomp.TokensUsed > 0 || decomp.InputTokens > 0 || decomp.OutputTokens > 0 {
+			inTok := decomp.InputTokens
+			outTok := decomp.OutputTokens
+			if inTok == 0 && outTok == 0 && decomp.TokensUsed > 0 {
+				inTok = int(float64(decomp.TokensUsed) * 0.6)
+				outTok = decomp.TokensUsed - inTok
+			}
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:       input.UserID,
+				SessionID:    input.SessionID,
+				TaskID:       wid,
+				AgentID:      "decompose",
+				Model:        decomp.ModelUsed,
+				Provider:     decomp.Provider,
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+				Metadata:     map[string]interface{}{"phase": "decompose"},
+			}).Get(ctx, nil)
+		}
 	}
 
 	// Override strategy if advisor has high confidence

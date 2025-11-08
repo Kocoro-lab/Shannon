@@ -188,11 +188,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	var decomp activities.DecompositionResult
-	if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
-		Query:          input.Query,
-		Context:        decompContext,
-		AvailableTools: nil, // Let llm-service derive tools from registry + role preset
-	}).Get(ctx, &decomp); err != nil {
+if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
+    Query:          input.Query,
+    Context:        decompContext,
+    AvailableTools: nil, // Let llm-service derive tools from registry + role preset
+}).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
 		// Emit error event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
@@ -204,6 +204,28 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		// Best-effort title generation even on planning failures
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Record decomposition usage if provided
+	if decomp.TokensUsed > 0 || decomp.InputTokens > 0 || decomp.OutputTokens > 0 {
+		inTok := decomp.InputTokens
+		outTok := decomp.OutputTokens
+		if inTok == 0 && outTok == 0 && decomp.TokensUsed > 0 {
+			inTok = int(float64(decomp.TokensUsed) * 0.6)
+			outTok = decomp.TokensUsed - inTok
+		}
+		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       input.UserID,
+			SessionID:    input.SessionID,
+			TaskID:       wid,
+			AgentID:      "decompose",
+			Model:        decomp.ModelUsed,
+			Provider:     decomp.Provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata:     map[string]interface{}{"phase": "decompose"},
+		}).Get(ctx, nil)
 	}
 
 	logger.Info("Routing decision",

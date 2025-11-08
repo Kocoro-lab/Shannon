@@ -1,14 +1,16 @@
 package patterns
 
 import (
-	"fmt"
-	"sort"
-	"strings"
+    "fmt"
+    "sort"
+    "strings"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+    "go.temporal.io/sdk/workflow"
 )
 
 // TreeOfThoughtsConfig configures the tree-of-thoughts pattern
@@ -318,6 +320,34 @@ Format each as a clear, concise thought.`,
             logger.Warn("Failed to generate branches", "error", err)
             return branches
         }
+        // Record branch generation usage when not budgeted
+        inTok := branchResult.InputTokens
+        outTok := branchResult.OutputTokens
+        if inTok == 0 && outTok == 0 && branchResult.TokensUsed > 0 {
+            inTok = branchResult.TokensUsed * 6 / 10
+            outTok = branchResult.TokensUsed - inTok
+        }
+        model := branchResult.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(modelTier); m != "" {
+                model = m
+            }
+        }
+        provider := branchResult.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       opts.UserID,
+            SessionID:    sessionID,
+            TaskID:       wid,
+            AgentID:      fmt.Sprintf("tot-generator-%s", parent.ID),
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "tree_of_thoughts"},
+        }).Get(ctx, nil)
     }
 
 	// Parse generated branches

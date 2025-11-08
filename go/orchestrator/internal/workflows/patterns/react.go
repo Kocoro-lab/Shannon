@@ -1,15 +1,17 @@
 package patterns
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "strings"
+    "time"
 
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 )
 
 // ReactConfig controls the Reason-Act-Observe loop behavior
@@ -146,7 +148,45 @@ func ReactLoop(
 		if len(thoughts) > config.MaxThoughts {
 			thoughts = thoughts[len(thoughts)-config.MaxThoughts:]
 		}
-		totalTokens += reasonResult.TokensUsed
+    totalTokens += reasonResult.TokensUsed
+    // Record token usage for the reasoner step
+    // Avoid double-recording when budgeted execution already recorded usage inside the activity
+    if opts.BudgetAgentMax <= 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if baseContext != nil {
+            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        inTok := reasonResult.InputTokens
+        outTok := reasonResult.OutputTokens
+        if inTok == 0 && outTok == 0 && reasonResult.TokensUsed > 0 {
+            inTok = reasonResult.TokensUsed * 6 / 10
+            outTok = reasonResult.TokensUsed - inTok
+        }
+        // Fallbacks for missing model/provider
+        model := reasonResult.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+                model = m
+            }
+        }
+        provider := reasonResult.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       opts.UserID,
+            SessionID:    sessionID,
+            TaskID:       wid,
+            AgentID:      fmt.Sprintf("reasoner-%d", iteration),
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "react_reason"},
+        }).Get(ctx, nil)
+    }
 
 		// Check if reasoning indicates completion
 		if isTaskComplete(reasonResult.Response) {
@@ -227,7 +267,7 @@ func ReactLoop(
             if disamb != "" { searchLine += fmt.Sprintf("; add disambiguation: %s", disamb) }
 
             actionQuery = fmt.Sprintf(
-                "ACT on this plan: %s\n\nIMPORTANT:\n- %s\n- Execute NOW and return findings in the SAME language as the user's query.\n- For each source used, include a 1–2 sentence summary plus Title and URL inline.\n- Keep the action atomic.\n- Do NOT include a '## Sources' section (the system will append Sources).",
+                "ACT on this plan: %s\n\nIMPORTANT:\n- %s\n- For web_search parameters: search_type ∈ {neural|keyword|auto} (default 'auto' if unsure); category ∈ {company|research paper|news|pdf|github|tweet|personal site|linkedin|financial report}; if unsure, omit category.\n- Execute NOW and return findings in the SAME language as the user's query.\n- For each source used, include a 1–2 sentence summary plus Title and URL inline.\n- Keep the action atomic.\n- Do NOT include a '## Sources' section (the system will append Sources).",
                 reasonResult.Response,
                 searchLine,
             )
@@ -292,20 +332,27 @@ func ReactLoop(
 			logger.Error("Action execution failed", "error", err)
 			observations = append(observations, fmt.Sprintf("Error: %v", err))
 			// Continue to next iteration to try recovery
-		} else {
-			actions = append(actions, actionResult.Response)
-			// Trim actions if exceeding limit
-			if len(actions) > config.MaxActions {
-				actions = actions[len(actions)-config.MaxActions:]
-			}
-			totalTokens += actionResult.TokensUsed
+        } else {
+            // Always track tokens and tool executions for citations
+            totalTokens += actionResult.TokensUsed
+            agentResults = append(agentResults, actionResult)
 
-			// Collect actor results for citation extraction
-			agentResults = append(agentResults, actionResult)
-
-			// Phase 3: OBSERVE - Record and analyze the result
-			observation := fmt.Sprintf("Action result: %s", actionResult.Response)
-			observations = append(observations, observation)
+            // Skip recording empty action responses (treat as no-op)
+            if strings.TrimSpace(actionResult.Response) != "" {
+                actions = append(actions, actionResult.Response)
+                // Trim actions if exceeding limit
+                if len(actions) > config.MaxActions {
+                    actions = actions[len(actions)-config.MaxActions:]
+                }
+                // Phase 3: OBSERVE - Record and analyze the result
+                observation := fmt.Sprintf("Action result: %s", actionResult.Response)
+                observations = append(observations, observation)
+            } else {
+                logger.Warn("Empty action response; skipping record",
+                    "iteration", iteration+1,
+                    "agent_id", fmt.Sprintf("actor-%d", iteration),
+                )
+            }
 
 			// Keep only recent observations to prevent memory growth
 			if len(observations) > config.MaxObservations {
@@ -315,10 +362,49 @@ func ReactLoop(
 				observations = append([]string{summary}, observations[len(observations)-config.MaxObservations+1:]...)
 			}
 
-			logger.Info("Observation recorded",
-				"iteration", iteration+1,
-				"observation_length", len(observation),
-			)
+            // Record token usage for the action step
+            // Avoid double-recording when budgeted execution already recorded usage inside the activity
+            if opts.BudgetAgentMax <= 0 {
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if actionContext != nil {
+                    if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                }
+                inTok := actionResult.InputTokens
+                outTok := actionResult.OutputTokens
+                if inTok == 0 && outTok == 0 && actionResult.TokensUsed > 0 {
+                    inTok = actionResult.TokensUsed * 6 / 10
+                    outTok = actionResult.TokensUsed - inTok
+                }
+                // Fallbacks for missing model/provider
+                model := actionResult.ModelUsed
+                if strings.TrimSpace(model) == "" {
+                    if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+                        model = m
+                    }
+                }
+                provider := actionResult.Provider
+                if strings.TrimSpace(provider) == "" {
+                    provider = imodels.DetectProvider(model)
+                }
+                _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                    UserID:       opts.UserID,
+                    SessionID:    sessionID,
+                    TaskID:       wid,
+                    AgentID:      fmt.Sprintf("actor-%d", iteration),
+                    Model:        model,
+                    Provider:     provider,
+                    InputTokens:  inTok,
+                    OutputTokens: outTok,
+                    Metadata:     map[string]interface{}{"phase": "react_action"},
+                }).Get(ctx, nil)
+            }
+
+            logger.Info("Observation recorded",
+                "iteration", iteration+1,
+                "total_observations", len(observations),
+            )
 		}
 
 		iteration++
@@ -399,8 +485,47 @@ func ReactLoop(
 		}
 	}
 
-	totalTokens += finalResult.TokensUsed
-	agentResults = append(agentResults, finalResult)
+totalTokens += finalResult.TokensUsed
+agentResults = append(agentResults, finalResult)
+
+    // Record token usage for the react-synthesizer step
+    // Avoid double-recording when budgeted execution already recorded usage inside the activity
+    if opts.BudgetAgentMax <= 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if baseContext != nil {
+            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        inTok := finalResult.InputTokens
+        outTok := finalResult.OutputTokens
+        if inTok == 0 && outTok == 0 && finalResult.TokensUsed > 0 {
+            inTok = finalResult.TokensUsed * 6 / 10
+            outTok = finalResult.TokensUsed - inTok
+        }
+        // Fallbacks for missing model/provider
+        model := finalResult.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+                model = m
+            }
+        }
+        provider := finalResult.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       opts.UserID,
+            SessionID:    sessionID,
+            TaskID:       wid,
+            AgentID:      "react-synthesizer",
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "react_synth"},
+        }).Get(ctx, nil)
+    }
 
 	return &ReactLoopResult{
 		Thoughts:     thoughts,
