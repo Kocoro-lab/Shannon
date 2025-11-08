@@ -120,12 +120,26 @@ class OpenAIProvider(LLMProvider):
             api_request["frequency_penalty"] = request.frequency_penalty
             api_request["presence_penalty"] = request.presence_penalty
 
+        # Compute a safe max completion tokens based on context window headroom
+        # This prevents requesting more tokens than the model can return given the prompt size
+        prompt_tokens_est = self.count_tokens(request.messages, model)
+        # Reserve a small safety margin for tool metadata or post-processing
+        safety_margin = 256
+        # Model-configured maxima
+        model_context = getattr(model_config, "context_window", 8192)
+        model_max_output = getattr(model_config, "max_tokens", model_context)
+        # Requested maximum, if provided
+        requested_max = int(request.max_tokens) if request.max_tokens else model_max_output
+        # Available headroom for completion
+        headroom = max(0, model_context - prompt_tokens_est - safety_margin)
+        adjusted_max = max(1, min(requested_max, model_max_output, headroom))
+
         # GPT-5 family uses max_completion_tokens instead of max_tokens
-        if request.max_tokens:
+        if adjusted_max:
             if is_gpt5_chat:
-                api_request["max_completion_tokens"] = request.max_tokens
+                api_request["max_completion_tokens"] = adjusted_max
             else:
-                api_request["max_tokens"] = request.max_tokens
+                api_request["max_tokens"] = adjusted_max
 
         if request.stop:
             api_request["stop"] = request.stop
@@ -259,6 +273,7 @@ class OpenAIProvider(LLMProvider):
             function_call=normalized_fc,
             request_id=response.id,
             latency_ms=latency_ms,
+            effective_max_completion=adjusted_max,
         )
 
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
@@ -480,6 +495,9 @@ class OpenAIProvider(LLMProvider):
             input_tokens, output_tokens, self._resolve_alias(model)
         )
 
+        # For Responses API, max_output_tokens is the effective limit
+        effective_max = params.get("max_output_tokens", 2048)
+
         return CompletionResponse(
             content=content,
             model=raw.get("model", model),
@@ -494,4 +512,5 @@ class OpenAIProvider(LLMProvider):
             function_call=None,
             request_id=raw.get("id"),
             latency_ms=latency_ms,
+            effective_max_completion=effective_max,
         )

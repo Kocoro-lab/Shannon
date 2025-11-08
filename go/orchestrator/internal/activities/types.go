@@ -15,20 +15,22 @@ type ComplexityAnalysisResult struct {
 
 // Subtask represents a decomposed subtask
 type Subtask struct {
-	ID              string
-	Description     string
-	Dependencies    []string
-	EstimatedTokens int
+    ID              string
+    Description     string
+    Dependencies    []string
+    EstimatedTokens int
 	// Structured subtask classification to avoid brittle string matching
 	TaskType string `json:"task_type,omitempty"`
-	// Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
-	Produces []string
-	Consumes []string
-	// LLM-native tool selection
-	SuggestedTools []string               `json:"suggested_tools"`
-	ToolParameters map[string]interface{} `json:"tool_parameters"`
-	// Persona assignment for specialized agent behavior
-	SuggestedPersona string `json:"suggested_persona"`
+    // Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
+    Produces []string
+    Consumes []string
+    // Optional grouping for research-area-driven decomposition
+    ParentArea string `json:"parent_area,omitempty"`
+    // LLM-native tool selection
+    SuggestedTools []string               `json:"suggested_tools"`
+    ToolParameters map[string]interface{} `json:"tool_parameters"`
+    // Persona assignment for specialized agent behavior
+    SuggestedPersona string `json:"suggested_persona"`
 }
 
 // AgentExecutionInput is the input for agent execution
@@ -84,9 +86,12 @@ type SynthesisInput struct {
 
 // SynthesisResult is the result of synthesis
 type SynthesisResult struct {
-	FinalResult  string
-	TokensUsed   int
-	FinishReason string // Reason model stopped: "stop", "length", "content_filter", etc.
+    FinalResult  string
+    TokensUsed   int
+    FinishReason string // Reason model stopped: "stop", "length", "content_filter", etc.
+    RequestedMaxTokens int // Max completion tokens requested from provider for this synthesis
+    CompletionTokens int // Output tokens (excludes prompt)
+    EffectiveMaxCompletion int // Actual max completion after provider headroom clamp
 }
 
 // EvaluateResultInput carries data for reflection/quality checks

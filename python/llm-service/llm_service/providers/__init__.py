@@ -303,7 +303,7 @@ class ProviderManager:
         # Normalize provider to a non-null string to avoid None → null propagation
         provider = response.provider if isinstance(response.provider, str) and response.provider else "unknown"
 
-        return {
+        result = {
             "provider": provider,
             "model": response.model,
             "output_text": response.content,
@@ -314,6 +314,12 @@ class ProviderManager:
             "latency_ms": response.latency_ms,
             "cached": response.cached,
         }
+
+        # Add effective_max_completion if available (for continuation trigger logic)
+        if response.effective_max_completion is not None:
+            result["effective_max_completion"] = response.effective_max_completion
+
+        return result
 
     @staticmethod
     def _serialize_usage(usage: Optional[CoreTokenUsage]) -> Dict[str, Any]:

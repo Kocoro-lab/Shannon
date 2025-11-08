@@ -81,11 +81,11 @@ func ReactLoop(
 		reasonContext["actions"] = actions
 		reasonContext["iteration"] = iteration
 
-		reasonQuery := fmt.Sprintf(
-			"REASON about the next step for: %s\nPrevious observations: %v\nWhat should I do next and why?",
-			query,
-			getRecentObservations(observations, config.ObservationWindow),
-		)
+        reasonQuery := fmt.Sprintf(
+            "REASON (1–2 sentences) about the single next action for: %s\nConstraints:\n- Keep response in the same language as the user's query.\n- State exactly what to do, why it's needed, and expected outcome.\n- If external information is required, say 'search'.\nContext: Previous observations: %v",
+            query,
+            getRecentObservations(observations, config.ObservationWindow),
+        )
 
 		var reasonResult activities.AgentExecutionResult
 		var err error
@@ -179,15 +179,61 @@ func ReactLoop(
 
         actionQuery := ""
         if len(suggestedTools) > 0 {
-            // Research mode: be explicit about tool usage
+            // Research mode: be explicit about tool usage and reporting
+            // Build quoted queries and site filters from context when available
+            quoted := ""
+            if actionContext != nil {
+                if eq, ok := actionContext["exact_queries"]; ok {
+                    switch t := eq.(type) {
+                    case []string:
+                        if len(t) > 0 { quoted = strings.Join(t, " OR ") }
+                    case []interface{}:
+                        parts := make([]string, 0, len(t))
+                        for _, it := range t { if s, ok := it.(string); ok && s != "" { parts = append(parts, s) } }
+                        if len(parts) > 0 { quoted = strings.Join(parts, " OR ") }
+                    }
+                }
+            }
+            domains := ""
+            if actionContext != nil {
+                if od, ok := actionContext["official_domains"]; ok {
+                    switch t := od.(type) {
+                    case []string:
+                        if len(t) > 0 { for i, d := range t { t[i] = fmt.Sprintf("site:%s", d) }; domains = strings.Join(t, " OR ") }
+                    case []interface{}:
+                        parts := []string{}
+                        for _, it := range t { if s, ok := it.(string); ok && s != "" { parts = append(parts, fmt.Sprintf("site:%s", s)) } }
+                        if len(parts) > 0 { domains = strings.Join(parts, " OR ") }
+                    }
+                }
+            }
+            disamb := ""
+            if actionContext != nil {
+                if dt, ok := actionContext["disambiguation_terms"]; ok {
+                    switch t := dt.(type) {
+                    case []string:
+                        if len(t) > 0 { disamb = strings.Join(t, ", ") }
+                    case []interface{}:
+                        parts := []string{}
+                        for _, it := range t { if s, ok := it.(string); ok && s != "" { parts = append(parts, s) } }
+                        if len(parts) > 0 { disamb = strings.Join(parts, ", ") }
+                    }
+                }
+            }
+
+            searchLine := fmt.Sprintf("Use web_search with queries: %s", quoted)
+            if quoted == "" { searchLine = fmt.Sprintf("Use web_search to find authoritative information about: %s", query) }
+            if domains != "" { searchLine += fmt.Sprintf("; prefer domains (%s)", domains) }
+            if disamb != "" { searchLine += fmt.Sprintf("; add disambiguation: %s", disamb) }
+
             actionQuery = fmt.Sprintf(
-                "ACT on this plan: %s\n\nIMPORTANT: Use web_search to find authoritative information about: %s\nExecute the search NOW and report findings.",
+                "ACT on this plan: %s\n\nIMPORTANT:\n- %s\n- Execute NOW and return findings in the SAME language as the user's query.\n- For each source used, include a 1–2 sentence summary plus Title and URL inline.\n- Keep the action atomic.\n- Do NOT include a '## Sources' section (the system will append Sources).",
                 reasonResult.Response,
-                query,
+                searchLine,
             )
         } else {
             actionQuery = fmt.Sprintf(
-                "ACT on this plan: %s\nExecute the next step with available tools.",
+                "ACT on this plan: %s\nConstraints:\n- Execute the next step with available tools.\n- Keep response in the SAME language as the user's query.\n- Keep actions atomic. If you used a tool that fetched information, add a brief 1–2 sentence summary of the key finding.",
                 reasonResult.Response,
             )
         }

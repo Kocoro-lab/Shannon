@@ -92,6 +92,8 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	)
 	// Use activity-scoped logger so logs appear in Temporal activity logs
 	logger := activity.GetLogger(ctx)
+	// Use direct zap logger for detailed diagnostic fields (Temporal adapter strips zap fields)
+	diagLogger := zap.L().With(zap.String("activity", "SynthesizeResultsLLM"))
 
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
@@ -122,19 +124,30 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		})
 	}
 
-	// Extract context for role-aware synthesis
-	role := ""
-	contextMap := make(map[string]interface{})
-	if input.Context != nil {
-		// Extract role to apply role-specific prompts
-		if r, ok := input.Context["role"].(string); ok {
-			role = r
-		}
-		// Copy all context (includes prompt_params, language, etc.)
-		for k, v := range input.Context {
-			contextMap[k] = v
-		}
-	}
+    // Extract context for role-aware synthesis
+    role := ""
+    contextMap := make(map[string]interface{})
+    // Track citation payload size for diagnostics
+    removedCitations := false
+    removedCitationsChars := 0
+    if input.Context != nil {
+        // Extract role to apply role-specific prompts
+        if r, ok := input.Context["role"].(string); ok {
+            role = r
+        }
+        // Copy all context (includes prompt_params, language, etc.)
+        for k, v := range input.Context {
+            contextMap[k] = v
+        }
+        // Remove large duplicates that are already included in the user query
+        if v, ok := contextMap["available_citations"]; ok {
+            if s, ok := v.(string); ok {
+                removedCitations = true
+                removedCitationsChars = len([]rune(s))
+            }
+            delete(contextMap, "available_citations")
+        }
+    }
 
 	// Ensure synthesis uses capable model tier for high-quality output
 	// Default to "large" if not specified, since synthesis is the final user-facing output
@@ -211,35 +224,108 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
         queryLanguage,
     )
 
-	fmt.Fprintf(&b, `# Synthesis Requirements:
+	// Check synthesis style (comprehensive vs. concise)
+	synthesisStyle := "concise"
+	if input.Context != nil {
+		if style, ok := input.Context["synthesis_style"].(string); ok && style != "" {
+			synthesisStyle = style
+		}
+	}
 
-	## CRITICAL - Language Matching:
-	%s
-	The user's query is in %s. You MUST respond in the SAME language.
-	DO NOT translate or switch to English unless the query is in English.
+    // Prepare optional organization guidance from research_areas
+    areasInstruction := ""
+    var areas []string
+    if input.Context != nil {
+        if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
+            // Accept []string or []interface{}
+            switch t := rawAreas.(type) {
+            case []string:
+                areas = t
+            case []interface{}:
+                for _, it := range t {
+                    if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+                        areas = append(areas, s)
+                    }
+                }
+            }
+            if len(areas) > 0 {
+                // Provide explicit heading skeleton for the model to follow
+                var sb strings.Builder
+                sb.WriteString("## MANDATORY Research Area Coverage:\n")
+                sb.WriteString(fmt.Sprintf("You MUST create a subsection for EACH of the %d research areas below.\n", len(areas)))
+                sb.WriteString("Each subsection should be 150–250 words with inline citations.\n")
+                sb.WriteString("Structure your Detailed Findings section with these exact headings:\n")
+                for _, a := range areas {
+                    if strings.TrimSpace(a) != "" {
+                        sb.WriteString("### ")
+                        sb.WriteString(a)
+                        sb.WriteString("\n")
+                    }
+                }
+                sb.WriteString("\nDo NOT skip any research areas. Generate comprehensive content for ALL sections above.\n")
+                areasInstruction = sb.String()
+            }
+        }
+    }
 
-	## Citation Integration:
-	- You MUST use AT LEAST %d inline citations from Available Citations
-	- Use inline citations [1], [2] for ALL factual claims
-	- Number sources sequentially WITHOUT GAPS (1, 2, 3, 4... not 1, 3, 5...)
-	- Each unique URL gets ONE citation number only
+    // Define output structure based on synthesis style
+    outputStructure := ""
+    if synthesisStyle == "comprehensive" {
+        // For deep research: comprehensive multi-section report (no Sources section; system appends it)
+        targetWords := 1200
+        if len(areas) > 0 {
+            // Calculate target based on research areas (150-250 words per area)
+            targetWords = len(areas) * 200
+        }
+        outputStructure = fmt.Sprintf(`## Output Structure:
+    1. Executive Summary (150–250 words; capture key insights and main conclusions)
+      2. Detailed Findings (%d–%d words total, organized by research areas as subsections):
+         - MUST cover ALL research areas specified below with roughly equal depth
+       - Present findings comprehensively with inline citations
+       - Include quantitative data, timelines, key developments
+       - Discuss implications and cross-cutting themes
+       - Address contradictions explicitly
+    3. Limitations and Uncertainties (100–150 words)
+    `, targetWords, targetWords+600)
+    } else {
+        // Default: concise synthesis (no Sources section; system appends it)
+        outputStructure = `## Output Structure:
+    1. Executive Summary (2–3 sentences)
+    2. Detailed Findings (with inline citations)
+    3. Limitations and Uncertainties (bullet list)
+    `
+    }
 
-	## Preserve Source Integrity:
-	- Keep findings VERBATIM when referencing specific data/quotes
-	- Synthesize patterns across sources, but don't paraphrase individual claims
+    fmt.Fprintf(&b, `# Synthesis Requirements:
 
-	## Output Structure:
-	1. Executive Summary (2-3 sentences)
-	2. Detailed Findings (with inline citations)
-	3. ## Sources (numbered list at end with format: [1] Title (URL))
+    ## CRITICAL - Language Matching:
+    %s
+    The user's query is in %s. You MUST respond in the SAME language.
+    DO NOT translate or switch to English unless the query is in English.
 
-	## Quality Standards:
-	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
-	- Flag gaps: "Limited information available on [aspect]"
-	- NEVER fabricate or hallucinate sources
-	- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+    ## Citation Integration:
+    - You MUST use AT LEAST %d inline citations from Available Citations
+    - Use inline citations [1], [2] for ALL factual claims
+    - Use ONLY the provided Available Citations and their existing indices [n]
+    - DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
+    - Each unique URL gets ONE citation number only
+    - Do NOT include a "## Sources" section; the system will append Sources automatically
 
-	`, languageInstruction, queryLanguage, minCitations)
+    ## Preserve Source Integrity:
+    - Keep findings VERBATIM when referencing specific data/quotes
+    - Synthesize patterns across sources, but don't paraphrase individual claims
+
+    %s
+    %s
+
+    ## Quality Standards:
+    - If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
+    - Flag gaps: "Limited information available on [aspect]"
+    - Include a short "Limitations and Uncertainties" section summarizing contested or weak evidence
+    - NEVER fabricate or hallucinate sources
+    - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+
+    `, languageInstruction, queryLanguage, minCitations, outputStructure, areasInstruction)
 
 	// Include available citations if present (Phase 2.5 fix)
 	if input.Context != nil {
@@ -309,10 +395,14 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 
     // Calculate max_tokens for synthesis without a hard ceiling.
-    // Industry practice: do not truncate final, user-facing output; guide length via prompt.
-    // Base: 4096, plus 1024 per agent result, no artificial cap.
-    maxTokens := 4096 + (len(input.AgentResults) * 1024)
-    logger.Info("Synthesis max_tokens calculated",
+    // Increase allowance per agent to reduce risk of early stops.
+    // Base: 10240, plus 2048 per agent result.
+    maxTokens := 10240 + (len(input.AgentResults) * 2048)
+    // For deep research (comprehensive style), enforce a 50k floor before provider headroom clamp.
+    if strings.EqualFold(synthesisStyle, "comprehensive") && maxTokens < 50000 {
+        maxTokens = 50000
+    }
+    diagLogger.Info("Synthesis max_tokens calculated",
         zap.Int("agent_count", len(input.AgentResults)),
         zap.Int("max_tokens", maxTokens),
     )
@@ -334,7 +424,18 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// Add synthesis mode for observability
 	reqBody["context"].(map[string]interface{})["mode"] = "synthesis"
 
-	buf, _ := json.Marshal(reqBody)
+    // Debug prompt stats (approximate token estimate)
+    promptStr := b.String()
+    diagLogger.Info("Synthesis prompt stats",
+        zap.Int("chars", len([]rune(promptStr))),
+        zap.Int("approx_tokens", len([]rune(promptStr))/4),
+        zap.Int("agent_results", len(input.AgentResults)),
+        zap.Int("requested_max_tokens", maxTokens),
+        zap.Bool("removed_available_citations_from_context", removedCitations),
+        zap.Int("removed_citations_chars", removedCitationsChars),
+    )
+
+    buf, _ := json.Marshal(reqBody)
 	url := base + "/agent/query"
 
 	httpClient := &http.Client{
@@ -564,18 +665,201 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		zap.String("role", role),
 	)
 
-	// Apply report formatting to ensure all citations appear in Sources
-	finalResponse := out.Response
-	if input.Context != nil {
-		if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
-			finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
-		}
-	}
+    // Apply report formatting to ensure all citations appear in Sources
+    finalResponse := out.Response
+    if input.Context != nil {
+        if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+            finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
+        }
+    }
 
-	// Extract usage metadata for event payload
+    // Continuation fallback: if model stopped early and output looks incomplete, ask it to continue
+    looksComplete := func(s string) bool {
+        txt := strings.TrimSpace(s)
+        if txt == "" {
+            return false
+        }
+        runes := []rune(txt)
+        last := runes[len(runes)-1]
+
+        // Check for sentence-ending punctuation (ASCII + CJK)
+        if last == '.' || last == '!' || last == '?' || last == '"' || last == '"' || last == ')' || last == ']' ||
+           last == '。' || last == '！' || last == '？' || last == '』' || last == '」' {
+            // Also check for incomplete phrases at the end
+            tail := strings.ToLower(txt)
+            if len(tail) > 40 {
+                tail = tail[len(tail)-40:]
+            }
+            bad := []string{" and", " or", " with", " to", " of", ":", "、", "と", "や", "の"}
+            for _, b := range bad {
+                if strings.HasSuffix(tail, b) {
+                    return false
+                }
+            }
+
+            // Check structural completeness: if research areas were specified, ensure each has content
+            if input.Context != nil {
+                if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
+                    var expectedAreas []string
+                    switch t := rawAreas.(type) {
+                    case []string:
+                        expectedAreas = t
+                    case []interface{}:
+                        for _, it := range t {
+                            if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+                                expectedAreas = append(expectedAreas, s)
+                            }
+                        }
+                    }
+                    // Check if all expected sections have non-trivial content
+                    for _, area := range expectedAreas {
+                        areaHeading := "### " + area
+                        idx := strings.Index(txt, areaHeading)
+                        if idx == -1 {
+                            // Missing section heading
+                            return false
+                        }
+                        // Find content after this heading (before next ### or ## or end)
+                        content := txt[idx+len(areaHeading):]
+                        nextSectionIdx := strings.Index(content, "\n##")
+                        if nextSectionIdx == -1 {
+                            nextSectionIdx = len(content)
+                        }
+                        sectionContent := strings.TrimSpace(content[:nextSectionIdx])
+                        if len([]rune(sectionContent)) < 100 {
+                            // Section too short (< 100 chars)
+                            return false
+                        }
+                    }
+                }
+            }
+            return true
+        }
+
+        // Ends with incomplete punctuation or mid-word
+        return false
+    }
+
+    // Extract finish_reason and completion tokens (may be empty)
+    finishReason := ""
+    outputTokens := 0
+    effectiveMaxCompletion := maxTokens
+    if out.Metadata != nil {
+        if fr, ok := out.Metadata["finish_reason"].(string); ok {
+            if finishReason == "" {
+                finishReason = fr
+            }
+        }
+        if ot, ok := out.Metadata["output_tokens"].(float64); ok {
+            outputTokens = int(ot)
+        } else if ot, ok := out.Metadata["output_tokens"].(int); ok {
+            outputTokens = ot
+        }
+        if emc, ok := out.Metadata["effective_max_completion"].(int); ok && emc > 0 {
+            effectiveMaxCompletion = emc
+        } else if emc, ok := out.Metadata["effective_max_completion"].(float64); ok && emc > 0 {
+            effectiveMaxCompletion = int(emc)
+        }
+    }
+
+    // Log continuation decision context
+    diagLogger.Info("Synthesis continuation decision",
+        zap.String("finish_reason", finishReason),
+        zap.Int("completion_tokens", outputTokens),
+        zap.Int("effective_max_completion", effectiveMaxCompletion),
+        zap.Bool("looks_complete", looksComplete(finalResponse)),
+    )
+
+    // Trigger continuation if there's insufficient remaining capacity
+    // Use adaptive threshold: min(25% of effective_max, 300 tokens absolute margin)
+    minMargin := effectiveMaxCompletion / 4
+    if minMargin > 300 {
+        minMargin = 300
+    }
+    remainingTokens := effectiveMaxCompletion - outputTokens
+
+    if finishReason == "stop" && !looksComplete(finalResponse) && remainingTokens < minMargin {
+        diagLogger.Info("Triggering synthesis continuation",
+            zap.Int("completion_tokens", outputTokens),
+            zap.Int("effective_max_completion", effectiveMaxCompletion),
+            zap.Int("remaining_tokens", remainingTokens),
+            zap.Int("min_margin", minMargin),
+        )
+        rs := []rune(finalResponse)
+        start := 0
+        if len(rs) > 2000 {
+            start = len(rs) - 2000
+        }
+        excerpt := string(rs[start:])
+
+        contQuery := "Continue the previous synthesis in the SAME language.\n" +
+            "Instructions:\n" +
+            "- Continue from the last sentence; do NOT repeat earlier content.\n" +
+            "- Maintain the same headings and inline citation style.\n" +
+            "- Output ONLY the continuation text (no preamble).\n\n" +
+            "Previous excerpt:\n" + excerpt
+
+        contMax := maxTokens / 2
+        if contMax > 4096 {
+            contMax = 4096
+        }
+
+        contBody, _ := json.Marshal(map[string]interface{}{
+            "query":         contQuery,
+            "context":       contextMap,
+            "allowed_tools": []string{},
+            "agent_id":      "synthesis-continue",
+            "max_tokens":    contMax,
+        })
+
+        creq, cerr := http.NewRequestWithContext(ctx, http.MethodPost, base+"/agent/query", bytes.NewReader(contBody))
+        if cerr == nil {
+            creq.Header.Set("Content-Type", "application/json")
+            if wfID != "" {
+                creq.Header.Set("X-Parent-Workflow-ID", wfID)
+            }
+            if cresp, cerr := httpClient.Do(creq); cerr == nil && cresp != nil && cresp.StatusCode >= 200 && cresp.StatusCode < 300 {
+                defer cresp.Body.Close()
+                var cdata struct {
+                    Success      bool              `json:"success"`
+                    Response     string            `json:"response"`
+                    TokensUsed   int               `json:"tokens_used"`
+                    ModelUsed    string            `json:"model_used"`
+                    Provider     string            `json:"provider"`
+                    FinishReason string            `json:"finish_reason"`
+                    Metadata     map[string]any    `json:"metadata"`
+                }
+                if json.NewDecoder(cresp.Body).Decode(&cdata) == nil && cdata.Success {
+                    diagLogger.Info("Continuation succeeded",
+                        zap.Int("cont_tokens_used", cdata.TokensUsed),
+                        zap.String("cont_finish_reason", cdata.FinishReason),
+                    )
+                    finalResponse = strings.TrimRight(finalResponse, "\n") + "\n\n" + strings.TrimSpace(cdata.Response)
+                    if input.Context != nil {
+                        if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+                            finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
+                        }
+                    }
+                    out.TokensUsed += cdata.TokensUsed
+                    if cdata.FinishReason != "" {
+                        finishReason = cdata.FinishReason
+                    }
+                }
+            }
+        }
+    } else {
+        diagLogger.Info("Continuation not triggered",
+            zap.String("reason", func() string {
+                if finishReason != "stop" { return "finish_reason_not_stop" }
+                if looksComplete(finalResponse) { return "looks_complete" }
+                return "budget_threshold"
+            }()),
+        )
+    }
+
+	// Extract usage metadata for event payload (finishReason, outputTokens, effectiveMaxCompletion already extracted above)
 	provider := ""
 	inputTokens := 0
-	outputTokens := 0
 	costUsd := 0.0
 	if out.Metadata != nil {
 		if p, ok := out.Metadata["provider"].(string); ok {
@@ -585,11 +869,6 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			inputTokens = int(it)
 		} else if it, ok := out.Metadata["input_tokens"].(int); ok {
 			inputTokens = it
-		}
-		if ot, ok := out.Metadata["output_tokens"].(float64); ok {
-			outputTokens = int(ot)
-		} else if ot, ok := out.Metadata["output_tokens"].(int); ok {
-			outputTokens = ot
 		}
 		if cost, ok := out.Metadata["cost_usd"].(float64); ok {
 			costUsd = cost
@@ -603,21 +882,23 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// This ordering ensures content is visible before status changes to "ready"
 	if wfID != "" {
 			// Event 1: LLM_OUTPUT with final content (LLM path)
-			streaming.Get().Publish(wfID, streaming.Event{
-				WorkflowID: wfID,
-				Type:       string(StreamEventLLMOutput),
-				AgentID:    "synthesis",
-				Message:    truncateQuery(finalResponse, MaxSynthesisOutputChars),
-				Payload: map[string]interface{}{
-					"tokens_used":   out.TokensUsed,
-					"model_used":    model,
-					"provider":      provider,
-					"input_tokens":  inputTokens,
-					"output_tokens": outputTokens,
-					"cost_usd":      costUsd,
-				},
-				Timestamp:  time.Now(),
-			})
+        streaming.Get().Publish(wfID, streaming.Event{
+            WorkflowID: wfID,
+            Type:       string(StreamEventLLMOutput),
+            AgentID:    "synthesis",
+            Message:    truncateQuery(finalResponse, MaxSynthesisOutputChars),
+            Payload: map[string]interface{}{
+                "tokens_used":   out.TokensUsed,
+                "model_used":    model,
+                "provider":      provider,
+                "input_tokens":  inputTokens,
+                "output_tokens": outputTokens,
+                "cost_usd":      costUsd,
+                "finish_reason": finishReason,
+                "requested_max_tokens": maxTokens,
+            },
+            Timestamp:  time.Now(),
+        })
 		// Event 2: Synthesis summary with model and token usage (omit model if unknown)
 		summary := fmt.Sprintf("~%d tokens", out.TokensUsed)
 		if model != "" && model != "unknown" {
@@ -640,17 +921,21 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		})
 	}
 
-	// Extract finish_reason safely from metadata
-	finishReason := "stop"
-	if fr, ok := out.Metadata["finish_reason"].(string); ok && fr != "" {
-		finishReason = fr
+	// Set default finish_reason if not already extracted
+	if finishReason == "" {
+		finishReason = "stop"
 	}
 
-	return SynthesisResult{
-		FinalResult:  finalResponse,
-		TokensUsed:   out.TokensUsed,
-		FinishReason: finishReason,
-	}, nil
+	// effectiveMaxCompletion, outputTokens already extracted above for continuation trigger
+
+    return SynthesisResult{
+        FinalResult:        finalResponse,
+        TokensUsed:         out.TokensUsed,
+        FinishReason:       finishReason,
+        RequestedMaxTokens: maxTokens,
+        CompletionTokens:   outputTokens,
+        EffectiveMaxCompletion: effectiveMaxCompletion,
+    }, nil
 }
 
 // detectLanguage performs simple heuristic language detection based on character ranges

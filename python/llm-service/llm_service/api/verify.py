@@ -2,6 +2,7 @@
 
 import logging
 import json
+import math
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
@@ -93,9 +94,11 @@ async def verify_claims(
     supported = sum(1 for cv in claim_verifications if cv.confidence >= 0.7)
     unsupported = [cv.claim for cv in claim_verifications if cv.confidence < 0.5]
 
-    # Overall confidence: weighted average by claim confidence
+    # Geometric mean: harsher on gaps than arithmetic
     if claim_verifications:
-        overall_conf = sum(cv.confidence for cv in claim_verifications) / len(claim_verifications)
+        mean_conf = sum(cv.confidence for cv in claim_verifications) / len(claim_verifications)
+        coverage = supported / max(1, len(claim_verifications))
+        overall_conf = math.sqrt(max(0.0, min(1.0, mean_conf)) * max(0.0, min(1.0, coverage)))
     else:
         overall_conf = 1.0
 
@@ -240,16 +243,40 @@ IMPORTANT: Only output the JSON, nothing else.
         conflicting = result.get("conflicting", [])
         base_confidence = result.get("confidence", 0.5)
 
-        # Weight confidence by citation credibility
+        # Weight confidence by citation credibility and count with diminishing returns (log2)
         if supporting:
             valid_indices = [i-1 for i in supporting if 0 < i <= len(citations)]
             if valid_indices:
                 credibility_weights = [citations[i].credibility_score for i in valid_indices]
-                confidence = (sum(credibility_weights) / len(credibility_weights)) * base_confidence
+                avg_cred = (sum(credibility_weights) / len(credibility_weights)) if credibility_weights else 0.5
+                # Diminishing returns for multiple sources
+                num_sources = len(valid_indices)
+                bonus = min(0.25, 0.2 * math.log2(max(1, num_sources)))  # cap 25%
+                confidence = base_confidence * avg_cred * (1.0 + bonus if num_sources > 1 else 1.0)
             else:
                 confidence = base_confidence * 0.5
         else:
             confidence = 0.0
+
+        # Weighted conflict penalty proportional to conflict strength
+        if conflicting:
+            conf_indices = [i-1 for i in conflicting if 0 < i <= len(citations)]
+            sup_indices = [i-1 for i in supporting if 0 < i <= len(citations)]
+            conflict_weight = sum(citations[i].credibility_score for i in conf_indices) if conf_indices else 0.0
+            support_weight = sum(citations[i].credibility_score for i in sup_indices) if sup_indices else 0.0
+            denom = conflict_weight + support_weight
+            if denom > 0:
+                conflict_ratio = conflict_weight / denom
+                penalty = 0.3 * conflict_ratio  # up to -30%
+            else:
+                penalty = 0.2
+            confidence *= (1.0 - penalty)
+
+        # Clamp to [0,1]
+        if confidence < 0:
+            confidence = 0.0
+        if confidence > 1:
+            confidence = 1.0
 
         return ClaimVerification(
             claim=claim,

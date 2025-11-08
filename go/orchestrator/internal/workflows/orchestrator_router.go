@@ -333,7 +333,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
 	}
 
-	// TEST ONLY: Force ResearchWorkflow via context flag (for citation testing)
+	// Force ResearchWorkflow via context flag (user-facing via CLI)
 	if v, ok := input.Context["force_research"]; ok {
 		if b, ok := v.(bool); ok && b {
 			logger.Info("Forcing ResearchWorkflow via context flag (test mode)")
@@ -485,13 +485,13 @@ func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query strin
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-        EventType:  activities.StreamEventStreamEnd,
-        AgentID:    "orchestrator",
-        Message:    "Stream end",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(emitCtx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventStreamEnd,
+		AgentID:    "orchestrator",
+		Message:    "Stream end",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(emitCtx, nil)
 }
 
 // convertToStrategiesInput converts workflows.TaskInput to strategies.TaskInput

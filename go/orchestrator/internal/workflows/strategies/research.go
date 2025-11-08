@@ -32,10 +32,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			MaximumAttempts: 3,
 		},
 	}
-	ctx = workflow.WithActivityOptions(ctx, activityOptions)
+    ctx = workflow.WithActivityOptions(ctx, activityOptions)
 
-	// Prepare base context (merge input.Context + SessionCtx)
-	baseContext := make(map[string]interface{})
+	// Set up workflow ID and emit context for event streaming
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+
+    // Prepare base context (merge input.Context + SessionCtx)
+    baseContext := make(map[string]interface{})
 	for k, v := range input.Context {
 		baseContext[k] = v
 	}
@@ -140,15 +150,77 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
-	// Step 1: Decompose the research query
-	var decomp activities.DecompositionResult
-	err := workflow.ExecuteActivity(ctx,
-		constants.DecomposeTaskActivity,
-		activities.DecompositionInput{
-			Query:          input.Query,
-			Context:        baseContext,
-			AvailableTools: []string{},
-		}).Get(ctx, &decomp)
+    // Step 0: Refine/expand vague research queries
+    // Emit refinement start event
+    emitTaskUpdate(ctx, input, activities.StreamEventAgentThinking, "research-refiner", "Refining research query")
+
+    var totalTokens int
+    var refineResult activities.RefineResearchQueryResult
+    refinedQuery := input.Query // Default to original query
+	err := workflow.ExecuteActivity(ctx, constants.RefineResearchQueryActivity,
+		activities.RefineResearchQueryInput{
+			Query:   input.Query,
+			Context: baseContext,
+		}).Get(ctx, &refineResult)
+
+    if err == nil && refineResult.RefinedQuery != "" {
+        logger.Info("Query refined for research",
+            "original", input.Query,
+            "refined", refineResult.RefinedQuery,
+            "areas", refineResult.ResearchAreas,
+            "tokens_used", refineResult.TokensUsed,
+        )
+        refinedQuery = refineResult.RefinedQuery
+        baseContext["research_areas"] = refineResult.ResearchAreas
+        baseContext["original_query"] = input.Query
+        baseContext["refinement_rationale"] = refineResult.Rationale
+        baseContext["refined_query"] = refinedQuery
+        if refineResult.CanonicalName != "" {
+            baseContext["canonical_name"] = refineResult.CanonicalName
+        }
+        if len(refineResult.ExactQueries) > 0 {
+            baseContext["exact_queries"] = refineResult.ExactQueries
+        }
+        if len(refineResult.OfficialDomains) > 0 {
+            baseContext["official_domains"] = refineResult.OfficialDomains
+        }
+        if len(refineResult.DisambiguationTerms) > 0 {
+            baseContext["disambiguation_terms"] = refineResult.DisambiguationTerms
+        }
+        // Account for refinement tokens in the workflow total
+        totalTokens += refineResult.TokensUsed
+
+        // Emit refinement complete event with details (include canonical/entity hints for diagnostics)
+        emitTaskUpdatePayload(ctx, input, activities.StreamEventProgress, "research-refiner",
+            fmt.Sprintf("Expanded query into %d research areas", len(refineResult.ResearchAreas)),
+            map[string]interface{}{
+                "original_query":     input.Query,
+                "refined_query":      refineResult.RefinedQuery,
+                "research_areas":     refineResult.ResearchAreas,
+                "rationale":          refineResult.Rationale,
+                "tokens_used":        refineResult.TokensUsed,
+                "model_used":         refineResult.ModelUsed,
+                "provider":           refineResult.Provider,
+                "canonical_name":     refineResult.CanonicalName,
+                "exact_queries":      refineResult.ExactQueries,
+                "official_domains":   refineResult.OfficialDomains,
+                "disambiguation_terms": refineResult.DisambiguationTerms,
+            })
+	} else if err != nil {
+		logger.Warn("Query refinement failed, using original query", "error", err)
+        // Emit warning but continue with original query
+        emitTaskUpdate(ctx, input, activities.StreamEventProgress, "research-refiner", "Query refinement skipped, proceeding with original query")
+	}
+
+	// Step 1: Decompose the (now refined) research query
+    var decomp activities.DecompositionResult
+    err = workflow.ExecuteActivity(ctx,
+        constants.DecomposeTaskActivity,
+        activities.DecompositionInput{
+            Query:          refinedQuery, // Use refined query here
+            Context:        baseContext,
+            AvailableTools: []string{},
+        }).Get(ctx, &decomp)
 
 	if err != nil {
 		logger.Error("Task decomposition failed", "error", err)
@@ -167,8 +239,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		agentMaxTokens = int(v)
 	}
 
-	modelTier := determineModelTier(baseContext, "medium")
-	var totalTokens int
+    modelTier := determineModelTier(baseContext, "medium")
 	var agentResults []activities.AgentExecutionResult
 
 	// Step 2: Execute based on complexity
@@ -195,15 +266,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			Context:        baseContext,
 		}
 
-		reactResult, err := patterns.ReactLoop(
-			ctx,
-			input.Query,
-			baseContext,
-			input.SessionID,
-			convertHistoryForAgent(input.History),
-			reactConfig,
-			reactOpts,
-		)
+        reactResult, err := patterns.ReactLoop(
+            ctx,
+            refinedQuery,
+            baseContext,
+            input.SessionID,
+            convertHistoryForAgent(input.History),
+            reactConfig,
+            reactOpts,
+        )
 
 		if err != nil {
 			return TaskResult{
@@ -243,15 +314,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					role = decomp.AgentTypes[i]
 				}
 
-				hybridTasks[i] = execution.HybridTask{
-					ID:             subtask.ID,
-					Description:    subtask.Description,
-					SuggestedTools: subtask.SuggestedTools,
-					ToolParameters: subtask.ToolParameters,
-					PersonaID:      subtask.SuggestedPersona,
-					Role:           role,
-					Dependencies:   subtask.Dependencies,
-				}
+            hybridTasks[i] = execution.HybridTask{
+                ID:             subtask.ID,
+                Description:    subtask.Description,
+                SuggestedTools: subtask.SuggestedTools,
+                ToolParameters: subtask.ToolParameters,
+                PersonaID:      subtask.SuggestedPersona,
+                Role:           role,
+                ParentArea:     subtask.ParentArea,
+                Dependencies:   subtask.Dependencies,
+            }
 			}
 
 			hybridConfig := execution.HybridConfig{
@@ -298,14 +370,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					role = decomp.AgentTypes[i]
 				}
 
-				parallelTasks[i] = execution.ParallelTask{
-					ID:             subtask.ID,
-					Description:    subtask.Description,
-					SuggestedTools: subtask.SuggestedTools,
-					ToolParameters: subtask.ToolParameters,
-					PersonaID:      subtask.SuggestedPersona,
-					Role:           role,
-				}
+            parallelTasks[i] = execution.ParallelTask{
+                ID:             subtask.ID,
+                Description:    subtask.Description,
+                SuggestedTools: subtask.SuggestedTools,
+                ToolParameters: subtask.ToolParameters,
+                PersonaID:      subtask.SuggestedPersona,
+                Role:           role,
+                ParentArea:     subtask.ParentArea,
+            }
 			}
 
 			parallelConfig := execution.ParallelConfig{
@@ -337,10 +410,73 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
-	// Step 3: Synthesize results
-	logger.Info("Synthesizing research results",
-		"agent_count", len(agentResults),
-	)
+    // Optional: filter out agent results that likely belong to the wrong entity
+    if v, ok := baseContext["canonical_name"].(string); ok && strings.TrimSpace(v) != "" {
+        aliases := []string{v}
+        if eqv, ok := baseContext["exact_queries"]; ok {
+            switch t := eqv.(type) {
+            case []string:
+                for _, q := range t { aliases = append(aliases, strings.Trim(q, "\"")) }
+            case []interface{}:
+                for _, it := range t {
+                    if s, ok := it.(string); ok { aliases = append(aliases, strings.Trim(s, "\"")) }
+                }
+            }
+        }
+        // Use official_domains for additional positive matching
+        var domains []string
+        if dv, ok := baseContext["official_domains"]; ok {
+            switch t := dv.(type) {
+            case []string:
+                domains = append(domains, t...)
+            case []interface{}:
+                for _, it := range t {
+                    if s, ok := it.(string); ok { domains = append(domains, s) }
+                }
+            }
+        }
+        filtered := make([]activities.AgentExecutionResult, 0, len(agentResults))
+        removed := 0
+        for _, ar := range agentResults {
+            txt := strings.ToLower(ar.Response)
+            match := false
+            for _, a := range aliases {
+                if sa := strings.ToLower(strings.TrimSpace(a)); sa != "" && strings.Contains(txt, sa) {
+                    match = true; break
+                }
+            }
+            if !match && len(domains) > 0 {
+                for _, d := range domains {
+                    sd := strings.ToLower(strings.TrimSpace(d))
+                    if sd != "" && strings.Contains(txt, sd) {
+                        match = true; break
+                    }
+                }
+            }
+            // Keep non-search reasoning, drop obvious off-entity tool-driven results
+            if match || len(ar.ToolsUsed) == 0 {
+                filtered = append(filtered, ar)
+            } else {
+                removed++
+            }
+        }
+        if len(filtered) > 0 {
+            agentResults = filtered
+        }
+        if removed > 0 {
+            logger.Info("Entity filter removed off-entity results",
+                "removed", removed,
+                "kept", len(agentResults),
+                "aliases", aliases,
+                "domains", domains,
+            )
+        }
+    }
+
+    // Step 3: Synthesize results
+    logger.Info("Synthesizing research results",
+        "agent_count", len(agentResults),
+    )
 
     // Collect citations from agent tool outputs and inject into context for synthesis/formatting
     // Also retain them for metadata/verification.
@@ -392,13 +528,26 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
         }
     }
 
+    // Set synthesis style to comprehensive for research workflows
+    baseContext["synthesis_style"] = "comprehensive"
+    baseContext["research_areas_count"] = len(refineResult.ResearchAreas)
+
     var synthesis activities.SynthesisResult
     err = workflow.ExecuteActivity(ctx,
         activities.SynthesizeResultsLLM,
         activities.SynthesisInput{
-            Query:            input.Query,
-            AgentResults:     agentResults,
-            Context:          baseContext,
+            Query:        input.Query, // Use original query for language detection
+            AgentResults: agentResults,
+            // Ensure comprehensive report style for research synthesis unless already specified
+            Context: func() map[string]interface{} {
+                if baseContext == nil {
+                    baseContext = map[string]interface{}{}
+                }
+                if _, ok := baseContext["synthesis_style"]; !ok {
+                    baseContext["synthesis_style"] = "comprehensive"
+                }
+                return baseContext
+            }(),
             ParentWorkflowID: input.ParentWorkflowID,
         }).Get(ctx, &synthesis)
 
@@ -427,15 +576,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		ModelTier:      modelTier,
 	}
 
-	finalResult, qualityScore, reflectionTokens, err := patterns.ReflectOnResult(
-		ctx,
-		input.Query,
-		synthesis.FinalResult,
-		agentResults,
-		baseContext,
-		reflectionConfig,
-		reflectionOpts,
-	)
+    finalResult, qualityScore, reflectionTokens, err := patterns.ReflectOnResult(
+        ctx,
+        refinedQuery,
+        synthesis.FinalResult,
+        agentResults,
+        baseContext,
+        reflectionConfig,
+        reflectionOpts,
+    )
 
 	if err != nil {
 		logger.Warn("Reflection failed, using original result", "error", err)
@@ -558,21 +707,27 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		meta["tool_errors"] = toolErrors
 	}
 
-	// Aggregate agent metadata (model, provider, tokens, cost)
-	agentMeta := metadata.AggregateAgentMetadata(agentResults, synthesis.TokensUsed+reflectionTokens)
-	for k, v := range agentMeta {
-		meta[k] = v
-	}
+    // Aggregate agent metadata (model, provider, tokens, cost)
+    agentMeta := metadata.AggregateAgentMetadata(agentResults, synthesis.TokensUsed+reflectionTokens)
+    for k, v := range agentMeta {
+        meta[k] = v
+    }
+
+    // Include synthesis finish_reason and requested_max_tokens for observability/debugging
+    if synthesis.FinishReason != "" {
+        meta["finish_reason"] = synthesis.FinishReason
+    }
+    if synthesis.RequestedMaxTokens > 0 {
+        meta["requested_max_tokens"] = synthesis.RequestedMaxTokens
+    }
+    if synthesis.CompletionTokens > 0 {
+        meta["completion_tokens"] = synthesis.CompletionTokens
+    }
+    if synthesis.EffectiveMaxCompletion > 0 {
+        meta["effective_max_completion"] = synthesis.EffectiveMaxCompletion
+    }
 
 	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
-	}
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,

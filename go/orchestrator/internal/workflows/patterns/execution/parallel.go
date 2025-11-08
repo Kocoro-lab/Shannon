@@ -23,13 +23,14 @@ type ParallelConfig struct {
 
 // ParallelTask represents a task to execute in parallel
 type ParallelTask struct {
-	ID             string
-	Description    string
-	SuggestedTools []string
-	ToolParameters map[string]interface{}
-	PersonaID      string
-	Role           string
-	Dependencies   []string // For hybrid parallel/sequential execution
+    ID             string
+    Description    string
+    SuggestedTools []string
+    ToolParameters map[string]interface{}
+    PersonaID      string
+    Role           string
+    ParentArea     string
+    Dependencies   []string // For hybrid parallel/sequential execution
 }
 
 // ParallelResult contains results from parallel execution
@@ -105,8 +106,11 @@ func ExecuteParallel(
 			for k, v := range config.Context {
 				taskContext[k] = v
 			}
-			taskContext["role"] = task.Role
-			taskContext["task_id"] = task.ID
+    taskContext["role"] = task.Role
+    taskContext["task_id"] = task.ID
+    if task.ParentArea != "" {
+        taskContext["parent_area"] = task.ParentArea
+    }
 
 			// Emit agent started event (publish under parent workflow when available)
 			if config.EmitEvents {

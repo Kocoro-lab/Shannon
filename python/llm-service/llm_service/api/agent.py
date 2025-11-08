@@ -205,11 +205,16 @@ async def agent_query(request: Request, query: AgentQuery):
                     logger.warning(f"System prompt rendering failed: {e}")
 
                 cap_overrides = preset.get("caps") or {}
-                # Allow role caps to softly override token/temperature bounds if caller didn't specify
-                max_tokens = int(cap_overrides.get("max_tokens") or query.max_tokens)
-                temperature = float(
-                    cap_overrides.get("temperature") or query.temperature
-                )
+                # Precedence: caller values win; fall back to role caps only if missing
+                # This avoids capping synthesis/composition calls to small role defaults (e.g., 1200)
+                try:
+                    max_tokens = int(query.max_tokens) if query.max_tokens is not None else int(cap_overrides.get("max_tokens") or 2048)
+                except Exception:
+                    max_tokens = int(cap_overrides.get("max_tokens") or 2048)
+                try:
+                    temperature = float(query.temperature) if query.temperature is not None else float(cap_overrides.get("temperature") or 0.7)
+                except Exception:
+                    temperature = float(cap_overrides.get("temperature") or 0.7)
             except Exception:
                 system_prompt = "You are a helpful AI assistant."
                 max_tokens = query.max_tokens
@@ -252,11 +257,34 @@ async def agent_query(request: Request, query: AgentQuery):
             messages.append({"role": "user", "content": query.query})
 
             # Add remaining context to system prompt if there's any
+            # Exclude large/duplicate fields that are already embedded in the user query
             if context_without_history:
-                context_str = "\n".join(
-                    [f"{k}: {v}" for k, v in context_without_history.items()]
-                )
-                messages[0]["content"] += f"\n\nContext:\n{context_str}"
+                excluded_keys = {
+                    "history",
+                    "system_prompt",
+                    "available_citations",
+                    "previous_response",
+                    "reflection_feedback",
+                    "previous_results",
+                }
+                safe_items = [
+                    (k, v)
+                    for k, v in context_without_history.items()
+                    if k not in excluded_keys and v is not None
+                ]
+                if safe_items:
+                    context_str = "\n".join([f"{k}: {v}" for k, v in safe_items])
+                    messages[0]["content"] += f"\n\nContext:\n{context_str}"
+
+            # Optional JSON enforcement passthrough: allow callers to request JSON via context
+            response_format = None
+            try:
+                if isinstance(query.context, dict):
+                    rf = query.context.get("response_format")
+                    if isinstance(rf, dict) and rf:
+                        response_format = rf
+            except Exception:
+                response_format = None
 
             # Soft enforcement: if caller requests tool usage and tools are allowed, nudge the model
             force_tools = False
@@ -440,6 +468,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         provider_override=provider_override,
                         max_tokens=max_tokens,
                         temperature=temperature,
+                        response_format=response_format,
                         tools=None,
                         workflow_id=request.headers.get("X-Workflow-ID")
                         or request.headers.get("x-workflow-id"),
@@ -491,6 +520,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 provider_override=provider_override,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                response_format=response_format,
                 tools=tools_param,
                 function_call=function_call,
                 workflow_id=request.headers.get("X-Workflow-ID")
@@ -564,6 +594,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             provider_override=provider_override,
                             max_tokens=max_tokens,
                             temperature=temperature,
+                            response_format=response_format,
                             tools=None,  # No tools for interpretation pass
                             workflow_id=request.headers.get("X-Workflow-ID")
                             or request.headers.get("x-workflow-id"),
@@ -696,6 +727,7 @@ async def agent_query(request: Request, query: AgentQuery):
                                 provider_override=provider_override,
                                 max_tokens=max_tokens,
                                 temperature=temperature,
+                                response_format=response_format,
                                 tools=None,
                                 workflow_id=request.headers.get("X-Workflow-ID")
                                 or request.headers.get("x-workflow-id"),
@@ -728,6 +760,11 @@ async def agent_query(request: Request, query: AgentQuery):
                                 if isinstance(query.context, dict)
                                 else None,
                                 "finish_reason": interpretation_result.get("finish_reason", "stop"),
+                                "requested_max_tokens": max_tokens,
+                                "input_tokens": interpretation_result.get("usage", {}).get("prompt_tokens")
+                                or interpretation_result.get("usage", {}).get("input_tokens"),
+                                "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
+                                or interpretation_result.get("usage", {}).get("output_tokens"),
                             },
                         )
                 except Exception as e:
@@ -754,6 +791,10 @@ async def agent_query(request: Request, query: AgentQuery):
                     if isinstance(query.context, dict)
                     else None,
                     "finish_reason": result_data.get("finish_reason", "stop"),
+                    "requested_max_tokens": max_tokens,
+                    "input_tokens": (result_data.get("usage", {}) or {}).get("input_tokens"),
+                    "output_tokens": (result_data.get("usage", {}) or {}).get("output_tokens"),
+                    "effective_max_completion": result_data.get("effective_max_completion"),
                 },
             )
         else:
@@ -1015,6 +1056,10 @@ class Subtask(BaseModel):
     task_type: str = Field(
         default="", description="Optional structured subtask type, e.g., 'synthesis'"
     )
+    # Optional grouping for research-area-driven decomposition
+    parent_area: Optional[str] = Field(
+        default="", description="Top-level research area that this subtask belongs to"
+    )
     # LLM-native tool selection
     suggested_tools: List[str] = Field(
         default_factory=list, description="Tools suggested by LLM for this subtask"
@@ -1166,7 +1211,8 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- python_executor: For executing Python code, data analysis, or programming tasks\n"
             "- code_executor: ONLY for executing provided WASM code (do not use for Python)\n\n"
             "If unsure, default to NO TOOLS. Set suggested_tools to [] for direct LLM response.\n\n"
-            "Return ONLY valid JSON with this EXACT structure (no additional text):\n"
+            "Return ONLY valid JSON with this EXACT structure (no additional text).\n"
+            "You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n"
             "{\n"
             '  "mode": "standard",\n'
             '  "complexity_score": 0.5,\n'
@@ -1249,6 +1295,31 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 "Set complexity_score >= 0.5 for queries that need tool execution.\n"
             )
             decompose_system_prompt = decompose_system_prompt + tool_hint
+
+        # If research_areas provided, instruct the planner to decompose 1→N per area and add parent_area
+        if isinstance(query.context, dict) and query.context.get("research_areas"):
+            areas = query.context.get("research_areas") or []
+            if isinstance(areas, list) and areas:
+                try:
+                    area_list = [str(a) for a in areas if str(a).strip()]
+                except Exception:
+                    area_list = []
+                if area_list:
+                    areas_hint = (
+                        "\n\nRESEARCH AREA DECOMPOSITION:\n"
+                        f"- The user identified {len(area_list)} research areas.\n"
+                        "- Create 1–3 subtasks per area (break complex areas into focused steps).\n"
+                        f"- Set 'parent_area' for grouping; valid values: {area_list}.\n"
+                        "- Keep descriptions concise and ACTION-FIRST; start with a verb, not the area name.\n"
+                        "- Example: parent_area='Financial Performance' → description='Analyze Q3 revenue trends'.\n"
+                        "- Include 'parent_area' in each subtask JSON when research_areas are provided.\n"
+                        "\nDESCRIPTION STYLE:\n"
+                        "- Start with action verb, not area name.\n"
+                        "- ❌ 'Company profile and history: Company profile and history includes…'\n"
+                        "- ✅ 'Analyze founding story, key milestones, and strategic pivots (Company Profile)'.\n"
+                        "- ✅ 'Compare market share vs. top 3 competitors (Competitive Landscape)'.\n"
+                    )
+                    decompose_system_prompt = decompose_system_prompt + areas_hint
 
         # Build messages with history rehydration for context awareness
         messages = [{"role": "system", "content": decompose_system_prompt}]
@@ -1390,6 +1461,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     dependencies=st.get("dependencies", []),
                     estimated_tokens=st.get("estimated_tokens", 300),
                     task_type=task_type,
+                    parent_area=str(st.get("parent_area", "")) if st.get("parent_area") is not None else "",
                     suggested_tools=suggested_tools,
                     tool_parameters=tool_params,
                 )

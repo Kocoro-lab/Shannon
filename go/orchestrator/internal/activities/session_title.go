@@ -196,7 +196,7 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 // generateTitleWithLLM uses LLM to generate a concise title
 func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (string, error) {
 	// Prepare request to LLM service
-	prompt := fmt.Sprintf("Summarize this user query in 3-5 words for a chat session title. Be concise and descriptive:\n\n%s", query)
+    prompt := fmt.Sprintf("Generate a chat session title from this user query. Rules: 3–5 words, Title Case, no quotes, no punctuation, no emojis, no sensitive identifiers. Output ONLY the title.\n\n%s", query)
 
 	llmServiceURL := getEnvOrDefaultTitle("LLM_SERVICE_URL", "http://llm-service:8000")
 	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
@@ -208,9 +208,9 @@ func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (st
 			"temperature": 0.3, // Low temperature for consistency
 		},
 		"agent_id": "title_generator",
-		"session_context": map[string]interface{}{
-			"system_prompt": "You are a title generator. Generate very short, descriptive titles (3-5 words) for chat sessions based on user queries. Output only the title, nothing else.",
-		},
+        "session_context": map[string]interface{}{
+            "system_prompt": "You are a title generator. Produce concise, descriptive titles for chat sessions. Rules: 3–5 words, Title Case, no quotes, no trailing punctuation, no emojis, no sensitive identifiers. Output ONLY the title.",
+        },
 	}
 
 	reqJSON, err := json.Marshal(reqBody)

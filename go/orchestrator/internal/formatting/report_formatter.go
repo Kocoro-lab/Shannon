@@ -37,10 +37,13 @@ func FormatReportWithCitations(synthesis string, citationsList string) string {
     }
 
     // 2) Remove existing Sources section from synthesis
-    //    Strategy: find "## Sources" heading and truncate from there to end
-    //    If not found, keep the synthesis as-is
+    //    Strategy: find the LAST occurrence of "## Sources" and truncate from there to end
+    //    If not found, keep the synthesis as-is.
+    //    Using last index avoids cutting content if the model references "## Sources" earlier in the body.
     cut := s
-    if idx := strings.Index(strings.ToLower(s), strings.ToLower("## Sources")); idx != -1 {
+    lower := strings.ToLower(s)
+    needle := strings.ToLower("## Sources")
+    if idx := strings.LastIndex(lower, needle); idx != -1 {
         cut = strings.TrimSpace(s[:idx])
     }
 
@@ -97,4 +100,3 @@ func FormatReportWithCitations(synthesis string, citationsList string) string {
     b.WriteString(strings.Join(rebuilt, "\n"))
     return b.String()
 }
-

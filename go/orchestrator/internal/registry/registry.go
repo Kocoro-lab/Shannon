@@ -128,6 +128,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 
 	// Session activities - register with consistent naming
 	w.RegisterActivityWithOptions(acts.DecomposeTask, activity.RegisterOptions{Name: constants.DecomposeTaskActivity})
+	w.RegisterActivityWithOptions(acts.RefineResearchQuery, activity.RegisterOptions{Name: constants.RefineResearchQueryActivity})
 	// Legacy activity name for Temporal replay compatibility
 	w.RegisterActivityWithOptions(acts.AnalyzeComplexity, activity.RegisterOptions{Name: constants.AnalyzeComplexityActivity})
 	w.RegisterActivityWithOptions(acts.UpdateSessionResult, activity.RegisterOptions{

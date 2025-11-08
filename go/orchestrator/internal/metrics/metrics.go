@@ -321,6 +321,22 @@ var (
 		},
 	)
 
+	// Research query refinement metrics
+	RefinementLatency = promauto.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "shannon_refinement_latency_seconds",
+			Help:    "Research query refinement latency in seconds",
+			Buckets: prometheus.DefBuckets,
+		},
+	)
+
+	RefinementErrors = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_refinement_errors_total",
+			Help: "Total number of research refinement errors",
+		},
+	)
+
 	// Decomposition pattern metrics
 	DecompositionPatternCacheHits = promauto.NewCounter(
 		prometheus.CounterOpts{

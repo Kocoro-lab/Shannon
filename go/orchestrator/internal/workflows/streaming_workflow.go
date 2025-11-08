@@ -312,12 +312,24 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
 		} else {
 			var err error
-			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-				Query:            input.Query,
-				AgentResults:     agentResults,
-				Context:          input.Context, // Pass role/prompt_params for role-aware synthesis
-				ParentWorkflowID: workflowID,
-			}).Get(ctx, &synthesis)
+            err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+                Query:        input.Query,
+                AgentResults: agentResults,
+                // Prefer comprehensive synthesis style when research cues are present
+                Context: func() map[string]interface{} {
+                    ctxMap := map[string]interface{}{}
+                    for k, v := range input.Context {
+                        ctxMap[k] = v
+                    }
+                    if _, ok := ctxMap["synthesis_style"]; !ok {
+                        if _, hasAreas := ctxMap["research_areas"]; hasAreas {
+                            ctxMap["synthesis_style"] = "comprehensive"
+                        }
+                    }
+                    return ctxMap
+                }(),
+                ParentWorkflowID: workflowID,
+            }).Get(ctx, &synthesis)
 			if err != nil {
 				logger.Error("Result synthesis failed", "error", err)
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -325,12 +337,24 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	} else {
 		var err error
-		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-			Query:            input.Query,
-			AgentResults:     agentResults,
-			Context:          input.Context, // Pass role/prompt_params for role-aware synthesis
-			ParentWorkflowID: workflowID,
-		}).Get(ctx, &synthesis)
+        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+            Query:        input.Query,
+            AgentResults: agentResults,
+            // Prefer comprehensive synthesis style when research cues are present
+            Context: func() map[string]interface{} {
+                ctxMap := map[string]interface{}{}
+                for k, v := range input.Context {
+                    ctxMap[k] = v
+                }
+                if _, ok := ctxMap["synthesis_style"]; !ok {
+                    if _, hasAreas := ctxMap["research_areas"]; hasAreas {
+                        ctxMap["synthesis_style"] = "comprehensive"
+                    }
+                }
+                return ctxMap
+            }(),
+            ParentWorkflowID: workflowID,
+        }).Get(ctx, &synthesis)
 		if err != nil {
 			logger.Error("Result synthesis failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err

@@ -144,6 +144,7 @@ class CompletionResponse:
     created_at: datetime = None
     latency_ms: Optional[int] = None
     cached: bool = False
+    effective_max_completion: Optional[int] = None  # Actual max completion after provider headroom clamp
 
     def __post_init__(self):
         if self.created_at is None:
