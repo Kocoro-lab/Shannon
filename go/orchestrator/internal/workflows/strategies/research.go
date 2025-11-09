@@ -1181,60 +1181,6 @@ if err == nil && refineResult.RefinedQuery != "" {
 					allCitations, _ := metadata.CollectCitations(resultsForCitations, now, 0) // Use 0 for default max (15)
 
 					if len(allCitations) > 0 {
-						// Apply entity filtering and reranking to gap-fill citations (same as initial citations)
-						canonicalName, _ := baseContext["canonical_name"].(string)
-						if canonicalName != "" {
-							// Extract domains and aliases for filtering
-							var domains []string
-							if d, ok := baseContext["official_domains"].([]string); ok {
-								domains = d
-							}
-							var aliases []string
-							if eq, ok := baseContext["exact_queries"].([]string); ok {
-								aliases = eq
-							}
-
-							beforeCount := len(allCitations)
-							allCitations = FilterCitationsByEntity(allCitations, canonicalName, aliases, domains)
-
-							// Apply entity-aware reranking for better relevance ordering
-							if len(allCitations) > 0 {
-								// Extract alpha from context (default 0.5)
-								alpha := 0.5
-								if a, ok := baseContext["entity_rerank_alpha"].(float64); ok && a > 0 {
-									alpha = a
-								}
-
-								// Compute average entity relevance before reranking
-								var totalEntityScore float64
-								var officialCount int
-								for i := range allCitations {
-									entityScore := metadata.ComputeEntityRelevance(allCitations[i], canonicalName, aliases, domains, nil)
-									allCitations[i].EntityRelevanceScore = entityScore
-									totalEntityScore += entityScore
-									// Count official domain citations
-									urlLower := strings.ToLower(allCitations[i].URL)
-									for _, d := range domains {
-										if strings.Contains(urlLower, strings.ToLower(d)) {
-											officialCount++
-											break
-										}
-									}
-								}
-								avgEntityScore := totalEntityScore / float64(len(allCitations))
-
-								// Rerank citations by entity relevance + quality
-								allCitations = metadata.RerankByEntity(allCitations, canonicalName, aliases, domains, alpha, nil)
-
-								logger.Info("Gap-fill citation rerank completed",
-									"before_filter", beforeCount,
-									"after_filter", len(allCitations),
-									"alpha", alpha,
-									"avg_entity_score", avgEntityScore,
-									"official_count", officialCount,
-								)
-							}
-						}
 
 						// Re-synthesize with augmented evidence
 						var enhancedSynthesis activities.SynthesisResult

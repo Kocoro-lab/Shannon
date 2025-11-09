@@ -354,8 +354,8 @@ func (bm *BudgetManager) GetUsageReport(ctx context.Context, filters UsageFilter
 		       COUNT(*) as request_count
 		FROM token_usage
 		WHERE created_at BETWEEN $1 AND $2
-		  AND (CASE WHEN $3 = '' THEN TRUE ELSE user_id::text = $3 END)
-		  AND (CASE WHEN $4 = '' THEN TRUE ELSE task_id::text = $4 END)
+		  AND ($3 = '' OR user_id::text = $3)
+		  AND ($4 = '' OR task_id::text = $4)
 		GROUP BY user_id, task_id, model, provider
 		ORDER BY total_tokens DESC
 	`, filters.StartTime, filters.EndTime, filters.UserID, filters.TaskID)
