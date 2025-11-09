@@ -37,7 +37,9 @@ These optional fields are validated by the Gateway and then added to the workflo
 - `enable_verification` — boolean (enables claim verification when citations exist)
 - `report_mode` — boolean (formatting hints for synthesis/reporting)
 
-Example:
+### Research Strategy Presets
+
+Apply preset configurations for research workflows:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/tasks \
@@ -52,9 +54,30 @@ curl -sS -X POST http://localhost:8080/api/v1/tasks \
   }'
 ```
 
-Note: Verification effectiveness depends on passing citation content/snippets; see `docs/deep-research.md` for current limitations.
+Note: Verification effectiveness depends on passing citation content/snippets; see `docs/deep-research-overview.md` for current limitations.
 
-Example:
+### Citations (optional, mapped into context)
+
+- `context.enable_citations` — boolean toggle for citation collection/integration in non‑research workflows
+  - ReactWorkflow: opt‑in. When true, collects citations from tool outputs (e.g., web_search, web_fetch) and appends a Sources section to the final report.
+  - DAGWorkflow: opt‑out. Enabled by default; set to false to skip citation collection and Sources section.
+  - ResearchWorkflow: unchanged; always manages citations internally.
+
+Example (enable citations in React):
+
+```bash
+curl -sS -X POST http://localhost:8080/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "Explain XKCD-style encryption best practices",
+    "mode": "standard",
+    "context": {"enable_citations": true}
+  }'
+```
+
+### Full Context Example
+
+Combining session, mode, model tier, and custom parameters:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/tasks \

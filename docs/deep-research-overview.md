@@ -22,6 +22,34 @@ Key file: `go/orchestrator/internal/workflows/strategies/research.go`
 
 ---
 
+## Architecture Diagram
+
+```
+Query → Decomposition → Information Gathering (Parallel)
+                        ├─ web_search + quality scoring
+                        ├─ web_fetch (deep content)
+                        └─ Source diversity enforcement
+                        ↓
+                     Citation Collection
+                        ├─ Deduplicate & normalize URLs/DOIs
+                        ├─ Score quality & credibility
+                        └─ Enforce diversity (max 3/domain)
+                        ↓
+                     Verification Layer
+                        ├─ Extract claims
+                        ├─ Cross‑reference against sources (with snippets)
+                        └─ Calculate confidence scores
+                        ↓
+                     Synthesis
+                        ├─ Inline citations [1], [2] when available
+                        ├─ Structured report format
+                        └─ Language matching
+                        ↓
+                     Reflection + Report Generation
+```
+
+---
+
 ## Stage Details and Code Pointers
 
 1) Refine (Step 0)
@@ -133,7 +161,7 @@ Safety nets
 Done
 - Native tools for research (web_search, web_fetch) with SSRF‑safe fetch and metadata.
 - Citation pipeline: extract from tool outputs, normalize/dedup URLs/DOIs, score (relevance×0.7 + recency×0.3), enforce diversity (max 3/domain).
-- Synthesis coverage enforcement: per‑area subsections (###), each ≥600 chars and ≥2 inline citations; minimum inline citations per report (default 6, floor 3).
+- Synthesis coverage enforcement: per‑area subsections (###), each ≥600 chars and ≥2 inline citations; minimum inline citations per report (default 6, floor 3). Citations are only required when available to avoid fabrication.
 - Verification layer: optional claim extraction and cross‑reference against citations via VerifyClaimsActivity and llm‑service `/api/verify_claims`.
 - Language matching in synthesis: detect from query and instruct response in the same language.
 - Strategy presets via gateway: research_strategy (quick/standard/deep/academic) with overrides (max_iterations, max_concurrent_agents), and toggles (enable_verification, report_mode).
@@ -145,6 +173,15 @@ Left To‑Dos
 - Future enhancement: hierarchical ReAct per parallel subtask (mini‑loops) for high‑complexity plans.
 
 ---
+
+## Citations & Verification Behavior
+
+- Citation collection: from `web_search` and `web_fetch` tool outputs with normalization (URL/DOI), dedup (keeps best scores), diversity enforcement, and combined score ranking.
+- Synthesis: citation requirements are conditional; when no citations are available, the model is instructed not to fabricate sources and to label unsupported claims as "unverified".
+- Verification: the orchestrator sends per‑citation snippets so the verifier can ground checks and produce meaningful confidence scores.
+- Toggle (non‑research flows):
+  - `context.enable_citations`: React (opt‑in), DAG (opt‑out; enabled by default). Research always manages citations internally.
+
 
 ## Quick Usage (HTTP)
 

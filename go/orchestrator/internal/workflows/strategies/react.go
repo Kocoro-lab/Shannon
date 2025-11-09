@@ -11,6 +11,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 )
@@ -291,6 +292,50 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
+	// Optional: collect citations and append Sources section when enabled
+	var collectedCitations []metadata.Citation
+	if v, ok := baseContext["enable_citations"].(bool); ok && v {
+		var resultsForCitations []interface{}
+		for _, ar := range reactResult.AgentResults {
+			var toolExecs []interface{}
+			if len(ar.ToolExecutions) > 0 {
+				for _, te := range ar.ToolExecutions {
+					toolExecs = append(toolExecs, map[string]interface{}{
+						"tool":    te.Tool,
+						"success": te.Success,
+						"output":  te.Output,
+						"error":   te.Error,
+					})
+				}
+			}
+			resultsForCitations = append(resultsForCitations, map[string]interface{}{
+				"agent_id":        ar.AgentID,
+				"tool_executions": toolExecs,
+				"response":        ar.Response,
+			})
+		}
+		now := workflow.Now(ctx)
+		citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+		if len(citations) > 0 {
+			collectedCitations = citations
+			var b strings.Builder
+			for i, c := range citations {
+				idx := i + 1
+				title := c.Title
+				if title == "" {
+					title = c.Source
+				}
+				if c.PublishedDate != nil {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+				} else {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+				}
+			}
+			citationList := strings.TrimRight(b.String(), "\n")
+			finalResult = formatting.FormatReportWithCitations(finalResult, citationList)
+		}
+	}
+
 	// Update session with results (include per-agent usage for accurate cost)
 	if input.SessionID != "" {
 		var updRes activities.SessionUpdateResult
@@ -378,6 +423,19 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		"thoughts":      len(reactResult.Thoughts),
 		"actions":       len(reactResult.Actions),
 		"observations":  len(reactResult.Observations),
+	}
+	if len(collectedCitations) > 0 {
+		out := make([]map[string]interface{}, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			out = append(out, map[string]interface{}{
+				"url":               c.URL,
+				"title":             c.Title,
+				"source":            c.Source,
+				"credibility_score": c.CredibilityScore,
+				"quality_score":     c.QualityScore,
+			})
+		}
+		meta["citations"] = out
 	}
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors

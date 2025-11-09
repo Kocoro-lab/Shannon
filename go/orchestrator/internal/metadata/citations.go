@@ -658,7 +658,8 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 
 // deduplicateCitations removes duplicate citations by normalized URL (keeping first occurrence)
 func deduplicateCitations(citations []Citation) []Citation {
-    seen := make(map[string]bool)
+    // Keep one entry per canonical key; merge to preserve best scores/metadata
+    index := make(map[string]int)
     var deduped []Citation
 
     for _, citation := range citations {
@@ -673,8 +674,30 @@ func deduplicateCitations(citations []Citation) []Citation {
         } else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
             key = norm
         }
-        if !seen[key] {
-            seen[key] = true
+
+        if idx, ok := index[key]; ok {
+            // Merge: keep higher quality/credibility; fill missing metadata when available
+            if citation.QualityScore > deduped[idx].QualityScore {
+                deduped[idx].QualityScore = citation.QualityScore
+            }
+            if citation.CredibilityScore > deduped[idx].CredibilityScore {
+                deduped[idx].CredibilityScore = citation.CredibilityScore
+            }
+            if deduped[idx].Title == "" && citation.Title != "" {
+                deduped[idx].Title = citation.Title
+            }
+            if deduped[idx].Snippet == "" && citation.Snippet != "" {
+                deduped[idx].Snippet = citation.Snippet
+            }
+            if deduped[idx].PublishedDate == nil && citation.PublishedDate != nil {
+                deduped[idx].PublishedDate = citation.PublishedDate
+            }
+            // Relevance: prefer higher
+            if citation.RelevanceScore > deduped[idx].RelevanceScore {
+                deduped[idx].RelevanceScore = citation.RelevanceScore
+            }
+        } else {
+            index[key] = len(deduped)
             deduped = append(deduped, citation)
         }
     }

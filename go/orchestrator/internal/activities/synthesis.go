@@ -309,6 +309,52 @@ Section requirements:
 `
     }
 
+    // Determine whether citations are available in context
+    hasCitations := false
+    if input.Context != nil {
+        if v, ok := input.Context["available_citations"].(string); ok && strings.TrimSpace(v) != "" {
+            hasCitations = true
+        } else if v, ok := input.Context["citation_count"]; ok {
+            switch t := v.(type) {
+            case int:
+                hasCitations = t > 0
+            case int32:
+                hasCitations = int(t) > 0
+            case int64:
+                hasCitations = int(t) > 0
+            case float64:
+                hasCitations = int(t) > 0
+            }
+        }
+    }
+
+    // Build dynamic checklist and citation guidance
+    coverageExtra := ""
+    if hasCitations {
+        coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\n" +
+            "    ✓ ALL claims supported by Available Citations (no fabrication)\n" +
+            "    ✓ Conflicting sources explicitly noted: \"[1] says X, [2] says Y\"\n"
+    } else {
+        coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \"unverified\"\n"
+    }
+
+    citationGuidance := ""
+    if hasCitations {
+        citationGuidance = fmt.Sprintf(`## Citation Integration:
+    - You MUST use AT LEAST %d inline citations from Available Citations
+    - Use inline citations [1], [2] for ALL factual claims
+    - Use ONLY the provided Available Citations and their existing indices [n]
+    - DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
+    - Each unique URL gets ONE citation number only
+    - Do NOT include a "## Sources" section; the system will append Sources automatically
+`, minCitations)
+    } else {
+        citationGuidance = `## Citation Guidance:
+    - Do NOT fabricate citations.
+    - If a claim lacks supporting sources, mark it as "unverified".
+`
+    }
+
     fmt.Fprintf(&b, `# Synthesis Requirements:
 
     IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with the "## Executive Summary" heading.
@@ -316,25 +362,16 @@ Section requirements:
     ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
     ✓ Each of the %d research areas has a dedicated subsection (### heading)
     ✓ Each subsection contains 150–250 words minimum
-    ✓ Each subsection includes ≥2 inline citations [n]
     ✓ Executive Summary captures key insights (150–250 words)
     ✓ Limitations section addresses gaps and conflicts
-    ✓ ALL claims supported by Available Citations (no fabrication)
-    ✓ Conflicting sources explicitly noted: "[1] says X, [2] says Y"
-    ✓ Response written in the SAME language as the query
+%s    ✓ Response written in the SAME language as the query
 
     ## CRITICAL - Language Matching:
     %s
     The user's query is in %s. You MUST respond in the SAME language.
     DO NOT translate or switch to English unless the query is in English.
 
-    ## Citation Integration:
-    - You MUST use AT LEAST %d inline citations from Available Citations
-    - Use inline citations [1], [2] for ALL factual claims
-    - Use ONLY the provided Available Citations and their existing indices [n]
-    - DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
-    - Each unique URL gets ONE citation number only
-    - Do NOT include a "## Sources" section; the system will append Sources automatically
+    %s
 
     ## Preserve Source Integrity:
     - Keep findings VERBATIM when referencing specific data/quotes
@@ -350,7 +387,7 @@ Section requirements:
     - NEVER fabricate or hallucinate sources
     - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
-    `, len(areas), languageInstruction, queryLanguage, minCitations, outputStructure, areasInstruction)
+    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
 
 	// Include available citations if present (Phase 2.5 fix)
 	if input.Context != nil {

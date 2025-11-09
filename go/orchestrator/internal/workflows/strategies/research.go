@@ -1041,15 +1041,19 @@ if err == nil && refineResult.RefinedQuery != "" {
                 "url":               c.URL,
                 "title":             c.Title,
                 "source":            c.Source,
+                "content":           c.Snippet,
                 "credibility_score": c.CredibilityScore,
                 "quality_score":     c.QualityScore,
             }
             verCitations = append(verCitations, m)
         }
-        _ = workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
+        verr := workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
             Answer:    finalResult,
             Citations: verCitations,
         }).Get(ctx, &verification)
+        if verr != nil {
+            logger.Warn("Claim verification failed, skipping verification metadata", "error", verr)
+        }
     }
 
 	// Step 5: Update session and persist results

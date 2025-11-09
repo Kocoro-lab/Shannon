@@ -98,6 +98,22 @@ def main():
     )
     submit_parser.set_defaults(report_mode=None)
 
+    # Citation toggle
+    cit_group = submit_parser.add_mutually_exclusive_group()
+    cit_group.add_argument(
+        "--enable-citations",
+        dest="enable_citations",
+        action="store_true",
+        help="Enable citation collection/integration (React/DAG opt-in)",
+    )
+    cit_group.add_argument(
+        "--disable-citations",
+        dest="enable_citations",
+        action="store_false",
+        help="Disable citation collection/integration",
+    )
+    submit_parser.set_defaults(enable_citations=None)
+
     # Status command
     status_parser = subparsers.add_parser("status", help="Get task status")
     status_parser.add_argument("task_id", help="Task ID")
@@ -169,6 +185,8 @@ def main():
                 submit_ctx["max_concurrent_agents"] = args.max_concurrent_agents
             if args.enable_verification is not None:
                 submit_ctx["enable_verification"] = args.enable_verification
+            if args.enable_citations is not None:
+                submit_ctx["enable_citations"] = args.enable_citations
             if args.report_mode is not None:
                 submit_ctx["report_mode"] = args.report_mode
 

@@ -6,6 +6,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -282,6 +283,13 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 			logger.Info("Reflection improved final result", "new_confidence", finalConfidence)
 		} else {
 			logger.Warn("Reflection failed, using previous result", "error", err)
+		}
+	}
+
+	// Optional: append Sources when citations provided in context
+	if v, ok := input.Context["enable_citations"].(bool); ok && v {
+		if citationList, ok2 := ctxMap["available_citations"].(string); ok2 && citationList != "" {
+			finalResult = formatting.FormatReportWithCitations(finalResult, citationList)
 		}
 	}
 

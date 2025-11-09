@@ -104,6 +104,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
     var totalTokens int
     var agentResults []activities.AgentExecutionResult
     var collectedCitations []metadata.Citation
+    // Option trigger: allow disabling citation collection via context flag (default on)
+    enableCitations := true
+    if v, ok := baseContext["enable_citations"].(bool); ok {
+        enableCitations = v
+    }
 
 	// Step 2: Check if task needs tools or has dependencies
 	needsTools := false
@@ -293,49 +298,16 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			}
 		}
 
-		// 3) If citations exist across agent results, avoid bypass so we can inject inline citations
-		if shouldBypass {
-			var resultsForCitations []interface{}
-			for _, ar := range agentResults {
-				var toolExecs []interface{}
-				if len(ar.ToolExecutions) > 0 {
-					for _, te := range ar.ToolExecutions {
-						toolExecs = append(toolExecs, map[string]interface{}{
-							"tool":    te.Tool,
-							"success": te.Success,
-							"output":  te.Output,
-							"error":   te.Error,
-						})
-					}
-				}
-				resultsForCitations = append(resultsForCitations, map[string]interface{}{
-					"agent_id":        ar.AgentID,
-					"tool_executions": toolExecs,
-					"response":        ar.Response,
-				})
-			}
-			now := workflow.Now(ctx)
-			citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
-			if len(citations) > 0 {
-				shouldBypass = false
-				collectedCitations = citations
-				var b strings.Builder
-				for i, c := range citations {
-					idx := i + 1
-					title := c.Title
-					if title == "" {
-						title = c.Source
-					}
-					if c.PublishedDate != nil {
-						fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-					} else {
-						fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
-					}
-				}
-				baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
-				baseContext["citation_count"] = len(citations)
-			}
-		}
+        // 3) If citations exist across agent results, avoid bypass so we can inject inline citations
+        if shouldBypass && enableCitations {
+            citations, formatted := collectAndFormatCitations(ctx, agentResults)
+            if len(citations) > 0 {
+                shouldBypass = false
+                collectedCitations = citations
+                baseContext["available_citations"] = formatted
+                baseContext["citation_count"] = len(citations)
+            }
+        }
 		// Enforce role-aware synthesis for data_analytics even with single result
 		if shouldBypass && baseContext != nil {
 			if role, ok := baseContext["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
@@ -355,51 +327,18 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				"total_agents", len(agentResults),
 				"successful", successfulCount,
 			)
-		} else {
+        } else {
 			// Fall through to standard synthesis below
 			logger.Info("Single result requires synthesis (web_search/JSON detected)")
-			// Collect citations for synthesis and inject into context
-			{
-				var resultsForCitations []interface{}
-				for _, ar := range agentResults {
-					var toolExecs []interface{}
-					if len(ar.ToolExecutions) > 0 {
-						for _, te := range ar.ToolExecutions {
-							toolExecs = append(toolExecs, map[string]interface{}{
-								"tool":    te.Tool,
-								"success": te.Success,
-								"output":  te.Output,
-								"error":   te.Error,
-							})
-						}
-					}
-					resultsForCitations = append(resultsForCitations, map[string]interface{}{
-						"agent_id":        ar.AgentID,
-						"tool_executions": toolExecs,
-						"response":        ar.Response,
-					})
-				}
-				now := workflow.Now(ctx)
-                citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
-                if len(citations) > 0 {
-                    collectedCitations = citations
-                    var b strings.Builder
-                    for i, c := range citations {
-						idx := i + 1
-						title := c.Title
-						if title == "" {
-							title = c.Source
-						}
-						if c.PublishedDate != nil {
-							fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-						} else {
-							fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
-						}
-					}
-					baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
-					baseContext["citation_count"] = len(citations)
-				}
-			}
+			// Collect citations for synthesis and inject into context (when enabled)
+    if enableCitations {
+        citations, formatted := collectAndFormatCitations(ctx, agentResults)
+        if len(citations) > 0 {
+            collectedCitations = citations
+            baseContext["available_citations"] = formatted
+            baseContext["citation_count"] = len(citations)
+        }
+    }
 			err = workflow.ExecuteActivity(ctx,
 				activities.SynthesizeResultsLLM,
 				activities.SynthesisInput{
@@ -422,47 +361,14 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
 		// If citations exist, re-run synthesis to inject inline citation numbers.
 		// Otherwise, use the synthesis subtask's result directly.
-		{
-			var resultsForCitations []interface{}
-			for _, ar := range agentResults {
-				var toolExecs []interface{}
-				if len(ar.ToolExecutions) > 0 {
-					for _, te := range ar.ToolExecutions {
-						toolExecs = append(toolExecs, map[string]interface{}{
-							"tool":    te.Tool,
-							"success": te.Success,
-							"output":  te.Output,
-							"error":   te.Error,
-						})
-					}
-				}
-				resultsForCitations = append(resultsForCitations, map[string]interface{}{
-					"agent_id":        ar.AgentID,
-					"tool_executions": toolExecs,
-					"response":        ar.Response,
-				})
-			}
-			now := workflow.Now(ctx)
-			citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
-			if len(citations) > 0 {
-				collectedCitations = citations
-				var b strings.Builder
-				for i, c := range citations {
-					idx := i + 1
-					title := c.Title
-					if title == "" {
-						title = c.Source
-					}
-					if c.PublishedDate != nil {
-						fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-					} else {
-						fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
-					}
-				}
-				baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
-				baseContext["citation_count"] = len(citations)
-			}
-		}
+    if enableCitations {
+        citations, formatted := collectAndFormatCitations(ctx, agentResults)
+        if len(citations) > 0 {
+            collectedCitations = citations
+            baseContext["available_citations"] = formatted
+            baseContext["citation_count"] = len(citations)
+        }
+    }
 
 		if len(collectedCitations) == 0 {
 			// No citations: use the synthesis subtask's result as-is
@@ -503,47 +409,15 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		// No bypass or synthesis subtask, perform standard synthesis
 		logger.Info("Performing standard synthesis of agent results")
 		// Collect citations and inject into context for synthesis
-		{
-			var resultsForCitations []interface{}
-			for _, ar := range agentResults {
-				var toolExecs []interface{}
-				if len(ar.ToolExecutions) > 0 {
-					for _, te := range ar.ToolExecutions {
-						toolExecs = append(toolExecs, map[string]interface{}{
-							"tool":    te.Tool,
-							"success": te.Success,
-							"output":  te.Output,
-							"error":   te.Error,
-						})
-					}
-				}
-				resultsForCitations = append(resultsForCitations, map[string]interface{}{
-					"agent_id":        ar.AgentID,
-					"tool_executions": toolExecs,
-					"response":        ar.Response,
-				})
-			}
-			now := workflow.Now(ctx)
-            citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+    if enableCitations {
+        citations, formatted := collectAndFormatCitations(ctx, agentResults)
             if len(citations) > 0 {
                 collectedCitations = citations
-                var b strings.Builder
-                for i, c := range citations {
-					idx := i + 1
-					title := c.Title
-					if title == "" {
-						title = c.Source
-					}
-					if c.PublishedDate != nil {
-						fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-					} else {
-						fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
-					}
-				}
-				baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
-				baseContext["citation_count"] = len(citations)
-			}
-		}
+                // formatted citations prepared by helper
+				baseContext["available_citations"] = formatted
+            baseContext["citation_count"] = len(citations)
+        }
+    }
         err = workflow.ExecuteActivity(ctx,
             activities.SynthesizeResultsLLM,
             activities.SynthesisInput{
@@ -624,23 +498,27 @@ reflectionTokens := 0
 	if v, ok := baseContext["enable_verification"].(bool); ok {
 		verifyEnabled = v
 	}
-	if verifyEnabled && len(collectedCitations) > 0 {
-		var verCitations []interface{}
-		for _, c := range collectedCitations {
-			m := map[string]interface{}{
-				"url":               c.URL,
-				"title":             c.Title,
-				"source":            c.Source,
-				"credibility_score": c.CredibilityScore,
-				"quality_score":     c.QualityScore,
-			}
-			verCitations = append(verCitations, m)
-		}
-		_ = workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
-			Answer:    finalResult,
-			Citations: verCitations,
-		}).Get(ctx, &verification)
-	}
+    if verifyEnabled && len(collectedCitations) > 0 {
+        var verCitations []interface{}
+        for _, c := range collectedCitations {
+            m := map[string]interface{}{
+                "url":               c.URL,
+                "title":             c.Title,
+                "source":            c.Source,
+                "content":           c.Snippet,
+                "credibility_score": c.CredibilityScore,
+                "quality_score":     c.QualityScore,
+            }
+            verCitations = append(verCitations, m)
+        }
+        verr := workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
+            Answer:    finalResult,
+            Citations: verCitations,
+        }).Get(ctx, &verification)
+        if verr != nil {
+            logger.Warn("Claim verification failed, skipping verification metadata", "error", verr)
+        }
+    }
 
 	logger.Info("DAGWorkflow completed successfully",
 		"total_tokens", totalTokens,
@@ -834,6 +712,49 @@ if len(collectedCitations) > 0 {
 		TokensUsed: totalTokens,
 		Metadata:   meta,
 	}, nil
+}
+
+// collectAndFormatCitations extracts citations from agentResults and returns the
+// citations along with a formatted list suitable for synthesis prompts.
+func collectAndFormatCitations(ctx workflow.Context, agentResults []activities.AgentExecutionResult) ([]metadata.Citation, string) {
+    var resultsForCitations []interface{}
+    for _, ar := range agentResults {
+        var toolExecs []interface{}
+        if len(ar.ToolExecutions) > 0 {
+            for _, te := range ar.ToolExecutions {
+                toolExecs = append(toolExecs, map[string]interface{}{
+                    "tool":    te.Tool,
+                    "success": te.Success,
+                    "output":  te.Output,
+                    "error":   te.Error,
+                })
+            }
+        }
+        resultsForCitations = append(resultsForCitations, map[string]interface{}{
+            "agent_id":        ar.AgentID,
+            "tool_executions": toolExecs,
+            "response":        ar.Response,
+        })
+    }
+    now := workflow.Now(ctx)
+    citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+    if len(citations) == 0 {
+        return citations, ""
+    }
+    var b strings.Builder
+    for i, c := range citations {
+        idx := i + 1
+        title := c.Title
+        if title == "" {
+            title = c.Source
+        }
+        if c.PublishedDate != nil {
+            fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+        } else {
+            fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+        }
+    }
+    return citations, strings.TrimRight(b.String(), "\n")
 }
 
 // executeParallelPattern uses the parallel execution pattern
