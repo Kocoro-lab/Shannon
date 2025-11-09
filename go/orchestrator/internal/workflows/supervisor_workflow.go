@@ -985,6 +985,43 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					"removed", beforeCount-len(citations),
 					"retention_rate", float64(len(citations))/float64(beforeCount),
 				)
+
+				// Apply entity-aware reranking for better relevance ordering
+				if len(citations) > 0 {
+					// Extract alpha from context (default 0.5)
+					alpha := 0.5
+					if a, ok := ctxForSynth["entity_rerank_alpha"].(float64); ok && a > 0 {
+						alpha = a
+					}
+
+					// Compute average entity relevance before reranking
+					var totalEntityScore float64
+					var officialCount int
+					for i := range citations {
+						entityScore := metadata.ComputeEntityRelevance(citations[i], canonicalName, aliases, domains, nil)
+						citations[i].EntityRelevanceScore = entityScore
+						totalEntityScore += entityScore
+						// Count official domain citations
+						urlLower := strings.ToLower(citations[i].URL)
+						for _, d := range domains {
+							if strings.Contains(urlLower, strings.ToLower(d)) {
+								officialCount++
+								break
+							}
+						}
+					}
+					avgEntityScore := totalEntityScore / float64(len(citations))
+
+					// Rerank citations by entity relevance + quality
+					citations = metadata.RerankByEntity(citations, canonicalName, aliases, domains, alpha, nil)
+
+					logger.Info("Citation rerank completed (supervisor)",
+						"count", len(citations),
+						"alpha", alpha,
+						"avg_entity_score", avgEntityScore,
+						"official_count", officialCount,
+					)
+				}
 			}
 		}
 
@@ -1225,11 +1262,12 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
         out := make([]map[string]interface{}, 0, len(collectedCitations))
         for _, c := range collectedCitations {
             out = append(out, map[string]interface{}{
-                "url":               c.URL,
-                "title":             c.Title,
-                "source":            c.Source,
-                "credibility_score": c.CredibilityScore,
-                "quality_score":     c.QualityScore,
+                "url":                    c.URL,
+                "title":                  c.Title,
+                "source":                 c.Source,
+                "credibility_score":      c.CredibilityScore,
+                "quality_score":          c.QualityScore,
+                "entity_relevance_score": c.EntityRelevanceScore,
             })
         }
         meta["citations"] = out

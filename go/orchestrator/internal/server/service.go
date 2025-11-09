@@ -1617,15 +1617,15 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 		return
 	}
 	ctx := context.Background()
-	// Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
+	// Wait for workflow completion and extract result
 	we := s.temporalClient.GetWorkflow(ctx, workflowID, runID)
-	var tmp interface{}
-	_ = we.Get(ctx, &tmp)
+	var result workflows.TaskResult
+	err := we.Get(ctx, &result)
 
 	// Describe to fetch status and times
-	desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, workflowID, runID)
-	if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-		s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(err))
+	desc, descErr := s.temporalClient.DescribeWorkflowExecution(ctx, workflowID, runID)
+	if descErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(descErr))
 		return
 	}
 
@@ -1658,6 +1658,74 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 		StartedAt:   start,
 		CompletedAt: &end,
 	}
+
+	// Extract metadata and usage from workflow result (if successful)
+	if err == nil && statusStr == "COMPLETED" {
+		// Store result text
+		if result.Result != "" {
+			te.Result = &result.Result
+		}
+
+		// Extract metadata
+		if result.Metadata != nil && len(result.Metadata) > 0 {
+			te.Metadata = result.Metadata
+
+			// Extract model and provider from metadata
+			if model, ok := result.Metadata["model_used"].(string); ok && model != "" {
+				te.ModelUsed = model
+			} else if model, ok := result.Metadata["model"].(string); ok && model != "" {
+				te.ModelUsed = model
+			}
+
+			if provider, ok := result.Metadata["provider"].(string); ok && provider != "" {
+				te.Provider = provider
+			}
+
+			// Extract cost from metadata
+			if cost, ok := result.Metadata["cost_usd"].(float64); ok && cost > 0 {
+				te.TotalCostUSD = cost
+			}
+
+			// Extract token counts from metadata
+			if totalTok, ok := result.Metadata["total_tokens"].(int); ok && totalTok > 0 {
+				te.TotalTokens = totalTok
+			}
+			if promptTok, ok := result.Metadata["prompt_tokens"].(int); ok && promptTok > 0 {
+				te.PromptTokens = promptTok
+			} else if inputTok, ok := result.Metadata["input_tokens"].(int); ok && inputTok > 0 {
+				te.PromptTokens = inputTok
+			}
+			if completionTok, ok := result.Metadata["completion_tokens"].(int); ok && completionTok > 0 {
+				te.CompletionTokens = completionTok
+			} else if outputTok, ok := result.Metadata["output_tokens"].(int); ok && outputTok > 0 {
+				te.CompletionTokens = outputTok
+			}
+
+			// Extract complexity score
+			if complexity, ok := result.Metadata["complexity"].(float64); ok && complexity > 0 {
+				te.ComplexityScore = complexity
+			}
+
+			// Extract agent count
+			if agentCount, ok := result.Metadata["agent_count"].(int); ok && agentCount > 0 {
+				te.AgentsUsed = agentCount
+			}
+		}
+
+		// Fallback to TokensUsed if total_tokens not in metadata
+		if te.TotalTokens == 0 && result.TokensUsed > 0 {
+			te.TotalTokens = result.TokensUsed
+		}
+	} else if err != nil {
+		// Store error message if workflow failed
+		if result.ErrorMessage != "" {
+			te.ErrorMessage = &result.ErrorMessage
+		} else {
+			errMsg := err.Error()
+			te.ErrorMessage = &errMsg
+		}
+	}
+
 	// Best-effort: copy memo fields (user_id/session_id/query/mode)
 	if m := desc.WorkflowExecutionInfo.Memo; m != nil {
 		dc := converter.GetDefaultDataConverter()
