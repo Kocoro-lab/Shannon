@@ -145,6 +145,31 @@ Safety nets
   - Reflection: `go/orchestrator/internal/workflows/patterns/reflection.go`, `patterns/wrappers.go`
 - Citations pipeline: `go/orchestrator/internal/metadata/citations.go`
 
+### Critical Development Guidelines
+
+**When modifying citation or cost tracking, ensure ALL paths are covered:**
+
+1. **Citation Collection & Reranking**
+   - Initial citations (`research.go:~937`): `CollectCitations` → filter → rerank
+   - Gap-fill citations (`research.go:~1181`): `CollectCitations` → filter → rerank
+   - SupervisorWorkflow citations (`supervisor_workflow.go:~958`): `CollectCitations` → filter → rerank
+   - **Rule**: Every `CollectCitations` call MUST be followed by entity filtering and reranking when `canonical_name` is present
+
+2. **Cost Aggregation**
+   - ResearchWorkflow calls `GenerateUsageReport` with `UserID=""` to aggregate ALL user records for a task
+   - SQL query (`budget/manager.go:~357`) uses `CASE WHEN $3 = '' THEN TRUE` to match all user_ids when filter is empty
+   - **Rule**: Empty filter = aggregate all; don't change to OR logic (breaks scope)
+
+3. **Metadata Persistence**
+   - `watchAndPersist` (`server/service.go:~1615`) extracts `TaskResult.Metadata` after workflow completion
+   - Must populate: `te.Metadata`, `te.ModelUsed`, `te.Provider`, `te.TotalTokens`, `te.TotalCostUSD`
+   - **Rule**: Don't discard workflow result; extract all fields into `TaskExecution` struct
+
+**Common Pitfalls**:
+- Forgetting to apply entity reranking to gap-fill citations (causes all-zero scores in metadata)
+- Using `OR` logic in SQL filters instead of `CASE` (widens scope incorrectly)
+- Not exporting new Citation fields to metadata map (scores missing from final output)
+
 ---
 
 ## Behavior Guarantees (Concise)
