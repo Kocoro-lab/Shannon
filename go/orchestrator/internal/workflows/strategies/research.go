@@ -18,6 +18,181 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
 
+// FilterCitationsByEntity filters citations based on entity relevance when canonical name is detected.
+//
+// Scoring System (OR logic, not AND):
+//   - Official domain match: +0.6 points (e.g., ptmind.com, jp.ptmind.com)
+//   - Alias in URL: +0.4 points (broader domain matching)
+//   - Title/snippet/source contains alias: +0.4 points
+//   - Threshold: 0.3 (passes with any single match)
+//
+// Filtering Strategy:
+//   1. Always keep ALL official domain citations (bypass threshold)
+//   2. Keep non-official citations scoring >= threshold
+//   3. Backfill to minKeep (8) using quality×credibility+entity_score
+//
+// Prevents Over-Filtering:
+//   - Lower threshold (0.3 vs 0.5) for better recall
+//   - Higher minKeep (8 vs 3) for deep research coverage
+//   - Official sites guaranteed inclusion
+//
+// Search Engine Variance:
+//   - If search doesn't return official sites, filter won't create them
+//   - If official sites in results, they're always preserved
+//
+// Future Improvements (see long-term plan):
+//   - Phase 2: Soft rerank (multiply scores vs hard filter)
+//   - Phase 3: Verification entity coherence
+//   - Phase 4: Adaptive retry if coverage < target
+func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string, aliases []string, officialDomains []string) []metadata.Citation {
+	if canonicalName == "" || len(citations) == 0 {
+		return citations
+	}
+
+	const (
+		threshold = 0.3  // Minimum relevance score to pass (lowered for recall)
+		minKeep   = 8    // Safety floor: keep at least this many for deep research
+	)
+
+	// Normalize canonical name and aliases for matching
+	canonical := strings.ToLower(strings.TrimSpace(canonicalName))
+	aliasSet := make(map[string]bool)
+	aliasSet[canonical] = true
+	for _, a := range aliases {
+		normalized := strings.ToLower(strings.TrimSpace(a))
+		if normalized != "" {
+			aliasSet[normalized] = true
+		}
+	}
+
+	// Normalize official domains (extract domain from URL or use as-is)
+	domainSet := make(map[string]bool)
+	for _, d := range officialDomains {
+		normalized := strings.ToLower(strings.TrimSpace(d))
+		// Remove protocol if present
+		normalized = strings.TrimPrefix(normalized, "https://")
+		normalized = strings.TrimPrefix(normalized, "http://")
+		normalized = strings.TrimPrefix(normalized, "www.")
+		if normalized != "" {
+			domainSet[normalized] = true
+		}
+	}
+
+	type scoredCitation struct {
+		citation      metadata.Citation
+		score         float64
+		isOfficial    bool
+		matchedDomain string
+		matchedAlias  string
+	}
+
+	var scored []scoredCitation
+	var officialSites []scoredCitation
+
+	for _, c := range citations {
+		score := 0.0
+		isOfficial := false
+		matchedDomain := ""
+		matchedAlias := ""
+
+		// Check 1: Domain match - stronger signal for official domains
+		urlLower := strings.ToLower(c.URL)
+		for domain := range domainSet {
+			if strings.Contains(urlLower, domain) {
+				score += 0.6  // Increased weight for domain match
+				isOfficial = true
+				matchedDomain = domain
+				break
+			}
+		}
+
+		// Also check if URL contains any alias (broader domain matching)
+		if !isOfficial {
+			for alias := range aliasSet {
+				// Remove quotes from aliases for URL matching
+				cleanAlias := strings.Trim(alias, "\"")
+				if cleanAlias != "" && strings.Contains(urlLower, cleanAlias) {
+					score += 0.4  // Partial credit for alias in URL
+					matchedDomain = "alias-in-url:" + cleanAlias
+					break
+				}
+			}
+		}
+
+		// Check 2: Title/snippet contains canonical name or aliases
+		titleLower := strings.ToLower(c.Title)
+		snippetLower := strings.ToLower(c.Snippet)
+		sourceLower := strings.ToLower(c.Source)
+		combined := titleLower + " " + snippetLower + " " + sourceLower
+
+		for alias := range aliasSet {
+			cleanAlias := strings.Trim(alias, "\"")
+			if cleanAlias != "" && strings.Contains(combined, cleanAlias) {
+				score += 0.4  // Title/snippet match
+				matchedAlias = cleanAlias
+				break
+			}
+		}
+
+		sc := scoredCitation{
+			citation:      c,
+			score:         score,
+			isOfficial:    isOfficial,
+			matchedDomain: matchedDomain,
+			matchedAlias:  matchedAlias,
+		}
+		scored = append(scored, sc)
+
+		// Track official sites separately for backfill
+		if isOfficial {
+			officialSites = append(officialSites, sc)
+		}
+	}
+
+	// Step 1: Always keep official domain citations (bypass threshold)
+	var filtered []metadata.Citation
+	officialKept := 0
+	for _, sc := range officialSites {
+		filtered = append(filtered, sc.citation)
+		officialKept++
+	}
+
+	// Step 2: Add non-official citations that pass threshold
+	for _, sc := range scored {
+		if !sc.isOfficial && sc.score >= threshold {
+			filtered = append(filtered, sc.citation)
+		}
+	}
+
+	// Step 3: Safety floor with backfill
+	if len(filtered) < minKeep {
+		// Sort all citations by combined score (quality × credibility + entity relevance)
+		for i := 0; i < len(scored); i++ {
+			for j := i + 1; j < len(scored); j++ {
+				scoreI := (scored[i].citation.QualityScore * scored[i].citation.CredibilityScore) + scored[i].score
+				scoreJ := (scored[j].citation.QualityScore * scored[j].citation.CredibilityScore) + scored[j].score
+				if scoreJ > scoreI {
+					scored[i], scored[j] = scored[j], scored[i]
+				}
+			}
+		}
+
+		// Backfill from top-scored citations
+		existingURLs := make(map[string]bool)
+		for _, c := range filtered {
+			existingURLs[c.URL] = true
+		}
+
+		for i := 0; i < len(scored) && len(filtered) < minKeep; i++ {
+			if !existingURLs[scored[i].citation.URL] {
+				filtered = append(filtered, scored[i].citation)
+			}
+		}
+	}
+
+	return filtered
+}
+
 // ResearchWorkflow demonstrates composed patterns for complex research tasks.
 // It combines React loops, parallel research, and reflection patterns.
 func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
@@ -760,7 +935,36 @@ if err == nil && refineResult.RefinedQuery != "" {
         // Use workflow timestamp for determinism; let collector default max to 15
         now := workflow.Now(ctx)
         citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+
+        // Apply entity-based filtering if canonical name is present
         if len(citations) > 0 {
+            canonicalName, _ := baseContext["canonical_name"].(string)
+            if canonicalName != "" {
+                // Extract domains and aliases for filtering
+                var domains []string
+                if d, ok := baseContext["official_domains"].([]string); ok {
+                    domains = d
+                }
+                var aliases []string
+                if eq, ok := baseContext["exact_queries"].([]string); ok {
+                    aliases = eq
+                }
+                // Filter citations by entity relevance
+                beforeCount := len(citations)
+                logger.Info("Applying citation entity filter",
+                    "pre_filter_count", beforeCount,
+                    "canonical_name", canonicalName,
+                    "official_domains", domains,
+                    "alias_count", len(aliases),
+                )
+                citations = FilterCitationsByEntity(citations, canonicalName, aliases, domains)
+                logger.Info("Citation filter completed",
+                    "before", beforeCount,
+                    "after", len(citations),
+                    "removed", beforeCount-len(citations),
+                    "retention_rate", float64(len(citations))/float64(beforeCount),
+                )
+            }
             collectedCitations = citations
             // Format into numbered list lines expected by FormatReportWithCitations
             var b strings.Builder

@@ -956,6 +956,38 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 		now := workflow.Now(ctx)
         citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+
+		// Apply entity-based citation filtering if canonical name is present
+		if len(citations) > 0 {
+			canonicalName, _ := ctxForSynth["canonical_name"].(string)
+			if canonicalName != "" {
+				// Extract entity hints for filtering
+				var domains []string
+				if d, ok := ctxForSynth["official_domains"].([]string); ok {
+					domains = d
+				}
+				var aliases []string
+				if eq, ok := ctxForSynth["exact_queries"].([]string); ok {
+					aliases = eq
+				}
+
+				beforeCount := len(citations)
+				logger.Info("Applying citation entity filter (supervisor)",
+					"pre_filter_count", beforeCount,
+					"canonical_name", canonicalName,
+					"official_domains", domains,
+					"alias_count", len(aliases),
+				)
+				citations = strategies.FilterCitationsByEntity(citations, canonicalName, aliases, domains)
+				logger.Info("Citation filter completed (supervisor)",
+					"before", beforeCount,
+					"after", len(citations),
+					"removed", beforeCount-len(citations),
+					"retention_rate", float64(len(citations))/float64(beforeCount),
+				)
+			}
+		}
+
         if len(citations) > 0 {
             collectedCitations = citations
             var b strings.Builder
