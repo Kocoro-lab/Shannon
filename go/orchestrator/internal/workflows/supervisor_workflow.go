@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
@@ -334,7 +335,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				outTok = decomp.TokensUsed - inTok
 			}
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+		recCtx := opts.WithTokenRecordOptions(ctx)
+			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 				UserID:       input.UserID,
 				SessionID:    input.SessionID,
 				TaskID:       wid,
@@ -344,7 +346,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				InputTokens:  inTok,
 				OutputTokens: outTok,
 				Metadata:     map[string]interface{}{"phase": "decompose"},
-			}).Get(ctx, nil)
+			}).Get(recCtx, nil)
 		}
 	}
 

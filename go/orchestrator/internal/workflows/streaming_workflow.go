@@ -12,6 +12,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 )
 
 // StreamingWorkflow executes tasks with streaming output and typed state management
@@ -196,6 +197,15 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 	agentMeta := metadata.AggregateAgentMetadata([]activities.AgentExecutionResult{ar}, 0)
 	for k, v := range agentMeta {
 		meta[k] = v
+	}
+
+	// Add cost estimate if tokens available
+	if streamRes.TokensUsed > 0 {
+		model := ""
+		if m, ok := meta["model"].(string); ok && m != "" {
+			model = m
+		}
+		meta["cost_usd"] = pricing.CostForTokens(model, streamRes.TokensUsed)
 	}
 
 	return TaskResult{
@@ -424,6 +434,15 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	agentMeta := metadata.AggregateAgentMetadata(agentResultsForMeta, 0)
 	for k, v := range agentMeta {
 		meta[k] = v
+	}
+
+	// Add cost estimate if tokens available
+	if totalTokens > 0 {
+		model := ""
+		if m, ok := meta["model"].(string); ok && m != "" {
+			model = m
+		}
+		meta["cost_usd"] = pricing.CostForTokens(model, totalTokens)
 	}
 
 	return TaskResult{

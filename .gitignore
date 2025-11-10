@@ -335,3 +335,4 @@ CLAUDE.md
 # Historical/archived documentation
 docs/archive-historical/
 tests/verify_rust_pricing
+scripts/benchmark_HLE.py

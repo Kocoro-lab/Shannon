@@ -11,6 +11,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
     pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
     imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
@@ -311,17 +312,56 @@ func ExecuteSequential(
 				if strings.TrimSpace(provider) == "" {
 					provider = imodels.DetectProvider(model)
 				}
-				_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-					UserID:       userID,
-					SessionID:    sessionID,
-					TaskID:       wid,
-					AgentID:      result.AgentID,
-					Model:        model,
-					Provider:     provider,
-					InputTokens:  inTok,
-					OutputTokens: outTok,
-					Metadata:     map[string]interface{}{"phase": "sequential"},
-				}).Get(ctx, nil)
+			recCtx := opts.WithTokenRecordOptions(ctx)
+        // Zero-token observability flag via workflow context: record_zero_token=true
+        recordZero := false
+        if config.Context != nil {
+            if v, ok := config.Context["record_zero_token"]; ok {
+                switch t := v.(type) {
+                case bool:
+                    recordZero = t
+                case string:
+                    if strings.EqualFold(t, "true") {
+                        recordZero = true
+                    }
+                }
+            }
+        }
+
+        meta := map[string]interface{}{"phase": "sequential"}
+        if (inTok+outTok) == 0 {
+            if recordZero {
+                meta["zero_tokens"] = true
+                _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                    UserID:       userID,
+                    SessionID:    sessionID,
+                    TaskID:       wid,
+                    AgentID:      result.AgentID,
+                    Model:        model,
+                    Provider:     provider,
+                    InputTokens:  inTok,
+                    OutputTokens: outTok,
+                    Metadata:     meta,
+                }).Get(recCtx, nil)
+            } else {
+                logger.Warn("Skipping token usage record: zero tokens",
+                    "agent_id", result.AgentID,
+                    "task_id", task.ID,
+                )
+            }
+        } else {
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                UserID:       userID,
+                SessionID:    sessionID,
+                TaskID:       wid,
+                AgentID:      result.AgentID,
+                Model:        model,
+                Provider:     provider,
+                InputTokens:  inTok,
+                OutputTokens: outTok,
+                Metadata:     meta,
+            }).Get(recCtx, nil)
+        }
 			}
 
 		// Emit completion event (parent workflow when available)

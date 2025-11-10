@@ -477,6 +477,15 @@ Section requirements:
 		"max_tokens":    maxTokens,   // Scale with agent count to avoid truncation
 	}
 
+	// Explicitly set model_tier if present in context to avoid Python API defaulting to "small"
+	if contextMap != nil {
+		if tierVal, ok := contextMap["model_tier"]; ok {
+			if tierStr, ok := tierVal.(string); ok && tierStr != "" {
+				reqBody["model_tier"] = tierStr
+			}
+		}
+	}
+
 	// If role is present, ensure it's in context
 	if role != "" {
 		reqBody["context"].(map[string]interface{})["role"] = role
@@ -745,7 +754,7 @@ Section requirements:
         last := runes[len(runes)-1]
 
         // Check for sentence-ending punctuation (ASCII + CJK)
-        if last == '.' || last == '!' || last == '?' || last == '"' || last == '"' || last == ')' || last == ']' ||
+        if last == '.' || last == '!' || last == '?' || last == '"' || last == ')' || last == ']' ||
            last == '。' || last == '！' || last == '？' || last == '』' || last == '」' {
             // Also check for incomplete phrases at the end
             tail := strings.ToLower(txt)

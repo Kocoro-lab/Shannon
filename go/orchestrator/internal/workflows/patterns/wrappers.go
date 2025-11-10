@@ -7,6 +7,7 @@ import (
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
     imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
     pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
     "go.temporal.io/sdk/workflow"
 )
 
@@ -232,7 +233,8 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
         if strings.TrimSpace(provider) == "" {
             provider = imodels.DetectProvider(model)
         }
-        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+        recCtx := opts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
             UserID:       input.UserID,
             SessionID:    input.SessionID,
             TaskID:       wid,
@@ -242,7 +244,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
             InputTokens:  inTok,
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "reflection_initial"},
-        }).Get(ctx, nil)
+        }).Get(recCtx, nil)
     }
 
 	// Apply reflection with defaults

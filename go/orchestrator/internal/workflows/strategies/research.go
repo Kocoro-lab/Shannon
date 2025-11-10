@@ -12,6 +12,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
     pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
@@ -376,7 +377,8 @@ if err == nil && refineResult.RefinedQuery != "" {
                 inTok = int(float64(refineResult.TokensUsed) * 0.6)
             }
             outTok := refineResult.TokensUsed - inTok
-            _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            recCtx := opts.WithTokenRecordOptions(ctx)
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
                 UserID:       input.UserID,
                 SessionID:    input.SessionID,
                 TaskID:       workflowID,
@@ -386,7 +388,7 @@ if err == nil && refineResult.RefinedQuery != "" {
                 InputTokens:  inTok,
                 OutputTokens: outTok,
                 Metadata:     map[string]interface{}{"phase": "refine"},
-            }).Get(ctx, nil)
+            }).Get(recCtx, nil)
         }
 
         // Emit refinement complete event with details (include canonical/entity hints for diagnostics)
@@ -437,17 +439,18 @@ if err == nil && refineResult.RefinedQuery != "" {
 				inTok = int(float64(decomp.TokensUsed) * 0.6)
 				outTok = decomp.TokensUsed - inTok
 			}
-			_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-				UserID:       input.UserID,
-				SessionID:    input.SessionID,
-				TaskID:       workflowID,
-				AgentID:      "decompose",
-				Model:        decomp.ModelUsed,
-				Provider:     decomp.Provider,
-				InputTokens:  inTok,
-				OutputTokens: outTok,
-				Metadata:     map[string]interface{}{"phase": "decompose"},
-			}).Get(ctx, nil)
+            recCtx := opts.WithTokenRecordOptions(ctx)
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                UserID:       input.UserID,
+                SessionID:    input.SessionID,
+                TaskID:       workflowID,
+                AgentID:      "decompose",
+                Model:        decomp.ModelUsed,
+                Provider:     decomp.Provider,
+                InputTokens:  inTok,
+                OutputTokens: outTok,
+                Metadata:     map[string]interface{}{"phase": "decompose"},
+            }).Get(recCtx, nil)
 		}
 
 	// Check for budget configuration
@@ -750,6 +753,20 @@ if err == nil && refineResult.RefinedQuery != "" {
             }
 			}
 
+			// Force inject web_search tool for research workflows to ensure citation collection
+			for i := range hybridTasks {
+				hasWebSearch := false
+				for _, tool := range hybridTasks[i].SuggestedTools {
+					if tool == "web_search" {
+						hasWebSearch = true
+						break
+					}
+				}
+				if !hasWebSearch {
+					hybridTasks[i].SuggestedTools = append(hybridTasks[i].SuggestedTools, "web_search")
+				}
+			}
+
 			hybridConfig := execution.HybridConfig{
 				MaxConcurrency:           5,
 				EmitEvents:               true,
@@ -803,6 +820,20 @@ if err == nil && refineResult.RefinedQuery != "" {
                 Role:           role,
                 ParentArea:     subtask.ParentArea,
             }
+			}
+
+			// Force inject web_search tool for research workflows to ensure citation collection
+			for i := range parallelTasks {
+				hasWebSearch := false
+				for _, tool := range parallelTasks[i].SuggestedTools {
+					if tool == "web_search" {
+						hasWebSearch = true
+						break
+					}
+				}
+				if !hasWebSearch {
+					parallelTasks[i].SuggestedTools = append(parallelTasks[i].SuggestedTools, "web_search")
+				}
 			}
 
 			parallelConfig := execution.ParallelConfig{
@@ -988,6 +1019,12 @@ if err == nil && refineResult.RefinedQuery != "" {
     // Set synthesis style to comprehensive for research workflows
     baseContext["synthesis_style"] = "comprehensive"
     baseContext["research_areas_count"] = len(refineResult.ResearchAreas)
+    // Synthesis tier: allow override via synthesis_model_tier; fallback to large
+    synthTier := "large"
+    if v, ok := baseContext["synthesis_model_tier"].(string); ok && strings.TrimSpace(v) != "" {
+        synthTier = strings.ToLower(strings.TrimSpace(v))
+    }
+    baseContext["model_tier"] = synthTier
 
     var synthesis activities.SynthesisResult
     err = workflow.ExecuteActivity(ctx,
@@ -1027,7 +1064,8 @@ if err == nil && refineResult.RefinedQuery != "" {
             est := synthesis.TokensUsed - outTok
             if est > 0 { inTok = est }
         }
-        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+        recCtx := opts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
             UserID:       input.UserID,
             SessionID:    input.SessionID,
             TaskID:       workflowID,
@@ -1039,7 +1077,7 @@ if err == nil && refineResult.RefinedQuery != "" {
             Metadata: map[string]interface{}{
                 "phase": "synthesis",
             },
-        }).Get(ctx, nil)
+        }).Get(recCtx, nil)
     }
 
 	// Step 3.5: Gap-filling loop (iterative re-search for undercovered areas)
@@ -1155,6 +1193,12 @@ if err == nil && refineResult.RefinedQuery != "" {
 						}
 						enhancedContext["research_areas"] = refineResult.ResearchAreas
 						enhancedContext["gap_iteration"] = iterationCount + 1
+            // Ensure synthesis tier respects override; fallback to large
+            synthTier2 := "large"
+            if v, ok := enhancedContext["synthesis_model_tier"].(string); ok && strings.TrimSpace(v) != "" {
+                synthTier2 = strings.ToLower(strings.TrimSpace(v))
+            }
+            enhancedContext["model_tier"] = synthTier2
 
 						// Format citations for synthesis
 						if len(allCitations) > 0 {

@@ -458,6 +458,11 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		meta[k] = v
 	}
 
+	// Align: compute and include estimated cost using centralized pricing
+	if totalTokens > 0 {
+		meta["cost_usd"] = pricing.CostForTokens(approxModel, totalTokens)
+	}
+
 	// Emit WORKFLOW_COMPLETED before returning
 	workflowID := input.ParentWorkflowID
 	if workflowID == "" {

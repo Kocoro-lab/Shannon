@@ -10,6 +10,7 @@ import (
     imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
     pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
     "go.temporal.io/sdk/workflow"
 )
 
@@ -337,7 +338,8 @@ Format each as a clear, concise thought.`,
         if strings.TrimSpace(provider) == "" {
             provider = imodels.DetectProvider(model)
         }
-        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+        recCtx := wopts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
             UserID:       opts.UserID,
             SessionID:    sessionID,
             TaskID:       wid,
@@ -347,7 +349,7 @@ Format each as a clear, concise thought.`,
             InputTokens:  inTok,
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "tree_of_thoughts"},
-        }).Get(ctx, nil)
+        }).Get(recCtx, nil)
     }
 
 	// Parse generated branches

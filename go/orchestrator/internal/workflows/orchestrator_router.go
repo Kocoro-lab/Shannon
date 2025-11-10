@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
@@ -215,17 +216,18 @@ if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activi
 			outTok = decomp.TokensUsed - inTok
 		}
 		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		_ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-			UserID:       input.UserID,
-			SessionID:    input.SessionID,
-			TaskID:       wid,
-			AgentID:      "decompose",
-			Model:        decomp.ModelUsed,
-			Provider:     decomp.Provider,
-			InputTokens:  inTok,
-			OutputTokens: outTok,
-			Metadata:     map[string]interface{}{"phase": "decompose"},
-		}).Get(ctx, nil)
+	recCtx := opts.WithTokenRecordOptions(ctx)
+	_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+		UserID:       input.UserID,
+		SessionID:    input.SessionID,
+		TaskID:       wid,
+		AgentID:      "decompose",
+		Model:        decomp.ModelUsed,
+		Provider:     decomp.Provider,
+		InputTokens:  inTok,
+		OutputTokens: outTok,
+		Metadata:     map[string]interface{}{"phase": "decompose"},
+	}).Get(ctx, nil)
 	}
 
 	logger.Info("Routing decision",

@@ -11,6 +11,7 @@ import (
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
     imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
     pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
 // ReflectOnResult evaluates and potentially improves a result through iterative reflection.
@@ -144,7 +145,8 @@ func ReflectOnResult(
             if strings.TrimSpace(provider) == "" {
                 provider = imodels.DetectProvider(model)
             }
-            _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity,
+            recCtx := wopts.WithTokenRecordOptions(ctx)
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity,
                 activities.TokenUsageInput{
                     UserID:       opts.UserID,
                     SessionID:    opts.SessionID,
@@ -155,7 +157,7 @@ func ReflectOnResult(
                     InputTokens:  inTok,
                     OutputTokens: outTok,
                     Metadata:     map[string]interface{}{"phase": "reflection_synth"},
-                }).Get(ctx, nil)
+                }).Get(recCtx, nil)
         }
 
         logger.Info("Reflection iteration completed",

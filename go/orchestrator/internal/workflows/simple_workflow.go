@@ -11,6 +11,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
 // SimpleTaskWorkflow handles simple, single-agent tasks efficiently
@@ -472,11 +473,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// Record token usage for SimpleTaskWorkflow (best-effort)
 	// Use a simple 60/40 split when detailed counts are unavailable
 	if input.UserID != "" && totalTokens > 0 {
-		recOpts := workflow.ActivityOptions{
-			StartToCloseTimeout: 10 * time.Second,
-			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-		}
-		recCtx := workflow.WithActivityOptions(ctx, recOpts)
+		recCtx := opts.WithTokenRecordOptions(ctx)
 		inTok := totalTokens * 6 / 10
 		outTok := totalTokens - inTok
 		// Prefer provider from activity result; fallback to detection from model name

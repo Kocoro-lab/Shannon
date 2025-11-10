@@ -307,18 +307,25 @@ async def agent_query(request: Request, query: AgentQuery):
                 "medium": ModelTier.MEDIUM,
                 "large": ModelTier.LARGE,
             }
-            # Precedence: top-level query.model_tier > context.model_tier > mode-based default
+            # Precedence: explicit top-level query.model_tier > context.model_tier > default
+            # Always honor top-level, including "small" when explicitly provided
             tier = None
-            # Check top-level query.model_tier first
+
+            # 1) Top-level override takes precedence when provided and valid
             if isinstance(query.model_tier, str):
-                tier = tier_map.get(query.model_tier.lower().strip(), None)
-            # Fallback to context.model_tier if top-level not provided
+                top_level_tier = query.model_tier.lower().strip()
+                mapped_tier = tier_map.get(top_level_tier, None)
+                if mapped_tier is not None:
+                    tier = mapped_tier
+
+            # 2) Fallback to context if top-level not set/invalid
             if tier is None and isinstance(query.context, dict):
                 ctx_tier_raw = query.context.get("model_tier")
                 if isinstance(ctx_tier_raw, str):
                     ctx_tier = ctx_tier_raw.lower().strip()
                     tier = tier_map.get(ctx_tier, None)
-            # Final fallback to default
+
+            # 3) Final fallback to default
             if tier is None:
                 tier = ModelTier.SMALL
 
@@ -346,8 +353,8 @@ async def agent_query(request: Request, query: AgentQuery):
             elif model_override:
                 logger.info(f"Using model override: {model_override}")
             else:
-                chosen = query.model_tier or (query.context or {}).get("model_tier") if isinstance(query.context, dict) else None
-                logger.info(f"Using tier-based selection: {chosen or 'small'} -> {tier}")
+                chosen = query.model_tier or ((query.context or {}).get("model_tier") if isinstance(query.context, dict) else None)
+                logger.info(f"Using tier-based selection (top-level>context): {chosen or 'small'} -> {tier}")
 
             # Resolve effective allowed tools: request.allowed_tools (intersect with preset when present)
             effective_allowed_tools: List[str] = []

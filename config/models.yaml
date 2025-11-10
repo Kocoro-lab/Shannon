@@ -49,7 +49,7 @@ model_tiers:
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: openai
-        model: gpt-5-2025-08-07
+        model: gpt-5-mini-2025-08-07
         priority: 1
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
@@ -84,7 +84,7 @@ model_tiers:
     # Heavy thinking/reasoning models for complex tasks
     providers:
       - provider: openai
-        model: gpt-4.1-2025-04-14
+        model: gpt-5-2025-08-07
         priority: 1
       - provider: anthropic
         model: claude-opus-4-1-20250805

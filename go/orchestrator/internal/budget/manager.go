@@ -663,7 +663,7 @@ type BackpressureResult struct {
 
 // CheckBudgetWithBackpressure checks budget and applies backpressure if needed
 func (bm *BudgetManager) CheckBudgetWithBackpressure(
-	ctx context.Context, userID, sessionID, taskID string, estimatedTokens int,
+    ctx context.Context, userID, sessionID, taskID string, estimatedTokens int,
 ) (*BackpressureResult, error) {
 
 	// Regular budget check
@@ -676,19 +676,29 @@ func (bm *BudgetManager) CheckBudgetWithBackpressure(
 		BudgetCheckResult: baseResult,
 	}
 
-	// Calculate usage percentage INCLUDING the new tokens (ensure budget exists)
-	// Use session budget for backpressure calculation (daily budget removed)
-	bm.mu.RLock()
-	sessionBudget, ok := bm.sessionBudgets[sessionID]
-	bm.mu.RUnlock()
+    // Calculate usage percentage INCLUDING the new tokens (ensure budget exists)
+    // Use session budget for backpressure calculation (daily budget removed)
+    // Copy required fields under lock to avoid data races on concurrent updates
+    var (
+        sbExists      bool
+        sbTokensUsed  int
+        sbBudgetLimit int
+    )
+    bm.mu.RLock()
+    if sb, ok := bm.sessionBudgets[sessionID]; ok && sb != nil {
+        sbExists = true
+        sbTokensUsed = sb.SessionTokensUsed
+        sbBudgetLimit = sb.SessionBudget
+    }
+    bm.mu.RUnlock()
 
-	var usagePercent float64
-	if ok && sessionBudget.SessionBudget > 0 {
-		projectedUsage := sessionBudget.SessionTokensUsed + estimatedTokens
-		usagePercent = float64(projectedUsage) / float64(sessionBudget.SessionBudget)
-	} else {
-		usagePercent = 0 // No budget defined, no backpressure
-	}
+    var usagePercent float64
+    if sbExists && sbBudgetLimit > 0 {
+        projectedUsage := sbTokensUsed + estimatedTokens
+        usagePercent = float64(projectedUsage) / float64(sbBudgetLimit)
+    } else {
+        usagePercent = 0 // No budget defined, no backpressure
+    }
 
 	// Apply backpressure if threshold exceeded
 	if usagePercent >= bm.backpressureThreshold {

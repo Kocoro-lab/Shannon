@@ -1,15 +1,16 @@
 package strategies
 
 import (
-	"fmt"
-	"time"
+    "fmt"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 )
 
 // ExploratoryWorkflow implements iterative discovery with hypothesis testing using patterns
@@ -355,6 +356,15 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 	agentMeta := metadata.AggregateAgentMetadata(agentResults, reflectionTokensCount)
 	for k, v := range agentMeta {
 		meta[k] = v
+	}
+
+	// Align: compute and include estimated cost using centralized pricing
+	if totalTokens > 0 {
+		metaModel := ""
+		if m, ok := meta["model"].(string); ok && m != "" {
+			metaModel = m
+		}
+		meta["cost_usd"] = pricing.CostForTokens(metaModel, totalTokens)
 	}
 
 	return TaskResult{

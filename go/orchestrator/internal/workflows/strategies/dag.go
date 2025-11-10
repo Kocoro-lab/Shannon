@@ -171,16 +171,45 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			_ = recordToVectorStore(ctx, input, simpleResult.Response, "simple", decomp.ComplexityScore)
 		}
 
-		return TaskResult{
-			Result:     simpleResult.Response,
-			Success:    true,
-			TokensUsed: totalTokens,
-			Metadata: map[string]interface{}{
-				"complexity_score": decomp.ComplexityScore,
-				"mode":             "simple",
-				"num_agents":       1,
-			},
-		}, nil
+        // Build metadata aligned with other workflows (model/provider/tokens/cost)
+        meta := map[string]interface{}{
+            "complexity_score": decomp.ComplexityScore,
+            "mode":             "simple",
+            "num_agents":       1,
+        }
+
+        // Aggregate agent metadata from the single result to populate model/provider/tokens
+        ar := []activities.AgentExecutionResult{
+            {
+                AgentID:    "simple-agent",
+                Response:   simpleResult.Response,
+                TokensUsed: simpleResult.TokensUsed,
+                Success:    simpleResult.Success,
+                ModelUsed:  simpleResult.ModelUsed,
+            },
+        }
+        agMeta := metadata.AggregateAgentMetadata(ar, 0)
+        for k, v := range agMeta {
+            meta[k] = v
+        }
+
+        // Compute cost with centralized pricing when tokens are available
+        if totalTokens > 0 {
+            modelForCost := ""
+            if m, ok := meta["model"].(string); ok && m != "" {
+                modelForCost = m
+            } else {
+                modelForCost = pricing.GetPriorityOneModel(modelTier)
+            }
+            meta["cost_usd"] = pricing.CostForTokens(modelForCost, totalTokens)
+        }
+
+        return TaskResult{
+            Result:     simpleResult.Response,
+            Success:    true,
+            TokensUsed: totalTokens,
+            Metadata:   meta,
+        }, nil
 	}
 
 	// Step 3: Complex multi-agent execution

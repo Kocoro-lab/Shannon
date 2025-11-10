@@ -12,6 +12,7 @@ import (
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
     pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
     imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
 // ReactConfig controls the Reason-Act-Observe loop behavior
@@ -175,7 +176,8 @@ func ReactLoop(
         if strings.TrimSpace(provider) == "" {
             provider = imodels.DetectProvider(model)
         }
-        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+        recCtx := wopts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
             UserID:       opts.UserID,
             SessionID:    sessionID,
             TaskID:       wid,
@@ -185,7 +187,7 @@ func ReactLoop(
             InputTokens:  inTok,
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "react_reason"},
-        }).Get(ctx, nil)
+        }).Get(recCtx, nil)
     }
 
 		// Check if reasoning indicates completion
@@ -388,7 +390,8 @@ func ReactLoop(
                 if strings.TrimSpace(provider) == "" {
                     provider = imodels.DetectProvider(model)
                 }
-                _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                recCtx := wopts.WithTokenRecordOptions(ctx)
+                _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
                     UserID:       opts.UserID,
                     SessionID:    sessionID,
                     TaskID:       wid,
@@ -398,7 +401,7 @@ func ReactLoop(
                     InputTokens:  inTok,
                     OutputTokens: outTok,
                     Metadata:     map[string]interface{}{"phase": "react_action"},
-                }).Get(ctx, nil)
+                }).Get(recCtx, nil)
             }
 
             logger.Info("Observation recorded",
@@ -514,7 +517,8 @@ agentResults = append(agentResults, finalResult)
         if strings.TrimSpace(provider) == "" {
             provider = imodels.DetectProvider(model)
         }
-        _ = workflow.ExecuteActivity(ctx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+        recCtx := wopts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
             UserID:       opts.UserID,
             SessionID:    sessionID,
             TaskID:       wid,
@@ -524,7 +528,7 @@ agentResults = append(agentResults, finalResult)
             InputTokens:  inTok,
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "react_synth"},
-        }).Get(ctx, nil)
+        }).Get(recCtx, nil)
     }
 
 	return &ReactLoopResult{
