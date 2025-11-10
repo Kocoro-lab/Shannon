@@ -1,0 +1,170 @@
+# Citation Credibility Scoring Configuration
+# Used by go/orchestrator/internal/metadata/citations.go
+#
+# Scoring guidelines:
+# - 0.85+: Highly authoritative (academic, government)
+# - 0.70-0.80: Professional/reputable (major news, tech documentation)
+# - 0.60-0.70: General web content
+# - 0.50-0.60: Social media, user-generated content
+# - Below 0.50: Low credibility (use with caution)
+
+credibility_rules:
+  # TLD-based rules (highest priority)
+  tld_patterns:
+    - suffix: ".edu"
+      score: 0.85
+      description: "Educational institutions"
+
+    - suffix: ".gov"
+      score: 0.80
+      description: "Government websites"
+
+    - suffix: ".ac.uk"
+      score: 0.85
+      description: "UK academic institutions"
+
+    - suffix: ".edu.au"
+      score: 0.85
+      description: "Australian educational institutions"
+
+  # Domain-based rules (checked after TLD)
+  domain_groups:
+    - category: "academic"
+      score: 0.85
+      domains:
+        - "arxiv.org"
+        - "pubmed.ncbi.nlm.nih.gov"
+        - "ncbi.nlm.nih.gov"
+        - "scholar.google.com"
+        - "researchgate.net"
+        - "sciencedirect.com"
+        - "springer.com"
+        - "nature.com"
+        - "science.org"
+        - "ieee.org"
+        - "acm.org"
+        - "jstor.org"
+        - "wiley.com"
+        - "elsevier.com"
+        - "plos.org"
+        - "frontiersin.org"
+        - "biorxiv.org"
+        - "medrxiv.org"
+
+    - category: "news_tier1"
+      score: 0.75
+      description: "Major international news outlets"
+      domains:
+        - "nytimes.com"
+        - "wsj.com"
+        - "ft.com"
+        - "reuters.com"
+        - "apnews.com"
+        - "bbc.com"
+        - "bbc.co.uk"
+        - "theguardian.com"
+        - "washingtonpost.com"
+        - "bloomberg.com"
+        - "economist.com"
+        - "npr.org"
+        - "pbs.org"
+
+    - category: "news_tier2"
+      score: 0.70
+      description: "Reputable news sources"
+      domains:
+        - "cnn.com"
+        - "nbcnews.com"
+        - "cbsnews.com"
+        - "abcnews.go.com"
+        - "usatoday.com"
+        - "latimes.com"
+        - "chicagotribune.com"
+        - "time.com"
+        - "theatlantic.com"
+        - "newyorker.com"
+
+    - category: "tech_documentation"
+      score: 0.75
+      description: "Official technical documentation"
+      domains:
+        - "github.com"
+        - "docs.github.com"
+        - "stackoverflow.com"
+        - "developer.mozilla.org"
+        - "w3.org"
+        - "ietf.org"
+        - "rfc-editor.org"
+        - "kubernetes.io"
+        - "docs.docker.com"
+        - "aws.amazon.com"
+        - "cloud.google.com"
+        - "docs.microsoft.com"
+
+    - category: "tech_news"
+      score: 0.70
+      description: "Technology news and analysis"
+      domains:
+        - "techcrunch.com"
+        - "theverge.com"
+        - "arstechnica.com"
+        - "wired.com"
+        - "zdnet.com"
+        - "cnet.com"
+        - "engadget.com"
+        - "techmeme.com"
+
+    - category: "tech_community"
+      score: 0.65
+      description: "Developer community platforms"
+      domains:
+        - "medium.com"
+        - "dev.to"
+        - "hackernoon.com"
+        - "substack.com"
+
+    - category: "reference"
+      score: 0.70
+      description: "Reference and encyclopedic sources"
+      domains:
+        - "wikipedia.org"
+        - "britannica.com"
+        - "merriam-webster.com"
+        - "dictionary.com"
+
+    - category: "social_media"
+      score: 0.50
+      description: "Social media platforms"
+      domains:
+        - "twitter.com"
+        - "x.com"
+        - "facebook.com"
+        - "linkedin.com"
+        - "reddit.com"
+        - "instagram.com"
+        - "tiktok.com"
+        - "youtube.com"
+
+    - category: "forums"
+      score: 0.55
+      description: "Discussion forums and Q&A"
+      domains:
+        - "quora.com"
+        - "stackexchange.com"
+        - "news.ycombinator.com"
+        - "lobste.rs"
+
+  # Default score for unknown domains
+  default_score: 0.60
+
+# Quality gates for citation filtering
+quality_gates:
+  min_credibility_score: 0.50  # Minimum to be included
+  preferred_score: 0.70         # Preferred threshold for research
+  high_quality_score: 0.80      # High-quality threshold
+
+# Source diversity rules
+diversity_rules:
+  max_per_domain: 3              # Maximum citations from same domain
+  min_unique_domains: 5          # Target minimum unique domains
+  diversity_bonus: 0.05          # Bonus for diverse sources

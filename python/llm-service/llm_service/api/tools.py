@@ -14,6 +14,7 @@ from ..tools.mcp import create_mcp_tool_class
 from ..tools.openapi_tool import load_openapi_tools_from_config
 from ..tools.builtin import (
     WebSearchTool,
+    WebFetchTool,
     CalculatorTool,
     FileReadTool,
     FileWriteTool,
@@ -299,6 +300,7 @@ async def startup_event():
     # Register built-in tools
     tools_to_register = [
         WebSearchTool,
+        WebFetchTool,
         CalculatorTool,
         FileReadTool,
         FileWriteTool,

@@ -84,6 +84,8 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivity(activities.SynthesizeResultsLLM)
 	// Reflection activity for quality evaluation
 	w.RegisterActivity(acts.EvaluateResult)
+	// Claim verification activity (Phase 4)
+	w.RegisterActivityWithOptions(acts.VerifyClaimsActivity, activity.RegisterOptions{Name: "VerifyClaimsActivity"})
 	// Configuration activity
 	w.RegisterActivity(activities.GetWorkflowConfig)
 	// Context compression + store
@@ -126,6 +128,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 
 	// Session activities - register with consistent naming
 	w.RegisterActivityWithOptions(acts.DecomposeTask, activity.RegisterOptions{Name: constants.DecomposeTaskActivity})
+	w.RegisterActivityWithOptions(acts.RefineResearchQuery, activity.RegisterOptions{Name: constants.RefineResearchQueryActivity})
 	// Legacy activity name for Temporal replay compatibility
 	w.RegisterActivityWithOptions(acts.AnalyzeComplexity, activity.RegisterOptions{Name: constants.AnalyzeComplexityActivity})
 	w.RegisterActivityWithOptions(acts.UpdateSessionResult, activity.RegisterOptions{

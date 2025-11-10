@@ -23,19 +23,26 @@ type DecompositionInput struct {
 
 // DecompositionResult is the result from the Python LLM service
 type DecompositionResult struct {
-	Mode                 string    `json:"mode"`
-	ComplexityScore      float64   `json:"complexity_score"`
-	Subtasks             []Subtask `json:"subtasks"`
-	TotalEstimatedTokens int       `json:"total_estimated_tokens"`
-	// Extended planning schema (plan_schema_v2)
-	ExecutionStrategy string         `json:"execution_strategy"`
-	AgentTypes        []string       `json:"agent_types"`
-	ConcurrencyLimit  int            `json:"concurrency_limit"`
-	TokenEstimates    map[string]int `json:"token_estimates"`
-	// Cognitive routing fields for intelligent strategy selection
-	CognitiveStrategy string  `json:"cognitive_strategy"`
-	Confidence        float64 `json:"confidence"`
-	FallbackStrategy  string  `json:"fallback_strategy"`
+    Mode                 string    `json:"mode"`
+    ComplexityScore      float64   `json:"complexity_score"`
+    Subtasks             []Subtask `json:"subtasks"`
+    TotalEstimatedTokens int       `json:"total_estimated_tokens"`
+    // Extended planning schema (plan_schema_v2)
+    ExecutionStrategy string         `json:"execution_strategy"`
+    AgentTypes        []string       `json:"agent_types"`
+    ConcurrencyLimit  int            `json:"concurrency_limit"`
+    TokenEstimates    map[string]int `json:"token_estimates"`
+    // Cognitive routing fields for intelligent strategy selection
+    CognitiveStrategy string  `json:"cognitive_strategy"`
+    Confidence        float64 `json:"confidence"`
+    FallbackStrategy  string  `json:"fallback_strategy"`
+    // Usage and provider/model metadata (optional)
+    InputTokens  int    `json:"input_tokens"`
+    OutputTokens int    `json:"output_tokens"`
+    TokensUsed   int    `json:"total_tokens"`
+    CostUSD      float64 `json:"cost_usd"`
+    ModelUsed    string `json:"model_used"`
+    Provider     string `json:"provider"`
 }
 
 // DecomposeTask calls the LLM service to decompose a task into subtasks

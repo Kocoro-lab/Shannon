@@ -157,6 +157,37 @@ curl -X POST http://localhost:8080/api/v1/tasks \
   -d '{"query": "What is 2+2?"}'
 ```
 
+### Strategy Presets
+
+Control research behavior with presets and overrides (mapped into context by the gateway):
+
+```bash
+# Quick strategy
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is quantum computing?",
+    "research_strategy": "quick"
+  }'
+
+# Deep strategy with override
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Compare LangChain and AutoGen frameworks",
+    "research_strategy": "deep",
+    "max_iterations": 12
+  }'
+
+# Academic strategy
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Latest research on transformer architectures",
+    "research_strategy": "academic"
+  }'
+```
+
 Response:
 ```json
 {

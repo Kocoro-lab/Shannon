@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"sync"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
+    "gopkg.in/yaml.v3"
 )
 
 // TaskHandler handles task-related HTTP requests
@@ -27,6 +30,82 @@ type TaskHandler struct {
 	db         *sqlx.DB
 	redis      *redis.Client
 	logger     *zap.Logger
+}
+
+// ResearchStrategiesConfig represents research strategy presets loaded from YAML
+type ResearchStrategiesConfig struct {
+    Strategies map[string]struct {
+        MaxIterations       int  `yaml:"max_iterations"`
+        MaxSources          int  `yaml:"max_sources"`
+        VerificationEnabled bool `yaml:"verification_enabled"`
+        ReportMode          bool `yaml:"report_mode"`
+        MaxConcurrentAgents int  `yaml:"max_concurrent_agents"`
+    } `yaml:"strategies"`
+}
+
+// Cached research strategies configuration
+var (
+    researchStrategiesOnce   sync.Once
+    researchStrategiesCached *ResearchStrategiesConfig
+    researchStrategiesErr    error
+)
+
+// loadResearchStrategies loads presets from standard locations
+func loadResearchStrategies() (*ResearchStrategiesConfig, error) {
+    researchStrategiesOnce.Do(func() {
+        candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
+        for _, p := range candidates {
+            if _, statErr := os.Stat(p); statErr == nil {
+                data, rerr := os.ReadFile(p)
+                if rerr != nil {
+                    researchStrategiesErr = rerr
+                    return
+                }
+                var tmp ResearchStrategiesConfig
+                if yerr := yaml.Unmarshal(data, &tmp); yerr != nil {
+                    researchStrategiesErr = yerr
+                    return
+                }
+                researchStrategiesCached = &tmp
+                researchStrategiesErr = nil
+                return
+            }
+        }
+        researchStrategiesErr = fmt.Errorf("research_strategies.yaml not found")
+    })
+    return researchStrategiesCached, researchStrategiesErr
+}
+
+// applyStrategyPreset seeds ctxMap with preset defaults when absent
+func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
+    s := strings.ToLower(strings.TrimSpace(strategy))
+    if s == "" {
+        return
+    }
+    cfg, err := loadResearchStrategies()
+    if err != nil || cfg == nil || cfg.Strategies == nil {
+        return
+    }
+    preset, ok := cfg.Strategies[s]
+    if !ok {
+        return
+    }
+    // Validate ranges before seeding
+    if _, ok := ctxMap["max_iterations"]; !ok && preset.MaxIterations >= 1 && preset.MaxIterations <= 50 {
+        ctxMap["max_iterations"] = preset.MaxIterations
+        if _, exists := ctxMap["react_max_iterations"]; !exists {
+            ctxMap["react_max_iterations"] = preset.MaxIterations
+        }
+    }
+    if _, ok := ctxMap["max_concurrent_agents"]; !ok && preset.MaxConcurrentAgents >= 1 && preset.MaxConcurrentAgents <= 20 {
+        ctxMap["max_concurrent_agents"] = preset.MaxConcurrentAgents
+    }
+    if _, ok := ctxMap["enable_verification"]; !ok {
+        ctxMap["enable_verification"] = preset.VerificationEnabled
+    }
+    if _, ok := ctxMap["report_mode"]; !ok {
+        ctxMap["report_mode"] = preset.ReportMode
+    }
 }
 
 // NewTaskHandler creates a new task handler
@@ -46,9 +125,9 @@ func NewTaskHandler(
 
 // TaskRequest represents a task submission request
 type TaskRequest struct {
-	Query     string                 `json:"query"`
-	SessionID string                 `json:"session_id,omitempty"`
-	Context   map[string]interface{} `json:"context,omitempty"`
+    Query     string                 `json:"query"`
+    SessionID string                 `json:"session_id,omitempty"`
+    Context   map[string]interface{} `json:"context,omitempty"`
 	// Optional execution mode hint (e.g., "supervisor").
 	// Routed via metadata labels to orchestrator.
 	Mode string `json:"mode,omitempty"`
@@ -57,8 +136,14 @@ type TaskRequest struct {
 	ModelTier string `json:"model_tier,omitempty"`
 	// Optional specific model override; if provided, inject into context
 	// (e.g., "gpt-5-2025-08-07", "gpt-5-pro-2025-10-06", "claude-sonnet-4-5-20250929").
-	ModelOverride    string `json:"model_override,omitempty"`
-	ProviderOverride string `json:"provider_override,omitempty"`
+    ModelOverride    string `json:"model_override,omitempty"`
+    ProviderOverride string `json:"provider_override,omitempty"`
+    // Phase 6: Strategy presets (mapped into context)
+    ResearchStrategy     string `json:"research_strategy,omitempty"`       // quick|standard|deep|academic
+    MaxIterations        *int   `json:"max_iterations,omitempty"`          // Optional override
+    MaxConcurrentAgents  *int   `json:"max_concurrent_agents,omitempty"`   // Optional override
+    EnableVerification   *bool  `json:"enable_verification,omitempty"`     // Optional flag
+    ReportMode           *bool  `json:"report_mode,omitempty"`             // Optional flag
 }
 
 // TaskResponse represents a task submission response
@@ -86,6 +171,7 @@ type TaskStatusResponse struct {
 	ModelUsed string                 `json:"model_used,omitempty"`
 	Provider  string                 `json:"provider,omitempty"`
 	Usage     map[string]interface{} `json:"usage,omitempty"`
+	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Task metadata (citations, etc.)
 }
 
 // ListTasksResponse represents the list tasks response
@@ -195,6 +281,43 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		ctxMap["provider_override"] = po
 		h.logger.Debug("Applied top-level provider_override", zap.String("provider_override", po))
 	}
+
+	// Map research strategy controls into context (streaming endpoint parity)
+	if rs := strings.TrimSpace(strings.ToLower(req.ResearchStrategy)); rs != "" {
+		switch rs {
+		case "quick", "standard", "deep", "academic":
+			ctxMap["research_strategy"] = rs
+		default:
+			h.sendError(w, "Invalid research_strategy (allowed: quick, standard, deep, academic)", http.StatusBadRequest)
+			return
+		}
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
+			h.sendError(w, "max_iterations out of range (1..50)", http.StatusBadRequest)
+			return
+		}
+		ctxMap["max_iterations"] = *req.MaxIterations
+	}
+	if req.MaxConcurrentAgents != nil {
+		if *req.MaxConcurrentAgents <= 0 || *req.MaxConcurrentAgents > 20 {
+			h.sendError(w, "max_concurrent_agents out of range (1..20)", http.StatusBadRequest)
+			return
+		}
+		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
+	}
+	if req.EnableVerification != nil {
+		ctxMap["enable_verification"] = *req.EnableVerification
+	}
+	if req.ReportMode != nil {
+		ctxMap["report_mode"] = *req.ReportMode
+	}
+
+	// Apply research strategy presets (seed defaults only when absent)
+	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+		applyStrategyPreset(ctxMap, rs)
+	}
+
 	// Conflict validation: disable_ai=true cannot be combined with model controls
 	var disableAI bool
 	if v, exists := ctxMap["disable_ai"]; exists {
@@ -391,6 +514,43 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 		ctxMap["provider_override"] = po
 		h.logger.Debug("Applied top-level provider_override", zap.String("provider_override", po))
 	}
+
+	// Map research strategy controls into context (streaming endpoint parity)
+	if rs := strings.TrimSpace(strings.ToLower(req.ResearchStrategy)); rs != "" {
+		switch rs {
+		case "quick", "standard", "deep", "academic":
+			ctxMap["research_strategy"] = rs
+		default:
+			h.sendError(w, "Invalid research_strategy (allowed: quick, standard, deep, academic)", http.StatusBadRequest)
+			return
+		}
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
+			h.sendError(w, "max_iterations out of range (1..50)", http.StatusBadRequest)
+			return
+		}
+		ctxMap["max_iterations"] = *req.MaxIterations
+	}
+	if req.MaxConcurrentAgents != nil {
+		if *req.MaxConcurrentAgents <= 0 || *req.MaxConcurrentAgents > 20 {
+			h.sendError(w, "max_concurrent_agents out of range (1..20)", http.StatusBadRequest)
+			return
+		}
+		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
+	}
+	if req.EnableVerification != nil {
+		ctxMap["enable_verification"] = *req.EnableVerification
+	}
+	if req.ReportMode != nil {
+		ctxMap["report_mode"] = *req.ReportMode
+	}
+
+	// Apply research strategy presets (seed defaults only when absent)
+	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+		applyStrategyPreset(ctxMap, rs)
+	}
+
 	// Conflict validation: disable_ai=true cannot be combined with model controls
 	var disableAI bool
 	if v, exists := ctxMap["disable_ai"]; exists {
@@ -552,7 +712,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		// If unmarshal fails, it's plain text - only result field will be populated
 	}
 
-	// Enrich with metadata from database (query, session_id, mode, model, provider, tokens, cost)
+	// Enrich with metadata from database (query, session_id, mode, model, provider, tokens, cost, metadata)
 	var (
 		q                sql.NullString
 		sid              sql.NullString
@@ -563,6 +723,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		promptTokens     sql.NullInt32
 		completionTokens sql.NullInt32
 		totalCost        sql.NullFloat64
+		metadataJSON     []byte
 	)
 	row := h.db.QueryRowxContext(ctx, `
 		SELECT
@@ -574,11 +735,12 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 			total_tokens,
 			prompt_tokens,
 			completion_tokens,
-			total_cost_usd
+			total_cost_usd,
+			metadata
 		FROM task_executions
 		WHERE workflow_id = $1
 		LIMIT 1`, taskID)
-	_ = row.Scan(&q, &sid, &mode, &modelUsed, &provider, &totalTokens, &promptTokens, &completionTokens, &totalCost)
+	_ = row.Scan(&q, &sid, &mode, &modelUsed, &provider, &totalTokens, &promptTokens, &completionTokens, &totalCost, &metadataJSON)
 	statusResp.Query = q.String
 	statusResp.SessionID = sid.String
 	statusResp.Mode = mode.String
@@ -605,6 +767,14 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if totalCost.Valid && totalCost.Float64 > 0 {
 			statusResp.Usage["estimated_cost"] = totalCost.Float64
+		}
+	}
+
+	// Parse and populate metadata (citations, etc.) if available
+	if len(metadataJSON) > 0 {
+		var metadata map[string]interface{}
+		if err := json.Unmarshal(metadataJSON, &metadata); err == nil {
+			statusResp.Metadata = metadata
 		}
 	}
 

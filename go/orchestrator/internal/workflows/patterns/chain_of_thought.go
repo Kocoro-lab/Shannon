@@ -1,14 +1,17 @@
 package patterns
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "strings"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 )
 
 // ChainOfThoughtConfig configures the chain-of-thought pattern
@@ -82,47 +85,100 @@ func ChainOfThought(
 	// Execute chain-of-thought reasoning
 	startTime := workflow.Now(ctx)
 
-	var cotResult activities.AgentExecutionResult
-	if opts.BudgetAgentMax > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		err := workflow.ExecuteActivity(ctx,
-			constants.ExecuteAgentWithBudgetActivity,
-			activities.BudgetedAgentInput{
-				AgentInput: activities.AgentExecutionInput{
-					Query:     cotPrompt,
-					AgentID:   "cot-reasoner",
-					Context:   context,
-					Mode:      "reasoning",
-					SessionID: sessionID,
-					History:   history,
+    var cotResult activities.AgentExecutionResult
+    if opts.BudgetAgentMax > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        // Prefer parent workflow ID from context when available for budget tracking and streaming
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
+                AgentInput: activities.AgentExecutionInput{
+                    Query:             cotPrompt,
+					AgentID:           "cot-reasoner",
+					Context:           context,
+					Mode:              "reasoning",
+					SessionID:         sessionID,
+					History:           history,
+                    ParentWorkflowID: wid,
 				},
 				MaxTokens: opts.BudgetAgentMax,
 				UserID:    opts.UserID,
 				TaskID:    wid,
 				ModelTier: config.ModelTier,
 			}).Get(ctx, &cotResult)
-		if err != nil {
-			return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
-		}
-	} else {
-		err := workflow.ExecuteActivity(ctx,
-			activities.ExecuteAgent,
-			activities.AgentExecutionInput{
-				Query:     cotPrompt,
-				AgentID:   "cot-reasoner",
-				Context:   context,
-				Mode:      "reasoning",
-				SessionID: sessionID,
-				History:   history,
-			}).Get(ctx, &cotResult)
-		if err != nil {
-			return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
-		}
-	}
+        if err != nil {
+            return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
+        }
+    } else {
+        // Determine parent workflow for streaming correlation
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            activities.ExecuteAgent,
+            activities.AgentExecutionInput{
+                Query:             cotPrompt,
+                AgentID:           "cot-reasoner",
+                Context:           context,
+                Mode:              "reasoning",
+                SessionID:         sessionID,
+                History:           history,
+                ParentWorkflowID:  wid,
+            }).Get(ctx, &cotResult)
+        if err != nil {
+            return nil, fmt.Errorf("chain-of-thought reasoning failed: %w", err)
+        }
+    }
 
 	duration := workflow.Now(ctx).Sub(startTime)
 	result.StepDurations = append(result.StepDurations, duration)
-	result.TotalTokens = cotResult.TokensUsed
+    result.TotalTokens = cotResult.TokensUsed
+
+    // Record token usage for the main CoT reasoning step when not budgeted
+    if opts.BudgetAgentMax <= 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if context != nil {
+            if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        inTok := cotResult.InputTokens
+        outTok := cotResult.OutputTokens
+        if inTok == 0 && outTok == 0 && cotResult.TokensUsed > 0 {
+            inTok = cotResult.TokensUsed * 6 / 10
+            outTok = cotResult.TokensUsed - inTok
+        }
+        model := cotResult.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(config.ModelTier); m != "" {
+                model = m
+            }
+        }
+        provider := cotResult.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        recCtx := wopts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       opts.UserID,
+            SessionID:    sessionID,
+            TaskID:       wid,
+            AgentID:      "cot-reasoner",
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "chain_of_thought"},
+        }).Get(recCtx, nil)
+    }
 
 	// Parse reasoning steps from response
 	steps := parseReasoningSteps(cotResult.Response, config.StepDelimiter)
@@ -144,36 +200,79 @@ func ChainOfThought(
 			strings.Join(steps, config.StepDelimiter),
 		)
 
-		var clarifyResult activities.AgentExecutionResult
-		if opts.BudgetAgentMax > 0 {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			err := workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
-					AgentInput: activities.AgentExecutionInput{
-						Query:     clarificationPrompt,
-						AgentID:   "cot-clarifier",
-						Context:   context,
-						Mode:      "reasoning",
-						SessionID: sessionID,
-						History:   append(history, fmt.Sprintf("Previous: %s", cotResult.Response)),
+        var clarifyResult activities.AgentExecutionResult
+        if opts.BudgetAgentMax > 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            err := workflow.ExecuteActivity(ctx,
+                constants.ExecuteAgentWithBudgetActivity,
+                activities.BudgetedAgentInput{
+                    AgentInput: activities.AgentExecutionInput{
+						Query:             clarificationPrompt,
+						AgentID:           "cot-clarifier",
+						Context:           context,
+						Mode:              "reasoning",
+						SessionID:         sessionID,
+						History:           append(history, fmt.Sprintf("Previous: %s", cotResult.Response)),
+                        ParentWorkflowID: wid,
 					},
-					MaxTokens: opts.BudgetAgentMax / 2, // Use less budget for clarification
-					UserID:    opts.UserID,
-					TaskID:    wid,
-					ModelTier: config.ModelTier,
-				}).Get(ctx, &clarifyResult)
-			if err == nil {
-				// Update with clarified reasoning
-				clarifiedSteps := parseReasoningSteps(clarifyResult.Response, config.StepDelimiter)
-				if len(clarifiedSteps) > 0 {
-					result.ReasoningSteps = clarifiedSteps
-					result.FinalAnswer = extractFinalAnswer(clarifyResult.Response, clarifiedSteps)
-					result.Confidence = calculateReasoningConfidence(clarifiedSteps, clarifyResult.Response)
-				}
-				result.TotalTokens += clarifyResult.TokensUsed
-			}
-		}
+                    MaxTokens: opts.BudgetAgentMax / 2, // Use less budget for clarification
+                    UserID:    opts.UserID,
+                    TaskID:    wid,
+                    ModelTier: config.ModelTier,
+                }).Get(ctx, &clarifyResult)
+            if err == nil {
+                // Update with clarified reasoning
+                clarifiedSteps := parseReasoningSteps(clarifyResult.Response, config.StepDelimiter)
+                if len(clarifiedSteps) > 0 {
+                    result.ReasoningSteps = clarifiedSteps
+                    result.FinalAnswer = extractFinalAnswer(clarifyResult.Response, clarifiedSteps)
+                    result.Confidence = calculateReasoningConfidence(clarifiedSteps, clarifyResult.Response)
+                }
+                result.TotalTokens += clarifyResult.TokensUsed
+                // Record clarification usage when not budgeted
+                if opts.BudgetAgentMax <= 0 {
+                    wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                    if context != nil {
+                        if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                            wid = p
+                        }
+                    }
+                    inTok := clarifyResult.InputTokens
+                    outTok := clarifyResult.OutputTokens
+                    if inTok == 0 && outTok == 0 && clarifyResult.TokensUsed > 0 {
+                        inTok = clarifyResult.TokensUsed * 6 / 10
+                        outTok = clarifyResult.TokensUsed - inTok
+                    }
+                    model := clarifyResult.ModelUsed
+                    if strings.TrimSpace(model) == "" {
+                        if m := pricing.GetPriorityOneModel(config.ModelTier); m != "" {
+                            model = m
+                        }
+                    }
+                    provider := clarifyResult.Provider
+                    if strings.TrimSpace(provider) == "" {
+                        provider = imodels.DetectProvider(model)
+                    }
+                    recCtx := wopts.WithTokenRecordOptions(ctx)
+                    _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                        UserID:       opts.UserID,
+                        SessionID:    sessionID,
+                        TaskID:       wid,
+                        AgentID:      "cot-clarifier",
+                        Model:        model,
+                        Provider:     provider,
+                        InputTokens:  inTok,
+                        OutputTokens: outTok,
+                        Metadata:     map[string]interface{}{"phase": "chain_of_thought_clarify"},
+                    }).Get(recCtx, nil)
+                }
+            }
+        }
 	}
 
 	// Format the result based on configuration

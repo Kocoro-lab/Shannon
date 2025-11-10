@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.2.0
+**Version:** 0.2.1
 
 ## Installation
 
@@ -72,6 +72,11 @@ client.close()
 ```bash
 # Submit a task and wait for completion
 python -m shannon.cli --base-url http://localhost:8080 submit "What is 2+2?" --wait
+
+# Strategy presets
+python -m shannon.cli --base-url http://localhost:8080 \
+  submit "Latest quantum computing breakthroughs" \
+  --research-strategy deep --max-iterations 12 --enable-verification --report-mode
 
 # List sessions (first 5)
 python -m shannon.cli --base-url http://localhost:8080 session-list --limit 5
@@ -193,6 +198,26 @@ Run any example:
 ```bash
 cd clients/python
 python examples/simple_task.py
+```
+
+### Strategy Presets (Programmatic)
+
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080")
+handle = client.submit_task(
+    "Compare LangChain and AutoGen frameworks",
+    context={
+        "research_strategy": "deep",
+        "max_iterations": 12,
+        "enable_verification": True,
+        "report_mode": True,
+    },
+)
+final = client.wait(handle.task_id)
+print(final.result)
+client.close()
 ```
 
 ## Development

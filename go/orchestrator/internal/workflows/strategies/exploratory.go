@@ -1,14 +1,16 @@
 package strategies
 
 import (
-	"fmt"
-	"time"
+    "fmt"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 )
 
 // ExploratoryWorkflow implements iterative discovery with hypothesis testing using patterns
@@ -265,15 +267,15 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 			},
 		}
 
-		reflectedResult, reflectedConfidence, reflectionTokens, err := patterns.ReflectOnResult(
-			ctx,
-			input.Query,
-			finalResult,
-			agentResults,
-			input.Context,
-			reflectionConfig,
-			opts,
-		)
+        reflectedResult, reflectedConfidence, reflectionTokens, err := patterns.ReflectOnResult(
+            ctx,
+            input.Query,
+            finalResult,
+            agentResults,
+            ctxMap,
+            reflectionConfig,
+            opts,
+        )
 
 		if err == nil {
 			finalResult = reflectedResult
@@ -282,6 +284,13 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 			logger.Info("Reflection improved final result", "new_confidence", finalConfidence)
 		} else {
 			logger.Warn("Reflection failed, using previous result", "error", err)
+		}
+	}
+
+	// Optional: append Sources when citations provided in context
+	if v, ok := input.Context["enable_citations"].(bool); ok && v {
+		if citationList, ok2 := ctxMap["available_citations"].(string); ok2 && citationList != "" {
+			finalResult = formatting.FormatReportWithCitations(finalResult, citationList)
 		}
 	}
 
@@ -347,6 +356,15 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 	agentMeta := metadata.AggregateAgentMetadata(agentResults, reflectionTokensCount)
 	for k, v := range agentMeta {
 		meta[k] = v
+	}
+
+	// Align: compute and include estimated cost using centralized pricing
+	if totalTokens > 0 {
+		metaModel := ""
+		if m, ok := meta["model"].(string); ok && m != "" {
+			metaModel = m
+		}
+		meta["cost_usd"] = pricing.CostForTokens(metaModel, totalTokens)
 	}
 
 	return TaskResult{

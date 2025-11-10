@@ -11,7 +11,10 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 )
 
 // SequentialConfig controls sequential execution behavior
@@ -179,48 +182,66 @@ func ExecuteSequential(
 		var result activities.AgentExecutionResult
 		var err error
 
-		if budgetPerAgent > 0 {
-			// Execute with budget
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			// Extract base UUID from workflow ID (remove suffix like "_23")
-			taskID := wid
-			if idx := strings.LastIndex(wid, "_"); idx > 0 {
-				taskID = wid[:idx]
-			}
-			err = workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
-					AgentInput: activities.AgentExecutionInput{
-						Query:          task.Description,
-						AgentID:        fmt.Sprintf("agent-%s", task.ID),
-						Context:        taskContext,
-						Mode:           "standard",
-						SessionID:      sessionID,
-						History:        history,
-						SuggestedTools: task.SuggestedTools,
-						ToolParameters: task.ToolParameters,
-						PersonaID:      task.PersonaID,
-					},
-					MaxTokens: budgetPerAgent,
-					UserID:    userID,
-					TaskID:    taskID,
-					ModelTier: modelTier,
-				}).Get(ctx, &result)
+        if budgetPerAgent > 0 {
+            // Execute with budget
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            // Prefer parent workflow ID for budget tracking and persistence
+            parentWid := ""
+            if config.Context != nil {
+                if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                    parentWid = p
+                }
+            }
+            // Use parent workflow ID when available, otherwise fallback to child ID (trim suffix if present)
+            taskID := wid
+            if parentWid != "" {
+                taskID = parentWid
+            } else if idx := strings.LastIndex(wid, "_"); idx > 0 {
+                taskID = wid[:idx]
+            }
+        err = workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
+                AgentInput: activities.AgentExecutionInput{
+                    Query:             task.Description,
+                    AgentID:           fmt.Sprintf("agent-%s", task.ID),
+                    Context:           taskContext,
+                    Mode:              "standard",
+                    SessionID:         sessionID,
+                    History:           history,
+                    SuggestedTools:    task.SuggestedTools,
+                    ToolParameters:    task.ToolParameters,
+                    PersonaID:         task.PersonaID,
+                    ParentWorkflowID:  parentWid,
+                },
+                MaxTokens: budgetPerAgent,
+                UserID:    userID,
+                TaskID:    taskID,
+                ModelTier: modelTier,
+            }).Get(ctx, &result)
 		} else {
 			// Execute without budget
-			err = workflow.ExecuteActivity(ctx,
-				activities.ExecuteAgent,
-				activities.AgentExecutionInput{
-					Query:          task.Description,
-					AgentID:        fmt.Sprintf("agent-%s", task.ID),
-					Context:        taskContext,
-					Mode:           "standard",
-					SessionID:      sessionID,
-					History:        history,
-					SuggestedTools: task.SuggestedTools,
-					ToolParameters: task.ToolParameters,
-					PersonaID:      task.PersonaID,
-				}).Get(ctx, &result)
+        // Determine parent workflow if available for streaming correlation
+        parentWid := ""
+        if config.Context != nil {
+            if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                parentWid = p
+            }
+        }
+        err = workflow.ExecuteActivity(ctx,
+            activities.ExecuteAgent,
+            activities.AgentExecutionInput{
+                Query:             task.Description,
+                AgentID:           fmt.Sprintf("agent-%s", task.ID),
+                Context:           taskContext,
+                Mode:              "standard",
+                SessionID:         sessionID,
+                History:           history,
+                SuggestedTools:    task.SuggestedTools,
+                ToolParameters:    task.ToolParameters,
+                PersonaID:         task.PersonaID,
+                ParentWorkflowID:  parentWid,
+            }).Get(ctx, &result)
 		}
 
 		if err != nil {
@@ -252,14 +273,96 @@ func ExecuteSequential(
 			continue
 		}
 
-		// Persist agent execution (fire-and-forget)
-		workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-		persistAgentExecution(ctx, workflowID, fmt.Sprintf("agent-%s", task.ID), task.Description, result)
+        // Persist agent execution (fire-and-forget). Use parent workflow ID when available.
+        workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if config.Context != nil {
+            if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+                workflowID = p
+            }
+        }
+        persistAgentExecution(ctx, workflowID, fmt.Sprintf("agent-%s", task.ID), task.Description, result)
 
-		// Success
-		results = append(results, result)
-		totalTokens += result.TokensUsed
-		successCount++
+			// Success
+			results = append(results, result)
+			totalTokens += result.TokensUsed
+			successCount++
+
+			// Record token usage for this sequential task when not budgeted
+			// Avoid double-recording: budgeted path already records inside the activity
+			if budgetPerAgent <= 0 {
+				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+				if config.Context != nil {
+					if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+						wid = p
+					}
+				}
+				inTok := result.InputTokens
+				outTok := result.OutputTokens
+				if inTok == 0 && outTok == 0 && result.TokensUsed > 0 {
+					inTok = result.TokensUsed * 6 / 10
+					outTok = result.TokensUsed - inTok
+				}
+				model := result.ModelUsed
+				if strings.TrimSpace(model) == "" {
+					if m := pricing.GetPriorityOneModel(modelTier); m != "" {
+						model = m
+					}
+				}
+				provider := result.Provider
+				if strings.TrimSpace(provider) == "" {
+					provider = imodels.DetectProvider(model)
+				}
+			recCtx := opts.WithTokenRecordOptions(ctx)
+        // Zero-token observability flag via workflow context: record_zero_token=true
+        recordZero := false
+        if config.Context != nil {
+            if v, ok := config.Context["record_zero_token"]; ok {
+                switch t := v.(type) {
+                case bool:
+                    recordZero = t
+                case string:
+                    if strings.EqualFold(t, "true") {
+                        recordZero = true
+                    }
+                }
+            }
+        }
+
+        meta := map[string]interface{}{"phase": "sequential"}
+        if (inTok+outTok) == 0 {
+            if recordZero {
+                meta["zero_tokens"] = true
+                _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                    UserID:       userID,
+                    SessionID:    sessionID,
+                    TaskID:       wid,
+                    AgentID:      result.AgentID,
+                    Model:        model,
+                    Provider:     provider,
+                    InputTokens:  inTok,
+                    OutputTokens: outTok,
+                    Metadata:     meta,
+                }).Get(recCtx, nil)
+            } else {
+                logger.Warn("Skipping token usage record: zero tokens",
+                    "agent_id", result.AgentID,
+                    "task_id", task.ID,
+                )
+            }
+        } else {
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                UserID:       userID,
+                SessionID:    sessionID,
+                TaskID:       wid,
+                AgentID:      result.AgentID,
+                Model:        model,
+                Provider:     provider,
+                InputTokens:  inTok,
+                OutputTokens: outTok,
+                Metadata:     meta,
+            }).Get(recCtx, nil)
+        }
+			}
 
 		// Emit completion event (parent workflow when available)
 		if config.EmitEvents {

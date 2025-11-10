@@ -21,13 +21,14 @@ type HybridConfig struct {
 
 // HybridTask represents a task with dependencies
 type HybridTask struct {
-	ID             string
-	Description    string
-	SuggestedTools []string
-	ToolParameters map[string]interface{}
-	PersonaID      string
-	Role           string
-	Dependencies   []string // IDs of tasks this depends on
+    ID             string
+    Description    string
+    SuggestedTools []string
+    ToolParameters map[string]interface{}
+    PersonaID      string
+    Role           string
+    ParentArea     string
+    Dependencies   []string // IDs of tasks this depends on
 }
 
 // HybridResult contains results from hybrid execution
@@ -212,8 +213,11 @@ func executeHybridTask(
 	for k, v := range config.Context {
 		taskContext[k] = v
 	}
-	taskContext["role"] = task.Role
-	taskContext["task_id"] = task.ID
+    taskContext["role"] = task.Role
+    taskContext["task_id"] = task.ID
+    if task.ParentArea != "" {
+        taskContext["parent_area"] = task.ParentArea
+    }
 
 	// Add dependency results if configured
 	if config.PassDependencyResults && len(task.Dependencies) > 0 {

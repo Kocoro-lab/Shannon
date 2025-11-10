@@ -4,7 +4,6 @@ Unit tests for manager model locking with tier preferences.
 Tests ensure manager locks request.model when tier preferences specify provider:model.
 """
 
-import pytest
 from enum import Enum
 
 

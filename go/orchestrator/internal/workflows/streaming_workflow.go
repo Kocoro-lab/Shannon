@@ -12,6 +12,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 )
 
 // StreamingWorkflow executes tasks with streaming output and typed state management
@@ -198,6 +199,15 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		meta[k] = v
 	}
 
+	// Add cost estimate if tokens available
+	if streamRes.TokensUsed > 0 {
+		model := ""
+		if m, ok := meta["model"].(string); ok && m != "" {
+			model = m
+		}
+		meta["cost_usd"] = pricing.CostForTokens(model, streamRes.TokensUsed)
+	}
+
 	return TaskResult{
 		Result:     streamRes.Response,
 		Success:    true,
@@ -213,6 +223,13 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		"query", input.Query,
 		"user_id", input.UserID,
 	)
+
+	// Determine workflow ID for event streaming
+	// Use parent workflow ID if this is a child workflow, otherwise use own ID
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
 
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
@@ -305,11 +322,24 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
 		} else {
 			var err error
-			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-				Query:        input.Query,
-				AgentResults: agentResults,
-				Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
-			}).Get(ctx, &synthesis)
+            err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+                Query:        input.Query,
+                AgentResults: agentResults,
+                // Prefer comprehensive synthesis style when research cues are present
+                Context: func() map[string]interface{} {
+                    ctxMap := map[string]interface{}{}
+                    for k, v := range input.Context {
+                        ctxMap[k] = v
+                    }
+                    if _, ok := ctxMap["synthesis_style"]; !ok {
+                        if _, hasAreas := ctxMap["research_areas"]; hasAreas {
+                            ctxMap["synthesis_style"] = "comprehensive"
+                        }
+                    }
+                    return ctxMap
+                }(),
+                ParentWorkflowID: workflowID,
+            }).Get(ctx, &synthesis)
 			if err != nil {
 				logger.Error("Result synthesis failed", "error", err)
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -317,11 +347,24 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	} else {
 		var err error
-		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-			Query:        input.Query,
-			AgentResults: agentResults,
-			Context:      input.Context, // Pass role/prompt_params for role-aware synthesis
-		}).Get(ctx, &synthesis)
+        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+            Query:        input.Query,
+            AgentResults: agentResults,
+            // Prefer comprehensive synthesis style when research cues are present
+            Context: func() map[string]interface{} {
+                ctxMap := map[string]interface{}{}
+                for k, v := range input.Context {
+                    ctxMap[k] = v
+                }
+                if _, ok := ctxMap["synthesis_style"]; !ok {
+                    if _, hasAreas := ctxMap["research_areas"]; hasAreas {
+                        ctxMap["synthesis_style"] = "comprehensive"
+                    }
+                }
+                return ctxMap
+            }(),
+            ParentWorkflowID: workflowID,
+        }).Get(ctx, &synthesis)
 		if err != nil {
 			logger.Error("Result synthesis failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -360,11 +403,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	}
 
-	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
-	}
+	// Emit WORKFLOW_COMPLETED before returning (workflowID already set at line 219)
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
@@ -395,6 +434,15 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	agentMeta := metadata.AggregateAgentMetadata(agentResultsForMeta, 0)
 	for k, v := range agentMeta {
 		meta[k] = v
+	}
+
+	// Add cost estimate if tokens available
+	if totalTokens > 0 {
+		model := ""
+		if m, ok := meta["model"].(string); ok && m != "" {
+			model = m
+		}
+		meta["cost_usd"] = pricing.CostForTokens(model, totalTokens)
 	}
 
 	return TaskResult{

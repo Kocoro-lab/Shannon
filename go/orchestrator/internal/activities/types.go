@@ -15,20 +15,22 @@ type ComplexityAnalysisResult struct {
 
 // Subtask represents a decomposed subtask
 type Subtask struct {
-	ID              string
-	Description     string
-	Dependencies    []string
-	EstimatedTokens int
+    ID              string
+    Description     string
+    Dependencies    []string
+    EstimatedTokens int
 	// Structured subtask classification to avoid brittle string matching
 	TaskType string `json:"task_type,omitempty"`
-	// Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
-	Produces []string
-	Consumes []string
-	// LLM-native tool selection
-	SuggestedTools []string               `json:"suggested_tools"`
-	ToolParameters map[string]interface{} `json:"tool_parameters"`
-	// Persona assignment for specialized agent behavior
-	SuggestedPersona string `json:"suggested_persona"`
+    // Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
+    Produces []string
+    Consumes []string
+    // Optional grouping for research-area-driven decomposition
+    ParentArea string `json:"parent_area,omitempty"`
+    // LLM-native tool selection
+    SuggestedTools []string               `json:"suggested_tools"`
+    ToolParameters map[string]interface{} `json:"tool_parameters"`
+    // Persona assignment for specialized agent behavior
+    SuggestedPersona string `json:"suggested_persona"`
 }
 
 // AgentExecutionInput is the input for agent execution
@@ -84,8 +86,17 @@ type SynthesisInput struct {
 
 // SynthesisResult is the result of synthesis
 type SynthesisResult struct {
-	FinalResult string
-	TokensUsed  int
+    FinalResult  string
+    TokensUsed   int
+    FinishReason string // Reason model stopped: "stop", "length", "content_filter", etc.
+    RequestedMaxTokens int // Max completion tokens requested from provider for this synthesis
+    CompletionTokens int // Output tokens (excludes prompt)
+    EffectiveMaxCompletion int // Actual max completion after provider headroom clamp
+    // Added for accurate cost tracking
+    InputTokens int    // Prompt tokens (when available or inferred)
+    ModelUsed   string // Model used for synthesis
+    Provider    string // Provider used for synthesis
+    CostUsd     float64 // Reported cost from provider metadata when available
 }
 
 // EvaluateResultInput carries data for reflection/quality checks
@@ -99,6 +110,39 @@ type EvaluateResultInput struct {
 type EvaluateResultOutput struct {
 	Score    float64
 	Feedback string
+}
+
+// VerifyClaimsInput is the input for claim verification
+type VerifyClaimsInput struct {
+	Answer    string        // Synthesis result to verify
+	Citations []interface{} // Available citations (from metadata.CollectCitations)
+}
+
+// VerificationResult contains claim verification analysis
+type VerificationResult struct {
+	OverallConfidence float64             `json:"overall_confidence"` // 0.0-1.0
+	TotalClaims       int                 `json:"total_claims"`       // Number of claims extracted
+	SupportedClaims   int                 `json:"supported_claims"`   // Claims with supporting citations
+	UnsupportedClaims []string            `json:"unsupported_claims"` // List of unsupported claim texts
+	Conflicts         []ConflictReport    `json:"conflicts"`          // Conflicting information found
+	ClaimDetails      []ClaimVerification `json:"claim_details"`      // Per-claim analysis
+}
+
+// ClaimVerification contains verification for a single claim
+type ClaimVerification struct {
+	Claim                string   `json:"claim"`                  // The factual claim text
+	SupportingCitations  []int    `json:"supporting_citations"`   // Citation numbers supporting this claim
+	ConflictingCitations []int    `json:"conflicting_citations"`  // Citation numbers conflicting with this claim
+	Confidence           float64  `json:"confidence"`             // 0.0-1.0 (weighted by citation credibility)
+}
+
+// ConflictReport describes conflicting information
+type ConflictReport struct {
+	Claim       string `json:"claim"`        // The claim in question
+	Source1     int    `json:"source1"`      // Citation number 1
+	Source1Text string `json:"source1_text"` // What source 1 says
+	Source2     int    `json:"source2"`      // Citation number 2
+	Source2Text string `json:"source2_text"` // What source 2 says
 }
 
 // SessionUpdateInput is the input for updating session

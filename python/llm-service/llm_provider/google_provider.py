@@ -7,7 +7,7 @@ Aligned with OpenAI and xAI provider patterns for consistency.
 import logging
 import os
 import time
-from typing import Dict, List, Any, Optional, AsyncIterator
+from typing import Dict, List, Any, AsyncIterator
 from tenacity import retry, stop_after_attempt, wait_exponential
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold

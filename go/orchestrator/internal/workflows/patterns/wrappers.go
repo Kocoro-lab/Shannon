@@ -1,9 +1,14 @@
 package patterns
 
 import (
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"go.temporal.io/sdk/workflow"
+    "strings"
+
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
+    "go.temporal.io/sdk/workflow"
 )
 
 // reactPattern wraps ReactLoop to satisfy the Pattern interface
@@ -154,43 +159,93 @@ func (reflectionPattern) EstimateTokens(input PatternInput) int {
 func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*PatternResult, error) {
 	// Get initial result via a single agent call
 	var initial activities.AgentExecutionResult
-	if input.BudgetMax > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		err := workflow.ExecuteActivity(ctx,
-			constants.ExecuteAgentWithBudgetActivity,
-			activities.BudgetedAgentInput{
-				AgentInput: activities.AgentExecutionInput{
-					Query:     input.Query,
-					AgentID:   "reflection-initial",
-					Context:   input.Context,
-					Mode:      "standard",
-					SessionID: input.SessionID,
-					History:   input.History,
-				},
-				MaxTokens: input.BudgetMax,
-				UserID:    input.UserID,
-				TaskID:    wid,
-				ModelTier: input.ModelTier,
-			},
-		).Get(ctx, &initial)
+    if input.BudgetMax > 0 {
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if input.Context != nil {
+            if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        err := workflow.ExecuteActivity(ctx,
+            constants.ExecuteAgentWithBudgetActivity,
+            activities.BudgetedAgentInput{
+                AgentInput: activities.AgentExecutionInput{
+                    Query:     input.Query,
+                    AgentID:   "reflection-initial",
+                    Context:   input.Context,
+                    Mode:      "standard",
+                    SessionID: input.SessionID,
+                    History:   input.History,
+                    ParentWorkflowID: wid,
+                },
+                MaxTokens: input.BudgetMax,
+                UserID:    input.UserID,
+                TaskID:    wid,
+                ModelTier: input.ModelTier,
+            },
+        ).Get(ctx, &initial)
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		if err := workflow.ExecuteActivity(ctx,
-			activities.ExecuteAgent,
-			activities.AgentExecutionInput{
-				Query:     input.Query,
-				AgentID:   "reflection-initial",
-				Context:   input.Context,
-				Mode:      "standard",
-				SessionID: input.SessionID,
-				History:   input.History,
-			},
-		).Get(ctx, &initial); err != nil {
-			return nil, err
-		}
-	}
+    } else {
+        if err := workflow.ExecuteActivity(ctx,
+            activities.ExecuteAgent,
+            activities.AgentExecutionInput{
+                Query:     input.Query,
+                AgentID:   "reflection-initial",
+                Context:   input.Context,
+                Mode:      "standard",
+                SessionID: input.SessionID,
+                History:   input.History,
+                ParentWorkflowID: func() string {
+                    if input.Context != nil {
+                        if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+                            return p
+                        }
+                    }
+                    return ""
+                }(),
+            },
+        ).Get(ctx, &initial); err != nil {
+            return nil, err
+        }
+
+        // Record initial reflection usage when not budgeted (avoid double-recording)
+        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+        if input.Context != nil {
+            if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+                wid = p
+            }
+        }
+        inTok := initial.InputTokens
+        outTok := initial.OutputTokens
+        if inTok == 0 && outTok == 0 && initial.TokensUsed > 0 {
+            inTok = initial.TokensUsed * 6 / 10
+            outTok = initial.TokensUsed - inTok
+        }
+        model := initial.ModelUsed
+        if strings.TrimSpace(model) == "" {
+            if m := pricing.GetPriorityOneModel(input.ModelTier); m != "" {
+                model = m
+            }
+        }
+        provider := initial.Provider
+        if strings.TrimSpace(provider) == "" {
+            provider = imodels.DetectProvider(model)
+        }
+        recCtx := opts.WithTokenRecordOptions(ctx)
+        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+            UserID:       input.UserID,
+            SessionID:    input.SessionID,
+            TaskID:       wid,
+            AgentID:      "reflection-initial",
+            Model:        model,
+            Provider:     provider,
+            InputTokens:  inTok,
+            OutputTokens: outTok,
+            Metadata:     map[string]interface{}{"phase": "reflection_initial"},
+        }).Get(recCtx, nil)
+    }
 
 	// Apply reflection with defaults
 	rcfg := ReflectionConfig{Enabled: true, MaxRetries: 1, ConfidenceThreshold: 0.7, Criteria: []string{"completeness", "correctness", "clarity"}, TimeoutMs: 30000}

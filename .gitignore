@@ -183,6 +183,10 @@ config/openapi_specs/schema_query_processor.*
 python/llm-service/llm_service/roles/ptengine/
 python/llm-service/llm_service/tools/vendor_adapters/ptengine/
 
+# Angfa vendor-specific files (DO NOT COMMIT)
+python/llm-service/llm_service/tools/vendor_adapters/angfa.py
+python/llm-service/llm_service/roles/vendor/angfa_analytics.py
+
 # GA4 vendor integration (exclude from public repo)
 python/llm-service/llm_service/tools/vendor_adapters/ga4/
 python/llm-service/llm_service/roles/ga4/
@@ -331,3 +335,4 @@ CLAUDE.md
 # Historical/archived documentation
 docs/archive-historical/
 tests/verify_rust_pricing
+scripts/benchmark_HLE.py

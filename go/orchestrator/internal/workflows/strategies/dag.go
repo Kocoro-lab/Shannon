@@ -101,8 +101,14 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	}
 
 	modelTier := determineModelTier(baseContext, "medium")
-	var totalTokens int
-	var agentResults []activities.AgentExecutionResult
+    var totalTokens int
+    var agentResults []activities.AgentExecutionResult
+    var collectedCitations []metadata.Citation
+    // Option trigger: allow disabling citation collection via context flag (default on)
+    enableCitations := true
+    if v, ok := baseContext["enable_citations"].(bool); ok {
+        enableCitations = v
+    }
 
 	// Step 2: Check if task needs tools or has dependencies
 	needsTools := false
@@ -165,16 +171,45 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			_ = recordToVectorStore(ctx, input, simpleResult.Response, "simple", decomp.ComplexityScore)
 		}
 
-		return TaskResult{
-			Result:     simpleResult.Response,
-			Success:    true,
-			TokensUsed: totalTokens,
-			Metadata: map[string]interface{}{
-				"complexity_score": decomp.ComplexityScore,
-				"mode":             "simple",
-				"num_agents":       1,
-			},
-		}, nil
+        // Build metadata aligned with other workflows (model/provider/tokens/cost)
+        meta := map[string]interface{}{
+            "complexity_score": decomp.ComplexityScore,
+            "mode":             "simple",
+            "num_agents":       1,
+        }
+
+        // Aggregate agent metadata from the single result to populate model/provider/tokens
+        ar := []activities.AgentExecutionResult{
+            {
+                AgentID:    "simple-agent",
+                Response:   simpleResult.Response,
+                TokensUsed: simpleResult.TokensUsed,
+                Success:    simpleResult.Success,
+                ModelUsed:  simpleResult.ModelUsed,
+            },
+        }
+        agMeta := metadata.AggregateAgentMetadata(ar, 0)
+        for k, v := range agMeta {
+            meta[k] = v
+        }
+
+        // Compute cost with centralized pricing when tokens are available
+        if totalTokens > 0 {
+            modelForCost := ""
+            if m, ok := meta["model"].(string); ok && m != "" {
+                modelForCost = m
+            } else {
+                modelForCost = pricing.GetPriorityOneModel(modelTier)
+            }
+            meta["cost_usd"] = pricing.CostForTokens(modelForCost, totalTokens)
+        }
+
+        return TaskResult{
+            Result:     simpleResult.Response,
+            Success:    true,
+            TokensUsed: totalTokens,
+            Metadata:   meta,
+        }, nil
 	}
 
 	// Step 3: Complex multi-agent execution
@@ -276,7 +311,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			}
 		}
 		// 2) If response looks like raw JSON, avoid bypass
-		if shouldBypass {
+	if shouldBypass {
 			trimmed := strings.TrimSpace(singleSuccessResult.Response)
 			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 				shouldBypass = false
@@ -291,6 +326,17 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				}
 			}
 		}
+
+        // 3) If citations exist across agent results, avoid bypass so we can inject inline citations
+        if shouldBypass && enableCitations {
+            citations, formatted := collectAndFormatCitations(ctx, agentResults)
+            if len(citations) > 0 {
+                shouldBypass = false
+                collectedCitations = citations
+                baseContext["available_citations"] = formatted
+                baseContext["citation_count"] = len(citations)
+            }
+        }
 		// Enforce role-aware synthesis for data_analytics even with single result
 		if shouldBypass && baseContext != nil {
 			if role, ok := baseContext["role"].(string); ok && strings.EqualFold(role, "data_analytics") {
@@ -310,9 +356,18 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				"total_agents", len(agentResults),
 				"successful", successfulCount,
 			)
-		} else {
+        } else {
 			// Fall through to standard synthesis below
 			logger.Info("Single result requires synthesis (web_search/JSON detected)")
+			// Collect citations for synthesis and inject into context (when enabled)
+    if enableCitations {
+        citations, formatted := collectAndFormatCitations(ctx, agentResults)
+        if len(citations) > 0 {
+            collectedCitations = citations
+            baseContext["available_citations"] = formatted
+            baseContext["citation_count"] = len(citations)
+        }
+    }
 			err = workflow.ExecuteActivity(ctx,
 				activities.SynthesizeResultsLLM,
 				activities.SynthesisInput{
@@ -333,25 +388,73 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			totalTokens += synthesis.TokensUsed
 		}
 	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
-		// Use the synthesis subtask's result as final output
-		synthesisResult := agentResults[synthesisTaskIdx]
-		synthesis = activities.SynthesisResult{
-			FinalResult: synthesisResult.Response,
-			TokensUsed:  0, // Already counted in agent execution
+		// If citations exist, re-run synthesis to inject inline citation numbers.
+		// Otherwise, use the synthesis subtask's result directly.
+    if enableCitations {
+        citations, formatted := collectAndFormatCitations(ctx, agentResults)
+        if len(citations) > 0 {
+            collectedCitations = citations
+            baseContext["available_citations"] = formatted
+            baseContext["citation_count"] = len(citations)
+        }
+    }
+
+		if len(collectedCitations) == 0 {
+			// No citations: use the synthesis subtask's result as-is
+			synthesisResult := agentResults[synthesisTaskIdx]
+			synthesis = activities.SynthesisResult{
+				FinalResult: synthesisResult.Response,
+				TokensUsed:  0, // Already counted in agent execution
+			}
+			logger.Info("Using synthesis subtask result as final output",
+				"agent_id", synthesisResult.AgentID,
+				"note", "no citations found",
+			)
+		} else {
+			// Citations present: re-run synthesis to inject inline citations and sources
+			logger.Info("Re-running synthesis to inject inline citations",
+				"citation_count", len(collectedCitations),
+			)
+			err = workflow.ExecuteActivity(ctx,
+				activities.SynthesizeResultsLLM,
+				activities.SynthesisInput{
+					Query:            input.Query,
+					AgentResults:     agentResults,
+					Context:          baseContext,
+					ParentWorkflowID: input.ParentWorkflowID,
+				},
+			).Get(ctx, &synthesis)
+
+			if err != nil {
+				logger.Error("Synthesis failed", "error", err)
+				return TaskResult{
+					Success:      false,
+					ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
+				}, err
+			}
+			totalTokens += synthesis.TokensUsed
 		}
-		logger.Info("Using synthesis subtask result as final output",
-			"agent_id", synthesisResult.AgentID,
-		)
 	} else {
 		// No bypass or synthesis subtask, perform standard synthesis
 		logger.Info("Performing standard synthesis of agent results")
-		err = workflow.ExecuteActivity(ctx,
-			activities.SynthesizeResultsLLM,
-			activities.SynthesisInput{
-				Query:        input.Query,
-				AgentResults: agentResults,
-				Context:      baseContext,
-			}).Get(ctx, &synthesis)
+		// Collect citations and inject into context for synthesis
+    if enableCitations {
+        citations, formatted := collectAndFormatCitations(ctx, agentResults)
+            if len(citations) > 0 {
+                collectedCitations = citations
+                // formatted citations prepared by helper
+				baseContext["available_citations"] = formatted
+            baseContext["citation_count"] = len(citations)
+        }
+    }
+        err = workflow.ExecuteActivity(ctx,
+            activities.SynthesizeResultsLLM,
+            activities.SynthesisInput{
+                Query:            input.Query,
+                AgentResults:     agentResults,
+                Context:          baseContext,
+                ParentWorkflowID: input.ParentWorkflowID,
+            }).Get(ctx, &synthesis)
 
 		if err != nil {
 			logger.Error("Synthesis failed", "error", err)
@@ -365,9 +468,9 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	}
 
 	// Step 5: Optional reflection for quality improvement
-	finalResult := synthesis.FinalResult
-	qualityScore := 0.5
-	reflectionTokens := 0
+finalResult := synthesis.FinalResult
+qualityScore := 0.5
+reflectionTokens := 0
 
 	if config.ReflectionEnabled && shouldReflect(decomp.ComplexityScore, &config) && !hasSynthesisSubtask {
 		// Only reflect if we didn't detect a synthesis subtask
@@ -418,6 +521,34 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	// Note: Workflow completion is handled by the orchestrator
 
+	// Optional: verify claims if enabled and we have citations
+	var verification activities.VerificationResult
+	verifyEnabled := false
+	if v, ok := baseContext["enable_verification"].(bool); ok {
+		verifyEnabled = v
+	}
+    if verifyEnabled && len(collectedCitations) > 0 {
+        var verCitations []interface{}
+        for _, c := range collectedCitations {
+            m := map[string]interface{}{
+                "url":               c.URL,
+                "title":             c.Title,
+                "source":            c.Source,
+                "content":           c.Snippet,
+                "credibility_score": c.CredibilityScore,
+                "quality_score":     c.QualityScore,
+            }
+            verCitations = append(verCitations, m)
+        }
+        verr := workflow.ExecuteActivity(ctx, "VerifyClaimsActivity", activities.VerifyClaimsInput{
+            Answer:    finalResult,
+            Citations: verCitations,
+        }).Get(ctx, &verification)
+        if verr != nil {
+            logger.Warn("Claim verification failed, skipping verification metadata", "error", verr)
+        }
+    }
+
 	logger.Info("DAGWorkflow completed successfully",
 		"total_tokens", totalTokens,
 		"quality_score", qualityScore,
@@ -462,17 +593,33 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-	meta := map[string]interface{}{
-		"version":        "v2",
-		"complexity":     decomp.ComplexityScore,
-		"quality_score":  qualityScore,
-		"agent_count":    len(agentResults),
-		"execution_mode": execStrategy,
-		"had_reflection": shouldReflect(decomp.ComplexityScore, &config),
-	}
-	if len(toolErrors) > 0 {
-		meta["tool_errors"] = toolErrors
-	}
+meta := map[string]interface{}{
+    "version":        "v2",
+    "complexity":     decomp.ComplexityScore,
+    "quality_score":  qualityScore,
+    "agent_count":    len(agentResults),
+    "execution_mode": execStrategy,
+    "had_reflection": shouldReflect(decomp.ComplexityScore, &config),
+}
+if len(collectedCitations) > 0 {
+    out := make([]map[string]interface{}, 0, len(collectedCitations))
+    for _, c := range collectedCitations {
+        out = append(out, map[string]interface{}{
+            "url":               c.URL,
+            "title":             c.Title,
+            "source":            c.Source,
+            "credibility_score": c.CredibilityScore,
+            "quality_score":     c.QualityScore,
+        })
+    }
+    meta["citations"] = out
+}
+    if len(toolErrors) > 0 {
+        meta["tool_errors"] = toolErrors
+    }
+    if verification.TotalClaims > 0 || verification.OverallConfidence > 0 {
+        meta["verification"] = verification
+    }
 
 	// Aggregate agent metadata (model, provider, tokens, cost)
 	agentMeta := metadata.AggregateAgentMetadata(agentResults, reflectionTokens+synthesis.TokensUsed)
@@ -594,6 +741,49 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		TokensUsed: totalTokens,
 		Metadata:   meta,
 	}, nil
+}
+
+// collectAndFormatCitations extracts citations from agentResults and returns the
+// citations along with a formatted list suitable for synthesis prompts.
+func collectAndFormatCitations(ctx workflow.Context, agentResults []activities.AgentExecutionResult) ([]metadata.Citation, string) {
+    var resultsForCitations []interface{}
+    for _, ar := range agentResults {
+        var toolExecs []interface{}
+        if len(ar.ToolExecutions) > 0 {
+            for _, te := range ar.ToolExecutions {
+                toolExecs = append(toolExecs, map[string]interface{}{
+                    "tool":    te.Tool,
+                    "success": te.Success,
+                    "output":  te.Output,
+                    "error":   te.Error,
+                })
+            }
+        }
+        resultsForCitations = append(resultsForCitations, map[string]interface{}{
+            "agent_id":        ar.AgentID,
+            "tool_executions": toolExecs,
+            "response":        ar.Response,
+        })
+    }
+    now := workflow.Now(ctx)
+    citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+    if len(citations) == 0 {
+        return citations, ""
+    }
+    var b strings.Builder
+    for i, c := range citations {
+        idx := i + 1
+        title := c.Title
+        if title == "" {
+            title = c.Source
+        }
+        if c.PublishedDate != nil {
+            fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+        } else {
+            fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+        }
+    }
+    return citations, strings.TrimRight(b.String(), "\n")
 }
 
 // executeParallelPattern uses the parallel execution pattern

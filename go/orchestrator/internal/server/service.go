@@ -963,8 +963,55 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			taskExecution.Metadata = db.JSONB(result.Metadata)
 		}
 
-		// Queue async write to database
-		err := s.dbClient.QueueWrite(db.WriteTypeTaskExecution, taskExecution, func(err error) {
+        // As a safety net, if cost wasn't provided or computed, aggregate from token_usage
+        if (taskExecution.TotalCostUSD == 0) && s.dbClient != nil {
+            var aggCost sql.NullFloat64
+            var aggTokens sql.NullInt64
+            row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+                SELECT COALESCE(SUM(tu.cost_usd), 0), COALESCE(SUM(tu.total_tokens), 0)
+                FROM token_usage tu
+                JOIN task_executions te ON tu.task_id = te.id
+                WHERE te.workflow_id = $1`, workflowID)
+            if err := row.Scan(&aggCost, &aggTokens); err == nil {
+                if aggCost.Valid && aggCost.Float64 > 0 {
+                    taskExecution.TotalCostUSD = aggCost.Float64
+                }
+                if aggTokens.Valid && taskExecution.TotalTokens == 0 {
+                    taskExecution.TotalTokens = int(aggTokens.Int64)
+                }
+            } else {
+                s.logger.Warn("Cost aggregation fallback failed",
+                    zap.String("workflow_id", workflowID),
+                    zap.Error(err))
+            }
+
+            // Secondary safety net: derive from agent_executions when token_usage linkage is missing
+            if taskExecution.TotalCostUSD == 0 {
+                var aeTokens sql.NullInt64
+                row2 := s.dbClient.Wrapper().QueryRowContext(ctx, `
+                    SELECT COALESCE(SUM(ae.tokens_used), 0)
+                    FROM agent_executions ae
+                    WHERE ae.workflow_id = $1`, workflowID)
+                if err2 := row2.Scan(&aeTokens); err2 == nil {
+                    if aeTokens.Valid {
+                        if taskExecution.TotalTokens == 0 {
+                            taskExecution.TotalTokens = int(aeTokens.Int64)
+                        }
+                        if taskExecution.TotalTokens > 0 {
+                            // Compute cost using model from metadata when available
+                            taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
+                        }
+                    }
+                } else {
+                    s.logger.Warn("Agent execution aggregation failed",
+                        zap.String("workflow_id", workflowID),
+                        zap.Error(err2))
+                }
+            }
+        }
+
+        // Queue async write to database
+        err := s.dbClient.QueueWrite(db.WriteTypeTaskExecution, taskExecution, func(err error) {
 			if err != nil {
 				s.logger.Error("Failed to persist task execution",
 					zap.String("workflow_id", workflowID),
@@ -1629,41 +1676,25 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 	}
 	end := getWorkflowEndTime(desc)
 
-	te := &db.TaskExecution{
-		WorkflowID:  workflowID,
-		Status:      statusStr,
-		StartedAt:   start,
-		CompletedAt: &end,
-	}
-	// Best-effort: copy memo fields (user_id/session_id/query/mode)
-	if m := desc.WorkflowExecutionInfo.Memo; m != nil {
-		dc := converter.GetDefaultDataConverter()
-		if f, ok := m.Fields["user_id"]; ok && f != nil {
-			var uidStr string
-			if err := dc.FromPayload(f, &uidStr); err == nil {
-				if u, err := uuid.Parse(uidStr); err == nil {
-					te.UserID = &u
-				}
-			}
-		}
-		if f, ok := m.Fields["session_id"]; ok && f != nil {
-			_ = dc.FromPayload(f, &te.SessionID)
-		}
-		if f, ok := m.Fields["query"]; ok && f != nil {
-			_ = dc.FromPayload(f, &te.Query)
-		}
-		if f, ok := m.Fields["mode"]; ok && f != nil {
-			_ = dc.FromPayload(f, &te.Mode)
-		}
-	}
-
-	_ = s.dbClient.QueueWrite(db.WriteTypeTaskExecution, te, func(err error) {
-		if err != nil {
-			s.logger.Warn("watchAndPersist: final write failed", zap.String("workflow_id", workflowID), zap.Error(err))
-		} else {
-			s.logger.Debug("watchAndPersist: final write ok", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
-		}
-	})
+    // Only update terminal fields to avoid clobbering richer data written elsewhere.
+    // Do not overwrite tokens/cost/model/provider/metadata.
+    durationMs := int(end.Sub(start).Milliseconds())
+    // Upsert terminal fields to handle races with initial creation; avoid overwriting terminal states
+    if _, err2 := s.dbClient.Wrapper().ExecContext(
+        ctx,
+        `INSERT INTO task_executions (workflow_id, status, completed_at, duration_ms)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (workflow_id) DO UPDATE
+         SET status = EXCLUDED.status,
+             completed_at = EXCLUDED.completed_at,
+             duration_ms = COALESCE(task_executions.duration_ms, EXCLUDED.duration_ms)
+         WHERE task_executions.status NOT IN ('COMPLETED', 'FAILED')`,
+        workflowID, statusStr, end, durationMs,
+    ); err2 != nil {
+        s.logger.Warn("watchAndPersist: final status upsert failed", zap.String("workflow_id", workflowID), zap.Error(err2))
+    } else {
+        s.logger.Debug("watchAndPersist: final status upserted", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
+    }
 }
 
 // getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.

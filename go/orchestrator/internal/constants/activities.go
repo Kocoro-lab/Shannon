@@ -18,8 +18,9 @@ const (
 	ExecuteAgentWithBudgetActivity = "ExecuteAgentWithBudget"
 
 	// Planning/Decomposition Activities
-	DecomposeTaskActivity     = "DecomposeTask"
-	AnalyzeComplexityActivity = "AnalyzeComplexity" // legacy compatibility for replay
+	DecomposeTaskActivity       = "DecomposeTask"
+	RefineResearchQueryActivity = "RefineResearchQuery"
+	AnalyzeComplexityActivity   = "AnalyzeComplexity" // legacy compatibility for replay
 
 	// Human Intervention Activities
 	RequestApprovalActivity         = "RequestApproval"

@@ -178,6 +178,27 @@ func emitTaskUpdate(ctx workflow.Context, input TaskInput, eventType activities.
 		}).Get(ctx, nil)
 }
 
+// emitTaskUpdatePayload sends a task update event with an optional payload
+func emitTaskUpdatePayload(ctx workflow.Context, input TaskInput, eventType activities.StreamEventType, agentID, message string, payload map[string]interface{}) {
+    emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+        StartToCloseTimeout: 30 * time.Second,
+    })
+    // Use parent workflow ID if this is a child workflow, otherwise use own ID
+    wid := input.ParentWorkflowID
+    if wid == "" {
+        wid = workflow.GetInfo(ctx).WorkflowExecution.ID
+    }
+    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate",
+        activities.EmitTaskUpdateInput{
+            WorkflowID: wid,
+            EventType:  eventType,
+            AgentID:    agentID,
+            Message:    message,
+            Timestamp:  workflow.Now(ctx),
+            Payload:    payload,
+        }).Get(ctx, nil)
+}
+
 // detectProviderFromModel determines the provider based on the model name
 // Delegates to shared models.DetectProvider for consistent provider detection
 func detectProviderFromModel(model string) string {

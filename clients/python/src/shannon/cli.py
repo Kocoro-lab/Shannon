@@ -48,6 +48,71 @@ def main():
         choices=["simple", "standard", "complex", "supervisor"],
         help="Execution mode hint",
     )
+    # Strategy presets and tuning (Phase 6)
+    submit_parser.add_argument(
+        "--force-research",
+        action="store_true",
+        help="Force routing to ResearchWorkflow (for citation-enabled research)",
+    )
+    submit_parser.add_argument(
+        "--research-strategy",
+        choices=["quick", "standard", "deep", "academic"],
+        help="Research strategy preset",
+    )
+    submit_parser.add_argument(
+        "--max-iterations",
+        type=int,
+        help="Override max iterations for research agent (1..50)",
+    )
+    submit_parser.add_argument(
+        "--max-concurrent-agents",
+        type=int,
+        help="Override max concurrent agents (1..20)",
+    )
+    ev_group = submit_parser.add_mutually_exclusive_group()
+    ev_group.add_argument(
+        "--enable-verification",
+        dest="enable_verification",
+        action="store_true",
+        help="Enable claim verification",
+    )
+    ev_group.add_argument(
+        "--disable-verification",
+        dest="enable_verification",
+        action="store_false",
+        help="Disable claim verification",
+    )
+    submit_parser.set_defaults(enable_verification=None)
+    rm_group = submit_parser.add_mutually_exclusive_group()
+    rm_group.add_argument(
+        "--report-mode",
+        dest="report_mode",
+        action="store_true",
+        help="Enable report mode in synthesis",
+    )
+    rm_group.add_argument(
+        "--no-report-mode",
+        dest="report_mode",
+        action="store_false",
+        help="Disable report mode",
+    )
+    submit_parser.set_defaults(report_mode=None)
+
+    # Citation toggle
+    cit_group = submit_parser.add_mutually_exclusive_group()
+    cit_group.add_argument(
+        "--enable-citations",
+        dest="enable_citations",
+        action="store_true",
+        help="Enable citation collection/integration (React/DAG opt-in)",
+    )
+    cit_group.add_argument(
+        "--disable-citations",
+        dest="enable_citations",
+        action="store_false",
+        help="Disable citation collection/integration",
+    )
+    submit_parser.set_defaults(enable_citations=None)
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Get task status")
@@ -108,9 +173,27 @@ def main():
 
     try:
         if args.command == "submit":
+            # Build context from strategy flags
+            submit_ctx = {}
+            if args.force_research:
+                submit_ctx["force_research"] = True
+            if args.research_strategy:
+                submit_ctx["research_strategy"] = args.research_strategy
+            if args.max_iterations is not None:
+                submit_ctx["max_iterations"] = args.max_iterations
+            if args.max_concurrent_agents is not None:
+                submit_ctx["max_concurrent_agents"] = args.max_concurrent_agents
+            if args.enable_verification is not None:
+                submit_ctx["enable_verification"] = args.enable_verification
+            if args.enable_citations is not None:
+                submit_ctx["enable_citations"] = args.enable_citations
+            if args.report_mode is not None:
+                submit_ctx["report_mode"] = args.report_mode
+
             handle = client.submit_task(
                 args.query,
                 session_id=args.session_id,
+                context=submit_ctx or None,
                 idempotency_key=args.idempotency_key,
                 traceparent=args.traceparent,
                 model_tier=args.model_tier,

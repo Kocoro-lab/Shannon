@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
@@ -188,11 +189,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	var decomp activities.DecompositionResult
-	if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
-		Query:          input.Query,
-		Context:        decompContext,
-		AvailableTools: nil, // Let llm-service derive tools from registry + role preset
-	}).Get(ctx, &decomp); err != nil {
+if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
+    Query:          input.Query,
+    Context:        decompContext,
+    AvailableTools: nil, // Let llm-service derive tools from registry + role preset
+}).Get(ctx, &decomp); err != nil {
 		logger.Error("Task decomposition failed", "error", err)
 		// Emit error event
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
@@ -204,6 +205,29 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		// Best-effort title generation even on planning failures
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Record decomposition usage if provided
+	if decomp.TokensUsed > 0 || decomp.InputTokens > 0 || decomp.OutputTokens > 0 {
+		inTok := decomp.InputTokens
+		outTok := decomp.OutputTokens
+		if inTok == 0 && outTok == 0 && decomp.TokensUsed > 0 {
+			inTok = int(float64(decomp.TokensUsed) * 0.6)
+			outTok = decomp.TokensUsed - inTok
+		}
+		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+	recCtx := opts.WithTokenRecordOptions(ctx)
+	_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+		UserID:       input.UserID,
+		SessionID:    input.SessionID,
+		TaskID:       wid,
+		AgentID:      "decompose",
+		Model:        decomp.ModelUsed,
+		Provider:     decomp.Provider,
+		InputTokens:  inTok,
+		OutputTokens: outTok,
+		Metadata:     map[string]interface{}{"phase": "decompose"},
+	}).Get(ctx, nil)
 	}
 
 	logger.Info("Routing decision",
@@ -320,12 +344,27 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
 	isSimple := decomp.ComplexityScore < simpleThreshold && simpleByShape
 
+	// Set parent workflow ID for child workflows to use for unified event streaming
+	// MUST be set BEFORE any strategy workflow routing to ensure events go to parent
+	parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	input.ParentWorkflowID = parentWorkflowID
+
 	// Cognitive program takes precedence if specified
 	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
 		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx); handled {
 			return result, err
 		}
 		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
+	}
+
+	// Force ResearchWorkflow via context flag (user-facing via CLI)
+	if v, ok := input.Context["force_research"]; ok {
+		if b, ok := v.(bool); ok && b {
+			logger.Info("Forcing ResearchWorkflow via context flag (test mode)")
+			if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx); handled {
+				return result, err
+			}
+		}
 	}
 
 	// Check if P2P is forced via context
@@ -352,10 +391,6 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			}
 		}
 	}
-
-	// Set parent workflow ID for child workflows to use for unified event streaming
-	parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	input.ParentWorkflowID = parentWorkflowID
 
 	switch {
 	case isSimple && !forceP2P:
@@ -474,13 +509,13 @@ func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query strin
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
-    _ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-        WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-        EventType:  activities.StreamEventStreamEnd,
-        AgentID:    "orchestrator",
-        Message:    "Stream end",
-        Timestamp:  workflow.Now(ctx),
-    }).Get(emitCtx, nil)
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		EventType:  activities.StreamEventStreamEnd,
+		AgentID:    "orchestrator",
+		Message:    "Stream end",
+		Timestamp:  workflow.Now(ctx),
+	}).Get(emitCtx, nil)
 }
 
 // convertToStrategiesInput converts workflows.TaskInput to strategies.TaskInput

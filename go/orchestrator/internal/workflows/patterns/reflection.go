@@ -1,12 +1,17 @@
 package patterns
 
 import (
-	"time"
+    "strings"
+    "time"
 
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
 // ReflectOnResult evaluates and potentially improves a result through iterative reflection.
@@ -92,25 +97,72 @@ func ReflectOnResult(
 			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
 		})
 
-		err = workflow.ExecuteActivity(synthCtx, "SynthesizeResultsLLM",
-			activities.SynthesisInput{
-				Query:        query,
-				AgentResults: agentResults,
-				Context:      reflectionContext,
-			}).Get(ctx, &improvedSynthesis)
+    // Preserve top-level correlation for streaming by forwarding parent_workflow_id if present
+    parentID := ""
+    if baseContext != nil {
+        if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+            parentID = p
+        }
+    }
+    err = workflow.ExecuteActivity(synthCtx, "SynthesizeResultsLLM",
+        activities.SynthesisInput{
+            Query:            query,
+            AgentResults:     agentResults,
+            Context:          reflectionContext,
+            ParentWorkflowID: parentID,
+        }).Get(ctx, &improvedSynthesis)
 
-		if err != nil {
-			logger.Warn("Reflection re-synthesis failed, keeping previous result", "error", err)
-			return finalResult, evalResult.Score, totalTokens, nil
-		}
+        if err != nil {
+            logger.Warn("Reflection re-synthesis failed, keeping previous result", "error", err)
+            return finalResult, evalResult.Score, totalTokens, nil
+        }
 
-		// Update result and track tokens
-		finalResult = improvedSynthesis.FinalResult
-		totalTokens += improvedSynthesis.TokensUsed
+        // Update result and track tokens
+        finalResult = improvedSynthesis.FinalResult
+        totalTokens += improvedSynthesis.TokensUsed
 
-		logger.Info("Reflection iteration completed",
-			"retry", retryCount,
-			"tokens_used", improvedSynthesis.TokensUsed)
+        // Record re-synthesis token usage (always record; this path is not budgeted)
+        {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if parentID != "" {
+                wid = parentID
+            }
+            inTok := improvedSynthesis.InputTokens
+            outTok := improvedSynthesis.CompletionTokens
+            if inTok == 0 && outTok > 0 {
+                est := improvedSynthesis.TokensUsed - outTok
+                if est > 0 {
+                    inTok = est
+                }
+            }
+            model := improvedSynthesis.ModelUsed
+            if strings.TrimSpace(model) == "" {
+                if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+                    model = m
+                }
+            }
+            provider := improvedSynthesis.Provider
+            if strings.TrimSpace(provider) == "" {
+                provider = imodels.DetectProvider(model)
+            }
+            recCtx := wopts.WithTokenRecordOptions(ctx)
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity,
+                activities.TokenUsageInput{
+                    UserID:       opts.UserID,
+                    SessionID:    opts.SessionID,
+                    TaskID:       wid,
+                    AgentID:      "reflection-synth",
+                    Model:        model,
+                    Provider:     provider,
+                    InputTokens:  inTok,
+                    OutputTokens: outTok,
+                    Metadata:     map[string]interface{}{"phase": "reflection_synth"},
+                }).Get(recCtx, nil)
+        }
+
+        logger.Info("Reflection iteration completed",
+            "retry", retryCount,
+            "tokens_used", improvedSynthesis.TokensUsed)
 	}
 
 	return finalResult, lastScore, totalTokens, nil

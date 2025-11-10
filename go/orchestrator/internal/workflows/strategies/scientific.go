@@ -1,16 +1,17 @@
 package strategies
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "strings"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 )
 
 // ScientificWorkflow implements hypothesis-driven investigation using patterns
@@ -355,15 +356,15 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		},
 	}
 
-	finalResult, finalConfidence, reflectionTokens, err := patterns.ReflectOnResult(
-		ctx,
-		input.Query,
-		comprehensiveResult,
-		agentResults,
-		input.Context,
-		reflectionConfig,
-		opts,
-	)
+    finalResult, finalConfidence, reflectionTokens, err := patterns.ReflectOnResult(
+        ctx,
+        input.Query,
+        comprehensiveResult,
+        agentResults,
+        totContext,
+        reflectionConfig,
+        opts,
+    )
 
 	if err != nil {
 		logger.Warn("Reflection failed, using synthesis result", "error", err)
@@ -446,9 +447,20 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		},
 	}
 	agentMeta := metadata.AggregateAgentMetadata(mockAgentResults, 0) // No separate synthesis
-	for k, v := range agentMeta {
-		meta[k] = v
-	}
+    for k, v := range agentMeta {
+        meta[k] = v
+    }
+
+    // Align: compute and include estimated cost using centralized pricing
+    if totalTokens > 0 {
+        modelForCost := ""
+        if m, ok := meta["model"].(string); ok && m != "" {
+            modelForCost = m
+        } else {
+            modelForCost = pricing.GetPriorityOneModel(modelTierFromContext)
+        }
+        meta["cost_usd"] = pricing.CostForTokens(modelForCost, totalTokens)
+    }
 
 	return TaskResult{
 		Result:     scientificReport,

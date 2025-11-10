@@ -51,6 +51,8 @@ High-level workflows that compose patterns for specific approaches:
 - Uses React pattern for simple research, parallel agents for complex
 - Applies reflection for comprehensive results
 
+Note on citations & verification: see `docs/deep-research.md` for current behavior and limitations (citation prompt enforcement and verification payload content).
+
 #### ExploratoryWorkflow (`exploratory.go`)
 - Systematic exploration using Tree-of-Thoughts pattern
 - Falls back to Debate pattern when confidence is low

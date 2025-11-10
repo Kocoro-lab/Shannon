@@ -94,11 +94,35 @@ async def evaluate_results(
     if not providers or not providers.is_configured():
         return _heuristic_evaluate(body)
 
-    # Build model prompt
+    # Build model prompt with comprehensive quality criteria
     sys = (
-        "You evaluate multi-agent subtask results for a user query. "
-        'Return JSON only: {"should_replan": bool, "reason": string, "issues": [string], "hint": string}. '
-        "Suggest replanning when results are low-quality, contradictory, missing, or failed."
+        "You are a research quality evaluator assessing the completeness and accuracy of research findings.\n\n"
+        "# Evaluation Criteria:\n\n"
+        "## Coverage (40%):\n"
+        "- Does the answer directly address the user's query?\n"
+        "- Are context, subtopics, and nuances covered?\n"
+        "- Are critical aspects addressed comprehensively?\n\n"
+        "## Evidence Quality (30%):\n"
+        "- Are claims supported by inline citations [1], [2]?\n"
+        "- Are sources authoritative (.gov, .edu, peer-reviewed, reputable)?\n"
+        "- Is source diversity adequate (multiple perspectives)?\n\n"
+        "## Citation Integrity (20%):\n"
+        "- Are all citations numbered sequentially without gaps?\n"
+        "- Are all cited sources included in a Sources section?\n"
+        "- Are URLs valid and complete?\n\n"
+        "## Clarity (10%):\n"
+        "- Is the report well-structured with clear headings?\n"
+        "- Are findings presented clearly with bullet points?\n"
+        "- Are conflicts or uncertainties flagged explicitly?\n\n"
+        "# Pass/Fail Thresholds:\n"
+        "- PASS: Coverage ≥80%, Evidence ≥80%, Citations ≥90%, Clarity ≥70%\n"
+        "- FAIL: Provide specific feedback on gaps\n\n"
+        "# Response Format:\n"
+        'Return JSON only: {"should_replan": bool, "reason": string, "issues": [string], "hint": string}\n'
+        "If revisions needed:\n"
+        "1. What's missing or unclear?\n"
+        "2. Which claims lack citations?\n"
+        "3. What sources need verification?\n"
     )
     # Summarize results compactly
     max_items = 6

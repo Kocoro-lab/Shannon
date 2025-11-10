@@ -1,14 +1,17 @@
 package patterns
 
 import (
-	"fmt"
-	"strings"
-	"time"
+    "fmt"
+    "strings"
+    "time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
+    "go.temporal.io/sdk/temporal"
+    "go.temporal.io/sdk/workflow"
 )
 
 // DebateConfig configures the debate pattern
@@ -119,42 +122,64 @@ func Debate(
 			query,
 		)
 
-		if opts.BudgetAgentMax > 0 {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			futures[i] = workflow.ExecuteActivity(ctx,
-				constants.ExecuteAgentWithBudgetActivity,
-				activities.BudgetedAgentInput{
+        if opts.BudgetAgentMax > 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if debateContext != nil {
+                if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            } else if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            futures[i] = workflow.ExecuteActivity(ctx,
+                constants.ExecuteAgentWithBudgetActivity,
+                activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
-						Query:     initialPrompt,
-						AgentID:   agentID,
-						Context:   debateContext,
-						Mode:      "debate",
-						SessionID: sessionID,
-						History:   history,
+						Query:             initialPrompt,
+						AgentID:           agentID,
+						Context:           debateContext,
+						Mode:              "debate",
+						SessionID:         sessionID,
+						History:           history,
+                            ParentWorkflowID: wid,
 					},
 					MaxTokens: opts.BudgetAgentMax / config.NumDebaters,
 					UserID:    opts.UserID,
 					TaskID:    wid,
 					ModelTier: config.ModelTier,
 				})
-		} else {
-			futures[i] = workflow.ExecuteActivity(ctx,
-				activities.ExecuteAgent,
-				activities.AgentExecutionInput{
-					Query:     initialPrompt,
-					AgentID:   agentID,
-					Context:   debateContext,
-					Mode:      "debate",
-					SessionID: sessionID,
-					History:   history,
-				})
-		}
+        } else {
+            // Determine parent workflow for streaming correlation
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if debateContext != nil {
+                if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            } else if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            futures[i] = workflow.ExecuteActivity(ctx,
+                activities.ExecuteAgent,
+                activities.AgentExecutionInput{
+                    Query:             initialPrompt,
+                    AgentID:           agentID,
+                    Context:           debateContext,
+                    Mode:              "debate",
+                    SessionID:         sessionID,
+                    History:           history,
+                    ParentWorkflowID:  wid,
+                })
+        }
 	}
 
 	// Collect initial positions
-	for i, future := range futures {
-		var agentResult activities.AgentExecutionResult
-		if err := future.Get(ctx, &agentResult); err != nil {
+    for i, future := range futures {
+        var agentResult activities.AgentExecutionResult
+        if err := future.Get(ctx, &agentResult); err != nil {
 			logger.Warn("Debater failed to provide initial position",
 				"agent", i,
 				"error", err,
@@ -169,10 +194,48 @@ func Debate(
 			Confidence: 0.5, // Initial confidence
 			TokensUsed: agentResult.TokensUsed,
 		}
-		initialPositions = append(initialPositions, position)
-		result.TotalTokens += agentResult.TokensUsed
-		debateHistory = append(debateHistory, fmt.Sprintf("%s: %s", position.AgentID, position.Position))
-	}
+        initialPositions = append(initialPositions, position)
+        result.TotalTokens += agentResult.TokensUsed
+        debateHistory = append(debateHistory, fmt.Sprintf("%s: %s", position.AgentID, position.Position))
+
+        // Record token usage for initial positions when not budgeted
+        if opts.BudgetAgentMax <= 0 {
+            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+            if context != nil {
+                if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                    wid = p
+                }
+            }
+            inTok := agentResult.InputTokens
+            outTok := agentResult.OutputTokens
+            if inTok == 0 && outTok == 0 && agentResult.TokensUsed > 0 {
+                inTok = agentResult.TokensUsed * 6 / 10
+                outTok = agentResult.TokensUsed - inTok
+            }
+            model := agentResult.ModelUsed
+            if strings.TrimSpace(model) == "" {
+                if m := pricing.GetPriorityOneModel(config.ModelTier); m != "" {
+                    model = m
+                }
+            }
+            provider := agentResult.Provider
+            if strings.TrimSpace(provider) == "" {
+                provider = imodels.DetectProvider(model)
+            }
+            recCtx := wopts.WithTokenRecordOptions(ctx)
+            _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                UserID:       opts.UserID,
+                SessionID:    sessionID,
+                TaskID:       wid,
+                AgentID:      position.AgentID,
+                Model:        model,
+                Provider:     provider,
+                InputTokens:  inTok,
+                OutputTokens: outTok,
+                Metadata:     map[string]interface{}{"phase": "debate_initial"},
+            }).Get(recCtx, nil)
+        }
+    }
 
 	result.Positions = initialPositions
 
@@ -211,42 +274,64 @@ func Debate(
 				"other_positions": othersPositions,
 			}
 
-			if opts.BudgetAgentMax > 0 {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				roundFutures[i] = workflow.ExecuteActivity(ctx,
-					constants.ExecuteAgentWithBudgetActivity,
-					activities.BudgetedAgentInput{
+            if opts.BudgetAgentMax > 0 {
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if debateContext != nil {
+                    if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                } else if context != nil {
+                    if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                }
+                roundFutures[i] = workflow.ExecuteActivity(ctx,
+                    constants.ExecuteAgentWithBudgetActivity,
+                    activities.BudgetedAgentInput{
 						AgentInput: activities.AgentExecutionInput{
-							Query:     responsePrompt,
-							AgentID:   debater.AgentID,
-							Context:   debateContext,
-							Mode:      "debate",
-							SessionID: sessionID,
-							History:   append(history, debateHistory...),
+							Query:             responsePrompt,
+							AgentID:           debater.AgentID,
+							Context:           debateContext,
+							Mode:              "debate",
+							SessionID:         sessionID,
+							History:           append(history, debateHistory...),
+                                ParentWorkflowID: wid,
 						},
 						MaxTokens: opts.BudgetAgentMax / (config.NumDebaters * config.MaxRounds),
 						UserID:    opts.UserID,
 						TaskID:    wid,
 						ModelTier: config.ModelTier,
 					})
-			} else {
-				roundFutures[i] = workflow.ExecuteActivity(ctx,
-					activities.ExecuteAgent,
-					activities.AgentExecutionInput{
-						Query:     responsePrompt,
-						AgentID:   debater.AgentID,
-						Context:   debateContext,
-						Mode:      "debate",
-						SessionID: sessionID,
-						History:   append(history, debateHistory...),
-					})
-			}
+            } else {
+                // Determine parent workflow for streaming correlation
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if debateContext != nil {
+                    if p, ok := debateContext["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                } else if context != nil {
+                    if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                }
+                roundFutures[i] = workflow.ExecuteActivity(ctx,
+                    activities.ExecuteAgent,
+                    activities.AgentExecutionInput{
+                        Query:             responsePrompt,
+                        AgentID:           debater.AgentID,
+                        Context:           debateContext,
+                        Mode:              "debate",
+                        SessionID:         sessionID,
+                        History:           append(history, debateHistory...),
+                        ParentWorkflowID:  wid,
+                    })
+            }
 		}
 
 		// Collect round responses
-		for i, future := range roundFutures {
-			var agentResult activities.AgentExecutionResult
-			if err := future.Get(ctx, &agentResult); err != nil {
+        for i, future := range roundFutures {
+            var agentResult activities.AgentExecutionResult
+            if err := future.Get(ctx, &agentResult); err != nil {
 				logger.Warn("Debater failed in round",
 					"round", round,
 					"agent", i,
@@ -255,18 +340,56 @@ func Debate(
 				continue
 			}
 
-			position := DebatePosition{
-				AgentID:    initialPositions[i].AgentID,
-				Position:   agentResult.Response,
-				Arguments:  extractArguments(agentResult.Response),
-				Confidence: calculateArgumentStrength(agentResult.Response),
-				TokensUsed: agentResult.TokensUsed,
-			}
-			roundPositions = append(roundPositions, position)
-			result.TotalTokens += agentResult.TokensUsed
-			debateHistory = append(debateHistory,
-				fmt.Sprintf("Round %d - %s: %s", round, position.AgentID, position.Position))
-		}
+            position := DebatePosition{
+                AgentID:    initialPositions[i].AgentID,
+                Position:   agentResult.Response,
+                Arguments:  extractArguments(agentResult.Response),
+                Confidence: calculateArgumentStrength(agentResult.Response),
+                TokensUsed: agentResult.TokensUsed,
+            }
+            roundPositions = append(roundPositions, position)
+            result.TotalTokens += agentResult.TokensUsed
+            debateHistory = append(debateHistory,
+                fmt.Sprintf("Round %d - %s: %s", round, position.AgentID, position.Position))
+
+            // Record token usage for each debate round when not budgeted
+            if opts.BudgetAgentMax <= 0 {
+                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+                if context != nil {
+                    if p, ok := context["parent_workflow_id"].(string); ok && p != "" {
+                        wid = p
+                    }
+                }
+                inTok := agentResult.InputTokens
+                outTok := agentResult.OutputTokens
+                if inTok == 0 && outTok == 0 && agentResult.TokensUsed > 0 {
+                    inTok = agentResult.TokensUsed * 6 / 10
+                    outTok = agentResult.TokensUsed - inTok
+                }
+                model := agentResult.ModelUsed
+                if strings.TrimSpace(model) == "" {
+                    if m := pricing.GetPriorityOneModel(config.ModelTier); m != "" {
+                        model = m
+                    }
+                }
+                provider := agentResult.Provider
+                if strings.TrimSpace(provider) == "" {
+                    provider = imodels.DetectProvider(model)
+                }
+                recCtx := wopts.WithTokenRecordOptions(ctx)
+                _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                    UserID:       opts.UserID,
+                    SessionID:    sessionID,
+                    TaskID:       wid,
+                    AgentID:      position.AgentID,
+                    Model:        model,
+                    Provider:     provider,
+                    InputTokens:  inTok,
+                    OutputTokens: outTok,
+                    Metadata:     map[string]interface{}{"phase": "debate_round", "round": round},
+                }).Get(recCtx, nil)
+            }
+        }
 
 		// Update positions with latest round
 		initialPositions = roundPositions

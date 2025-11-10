@@ -18,6 +18,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 )
 
 // TemplateWorkflowInput carries data required to execute a compiled template.
@@ -106,6 +107,15 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		agentMeta := metadata.AggregateAgentMetadata(runtime.AgentResults, 0)
 		for k, v := range agentMeta {
 			resultMetadata[k] = v
+		}
+
+		// Compute cost estimate if tokens available
+		if runtime.TotalTokens > 0 {
+			model := ""
+			if m, ok := resultMetadata["model"].(string); ok && m != "" {
+				model = m
+			}
+			resultMetadata["cost_usd"] = pricing.CostForTokens(model, runtime.TotalTokens)
 		}
 	}
 

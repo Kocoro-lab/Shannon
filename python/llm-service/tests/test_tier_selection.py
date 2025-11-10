@@ -4,7 +4,6 @@ Unit tests for model tier selection in LLM service.
 Tests ensure top-level query.model_tier is respected before defaulting to context/model-based tiers.
 """
 
-import pytest
 from enum import Enum
 
 
