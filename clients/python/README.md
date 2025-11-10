@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.2.1
+**Version:** 0.2.2
 
 ## Installation
 
