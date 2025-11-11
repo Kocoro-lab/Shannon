@@ -30,6 +30,7 @@ type RefineResearchQueryResult struct {
     TokensUsed    int      `json:"tokens_used"`
     ModelUsed     string   `json:"model_used,omitempty"`
     Provider      string   `json:"provider,omitempty"`
+    DetectedLanguage string `json:"detected_language,omitempty"` // Language detected from query
     // Entity disambiguation and search guidance
     CanonicalName      string   `json:"canonical_name,omitempty"`
     ExactQueries       []string `json:"exact_queries,omitempty"`
@@ -184,6 +185,9 @@ Respond in JSON format:
         }, nil
     }
 
+    // Detect language from original query
+    detectedLang := detectLanguage(in.Query)
+
     result := &RefineResearchQueryResult{
         OriginalQuery: in.Query,
         RefinedQuery:  refinedData.RefinedQuery,
@@ -192,6 +196,7 @@ Respond in JSON format:
         TokensUsed:    llmResp.TokensUsed,
         ModelUsed:     llmResp.ModelUsed,
         Provider:      llmResp.Provider,
+        DetectedLanguage: detectedLang,
         CanonicalName: refinedData.CanonicalName,
         ExactQueries:  refinedData.ExactQueries,
         OfficialDomains: refinedData.OfficialDomains,
@@ -219,4 +224,86 @@ Respond in JSON format:
     ometrics.RefinementLatency.Observe(time.Since(start).Seconds())
 
 	return result, nil
+}
+
+// detectLanguage performs simple heuristic language detection based on character ranges
+func detectLanguage(query string) string {
+	if query == "" {
+		return "English"
+	}
+
+	// Count characters by Unicode range
+	var cjk, cyrillic, arabic, latin int
+	for _, r := range query {
+		switch {
+		case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+			cjk++
+		case r >= 0x3040 && r <= 0x309F: // Hiragana
+			cjk++
+		case r >= 0x30A0 && r <= 0x30FF: // Katakana
+			cjk++
+		case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
+			cjk++
+		case r >= 0x0400 && r <= 0x04FF: // Cyrillic
+			cyrillic++
+		case r >= 0x0600 && r <= 0x06FF: // Arabic
+			arabic++
+		case (r >= 0x0041 && r <= 0x005A) || (r >= 0x0061 && r <= 0x007A): // Latin
+			latin++
+		}
+	}
+
+	total := cjk + cyrillic + arabic + latin
+	if total == 0 {
+		return "English" // Default if no recognized characters
+	}
+
+	// Determine language based on character composition
+	cjkPercent := float64(cjk) / float64(total)
+	if cjkPercent > 0.3 {
+		// Distinguish Chinese/Japanese/Korean by character patterns
+		var hiragana, katakana, hangul int
+		for _, r := range query {
+			if r >= 0x3040 && r <= 0x309F {
+				hiragana++
+			}
+			if r >= 0x30A0 && r <= 0x30FF {
+				katakana++
+			}
+			if r >= 0xAC00 && r <= 0xD7AF {
+				hangul++
+			}
+		}
+		if hangul > 0 {
+			return "Korean"
+		}
+		if hiragana > 0 || katakana > 0 {
+			return "Japanese"
+		}
+		return "Chinese"
+	}
+
+	cyrillicPercent := float64(cyrillic) / float64(total)
+	if cyrillicPercent > 0.3 {
+		return "Russian"
+	}
+
+	arabicPercent := float64(arabic) / float64(total)
+	if arabicPercent > 0.3 {
+		return "Arabic"
+	}
+
+	// Check for common non-English Latin script patterns
+	lowerQuery := strings.ToLower(query)
+	if strings.Contains(lowerQuery, "ñ") || strings.Contains(lowerQuery, "¿") || strings.Contains(lowerQuery, "¡") {
+		return "Spanish"
+	}
+	if strings.Contains(lowerQuery, "ç") || strings.Contains(lowerQuery, "à") || strings.Contains(lowerQuery, "è") {
+		return "French"
+	}
+	if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
+		return "German"
+	}
+
+	return "English" // Default for Latin scripts
 }

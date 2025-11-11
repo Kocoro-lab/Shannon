@@ -128,9 +128,10 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
     // Extract context for role-aware synthesis
     role := ""
     contextMap := make(map[string]interface{})
-    // Track citation payload size for diagnostics
+    // Track citation payload size for diagnostics and save for later appending
     removedCitations := false
     removedCitationsChars := 0
+    var savedCitations string // Save citations to append after synthesis
     if input.Context != nil {
         // Extract role to apply role-specific prompts
         if r, ok := input.Context["role"].(string); ok {
@@ -140,11 +141,12 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
         for k, v := range input.Context {
             contextMap[k] = v
         }
-        // Remove large duplicates that are already included in the user query
+        // Remove large duplicates from LLM prompt but save for post-processing
         if v, ok := contextMap["available_citations"]; ok {
             if s, ok := v.(string); ok {
                 removedCitations = true
                 removedCitationsChars = len([]rune(s))
+                savedCitations = s // Save for later appending
             }
             delete(contextMap, "available_citations")
         }
@@ -219,11 +221,28 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
     // Detect language from query for language matching
     queryLanguage := detectLanguage(input.Query)
-    // Keep instruction generic to avoid brittle per-language templates
-    languageInstruction := fmt.Sprintf(
-        "Respond in the same language as the user's query (detected: %s).",
-        queryLanguage,
-    )
+
+    // Check if this is a language-retry with stronger emphasis
+    forceLanguageMatch := false
+    if input.Context != nil {
+        if force, ok := input.Context["force_language_match"].(bool); ok {
+            forceLanguageMatch = force
+        }
+    }
+
+    // Build language instruction (stronger for retries)
+    var languageInstruction string
+    if forceLanguageMatch {
+        languageInstruction = fmt.Sprintf(
+            "🚨 CRITICAL LANGUAGE REQUIREMENT 🚨\nYou MUST respond ENTIRELY in %s.\nThe user's query is in %s.\nDO NOT use English or any other language.\nDO NOT mix languages.\nEVERY sentence, heading, and word must be in %s.",
+            queryLanguage, queryLanguage, queryLanguage,
+        )
+    } else {
+        languageInstruction = fmt.Sprintf(
+            "Respond in the same language as the user's query (detected: %s).",
+            queryLanguage,
+        )
+    }
 
 	// Check synthesis style (comprehensive vs. concise)
 	synthesisStyle := "concise"
@@ -269,17 +288,95 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
         }
     }
 
-    // Define output structure based on synthesis style
+    // Detect query type for adaptive structure
+    queryType := detectQueryType(input.Query, input.Context)
+
+    // Define output structure based on query type and synthesis style
     outputStructure := ""
     if synthesisStyle == "comprehensive" {
-        // For deep research: comprehensive multi-section report (no Sources section; system appends it)
+        // For deep research: use query-type specific structure
         targetWords := 1200
         if len(areas) > 0 {
             // Calculate target based on research areas (150-250 words per area)
             targetWords = len(areas) * 200
         }
-        // Use explicit top-level headings and forbid copying instruction text into the answer
-        outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+
+        // Generate structure based on query type
+        switch queryType {
+        case "comparison":
+            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+
+Start your answer directly with "## Scope and Criteria" (do NOT include any instruction text):
+
+## Scope and Criteria (100-150 words)
+## [Entity A] Overview (200-300 words)
+## [Entity B] Overview (200-300 words)
+## Side-by-Side Comparison
+  - Create a markdown table comparing key dimensions
+  - Include 200-300 words of analysis after the table
+## Conclusion and Recommendation (150-200 words)
+
+Requirements:
+- Replace [Entity A] and [Entity B] with actual entity names from the query
+- Table must compare: key features, strengths, weaknesses, use cases
+- Include inline citations [1], [2] for ALL factual claims
+- Provide clear verdict with reasoning
+`)
+
+        case "analysis":
+            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+
+Start your answer directly with "## Context and Scope" (do NOT include any instruction text):
+
+## Context and Scope (100-150 words)
+## Quantitative Picture
+  - Create markdown tables for key metrics (size, growth, market share, etc.)
+  - Include 200-300 words explaining the data
+## Key Insights and Patterns (200-300 words)
+## Conclusions and Actionable Takeaways (150-200 words)
+
+Requirements:
+- MUST include at least one data table with metrics
+- Cite data sources inline [1], [2]
+- Focus on quantitative evidence over qualitative discussion
+- Provide 3-5 concrete takeaways in the conclusion
+`)
+
+        case "list":
+            outputStructure = `## Output Format (do NOT include this section in the final answer):
+
+Start your answer directly with the list or table (do NOT include intro/conclusion):
+
+Create either:
+1. A markdown table with columns for each key attribute, OR
+2. A numbered list with detailed entries
+
+Requirements:
+- NO introduction or conclusion sections needed
+- Each item must have inline citations [1], [2]
+- Include relevant metrics/data for each item
+- Sort by relevance or specified criteria
+`
+
+        case "explanation":
+            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+
+Start your answer directly with "## Overview" (do NOT include any instruction text):
+
+## Overview (100-150 words)
+## Core Mechanisms (200-300 words per mechanism)
+## Practical Applications (200-300 words)
+## Current Developments (150-200 words)
+
+Requirements:
+- Explain mechanisms step-by-step with examples
+- Include inline citations [1], [2] for ALL technical claims
+- Use clear, accessible language
+- Highlight real-world impact
+`)
+
+        default: // survey or unknown
+            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
 
 Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
 
@@ -292,6 +389,7 @@ Section requirements:
 - Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 - Limitations and Uncertainties: 100–150 words
 `, targetWords, targetWords+600)
+        }
     } else {
         // Default: concise synthesis (no Sources section; system appends it)
         outputStructure = `## Output Format (do NOT include this section in the final answer):
@@ -355,9 +453,24 @@ Section requirements:
 `
     }
 
+    // Generate dynamic start instruction based on query type
+    var startInstruction string
+    switch queryType {
+    case "comparison":
+        startInstruction = `Begin your answer directly with the "## Scope and Criteria" heading.`
+    case "analysis":
+        startInstruction = `Begin your answer directly with the "## Context and Scope" heading.`
+    case "list":
+        startInstruction = `Begin your answer directly with the table or list (no introductory heading).`
+    case "explanation":
+        startInstruction = `Begin your answer directly with the "## Overview" heading.`
+    default: // survey
+        startInstruction = `Begin your answer directly with the "## Executive Summary" heading.`
+    }
+
     fmt.Fprintf(&b, `# Synthesis Requirements:
 
-    IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with the "## Executive Summary" heading.
+    IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. %s
 
     ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
     ✓ Each of the %d research areas has a dedicated subsection (### heading)
@@ -377,6 +490,13 @@ Section requirements:
     - Keep findings VERBATIM when referencing specific data/quotes
     - Synthesize patterns across sources, but don't paraphrase individual claims
 
+    ## Quantitative Synthesis Requirements:
+    - When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES when appropriate
+    - Tables should compare: size, growth rates, market share, performance metrics, costs, timelines
+    - Include inline citations [n] for ALL data points in tables
+    - If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
+    - Prioritize specific numbers over vague descriptors (e.g., "$5.2B revenue" not "significant revenue")
+
     %s
     %s
 
@@ -387,7 +507,7 @@ Section requirements:
     - NEVER fabricate or hallucinate sources
     - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
-    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
+    `, startInstruction, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
 
 	// Include available citations if present (Phase 2.5 fix)
 	if input.Context != nil {
@@ -510,7 +630,7 @@ Section requirements:
 	url := base + "/agent/query"
 
 	httpClient := &http.Client{
-		Timeout:   60 * time.Second, // Allow up to 1 minute for role-aware LLM synthesis
+		Timeout:   180 * time.Second, // Allow up to 3 minutes for comprehensive synthesis (deep research)
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
@@ -737,11 +857,10 @@ Section requirements:
 	)
 
     // Apply report formatting to ensure all citations appear in Sources
+    // Use savedCitations (preserved before deletion) instead of input.Context
     finalResponse := out.Response
-    if input.Context != nil {
-        if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
-            finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
-        }
+    if savedCitations != "" {
+        finalResponse = formatting.FormatReportWithCitations(finalResponse, savedCitations)
     }
 
     // Continuation fallback: if model stopped early and output looks incomplete, ask it to continue
@@ -1034,88 +1153,6 @@ Section requirements:
     }, nil
 }
 
-// detectLanguage performs simple heuristic language detection based on character ranges
-func detectLanguage(query string) string {
-	if query == "" {
-		return "English"
-	}
-
-	// Count characters by Unicode range
-	var cjk, cyrillic, arabic, latin int
-	for _, r := range query {
-		switch {
-		case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
-			cjk++
-		case r >= 0x3040 && r <= 0x309F: // Hiragana
-			cjk++
-		case r >= 0x30A0 && r <= 0x30FF: // Katakana
-			cjk++
-		case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
-			cjk++
-		case r >= 0x0400 && r <= 0x04FF: // Cyrillic
-			cyrillic++
-		case r >= 0x0600 && r <= 0x06FF: // Arabic
-			arabic++
-		case (r >= 0x0041 && r <= 0x005A) || (r >= 0x0061 && r <= 0x007A): // Latin
-			latin++
-		}
-	}
-
-	total := cjk + cyrillic + arabic + latin
-	if total == 0 {
-		return "English" // Default if no recognized characters
-	}
-
-	// Determine language based on character composition
-	cjkPercent := float64(cjk) / float64(total)
-	if cjkPercent > 0.3 {
-		// Distinguish Chinese/Japanese/Korean by character patterns
-		var hiragana, katakana, hangul int
-		for _, r := range query {
-			if r >= 0x3040 && r <= 0x309F {
-				hiragana++
-			}
-			if r >= 0x30A0 && r <= 0x30FF {
-				katakana++
-			}
-			if r >= 0xAC00 && r <= 0xD7AF {
-				hangul++
-			}
-		}
-		if hangul > 0 {
-			return "Korean"
-		}
-		if hiragana > 0 || katakana > 0 {
-			return "Japanese"
-		}
-		return "Chinese"
-	}
-
-	cyrillicPercent := float64(cyrillic) / float64(total)
-	if cyrillicPercent > 0.3 {
-		return "Russian"
-	}
-
-	arabicPercent := float64(arabic) / float64(total)
-	if arabicPercent > 0.3 {
-		return "Arabic"
-	}
-
-	// Check for common non-English Latin script patterns
-	lowerQuery := strings.ToLower(query)
-	if strings.Contains(lowerQuery, "ñ") || strings.Contains(lowerQuery, "¿") || strings.Contains(lowerQuery, "¡") {
-		return "Spanish"
-	}
-	if strings.Contains(lowerQuery, "ç") || strings.Contains(lowerQuery, "à") || strings.Contains(lowerQuery, "è") {
-		return "French"
-	}
-	if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
-		return "German"
-	}
-
-	return "English" // Default for Latin scripts
-}
-
 // truncateForLog returns s truncated to max characters for safe logging
 func truncateForLog(s string, max int) string {
 	runes := []rune(s)
@@ -1252,4 +1289,56 @@ func countInlineCitations(text string) int {
 		seen[m] = true
 	}
 	return len(seen)
+}
+
+// detectQueryType analyzes the query to determine the appropriate report structure
+func detectQueryType(query string, context map[string]interface{}) string {
+	lowerQuery := strings.ToLower(query)
+
+	// Check for comparison queries
+	comparisonKeywords := []string{
+		"compare", "versus", "vs", "vs.", "对比", "比较",
+		"difference between", "区别", "哪个更好", "孰优孰劣",
+	}
+	for _, kw := range comparisonKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			return "comparison"
+		}
+	}
+
+	// Check for list/ranking queries
+	listKeywords := []string{
+		"list", "top ", "best ", "worst ", "列表", "排名",
+		"top 5", "top 10", "最佳", "列举",
+	}
+	for _, kw := range listKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			return "list"
+		}
+	}
+
+	// Check for analysis queries
+	analysisKeywords := []string{
+		"analyze", "analysis", "assess", "evaluate", "分析",
+		"评估", "市场", "market", "landscape", "industry",
+	}
+	for _, kw := range analysisKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			return "analysis"
+		}
+	}
+
+	// Check for explanation queries
+	explanationKeywords := []string{
+		"what is", "how does", "explain", "什么是", "如何",
+		"解释", "原理", "mechanism", "process",
+	}
+	for _, kw := range explanationKeywords {
+		if strings.Contains(lowerQuery, kw) {
+			return "explanation"
+		}
+	}
+
+	// Default to survey/overview for unmatched queries
+	return "survey"
 }

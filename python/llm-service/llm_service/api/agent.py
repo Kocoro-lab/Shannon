@@ -183,6 +183,12 @@ async def agent_query(request: Request, query: AgentQuery):
                     role_name = query.context.get("role") or query.context.get(
                         "agent_type"
                     )
+
+                # Default to deep_research_agent for research workflows
+                if not role_name and isinstance(query.context, dict):
+                    if query.context.get("force_research") or query.context.get("workflow_type") == "research":
+                        role_name = "deep_research_agent"
+
                 preset = get_role_preset(str(role_name) if role_name else "generalist")
 
                 # Check for system_prompt in context first, then fall back to preset
@@ -203,6 +209,13 @@ async def agent_query(request: Request, query: AgentQuery):
                 except Exception as e:
                     # On any rendering issue, keep original system_prompt
                     logger.warning(f"System prompt rendering failed: {e}")
+
+                # Add language instruction if target_language is specified in context
+                if isinstance(query.context, dict) and "target_language" in query.context:
+                    target_lang = query.context.get("target_language")
+                    if target_lang and target_lang != "English":
+                        language_instruction = f"\n\nCRITICAL: Respond in {target_lang}. The user's query is in {target_lang}. You MUST respond in the SAME language. DO NOT translate to English."
+                        system_prompt = language_instruction + "\n\n" + system_prompt
 
                 cap_overrides = preset.get("caps") or {}
                 # Precedence: caller values win; fall back to role caps only if missing
@@ -1214,6 +1227,19 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- Ensure logical dependencies are clear\n"
             "- Prioritize high-value information sources\n"
             "- Quality over quantity: Focus on tasks yielding authoritative, relevant sources\n\n"
+            "# Scaling Rules (Task Count by Query Type):\n"
+            "- **Comparison queries** ('compare A vs B'): Create ONE subtask per entity being compared\n"
+            "  Example: 'Compare LangChain vs AutoGen vs CrewAI' → 3 subtasks (one per framework)\n"
+            "- **List/ranking queries** ('top 10 X', 'best Y'): Use SINGLE comprehensive subtask\n"
+            "  Example: 'List top 10 AI frameworks' → 1 subtask with broad search scope\n"
+            "- **Analysis queries** ('analyze market for X'): Split by major dimensions\n"
+            "  Example: 'Analyze EV market' → [market size, key players, trends, regulations]\n"
+            "- **Explanation queries** ('what is X', 'how does Y work'): Usually 1-2 subtasks\n"
+            "  Example: 'Explain quantum computing' → 1 subtask (or 2 if very complex: principles + applications)\n\n"
+            "**Anti-patterns to avoid:**\n"
+            "- DO NOT create subtasks that overlap significantly in scope\n"
+            "- DO NOT split tasks that are too granular (combine related questions)\n"
+            "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n\n"
             "CRITICAL: Each subtask MUST have these EXACT fields: id, description, dependencies, estimated_tokens, suggested_tools, tool_parameters\n"
             "NEVER return null for subtasks field - always provide at least one subtask.\n\n"
             "TOOL SELECTION GUIDELINES:\n"

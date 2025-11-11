@@ -1679,21 +1679,21 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
     // Only update terminal fields to avoid clobbering richer data written elsewhere.
     // Do not overwrite tokens/cost/model/provider/metadata.
     durationMs := int(end.Sub(start).Milliseconds())
-    // Upsert terminal fields to handle races with initial creation; avoid overwriting terminal states
+    // Update terminal fields only if row already exists (created by SubmitTask or GetTaskStatus)
+    // Use UPDATE instead of INSERT to avoid NOT NULL constraint violations on required fields
     if _, err2 := s.dbClient.Wrapper().ExecContext(
         ctx,
-        `INSERT INTO task_executions (workflow_id, status, completed_at, duration_ms)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (workflow_id) DO UPDATE
-         SET status = EXCLUDED.status,
-             completed_at = EXCLUDED.completed_at,
-             duration_ms = COALESCE(task_executions.duration_ms, EXCLUDED.duration_ms)
-         WHERE task_executions.status NOT IN ('COMPLETED', 'FAILED')`,
+        `UPDATE task_executions
+         SET status = $2,
+             completed_at = $3,
+             duration_ms = COALESCE(duration_ms, $4)
+         WHERE workflow_id = $1
+           AND status NOT IN ('COMPLETED', 'FAILED')`,
         workflowID, statusStr, end, durationMs,
     ); err2 != nil {
-        s.logger.Warn("watchAndPersist: final status upsert failed", zap.String("workflow_id", workflowID), zap.Error(err2))
+        s.logger.Warn("watchAndPersist: final status update failed", zap.String("workflow_id", workflowID), zap.Error(err2))
     } else {
-        s.logger.Debug("watchAndPersist: final status upserted", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
+        s.logger.Debug("watchAndPersist: final status updated", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
     }
 }
 

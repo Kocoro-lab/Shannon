@@ -354,6 +354,9 @@ if err == nil && refineResult.RefinedQuery != "" {
         baseContext["original_query"] = input.Query
         baseContext["refinement_rationale"] = refineResult.Rationale
         baseContext["refined_query"] = refinedQuery
+        if refineResult.DetectedLanguage != "" {
+            baseContext["target_language"] = refineResult.DetectedLanguage
+        }
         if refineResult.CanonicalName != "" {
             baseContext["canonical_name"] = refineResult.CanonicalName
         }
@@ -596,7 +599,8 @@ if err == nil && refineResult.RefinedQuery != "" {
 
                     // Execute this subtask with ReAct
                     // Allow tuning ReAct iterations via context with safe clamp (2..8)
-                    reactMaxIterations := 5
+                    // Default is 3 for focused subtasks (lower than full-task React which uses 5)
+                    reactMaxIterations := 3
                     if v, ok := baseContext["react_max_iterations"]; ok {
                         switch t := v.(type) {
                         case int:
@@ -655,7 +659,8 @@ if err == nil && refineResult.RefinedQuery != "" {
 
                     workflow.Go(ctx, func(gctx workflow.Context) {
                         // Allow tuning ReAct iterations via context with safe clamp (2..8)
-                        reactMaxIterations := 5
+                        // Default is 3 for focused subtasks (lower than full-task React which uses 5)
+                        reactMaxIterations := 3
                         if v, ok := baseContext["react_max_iterations"]; ok {
                             switch t := v.(type) {
                             case int:
@@ -1080,6 +1085,59 @@ if err == nil && refineResult.RefinedQuery != "" {
         }).Get(recCtx, nil)
     }
 
+    // Post-synthesis language validation
+    if targetLang, ok := baseContext["target_language"].(string); ok && targetLang != "" && targetLang != "English" {
+        detectedOutputLang := detectLanguageFromText(synthesis.FinalResult)
+        if detectedOutputLang != targetLang {
+            logger.Warn("Language mismatch detected in synthesis output",
+                "expected", targetLang,
+                "detected", detectedOutputLang,
+                "retrying_with_stronger_instruction", true,
+            )
+
+            // Re-synthesize with stronger language instruction at the top
+            baseContext["language_instruction_priority"] = "critical"
+            baseContext["force_language_match"] = true
+
+            var reSynthesis activities.SynthesisResult
+            err = workflow.ExecuteActivity(ctx,
+                activities.SynthesizeResultsLLM,
+                activities.SynthesisInput{
+                    Query:        input.Query,
+                    AgentResults: agentResults,
+                    Context:      baseContext,
+                    ParentWorkflowID: input.ParentWorkflowID,
+                }).Get(ctx, &reSynthesis)
+
+            if err == nil {
+                // Use re-synthesized result
+                synthesis = reSynthesis
+                totalTokens += reSynthesis.TokensUsed
+
+                // Record re-synthesis token usage
+                if reSynthesis.TokensUsed > 0 {
+                    recCtx := opts.WithTokenRecordOptions(ctx)
+                    _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+                        UserID:       input.UserID,
+                        SessionID:    input.SessionID,
+                        TaskID:       workflowID,
+                        AgentID:      "synthesis-language-retry",
+                        Model:        reSynthesis.ModelUsed,
+                        Provider:     reSynthesis.Provider,
+                        InputTokens:  reSynthesis.InputTokens,
+                        OutputTokens: reSynthesis.CompletionTokens,
+                        Metadata: map[string]interface{}{
+                            "phase": "synthesis-retry",
+                            "reason": "language_mismatch",
+                        },
+                    }).Get(recCtx, nil)
+                }
+            } else {
+                logger.Warn("Re-synthesis failed, using original result", "error", err)
+            }
+        }
+    }
+
 	// Step 3.5: Gap-filling loop (iterative re-search for undercovered areas)
 	// Version-gated for safe rollout and Temporal determinism
 	gapFillingVersion := workflow.GetVersion(ctx, "gap_filling_v1", workflow.DefaultVersion, 1)
@@ -1106,46 +1164,77 @@ if err == nil && refineResult.RefinedQuery != "" {
 				// Build targeted search queries for gaps
 				gapQueries := buildGapQueries(gapAnalysis.UndercoveredAreas, input.Query)
 
-				// Execute targeted searches using ReAct pattern
+				// Execute targeted searches in parallel using Temporal-safe channels
 				var allGapResults []activities.AgentExecutionResult
+				var gapTotalTokens int
+
+				// Define payload type once (shared between send and receive)
+				type gapResultPayload struct {
+					Results []activities.AgentExecutionResult
+					Tokens  int
+				}
+
+				// Use Temporal-safe channel to collect gap results
+				gapResultsChan := workflow.NewChannel(ctx)
+				numGapQueries := len(gapQueries)
+
 				for _, gapQuery := range gapQueries {
-					gapContext := make(map[string]interface{})
-					for k, v := range baseContext {
-						gapContext[k] = v
-					}
-					gapContext["research_mode"] = "gap_fill"
-					gapContext["target_area"] = gapQuery.TargetArea
-					gapContext["gap_iteration"] = iterationCount + 1
+					gapQuery := gapQuery // Capture for goroutine
 
-				reactConfig := patterns.ReactConfig{
-					MaxIterations:     3,  // Focused search
-					ObservationWindow: 3,  // Keep last 3 observations in context
-					MaxObservations:   20, // Prevent unbounded growth
-					MaxThoughts:       10,
-					MaxActions:        10,
+					workflow.Go(ctx, func(gctx workflow.Context) {
+
+						gapContext := make(map[string]interface{})
+						for k, v := range baseContext {
+							gapContext[k] = v
+						}
+						gapContext["research_mode"] = "gap_fill"
+						gapContext["target_area"] = gapQuery.TargetArea
+						gapContext["gap_iteration"] = iterationCount + 1
+
+						reactConfig := patterns.ReactConfig{
+							MaxIterations:     3,  // Focused search
+							ObservationWindow: 3,  // Keep last 3 observations in context
+							MaxObservations:   20, // Prevent unbounded growth
+							MaxThoughts:       10,
+							MaxActions:        10,
+						}
+						reactOpts := patterns.Options{
+							BudgetAgentMax: agentMaxTokens,
+							SessionID:      input.SessionID,
+							ModelTier:      modelTier,
+							Context:        gapContext,
+						}
+
+						gapResult, err := patterns.ReactLoop(
+							gctx,
+							gapQuery.Query,
+							gapContext,
+							input.SessionID,
+							[]string{}, // No history for gap queries
+							reactConfig,
+							reactOpts,
+						)
+
+						// Send result to channel
+						payload := gapResultPayload{}
+						if err == nil && len(gapResult.AgentResults) > 0 {
+							payload.Results = gapResult.AgentResults
+							payload.Tokens = gapResult.TotalTokens
+						}
+						gapResultsChan.Send(gctx, payload)
+					})
 				}
-					reactOpts := patterns.Options{
-						BudgetAgentMax: agentMaxTokens,
-						SessionID:      input.SessionID,
-						ModelTier:      modelTier,
-						Context:        gapContext,
-					}
 
-					gapResult, err := patterns.ReactLoop(
-						ctx,
-						gapQuery.Query,
-						gapContext,
-						input.SessionID,
-						[]string{}, // No history for gap queries
-						reactConfig,
-						reactOpts,
-					)
-
-					if err == nil && len(gapResult.AgentResults) > 0 {
-						allGapResults = append(allGapResults, gapResult.AgentResults...)
-						totalTokens += gapResult.TotalTokens
+				// Collect all gap results from channel (Temporal-safe)
+				for i := 0; i < numGapQueries; i++ {
+					var payload gapResultPayload
+					gapResultsChan.Receive(ctx, &payload)
+					if len(payload.Results) > 0 {
+						allGapResults = append(allGapResults, payload.Results...)
+						gapTotalTokens += payload.Tokens
 					}
 				}
+				totalTokens += gapTotalTokens
 
 				// If we got new evidence, re-collect citations and re-synthesize
 				if len(allGapResults) > 0 {
@@ -1371,6 +1460,7 @@ if err == nil && refineResult.RefinedQuery != "" {
         "agent_count":   len(agentResults),
         "patterns_used": []string{"react", "parallel", "reflection"},
     }
+    logger.Info("Preparing metadata", "collected_citations_count", len(collectedCitations))
     if len(collectedCitations) > 0 {
         // Export a light citation struct to metadata
         out := make([]map[string]interface{}, 0, len(collectedCitations))
@@ -1384,6 +1474,7 @@ if err == nil && refineResult.RefinedQuery != "" {
             })
         }
         meta["citations"] = out
+        logger.Info("Added citations to metadata", "count", len(out))
     }
     if verification.TotalClaims > 0 || verification.OverallConfidence > 0 {
         meta["verification"] = verification
@@ -1628,4 +1719,75 @@ func topologicalSort(subtasks []activities.Subtask) []string {
 	}
 
 	return result
+}
+
+// detectLanguageFromText performs simple heuristic language detection on output text
+func detectLanguageFromText(text string) string {
+	if text == "" {
+		return "English"
+	}
+
+	// Count characters by Unicode range
+	var cjk, cyrillic, arabic, latin int
+	for _, r := range text {
+		switch {
+		case r >= 0x4E00 && r <= 0x9FFF: // CJK Unified Ideographs
+			cjk++
+		case r >= 0x3040 && r <= 0x309F: // Hiragana
+			cjk++
+		case r >= 0x30A0 && r <= 0x30FF: // Katakana
+			cjk++
+		case r >= 0xAC00 && r <= 0xD7AF: // Hangul Syllables
+			cjk++
+		case r >= 0x0400 && r <= 0x04FF: // Cyrillic
+			cyrillic++
+		case r >= 0x0600 && r <= 0x06FF: // Arabic
+			arabic++
+		case (r >= 0x0041 && r <= 0x005A) || (r >= 0x0061 && r <= 0x007A): // Latin
+			latin++
+		}
+	}
+
+	total := cjk + cyrillic + arabic + latin
+	if total == 0 {
+		return "English" // Default if no recognized characters
+	}
+
+	// Determine language based on character composition
+	cjkPercent := float64(cjk) / float64(total)
+	if cjkPercent > 0.3 {
+		// Distinguish Chinese/Japanese/Korean by character patterns
+		var hiragana, katakana, hangul int
+		for _, r := range text {
+			if r >= 0x3040 && r <= 0x309F {
+				hiragana++
+			}
+			if r >= 0x30A0 && r <= 0x30FF {
+				katakana++
+			}
+			if r >= 0xAC00 && r <= 0xD7AF {
+				hangul++
+			}
+		}
+		if hangul > 0 {
+			return "Korean"
+		}
+		if hiragana > 0 || katakana > 0 {
+			return "Japanese"
+		}
+		return "Chinese"
+	}
+
+	cyrillicPercent := float64(cyrillic) / float64(total)
+	if cyrillicPercent > 0.3 {
+		return "Russian"
+	}
+
+	arabicPercent := float64(arabic) / float64(total)
+	if arabicPercent > 0.3 {
+		return "Arabic"
+	}
+
+	// Default to English for Latin scripts
+	return "English"
 }
