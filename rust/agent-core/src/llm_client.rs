@@ -106,9 +106,19 @@ impl LLMClient {
             }
         }
 
+        // Check for max_tokens override in context, otherwise use 16384 default (increased for GPT-5 reasoning models)
+        let max_tokens = if let Some(obj) = ctx_val.as_object() {
+            obj.get("max_tokens")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as u32)
+                .unwrap_or(16384)
+        } else {
+            16384
+        };
+
         debug!(
-            "LLMClient tier selection: mode_default={}, effective_tier={}",
-            tier_from_mode, effective_tier
+            "LLMClient tier selection: mode_default={}, effective_tier={}, max_tokens={}",
+            tier_from_mode, effective_tier, max_tokens
         );
 
         let request = AgentQuery {
@@ -117,7 +127,7 @@ impl LLMClient {
             agent_id: Cow::Borrowed(agent_id),
             mode: Cow::Borrowed(mode),
             tools: tools_vec,
-            max_tokens: 2048,
+            max_tokens,
             temperature: 0.7,
             model_tier: Cow::Owned(effective_tier),
         };

@@ -394,6 +394,15 @@ class CacheManager:
         expiry = datetime.utcnow() + timedelta(seconds=ttl)
         self.cache[key] = (response, expiry)
 
+    def delete(self, key: str) -> None:
+        """Delete a cache entry if present"""
+        try:
+            if key in self.cache:
+                del self.cache[key]
+        except Exception:
+            # Best-effort; ignore
+            pass
+
     @property
     def hit_rate(self) -> float:
         """Calculate cache hit rate"""

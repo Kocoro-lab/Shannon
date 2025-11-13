@@ -490,6 +490,105 @@ func extractCitationsFromResponse(response string, agentID string, now time.Time
 	return citations
 }
 
+// extractCitationsFromPlainTextResponse extracts citations by scanning plain-text
+// agent responses for HTTP/HTTPS URLs when structured tool outputs are absent.
+// This is a conservative fallback to ensure metadata contains citations even when
+// agents only mention sources narratively.
+func extractCitationsFromPlainTextResponse(response string, agentID string, now time.Time) []Citation {
+    var citations []Citation
+    if strings.TrimSpace(response) == "" {
+        return citations
+    }
+
+    // Regex for http(s) URLs, stop at whitespace or common trailing punctuation
+    urlRe := regexp.MustCompile(`https?://[^\s\]\)\>\"']+`)
+    matches := urlRe.FindAllStringIndex(response, -1)
+    if len(matches) == 0 {
+        return citations
+    }
+
+    // Deduplicate per-response by normalized URL
+    seen := make(map[string]bool)
+
+    // Helper to build a small context snippet around the URL (UTF-8 safe)
+    getSnippet := func(start, end int) string {
+        r := []rune(response)
+        // Map byte indices to rune indices conservatively
+        // Fallback: slice by bytes if mapping fails
+        // Simplicity: approximate by converting entire string to runes and searching substring
+        urlText := response[start:end]
+        ri := strings.Index(string(r), urlText)
+        if ri < 0 {
+            // Fallback: just return first 200 runes of the tail starting at start
+            if start < len(response) {
+                tail := []rune(response[start:])
+                if len(tail) > 200 { return string(tail[:200]) + "..." }
+                return string(tail)
+            }
+            return ""
+        }
+        lo := ri - 120
+        hi := ri + len([]rune(urlText)) + 120
+        if lo < 0 { lo = 0 }
+        if hi > len(r) { hi = len(r) }
+        // Ensure lo <= hi after clamping (can happen with multi-byte chars at boundaries)
+        if lo > hi { lo = 0; if hi < len(r) { hi = len(r) } }
+        if lo >= len(r) { return "" }
+        snippet := string(r[lo:hi])
+        if len([]rune(snippet)) > 220 {
+            snippet = string([]rune(snippet)[:220]) + "..."
+        }
+        return snippet
+    }
+
+    for _, m := range matches {
+        start, end := m[0], m[1]
+        raw := response[start:end]
+        // Trim trailing punctuation that often gets attached in prose
+        raw = strings.TrimRight(raw, ",.;:)]}")
+        // Normalize URL
+        normalized, err := NormalizeURL(raw)
+        if err != nil || normalized == "" {
+            continue
+        }
+        if seen[normalized] {
+            continue
+        }
+        seen[normalized] = true
+
+        domain, err := ExtractDomain(normalized)
+        if err != nil || domain == "" {
+            continue
+        }
+
+        snippet := getSnippet(start, end)
+
+        // Conservative relevance for narrative references
+        relevance := 0.4
+        quality := ScoreQuality(relevance, nil, false, snippet != "", now)
+        credibility := ScoreCredibility(domain)
+
+        citations = append(citations, Citation{
+            URL:              normalized,
+            Title:            "", // Unknown in plain text; formatter will display URL/domain
+            Source:           domain,
+            SourceType:       "web",
+            RetrievedAt:      now,
+            PublishedDate:    nil,
+            RelevanceScore:   relevance,
+            QualityScore:     quality,
+            CredibilityScore: credibility,
+            AgentID:          agentID,
+            Snippet:          snippet,
+        })
+    }
+
+    if isCitationsDebugEnabled() {
+        log.Printf("[citations] plain_text_extracted=%d", len(citations))
+    }
+    return citations
+}
+
 // extractCitationsFromToolOutput extracts citations from a tool execution output
 func extractCitationsFromToolOutput(toolName string, output interface{}, agentID string, now time.Time) []Citation {
     var citations []Citation
@@ -591,12 +690,16 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 			agentID = "unknown"
 		}
 
-		// Extract tool_executions array
-		toolExecutions, ok := resultMap["tool_executions"].([]interface{})
-		if !ok {
-			continue
+
+		// Extract tool_executions array if present; allow nil/missing
+		var toolExecutions []interface{}
+		if tev, ok := resultMap["tool_executions"]; ok && tev != nil {
+			if arr, ok := tev.([]interface{}); ok {
+				toolExecutions = arr
+			}
 		}
 
+		beforeCount := len(allCitations)
 		for _, toolExecInterface := range toolExecutions {
 			toolExecMap, ok := toolExecInterface.(map[string]interface{})
 			if !ok {
@@ -616,11 +719,18 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 			allCitations = append(allCitations, citations...)
 		}
 
-		// Fallback: If tool_executions was empty or didn't yield citations, try parsing from response text
-		if len(toolExecutions) == 0 && len(allCitations) == 0 {
-			if responseStr, ok := resultMap["response"].(string); ok && responseStr != "" {
+		// Fallbacks when this result yielded no citations via tools
+		if responseStr, ok := resultMap["response"].(string); ok && strings.TrimSpace(responseStr) != "" {
+			if len(toolExecutions) == 0 || beforeCount == len(allCitations) {
+				// 1) Try structured JSON array fallback
 				fallbackCitations := extractCitationsFromResponse(responseStr, agentID, now)
-				allCitations = append(allCitations, fallbackCitations...)
+				if len(fallbackCitations) > 0 {
+					allCitations = append(allCitations, fallbackCitations...)
+				} else {
+					// 2) Plain-text URL scan fallback
+					plain := extractCitationsFromPlainTextResponse(responseStr, agentID, now)
+					allCitations = append(allCitations, plain...)
+				}
 			}
 		}
 	}

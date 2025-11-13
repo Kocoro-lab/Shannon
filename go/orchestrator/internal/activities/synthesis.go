@@ -11,28 +11,79 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
 )
 
+// sanitizeAgentOutput removes duplicate references from agent outputs
+// to avoid sending the same URLs/citations twice (once in agent output, once in Available Citations)
+func sanitizeAgentOutput(text string) string {
+	lines := strings.Split(text, "\n")
+	var result []string
+	inSourcesSection := false
+
+	urlPattern := regexp.MustCompile(`^https?://`)
+	citationPattern := regexp.MustCompile(`^\[\d+\]\s+https?://`)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect Sources section start
+		if strings.HasPrefix(trimmed, "## Sources") || strings.HasPrefix(trimmed, "### Sources") {
+			inSourcesSection = true
+			continue
+		}
+
+		// Skip everything inside Sources section
+		if inSourcesSection {
+			// Check if we hit another major section (exit Sources)
+			if strings.HasPrefix(trimmed, "##") && !strings.HasPrefix(trimmed, "## Sources") {
+				inSourcesSection = false
+			} else {
+				continue
+			}
+		}
+
+		// Skip bare URLs
+		if urlPattern.MatchString(trimmed) {
+			continue
+		}
+
+		// Skip citation lines like "[1] https://..."
+		if citationPattern.MatchString(trimmed) {
+			continue
+		}
+
+		// Skip bullet points with only URLs
+		if strings.HasPrefix(trimmed, "- http") || strings.HasPrefix(trimmed, "* http") || strings.HasPrefix(trimmed, "• http") {
+			continue
+		}
+
+		// Keep the line
+		result = append(result, line)
+	}
+
+	return strings.TrimSpace(strings.Join(result, "\n"))
+}
+
 // SynthesizeResults synthesizes results from multiple agents (baseline concatenation)
 func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
-    // Emit synthesis start once for the simple (non-LLM) path
-    wfID := input.ParentWorkflowID
-    // Fallback to context-provided parent_workflow_id for correlation
-    if wfID == "" && input.Context != nil {
-        if v, ok := input.Context["parent_workflow_id"].(string); ok && v != "" {
-            wfID = v
-        }
-    }
-    if wfID == "" {
-        if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-            wfID = info.WorkflowExecution.ID
-        }
-    }
+	// Emit synthesis start once for the simple (non-LLM) path
+	wfID := input.ParentWorkflowID
+	// Fallback to context-provided parent_workflow_id for correlation
+	if wfID == "" && input.Context != nil {
+		if v, ok := input.Context["parent_workflow_id"].(string); ok && v != "" {
+			wfID = v
+		}
+	}
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
 	if wfID != "" {
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
@@ -62,7 +113,7 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 			Payload: map[string]interface{}{
 				"tokens_used": res.TokensUsed,
 			},
-			Timestamp:  time.Now(),
+			Timestamp: time.Now(),
 		})
 		// Event 2: Lightweight tokens summary
 		streaming.Get().Publish(wfID, streaming.Event{
@@ -103,18 +154,18 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// LLM-first; fallback to simple synthesis on any failure
 
 	// Emit synthesis start once at the beginning of the LLM attempt
-    wfID := input.ParentWorkflowID
-    // Fallback to context-provided parent_workflow_id for correlation
-    if wfID == "" && input.Context != nil {
-        if v, ok := input.Context["parent_workflow_id"].(string); ok && v != "" {
-            wfID = v
-        }
-    }
-    if wfID == "" {
-        if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-            wfID = info.WorkflowExecution.ID
-        }
-    }
+	wfID := input.ParentWorkflowID
+	// Fallback to context-provided parent_workflow_id for correlation
+	if wfID == "" && input.Context != nil {
+		if v, ok := input.Context["parent_workflow_id"].(string); ok && v != "" {
+			wfID = v
+		}
+	}
+	if wfID == "" {
+		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+			wfID = info.WorkflowExecution.ID
+		}
+	}
 	if wfID != "" {
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
@@ -125,32 +176,32 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		})
 	}
 
-    // Extract context for role-aware synthesis
-    role := ""
-    contextMap := make(map[string]interface{})
-    // Track citation payload size for diagnostics and save for later appending
-    removedCitations := false
-    removedCitationsChars := 0
-    var savedCitations string // Save citations to append after synthesis
-    if input.Context != nil {
-        // Extract role to apply role-specific prompts
-        if r, ok := input.Context["role"].(string); ok {
-            role = r
-        }
-        // Copy all context (includes prompt_params, language, etc.)
-        for k, v := range input.Context {
-            contextMap[k] = v
-        }
-        // Remove large duplicates from LLM prompt but save for post-processing
-        if v, ok := contextMap["available_citations"]; ok {
-            if s, ok := v.(string); ok {
-                removedCitations = true
-                removedCitationsChars = len([]rune(s))
-                savedCitations = s // Save for later appending
-            }
-            delete(contextMap, "available_citations")
-        }
-    }
+	// Extract context for role-aware synthesis
+	role := ""
+	contextMap := make(map[string]interface{})
+	// Track citation payload size for diagnostics and save for later appending
+	removedCitations := false
+	removedCitationsChars := 0
+	var savedCitations string // Save citations to append after synthesis
+	if input.Context != nil {
+		// Extract role to apply role-specific prompts
+		if r, ok := input.Context["role"].(string); ok {
+			role = r
+		}
+		// Copy all context (includes prompt_params, language, etc.)
+		for k, v := range input.Context {
+			contextMap[k] = v
+		}
+		// Remove large duplicates from LLM prompt but save for post-processing
+		if v, ok := contextMap["available_citations"]; ok {
+			if s, ok := v.(string); ok {
+				removedCitations = true
+				removedCitationsChars = len([]rune(s))
+				savedCitations = s // Save for later appending
+			}
+			delete(contextMap, "available_citations")
+		}
+	}
 
 	// Ensure synthesis uses capable model tier for high-quality output
 	// Default to "large" if not specified, since synthesis is the final user-facing output
@@ -160,7 +211,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	// Build synthesis query that includes agent results
 	const maxAgents = 6
-	const maxPerAgentChars = 10000 // Increased for data-heavy responses (analytics, structured data)
+	const maxPerAgentChars = 4000 // Increased for data-heavy responses (analytics, structured data)
 
 	var b strings.Builder
 
@@ -219,30 +270,30 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		minCitations = 3 // Minimum floor for research synthesis
 	}
 
-    // Detect language from query for language matching
-    queryLanguage := detectLanguage(input.Query)
+	// Detect language from query for language matching
+	queryLanguage := detectLanguage(input.Query)
 
-    // Check if this is a language-retry with stronger emphasis
-    forceLanguageMatch := false
-    if input.Context != nil {
-        if force, ok := input.Context["force_language_match"].(bool); ok {
-            forceLanguageMatch = force
-        }
-    }
+	// Check if this is a language-retry with stronger emphasis
+	forceLanguageMatch := false
+	if input.Context != nil {
+		if force, ok := input.Context["force_language_match"].(bool); ok {
+			forceLanguageMatch = force
+		}
+	}
 
-    // Build language instruction (stronger for retries)
-    var languageInstruction string
-    if forceLanguageMatch {
-        languageInstruction = fmt.Sprintf(
-            "🚨 CRITICAL LANGUAGE REQUIREMENT 🚨\nYou MUST respond ENTIRELY in %s.\nThe user's query is in %s.\nDO NOT use English or any other language.\nDO NOT mix languages.\nEVERY sentence, heading, and word must be in %s.",
-            queryLanguage, queryLanguage, queryLanguage,
-        )
-    } else {
-        languageInstruction = fmt.Sprintf(
-            "Respond in the same language as the user's query (detected: %s).",
-            queryLanguage,
-        )
-    }
+	// Build language instruction (stronger for retries)
+	var languageInstruction string
+	if forceLanguageMatch {
+		languageInstruction = fmt.Sprintf(
+			"🚨 CRITICAL LANGUAGE REQUIREMENT 🚨\nYou MUST respond ENTIRELY in %s.\nThe user's query is in %s.\nDO NOT use English or any other language.\nDO NOT mix languages.\nEVERY sentence, heading, and word must be in %s.",
+			queryLanguage, queryLanguage, queryLanguage,
+		)
+	} else {
+		languageInstruction = fmt.Sprintf(
+			"Respond in the same language as the user's query (detected: %s).",
+			queryLanguage,
+		)
+	}
 
 	// Check synthesis style (comprehensive vs. concise)
 	synthesisStyle := "concise"
@@ -252,131 +303,72 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
-    // Prepare optional organization guidance from research_areas
-    areasInstruction := ""
-    var areas []string
-    if input.Context != nil {
-        if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
-            // Accept []string or []interface{}
-            switch t := rawAreas.(type) {
-            case []string:
-                areas = t
-            case []interface{}:
-                for _, it := range t {
-                    if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
-                        areas = append(areas, s)
-                    }
-                }
-            }
-            if len(areas) > 0 {
-                // Provide explicit heading skeleton for the model to follow
-                var sb strings.Builder
-                sb.WriteString("## MANDATORY Research Area Coverage:\n")
-                sb.WriteString(fmt.Sprintf("You MUST create a subsection for EACH of the %d research areas below.\n", len(areas)))
-                sb.WriteString("Each subsection should be 150–250 words with inline citations.\n")
-                sb.WriteString("Structure your Detailed Findings section with these exact headings:\n")
-                for _, a := range areas {
-                    if strings.TrimSpace(a) != "" {
-                        sb.WriteString("### ")
-                        sb.WriteString(a)
-                        sb.WriteString("\n")
-                    }
-                }
-                sb.WriteString("\nDo NOT skip any research areas. Generate comprehensive content for ALL sections above.\n")
-                areasInstruction = sb.String()
-            }
-        }
-    }
+	// Prepare optional organization guidance from research_areas
+	areasInstruction := ""
+	var areas []string
+	if input.Context != nil {
+		if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
+			// Accept []string or []interface{}
+			switch t := rawAreas.(type) {
+			case []string:
+				areas = t
+			case []interface{}:
+				for _, it := range t {
+					if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+						areas = append(areas, s)
+					}
+				}
+			}
+			if len(areas) > 0 {
+				// Provide explicit heading skeleton for the model to follow
+				var sb strings.Builder
+				sb.WriteString("## MANDATORY Research Area Coverage:\n")
+				sb.WriteString(fmt.Sprintf("You MUST create a subsection for EACH of the %d research areas below.\n", len(areas)))
+				sb.WriteString("Each subsection should be 150–250 words with inline citations.\n")
+				sb.WriteString("Structure your Detailed Findings section with these exact headings:\n")
+				for _, a := range areas {
+					if strings.TrimSpace(a) != "" {
+						sb.WriteString("### ")
+						sb.WriteString(a)
+						sb.WriteString("\n")
+					}
+				}
+				sb.WriteString("\nDo NOT skip any research areas. Generate comprehensive content for ALL sections above.\n")
+				areasInstruction = sb.String()
+			}
+		}
+	}
 
-    // Detect query type for adaptive structure
-    queryType := detectQueryType(input.Query, input.Context)
+	// Determine if this is a research-style synthesis
+	isResearch := false
+	if strings.EqualFold(synthesisStyle, "comprehensive") || len(areas) > 0 {
+		isResearch = true
+	}
+	if input.Context != nil {
+		if fr, ok := input.Context["force_research"].(bool); ok && fr {
+			isResearch = true
+		}
+		if _, ok := input.Context["enable_citations"]; ok {
+			isResearch = true
+		}
+		if rm, ok := input.Context["research_mode"].(string); ok {
+			if strings.TrimSpace(rm) != "" || strings.EqualFold(rm, "gap_fill") {
+				isResearch = true
+			}
+		}
+	}
 
-    // Define output structure based on query type and synthesis style
-    outputStructure := ""
-    if synthesisStyle == "comprehensive" {
-        // For deep research: use query-type specific structure
-        targetWords := 1200
-        if len(areas) > 0 {
-            // Calculate target based on research areas (150-250 words per area)
-            targetWords = len(areas) * 200
-        }
-
-        // Generate structure based on query type
-        switch queryType {
-        case "comparison":
-            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
-
-Start your answer directly with "## Scope and Criteria" (do NOT include any instruction text):
-
-## Scope and Criteria (100-150 words)
-## [Entity A] Overview (200-300 words)
-## [Entity B] Overview (200-300 words)
-## Side-by-Side Comparison
-  - Create a markdown table comparing key dimensions
-  - Include 200-300 words of analysis after the table
-## Conclusion and Recommendation (150-200 words)
-
-Requirements:
-- Replace [Entity A] and [Entity B] with actual entity names from the query
-- Table must compare: key features, strengths, weaknesses, use cases
-- Include inline citations [1], [2] for ALL factual claims
-- Provide clear verdict with reasoning
-`)
-
-        case "analysis":
-            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
-
-Start your answer directly with "## Context and Scope" (do NOT include any instruction text):
-
-## Context and Scope (100-150 words)
-## Quantitative Picture
-  - Create markdown tables for key metrics (size, growth, market share, etc.)
-  - Include 200-300 words explaining the data
-## Key Insights and Patterns (200-300 words)
-## Conclusions and Actionable Takeaways (150-200 words)
-
-Requirements:
-- MUST include at least one data table with metrics
-- Cite data sources inline [1], [2]
-- Focus on quantitative evidence over qualitative discussion
-- Provide 3-5 concrete takeaways in the conclusion
-`)
-
-        case "list":
-            outputStructure = `## Output Format (do NOT include this section in the final answer):
-
-Start your answer directly with the list or table (do NOT include intro/conclusion):
-
-Create either:
-1. A markdown table with columns for each key attribute, OR
-2. A numbered list with detailed entries
-
-Requirements:
-- NO introduction or conclusion sections needed
-- Each item must have inline citations [1], [2]
-- Include relevant metrics/data for each item
-- Sort by relevance or specified criteria
-`
-
-        case "explanation":
-            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
-
-Start your answer directly with "## Overview" (do NOT include any instruction text):
-
-## Overview (100-150 words)
-## Core Mechanisms (200-300 words per mechanism)
-## Practical Applications (200-300 words)
-## Current Developments (150-200 words)
-
-Requirements:
-- Explain mechanisms step-by-step with examples
-- Include inline citations [1], [2] for ALL technical claims
-- Use clear, accessible language
-- Highlight real-world impact
-`)
-
-        default: // survey or unknown
-            outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+	// Define output structure based on synthesis style
+	outputStructure := ""
+	if synthesisStyle == "comprehensive" {
+		// For deep research: comprehensive multi-section report (no Sources section; system appends it)
+		targetWords := 1200
+		if len(areas) > 0 {
+			// Calculate target based on research areas (150-250 words per area)
+			targetWords = len(areas) * 200
+		}
+		// Use explicit top-level headings and forbid copying instruction text into the answer
+		outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
 
 Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
 
@@ -389,10 +381,9 @@ Section requirements:
 - Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 - Limitations and Uncertainties: 100–150 words
 `, targetWords, targetWords+600)
-        }
-    } else {
-        // Default: concise synthesis (no Sources section; system appends it)
-        outputStructure = `## Output Format (do NOT include this section in the final answer):
+	} else {
+		// Default: concise synthesis (no Sources section; system appends it)
+		outputStructure = `## Output Format (do NOT include this section in the final answer):
 
 Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
 
@@ -405,40 +396,41 @@ Section requirements:
 - Detailed Findings: include inline citations
 - Limitations and Uncertainties: bullet list
 `
-    }
+	}
 
-    // Determine whether citations are available in context
-    hasCitations := false
-    if input.Context != nil {
-        if v, ok := input.Context["available_citations"].(string); ok && strings.TrimSpace(v) != "" {
-            hasCitations = true
-        } else if v, ok := input.Context["citation_count"]; ok {
-            switch t := v.(type) {
-            case int:
-                hasCitations = t > 0
-            case int32:
-                hasCitations = int(t) > 0
-            case int64:
-                hasCitations = int(t) > 0
-            case float64:
-                hasCitations = int(t) > 0
-            }
-        }
-    }
+	if isResearch {
+		// Determine whether citations are available in context
+		hasCitations := false
+		if input.Context != nil {
+			if v, ok := input.Context["available_citations"].(string); ok && strings.TrimSpace(v) != "" {
+				hasCitations = true
+			} else if v, ok := input.Context["citation_count"]; ok {
+				switch t := v.(type) {
+				case int:
+					hasCitations = t > 0
+				case int32:
+					hasCitations = int(t) > 0
+				case int64:
+					hasCitations = int(t) > 0
+				case float64:
+					hasCitations = int(t) > 0
+				}
+			}
+		}
 
-    // Build dynamic checklist and citation guidance
-    coverageExtra := ""
-    if hasCitations {
-        coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\n" +
-            "    ✓ ALL claims supported by Available Citations (no fabrication)\n" +
-            "    ✓ Conflicting sources explicitly noted: \"[1] says X, [2] says Y\"\n"
-    } else {
-        coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \"unverified\"\n"
-    }
+		// Build dynamic checklist and citation guidance
+		coverageExtra := ""
+		if hasCitations {
+			coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\\n" +
+				"    ✓ ALL claims supported by Available Citations (no fabrication)\\n" +
+				"    ✓ Conflicting sources explicitly noted: \\\"[1] says X, [2] says Y\\\"\\n"
+		} else {
+			coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \\\"unverified\\\"\\n"
+		}
 
-    citationGuidance := ""
-    if hasCitations {
-        citationGuidance = fmt.Sprintf(`## Citation Integration:
+		citationGuidance := ""
+		if hasCitations {
+			citationGuidance = fmt.Sprintf(`## Citation Integration:
     - You MUST use AT LEAST %d inline citations from Available Citations
     - Use inline citations [1], [2] for ALL factual claims
     - Use ONLY the provided Available Citations and their existing indices [n]
@@ -446,31 +438,16 @@ Section requirements:
     - Each unique URL gets ONE citation number only
     - Do NOT include a "## Sources" section; the system will append Sources automatically
 `, minCitations)
-    } else {
-        citationGuidance = `## Citation Guidance:
+		} else {
+			citationGuidance = `## Citation Guidance:
     - Do NOT fabricate citations.
     - If a claim lacks supporting sources, mark it as "unverified".
 `
-    }
+		}
 
-    // Generate dynamic start instruction based on query type
-    var startInstruction string
-    switch queryType {
-    case "comparison":
-        startInstruction = `Begin your answer directly with the "## Scope and Criteria" heading.`
-    case "analysis":
-        startInstruction = `Begin your answer directly with the "## Context and Scope" heading.`
-    case "list":
-        startInstruction = `Begin your answer directly with the table or list (no introductory heading).`
-    case "explanation":
-        startInstruction = `Begin your answer directly with the "## Overview" heading.`
-    default: // survey
-        startInstruction = `Begin your answer directly with the "## Executive Summary" heading.`
-    }
+		fmt.Fprintf(&b, `# Synthesis Requirements:
 
-    fmt.Fprintf(&b, `# Synthesis Requirements:
-
-    IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. %s
+    IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with "## Executive Summary".
 
     ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
     ✓ Each of the %d research areas has a dedicated subsection (### heading)
@@ -507,7 +484,14 @@ Section requirements:
     - NEVER fabricate or hallucinate sources
     - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
-    `, startInstruction, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
+    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
+	} else {
+		// Lightweight summarizer (non-research): no heavy structure or checklists
+		fmt.Fprintf(&b, "# Synthesis Requirements:\n\n")
+		fmt.Fprintf(&b, "%s\n", languageInstruction)
+		fmt.Fprintf(&b, "Produce a concise, directly helpful answer. Avoid unnecessary headings.\n")
+		fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n\n")
+	}
 
 	// Include available citations if present (Phase 2.5 fix)
 	if input.Context != nil {
@@ -523,11 +507,13 @@ Section requirements:
 		if !r.Success || r.Response == "" {
 			continue
 		}
-		trimmed := r.Response
-		if len([]rune(trimmed)) > maxPerAgentChars {
-			trimmed = string([]rune(trimmed)[:maxPerAgentChars]) + "..."
+		// Sanitize agent output to remove duplicate sources/citations
+		sanitized := sanitizeAgentOutput(r.Response)
+		// Apply length cap after sanitization
+		if len([]rune(sanitized)) > maxPerAgentChars {
+			sanitized = string([]rune(sanitized)[:maxPerAgentChars]) + "..."
 		}
-		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, trimmed)
+		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, sanitized)
 		count++
 		if count >= maxAgents {
 			break
@@ -551,7 +537,7 @@ Section requirements:
 				Payload: map[string]interface{}{
 					"tokens_used": res.TokensUsed,
 				},
-				Timestamp:  time.Now(),
+				Timestamp: time.Now(),
 			})
 			// Emit friendly summary with tokens
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -576,18 +562,18 @@ Section requirements:
 	// Use /agent/query to leverage role presets and proper model selection
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 
-    // Calculate max_tokens for synthesis without a hard ceiling.
-    // Increase allowance per agent to reduce risk of early stops.
-    // Base: 10240, plus 2048 per agent result.
-    maxTokens := 10240 + (len(input.AgentResults) * 2048)
-    // For deep research (comprehensive style), enforce a 50k floor before provider headroom clamp.
-    if strings.EqualFold(synthesisStyle, "comprehensive") && maxTokens < 50000 {
-        maxTokens = 50000
-    }
-    diagLogger.Info("Synthesis max_tokens calculated",
-        zap.Int("agent_count", len(input.AgentResults)),
-        zap.Int("max_tokens", maxTokens),
-    )
+	// Calculate max_tokens for synthesis without a hard ceiling.
+	// Increase allowance per agent to reduce risk of early stops.
+	// Base: 10240, plus 2048 per agent result.
+	maxTokens := 10240 + (len(input.AgentResults) * 2048)
+	// For deep research (comprehensive style), enforce a 50k floor before provider headroom clamp.
+	if strings.EqualFold(synthesisStyle, "comprehensive") && maxTokens < 50000 {
+		maxTokens = 50000
+	}
+	diagLogger.Info("Synthesis max_tokens calculated",
+		zap.Int("agent_count", len(input.AgentResults)),
+		zap.Int("max_tokens", maxTokens),
+	)
 
 	reqBody := map[string]interface{}{
 		"query":         b.String(),
@@ -615,22 +601,28 @@ Section requirements:
 	// Add synthesis mode for observability
 	reqBody["context"].(map[string]interface{})["mode"] = "synthesis"
 
-    // Debug prompt stats (approximate token estimate)
-    promptStr := b.String()
-    diagLogger.Info("Synthesis prompt stats",
-        zap.Int("chars", len([]rune(promptStr))),
-        zap.Int("approx_tokens", len([]rune(promptStr))/4),
-        zap.Int("agent_results", len(input.AgentResults)),
-        zap.Int("requested_max_tokens", maxTokens),
-        zap.Bool("removed_available_citations_from_context", removedCitations),
-        zap.Int("removed_citations_chars", removedCitationsChars),
-    )
+	// Debug prompt stats (approximate token estimate)
+	promptStr := b.String()
+	diagLogger.Info("Synthesis prompt stats",
+		zap.Int("chars", len([]rune(promptStr))),
+		zap.Int("approx_tokens", len([]rune(promptStr))/4),
+		zap.Int("agent_results", len(input.AgentResults)),
+		zap.Int("requested_max_tokens", maxTokens),
+		zap.Bool("removed_available_citations_from_context", removedCitations),
+		zap.Int("removed_citations_chars", removedCitationsChars),
+	)
 
-    buf, _ := json.Marshal(reqBody)
+	buf, _ := json.Marshal(reqBody)
 	url := base + "/agent/query"
 
+	// Timeout based on research mode: deep research needs more time for large context
+	timeout := 180 * time.Second // Default: 3 minutes (non-research)
+	if isResearch {
+		timeout = 300 * time.Second // 5 minutes for all research syntheses (temporarily increased for testing)
+	}
+
 	httpClient := &http.Client{
-		Timeout:   180 * time.Second, // Allow up to 3 minutes for comprehensive synthesis (deep research)
+		Timeout:   timeout,
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
@@ -640,9 +632,9 @@ Section requirements:
 		return simpleSynthesis(ctx, input)
 	}
 	req.Header.Set("Content-Type", "application/json")
-    if wfID != "" {
-        req.Header.Set("X-Parent-Workflow-ID", wfID)
-    }
+	if wfID != "" {
+		req.Header.Set("X-Parent-Workflow-ID", wfID)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -650,6 +642,10 @@ Section requirements:
 		res, serr := simpleSynthesisNoEvents(ctx, input)
 		if serr != nil {
 			return res, serr
+		}
+		// Append citations saved earlier (if any) to ensure Sources are preserved
+		if savedCitations != "" {
+			res.FinalResult = formatting.FormatReportWithCitations(res.FinalResult, savedCitations)
 		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
@@ -661,7 +657,7 @@ Section requirements:
 				Payload: map[string]interface{}{
 					"tokens_used": res.TokensUsed,
 				},
-				Timestamp:  time.Now(),
+				Timestamp: time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
@@ -687,6 +683,10 @@ Section requirements:
 		if serr != nil {
 			return res, serr
 		}
+		// Append citations saved earlier (if any) to ensure Sources are preserved
+		if savedCitations != "" {
+			res.FinalResult = formatting.FormatReportWithCitations(res.FinalResult, savedCitations)
+		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -697,7 +697,7 @@ Section requirements:
 				Payload: map[string]interface{}{
 					"tokens_used": res.TokensUsed,
 				},
-				Timestamp:  time.Now(),
+				Timestamp: time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
@@ -725,6 +725,10 @@ Section requirements:
 		if serr != nil {
 			return res, serr
 		}
+		// Append citations saved earlier (if any) to ensure Sources are preserved
+		if savedCitations != "" {
+			res.FinalResult = formatting.FormatReportWithCitations(res.FinalResult, savedCitations)
+		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -735,7 +739,7 @@ Section requirements:
 				Payload: map[string]interface{}{
 					"tokens_used": res.TokensUsed,
 				},
-				Timestamp:  time.Now(),
+				Timestamp: time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
@@ -770,6 +774,10 @@ Section requirements:
 		if serr != nil {
 			return res, serr
 		}
+		// Append citations saved earlier (if any) to ensure Sources are preserved
+		if savedCitations != "" {
+			res.FinalResult = formatting.FormatReportWithCitations(res.FinalResult, savedCitations)
+		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -780,7 +788,7 @@ Section requirements:
 				Payload: map[string]interface{}{
 					"tokens_used": res.TokensUsed,
 				},
-				Timestamp:  time.Now(),
+				Timestamp: time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
@@ -808,6 +816,10 @@ Section requirements:
 		if serr != nil {
 			return res, serr
 		}
+		// Append citations saved earlier (if any) to ensure Sources are preserved
+		if savedCitations != "" {
+			res.FinalResult = formatting.FormatReportWithCitations(res.FinalResult, savedCitations)
+		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
 			streaming.Get().Publish(wfID, streaming.Event{
@@ -818,7 +830,7 @@ Section requirements:
 				Payload: map[string]interface{}{
 					"tokens_used": res.TokensUsed,
 				},
-				Timestamp:  time.Now(),
+				Timestamp: time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
@@ -856,214 +868,218 @@ Section requirements:
 		zap.String("role", role),
 	)
 
-    // Apply report formatting to ensure all citations appear in Sources
-    // Use savedCitations (preserved before deletion) instead of input.Context
-    finalResponse := out.Response
-    if savedCitations != "" {
-        finalResponse = formatting.FormatReportWithCitations(finalResponse, savedCitations)
-    }
+	// Apply report formatting to ensure all citations appear in Sources
+	// Use savedCitations (preserved before deletion) instead of input.Context
+	finalResponse := out.Response
+	if savedCitations != "" {
+		finalResponse = formatting.FormatReportWithCitations(finalResponse, savedCitations)
+	}
 
-    // Continuation fallback: if model stopped early and output looks incomplete, ask it to continue
-    looksComplete := func(s string) bool {
-        txt := strings.TrimSpace(s)
-        if txt == "" {
-            return false
-        }
-        runes := []rune(txt)
-        last := runes[len(runes)-1]
+	// Continuation fallback: if model stopped early and output looks incomplete, ask it to continue
+	looksComplete := func(s string) bool {
+		txt := strings.TrimSpace(s)
+		if txt == "" {
+			return false
+		}
+		runes := []rune(txt)
+		last := runes[len(runes)-1]
 
-        // Check for sentence-ending punctuation (ASCII + CJK)
-        if last == '.' || last == '!' || last == '?' || last == '"' || last == ')' || last == ']' ||
-           last == '。' || last == '！' || last == '？' || last == '』' || last == '」' {
-            // Also check for incomplete phrases at the end
-            tail := strings.ToLower(txt)
-            if len(tail) > 40 {
-                tail = tail[len(tail)-40:]
-            }
-            bad := []string{" and", " or", " with", " to", " of", ":", "、", "と", "や", "の"}
-            for _, b := range bad {
-                if strings.HasSuffix(tail, b) {
-                    return false
-                }
-            }
+		// Check for sentence-ending punctuation (ASCII + CJK)
+		if last == '.' || last == '!' || last == '?' || last == '"' || last == ')' || last == ']' ||
+			last == '。' || last == '！' || last == '？' || last == '』' || last == '」' {
+			// Also check for incomplete phrases at the end
+			tail := strings.ToLower(txt)
+			if len(tail) > 40 {
+				tail = tail[len(tail)-40:]
+			}
+			bad := []string{" and", " or", " with", " to", " of", ":", "、", "と", "や", "の"}
+			for _, b := range bad {
+				if strings.HasSuffix(tail, b) {
+					return false
+				}
+			}
 
-            // Check structural completeness: if research areas were specified, ensure each has content
-            if input.Context != nil {
-                if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
-                    var expectedAreas []string
-                    switch t := rawAreas.(type) {
-                    case []string:
-                        expectedAreas = t
-                    case []interface{}:
-                        for _, it := range t {
-                            if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
-                                expectedAreas = append(expectedAreas, s)
-                            }
-                        }
-                    }
-                    // Check if all expected sections have non-trivial content
-                    for _, area := range expectedAreas {
-                        areaHeading := "### " + area
-                        idx := strings.Index(txt, areaHeading)
-                        if idx == -1 {
-                            // Missing section heading
-                            return false
-                        }
-                        // Find content after this heading (before next ### or ## or end)
-                        content := txt[idx+len(areaHeading):]
+			// Check structural completeness: if research areas were specified, ensure each has content
+			if input.Context != nil {
+				if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
+					var expectedAreas []string
+					switch t := rawAreas.(type) {
+					case []string:
+						expectedAreas = t
+					case []interface{}:
+						for _, it := range t {
+							if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+								expectedAreas = append(expectedAreas, s)
+							}
+						}
+					}
+					// Check if all expected sections have non-trivial content
+					for _, area := range expectedAreas {
+						areaHeading := "### " + area
+						idx := strings.Index(txt, areaHeading)
+						if idx == -1 {
+							// Missing section heading
+							return false
+						}
+						// Find content after this heading (before next ### or ## or end)
+						content := txt[idx+len(areaHeading):]
 
-                        // IMPROVED: Use ### for subsections first, ## as fallback
-                        nextSectionIdx := strings.Index(content, "\n### ")
-                        if nextSectionIdx == -1 {
-                            nextSectionIdx = strings.Index(content, "\n## ")
-                        }
-                        if nextSectionIdx == -1 {
-                            nextSectionIdx = len(content)
-                        }
-                        sectionContent := strings.TrimSpace(content[:nextSectionIdx])
+						// IMPROVED: Use ### for subsections first, ## as fallback
+						nextSectionIdx := strings.Index(content, "\n### ")
+						if nextSectionIdx == -1 {
+							nextSectionIdx = strings.Index(content, "\n## ")
+						}
+						if nextSectionIdx == -1 {
+							nextSectionIdx = len(content)
+						}
+						sectionContent := strings.TrimSpace(content[:nextSectionIdx])
 
-                        if len([]rune(sectionContent)) < 600 {
-                            // Section too short (< 600 chars, ~150 words minimum)
-                            return false
-                        }
+						if len([]rune(sectionContent)) < 600 {
+							// Section too short (< 600 chars, ~150 words minimum)
+							return false
+						}
 
-                        // Check minimum citations per section (≥2)
-                        citationCount := countInlineCitations(sectionContent)
-                        if citationCount < 2 {
-                            // Section needs more citations
-                            return false
-                        }
-                    }
-                }
-            }
-            return true
-        }
+						// Check minimum citations per section (≥2)
+						citationCount := countInlineCitations(sectionContent)
+						if citationCount < 2 {
+							// Section needs more citations
+							return false
+						}
+					}
+				}
+			}
+			return true
+		}
 
-        // Ends with incomplete punctuation or mid-word
-        return false
-    }
+		// Ends with incomplete punctuation or mid-word
+		return false
+	}
 
-    // Extract finish_reason and completion tokens (may be empty)
-    finishReason := ""
-    outputTokens := 0
-    effectiveMaxCompletion := maxTokens
-    if out.Metadata != nil {
-        if fr, ok := out.Metadata["finish_reason"].(string); ok {
-            if finishReason == "" {
-                finishReason = fr
-            }
-        }
-        if ot, ok := out.Metadata["output_tokens"].(float64); ok {
-            outputTokens = int(ot)
-        } else if ot, ok := out.Metadata["output_tokens"].(int); ok {
-            outputTokens = ot
-        }
-        if emc, ok := out.Metadata["effective_max_completion"].(int); ok && emc > 0 {
-            effectiveMaxCompletion = emc
-        } else if emc, ok := out.Metadata["effective_max_completion"].(float64); ok && emc > 0 {
-            effectiveMaxCompletion = int(emc)
-        }
-    }
+	// Extract finish_reason and completion tokens (may be empty)
+	finishReason := ""
+	outputTokens := 0
+	effectiveMaxCompletion := maxTokens
+	if out.Metadata != nil {
+		if fr, ok := out.Metadata["finish_reason"].(string); ok {
+			if finishReason == "" {
+				finishReason = fr
+			}
+		}
+		if ot, ok := out.Metadata["output_tokens"].(float64); ok {
+			outputTokens = int(ot)
+		} else if ot, ok := out.Metadata["output_tokens"].(int); ok {
+			outputTokens = ot
+		}
+		if emc, ok := out.Metadata["effective_max_completion"].(int); ok && emc > 0 {
+			effectiveMaxCompletion = emc
+		} else if emc, ok := out.Metadata["effective_max_completion"].(float64); ok && emc > 0 {
+			effectiveMaxCompletion = int(emc)
+		}
+	}
 
-    // Log continuation decision context
-    diagLogger.Info("Synthesis continuation decision",
-        zap.String("finish_reason", finishReason),
-        zap.Int("completion_tokens", outputTokens),
-        zap.Int("effective_max_completion", effectiveMaxCompletion),
-        zap.Bool("looks_complete", looksComplete(finalResponse)),
-    )
+	// Log continuation decision context
+	diagLogger.Info("Synthesis continuation decision",
+		zap.String("finish_reason", finishReason),
+		zap.Int("completion_tokens", outputTokens),
+		zap.Int("effective_max_completion", effectiveMaxCompletion),
+		zap.Bool("looks_complete", looksComplete(finalResponse)),
+	)
 
-    // Trigger continuation if there's insufficient remaining capacity
-    // Use adaptive threshold: min(25% of effective_max, 300 tokens absolute margin)
-    minMargin := effectiveMaxCompletion / 4
-    if minMargin > 300 {
-        minMargin = 300
-    }
-    remainingTokens := effectiveMaxCompletion - outputTokens
+	// Trigger continuation if there's insufficient remaining capacity
+	// Use adaptive threshold: min(25% of effective_max, 300 tokens absolute margin)
+	minMargin := effectiveMaxCompletion / 4
+	if minMargin > 300 {
+		minMargin = 300
+	}
+	remainingTokens := effectiveMaxCompletion - outputTokens
 
-    if finishReason == "stop" && !looksComplete(finalResponse) && remainingTokens < minMargin {
-        diagLogger.Info("Triggering synthesis continuation",
-            zap.Int("completion_tokens", outputTokens),
-            zap.Int("effective_max_completion", effectiveMaxCompletion),
-            zap.Int("remaining_tokens", remainingTokens),
-            zap.Int("min_margin", minMargin),
-        )
-        rs := []rune(finalResponse)
-        start := 0
-        if len(rs) > 2000 {
-            start = len(rs) - 2000
-        }
-        excerpt := string(rs[start:])
+	if finishReason == "stop" && !looksComplete(finalResponse) && remainingTokens < minMargin {
+		diagLogger.Info("Triggering synthesis continuation",
+			zap.Int("completion_tokens", outputTokens),
+			zap.Int("effective_max_completion", effectiveMaxCompletion),
+			zap.Int("remaining_tokens", remainingTokens),
+			zap.Int("min_margin", minMargin),
+		)
+		rs := []rune(finalResponse)
+		start := 0
+		if len(rs) > 2000 {
+			start = len(rs) - 2000
+		}
+		excerpt := string(rs[start:])
 
-        contQuery := "Continue the previous synthesis in the SAME language.\n" +
-            "Instructions:\n" +
-            "- Continue from the last sentence; do NOT repeat earlier content.\n" +
-            "- Maintain the same headings and inline citation style.\n" +
-            "- Output ONLY the continuation text (no preamble).\n\n" +
-            "Previous excerpt:\n" + excerpt
+		contQuery := "Continue the previous synthesis in the SAME language.\n" +
+			"Instructions:\n" +
+			"- Continue from the last sentence; do NOT repeat earlier content.\n" +
+			"- Maintain the same headings and inline citation style.\n" +
+			"- Output ONLY the continuation text (no preamble).\n\n" +
+			"Previous excerpt:\n" + excerpt
 
-        contMax := maxTokens / 2
-        if contMax > 4096 {
-            contMax = 4096
-        }
+		contMax := maxTokens / 2
+		if contMax > 4096 {
+			contMax = 4096
+		}
 
-        contBody, _ := json.Marshal(map[string]interface{}{
-            "query":         contQuery,
-            "context":       contextMap,
-            "allowed_tools": []string{},
-            "agent_id":      "synthesis-continue",
-            "max_tokens":    contMax,
-        })
+		contBody, _ := json.Marshal(map[string]interface{}{
+			"query":         contQuery,
+			"context":       contextMap,
+			"allowed_tools": []string{},
+			"agent_id":      "synthesis-continue",
+			"max_tokens":    contMax,
+		})
 
-        creq, cerr := http.NewRequestWithContext(ctx, http.MethodPost, base+"/agent/query", bytes.NewReader(contBody))
-        if cerr == nil {
-            creq.Header.Set("Content-Type", "application/json")
-            if wfID != "" {
-                creq.Header.Set("X-Parent-Workflow-ID", wfID)
-            }
-            if cresp, cerr := httpClient.Do(creq); cerr == nil && cresp != nil && cresp.StatusCode >= 200 && cresp.StatusCode < 300 {
-                defer cresp.Body.Close()
-                var cdata struct {
-                    Success      bool              `json:"success"`
-                    Response     string            `json:"response"`
-                    TokensUsed   int               `json:"tokens_used"`
-                    ModelUsed    string            `json:"model_used"`
-                    Provider     string            `json:"provider"`
-                    FinishReason string            `json:"finish_reason"`
-                    Metadata     map[string]any    `json:"metadata"`
-                }
-                if json.NewDecoder(cresp.Body).Decode(&cdata) == nil && cdata.Success {
-                    diagLogger.Info("Continuation succeeded",
-                        zap.Int("cont_tokens_used", cdata.TokensUsed),
-                        zap.String("cont_finish_reason", cdata.FinishReason),
-                    )
-                    finalResponse = strings.TrimRight(finalResponse, "\n") + "\n\n" + strings.TrimSpace(cdata.Response)
-                    if input.Context != nil {
-                        if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
-                            finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
-                        }
-                    }
-                    out.TokensUsed += cdata.TokensUsed
-                    if cdata.FinishReason != "" {
-                        finishReason = cdata.FinishReason
-                    }
-                }
-            }
-        }
-    } else {
-        diagLogger.Info("Continuation not triggered",
-            zap.String("reason", func() string {
-                if finishReason != "stop" { return "finish_reason_not_stop" }
-                if looksComplete(finalResponse) { return "looks_complete" }
-                return "budget_threshold"
-            }()),
-        )
-    }
+		creq, cerr := http.NewRequestWithContext(ctx, http.MethodPost, base+"/agent/query", bytes.NewReader(contBody))
+		if cerr == nil {
+			creq.Header.Set("Content-Type", "application/json")
+			if wfID != "" {
+				creq.Header.Set("X-Parent-Workflow-ID", wfID)
+			}
+			if cresp, cerr := httpClient.Do(creq); cerr == nil && cresp != nil && cresp.StatusCode >= 200 && cresp.StatusCode < 300 {
+				defer cresp.Body.Close()
+				var cdata struct {
+					Success      bool           `json:"success"`
+					Response     string         `json:"response"`
+					TokensUsed   int            `json:"tokens_used"`
+					ModelUsed    string         `json:"model_used"`
+					Provider     string         `json:"provider"`
+					FinishReason string         `json:"finish_reason"`
+					Metadata     map[string]any `json:"metadata"`
+				}
+				if json.NewDecoder(cresp.Body).Decode(&cdata) == nil && cdata.Success {
+					diagLogger.Info("Continuation succeeded",
+						zap.Int("cont_tokens_used", cdata.TokensUsed),
+						zap.String("cont_finish_reason", cdata.FinishReason),
+					)
+					finalResponse = strings.TrimRight(finalResponse, "\n") + "\n\n" + strings.TrimSpace(cdata.Response)
+					if input.Context != nil {
+						if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+							finalResponse = formatting.FormatReportWithCitations(finalResponse, citationList)
+						}
+					}
+					out.TokensUsed += cdata.TokensUsed
+					if cdata.FinishReason != "" {
+						finishReason = cdata.FinishReason
+					}
+				}
+			}
+		}
+	} else {
+		diagLogger.Info("Continuation not triggered",
+			zap.String("reason", func() string {
+				if finishReason != "stop" {
+					return "finish_reason_not_stop"
+				}
+				if looksComplete(finalResponse) {
+					return "looks_complete"
+				}
+				return "budget_threshold"
+			}()),
+		)
+	}
 
-    // Extract usage metadata for event payload (finishReason, outputTokens, effectiveMaxCompletion already extracted above)
-    provider := ""
-    inputTokens := 0
-    costUsd := 0.0
+	// Extract usage metadata for event payload (finishReason, outputTokens, effectiveMaxCompletion already extracted above)
+	provider := ""
+	inputTokens := 0
+	costUsd := 0.0
 	if out.Metadata != nil {
 		if p, ok := out.Metadata["provider"].(string); ok {
 			provider = p
@@ -1084,24 +1100,24 @@ Section requirements:
 	// 3. DATA_PROCESSING (completion) - final status message "Final answer ready"
 	// This ordering ensures content is visible before status changes to "ready"
 	if wfID != "" {
-			// Event 1: LLM_OUTPUT with final content (LLM path)
-        streaming.Get().Publish(wfID, streaming.Event{
-            WorkflowID: wfID,
-            Type:       string(StreamEventLLMOutput),
-            AgentID:    "synthesis",
-            Message:    truncateQuery(finalResponse, MaxSynthesisOutputChars),
-            Payload: map[string]interface{}{
-                "tokens_used":   out.TokensUsed,
-                "model_used":    model,
-                "provider":      provider,
-                "input_tokens":  inputTokens,
-                "output_tokens": outputTokens,
-                "cost_usd":      costUsd,
-                "finish_reason": finishReason,
-                "requested_max_tokens": maxTokens,
-            },
-            Timestamp:  time.Now(),
-        })
+		// Event 1: LLM_OUTPUT with final content (LLM path)
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMOutput),
+			AgentID:    "synthesis",
+			Message:    truncateQuery(finalResponse, MaxSynthesisOutputChars),
+			Payload: map[string]interface{}{
+				"tokens_used":          out.TokensUsed,
+				"model_used":           model,
+				"provider":             provider,
+				"input_tokens":         inputTokens,
+				"output_tokens":        outputTokens,
+				"cost_usd":             costUsd,
+				"finish_reason":        finishReason,
+				"requested_max_tokens": maxTokens,
+			},
+			Timestamp: time.Now(),
+		})
 		// Event 2: Synthesis summary with model and token usage (omit model if unknown)
 		summary := fmt.Sprintf("~%d tokens", out.TokensUsed)
 		if model != "" && model != "unknown" {
@@ -1131,26 +1147,26 @@ Section requirements:
 
 	// effectiveMaxCompletion, outputTokens already extracted above for continuation trigger
 
-    // Infer input tokens if not present in metadata
-    if inputTokens == 0 && out.TokensUsed > 0 && outputTokens > 0 {
-        est := out.TokensUsed - outputTokens
-        if est > 0 {
-            inputTokens = est
-        }
-    }
+	// Infer input tokens if not present in metadata
+	if inputTokens == 0 && out.TokensUsed > 0 && outputTokens > 0 {
+		est := out.TokensUsed - outputTokens
+		if est > 0 {
+			inputTokens = est
+		}
+	}
 
-    return SynthesisResult{
-        FinalResult:        finalResponse,
-        TokensUsed:         out.TokensUsed,
-        FinishReason:       finishReason,
-        RequestedMaxTokens: maxTokens,
-        CompletionTokens:   outputTokens,
-        EffectiveMaxCompletion: effectiveMaxCompletion,
-        InputTokens:        inputTokens,
-        ModelUsed:          model,
-        Provider:           provider,
-        CostUsd:            costUsd,
-    }, nil
+	return SynthesisResult{
+		FinalResult:            finalResponse,
+		TokensUsed:             out.TokensUsed,
+		FinishReason:           finishReason,
+		RequestedMaxTokens:     maxTokens,
+		CompletionTokens:       outputTokens,
+		EffectiveMaxCompletion: effectiveMaxCompletion,
+		InputTokens:            inputTokens,
+		ModelUsed:              model,
+		Provider:               provider,
+		CostUsd:                costUsd,
+	}, nil
 }
 
 // truncateForLog returns s truncated to max characters for safe logging
@@ -1231,7 +1247,7 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 			Payload: map[string]interface{}{
 				"tokens_used": res.TokensUsed,
 			},
-			Timestamp:  time.Now(),
+			Timestamp: time.Now(),
 		})
 		// Emit a simple summary with tokens
 		streaming.Get().Publish(wfID, streaming.Event{
@@ -1257,7 +1273,7 @@ func cleanAgentOutput(response string) string {
 	// Try to parse as JSON array (common for web_search results)
 	var results []map[string]interface{}
 	if err := json.Unmarshal([]byte(response), &results); err == nil && len(results) > 0 {
-		// Format search results as a readable list
+		// Format search results as a readable list (without header to avoid injection)
 		var formatted []string
 		for i, result := range results {
 			if i >= 5 { // Limit to top 5 results
@@ -1270,7 +1286,9 @@ func cleanAgentOutput(response string) string {
 			}
 		}
 		if len(formatted) > 0 {
-			return "Research findings:\n" + strings.Join(formatted, "\n")
+			// Return clean list without "Research findings:" header
+			// This prevents intermediate formatting from appearing in final synthesis
+			return strings.Join(formatted, "\n")
 		}
 	}
 
@@ -1289,56 +1307,4 @@ func countInlineCitations(text string) int {
 		seen[m] = true
 	}
 	return len(seen)
-}
-
-// detectQueryType analyzes the query to determine the appropriate report structure
-func detectQueryType(query string, context map[string]interface{}) string {
-	lowerQuery := strings.ToLower(query)
-
-	// Check for comparison queries
-	comparisonKeywords := []string{
-		"compare", "versus", "vs", "vs.", "对比", "比较",
-		"difference between", "区别", "哪个更好", "孰优孰劣",
-	}
-	for _, kw := range comparisonKeywords {
-		if strings.Contains(lowerQuery, kw) {
-			return "comparison"
-		}
-	}
-
-	// Check for list/ranking queries
-	listKeywords := []string{
-		"list", "top ", "best ", "worst ", "列表", "排名",
-		"top 5", "top 10", "最佳", "列举",
-	}
-	for _, kw := range listKeywords {
-		if strings.Contains(lowerQuery, kw) {
-			return "list"
-		}
-	}
-
-	// Check for analysis queries
-	analysisKeywords := []string{
-		"analyze", "analysis", "assess", "evaluate", "分析",
-		"评估", "市场", "market", "landscape", "industry",
-	}
-	for _, kw := range analysisKeywords {
-		if strings.Contains(lowerQuery, kw) {
-			return "analysis"
-		}
-	}
-
-	// Check for explanation queries
-	explanationKeywords := []string{
-		"what is", "how does", "explain", "什么是", "如何",
-		"解释", "原理", "mechanism", "process",
-	}
-	for _, kw := range explanationKeywords {
-		if strings.Contains(lowerQuery, kw) {
-			return "explanation"
-		}
-	}
-
-	// Default to survey/overview for unmatched queries
-	return "survey"
 }

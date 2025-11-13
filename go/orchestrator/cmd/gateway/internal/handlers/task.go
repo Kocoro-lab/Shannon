@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"sync"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
@@ -21,7 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/structpb"
-    "gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v3"
 )
 
 // TaskHandler handles task-related HTTP requests
@@ -35,77 +35,89 @@ type TaskHandler struct {
 // ResearchStrategiesConfig represents research strategy presets loaded from YAML
 type ResearchStrategiesConfig struct {
     Strategies map[string]struct {
-        MaxIterations       int  `yaml:"max_iterations"`
-        MaxSources          int  `yaml:"max_sources"`
-        VerificationEnabled bool `yaml:"verification_enabled"`
-        ReportMode          bool `yaml:"report_mode"`
-        MaxConcurrentAgents int  `yaml:"max_concurrent_agents"`
+        MaxIterations              int  `yaml:"max_iterations"` // deprecated
+        VerificationEnabled        bool `yaml:"verification_enabled"`
+        MaxConcurrentAgents        int  `yaml:"max_concurrent_agents"`
+        ReactMaxIterations         int  `yaml:"react_max_iterations"`
+        GapFillingEnabled          bool `yaml:"gap_filling_enabled"`
+        GapFillingMaxGaps          int  `yaml:"gap_filling_max_gaps"`
+        GapFillingMaxIterations    int  `yaml:"gap_filling_max_iterations"`
+        GapFillingCheckCitations   bool `yaml:"gap_filling_check_citations"`
     } `yaml:"strategies"`
 }
 
 // Cached research strategies configuration
 var (
-    researchStrategiesOnce   sync.Once
-    researchStrategiesCached *ResearchStrategiesConfig
-    researchStrategiesErr    error
+	researchStrategiesOnce   sync.Once
+	researchStrategiesCached *ResearchStrategiesConfig
+	researchStrategiesErr    error
 )
 
 // loadResearchStrategies loads presets from standard locations
 func loadResearchStrategies() (*ResearchStrategiesConfig, error) {
-    researchStrategiesOnce.Do(func() {
-        candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
-        for _, p := range candidates {
-            if _, statErr := os.Stat(p); statErr == nil {
-                data, rerr := os.ReadFile(p)
-                if rerr != nil {
-                    researchStrategiesErr = rerr
-                    return
-                }
-                var tmp ResearchStrategiesConfig
-                if yerr := yaml.Unmarshal(data, &tmp); yerr != nil {
-                    researchStrategiesErr = yerr
-                    return
-                }
-                researchStrategiesCached = &tmp
-                researchStrategiesErr = nil
-                return
-            }
-        }
-        researchStrategiesErr = fmt.Errorf("research_strategies.yaml not found")
-    })
-    return researchStrategiesCached, researchStrategiesErr
+	researchStrategiesOnce.Do(func() {
+		candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
+		for _, p := range candidates {
+			if _, statErr := os.Stat(p); statErr == nil {
+				data, rerr := os.ReadFile(p)
+				if rerr != nil {
+					researchStrategiesErr = rerr
+					return
+				}
+				var tmp ResearchStrategiesConfig
+				if yerr := yaml.Unmarshal(data, &tmp); yerr != nil {
+					researchStrategiesErr = yerr
+					return
+				}
+				researchStrategiesCached = &tmp
+				researchStrategiesErr = nil
+				return
+			}
+		}
+		researchStrategiesErr = fmt.Errorf("research_strategies.yaml not found")
+	})
+	return researchStrategiesCached, researchStrategiesErr
 }
 
 // applyStrategyPreset seeds ctxMap with preset defaults when absent
 func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
-    s := strings.ToLower(strings.TrimSpace(strategy))
-    if s == "" {
-        return
-    }
-    cfg, err := loadResearchStrategies()
-    if err != nil || cfg == nil || cfg.Strategies == nil {
-        return
-    }
-    preset, ok := cfg.Strategies[s]
-    if !ok {
-        return
-    }
-    // Validate ranges before seeding
-    if _, ok := ctxMap["max_iterations"]; !ok && preset.MaxIterations >= 1 && preset.MaxIterations <= 50 {
-        ctxMap["max_iterations"] = preset.MaxIterations
-        if _, exists := ctxMap["react_max_iterations"]; !exists {
-            ctxMap["react_max_iterations"] = preset.MaxIterations
-        }
-    }
-    if _, ok := ctxMap["max_concurrent_agents"]; !ok && preset.MaxConcurrentAgents >= 1 && preset.MaxConcurrentAgents <= 20 {
-        ctxMap["max_concurrent_agents"] = preset.MaxConcurrentAgents
-    }
-    if _, ok := ctxMap["enable_verification"]; !ok {
-        ctxMap["enable_verification"] = preset.VerificationEnabled
-    }
-    if _, ok := ctxMap["report_mode"]; !ok {
-        ctxMap["report_mode"] = preset.ReportMode
-    }
+	s := strings.ToLower(strings.TrimSpace(strategy))
+	if s == "" {
+		return
+	}
+	cfg, err := loadResearchStrategies()
+	if err != nil || cfg == nil || cfg.Strategies == nil {
+		return
+	}
+	preset, ok := cfg.Strategies[s]
+	if !ok {
+		return
+	}
+	// Seed react_max_iterations (independent of deprecated max_iterations)
+	if _, ok := ctxMap["react_max_iterations"]; !ok && preset.ReactMaxIterations >= 1 && preset.ReactMaxIterations <= 10 {
+		ctxMap["react_max_iterations"] = preset.ReactMaxIterations
+	}
+	// Seed max_concurrent_agents
+	if _, ok := ctxMap["max_concurrent_agents"]; !ok && preset.MaxConcurrentAgents >= 1 && preset.MaxConcurrentAgents <= 20 {
+		ctxMap["max_concurrent_agents"] = preset.MaxConcurrentAgents
+	}
+	// Seed enable_verification
+	if _, ok := ctxMap["enable_verification"]; !ok {
+		ctxMap["enable_verification"] = preset.VerificationEnabled
+	}
+	// Seed gap filling settings (always apply, not gated by max_iterations)
+	if _, ok := ctxMap["gap_filling_enabled"]; !ok {
+		ctxMap["gap_filling_enabled"] = preset.GapFillingEnabled
+	}
+	if _, ok := ctxMap["gap_filling_max_gaps"]; !ok && preset.GapFillingMaxGaps > 0 {
+		ctxMap["gap_filling_max_gaps"] = preset.GapFillingMaxGaps
+	}
+	if _, ok := ctxMap["gap_filling_max_iterations"]; !ok && preset.GapFillingMaxIterations > 0 {
+		ctxMap["gap_filling_max_iterations"] = preset.GapFillingMaxIterations
+	}
+	if _, ok := ctxMap["gap_filling_check_citations"]; !ok {
+		ctxMap["gap_filling_check_citations"] = preset.GapFillingCheckCitations
+	}
 }
 
 // NewTaskHandler creates a new task handler
@@ -125,9 +137,9 @@ func NewTaskHandler(
 
 // TaskRequest represents a task submission request
 type TaskRequest struct {
-    Query     string                 `json:"query"`
-    SessionID string                 `json:"session_id,omitempty"`
-    Context   map[string]interface{} `json:"context,omitempty"`
+	Query     string                 `json:"query"`
+	SessionID string                 `json:"session_id,omitempty"`
+	Context   map[string]interface{} `json:"context,omitempty"`
 	// Optional execution mode hint (e.g., "supervisor").
 	// Routed via metadata labels to orchestrator.
 	Mode string `json:"mode,omitempty"`
@@ -136,14 +148,13 @@ type TaskRequest struct {
 	ModelTier string `json:"model_tier,omitempty"`
 	// Optional specific model override; if provided, inject into context
 	// (e.g., "gpt-5-2025-08-07", "gpt-5-pro-2025-10-06", "claude-sonnet-4-5-20250929").
-    ModelOverride    string `json:"model_override,omitempty"`
-    ProviderOverride string `json:"provider_override,omitempty"`
-    // Phase 6: Strategy presets (mapped into context)
-    ResearchStrategy     string `json:"research_strategy,omitempty"`       // quick|standard|deep|academic
-    MaxIterations        *int   `json:"max_iterations,omitempty"`          // Optional override
-    MaxConcurrentAgents  *int   `json:"max_concurrent_agents,omitempty"`   // Optional override
-    EnableVerification   *bool  `json:"enable_verification,omitempty"`     // Optional flag
-    ReportMode           *bool  `json:"report_mode,omitempty"`             // Optional flag
+	ModelOverride    string `json:"model_override,omitempty"`
+	ProviderOverride string `json:"provider_override,omitempty"`
+	// Phase 6: Strategy presets (mapped into context)
+	ResearchStrategy    string `json:"research_strategy,omitempty"`     // quick|standard|deep|academic
+	MaxIterations       *int   `json:"max_iterations,omitempty"`        // Optional override
+	MaxConcurrentAgents *int   `json:"max_concurrent_agents,omitempty"` // Optional override
+	EnableVerification  *bool  `json:"enable_verification,omitempty"`   // Optional flag
 }
 
 // TaskResponse represents a task submission response
@@ -306,12 +317,9 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		}
 		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
 	}
-	if req.EnableVerification != nil {
-		ctxMap["enable_verification"] = *req.EnableVerification
-	}
-	if req.ReportMode != nil {
-		ctxMap["report_mode"] = *req.ReportMode
-	}
+    if req.EnableVerification != nil {
+        ctxMap["enable_verification"] = *req.EnableVerification
+    }
 
 	// Apply research strategy presets (seed defaults only when absent)
 	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
@@ -539,12 +547,9 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 		}
 		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
 	}
-	if req.EnableVerification != nil {
-		ctxMap["enable_verification"] = *req.EnableVerification
-	}
-	if req.ReportMode != nil {
-		ctxMap["report_mode"] = *req.ReportMode
-	}
+    if req.EnableVerification != nil {
+        ctxMap["enable_verification"] = *req.EnableVerification
+    }
 
 	// Apply research strategy presets (seed defaults only when absent)
 	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {

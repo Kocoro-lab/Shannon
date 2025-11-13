@@ -105,7 +105,7 @@ Respond in JSON format:
 
 	// HTTP client with workflow interceptor for tracing
 	client := &http.Client{
-		Timeout:   30 * time.Second,
+		Timeout:   300 * time.Second,
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
@@ -228,9 +228,9 @@ Respond in JSON format:
 
 // detectLanguage performs simple heuristic language detection based on character ranges
 func detectLanguage(query string) string {
-	if query == "" {
-		return "English"
-	}
+    if query == "" {
+        return "English"
+    }
 
 	// Count characters by Unicode range
 	var cjk, cyrillic, arabic, latin int
@@ -253,10 +253,10 @@ func detectLanguage(query string) string {
 		}
 	}
 
-	total := cjk + cyrillic + arabic + latin
-	if total == 0 {
-		return "English" // Default if no recognized characters
-	}
+    total := cjk + cyrillic + arabic + latin
+    if total == 0 {
+        return "English" // Default if no recognized characters
+    }
 
 	// Determine language based on character composition
 	cjkPercent := float64(cjk) / float64(total)
@@ -301,9 +301,10 @@ func detectLanguage(query string) string {
 	if strings.Contains(lowerQuery, "ç") || strings.Contains(lowerQuery, "à") || strings.Contains(lowerQuery, "è") {
 		return "French"
 	}
-	if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
-		return "German"
-	}
+    if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
+        return "German"
+    }
 
-	return "English" // Default for Latin scripts
+    // Default to English for Latin scripts (most common for research queries)
+    return "English"
 }

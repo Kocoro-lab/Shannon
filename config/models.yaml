@@ -1,15 +1,17 @@
 # Shannon Platform - Model Configuration
 # GitHub: https://github.com/Kocoro-lab/Shannon
-# Updated: September 2025 with latest AI models and pricing
+# Updated: November 2025 with latest AI models and pricing
 #
 # NOTE: Model tier selection is driven by:
 #   1. Task complexity score (computed during decomposition)
 #   2. Explicit tier requests from callers
 #   3. Budget constraints and token limits
+#   4. API payload override (e.g., provider_override, deep_research payload, etc.)
 #
 # The percentages below (50/40/10) are target distributions for reference,
 # NOT enforced quotas. Actual usage depends on workload characteristics.
 # Monitor real distribution via Prometheus metrics: llm_requests_total{tier="..."}
+# ATTENTION: ONLY openai, anthropic, xai and google MODELS ARE TESTED as of now.
 
 model_tiers:
   small:
@@ -89,17 +91,17 @@ model_tiers:
       - provider: anthropic
         model: claude-opus-4-1-20250805
         priority: 2
-      - provider: google
-        model: gemini-2.5-pro
-        priority: 3
-      - provider: deepseek
-        model: deepseek-r1
-        priority: 4
-      - provider: qwen
-        model: qwen3-omni-30b-a3b-instruct
-        priority: 5
       - provider: xai
         model: grok-4-fast-reasoning
+        priority: 3
+      - provider: google
+        model: gemini-2.5-pro
+        priority: 4
+      - provider: deepseek
+        model: deepseek-r1
+        priority: 5
+      - provider: qwen
+        model: qwen3-omni-30b-a3b-instruct
         priority: 6
       - provider: mistral
         model: mistral-nemo-instruct-2407
@@ -136,17 +138,17 @@ prompt_cache:
 provider_settings:
   openai:
     base_url: https://api.openai.com/v1
-    timeout: 60
+    timeout: 300
     max_retries: 3
     
   anthropic:
     base_url: https://api.anthropic.com
-    timeout: 60
+    timeout: 300
     max_retries: 3
     
   google:
     base_url: https://generativelanguage.googleapis.com
-    timeout: 60
+    timeout: 300
     max_retries: 3
     
   deepseek:
@@ -198,17 +200,17 @@ model_catalog:
   openai:
     gpt-5-2025-08-07:
       model_id: gpt-5-2025-08-07
-      tier: medium
+      tier: large
       context_window: 128000
-      max_tokens: 4096
+      max_tokens: 16384
       supports_functions: true
       supports_streaming: true
       supports_vision: true
     gpt-5-mini-2025-08-07:
       model_id: gpt-5-mini-2025-08-07
-      tier: small
+      tier: medium
       context_window: 128000
-      max_tokens: 4096
+      max_tokens: 16384
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -216,13 +218,13 @@ model_catalog:
       model_id: gpt-5-nano-2025-08-07
       tier: small
       context_window: 128000
-      max_tokens: 4096
+      max_tokens: 8192
       supports_functions: true
       supports_streaming: true
       supports_vision: false
     gpt-4.1-2025-04-14:
       model_id: gpt-4.1-2025-04-14
-      tier: large
+      tier: medium
       context_window: 128000
       max_tokens: 4096
       supports_functions: true
@@ -232,7 +234,7 @@ model_catalog:
       model_id: gpt-5-pro-2025-10-06
       tier: large
       context_window: 128000
-      max_tokens: 4096
+      max_tokens: 32768
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -240,7 +242,7 @@ model_catalog:
   anthropic:
     claude-sonnet-4-20250514:
       model_id: claude-sonnet-4-20250514
-      tier: large
+      tier: medium
       context_window: 200000
       max_tokens: 4096
       supports_functions: true
@@ -520,39 +522,39 @@ model_catalog:
       supports_streaming: true
 
 # Centralized model pricing (USD per 1K tokens)
-# Updated: September 2025 with latest pricing
+# Updated: November 2025 with latest pricing
 # Used across Go/Rust/Python for consistent cost calculation.
 pricing:
   defaults:
-    combined_per_1k: 0.005
+    combined_per_1k: 0.005  # Default cost per 1K tokens when model is unknown
   models:
     openai:
+      gpt-4.1-2025-04-14:
+        input_per_1k: 0.00200
+        output_per_1k: 0.00800
       gpt-5-nano-2025-08-07:
-        input_per_1k: 0.00010
+        input_per_1k: 0.00005
         output_per_1k: 0.00040
       gpt-5-mini-2025-08-07:
-        input_per_1k: 0.00020
-        output_per_1k: 0.00080
+        input_per_1k: 0.00025
+        output_per_1k: 0.00200
       gpt-5-2025-08-07:
-        input_per_1k: 0.0060
-        output_per_1k: 0.0180
-      gpt-4.1-2025-04-14:
-        input_per_1k: 0.0200
-        output_per_1k: 0.0800
+        input_per_1k: 0.00125
+        output_per_1k: 0.01000
       gpt-5-pro-2025-10-06:
-        input_per_1k: 0.0250
-        output_per_1k: 0.1000
+        input_per_1k: 0.0150
+        output_per_1k: 0.1200
 
     anthropic:
       claude-haiku-4-5-20251001:
-        input_per_1k: 0.0010
-        output_per_1k: 0.0050
+        input_per_1k: 0.00010
+        output_per_1k: 0.00050
       claude-sonnet-4-20250514:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0150
+        input_per_1k: 0.00030
+        output_per_1k: 0.00150
       claude-sonnet-4-5-20250929:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0150
+        input_per_1k: 0.00030
+        output_per_1k: 0.00150
       claude-opus-4-1-20250805:
         input_per_1k: 0.0150
         output_per_1k: 0.0750

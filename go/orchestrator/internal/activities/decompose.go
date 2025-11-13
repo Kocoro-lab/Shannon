@@ -86,18 +86,18 @@ func (a *Activities) DecomposeTask(ctx context.Context, in DecompositionInput) (
 	resp, err := client.Do(req)
 	if err != nil {
 		ometrics.DecompositionErrors.Inc()
-		return DecompositionResult{Mode: "standard", ComplexityScore: 0.5, Subtasks: nil, TotalEstimatedTokens: 0}, nil
+		return DecompositionResult{}, fmt.Errorf("failed to call LLM decomposition service: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ometrics.DecompositionErrors.Inc()
-		return DecompositionResult{Mode: "standard", ComplexityScore: 0.5, Subtasks: nil, TotalEstimatedTokens: 0}, nil
+		return DecompositionResult{}, fmt.Errorf("LLM decomposition service returned status %d", resp.StatusCode)
 	}
 
 	var out DecompositionResult
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		ometrics.DecompositionErrors.Inc()
-		return DecompositionResult{Mode: "standard", ComplexityScore: 0.5, Subtasks: nil, TotalEstimatedTokens: 0}, nil
+		return DecompositionResult{}, fmt.Errorf("failed to decode decomposition response: %w", err)
 	}
 
 	// TODO: Assign personas to each subtask when personas package is complete

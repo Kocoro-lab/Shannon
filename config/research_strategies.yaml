@@ -1,25 +1,30 @@
 strategies:
   quick:
-    max_iterations: 3
-    max_sources: 8
     verification_enabled: false
-    report_mode: false
     max_concurrent_agents: 3
+    react_max_iterations: 2
+    gap_filling_enabled: false
   standard:
-    max_iterations: 5
-    max_sources: 15
     verification_enabled: true
-    report_mode: false
     max_concurrent_agents: 5
+    react_max_iterations: 3
+    gap_filling_enabled: true
+    gap_filling_max_gaps: 3
+    gap_filling_max_iterations: 2
+    gap_filling_check_citations: false
   deep:
-    max_iterations: 10
-    max_sources: 30
     verification_enabled: true
-    report_mode: false
-    max_concurrent_agents: 5
+    max_concurrent_agents: 6
+    react_max_iterations: 4
+    gap_filling_enabled: true
+    gap_filling_max_gaps: 5
+    gap_filling_max_iterations: 2
+    gap_filling_check_citations: true
   academic:
-    max_iterations: 15
-    max_sources: 50
     verification_enabled: true
-    report_mode: true
-    max_concurrent_agents: 5
+    max_concurrent_agents: 8
+    react_max_iterations: 5
+    gap_filling_enabled: true
+    gap_filling_max_gaps: 10
+    gap_filling_max_iterations: 2
+    gap_filling_check_citations: true
