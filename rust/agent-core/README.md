@@ -128,7 +128,7 @@ Configuration via environment variables:
 | `OTEL_ENABLED` | Enable OpenTelemetry | `true` |
 | `MEMORY_POOL_SIZE_MB` | Memory pool size | `512` |
 | `WASI_MEMORY_LIMIT_MB` | WASI sandbox memory | `256` |
-| `WASI_EXECUTION_TIMEOUT_SECONDS` | WASI timeout | `30` |
+| `WASI_TIMEOUT_SECONDS` | WASI timeout | `30` |
 | `TOOL_CACHE_TTL_SECONDS` | Cache TTL | `300` |
 | `TOOL_CACHE_MAX_SIZE` | Max cache entries | `1000` |
 | `ENFORCE_TIMEOUT_SECONDS` | Per-request timeout | `30` |

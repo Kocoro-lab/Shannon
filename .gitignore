@@ -291,6 +291,9 @@ NOTES.md
 scratch/
 experiments/
 
+# Deep research benchmarking (external evaluation)
+deep-research-benchmark/
+
 # WebAssembly (if used)
 *.wasm
 *.wat

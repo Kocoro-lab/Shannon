@@ -253,7 +253,12 @@ Shannon includes a human approval workflow for high-risk operations that require
 APPROVAL_ENABLED=true                                  # Enable approval workflow
 APPROVAL_COMPLEXITY_THRESHOLD=0.7                      # Complexity threshold (0.0-1.0)
 APPROVAL_DANGEROUS_TOOLS=file_system,code_execution   # Comma-separated list of tools
-APPROVAL_TIMEOUT_SECONDS=3600                         # Timeout in seconds (default: 1 hour)
+# NOTE: Approval timeout is currently set per-request via API input.
+# The orchestrator's server default is 1800 seconds (30 minutes).
+# An APPROVAL_TIMEOUT_SECONDS env var is not read by the server.
+# To change the timeout, pass approval_timeout in the request payload.
+# Example (not used by server):
+APPROVAL_TIMEOUT_SECONDS=1800
 ```
 
 ### Approval Process
