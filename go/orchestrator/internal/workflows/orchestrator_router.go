@@ -489,8 +489,9 @@ func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query strin
 	}
 
 	// Use a short timeout and no retries for best-effort execution
+	// 15s timeout provides buffer for LLM call (~1-2s with fix) + Redis save (~0.5s)
 	titleOpts := workflow.ActivityOptions{
-		StartToCloseTimeout: 10 * time.Second,
+		StartToCloseTimeout: 15 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 1, // Best-effort, don't retry on failure
 		},

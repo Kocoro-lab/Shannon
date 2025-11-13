@@ -892,7 +892,7 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			Mode:         mode,
 			Status:       statusStr,
 			StartedAt:    workflowStartTime.AsTime(),
-			TotalTokens:  result.TokensUsed,
+			TotalTokens:  result.TokensUsed, // Will be overridden by metadata if available
 			Result:       &result.Result,
 			ErrorMessage: &result.ErrorMessage,
 		}
@@ -944,10 +944,17 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 				taskExecution.CompletionTokens = outputTokens
 			}
 
+			// Check if metadata has the correct total_tokens value (preferred over TokensUsed)
+			if totalTokens, ok := result.Metadata["total_tokens"].(float64); ok && totalTokens > 0 {
+				taskExecution.TotalTokens = int(totalTokens)
+			} else if totalTokens, ok := result.Metadata["total_tokens"].(int); ok && totalTokens > 0 {
+				taskExecution.TotalTokens = totalTokens
+			}
+
 			// If breakdown not available but we have total, estimate split (60% prompt, 40% completion)
-			if taskExecution.PromptTokens == 0 && taskExecution.CompletionTokens == 0 && result.TokensUsed > 0 {
-				taskExecution.PromptTokens = result.TokensUsed * 6 / 10
-				taskExecution.CompletionTokens = result.TokensUsed - taskExecution.PromptTokens
+			if taskExecution.PromptTokens == 0 && taskExecution.CompletionTokens == 0 && taskExecution.TotalTokens > 0 {
+				taskExecution.PromptTokens = taskExecution.TotalTokens * 6 / 10
+				taskExecution.CompletionTokens = taskExecution.TotalTokens - taskExecution.PromptTokens
 			}
 
 			// Extract cost
@@ -963,44 +970,59 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			taskExecution.Metadata = db.JSONB(result.Metadata)
 		}
 
-        // As a safety net, if cost wasn't provided or computed, aggregate from token_usage
-        if (taskExecution.TotalCostUSD == 0) && s.dbClient != nil {
+        // Always aggregate from token_usage as the source of truth for all workflow phases
+        if s.dbClient != nil {
             var aggCost sql.NullFloat64
-            var aggTokens sql.NullInt64
+            var aggTotalTokens sql.NullInt64
+            var aggPromptTokens sql.NullInt64
+            var aggCompletionTokens sql.NullInt64
             row := s.dbClient.Wrapper().QueryRowContext(ctx, `
-                SELECT COALESCE(SUM(tu.cost_usd), 0), COALESCE(SUM(tu.total_tokens), 0)
+                SELECT
+                    COALESCE(SUM(tu.cost_usd), 0),
+                    COALESCE(SUM(tu.total_tokens), 0),
+                    COALESCE(SUM(tu.prompt_tokens), 0),
+                    COALESCE(SUM(tu.completion_tokens), 0)
                 FROM token_usage tu
                 JOIN task_executions te ON tu.task_id = te.id
                 WHERE te.workflow_id = $1`, workflowID)
-            if err := row.Scan(&aggCost, &aggTokens); err == nil {
-                if aggCost.Valid && aggCost.Float64 > 0 {
+            if err := row.Scan(&aggCost, &aggTotalTokens, &aggPromptTokens, &aggCompletionTokens); err == nil {
+                // Always use aggregated values from token_usage (captures all phases: decompose, refine, synthesis, etc.)
+                s.logger.Info("Token usage aggregation succeeded",
+                    zap.String("workflow_id", workflowID),
+                    zap.Float64("cost", aggCost.Float64),
+                    zap.Int64("total_tokens", aggTotalTokens.Int64),
+                    zap.Int64("prompt_tokens", aggPromptTokens.Int64),
+                    zap.Int64("completion_tokens", aggCompletionTokens.Int64))
+                if aggCost.Valid {
                     taskExecution.TotalCostUSD = aggCost.Float64
                 }
-                if aggTokens.Valid && taskExecution.TotalTokens == 0 {
-                    taskExecution.TotalTokens = int(aggTokens.Int64)
+                if aggTotalTokens.Valid {
+                    taskExecution.TotalTokens = int(aggTotalTokens.Int64)
+                }
+                if aggPromptTokens.Valid {
+                    taskExecution.PromptTokens = int(aggPromptTokens.Int64)
+                }
+                if aggCompletionTokens.Valid {
+                    taskExecution.CompletionTokens = int(aggCompletionTokens.Int64)
                 }
             } else {
-                s.logger.Warn("Cost aggregation fallback failed",
+                s.logger.Warn("Token usage aggregation failed",
                     zap.String("workflow_id", workflowID),
                     zap.Error(err))
             }
 
-            // Secondary safety net: derive from agent_executions when token_usage linkage is missing
-            if taskExecution.TotalCostUSD == 0 {
+            // Secondary fallback: derive from agent_executions only if token_usage aggregation returned zero
+            if taskExecution.TotalTokens == 0 {
                 var aeTokens sql.NullInt64
                 row2 := s.dbClient.Wrapper().QueryRowContext(ctx, `
                     SELECT COALESCE(SUM(ae.tokens_used), 0)
                     FROM agent_executions ae
                     WHERE ae.workflow_id = $1`, workflowID)
                 if err2 := row2.Scan(&aeTokens); err2 == nil {
-                    if aeTokens.Valid {
-                        if taskExecution.TotalTokens == 0 {
-                            taskExecution.TotalTokens = int(aeTokens.Int64)
-                        }
-                        if taskExecution.TotalTokens > 0 {
-                            // Compute cost using model from metadata when available
-                            taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
-                        }
+                    if aeTokens.Valid && aeTokens.Int64 > 0 {
+                        taskExecution.TotalTokens = int(aeTokens.Int64)
+                        // Compute cost using model from metadata when available
+                        taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
                     }
                 } else {
                     s.logger.Warn("Agent execution aggregation failed",

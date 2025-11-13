@@ -94,7 +94,7 @@ class AgentQuery(BaseModel):
         description="Explicit sequence of tool calls to execute before interpretation",
     )
     max_tokens: Optional[int] = Field(
-        default=2048, description="Maximum tokens for response"
+        default=None, description="Maximum tokens for response (None = use role/tier defaults, typically 4096 for GPT-5)"
     )
     temperature: Optional[float] = Field(
         default=0.7, description="Temperature for generation"
@@ -220,10 +220,14 @@ async def agent_query(request: Request, query: AgentQuery):
                 cap_overrides = preset.get("caps") or {}
                 # Precedence: caller values win; fall back to role caps only if missing
                 # This avoids capping synthesis/composition calls to small role defaults (e.g., 1200)
+                # GPT-5 models need more tokens for reasoning + output (default 4096 instead of 2048)
+                default_max_tokens = 4096  # Increased for GPT-5 reasoning models
                 try:
-                    max_tokens = int(query.max_tokens) if query.max_tokens is not None else int(cap_overrides.get("max_tokens") or 2048)
+                    max_tokens = int(query.max_tokens) if query.max_tokens is not None else int(cap_overrides.get("max_tokens") or default_max_tokens)
+                    logger.info(f"Agent query max_tokens: query.max_tokens={query.max_tokens}, cap_overrides={cap_overrides.get('max_tokens')}, final={max_tokens}")
                 except Exception:
-                    max_tokens = int(cap_overrides.get("max_tokens") or 2048)
+                    max_tokens = int(cap_overrides.get("max_tokens") or default_max_tokens)
+                    logger.info(f"Agent query max_tokens (exception path): final={max_tokens}")
                 try:
                     temperature = float(query.temperature) if query.temperature is not None else float(cap_overrides.get("temperature") or 0.7)
                 except Exception:
@@ -692,7 +696,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             {"role": "user", "content": str(user_obj)},
                         ],
                         tier=tier,
-                        max_tokens=300,
+                        max_tokens=4096,
                         temperature=0.1,
                         response_format={"type": "json_object"},
                         workflow_id=request.headers.get("X-Workflow-ID")
@@ -1394,7 +1398,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             result = await providers.generate_completion(
                 messages=messages,
                 tier=ModelTier.SMALL,
-                max_tokens=4096,  # Increased from 400 to handle complex multi-subtask decompositions
+                max_tokens=8192,  # Increased from 4096 to prevent truncation on complex decompositions
                 temperature=0.1,
                 response_format={"type": "json_object"},
                 specific_model=(
