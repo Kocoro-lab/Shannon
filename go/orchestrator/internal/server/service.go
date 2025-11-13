@@ -1802,7 +1802,10 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 	if s.temporalClient == nil || s.dbClient == nil {
 		return
 	}
-	ctx := context.Background()
+	// Use 5-minute timeout to prevent goroutine leaks on stuck workflows
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
 	// Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
 	we := s.temporalClient.GetWorkflow(ctx, workflowID, runID)
 	var tmp interface{}
