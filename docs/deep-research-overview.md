@@ -198,9 +198,10 @@ Query → Decomposition → Information Gathering (Parallel)
 ### 7) Synthesize (Step 4)
 
 - Activity: `SynthesizeResultsLLM` (LLM‑first, fallback to simple)
-- **Model Tier**: Uses `large` tier (gpt-4.1/claude-opus-4-1/gemini-2.5-pro) for highest quality final output
-  - Implementation: Tier set in workflow context and explicitly passed in request body to ensure Python API respects it
-  - Overrides any inherited medium/small tier from parent workflow
+- **Model Tier**:
+  - Initial synthesis: Defaults to `medium` tier (gpt-5-mini) for cost efficiency
+  - Gap-filling re-synthesis: Uses `large` tier (gpt-4.1/claude-opus-4-1/gemini-2.5-pro) for highest quality
+  - Override with `context.synthesis_model_tier` parameter to explicitly control tier selection
 - Prompt directives:
   - Language matching (respond in query language)
   - Mandatory research area coverage (subsection per area)
@@ -310,8 +311,7 @@ Research workflows automatically inject `web_search` into all subtasks to ensure
 
 **Implementation:**
 - File: `go/orchestrator/internal/workflows/strategies/research.go`
-- Parallel injection: lines 832-844
-- Hybrid injection: lines 763-775
+- Injection logic for Parallel and Hybrid execution patterns
 - ReAct pattern doesn't need injection (has access to all tools by default)
 
 **Example:**
@@ -370,8 +370,47 @@ parallelTask.SuggestedTools = ["web_search"]
 - **React per task**: Mini ReAct loops per subtask for deep research (auto-enable when complexity > 0.7 + {deep|academic} strategy)
 - **Verification layer**: Optional claim extraction and cross‑reference against citations via VerifyClaimsActivity
 - **Language matching**: Detect from query, instruct response in same language
-- **Strategy presets**: research_strategy (quick/standard/deep/academic) with overrides (max_iterations, max_concurrent_agents, react_max_iterations), toggles (enable_verification, report_mode, react_per_task)
+- **Strategy presets**: research_strategy (quick/standard/deep/academic) with overrides (max_concurrent_agents, react_max_iterations), toggles (enable_verification, react_per_task)
 - **Token accounting**: Budgeted vs non‑budgeted guards across patterns; single write per step
+- **Gap filling**: Automatic quality improvement for incomplete research areas (configurable per strategy)
+
+### Gap Filling Configuration
+
+Automatic iterative refinement for undercovered research areas:
+
+| Strategy | Enabled | Max Gaps | Citation Check | Max Iterations |
+|----------|---------|----------|----------------|----------------|
+| **quick** | No | - | - | - |
+| **standard** | Yes | 3 | No | 2 |
+| **deep** | Yes | 5 | Yes (≥2 per section) | 2 |
+| **academic** | Yes | 10 | Yes (≥2 per section) | 2 |
+
+**How it works:**
+1. After initial synthesis, analyzes each research area for coverage gaps
+2. Detects gaps via: missing sections, explicit gap phrases ("insufficient data"), or low citation density
+3. Triggers targeted ReAct loops to fill identified gaps
+4. Re-synthesizes with combined original + gap-fill results
+5. Repeats up to max iterations if gaps still exist
+
+**Override via context:**
+- `gap_filling_enabled` (bool) - Enable/disable gap filling
+- `gap_filling_max_gaps` (int) - Maximum areas to refine per iteration
+- `gap_filling_max_iterations` (int) - Maximum re-synthesis attempts
+- `gap_filling_check_citations` (bool) - Require ≥2 inline citations per section
+
+**Example:**
+```json
+{
+  "query": "...",
+  "research_strategy": "deep",
+  "context": {
+    "gap_filling_max_gaps": 8,
+    "gap_filling_max_iterations": 3
+  }
+}
+```
+
+**Note:** Gap-fill synthesis inherits model tier from initial synthesis (defaults to medium). For higher quality gap filling, explicitly set `context.synthesis_model_tier: "large"`.
 
 ### 🔜 Future Enhancements
 
@@ -427,7 +466,6 @@ curl -X POST http://localhost:8080/api/v1/tasks \
       "react_max_iterations": 6
     },
     "research_strategy": "deep",
-    "max_iterations": 12,
     "enable_verification": true
   }'
 ```
@@ -485,7 +523,5 @@ Parameters (through gateway)
 - `context.react_max_iterations` (2–8, default 5, controls ReAct loop depth)
 - `context.budget_agent_max` (int, optional per-agent token budget with enforcement)
 - `research_strategy` (`quick|standard|deep|academic`)
-- `max_iterations` (1–50, controls main React pattern iterations)
 - `max_concurrent_agents` (1–20, controls parallel task concurrency)
 - `enable_verification` (boolean, enables claim verification against citations)
-- `report_mode` (boolean, affects synthesis style)

@@ -32,10 +32,10 @@ Response headers include `X-Workflow-ID` and `X-Session-ID`.
 These optional fields are validated by the Gateway and then added to the workflow `context`:
 
 - `research_strategy` — `quick | standard | deep | academic`
-- `max_iterations` — integer (1..50)
 - `max_concurrent_agents` — integer (1..20)
 - `enable_verification` — boolean (enables claim verification when citations exist)
-- `report_mode` — boolean (formatting hints for synthesis/reporting)
+
+**Note**: The `max_iterations` parameter is accepted by the gateway for backward compatibility but is not used by current workflows. Use `context.react_max_iterations` to control ReAct loop depth instead.
 
 ### Research Strategy Presets
 
@@ -47,10 +47,11 @@ curl -sS -X POST http://localhost:8080/api/v1/tasks \
   -d '{
     "query": "Weekly research briefing",
     "research_strategy": "deep",
-    "max_iterations": 10,
-    "max_concurrent_agents": 5,
+    "max_concurrent_agents": 7,
     "enable_verification": true,
-    "report_mode": true
+    "context": {
+      "react_max_iterations": 4
+    }
   }'
 ```
 

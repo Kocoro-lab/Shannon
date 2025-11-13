@@ -1,8 +1,9 @@
 package metadata
 
 import (
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 )
 
 // AggregateAgentMetadata extracts model, provider, and token information from agent results.
@@ -44,22 +45,28 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 		totalTokensUsed += result.TokensUsed
 
 		// Record per-agent usage
-		if result.Success {
-			agentUsage := map[string]interface{}{
-				"agent_id": result.AgentID,
-			}
-			if result.ModelUsed != "" {
-				agentUsage["model"] = result.ModelUsed
-			}
-			if result.InputTokens > 0 || result.OutputTokens > 0 {
-				agentUsage["input_tokens"] = result.InputTokens
-				agentUsage["output_tokens"] = result.OutputTokens
-				agentUsage["total_tokens"] = result.InputTokens + result.OutputTokens
-			} else if result.TokensUsed > 0 {
-				agentUsage["total_tokens"] = result.TokensUsed
-			}
-			agentUsages = append(agentUsages, agentUsage)
-		}
+        if result.Success {
+            agentUsage := map[string]interface{}{
+                "agent_id": result.AgentID,
+            }
+            if result.ModelUsed != "" {
+                agentUsage["model"] = result.ModelUsed
+            }
+            // Tokens and per-agent cost
+            var cost float64
+            if result.InputTokens > 0 || result.OutputTokens > 0 {
+                agentUsage["input_tokens"] = result.InputTokens
+                agentUsage["output_tokens"] = result.OutputTokens
+                total := result.InputTokens + result.OutputTokens
+                agentUsage["total_tokens"] = total
+                cost = pricing.CostForSplit(result.ModelUsed, result.InputTokens, result.OutputTokens)
+            } else if result.TokensUsed > 0 {
+                agentUsage["total_tokens"] = result.TokensUsed
+                cost = pricing.CostForTokens(result.ModelUsed, result.TokensUsed)
+            }
+            agentUsage["cost_usd"] = cost
+            agentUsages = append(agentUsages, agentUsage)
+        }
 	}
 
 	// Use the most frequently used model if available

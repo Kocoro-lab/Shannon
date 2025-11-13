@@ -231,6 +231,14 @@ func (b *BudgetActivities) RecordTokenUsage(ctx context.Context, input TokenUsag
 		IdempotencyKey: idempotencyKey,
 	}
 
+	// Backfill missing provider from model if available
+	if usage.Provider == "" && usage.Model != "" {
+		usage.Provider = detectProviderFromModel(usage.Model)
+		b.logger.Debug("Backfilled provider from model",
+			zap.String("model", usage.Model),
+			zap.String("provider", usage.Provider))
+	}
+
 	err := b.budgetManager.RecordUsage(ctx, usage)
 	if err != nil {
 		b.logger.Error("Failed to record token usage", zap.Error(err))

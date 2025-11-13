@@ -16,7 +16,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "state assumptions, and avoid speculation."
         ),
         "allowed_tools": ["web_search", "code_reader"],
-        "caps": {"max_tokens": 1200, "temperature": 0.2},
+        "caps": {"max_tokens": 4096, "temperature": 0.2},
     },
     "research": {
         "system_prompt": (
@@ -31,11 +31,14 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 
 # Research Strategy:
 1. Start with BROAD searches to understand the landscape
-2. After EACH tool use, reflect using these questions:
-   - What did I learn from this search?
-   - What critical gaps or questions remain?
-   - What should I investigate next?
+2. After EACH tool use, INTERNALLY assess (do not output this reflection to user):
+   - What key information did I gather from this search?
+   - What critical gaps or questions remain unanswered?
+   - Can I answer the user's question confidently with current evidence?
+   - Should I search again (with more specific query) OR proceed to synthesis?
+   - If searching again: How can I avoid repeating unsuccessful queries?
 3. Progressively narrow focus based on findings
+4. Stop when comprehensive coverage achieved (see Hard Limits below)
 
 # Source Quality Standards:
 - Prioritize authoritative sources (.gov, .edu, peer-reviewed journals, reputable media)
@@ -73,7 +76,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 
 **Citation integrity is paramount. Every claim needs evidence.**""",
         "allowed_tools": ["web_search", "web_fetch"],
-        "caps": {"max_tokens": 2000, "temperature": 0.3},
+        "caps": {"max_tokens": 4096, "temperature": 0.3},
     },
     "writer": {
         "system_prompt": (
@@ -93,7 +96,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
     "generalist": {
         "system_prompt": "You are a helpful AI assistant.",
         "allowed_tools": [],
-        "caps": {"max_tokens": 1200, "temperature": 0.7},
+        "caps": {"max_tokens": 8192, "temperature": 0.7},
     },
 }
 

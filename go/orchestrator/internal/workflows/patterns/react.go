@@ -412,10 +412,11 @@ func ReactLoop(
 
 		iteration++
 
-		// Check for early termination based on confidence
-		if hasHighConfidenceSolution(observations, thoughts) {
-			logger.Info("High confidence solution found",
+		// Check for early termination based on multiple criteria
+		if shouldStopReactLoop(observations, thoughts, agentResults, iteration) {
+			logger.Info("Early termination criteria met",
 				"iteration", iteration,
+				"total_agent_results", len(agentResults),
 			)
 			break
 		}
@@ -576,6 +577,48 @@ func isTaskComplete(reasoning string) bool {
 // Removed extractToolsFromReasoning - all tool selection is now LLM-driven
 // to maintain consistency with the LLM-native architecture
 
+// shouldStopReactLoop checks multiple criteria for early termination
+func shouldStopReactLoop(observations []string, thoughts []string, agentResults []activities.AgentExecutionResult, iteration int) bool {
+	// Need at least 2 iterations to compare
+	if iteration < 2 {
+		return false
+	}
+
+	// Criterion 1: High confidence solution found
+	if hasHighConfidenceSolution(observations, thoughts) {
+		return true
+	}
+
+	// Criterion 2: Last two iterations returned similar results (convergence)
+	var lastObs, prevObs string
+	if len(observations) >= 2 {
+		lastObs = observations[len(observations)-1]
+		prevObs = observations[len(observations)-2]
+		if areSimilar(lastObs, prevObs) {
+			return true
+		}
+	}
+
+	// Criterion 3: No new citations/information in last 2 iterations
+	if len(agentResults) >= 2 && len(observations) >= 2 {
+		lastCitationCount := countCitations(agentResults[len(agentResults)-1])
+		prevCitationCount := countCitations(agentResults[len(agentResults)-2])
+
+		// If both iterations have citations and counts are the same, likely no new info
+		if lastCitationCount > 0 && prevCitationCount > 0 && lastCitationCount == prevCitationCount {
+			// Also check if observation length is similar (not significantly more content)
+			if len(lastObs) > 0 && len(prevObs) > 0 {
+				lengthRatio := float64(len(lastObs)) / float64(len(prevObs))
+				if lengthRatio > 0.8 && lengthRatio < 1.2 {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 func hasHighConfidenceSolution(observations []string, thoughts []string) bool {
 	// Check if we have strong indicators of a solution
 	if len(observations) == 0 || len(thoughts) == 0 {
@@ -589,10 +632,70 @@ func hasHighConfidenceSolution(observations []string, thoughts []string) bool {
 		if strings.Contains(lowerObs, "success") ||
 			strings.Contains(lowerObs, "correct") ||
 			strings.Contains(lowerObs, "solved") ||
-			strings.Contains(lowerObs, "answer is") {
+			strings.Contains(lowerObs, "answer is") ||
+			strings.Contains(lowerObs, "found") ||
+			strings.Contains(lowerObs, "comprehensive") {
 			return true
 		}
 	}
 
 	return false
+}
+
+// areSimilar checks if two strings are similar (simple overlap check)
+func areSimilar(s1, s2 string) bool {
+	if s1 == s2 {
+		return true
+	}
+
+	// Check length similarity first
+	len1, len2 := len(s1), len(s2)
+	if len1 == 0 || len2 == 0 {
+		return false
+	}
+
+	lengthRatio := float64(len1) / float64(len2)
+	if lengthRatio < 0.5 || lengthRatio > 2.0 {
+		return false
+	}
+
+	// Check for high word overlap
+	words1 := strings.Fields(strings.ToLower(s1))
+	words2 := strings.Fields(strings.ToLower(s2))
+
+	if len(words1) == 0 || len(words2) == 0 {
+		return false
+	}
+
+	wordSet := make(map[string]bool)
+	for _, w := range words1 {
+		if len(w) > 3 { // Only consider words longer than 3 chars
+			wordSet[w] = true
+		}
+	}
+
+	overlap := 0
+	for _, w := range words2 {
+		if len(w) > 3 && wordSet[w] {
+			overlap++
+		}
+	}
+
+	// If >70% of significant words overlap, consider similar
+	overlapRatio := float64(overlap) / float64(len(words2))
+	return overlapRatio > 0.7
+}
+
+// countCitations counts how many citations are in an agent result
+func countCitations(result activities.AgentExecutionResult) int {
+	count := 0
+	for _, toolExec := range result.ToolExecutions {
+		if toolExec.Tool == "web_search" && toolExec.Success {
+			// Rough estimate: count URLs in output
+			if output, ok := toolExec.Output.(string); ok {
+				count += strings.Count(output, "http")
+			}
+		}
+	}
+	return count
 }

@@ -153,6 +153,7 @@ services:
       - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/app/config/models.yaml}
       - METRICS_PORT=${ORCHESTRATOR_METRICS_PORT:-2112}
       - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-600}
+      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-30}
       # Optional: Account MCP tool costs in tokens (cost*1000); default off
       - MCP_COST_TO_TOKENS=${MCP_COST_TO_TOKENS:-0}
       # Priority-based task queues: set to 'on' to enable separate workers per priority
@@ -360,6 +361,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - ../../config:/app/config:ro
     networks: [shannon-net]
 
   dashboard:

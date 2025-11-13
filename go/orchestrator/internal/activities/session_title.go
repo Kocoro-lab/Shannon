@@ -202,15 +202,13 @@ func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (st
 	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
 
 	reqBody := map[string]interface{}{
-		"query": prompt,
-		"context": map[string]interface{}{
-			"max_tokens":  20,
-			"temperature": 0.3, // Low temperature for consistency
+		"query":       prompt,
+		"max_tokens":  50,         // Top-level so agent API reads it correctly (50 tokens enough for 3-5 words + safety)
+		"temperature": 0.3,        // Low temperature for consistency
+		"agent_id":    "title_generator",
+		"session_context": map[string]interface{}{
+			"system_prompt": "You are a title generator. Produce concise, descriptive titles for chat sessions. Rules: 3–5 words, Title Case, no quotes, no trailing punctuation, no emojis, no sensitive identifiers. Output ONLY the title.",
 		},
-		"agent_id": "title_generator",
-        "session_context": map[string]interface{}{
-            "system_prompt": "You are a title generator. Produce concise, descriptive titles for chat sessions. Rules: 3–5 words, Title Case, no quotes, no trailing punctuation, no emojis, no sensitive identifiers. Output ONLY the title.",
-        },
 	}
 
 	reqJSON, err := json.Marshal(reqBody)

@@ -83,20 +83,7 @@ def main():
         help="Disable claim verification",
     )
     submit_parser.set_defaults(enable_verification=None)
-    rm_group = submit_parser.add_mutually_exclusive_group()
-    rm_group.add_argument(
-        "--report-mode",
-        dest="report_mode",
-        action="store_true",
-        help="Enable report mode in synthesis",
-    )
-    rm_group.add_argument(
-        "--no-report-mode",
-        dest="report_mode",
-        action="store_false",
-        help="Disable report mode",
-    )
-    submit_parser.set_defaults(report_mode=None)
+    
 
     # Citation toggle
     cit_group = submit_parser.add_mutually_exclusive_group()
@@ -187,8 +174,7 @@ def main():
                 submit_ctx["enable_verification"] = args.enable_verification
             if args.enable_citations is not None:
                 submit_ctx["enable_citations"] = args.enable_citations
-            if args.report_mode is not None:
-                submit_ctx["report_mode"] = args.report_mode
+            
 
             handle = client.submit_task(
                 args.query,

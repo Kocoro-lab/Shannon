@@ -256,6 +256,7 @@ yarn-error.log*
 *.iml
 .cursor/
 .claude/
+.codex_cache/
 *.suo
 *.ntvs*
 *.njsproj

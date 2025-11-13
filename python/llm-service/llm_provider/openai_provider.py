@@ -87,6 +87,8 @@ class OpenAIProvider(LLMProvider):
     )
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using OpenAI API (Responses API preferred)."""
+        import logging
+        logger = logging.getLogger(__name__)
 
         # Select model based on tier or explicit override
         model_config = self.resolve_model_config(request)
@@ -98,7 +100,15 @@ class OpenAIProvider(LLMProvider):
             if hasattr(self.client, "responses") and hasattr(
                 self.client.responses, "create"
             ):
-                return await self._complete_responses_api(request, model)
+                try:
+                    return await self._complete_responses_api(request, model)
+                except Exception as e:
+                    # Log the actual error from Responses API
+                    logger.warning(
+                        f"Responses API failed for model {model}, falling back to Chat Completions API. "
+                        f"Error: {type(e).__name__}: {str(e)}"
+                    )
+                    # Fall through to Chat Completions API
             # If Responses not available, fall through to chat
 
         # Fallback: Chat Completions API
@@ -134,10 +144,30 @@ class OpenAIProvider(LLMProvider):
         headroom = max(0, model_context - prompt_tokens_est - safety_margin)
         adjusted_max = max(1, min(requested_max, model_max_output, headroom))
 
+        # Debug: Log the calculation for GPT-5
+        if model.startswith("gpt-5"):
+            logger.info(
+                f"Token limit calculation for {model}: "
+                f"request.max_tokens={request.max_tokens}, model_max_output={model_max_output}, "
+                f"requested_max={requested_max}, headroom={headroom}, adjusted_max={adjusted_max}"
+            )
+
+        # Debug logging for token limits
+        if adjusted_max < 100:
+            logger.warning(
+                f"Very low max_completion_tokens for model {model}: adjusted_max={adjusted_max}, "
+                f"prompt_tokens={prompt_tokens_est}, model_context={model_context}, "
+                f"requested_max={requested_max}, headroom={headroom}"
+            )
+
         # GPT-5 family uses max_completion_tokens instead of max_tokens
         if adjusted_max:
             if is_gpt5_chat:
                 api_request["max_completion_tokens"] = adjusted_max
+                logger.info(
+                    f"GPT-5 Chat API request for {model}: max_completion_tokens={adjusted_max}, "
+                    f"prompt_tokens_est={prompt_tokens_est}, context_window={model_context}"
+                )
             else:
                 api_request["max_tokens"] = adjusted_max
 
@@ -158,12 +188,45 @@ class OpenAIProvider(LLMProvider):
         try:
             response = await self.client.chat.completions.create(**api_request)
         except openai.APIError as e:
-            raise Exception(f"OpenAI API error: {e}")
+            logger.error(
+                f"OpenAI Chat Completions API error for model {model}: "
+                f"Status={getattr(e, 'status_code', 'unknown')}, "
+                f"Type={type(e).__name__}, "
+                f"Message={str(e)}"
+            )
+            raise Exception(f"OpenAI Chat Completions API error: {e}") from e
+        except Exception as e:
+            logger.error(
+                f"Unexpected error calling Chat Completions API for model {model}: "
+                f"Type={type(e).__name__}, "
+                f"Message={str(e)}"
+            )
+            raise
 
         latency_ms = int((time.time() - start_time) * 1000)
 
         choice = response.choices[0]
         message = choice.message
+
+        # Debug: Log raw message structure for GPT-5 models
+        if model.startswith("gpt-5"):
+            raw_content = getattr(message, "content", None)
+            # Get all message attributes to see what's available
+            msg_attrs = [attr for attr in dir(message) if not attr.startswith('_')]
+            logger.info(
+                f"GPT-5 message attributes: {msg_attrs}"
+            )
+            logger.info(
+                f"GPT-5 raw message.content: type={type(raw_content)}, "
+                f"len={len(raw_content) if isinstance(raw_content, str) else 'N/A'}, "
+                f"is_empty_string={raw_content == ''}, "
+                f"value_preview={raw_content[:200] if raw_content else '(empty or None)'}"
+            )
+            # Check for alternative content fields
+            for alt_field in ['reasoning_content', 'thinking', 'internal_thoughts', 'output', 'text']:
+                if hasattr(message, alt_field):
+                    alt_value = getattr(message, alt_field, None)
+                    logger.info(f"GPT-5 message.{alt_field}: {type(alt_value)}, preview: {str(alt_value)[:100]}")
 
         # Normalize message content: some models (e.g., GPT‑5/4.1) may return
         # content as a list of parts instead of a plain string. Extract the
@@ -171,32 +234,164 @@ class OpenAIProvider(LLMProvider):
         def _extract_text_from_message(msg) -> str:
             try:
                 content = getattr(msg, "content", None)
-                # Plain string content
-                if isinstance(content, str):
-                    return content or ""
-                # List of content parts (each may have a .text attribute or be a dict)
+
+                # 1. Plain string content
+                if isinstance(content, str) and content.strip():
+                    return content
+
+                # 2. List of content parts (each may have a .text attribute or be a dict)
                 if isinstance(content, list):
                     parts: List[str] = []
                     for part in content:
                         try:
+                            # Try part.text attribute
                             text = getattr(part, "text", None)
+                            # Try part["text"] dict key
                             if not text and isinstance(part, dict):
                                 text = part.get("text")
+                            # Try part["output_text"] for GPT-5
+                            if not text and isinstance(part, dict):
+                                text = part.get("output_text")
                             if isinstance(text, str) and text.strip():
                                 parts.append(text.strip())
                         except Exception:
                             # Be permissive; ignore malformed parts
                             pass
-                    return "\n\n".join(parts).strip()
-                # Some SDK variants expose a single object with .text
+                    if parts:
+                        return "\n\n".join(parts).strip()
+
+                # 3. Some SDK variants expose a single object with .text
                 if hasattr(content, "text"):
                     txt = getattr(content, "text", "")
-                    return txt or ""
-            except Exception:
-                pass
+                    if txt:
+                        return txt
+
+                # 4. GPT-5 fallback: try model_dump() to inspect structured content
+                if hasattr(msg, "model_dump"):
+                    try:
+                        dump = msg.model_dump()
+                        # Check if content is a list in the dump
+                        if isinstance(dump.get("content"), list):
+                            parts: List[str] = []
+                            for item in dump["content"]:
+                                if isinstance(item, dict):
+                                    # Try output_text, text, or any text field
+                                    for field in ["output_text", "text", "content"]:
+                                        if field in item and isinstance(item[field], str) and item[field].strip():
+                                            parts.append(item[field].strip())
+                                            break
+                            if parts:
+                                logger.info(f"Extracted content from model_dump() list parts: {len(parts)} parts")
+                                return "\n\n".join(parts).strip()
+                    except Exception as e:
+                        logger.warning(f"Failed to extract from model_dump(): {e}")
+
+                # 5. GPT-5 reasoning fields
+                for alt_field in ["reasoning_content", "output", "thinking"]:
+                    if hasattr(msg, alt_field):
+                        alt_value = getattr(msg, alt_field, None)
+                        if isinstance(alt_value, str) and alt_value.strip():
+                            logger.info(f"Extracted content from message.{alt_field}")
+                            return alt_value
+                        elif isinstance(alt_value, list):
+                            # Handle list of reasoning parts
+                            parts: List[str] = []
+                            for part in alt_value:
+                                if isinstance(part, dict) and "text" in part:
+                                    parts.append(str(part["text"]))
+                                elif isinstance(part, str):
+                                    parts.append(part)
+                            if parts:
+                                logger.info(f"Extracted content from message.{alt_field} list")
+                                return "\n\n".join(parts).strip()
+
+            except Exception as e:
+                logger.warning(f"Content extraction failed: {e}")
+
             return ""
 
         content_text = _extract_text_from_message(message)
+
+        # Special case: finish_reason == "function_call" or "tool_calls"
+        # Content is in message.tool_calls array (new format) or message.function_call (old format)
+        if not content_text or not content_text.strip():
+            if choice.finish_reason in ["function_call", "tool_calls"]:
+                # Try new format first (tool_calls array)
+                tool_calls = getattr(message, "tool_calls", None)
+                if tool_calls and len(tool_calls) > 0:
+                    tool_descriptions = []
+                    for tc in tool_calls:
+                        try:
+                            func_name = getattr(tc.function, "name", "unknown")
+                            func_args = getattr(tc.function, "arguments", "{}")
+                            tool_descriptions.append(f"Tool: {func_name}, Args: {func_args}")
+                        except Exception:
+                            pass
+                    if tool_descriptions:
+                        content_text = "Tool calls:\n" + "\n".join(tool_descriptions)
+                        logger.info(f"Extracted {len(tool_calls)} tool calls from message.tool_calls for finish_reason={choice.finish_reason}")
+
+                # Try old format if new format didn't work (function_call object)
+                if not content_text or not content_text.strip():
+                    function_call = getattr(message, "function_call", None)
+                    if function_call:
+                        try:
+                            func_name = getattr(function_call, "name", "unknown")
+                            func_args = getattr(function_call, "arguments", "{}")
+                            content_text = f"Tool call: {func_name}, Args: {func_args}"
+                            logger.info(f"Extracted function call from message.function_call (old format) for finish_reason={choice.finish_reason}")
+                        except Exception:
+                            pass
+
+        # Guard: If content is still empty but completion_tokens > 0, handle gracefully
+        completion_tokens_actual = int(getattr(response.usage, "completion_tokens", 0))
+        if (not content_text or not content_text.strip()) and completion_tokens_actual > 0:
+            # Special case: finish_reason == "length" means model hit token limit
+            # GPT-5 reasoning models may consume all tokens for internal reasoning
+            if choice.finish_reason == "length":
+                logger.warning(
+                    f"Model {model} hit token limit with empty content. "
+                    f"finish_reason: length, "
+                    f"prompt_tokens: {getattr(response.usage, 'prompt_tokens', 'N/A')}, "
+                    f"completion_tokens: {completion_tokens_actual}. "
+                    f"Returning partial content message."
+                )
+                # Return a partial content message instead of raising an exception
+                content_text = (
+                    f"[Incomplete response: Model hit token limit ({completion_tokens_actual} tokens used). "
+                    f"The response was truncated. Consider increasing max_tokens or simplifying the prompt.]"
+                )
+            else:
+                # For other finish_reasons with empty content, this is an error
+                logger.error(
+                    f"Empty content after all extraction attempts for model {model}. "
+                    f"finish_reason: {choice.finish_reason}, "
+                    f"prompt_tokens: {getattr(response.usage, 'prompt_tokens', 'N/A')}, "
+                    f"completion_tokens: {completion_tokens_actual}"
+                )
+                # Dump message structure for debugging
+                if hasattr(message, "model_dump"):
+                    try:
+                        dump = message.model_dump()
+                        logger.error(f"Message dump: {dump}")
+                    except Exception as e:
+                        logger.error(f"Failed to dump message: {e}")
+                # This is an error condition - content should exist with non-zero tokens
+                raise Exception(
+                    f"GPT-5 model {model} returned {completion_tokens_actual} completion tokens "
+                    f"but content extraction failed. finish_reason={choice.finish_reason}"
+                )
+
+        # Debug logging for empty responses (only when completion_tokens == 0 or None content in function_call)
+        if not content_text or not content_text.strip():
+            logger.warning(
+                f"Empty response from Chat Completions API for model {model}. "
+                f"message.content type: {type(message.content)}, "
+                f"message.content value: {message.content}, "
+                f"finish_reason: {choice.finish_reason}, "
+                f"prompt_tokens: {getattr(response.usage, 'prompt_tokens', 'N/A')}, "
+                f"completion_tokens: {completion_tokens_actual}"
+            )
 
         # Prefer provider usage for tokens
         try:
@@ -361,22 +556,22 @@ class OpenAIProvider(LLMProvider):
         )
         high_complexity = (request.complexity_score or 0.0) >= 0.7
 
-        # GPT-5-pro only works with Responses API
-        if model_name.startswith("gpt-5-pro"):
-            return "responses"
+        # Check requirements that need Chat Completions API BEFORE model family checks
+        # Responses API doesn't support response_format or tools properly
+        if has_tools and getattr(caps, "supports_tools", True):
+            return "chat"
+        if wants_json and getattr(caps, "supports_json_mode", True):
+            return "chat"
 
-        # GPT-5 family works best with Responses API
+        # GPT-5 family: Use Chat API by default (more reliable than Responses API)
+        # Responses API has strict content type validation and empty output issues with reasoning models
         if model_name.startswith("gpt-5"):
-            return "responses"
+            return "chat"
 
         # GPT-4.1 family uses standard chat completions API
         if model_name.startswith("gpt-4."):
             return "chat"
 
-        if has_tools and getattr(caps, "supports_tools", True):
-            return "chat"
-        if wants_json and getattr(caps, "supports_json_mode", True):
-            return "chat"
         if high_complexity and getattr(caps, "supports_reasoning", False):
             return "responses"
         # Default preference: Chat Completions API
@@ -388,6 +583,9 @@ class OpenAIProvider(LLMProvider):
         """Call OpenAI Responses API and normalize to CompletionResponse."""
         import time
 
+        # Get model config for token limits
+        model_config = self.resolve_model_config(request)
+
         # Map OpenAI chat-style messages to Responses input blocks
         inputs: List[Dict[str, Any]] = []
         for msg in request.messages:
@@ -398,16 +596,23 @@ class OpenAIProvider(LLMProvider):
             content_block = {"type": "input_text", "text": text}
             inputs.append({"role": role, "content": [content_block]})
 
+        # Clamp max_output_tokens to model limits (same as Chat API path)
+        prompt_tokens_est = self.count_tokens(request.messages, model)
+        safety_margin = 256
+        model_context = getattr(model_config, "context_window", 8192)
+        model_max_output = getattr(model_config, "max_tokens", model_context)
+        requested_max = int(request.max_tokens) if request.max_tokens else model_max_output
+        headroom = max(0, model_context - prompt_tokens_est - safety_margin)
+        adjusted_max = max(1, min(requested_max, model_max_output, headroom))
+
         params: Dict[str, Any] = {
             "model": model,
             "input": inputs,
-            "max_output_tokens": request.max_tokens or 2048,
+            "max_output_tokens": adjusted_max,
         }
-        # Limit reasoning budget so the model produces actual output text
-        params["reasoning"] = {"effort": "low"}
-        # Tools / response_format are not fully aligned; pass through best‑effort
-        if request.response_format:
-            params["response_format"] = request.response_format
+        # No reasoning parameter = thinking disabled by default
+        # Note: Responses API doesn't support response_format parameter
+        # If needed, the fallback to Chat Completions API will handle it
         if request.functions:
             # Minimal pass-through using function blocks
             tools: List[Dict[str, Any]] = []
@@ -429,7 +634,27 @@ class OpenAIProvider(LLMProvider):
                 params["tools"] = tools
 
         start_time = time.time()
-        response = await self.client.responses.create(**params)
+        try:
+            response = await self.client.responses.create(**params)
+        except openai.APIError as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"OpenAI Responses API error for model {model}: "
+                f"Status={getattr(e, 'status_code', 'unknown')}, "
+                f"Type={type(e).__name__}, "
+                f"Message={str(e)}"
+            )
+            raise Exception(f"OpenAI Responses API error: {e}") from e
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(
+                f"Unexpected error calling Responses API for model {model}: "
+                f"Type={type(e).__name__}, "
+                f"Message={str(e)}"
+            )
+            raise
 
         # Prefer output_text when Responses API provides it directly
         direct_text = getattr(response, "output_text", None)

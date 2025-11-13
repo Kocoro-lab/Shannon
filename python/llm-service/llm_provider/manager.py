@@ -552,18 +552,42 @@ class LLMManager:
         # No model aliasing: expect callers to provide canonical model IDs
 
         # Check cache if enabled
+        cache_key = None
         if self.cache and not request.stream:
             cache_key = request.generate_cache_key()
             cached_response = self.cache.get(cache_key)
             if cached_response:
-                hit_rate = getattr(self.cache, "hit_rate", None)
-                if isinstance(hit_rate, float):
-                    self.logger.info(
-                        f"Cache hit for request (hit rate: {hit_rate:.2%})"
-                    )
-                else:
-                    self.logger.info("Cache hit for request")
-                return cached_response
+                # Guard against cache poisoning when strict JSON is expected
+                if _is_strict_json_mode(request):
+                    try:
+                        parsed = json.loads(cached_response.content or "")
+                        if not isinstance(parsed, dict):
+                            raise ValueError("cached JSON is not an object")
+                    except Exception:
+                        try:
+                            if hasattr(self.cache, "delete"):
+                                self.cache.delete(cache_key)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                        cached_response = None
+                # Avoid serving cached truncated/filtered outputs
+                if cached_response and (getattr(cached_response, "finish_reason", "") or "").lower() in {"length", "content_filter"}:
+                    try:
+                        if hasattr(self.cache, "delete"):
+                            self.cache.delete(cache_key)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    cached_response = None
+
+                if cached_response:
+                    hit_rate = getattr(self.cache, "hit_rate", None)
+                    if isinstance(hit_rate, float):
+                        self.logger.info(
+                            f"Cache hit for request (hit rate: {hit_rate:.2%})"
+                        )
+                    else:
+                        self.logger.info("Cache hit for request")
+                    return cached_response
 
         # Select provider based on request
         provider_name, provider = self._select_provider(request)
@@ -601,10 +625,18 @@ class LLMManager:
             # Update usage tracking
             self._update_usage_tracking(request, response)
 
-            # Cache the response if applicable
+            # Cache the response if applicable and safe
             if self.cache and not request.stream:
-                cache_ttl = request.cache_ttl or self.default_cache_ttl
-                self.cache.set(cache_key, response, cache_ttl)
+                try:
+                    cache_ttl = request.cache_ttl or self.default_cache_ttl
+                    if self._should_cache_response(request, response):
+                        ck = cache_key or request.generate_cache_key()
+                        self.cache.set(ck, response, cache_ttl)
+                    else:
+                        self.logger.info("Skip caching response (unsafe/invalid for cache)")
+                except Exception:
+                    # Never fail due to cache issues
+                    self.logger.debug("Cache set failed; continuing without cache", exc_info=True)
 
             # Instrumentation
             if _METRICS_ENABLED:
@@ -628,7 +660,7 @@ class LLMManager:
             return response
 
         except Exception as e:
-            self.logger.error(f"Provider {provider_name} failed: {e}")
+            self.logger.error(f"Provider {provider_name} failed: {e}", exc_info=True)
             if _METRICS_ENABLED:
                 try:
                     LLM_MANAGER_REQUESTS.labels(provider_name, "", "error").inc()
@@ -819,6 +851,41 @@ class LLMManager:
         if isinstance(rf, dict) and rf.get("type") == "json_object":
             return False
         return True
+
+    def _should_cache_response(
+        self, request: CompletionRequest, response: CompletionResponse
+    ) -> bool:
+        """Return True if response is safe to cache.
+
+        - For strict JSON, only cache if content parses to a JSON object.
+        - Do not cache when finish_reason indicates truncation or content filtering.
+        - Require non-empty content unless a function_call is present.
+        """
+        try:
+            # Check finish_reason FIRST (most important guard)
+            fr = (getattr(response, "finish_reason", "") or "").lower()
+            if fr in {"length", "content_filter"}:
+                self.logger.info(f"Skip caching: finish_reason={fr}")
+                return False
+
+            if _is_strict_json_mode(request):
+                try:
+                    obj = json.loads(response.content or "")
+                    if not isinstance(obj, dict):
+                        self.logger.info("Skip caching: JSON mode but content is not a dict")
+                        return False
+                except Exception as e:
+                    self.logger.info(f"Skip caching: JSON mode but invalid JSON: {e}")
+                    return False
+
+            if not (isinstance(response.content, str) and response.content.strip()) and not response.function_call:
+                self.logger.info("Skip caching: empty content and no function_call")
+                return False
+
+            return True
+        except Exception as e:
+            self.logger.warning(f"Cache guard exception: {e}")
+            return False
 
     async def _hedged_complete(
         self,
@@ -1052,6 +1119,12 @@ class _RedisCacheManager:
     def set(self, key: str, response: CompletionResponse, ttl: int = 3600):
         data = _serialize_response(response)
         self._r.setex(self._mk(key), ttl, json.dumps(data))
+
+    def delete(self, key: str) -> None:
+        try:
+            self._r.delete(self._mk(key))
+        except Exception:
+            pass
 
     @staticmethod
     def _mk(key: str) -> str:
