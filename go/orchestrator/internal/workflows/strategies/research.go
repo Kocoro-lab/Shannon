@@ -1297,6 +1297,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 			// Only attempt gap-filling if we haven't exceeded max iterations
 			if iterationCount < maxGapIterations {
+				// Version gate for CJK gap detection phrases (for Temporal replay determinism)
+				cjkGapPhrasesVersion := workflow.GetVersion(ctx, "cjk_gap_phrases_v1", workflow.DefaultVersion, 1)
+				if cjkGapPhrasesVersion >= 1 {
+					baseContext["enable_cjk_gap_phrases"] = true
+				}
+
 				// Strategy-aware gap detection (pass baseContext instead of strategy string)
 				gapAnalysis := analyzeGaps(synthesis.FinalResult, refineResult.ResearchAreas, baseContext)
 
@@ -1718,14 +1724,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			if report.TotalCostUSD > 0 {
 				meta["cost_usd"] = report.TotalCostUSD
 			}
-			// NOTE: Do NOT update totalTokens from report as it may double-count
-			// The workflow's own tracking via AggregateAgentMetadata is more accurate
-			// Keeping this commented for observability:
-			// if report.TotalTokens > 0 && report.TotalTokens != totalTokens {
-			//     logger.Warn("Token count mismatch",
-			//         "workflow_tokens", totalTokens,
-			//         "report_tokens", report.TotalTokens)
-			// }
+			// Note: DB aggregation of token_usage provides the accurate full-workflow totals.
+			// This is used by the API layer (service.go) when returning GetTaskStatus for terminal workflows.
 		} else if err != nil {
 			logger.Warn("Usage report aggregation failed", "error", err)
 		}
@@ -1862,13 +1862,18 @@ func analyzeGaps(synthesisText string, researchAreas []string, context map[strin
         "no clear evidence",
         "data unavailable",
         "no information found",
-        // CJK equivalents (concise and unambiguous)
-        "未找到足够信息", // Chinese: not enough information found
-        "数据不足",       // Chinese: insufficient data
-        "信息不足",       // Chinese: insufficient information
-        "情報不足",       // Japanese: information insufficient
-        "情報が不足",     // Japanese: lacking information
-        "정보가 부족",     // Korean: lacking information
+    }
+
+    // CJK gap detection phrases (version-gated for Temporal determinism)
+    if enableCJK, ok := context["enable_cjk_gap_phrases"].(bool); ok && enableCJK {
+        gapPhrases = append(gapPhrases,
+            "未找到足够信息", // Chinese: not enough information found
+            "数据不足",       // Chinese: insufficient data
+            "信息不足",       // Chinese: insufficient information
+            "情報不足",       // Japanese: information insufficient
+            "情報が不足",     // Japanese: lacking information
+            "정보가 부족",     // Korean: lacking information
+        )
     }
 
 		hasExplicitGap := false

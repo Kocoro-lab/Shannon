@@ -378,7 +378,7 @@ async def analyze_task(request: Request, body: TaskAnalysisRequest):
                 {"role": "user", "content": user_prompt},
             ],
             tier=ModelTier.SMALL,
-            max_tokens=300,
+            max_tokens=1024,
             temperature=0.0,
             response_format={"type": "json_object"},
         )

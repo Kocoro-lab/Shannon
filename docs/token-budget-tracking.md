@@ -274,6 +274,113 @@ CREATE TABLE token_usage (
 
 ---
 
+## Zero-Token Executions
+
+### Tool-Only Paths
+
+Some agent executions return **0 LLM tokens** by design when no LLM inference occurs:
+
+**Common Scenarios**:
+- **Forced tool calls**: Agent uses tools without LLM reasoning (`forced_tools` mode)
+- **Cache hits**: Response served entirely from cache (future feature)
+- **Tool-only workflows**: Workflows that only execute tools without text generation
+
+**Example** (from ResearchWorkflow):
+```go
+// Tool-only web search execution
+result := executeWebSearch(ctx, query)
+// Returns: InputTokens=0, OutputTokens=0, ToolExecutions=[...]
+```
+
+See [Deep Research Overview](deep-research-overview.md#gap-filling-and-convergence) for details on gap-filling tool execution.
+
+---
+
+### Recording Behavior
+
+**Default**: Zero-token executions are **NOT recorded** to `token_usage` table
+
+**Rationale**:
+- No LLM cost to track
+- No billable token consumption
+- Reduces database writes for non-LLM operations
+
+**Implementation**:
+```go
+// Pattern recording guards (parallel.go, sequential.go)
+if result.TokensUsed == 0 && result.InputTokens == 0 {
+    if recordZeroToken, ok := context["record_zero_token"].(bool); !ok || !recordZeroToken {
+        logger.Warn("Skipping zero-token recording (no LLM inference occurred)")
+        return nil  // Skip recording
+    }
+}
+```
+
+**Locations**:
+- `go/orchestrator/internal/workflows/patterns/execution/sequential.go:316-380`
+- `go/orchestrator/internal/workflows/patterns/execution/parallel.go:295-320`
+
+---
+
+### Enabling Zero-Token Recording
+
+To record zero-token executions for **audit trail purposes**:
+
+**Via API Context**:
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "query": "Task with tool-only execution",
+    "context": {
+      "record_zero_token": true
+    }
+  }'
+```
+
+**Via Workflow Context**:
+```go
+baseContext := map[string]interface{}{
+    "record_zero_token": true,  // Enable zero-token recording
+}
+```
+
+**When Enabled**:
+- Zero-token records inserted into `token_usage` table
+- `cost_usd` = 0.0
+- Metadata can distinguish tool-only vs. LLM executions
+
+**Use Cases**:
+- Compliance/audit requirements (track all agent executions)
+- Debugging tool execution workflows
+- Analytics on tool-only vs. LLM paths
+
+---
+
+### Distinguishing Zero-Token Types
+
+When reviewing `token_usage` records with 0 tokens:
+
+```sql
+-- Find zero-token executions
+SELECT
+    tu.model,
+    tu.provider,
+    tu.total_tokens,
+    tu.cost_usd,
+    te.metadata->>'tool_executions' as tools_used
+FROM token_usage tu
+JOIN task_executions te ON tu.task_id = te.id
+WHERE tu.total_tokens = 0
+ORDER BY tu.created_at DESC;
+```
+
+**Interpretation**:
+- `tools_used IS NOT NULL` → Forced tool call (expected zero)
+- `tools_used IS NULL` → Potential issue (LLM should have returned tokens)
+
+---
+
 ## Preventing Duplicate Recordings
 
 ### The Problem (Before Fix)

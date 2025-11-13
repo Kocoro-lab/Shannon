@@ -857,7 +857,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
                     {"role": "system", "content": sys},
                     {"role": "user", "content": str(user)},
                 ],
-                max_tokens=300,
+                max_tokens=4096,
                 temperature=0.1,
                 response_format={"type": "json_object"},
                 workflow_id=wf_id,
