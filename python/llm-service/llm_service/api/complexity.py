@@ -50,7 +50,7 @@ def _heuristic_analysis(body: ComplexityRequest) -> ComplexityResponse:
         mode = "standard"
         score = 0.4
         agents = 1
-        tokens = 200
+        tokens = 4096
         cost = 0.002
         capabilities = ["calculation", "tool_use"]
         reasoning = "Calculation task requiring tool execution"
@@ -61,7 +61,7 @@ def _heuristic_analysis(body: ComplexityRequest) -> ComplexityResponse:
         mode = "simple"
         score = 0.2
         agents = 0
-        tokens = 100
+        tokens = 4096
         cost = 0.001
         capabilities = ["basic_qa"]
         reasoning = "Simple query that can be answered directly"
@@ -71,7 +71,7 @@ def _heuristic_analysis(body: ComplexityRequest) -> ComplexityResponse:
         mode = "standard"
         score = 0.5
         agents = 1
-        tokens = 500
+        tokens = 4096
         cost = 0.005
         capabilities = ["analysis", "reasoning"]
         reasoning = "Standard analysis task requiring single agent"
@@ -82,7 +82,7 @@ def _heuristic_analysis(body: ComplexityRequest) -> ComplexityResponse:
         mode = "complex"
         score = 0.8
         agents = 3
-        tokens = 2000
+        tokens = 4096
         cost = 0.02
         capabilities = ["planning", "execution", "validation"]
         reasoning = "Complex task requiring multiple specialized agents"
@@ -90,7 +90,7 @@ def _heuristic_analysis(body: ComplexityRequest) -> ComplexityResponse:
         mode = "standard"
         score = 0.4
         agents = 1
-        tokens = 300
+        tokens = 4096
         cost = 0.003
         capabilities = ["general"]
         reasoning = "Standard task with moderate complexity"
@@ -164,7 +164,7 @@ async def analyze_complexity(
                 {"role": "user", "content": user},
             ],
             tier=ModelTier.SMALL,
-            max_tokens=250,
+            max_tokens=1024,
             temperature=0.0,
             response_format={"type": "json_object"},
             specific_model=(
@@ -378,7 +378,7 @@ async def analyze_task(request: Request, body: TaskAnalysisRequest):
                 {"role": "user", "content": user_prompt},
             ],
             tier=ModelTier.SMALL,
-            max_tokens=1024,
+            max_tokens=4096,
             temperature=0.0,
             response_format={"type": "json_object"},
         )

@@ -51,14 +51,17 @@ model_tiers:
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: openai
-        model: gpt-5-mini-2025-08-07
+        model: gpt-5.1-chat-latest
         priority: 1
+      - provider: openai
+        model: gpt-5-mini-2025-08-07
+        priority: 2
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
-        priority: 2
+        priority: 3
       - provider: xai
         model: grok-4
-        priority: 3
+        priority: 4
       - provider: google
         model: gemini-2.5-flash
         priority: 4
@@ -86,14 +89,17 @@ model_tiers:
     # Heavy thinking/reasoning models for complex tasks
     providers:
       - provider: openai
-        model: gpt-5-2025-08-07
+        model: gpt-5.1
         priority: 1
+      - provider: openai
+        model: gpt-5-2025-08-07
+        priority: 2
       - provider: anthropic
         model: claude-opus-4-1-20250805
-        priority: 2
+        priority: 3
       - provider: xai
         model: grok-4-fast-reasoning
-        priority: 3
+        priority: 4
       - provider: google
         model: gemini-2.5-pro
         priority: 4
@@ -201,24 +207,24 @@ model_catalog:
     gpt-5-2025-08-07:
       model_id: gpt-5-2025-08-07
       tier: large
-      context_window: 128000
-      max_tokens: 16384
+      context_window: 400000
+      max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
     gpt-5-mini-2025-08-07:
       model_id: gpt-5-mini-2025-08-07
       tier: medium
-      context_window: 128000
-      max_tokens: 16384
+      context_window: 400000
+      max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
     gpt-5-nano-2025-08-07:
       model_id: gpt-5-nano-2025-08-07
       tier: small
-      context_window: 128000
-      max_tokens: 8192
+      context_window: 400000
+      max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_vision: false
@@ -233,18 +239,34 @@ model_catalog:
     gpt-5-pro-2025-10-06:
       model_id: gpt-5-pro-2025-10-06
       tier: large
-      context_window: 128000
-      max_tokens: 32768
+      context_window: 400000
+      max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
-  
+    gpt-5.1-chat-latest:
+      model_id: gpt-5.1-chat-latest
+      tier: medium
+      context_window: 400000
+      max_tokens: 128000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    gpt-5.1:
+      model_id: gpt-5.1
+      tier: large
+      context_window: 400000
+      max_tokens: 128000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+
   anthropic:
     claude-sonnet-4-20250514:
       model_id: claude-sonnet-4-20250514
       tier: medium
       context_window: 200000
-      max_tokens: 4096
+      max_tokens: 64000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -252,7 +274,7 @@ model_catalog:
       model_id: claude-sonnet-4-5-20250929
       tier: medium
       context_window: 200000
-      max_tokens: 8192
+      max_tokens: 64000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -260,7 +282,7 @@ model_catalog:
       model_id: claude-haiku-4-5-20251001
       tier: small
       context_window: 200000
-      max_tokens: 8192
+      max_tokens: 64000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -268,7 +290,7 @@ model_catalog:
       model_id: claude-opus-4-1-20250805
       tier: large
       context_window: 200000
-      max_tokens: 4096
+      max_tokens: 32000
       supports_functions: true
       supports_streaming: true
       supports_vision: true
@@ -277,31 +299,31 @@ model_catalog:
     gemini-2.5-pro:
       model_id: gemini-2.5-pro
       tier: large
-      context_window: 2000000
-      max_tokens: 8192
+      context_window: 1048576
+      max_tokens: 65536
       supports_functions: true
       supports_streaming: true
       supports_vision: true
     gemini-2.5-flash:
       model_id: gemini-2.5-flash
       tier: medium
-      context_window: 1000000
-      max_tokens: 8192
+      context_window: 1048576
+      max_tokens: 65536
       supports_functions: true
       supports_streaming: true
       supports_vision: true
     gemini-2.5-flash-lite:
       model_id: gemini-2.5-flash-lite
       tier: small
-      context_window: 1000000
-      max_tokens: 8192
+      context_window: 1048576
+      max_tokens: 65536
       supports_functions: true
       supports_streaming: true
       supports_vision: true
     gemini-2.0-flash:
       model_id: gemini-2.0-flash
       tier: medium
-      context_window: 1000000
+      context_window: 1048576
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
@@ -309,7 +331,7 @@ model_catalog:
     gemini-2.0-flash-lite:
       model_id: gemini-2.0-flash-lite
       tier: small
-      context_window: 1000000
+      context_window: 1048576
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
@@ -319,24 +341,24 @@ model_catalog:
     grok-4-fast-non-reasoning:
       model_id: grok-4-fast-non-reasoning
       tier: small
-      context_window: 131072
-      max_tokens: 8192
+      context_window: 2000000
+      max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_reasoning: false
     grok-4:
       model_id: grok-4
       tier: medium
-      context_window: 131072
-      max_tokens: 8192
+      context_window: 256000
+      max_tokens: 64000
       supports_functions: true
       supports_streaming: true
       supports_reasoning: true
     grok-4-fast-reasoning:
       model_id: grok-4-fast-reasoning
       tier: large
-      context_window: 131072
-      max_tokens: 8192
+      context_window: 2000000
+      max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_reasoning: true
