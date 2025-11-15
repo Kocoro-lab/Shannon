@@ -27,22 +27,20 @@ interface DashboardMetrics {
 }
 
 interface DashboardState {
-  workflowId: string | null;
   flights: Record<string, FlightSummary>;
   metrics: DashboardMetrics;
   lastEvent?: TaskEvent;
   toolCounts: Record<string, number>;
   agentTimers: Record<string, { lastPhase: 'thinking' | 'execution' | null; lastTimestamp?: number; thinkingMs: number; executionMs: number }>;
-  finalStatus?: TaskStatusResponse;
+  completedWorkflows: Set<string>;
 }
 
 type Action =
-  | { type: 'RESET'; workflowId: string }
+  | { type: 'RESET' }
   | { type: 'INGEST_EVENT'; event: TaskEvent }
-  | { type: 'SET_FINAL'; final: TaskStatusResponse };
+  | { type: 'MARK_WORKFLOW_COMPLETED'; workflowId: string };
 
 const initialState: DashboardState = {
-  workflowId: null,
   flights: {},
   metrics: {
     totalEvents: 0,
@@ -50,6 +48,7 @@ const initialState: DashboardState = {
   },
   toolCounts: {},
   agentTimers: {},
+  completedWorkflows: new Set(),
 };
 
 function toMillis(input: Date | string | number | undefined): number | undefined {
@@ -165,7 +164,6 @@ function reducer(state: DashboardState, action: Action): DashboardState {
   switch (action.type) {
     case 'RESET':
       return {
-        workflowId: action.workflowId,
         flights: {},
         metrics: {
           totalEvents: 0,
@@ -175,7 +173,7 @@ function reducer(state: DashboardState, action: Action): DashboardState {
         lastEvent: undefined,
         toolCounts: {},
         agentTimers: {},
-        finalStatus: undefined,
+        completedWorkflows: new Set(),
       };
     case 'INGEST_EVENT': {
       const { event } = action;
@@ -192,16 +190,25 @@ function reducer(state: DashboardState, action: Action): DashboardState {
         metrics.errorEvents = state.metrics.errorEvents + 1;
       }
 
+      // Mark workflow as completed
+      const completedWorkflows = new Set(state.completedWorkflows);
+      if (event.type === 'WORKFLOW_COMPLETED' && event.workflow_id) {
+        completedWorkflows.add(event.workflow_id);
+      }
+
       if (!event.agent_id) {
         return {
           ...state,
           metrics,
           lastEvent: event,
+          completedWorkflows,
         };
       }
 
       const flights = { ...state.flights };
-      const key = event.agent_id;
+      // Use composite key: workflow_id::agent_id to prevent collisions
+      const workflowId = event.workflow_id || 'unknown';
+      const key = `${workflowId}::${event.agent_id}`;
       const existing = flights[key];
       const previousStatus = existing?.status ?? 'queued';
       const nextStatus = deriveStatus(event.type, previousStatus);
@@ -210,8 +217,8 @@ function reducer(state: DashboardState, action: Action): DashboardState {
 
       flights[key] = {
         id: key,
-        agentId: key,
-        title: key,
+        agentId: event.agent_id,
+        title: event.agent_id,
         status: nextStatus,
         sector,
         lastMessage: event.formatted || event.message || event.type,
@@ -247,16 +254,16 @@ function reducer(state: DashboardState, action: Action): DashboardState {
         lastEvent: event,
         toolCounts,
         agentTimers,
+        completedWorkflows,
       };
     }
-    case 'SET_FINAL': {
-      const next: DashboardState = { ...state, finalStatus: action.final } as DashboardState;
-      const resp = action.final && (action.final.response as any);
-      const merged = { ...state.toolCounts };
-      const extra = extractToolsFromFinal(resp);
-      for (const [k, v] of Object.entries(extra)) merged[k] = (merged[k] || 0) + (v as number);
-      next.toolCounts = merged;
-      return next;
+    case 'MARK_WORKFLOW_COMPLETED': {
+      const completedWorkflows = new Set(state.completedWorkflows);
+      completedWorkflows.add(action.workflowId);
+      return {
+        ...state,
+        completedWorkflows,
+      };
     }
     default:
       return state;
@@ -265,7 +272,7 @@ function reducer(state: DashboardState, action: Action): DashboardState {
 
 interface DashboardContextValue {
   state: DashboardState;
-  reset: (workflowId: string) => void;
+  reset: () => void;
   ingestEvent: (event: TaskEvent) => void;
 }
 
@@ -273,10 +280,9 @@ const DashboardContext = createContext<DashboardContextValue | undefined>(undefi
 
 export function DashboardProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
-  const fetchedForWfRef = useRef<string | null>(null);
 
-  const reset = useCallback((workflowId: string) => {
-    dispatch({ type: 'RESET', workflowId });
+  const reset = useCallback(() => {
+    dispatch({ type: 'RESET' });
   }, []);
 
   const ingestEvent = useCallback((event: TaskEvent) => {
@@ -284,21 +290,6 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(() => ({ state, reset, ingestEvent }), [state, reset, ingestEvent]);
-
-  // Fetch final status once upon workflow completion
-  useEffect(() => {
-    const ev = state.lastEvent;
-    if (!ev || ev.type !== 'WORKFLOW_COMPLETED') return;
-    const wf = state.workflowId;
-    if (!wf) return;
-    if (fetchedForWfRef.current === wf) return;
-    fetchedForWfRef.current = wf;
-    let apiKey: string | undefined;
-    try { if (typeof window !== 'undefined') apiKey = window.sessionStorage.getItem('api_key') || undefined; } catch {}
-    fetchTaskStatus(wf, apiKey)
-      .then((final) => { dispatch({ type: 'SET_FINAL', final }); })
-      .catch(() => {});
-  }, [state.lastEvent, state.workflowId]);
 
   return <DashboardContext.Provider value={value}>{children}</DashboardContext.Provider>;
 }

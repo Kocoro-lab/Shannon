@@ -12,11 +12,40 @@ function buildHeaders(apiKey?: string): HeadersInit {
   return headers;
 }
 
-export async function submitTask(query: string, apiKey?: string): Promise<TaskSubmitResponse> {
+export interface SubmitTaskOptions {
+  session_id?: string;
+  research_strategy?: 'quick' | 'standard' | 'deep' | 'academic';
+  model_tier?: 'small' | 'medium' | 'large';
+  model_override?: string;
+  provider_override?: string;
+  max_iterations?: number;
+  max_concurrent_agents?: number;
+  enable_verification?: boolean;
+  context?: Record<string, unknown>;
+}
+
+export async function submitTask(
+  query: string,
+  options?: SubmitTaskOptions,
+  apiKey?: string
+): Promise<TaskSubmitResponse> {
+  const body: Record<string, unknown> = { query };
+
+  // Add optional parameters
+  if (options?.session_id) body.session_id = options.session_id;
+  if (options?.research_strategy) body.research_strategy = options.research_strategy;
+  if (options?.model_tier) body.model_tier = options.model_tier;
+  if (options?.model_override) body.model_override = options.model_override;
+  if (options?.provider_override) body.provider_override = options.provider_override;
+  if (options?.max_iterations) body.max_iterations = options.max_iterations;
+  if (options?.max_concurrent_agents) body.max_concurrent_agents = options.max_concurrent_agents;
+  if (options?.enable_verification !== undefined) body.enable_verification = options.enable_verification;
+  if (options?.context) body.context = options.context;
+
   const response = await fetch(`${API_BASE_URL}/api/v1/tasks`, {
     method: 'POST',
     headers: buildHeaders(apiKey),
-    body: JSON.stringify({ query }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {

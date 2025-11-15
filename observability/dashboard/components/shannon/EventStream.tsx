@@ -4,9 +4,8 @@ import { useRef, useEffect } from 'react';
 import type { TaskEvent } from '../../shannon/types';
 
 interface Props {
-  workflowId: string | null;
   events: TaskEvent[];
-  status: 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'closed';
+  status: 'idle' | 'connecting' | 'connected' | 'error';
   error: Error | null;
 }
 
@@ -36,7 +35,7 @@ function rowClassForType(type: string) {
   return 'tr-status-queued';
 }
 
-export function EventStream({ workflowId, events, status, error }: Props) {
+export function EventStream({ events, status, error }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -45,21 +44,13 @@ export function EventStream({ workflowId, events, status, error }: Props) {
     }
   }, [events]);
 
-  if (!workflowId) {
-    return (
-      <div className="h-full flex items-center justify-center text-xs text-[#7b7b7b] uppercase tracking-[0.3em]">
-        Awaiting task submission
-      </div>
-    );
-  }
-
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center justify-between px-3 py-2 border-b border-[#1b1407] text-[10px] uppercase tracking-[0.3em] text-[#8a8a8a]">
-        <span>Status: {status === 'reconnecting' ? 'reconnecting' : status}</span>
+        <span>Platform Timeline</span>
         <span>{events.length} events</span>
       </div>
-      {error && status !== 'reconnecting' && (
+      {error && (
         <div className="px-3 py-2 text-xs text-[#f87171] uppercase tracking-wide border-b border-[#1b1407]">{error.message}</div>
       )}
       <div
@@ -78,26 +69,34 @@ export function EventStream({ workflowId, events, status, error }: Props) {
         >
           <thead className="text-[#d79326] sticky top-0 bg-black z-10">
             <tr>
+              <th className="text-left px-2 py-1 whitespace-nowrap" style={{ width: '90px', minWidth: '90px' }}>Time</th>
               <th className="text-left px-2 py-1 whitespace-nowrap" style={{ width: '140px', minWidth: '140px' }}>Type</th>
+              <th className="text-left px-2 py-1 whitespace-nowrap" style={{ width: '160px', minWidth: '160px' }}>Workflow</th>
               <th className="text-left px-2 py-1 whitespace-nowrap" style={{ width: '120px', minWidth: '120px' }}>Agent</th>
               <th className="text-left px-2 py-1 whitespace-nowrap" style={{ minWidth: '250px' }}>Message</th>
-              <th className="text-left px-2 py-1 whitespace-nowrap" style={{ width: '90px', minWidth: '90px' }}>Time</th>
             </tr>
           </thead>
           <tbody>
             {events.length === 0 ? (
               <tr>
-                <td colSpan={4} className="px-3 py-4 text-center text-[#666]">
-                  No events yet.
+                <td colSpan={5} className="px-3 py-4 text-center text-[#666]">
+                  Monitoring platform... No events yet.
                 </td>
               </tr>
             ) : (
               events.map((event, idx) => {
                 const rowClass = rowClassForType(event.type);
-                const key = event.stream_id || `${event.seq}-${event.agent_id}-${event.type}-${idx}`;
+                const key = event.stream_id || `${event.workflow_id}-${event.seq}-${event.agent_id}-${event.type}-${idx}`;
+                const workflowShort = event.workflow_id ? event.workflow_id.split('-').pop() || event.workflow_id : '—';
                 return (
                   <tr key={key} className={rowClass}>
+                    <td className="px-2 py-1 font-mono text-[#a0a0a0] whitespace-nowrap" style={{ width: '90px', minWidth: '90px' }}>{formatTime(event.timestamp)}</td>
                     <td className={`px-2 py-1 font-mono ${eventTypeTone(event.type)} whitespace-nowrap`} style={{ width: '140px', minWidth: '140px', borderLeft: '4px solid currentColor' }}>{event.type}</td>
+                    <td className="px-2 py-1 whitespace-nowrap font-mono text-[#8aa9cf]" style={{ width: '160px', minWidth: '160px' }} title={event.workflow_id}>
+                      <div className="truncate">
+                        {workflowShort}
+                      </div>
+                    </td>
                     <td className="px-2 py-1 whitespace-nowrap" style={{ width: '120px', minWidth: '120px' }} title={event.agent_id}>
                       <div className="truncate">
                         {event.agent_id || '—'}
@@ -108,7 +107,6 @@ export function EventStream({ workflowId, events, status, error }: Props) {
                         {event.formatted || event.message || '—'}
                       </div>
                     </td>
-                    <td className="px-2 py-1 font-mono text-[#a0a0a0] whitespace-nowrap" style={{ width: '90px', minWidth: '90px' }}>{formatTime(event.timestamp)}</td>
                   </tr>
                 );
               })

@@ -7,29 +7,50 @@ import { parseSSEEvent } from './events';
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
 const KNOWN_EVENT_TYPES = [
+  // Core workflow events
   'WORKFLOW_STARTED',
   'WORKFLOW_COMPLETED',
+
+  // Agent lifecycle
   'AGENT_STARTED',
   'AGENT_COMPLETED',
   'AGENT_THINKING',
+
+  // Communication (P2P v1)
   'MESSAGE_SENT',
   'MESSAGE_RECEIVED',
   'WORKSPACE_UPDATED',
-  'ROLE_ASSIGNED',
-  'TOOL_INVOKED',
-  'TOOL_COMPLETED',
-  'DELEGATION',
-  'ERROR_OCCURRED',
-  // Supervisor/DAG coordination signals
+
+  // Team coordination
   'TEAM_RECRUITED',
   'TEAM_RETIRED',
+  'ROLE_ASSIGNED',
   'TEAM_STATUS',
+  'DELEGATION',
+  'DEPENDENCY_SATISFIED',
+
+  // Tool usage
+  'TOOL_INVOKED',
+  'TOOL_OBSERVATION',
+
+  // LLM streaming (critical for token-by-token display)
+  'LLM_PROMPT',
+  'LLM_PARTIAL',
+  'LLM_OUTPUT',
+
+  // Progress & status
   'PROGRESS',
   'DATA_PROCESSING',
   'WAITING',
   'ERROR_RECOVERY',
-  'DEPENDENCY_SATISFIED',
-  'message',
+  'ERROR_OCCURRED',
+
+  // Stream lifecycle
+  'STREAM_END',
+
+  // Human approval
+  'APPROVAL_REQUESTED',
+  'APPROVAL_DECISION',
 ];
 
 type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error' | 'closed';
