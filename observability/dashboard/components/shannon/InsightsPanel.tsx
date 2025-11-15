@@ -11,40 +11,12 @@ function millis(ms: number) {
 }
 
 export function InsightsPanel() {
-  const { tools, timing, finalStatus } = useDashboardMetrics();
+  const { tools, timing, totals, metrics } = useDashboardMetrics();
 
   const toolEntries = Object.entries(tools || {}).sort((a, b) => b[1] - a[1]).slice(0, 5);
   const totalMs = Math.max(1, (timing?.thinkingMs || 0) + (timing?.executionMs || 0));
   const thinkingPct = Math.round(((timing?.thinkingMs || 0) / totalMs) * 100);
   const executionPct = 100 - thinkingPct;
-
-  // Extract common fields from final status if present
-  let model: string | undefined;
-  let totalTokens: number | undefined;
-  let costUsd: number | undefined;
-  const resp = (finalStatus && finalStatus.response) as any;
-  if (resp && typeof resp === 'object') {
-    // Try various field names for model
-    model = resp.model || resp.llm || resp.provider || resp.model_name || resp.llm_model || undefined;
-
-    // Try various field names for tokens
-    totalTokens = resp.total_tokens || resp.tokens || resp.tokens_used ||
-                  (resp.usage && resp.usage.total_tokens) ||
-                  (resp.metrics && resp.metrics.total_tokens) || undefined;
-
-    // Try various field names for cost
-    costUsd = resp.total_cost_usd || resp.cost_usd || resp.cost ||
-              resp.total_cost || resp.estimated_cost ||
-              (resp.metrics && resp.metrics.cost) || undefined;
-
-    // Calculate cost from tokens if not provided
-    if ((costUsd === undefined || costUsd === null) && typeof totalTokens === 'number') {
-      costUsd = totalTokens * COST_PER_TOKEN_USD;
-    }
-  }
-
-  // If still no data and workflow is completed, show placeholder message
-  const isCompleted = finalStatus?.status === 'COMPLETED';
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-3 gap-3 text-[#d5d5d5]">
@@ -82,17 +54,12 @@ export function InsightsPanel() {
       </section>
 
       <section className="bg-black border border-[#352b19]">
-        <div className="ui-label ui-label--tab">Final Summary</div>
+        <div className="ui-label ui-label--tab">Platform Summary</div>
         <div className="p-3 text-sm space-y-1">
-          {!finalStatus ? (
-            <div className="text-xs text-[#a0a0a0]">Awaiting completion…</div>
-          ) : (
-            <>
-              <Row label="Model" value={model || (isCompleted ? 'GPT-4' : '—')} />
-              <Row label="Total Tokens" value={typeof totalTokens === 'number' ? `${totalTokens}` : (isCompleted ? 'N/A' : '—')} />
-              <Row label="Est. Cost" value={typeof costUsd === 'number' ? `$${costUsd.toFixed(4)}` : (isCompleted ? 'N/A' : '—')} />
-            </>
-          )}
+          <Row label="Total Workflows" value={`${totals.totalFlights}`} />
+          <Row label="Active Agents" value={`${totals.activeCount}`} />
+          <Row label="Completed" value={`${totals.completedCount}`} />
+          <Row label="Total Events" value={`${metrics.totalEvents}`} />
         </div>
       </section>
     </div>

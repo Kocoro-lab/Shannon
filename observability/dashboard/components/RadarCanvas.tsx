@@ -567,6 +567,9 @@ export default function RadarCanvas({ workflowId }: { workflowId?: string }) {
       for (const agent of Object.values(state.agents)) {
         const item = state.items[agent.work_item_id];
         if (!item || item.status !== 'in_progress') continue;
+        // Prefer the logical agent_id from the work item for display;
+        // fall back to the internal agent.id (which may include workflow prefix).
+        const labelId = (item.agent_id as string) || agent.id;
         const est = Math.max(1, item.estimate_ms || 0);
         let t = 0;
         if (typeof item.eta_ms === 'number' && isFinite(item.eta_ms)) {
@@ -650,7 +653,7 @@ export default function RadarCanvas({ workflowId }: { workflowId?: string }) {
 
         // Label with agent id and elapsed time below arrow (screen space)
         const elapsedMs = Math.round(t * est);
-        drawLabel(x, y, agent.id, fmtElapsed(elapsedMs), ARROW_COLOR_HEX);
+        drawLabel(x, y, labelId, fmtElapsed(elapsedMs), ARROW_COLOR_HEX);
       }
 
       // Draw center pulses on top
