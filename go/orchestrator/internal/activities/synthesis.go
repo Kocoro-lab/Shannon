@@ -13,6 +13,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
@@ -111,16 +112,27 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 			AgentID:    "synthesis",
 			Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
 			Payload: map[string]interface{}{
-				"tokens_used": res.TokensUsed,
+				"tokens_used":          res.TokensUsed,
+				"model_used":           res.ModelUsed,
+				"provider":             res.Provider,
+				"input_tokens":         res.InputTokens,
+				"output_tokens":        res.CompletionTokens,
+				"cost_usd":             res.CostUsd,
+				"finish_reason":        res.FinishReason,
+				"requested_max_tokens": res.RequestedMaxTokens,
 			},
 			Timestamp: time.Now(),
 		})
 		// Event 2: Lightweight tokens summary
+		msgSummary := fmt.Sprintf("~%d tokens", res.TokensUsed)
+		if res.ModelUsed != "" {
+			msgSummary = fmt.Sprintf("Used %s (~%d tokens)", res.ModelUsed, res.TokensUsed)
+		}
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+			Message:    msgSummary,
 			Timestamp:  time.Now(),
 		})
 		// Event 3: Synthesis completion status
@@ -1194,6 +1206,11 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 
 	var resultParts []string
 	totalTokens := 0
+	totalInputTokens := 0
+	totalOutputTokens := 0
+	var totalCostUsd float64
+	var modelUsed string
+	var provider string
 
 	for _, result := range input.AgentResults {
 		if result.Success && result.Response != "" {
@@ -1202,6 +1219,16 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 			if cleaned != "" {
 				resultParts = append(resultParts, cleaned)
 				totalTokens += result.TokensUsed
+				totalInputTokens += result.InputTokens
+				totalOutputTokens += result.OutputTokens
+
+				// Capture model and provider from first successful agent
+				if modelUsed == "" && result.ModelUsed != "" {
+					modelUsed = result.ModelUsed
+				}
+				if provider == "" && result.Provider != "" {
+					provider = result.Provider
+				}
 			}
 		}
 	}
@@ -1213,15 +1240,30 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 	// Combine results without exposing internal details
 	finalResult := strings.Join(resultParts, "\n\n")
 
+	// Estimate cost if not already calculated
+	if totalInputTokens > 0 && totalOutputTokens > 0 && modelUsed != "" {
+		totalCostUsd = pricing.CostForSplit(modelUsed, totalInputTokens, totalOutputTokens)
+	}
+
 	logger.Info("Synthesis (simple) completed",
 		zap.Int("total_tokens", totalTokens),
+		zap.Int("input_tokens", totalInputTokens),
+		zap.Int("output_tokens", totalOutputTokens),
+		zap.Float64("cost_usd", totalCostUsd),
+		zap.String("model", modelUsed),
+		zap.String("provider", provider),
 		zap.Int("successful_agents", len(resultParts)),
 	)
 
 	return SynthesisResult{
-		FinalResult:  finalResult,
-		TokensUsed:   totalTokens,
-		FinishReason: "stop", // Simple synthesis always completes
+		FinalResult:      finalResult,
+		TokensUsed:       totalTokens,
+		InputTokens:      totalInputTokens,
+		CompletionTokens: totalOutputTokens,
+		ModelUsed:        modelUsed,
+		Provider:         provider,
+		CostUsd:          totalCostUsd,
+		FinishReason:     "stop", // Simple synthesis always completes
 	}, nil
 }
 

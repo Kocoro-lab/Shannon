@@ -22,6 +22,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/policy"
@@ -1508,11 +1509,13 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 
 	// Parse response
 	var agentResponse struct {
-		Success    bool        `json:"success"`
-		Response   string      `json:"response"`
-		TokensUsed int         `json:"tokens_used"`
-		ModelUsed  string      `json:"model_used"`
-		Metadata   interface{} `json:"metadata"`
+		Success      bool                   `json:"success"`
+		Response     string                 `json:"response"`
+		TokensUsed   int                    `json:"tokens_used"`
+		ModelUsed    string                 `json:"model_used"`
+		Provider     string                 `json:"provider"`
+		FinishReason string                 `json:"finish_reason"`
+		Metadata     map[string]interface{} `json:"metadata"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&agentResponse); err != nil {
@@ -1520,18 +1523,65 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		return AgentExecutionResult{Success: false, Error: "Failed to parse response"}, nil
 	}
 
+	// Extract detailed token metrics from metadata
+	inputTokens := 0
+	outputTokens := 0
+	if agentResponse.Metadata != nil {
+		if v, ok := agentResponse.Metadata["input_tokens"].(float64); ok {
+			inputTokens = int(v)
+		}
+		if v, ok := agentResponse.Metadata["output_tokens"].(float64); ok {
+			outputTokens = int(v)
+		}
+	}
+
 	logger.Info("ExecuteAgentWithForcedTools completed",
 		"success", agentResponse.Success,
 		"tokens", agentResponse.TokensUsed,
 		"model", agentResponse.ModelUsed,
+		"provider", agentResponse.Provider,
+		"input_tokens", inputTokens,
+		"output_tokens", outputTokens,
 	)
 
+	// Publish LLM_OUTPUT SSE event with complete metadata
+	wfID := ""
+	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		wfID = info.WorkflowExecution.ID
+	}
+	if wfID != "" && agentResponse.Response != "" {
+		// Calculate cost using pricing service
+		var costUsd float64
+		if agentResponse.ModelUsed != "" && inputTokens > 0 && outputTokens > 0 {
+			costUsd = pricing.CostForSplit(agentResponse.ModelUsed, inputTokens, outputTokens)
+		}
+
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMOutput),
+			AgentID:    input.AgentID,
+			Message:    truncateQuery(agentResponse.Response, MaxLLMOutputChars),
+			Payload: map[string]interface{}{
+				"tokens_used":   agentResponse.TokensUsed,
+				"model_used":    agentResponse.ModelUsed,
+				"provider":      agentResponse.Provider,
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"cost_usd":      costUsd,
+			},
+			Timestamp: time.Now(),
+		})
+	}
+
 	return AgentExecutionResult{
-		Success:    agentResponse.Success,
-		Response:   agentResponse.Response,
-		TokensUsed: agentResponse.TokensUsed,
-		ModelUsed:  agentResponse.ModelUsed,
-		ToolsUsed:  []string{toolName},
+		Success:      agentResponse.Success,
+		Response:     agentResponse.Response,
+		TokensUsed:   agentResponse.TokensUsed,
+		ModelUsed:    agentResponse.ModelUsed,
+		Provider:     agentResponse.Provider,
+		InputTokens:  inputTokens,
+		OutputTokens: outputTokens,
+		ToolsUsed:    []string{toolName},
 	}, nil
 }
 

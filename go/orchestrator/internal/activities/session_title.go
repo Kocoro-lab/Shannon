@@ -204,9 +204,9 @@ func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (st
 	reqBody := map[string]interface{}{
 		"query":       prompt,
 		"max_tokens":  1024, // Allow 3-5 words + safety margin for large original queries
-		"temperature": 0.3, // Low temperature for consistency
+		"temperature": 0.3,  // Low temperature for consistency
 		"agent_id":    "title_generator",
-		"session_context": map[string]interface{}{
+		"context": map[string]interface{}{
 			"system_prompt": "You are a title generator. Produce concise, descriptive titles for chat sessions. Rules: 3–5 words, Title Case, no quotes, no trailing punctuation, no emojis, no sensitive identifiers. Output ONLY the title.",
 		},
 	}
