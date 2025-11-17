@@ -17,14 +17,14 @@ strategies:
     max_concurrent_agents: 6
     react_max_iterations: 4
     gap_filling_enabled: true
-    gap_filling_max_gaps: 5
+    gap_filling_max_gaps: 2
     gap_filling_max_iterations: 2
-    gap_filling_check_citations: true
+    gap_filling_check_citations: false
   academic:
     verification_enabled: true
     max_concurrent_agents: 8
     react_max_iterations: 5
     gap_filling_enabled: true
-    gap_filling_max_gaps: 10
+    gap_filling_max_gaps: 3
     gap_filling_max_iterations: 2
-    gap_filling_check_citations: true
+    gap_filling_check_citations: false

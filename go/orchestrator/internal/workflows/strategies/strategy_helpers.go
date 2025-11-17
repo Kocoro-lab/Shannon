@@ -2,6 +2,7 @@ package strategies
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
@@ -21,9 +22,9 @@ func convertHistoryForAgent(history []Message) []string {
 
 // determineModelTier selects a model tier based on context and default
 func determineModelTier(context map[string]interface{}, defaultTier string) string {
-	// Check for explicit model tier in context
-	if tier, ok := context["model_tier"].(string); ok && tier != "" {
-		return tier
+	// Check for explicit model tier in context (highest priority)
+	if tier, ok := context["model_tier"].(string); ok && strings.TrimSpace(tier) != "" {
+		return strings.ToLower(strings.TrimSpace(tier))
 	}
 
 	// Get thresholds from config (with defaults)
@@ -38,7 +39,32 @@ func determineModelTier(context map[string]interface{}, defaultTier string) stri
 		}
 	}
 
-	// Check for complexity score
+	// Strategy-aware overrides for research workflows (applied before pure complexity routing)
+	if strategyRaw, ok := context["research_strategy"].(string); ok && strings.TrimSpace(strategyRaw) != "" {
+		strategy := strings.ToLower(strings.TrimSpace(strategyRaw))
+
+		switch strategy {
+		case "quick":
+			// Fast, cheap research regardless of complexity.
+			return "small"
+		case "standard":
+			// Default research path.
+			return "medium"
+		case "deep":
+			// Minimum medium; upgrade to large when complexity is high.
+			if complexity, ok := context["complexity"].(float64); ok {
+				if complexity >= mediumThreshold {
+					return "large"
+				}
+			}
+			return "medium"
+		case "academic":
+			// Always use highest tier for academic research.
+			return "large"
+		}
+	}
+
+	// Fall back to complexity-based routing
 	if complexity, ok := context["complexity"].(float64); ok {
 		if complexity < simpleThreshold {
 			return "small"

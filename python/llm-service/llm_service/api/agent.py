@@ -1402,6 +1402,48 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             )
             decompose_system_prompt = decompose_system_prompt + tool_hint
 
+        # Strategy-specific scaling for research workflows
+        research_strategy = None
+        if isinstance(query.context, dict):
+            research_strategy = query.context.get("research_strategy")
+
+        if isinstance(research_strategy, str) and research_strategy and prompt_source == "research":
+            strategy_key = research_strategy.strip().lower()
+            strategy_guidance = {
+                "quick": (
+                    "\n\nRESEARCH STRATEGY: quick\n"
+                    "- Override the generic simple/complex ranges for this query.\n"
+                    "- Prefer 1–3 broad subtasks that cover the main question.\n"
+                    "- Focus on a high-level overview instead of exhaustive coverage.\n"
+                    "- Avoid splitting into many narrow subtasks.\n"
+                    "- Aim for complexity_score < 0.4.\n"
+                ),
+                "standard": (
+                    "\n\nRESEARCH STRATEGY: standard\n"
+                    "- Override the generic simple/complex ranges for this query.\n"
+                    "- Prefer 3–5 focused subtasks that cover the key dimensions of the query.\n"
+                    "- Balance breadth and depth; avoid unnecessary fragmentation.\n"
+                    "- Aim for complexity_score between 0.4 and 0.6.\n"
+                ),
+                "deep": (
+                    "\n\nRESEARCH STRATEGY: deep\n"
+                    "- Override the generic simple/complex ranges for this query.\n"
+                    "- Prefer 5–8 specialized subtasks that each explore a distinct aspect.\n"
+                    "- Include follow-up subtasks when clarification or cross-checking is needed.\n"
+                    "- Aim for complexity_score between 0.6 and 0.8.\n"
+                ),
+                "academic": (
+                    "\n\nRESEARCH STRATEGY: academic\n"
+                    "- Override the generic simple/complex ranges for this query.\n"
+                    "- Prefer 8–12 comprehensive subtasks that cover all major aspects of the brief.\n"
+                    "- Include methodology/background, main analysis, and verification/limitations subtasks when relevant.\n"
+                    "- Aim for complexity_score >= 0.7.\n"
+                ),
+            }
+
+            if strategy_key in strategy_guidance:
+                decompose_system_prompt = decompose_system_prompt + strategy_guidance[strategy_key]
+
         # If research_areas provided, instruct the planner to decompose 1→N per area and add parent_area
         if isinstance(query.context, dict) and query.context.get("research_areas"):
             areas = query.context.get("research_areas") or []

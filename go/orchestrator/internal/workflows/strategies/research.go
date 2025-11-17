@@ -1353,8 +1353,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							gapContext["target_area"] = gapQuery.TargetArea
 							gapContext["gap_iteration"] = iterationCount + 1
 
-							// Use react_max_iterations from context if provided, default to 3
-							gapReactMaxIterations := 3
+							// Use react_max_iterations from context if provided, default to 2 for gap-filling efficiency
+							gapReactMaxIterations := 2
 							if v, ok := baseContext["react_max_iterations"]; ok {
 								switch t := v.(type) {
 								case int:
@@ -1806,28 +1806,22 @@ func analyzeGaps(synthesisText string, researchAreas []string, context map[strin
 		// Fallback to strategy-based defaults for backward compatibility
 		switch strategy {
 		case "deep":
-			maxGaps = 5
+			maxGaps = 2
 		case "academic":
-			maxGaps = 10
+			maxGaps = 3
 		default:
 			maxGaps = 3 // standard or unknown
 		}
 	}
 
-	checkCitationDensity := false // default for standard/unknown
+	checkCitationDensity := false // disabled by default (too aggressive)
 	if v, ok := context["gap_filling_check_citations"]; ok {
 		if b, ok := v.(bool); ok {
 			checkCitationDensity = b
 		}
-	} else {
-		// Fallback to strategy-based defaults for backward compatibility
-		switch strategy {
-		case "deep", "academic":
-			checkCitationDensity = true
-		default:
-			checkCitationDensity = false // standard or unknown
-		}
 	}
+	// Citation density check disabled by default to avoid false positives
+	// (well-written sections without citations shouldn't trigger gap-filling)
 
 	for _, area := range researchAreas {
 		// Stop if we've already found enough gaps

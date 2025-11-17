@@ -374,6 +374,19 @@ parallelTask.SuggestedTools = ["web_search"]
 - **Token accounting**: Budgeted vs non‑budgeted guards across patterns; single write per step
 - **Gap filling**: Automatic quality improvement for incomplete research areas (configurable per strategy)
 
+### Decomposition Scaling and Model Tiers
+
+For research workflows, the decomposition step and model tier selection are strategy‑aware:
+
+| Strategy   | Decomposition Bias (Subtasks) | Target Complexity | Default Model Tier |
+|-----------|--------------------------------|-------------------|--------------------|
+| quick     | Prefer 1–3 broad subtasks      | `< 0.4`           | small              |
+| standard  | Prefer 3–5 focused subtasks    | `0.4–0.6`         | medium             |
+| deep      | Prefer 5–8 specialized subtasks| `0.6–0.8`         | medium → large\*   |
+| academic  | Prefer 8–12 comprehensive subtasks | `≥ 0.7`      | large              |
+
+\*For `deep`, the orchestrator guarantees at least `medium` tier and upgrades to `large` when the computed complexity score is above the medium threshold (configurable, default 0.5). Academic always uses a large tier for agent execution.
+
 ### Gap Filling Configuration
 
 Automatic iterative refinement for undercovered research areas:
@@ -382,8 +395,8 @@ Automatic iterative refinement for undercovered research areas:
 |----------|---------|----------|----------------|----------------|
 | **quick** | No | - | - | - |
 | **standard** | Yes | 3 | No | 2 |
-| **deep** | Yes | 5 | Yes (≥2 per section) | 2 |
-| **academic** | Yes | 10 | Yes (≥2 per section) | 2 |
+| **deep** | Yes | 3 | Yes (≥2 per section) | 2 |
+| **academic** | Yes | 5 | Yes (≥2 per section) | 2 |
 
 **How it works:**
 1. After initial synthesis, analyzes each research area for coverage gaps
