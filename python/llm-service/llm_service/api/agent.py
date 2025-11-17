@@ -380,8 +380,16 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 registry = get_registry()
                 # Use preset only if allowed_tools is None (not provided), not if it's [] (explicitly empty)
+                # EXCEPTION: If a role preset is active and allowed_tools is [], treat as None (use role preset's tools)
+                # This handles the bypass decomposition case where orchestrator passes [] but role defines tools
                 requested = query.allowed_tools
                 preset_allowed = list(preset.get("allowed_tools", []))
+
+                # If requested is explicitly empty [] AND role preset has tools, use preset tools
+                if requested is not None and len(requested) == 0 and preset and len(preset_allowed) > 0:
+                    logger.info(f"Role preset active with empty allowed_tools - using role preset tools: {preset_allowed}")
+                    requested = None  # Treat as if not provided
+
                 if requested is None:
                     base = preset_allowed
                 else:
@@ -1226,34 +1234,12 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         else:
             tool_schemas_text = "\n\nDefault tools: web_search, calculator, python_executor, file_read\n"
 
-        # System prompt for pure LLM-driven decomposition
-        sys = (
-            "You are the lead research supervisor planning a comprehensive strategy.\n"
-            "IMPORTANT: Process queries in ANY language including English, Chinese, Japanese, Korean, etc.\n\n"
-            "# Planning Phase:\n"
-            "1. Analyze the research brief carefully\n"
-            "2. Break down into clear, SPECIFIC subtasks (avoid acronyms)\n"
-            "3. Bias toward SINGLE subtask workflow unless clear parallelization opportunity exists\n"
-            "4. Each subtask gets COMPLETE STANDALONE INSTRUCTIONS\n\n"
-            "# Research Breakdown Guidelines:\n"
-            "- Simple queries (factual, narrow scope): 1-2 subtasks, complexity_score < 0.3\n"
-            "- Complex queries (multi-faceted, analytical): 3-5 subtasks, complexity_score >= 0.3\n"
-            "- Ensure logical dependencies are clear\n"
-            "- Prioritize high-value information sources\n"
-            "- Quality over quantity: Focus on tasks yielding authoritative, relevant sources\n\n"
-            "# Scaling Rules (Task Count by Query Type):\n"
-            "- **Comparison queries** ('compare A vs B'): Create ONE subtask per entity being compared\n"
-            "  Example: 'Compare LangChain vs AutoGen vs CrewAI' → 3 subtasks (one per framework)\n"
-            "- **List/ranking queries** ('top 10 X', 'best Y'): Use SINGLE comprehensive subtask\n"
-            "  Example: 'List top 10 AI frameworks' → 1 subtask with broad search scope\n"
-            "- **Analysis queries** ('analyze market for X'): Split by major dimensions\n"
-            "  Example: 'Analyze EV market' → [market size, key players, trends, regulations]\n"
-            "- **Explanation queries** ('what is X', 'how does Y work'): Usually 1-2 subtasks\n"
-            "  Example: 'Explain quantum computing' → 1 subtask (or 2 if very complex: principles + applications)\n\n"
-            "**Anti-patterns to avoid:**\n"
-            "- DO NOT create subtasks that overlap significantly in scope\n"
-            "- DO NOT split tasks that are too granular (combine related questions)\n"
-            "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n\n"
+        # ================================================================
+        # PROMPT CONSTANTS: Identity prompts + Common decomposition suffix
+        # ================================================================
+
+        # Common decomposition instructions (appended to all identity prompts)
+        COMMON_DECOMPOSITION_SUFFIX = (
             "CRITICAL: Each subtask MUST have these EXACT fields: id, description, dependencies, estimated_tokens, suggested_tools, tool_parameters\n"
             "NEVER return null for subtasks field - always provide at least one subtask.\n\n"
             "TOOL SELECTION GUIDELINES:\n"
@@ -1265,8 +1251,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- python_executor: For executing Python code, data analysis, or programming tasks\n"
             "- code_executor: ONLY for executing provided WASM code (do not use for Python)\n\n"
             "If unsure, default to NO TOOLS. Set suggested_tools to [] for direct LLM response.\n\n"
-            "Return ONLY valid JSON with this EXACT structure (no additional text).\n"
-            "You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n"
+            "Return ONLY valid JSON with this EXACT structure (no additional text):\n"
             "{\n"
             '  "mode": "standard",\n'
             '  "complexity_score": 0.5,\n'
@@ -1318,27 +1303,94 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- Let the semantic meaning of the query guide tool selection\n"
         )
 
-        # Enhance decomposition prompt with tool availability (generic approach)
-        decompose_system_prompt = sys  # Start with base decomposition prompt
+        # General planning identity (default for non-research tasks)
+        GENERAL_PLANNING_IDENTITY = (
+            "You are a planning assistant. Analyze the user's task and determine if it needs decomposition.\n"
+            "IMPORTANT: Process queries in ANY language including English, Chinese, Japanese, Korean, etc.\n\n"
+            "For SIMPLE queries (single action, direct answer, or basic calculation), set complexity_score < 0.3 and provide a single subtask.\n"
+            "For COMPLEX queries (multiple steps, dependencies), set complexity_score >= 0.3 and decompose into multiple subtasks.\n\n"
+        )
 
-        # If a role is specified in context, prepend role-specific system prompt
-        role_name = None
-        if query.context and "role" in query.context:
-            role_name = query.context.get("role")
-            if role_name:
-                from ..roles.presets import get_role_preset, render_system_prompt
+        # Research supervisor identity (for deep research workflows)
+        RESEARCH_SUPERVISOR_IDENTITY = (
+            "You are the lead research supervisor planning a comprehensive strategy.\n"
+            "IMPORTANT: Process queries in ANY language including English, Chinese, Japanese, Korean, etc.\n\n"
+            "# Planning Phase:\n"
+            "1. Analyze the research brief carefully\n"
+            "2. Break down into clear, SPECIFIC subtasks (avoid acronyms)\n"
+            "3. Bias toward SINGLE subtask workflow unless clear parallelization opportunity exists\n"
+            "4. Each subtask gets COMPLETE STANDALONE INSTRUCTIONS\n\n"
+            "# Research Breakdown Guidelines:\n"
+            "- Simple queries (factual, narrow scope): 1-2 subtasks, complexity_score < 0.3\n"
+            "- Complex queries (multi-faceted, analytical): 3-5 subtasks, complexity_score >= 0.3\n"
+            "- Ensure logical dependencies are clear\n"
+            "- Prioritize high-value information sources\n"
+            "- Quality over quantity: Focus on tasks yielding authoritative, relevant sources\n\n"
+            "# Scaling Rules (Task Count by Query Type):\n"
+            "- **Comparison queries** ('compare A vs B'): Create ONE subtask per entity being compared\n"
+            "  Example: 'Compare LangChain vs AutoGen vs CrewAI' → 3 subtasks (one per framework)\n"
+            "- **List/ranking queries** ('top 10 X', 'best Y'): Use SINGLE comprehensive subtask\n"
+            "  Example: 'List top 10 AI frameworks' → 1 subtask with broad search scope\n"
+            "- **Analysis queries** ('analyze market for X'): Split by major dimensions\n"
+            "  Example: 'Analyze EV market' → [market size, key players, trends, regulations]\n"
+            "- **Explanation queries** ('what is X', 'how does Y work'): Usually 1-2 subtasks\n"
+            "  Example: 'Explain quantum computing' → 1 subtask (or 2 if very complex: principles + applications)\n\n"
+            "**Anti-patterns to avoid:**\n"
+            "- DO NOT create subtasks that overlap significantly in scope\n"
+            "- DO NOT split tasks that are too granular (combine related questions)\n"
+            "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n\n"
+            "NOTE: You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n\n"
+        )
 
-                role_preset = get_role_preset(role_name)
-                role_system_prompt = role_preset.get("system_prompt", "")
-                # Render with context for variable substitution
-                rendered_role_prompt = render_system_prompt(
-                    role_system_prompt, query.context or {}
-                )
-                # Prepend role prompt before decomposition instructions
-                decompose_system_prompt = rendered_role_prompt + "\n\n" + sys
-                logger.info(
-                    f"Decompose: Applied role preset '{role_name}' to system prompt"
-                )
+        # ================================================================
+        # PRIORITY-BASED PROMPT SELECTION (IDENTITY + COMMON_SUFFIX)
+        # ================================================================
+        # Priority order (highest to lowest):
+        # 1. Explicit user override (future: context.decomposition_prompt)
+        # 2. Deep research context (force_research, workflow_type=="research", role=="deep_research_agent")
+        # 3. Role preset (data_analytics, code_assistant, etc.)
+        # 4. General default (simple planning assistant)
+        #
+        # All prompts follow the pattern: IDENTITY_PROMPT + COMMON_DECOMPOSITION_SUFFIX
+        # This ensures all branches get the JSON schema and decomposition instructions.
+
+        identity_prompt = None
+        prompt_source = "default"
+
+        # Check for explicit override (future-proofing)
+        if isinstance(query.context, dict) and query.context.get("decomposition_prompt"):
+            identity_prompt = query.context.get("decomposition_prompt")
+            prompt_source = "explicit_override"
+            logger.info("Decompose: Using explicit override prompt from context")
+
+        # Check for deep research context
+        elif isinstance(query.context, dict) and (
+            query.context.get("force_research")
+            or query.context.get("workflow_type") == "research"
+            or query.context.get("role") == "deep_research_agent"
+        ):
+            identity_prompt = RESEARCH_SUPERVISOR_IDENTITY
+            prompt_source = "research"
+            logger.info("Decompose: Using research supervisor identity")
+
+        # NOTE: Role presets are NOT used for decomposition
+        # Role-specific prompts are designed for agent execution (answering questions),
+        # not for task decomposition. Using role presets here causes conflicts - for
+        # example, data_analytics role explicitly requires "dataResult" format,
+        # which conflicts with the "subtasks" format required for decomposition.
+        #
+        # Therefore, we skip role preset selection and fall through to the general
+        # planning identity. Role information (allowed_tools) is still respected
+        # via the available_tools filtering done earlier in this function.
+
+        # Fallback to general planning identity
+        if identity_prompt is None:
+            identity_prompt = GENERAL_PLANNING_IDENTITY
+            prompt_source = "general"
+            logger.info("Decompose: Using general planning identity")
+
+        # Combine identity with common decomposition suffix
+        decompose_system_prompt = identity_prompt + COMMON_DECOMPOSITION_SUFFIX
 
         # If tools are available, add a generic tool-aware hint
         if available_tools:

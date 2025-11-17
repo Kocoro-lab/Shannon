@@ -97,7 +97,7 @@ curl -sS -X POST http://localhost:8080/api/v1/tasks \
 
 ## Recognized `context.*` Keys
 
-- `role` — role preset (e.g., `analysis`, `research`, `writer`)
+- `role` — role preset (e.g., `analysis`, `research`, `writer`). When present, the orchestrator bypasses `/agent/decompose` and creates a single-subtask plan, letting the role-specific agent handle any internal multi-step/tool logic.
 - `system_prompt` — overrides role prompt; supports `${var}` from `prompt_params`
 - `prompt_params` — arbitrary params for prompts/tools/adapters
 - `model_tier` — fallback when top‑level not provided

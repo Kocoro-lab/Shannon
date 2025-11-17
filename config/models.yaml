@@ -51,17 +51,14 @@ model_tiers:
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: openai
-        model: gpt-5.1-chat-latest
-        priority: 1
-      - provider: openai
         model: gpt-5-mini-2025-08-07
-        priority: 2
+        priority: 1
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
-        priority: 3
+        priority: 2
       - provider: xai
         model: grok-4
-        priority: 4
+        priority: 3
       - provider: google
         model: gemini-2.5-flash
         priority: 4
@@ -89,17 +86,14 @@ model_tiers:
     # Heavy thinking/reasoning models for complex tasks
     providers:
       - provider: openai
-        model: gpt-5.1
-        priority: 1
-      - provider: openai
         model: gpt-5-2025-08-07
-        priority: 2
+        priority: 1
       - provider: anthropic
         model: claude-opus-4-1-20250805
-        priority: 3
+        priority: 2
       - provider: xai
         model: grok-4-fast-reasoning
-        priority: 4
+        priority: 3
       - provider: google
         model: gemini-2.5-pro
         priority: 4

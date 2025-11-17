@@ -189,22 +189,60 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	var decomp activities.DecompositionResult
-if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
-    Query:          input.Query,
-    Context:        decompContext,
-    AvailableTools: nil, // Let llm-service derive tools from registry + role preset
-}).Get(ctx, &decomp); err != nil {
-		logger.Error("Task decomposition failed", "error", err)
-		// Emit error event
-		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-			EventType:  activities.StreamEventErrorOccurred,
-			Message:    "Couldn't create a plan: " + err.Error(),
-			Timestamp:  workflow.Now(ctx),
-		}).Get(ctx, nil)
-		// Best-effort title generation even on planning failures
-		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+
+	// Check if a role is specified - if so, bypass LLM decomposition and create simple plan
+	// Role-specific agents have their own internal multi-step logic, so orchestrator-level
+	// decomposition is unnecessary and can cause conflicts (e.g., data_analytics role expects
+	// to output dataResult format, which conflicts with decomposition's subtasks format).
+	rolePresent := false
+	if input.Context != nil {
+		if role, ok := input.Context["role"].(string); ok && role != "" {
+			rolePresent = true
+			logger.Info("Role specified - bypassing LLM decomposition", "role", role)
+
+			// Create a simple single-subtask plan
+			decomp = activities.DecompositionResult{
+				Mode:             "simple",
+				ComplexityScore:  0.5,
+				ExecutionStrategy: "sequential",
+				ConcurrencyLimit: 1,
+				Subtasks: []activities.Subtask{
+					{
+						ID:              "task-1",
+						Description:     input.Query,
+						Dependencies:    []string{},
+						EstimatedTokens: 5000,
+						SuggestedTools:  []string{}, // Agent will determine tools from role preset
+						ToolParameters:  map[string]interface{}{}, // Agent constructs from context
+					},
+				},
+				TotalEstimatedTokens: 5000,
+				TokensUsed:           0, // No LLM call for decomposition
+				InputTokens:          0,
+				OutputTokens:         0,
+			}
+		}
+	}
+
+	// If no role, proceed with normal LLM decomposition
+	if !rolePresent {
+		if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
+			Query:          input.Query,
+			Context:        decompContext,
+			AvailableTools: nil, // Let llm-service derive tools from registry + role preset
+		}).Get(ctx, &decomp); err != nil {
+			logger.Error("Task decomposition failed", "error", err)
+			// Emit error event
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+				EventType:  activities.StreamEventErrorOccurred,
+				Message:    "Couldn't create a plan: " + err.Error(),
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
+			// Best-effort title generation even on planning failures
+			scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
 	}
 
 	// Record decomposition usage if provided
