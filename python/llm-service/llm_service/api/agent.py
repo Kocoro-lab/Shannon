@@ -525,7 +525,13 @@ async def agent_query(request: Request, query: AgentQuery):
                         "role": (query.context or {}).get("role")
                         if isinstance(query.context, dict)
                         else None,
+                        "provider": interpretation_result.get("provider") or "unknown",
                         "finish_reason": interpretation_result.get("finish_reason", "stop"),
+                        "input_tokens": interpretation_result.get("usage", {}).get("prompt_tokens")
+                        or interpretation_result.get("usage", {}).get("input_tokens"),
+                        "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
+                        or interpretation_result.get("usage", {}).get("output_tokens"),
+                        "cost_usd": (interpretation_result.get("usage", {}) or {}).get("cost_usd", 0.0),
                     },
                 )
 
@@ -783,12 +789,14 @@ async def agent_query(request: Request, query: AgentQuery):
                                 "role": (query.context or {}).get("role")
                                 if isinstance(query.context, dict)
                                 else None,
+                                "provider": interpretation_result.get("provider") or "unknown",
                                 "finish_reason": interpretation_result.get("finish_reason", "stop"),
                                 "requested_max_tokens": max_tokens,
                                 "input_tokens": interpretation_result.get("usage", {}).get("prompt_tokens")
                                 or interpretation_result.get("usage", {}).get("input_tokens"),
                                 "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
                                 or interpretation_result.get("usage", {}).get("output_tokens"),
+                                "cost_usd": (interpretation_result.get("usage", {}) or {}).get("cost_usd", 0.0),
                             },
                         )
                 except Exception as e:
@@ -814,10 +822,12 @@ async def agent_query(request: Request, query: AgentQuery):
                     "role": (query.context or {}).get("role")
                     if isinstance(query.context, dict)
                     else None,
+                    "provider": result_data.get("provider") or "unknown",
                     "finish_reason": result_data.get("finish_reason", "stop"),
                     "requested_max_tokens": max_tokens,
                     "input_tokens": (result_data.get("usage", {}) or {}).get("input_tokens"),
                     "output_tokens": (result_data.get("usage", {}) or {}).get("output_tokens"),
+                    "cost_usd": (result_data.get("usage", {}) or {}).get("cost_usd", 0.0),
                     "effective_max_completion": result_data.get("effective_max_completion"),
                 },
             )
