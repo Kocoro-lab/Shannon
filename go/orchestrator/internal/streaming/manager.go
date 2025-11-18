@@ -572,3 +572,4 @@ func (m *Manager) GetLastStreamID(workflowID string) string {
 
 	return messages[0].ID
 }
+

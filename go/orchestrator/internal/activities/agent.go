@@ -1929,3 +1929,4 @@ func truncateURL(url string) string {
 	// Otherwise truncate at character boundary
 	return string(runes[:47]) + "..."
 }
+
