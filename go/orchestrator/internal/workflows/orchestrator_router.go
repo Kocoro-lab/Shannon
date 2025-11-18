@@ -14,6 +14,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/roles"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
@@ -198,21 +199,22 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if input.Context != nil {
 		if role, ok := input.Context["role"].(string); ok && role != "" {
 			rolePresent = true
-			logger.Info("Role specified - bypassing LLM decomposition", "role", role)
+			roleTools := roles.AllowedTools(role)
+			logger.Info("Role specified - bypassing LLM decomposition", "role", role, "tool_count", len(roleTools))
 
 			// Create a simple single-subtask plan
 			decomp = activities.DecompositionResult{
-				Mode:             "simple",
-				ComplexityScore:  0.5,
+				Mode:              "simple",
+				ComplexityScore:   0.5,
 				ExecutionStrategy: "sequential",
-				ConcurrencyLimit: 1,
+				ConcurrencyLimit:  1,
 				Subtasks: []activities.Subtask{
 					{
 						ID:              "task-1",
 						Description:     input.Query,
 						Dependencies:    []string{},
 						EstimatedTokens: 5000,
-						SuggestedTools:  []string{}, // Agent will determine tools from role preset
+						SuggestedTools:  append([]string(nil), roleTools...),
 						ToolParameters:  map[string]interface{}{}, // Agent constructs from context
 					},
 				},
@@ -254,18 +256,18 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			outTok = decomp.TokensUsed - inTok
 		}
 		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-	recCtx := opts.WithTokenRecordOptions(ctx)
-	_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-		UserID:       input.UserID,
-		SessionID:    input.SessionID,
-		TaskID:       wid,
-		AgentID:      "decompose",
-		Model:        decomp.ModelUsed,
-		Provider:     decomp.Provider,
-		InputTokens:  inTok,
-		OutputTokens: outTok,
-		Metadata:     map[string]interface{}{"phase": "decompose"},
-	}).Get(ctx, nil)
+		recCtx := opts.WithTokenRecordOptions(ctx)
+		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       input.UserID,
+			SessionID:    input.SessionID,
+			TaskID:       wid,
+			AgentID:      "decompose",
+			Model:        decomp.ModelUsed,
+			Provider:     decomp.Provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata:     map[string]interface{}{"phase": "decompose"},
+		}).Get(ctx, nil)
 	}
 
 	logger.Info("Routing decision",
@@ -378,6 +380,9 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			needsTools = true
 			break
 		}
+	}
+	if rolePresent {
+		needsTools = false
 	}
 	simpleByShape := len(decomp.Subtasks) == 0 || (len(decomp.Subtasks) == 1 && !needsTools)
 	isSimple := decomp.ComplexityScore < simpleThreshold && simpleByShape
