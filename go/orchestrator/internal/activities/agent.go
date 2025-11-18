@@ -949,24 +949,28 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	// Respect the decomposition decision: if no tools suggested, don't override with tool selection
 	var selectedToolCalls []map[string]interface{}
 
-	// Detect role-based agents: when a role is present in context,
-	// skip auto tool selection and let the role-specific agent
-	// control tool usage via its allowlist and forced calls.
-	hasRole := false
+	// Detect ptengine-style roles that use forced tool execution (ExecuteAgentWithForcedTools).
+	// These roles have pre-computed tool parameters and don't need /tools/select.
+	// GA4-style roles (ga4_analytics, etc.) still need /tools/select to work correctly.
+	disableToolSelectRole := false
 	if input.Context != nil {
 		if roleVal, ok := input.Context["role"]; ok {
-			if role, ok := roleVal.(string); ok && strings.TrimSpace(role) != "" {
-				hasRole = true
-				logger.Info("Role present in context - skipping /tools/select auto tool selection",
-					zap.String("role", role),
-					zap.String("agent_id", input.AgentID),
-				)
+			if roleStr, ok := roleVal.(string); ok {
+				role := strings.ToLower(strings.TrimSpace(roleStr))
+				switch role {
+				case "data_analytics": // ptengine-style analytics with forced tool execution
+					disableToolSelectRole = true
+					logger.Info("Ptengine-style role detected - skipping /tools/select (uses forced tools)",
+						zap.String("role", role),
+						zap.String("agent_id", input.AgentID),
+					)
+				}
 			}
 		}
 	}
 
 	// Skip tool selection if we already have tool_parameters from decomposition
-	if !hasRole && len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
+	if !disableToolSelectRole && len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
 		if getenvInt("ENABLE_TOOL_SELECTION", 1) > 0 {
 			// Only select tools if we have valid parameters or the tool doesn't require them
 			// Skip tools that require parameters when none are provided to avoid execution errors
