@@ -22,10 +22,10 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/policy"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 	"go.temporal.io/sdk/activity"
@@ -948,8 +948,25 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	// Auto-populate tool_calls via /tools/select only if tools were suggested by decomposition
 	// Respect the decomposition decision: if no tools suggested, don't override with tool selection
 	var selectedToolCalls []map[string]interface{}
+
+	// Detect role-based agents: when a role is present in context,
+	// skip auto tool selection and let the role-specific agent
+	// control tool usage via its allowlist and forced calls.
+	hasRole := false
+	if input.Context != nil {
+		if roleVal, ok := input.Context["role"]; ok {
+			if role, ok := roleVal.(string); ok && strings.TrimSpace(role) != "" {
+				hasRole = true
+				logger.Info("Role present in context - skipping /tools/select auto tool selection",
+					zap.String("role", role),
+					zap.String("agent_id", input.AgentID),
+				)
+			}
+		}
+	}
+
 	// Skip tool selection if we already have tool_parameters from decomposition
-	if len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
+	if !hasRole && len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
 		if getenvInt("ENABLE_TOOL_SELECTION", 1) > 0 {
 			// Only select tools if we have valid parameters or the tool doesn't require them
 			// Skip tools that require parameters when none are provided to avoid execution errors
@@ -1261,15 +1278,15 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			AgentID:    input.AgentID,
 			Message:    truncateQuery(out, MaxLLMOutputChars),
 			Payload: map[string]interface{}{
-				"tokens_used":       tokens,
-				"model_used":        model,
-				"provider":          provider,
-				"input_tokens":      promptTokens,
-				"output_tokens":     completionTokens,
-				"cost_usd":          costUsd,
-				"duration_ms":       duration,
+				"tokens_used":   tokens,
+				"model_used":    model,
+				"provider":      provider,
+				"input_tokens":  promptTokens,
+				"output_tokens": completionTokens,
+				"cost_usd":      costUsd,
+				"duration_ms":   duration,
 			},
-			Timestamp:  time.Now(),
+			Timestamp: time.Now(),
 		})
 	}
 
@@ -1288,25 +1305,25 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			success := tr.Status == commonpb.StatusCode_STATUS_CODE_OK
 
 			// Emit human-readable tool invocation event
-    if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-        message := humanizeToolCall(tool, nil)
-        eventData := EmitTaskUpdateInput{
-            WorkflowID: wfID,
-            EventType:  StreamEventToolInvoked,
-            AgentID:    input.AgentID,
-            Message:    message,
-            Timestamp:  time.Now(),
-        }
-        activity.RecordHeartbeat(ctx, eventData)
-        // Also publish to Redis Streams for SSE (use parent workflow ID when available)
-        streaming.Get().Publish(wfID, streaming.Event{
-            WorkflowID: eventData.WorkflowID,
-            Type:       string(eventData.EventType),
-            AgentID:    eventData.AgentID,
-            Message:    eventData.Message,
-            Timestamp:  eventData.Timestamp,
-        })
-    }
+			if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+				message := humanizeToolCall(tool, nil)
+				eventData := EmitTaskUpdateInput{
+					WorkflowID: wfID,
+					EventType:  StreamEventToolInvoked,
+					AgentID:    input.AgentID,
+					Message:    message,
+					Timestamp:  time.Now(),
+				}
+				activity.RecordHeartbeat(ctx, eventData)
+				// Also publish to Redis Streams for SSE (use parent workflow ID when available)
+				streaming.Get().Publish(wfID, streaming.Event{
+					WorkflowID: eventData.WorkflowID,
+					Type:       string(eventData.EventType),
+					AgentID:    eventData.AgentID,
+					Message:    eventData.Message,
+					Timestamp:  eventData.Timestamp,
+				})
+			}
 
 			var out interface{}
 			if tr.Output != nil {
@@ -1335,14 +1352,14 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						obs = string(b)
 					}
 				}
-            streaming.Get().Publish(wfID, streaming.Event{
-                WorkflowID: wfID,
-                Type:       string(StreamEventToolObs),
-                AgentID:    input.AgentID,
-                Message:    truncateQuery(fmt.Sprintf("%s: %s", tool, obs), 2000),
-                Timestamp:  time.Now(),
-            })
-        }
+				streaming.Get().Publish(wfID, streaming.Event{
+					WorkflowID: wfID,
+					Type:       string(StreamEventToolObs),
+					AgentID:    input.AgentID,
+					Message:    truncateQuery(fmt.Sprintf("%s: %s", tool, obs), 2000),
+					Timestamp:  time.Now(),
+				})
+			}
 
 			toolExecs = append(toolExecs, ToolExecution{
 				Tool:    tool,
@@ -1694,86 +1711,6 @@ func selectToolsForQuery(ctx context.Context, query string, availableTools []str
 	return out
 }
 
-// filterToolsByRole returns the intersection of service-available tools and the
-// static role allowlist. This is a minimal, deterministic enforcement until a
-// shared role schema is introduced.
-func filterToolsByRole(role string, serviceTools []string) []string {
-	list, ok := getRoleAllowlist()[strings.ToLower(role)]
-	if !ok {
-		list = roleAllowlist["generalist"]
-	}
-	if len(list) == 0 {
-		return []string{}
-	}
-	// Build set of service tools
-	svc := make(map[string]struct{}, len(serviceTools))
-	for _, t := range serviceTools {
-		svc[t] = struct{}{}
-	}
-	// Intersect
-	out := make([]string, 0, len(list))
-	for _, t := range list {
-		if _, ok := svc[t]; ok {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-// --- Role allowlist cache (fetched from LLM service /roles; fallback to static) ---
-var (
-	roleAllowlist = map[string][]string{
-		"analysis":   {"web_search", "code_reader"},
-		"research":   {"web_search"},
-		"writer":     {"code_reader"},
-		"critic":     {"code_reader"},
-		"generalist": {},
-	}
-	roleAllowlistMu   sync.RWMutex
-	roleAllowlistOnce sync.Once
-)
-
-func getRoleAllowlist() map[string][]string {
-	// Use sync.Once to ensure initialization happens exactly once
-	roleAllowlistOnce.Do(func() {
-		// Try fetching from LLM service
-		base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
-		url := fmt.Sprintf("%s/roles", base)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err == nil {
-			client := &http.Client{Timeout: 2 * time.Second, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
-			if resp, err := client.Do(req); err == nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				defer resp.Body.Close()
-				var payload map[string]struct {
-					AllowedTools []string `json:"allowed_tools"`
-				}
-				if json.NewDecoder(resp.Body).Decode(&payload) == nil {
-					tmp := map[string][]string{}
-					for k, v := range payload {
-						tmp[strings.ToLower(k)] = v.AllowedTools
-					}
-					if len(tmp) > 0 {
-						roleAllowlistMu.Lock()
-						roleAllowlist = tmp
-						roleAllowlistMu.Unlock()
-					}
-				}
-			}
-		}
-	})
-
-	// Return a copy to prevent external modifications
-	roleAllowlistMu.RLock()
-	defer roleAllowlistMu.RUnlock()
-	result := make(map[string][]string, len(roleAllowlist))
-	for k, v := range roleAllowlist {
-		result[k] = v
-	}
-	return result
-}
-
 // getenv returns env var or default
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -1794,80 +1731,80 @@ func getenvInt(key string, def int) int {
 
 // emitAgentThinkingEvent emits a human-readable thinking event
 func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
-    if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-        // Determine the correct workflow ID for streaming (prefer parent)
-        wfID := ""
-        if input.ParentWorkflowID != "" {
-            wfID = input.ParentWorkflowID
-        } else if input.Context != nil {
-            if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
-                wfID = p
-            }
-        }
-        if wfID == "" {
-            wfID = info.WorkflowExecution.ID
-        }
+	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		// Determine the correct workflow ID for streaming (prefer parent)
+		wfID := ""
+		if input.ParentWorkflowID != "" {
+			wfID = input.ParentWorkflowID
+		} else if input.Context != nil {
+			if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+				wfID = p
+			}
+		}
+		if wfID == "" {
+			wfID = info.WorkflowExecution.ID
+		}
 
-        message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
-        eventData := EmitTaskUpdateInput{
-            WorkflowID: wfID,
-            EventType:  StreamEventAgentThinking,
-            AgentID:    input.AgentID,
-            Message:    message,
-            Timestamp:  time.Now(),
-        }
-        activity.RecordHeartbeat(ctx, eventData)
-        // Also publish to Redis Streams for SSE (use parent workflow ID when available)
-        streaming.Get().Publish(wfID, streaming.Event{
-            WorkflowID: eventData.WorkflowID,
-            Type:       string(eventData.EventType),
-            AgentID:    eventData.AgentID,
-            Message:    eventData.Message,
-            Timestamp:  eventData.Timestamp,
-        })
-    }
+		message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
+		eventData := EmitTaskUpdateInput{
+			WorkflowID: wfID,
+			EventType:  StreamEventAgentThinking,
+			AgentID:    input.AgentID,
+			Message:    message,
+			Timestamp:  time.Now(),
+		}
+		activity.RecordHeartbeat(ctx, eventData)
+		// Also publish to Redis Streams for SSE (use parent workflow ID when available)
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: eventData.WorkflowID,
+			Type:       string(eventData.EventType),
+			AgentID:    eventData.AgentID,
+			Message:    eventData.Message,
+			Timestamp:  eventData.Timestamp,
+		})
+	}
 }
 
 // emitToolSelectionEvent emits events for selected tools
 func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, toolCalls []map[string]interface{}) {
-    if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-        // Determine the correct workflow ID for streaming (prefer parent)
-        wfID := ""
-        if input.ParentWorkflowID != "" {
-            wfID = input.ParentWorkflowID
-        } else if input.Context != nil {
-            if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
-                wfID = p
-            }
-        }
-        if wfID == "" {
-            wfID = info.WorkflowExecution.ID
-        }
+	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		// Determine the correct workflow ID for streaming (prefer parent)
+		wfID := ""
+		if input.ParentWorkflowID != "" {
+			wfID = input.ParentWorkflowID
+		} else if input.Context != nil {
+			if p, ok := input.Context["parent_workflow_id"].(string); ok && p != "" {
+				wfID = p
+			}
+		}
+		if wfID == "" {
+			wfID = info.WorkflowExecution.ID
+		}
 
-        for _, call := range toolCalls {
-            toolName, _ := call["tool"].(string)
-            if toolName == "" {
-                continue
-            }
-            message := humanizeToolCall(toolName, call["parameters"])
-            eventData := EmitTaskUpdateInput{
-                WorkflowID: wfID,
-                EventType:  StreamEventToolInvoked,
-                AgentID:    input.AgentID,
-                Message:    message,
-                Timestamp:  time.Now(),
-            }
-            activity.RecordHeartbeat(ctx, eventData)
-            // Also publish to Redis Streams for SSE (use parent workflow ID when available)
-            streaming.Get().Publish(wfID, streaming.Event{
-                WorkflowID: eventData.WorkflowID,
-                Type:       string(eventData.EventType),
-                AgentID:    eventData.AgentID,
-                Message:    eventData.Message,
-                Timestamp:  eventData.Timestamp,
-            })
-        }
-    }
+		for _, call := range toolCalls {
+			toolName, _ := call["tool"].(string)
+			if toolName == "" {
+				continue
+			}
+			message := humanizeToolCall(toolName, call["parameters"])
+			eventData := EmitTaskUpdateInput{
+				WorkflowID: wfID,
+				EventType:  StreamEventToolInvoked,
+				AgentID:    input.AgentID,
+				Message:    message,
+				Timestamp:  time.Now(),
+			}
+			activity.RecordHeartbeat(ctx, eventData)
+			// Also publish to Redis Streams for SSE (use parent workflow ID when available)
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: eventData.WorkflowID,
+				Type:       string(eventData.EventType),
+				AgentID:    eventData.AgentID,
+				Message:    eventData.Message,
+				Timestamp:  eventData.Timestamp,
+			})
+		}
+	}
 }
 
 // humanizeToolCall creates a human-readable description of a tool invocation
