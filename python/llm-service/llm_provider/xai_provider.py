@@ -64,6 +64,15 @@ class XAIProvider(LLMProvider):
         """Populate a minimal catalog if models were not provided via config."""
 
         defaults: Dict[str, Dict[str, Any]] = {
+            "grok-3-mini": {
+                "model_id": "grok-3-mini",
+                "tier": "small",
+                "context_window": 131072,
+                "max_tokens": 32768,
+                "supports_functions": True,
+                "supports_streaming": True,
+                "supports_reasoning": False,
+            },
             "grok-4-fast-reasoning": {
                 "model_id": "grok-4-fast-reasoning",
                 "tier": "large",
