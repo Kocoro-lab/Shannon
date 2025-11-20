@@ -25,7 +25,7 @@ model_tiers:
         model: claude-haiku-4-5-20251001
         priority: 2
       - provider: xai
-        model: grok-4-fast-non-reasoning
+        model: grok-3-mini
         priority: 3
       - provider: google
         model: gemini-2.5-flash-lite
@@ -57,7 +57,7 @@ model_tiers:
         model: claude-sonnet-4-5-20250929
         priority: 2
       - provider: xai
-        model: grok-4
+        model: grok-4-fast-non-reasoning
         priority: 3
       - provider: google
         model: gemini-2.5-flash
@@ -325,22 +325,22 @@ model_catalog:
       supports_vision: true
 
   xai:
+    grok-3-mini:
+      model_id: grok-3-mini
+      tier: small
+      context_window: 131072
+      max_tokens: 32768
+      supports_functions: true
+      supports_streaming: true
+      supports_reasoning: false
     grok-4-fast-non-reasoning:
       model_id: grok-4-fast-non-reasoning
-      tier: small
+      tier: medium
       context_window: 2000000
       max_tokens: 128000
       supports_functions: true
       supports_streaming: true
       supports_reasoning: false
-    grok-4:
-      model_id: grok-4
-      tier: medium
-      context_window: 256000
-      max_tokens: 64000
-      supports_functions: true
-      supports_streaming: true
-      supports_reasoning: true
     grok-4-fast-reasoning:
       model_id: grok-4-fast-reasoning
       tier: large
@@ -586,15 +586,15 @@ pricing:
         output_per_1k: 0.00030
         
     xai:
+      grok-3-mini:
+        input_per_1k: 0.0003
+        output_per_1k: 0.0005
       grok-4-fast-non-reasoning:
         input_per_1k: 0.0002
         output_per_1k: 0.0005
-      grok-4:
-        input_per_1k: 0.0030
-        output_per_1k: 0.0150
       grok-4-fast-reasoning:
         input_per_1k: 0.0002
-        output_per_1k: 0.0010
+        output_per_1k: 0.0005
       grok-beta:
         input_per_1k: 0.0380
         output_per_1k: 0.1140
@@ -729,7 +729,6 @@ model_capabilities:
     - gemini-2.5-pro
     - deepseek-r1
     - qwen3-omni-30b-a3b-instruct
-    - grok-4
     - grok-4-fast-reasoning
 
   coding_specialists:
