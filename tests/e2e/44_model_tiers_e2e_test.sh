@@ -104,8 +104,8 @@ else
     record_result "OpenAI Small (gpt-5-nano)" "❌ FAIL - Submit failed"
 fi
 
-# Test 2: OpenAI medium tier (gpt-5-2025-08-07)
-log_test "OpenAI Medium Tier (gpt-5-2025-08-07) - Multiplication"
+# Test 2: OpenAI medium tier (gpt-5.1)
+log_test "OpenAI Medium Tier (gpt-5.1) - Multiplication"
 RESPONSE=$(submit_task "Calculate 13 * 8. Respond with only the number." "" "openai" "medium")
 TASK_ID=$(echo "$RESPONSE" | jq -r '.task_id')
 if [ -n "$TASK_ID" ] && [ "$TASK_ID" != "null" ]; then
@@ -114,14 +114,14 @@ if [ -n "$TASK_ID" ] && [ "$TASK_ID" != "null" ]; then
     RESULT=$(echo "$FINAL" | jq -r '.result')
     if [ "$STATUS" = "TASK_STATUS_COMPLETED" ] && echo "$RESULT" | grep -qi "104"; then
         log_pass "OpenAI medium tier: 13*8=104 ✓"
-        record_result "OpenAI Medium (gpt-5-2025-08-07)" "✅ PASS - Result: $RESULT"
+        record_result "OpenAI Medium (gpt-5.1)" "✅ PASS - Result: $RESULT"
     else
         log_fail "Expected 104, got: $RESULT"
-        record_result "OpenAI Medium (gpt-5-2025-08-07)" "❌ FAIL - Got: $RESULT"
+        record_result "OpenAI Medium (gpt-5.1)" "❌ FAIL - Got: $RESULT"
     fi
 else
     log_fail "Failed to submit"
-    record_result "OpenAI Medium (gpt-5-2025-08-07)" "❌ FAIL - Submit failed"
+    record_result "OpenAI Medium (gpt-5.1)" "❌ FAIL - Submit failed"
 fi
 
 # Test 3: OpenAI large tier (gpt-4.1-2025-04-14)
