@@ -218,13 +218,17 @@ async def agent_query(request: Request, query: AgentQuery):
                         system_prompt = language_instruction + "\n\n" + system_prompt
 
                 cap_overrides = preset.get("caps") or {}
-                # Precedence: caller values win; fall back to role caps only if missing
-                # This avoids capping synthesis/composition calls to small role defaults (e.g., 1200)
                 # GPT-5 models need more tokens for reasoning + output (default 4096 instead of 2048)
                 default_max_tokens = 4096  # Increased for GPT-5 reasoning models
                 try:
-                    max_tokens = int(query.max_tokens) if query.max_tokens is not None else int(cap_overrides.get("max_tokens") or default_max_tokens)
-                    logger.info(f"Agent query max_tokens: query.max_tokens={query.max_tokens}, cap_overrides={cap_overrides.get('max_tokens')}, final={max_tokens}")
+                    # Check query.max_tokens, then context.max_tokens (set by budget.go), then role caps
+                    if query.max_tokens is not None:
+                        max_tokens = int(query.max_tokens)
+                    elif isinstance(query.context, dict) and query.context.get("max_tokens"):
+                        max_tokens = int(query.context.get("max_tokens"))
+                    else:
+                        max_tokens = int(cap_overrides.get("max_tokens") or default_max_tokens)
+                    logger.info(f"Agent query max_tokens: final={max_tokens}")
                 except Exception:
                     max_tokens = int(cap_overrides.get("max_tokens") or default_max_tokens)
                     logger.info(f"Agent query max_tokens (exception path): final={max_tokens}")

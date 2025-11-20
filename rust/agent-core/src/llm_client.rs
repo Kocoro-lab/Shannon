@@ -109,7 +109,7 @@ impl LLMClient {
         // Check for max_tokens override in context, otherwise use 16384 default (increased for GPT-5 reasoning models)
         let max_tokens = if let Some(obj) = ctx_val.as_object() {
             obj.get("max_tokens")
-                .and_then(|v| v.as_u64())
+                .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
                 .map(|n| n as u32)
                 .unwrap_or(16384)
         } else {
