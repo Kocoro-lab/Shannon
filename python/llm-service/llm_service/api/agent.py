@@ -229,7 +229,8 @@ async def agent_query(request: Request, query: AgentQuery):
                     else:
                         max_tokens = int(cap_overrides.get("max_tokens") or default_max_tokens)
                     logger.info(f"Agent query max_tokens: final={max_tokens}")
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"Failed to parse max_tokens: {e}, using default")
                     max_tokens = int(cap_overrides.get("max_tokens") or default_max_tokens)
                     logger.info(f"Agent query max_tokens (exception path): final={max_tokens}")
                 try:
