@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -94,6 +95,60 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	marshal := func(v interface{}) []byte {
+		b, err := json.Marshal(v)
+		if err != nil {
+			return []byte("{}")
+		}
+		return b
+	}
+
+	mapEvent := func(ev streaming.Event) (string, []byte) {
+		switch ev.Type {
+		case "LLM_PARTIAL":
+			return "thread.message.delta", marshal(map[string]interface{}{
+				"delta":       ev.Message,
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"seq":         ev.Seq,
+				"stream_id":   ev.StreamID,
+			})
+		case "LLM_OUTPUT":
+			payload := map[string]interface{}{
+				"response":    ev.Message,
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"seq":         ev.Seq,
+				"stream_id":   ev.StreamID,
+			}
+			if ev.Payload != nil {
+				payload["metadata"] = ev.Payload
+			}
+			return "thread.message.completed", marshal(payload)
+		case "ERROR_OCCURRED":
+			return "error", ev.Marshal()
+		case "STREAM_END":
+			return "done", []byte("[DONE]")
+		default:
+			return ev.Type, ev.Marshal()
+		}
+	}
+
+	writeEvent := func(ev streaming.Event) {
+		if ev.StreamID != "" {
+			fmt.Fprintf(w, "id: %s\n", ev.StreamID)
+		} else if ev.Seq > 0 {
+			fmt.Fprintf(w, "id: %d\n", ev.Seq)
+		}
+
+		eventName, data := mapEvent(ev)
+		if eventName != "" {
+			fmt.Fprintf(w, "event: %s\n", eventName)
+		}
+		fmt.Fprintf(w, "data: %s\n\n", string(data))
+		flusher.Flush()
+	}
+
 	// Send an initial comment to establish the stream
 	fmt.Fprintf(w, ": connected to workflow %s\n\n", wf)
 	flusher.Flush()
@@ -118,17 +173,7 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if ev.StreamID != "" {
 				lastSentStreamID = ev.StreamID
 			}
-			// Prefer stream ID, fallback to seq
-			if ev.StreamID != "" {
-				fmt.Fprintf(w, "id: %s\n", ev.StreamID)
-			} else if ev.Seq > 0 {
-				fmt.Fprintf(w, "id: %d\n", ev.Seq)
-			}
-			if ev.Type != "" {
-				fmt.Fprintf(w, "event: %s\n", ev.Type)
-			}
-			fmt.Fprintf(w, "data: %s\n\n", string(ev.Marshal()))
-			flusher.Flush()
+			writeEvent(ev)
 		}
 	} else if lastSeq > 0 {
 		// Resume from numeric sequence
@@ -145,17 +190,7 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if ev.StreamID != "" {
 				lastSentStreamID = ev.StreamID
 			}
-			// Prefer stream ID, fallback to seq
-			if ev.StreamID != "" {
-				fmt.Fprintf(w, "id: %s\n", ev.StreamID)
-			} else if ev.Seq > 0 {
-				fmt.Fprintf(w, "id: %d\n", ev.Seq)
-			}
-			if ev.Type != "" {
-				fmt.Fprintf(w, "event: %s\n", ev.Type)
-			}
-			fmt.Fprintf(w, "data: %s\n\n", string(ev.Marshal()))
-			flusher.Flush()
+			writeEvent(ev)
 		}
 	}
 
@@ -172,117 +207,111 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 	ch := h.mgr.SubscribeFrom(wf, 256, startFrom)
 	defer h.mgr.Unsubscribe(wf, ch)
 
-    // Heartbeat ticker (shorter to keep intermediaries happy)
-    hb := time.NewTicker(10 * time.Second)
-    defer hb.Stop()
+	// Heartbeat ticker (shorter to keep intermediaries happy)
+	hb := time.NewTicker(10 * time.Second)
+	defer hb.Stop()
 
-    // First-event timeout timer
-    firstEventTimer := time.NewTimer(30 * time.Second)
-    defer firstEventTimer.Stop()
+	// First-event timeout timer
+	firstEventTimer := time.NewTimer(30 * time.Second)
+	defer firstEventTimer.Stop()
 
-    // Post-completion inactivity timer (starts after WORKFLOW_COMPLETED)
-    var postCompleteTimer *time.Timer
-    var postCompleteCh <-chan time.Time
-    completedSeen := false
-    // Ensure timer is stopped on all exits to avoid leaks
-    defer func() {
-        if postCompleteTimer != nil {
-            postCompleteTimer.Stop()
-        }
-    }()
+	// Post-completion inactivity timer (starts after WORKFLOW_COMPLETED)
+	var postCompleteTimer *time.Timer
+	var postCompleteCh <-chan time.Time
+	completedSeen := false
+	// Ensure timer is stopped on all exits to avoid leaks
+	defer func() {
+		if postCompleteTimer != nil {
+			postCompleteTimer.Stop()
+		}
+	}()
 
-    ctx := r.Context()
-    for {
-        select {
-        case <-ctx.Done():
-            h.logger.Info("SSE client disconnected", zap.String("workflow_id", wf))
-            return
-        case <-firstEventTimer.C:
-            if !firstEventSeen {
-                if h.tclient == nil {
-                    h.logger.Warn("First-event timeout but Temporal client not available", zap.String("workflow_id", wf))
-                    fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-                    fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow validation unavailable\"}\n\n", wf)
-                    flusher.Flush()
-                    return
-                }
-                cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-                _, err := h.tclient.DescribeWorkflowExecution(cctx, wf, "")
-                cancel()
-                if err != nil {
-                    if _, ok := err.(*serviceerror.NotFound); ok {
-                        // Emit an error event and close
-                        fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-                        fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found\"}\n\n", wf)
-                        flusher.Flush()
-                        return
-                    }
-                    // Other errors (timeout, etc) also indicate invalid workflow
-                    fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
-                    fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found or unavailable\"}\n\n", wf)
-                    flusher.Flush()
-                    return
-                }
-                // Workflow exists but no events yet - reset timer and continue waiting
-                firstEventTimer.Reset(30 * time.Second)
-            }
-        case <-postCompleteCh:
-            // Close after inactivity window following completion
-            return
-        case evt := <-ch:
-            // Detect completion and stream end ahead of filtering
-            isCompleted := evt.Type == "WORKFLOW_COMPLETED"
-            isStreamEnd := evt.Type == "STREAM_END"
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			h.logger.Info("SSE client disconnected", zap.String("workflow_id", wf))
+			return
+		case <-firstEventTimer.C:
+			if !firstEventSeen {
+				if h.tclient == nil {
+					h.logger.Warn("First-event timeout but Temporal client not available", zap.String("workflow_id", wf))
+					fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+					fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow validation unavailable\"}\n\n", wf)
+					flusher.Flush()
+					return
+				}
+				cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				_, err := h.tclient.DescribeWorkflowExecution(cctx, wf, "")
+				cancel()
+				if err != nil {
+					if _, ok := err.(*serviceerror.NotFound); ok {
+						// Emit an error event and close
+						fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+						fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found\"}\n\n", wf)
+						flusher.Flush()
+						return
+					}
+					// Other errors (timeout, etc) also indicate invalid workflow
+					fmt.Fprintf(w, "event: ERROR_OCCURRED\n")
+					fmt.Fprintf(w, "data: {\"workflow_id\":\"%s\",\"type\":\"ERROR_OCCURRED\",\"message\":\"Workflow not found or unavailable\"}\n\n", wf)
+					flusher.Flush()
+					return
+				}
+				// Workflow exists but no events yet - reset timer and continue waiting
+				firstEventTimer.Reset(30 * time.Second)
+			}
+		case <-postCompleteCh:
+			// Close after inactivity window following completion
+			return
+		case evt := <-ch:
+			// Detect completion and stream end ahead of filtering
+			isCompleted := evt.Type == "WORKFLOW_COMPLETED"
+			isStreamEnd := evt.Type == "STREAM_END"
 
-            // Any incoming event means the workflow exists; disable first-event detection
-            if !firstEventSeen {
-                firstEventSeen = true
-            }
+			// Any incoming event means the workflow exists; disable first-event detection
+			if !firstEventSeen {
+				firstEventSeen = true
+			}
 
-            // Start/reset post-completion inactivity timer
-            if isCompleted || completedSeen {
-                completedSeen = true
-                if postCompleteTimer == nil {
-                    postCompleteTimer = time.NewTimer(30 * time.Second)
-                    postCompleteCh = postCompleteTimer.C
-                } else {
-                    if !postCompleteTimer.Stop() {
-                        select { case <-postCompleteCh: default: }
-                    }
-                    postCompleteTimer.Reset(30 * time.Second)
-                }
-            }
+			// Start/reset post-completion inactivity timer
+			if isCompleted || completedSeen {
+				completedSeen = true
+				if postCompleteTimer == nil {
+					postCompleteTimer = time.NewTimer(30 * time.Second)
+					postCompleteCh = postCompleteTimer.C
+				} else {
+					if !postCompleteTimer.Stop() {
+						select {
+						case <-postCompleteCh:
+						default:
+						}
+					}
+					postCompleteTimer.Reset(30 * time.Second)
+				}
+			}
 
-            // Apply type filter, but still close on terminal events even if filtered
-            if len(typeFilter) > 0 {
-                if _, ok := typeFilter[evt.Type]; !ok {
-                    if isStreamEnd || isCompleted {
-                        return
-                    }
-                    continue
-                }
-            }
+			// Apply type filter, but still close on terminal events even if filtered
+			if len(typeFilter) > 0 {
+				if _, ok := typeFilter[evt.Type]; !ok {
+					if isStreamEnd || isCompleted {
+						return
+					}
+					continue
+				}
+			}
 
-            // Write event
-            if evt.StreamID != "" {
-                fmt.Fprintf(w, "id: %s\n", evt.StreamID)
-            } else if evt.Seq > 0 {
-                fmt.Fprintf(w, "id: %d\n", evt.Seq)
-            }
-            if evt.Type != "" {
-                fmt.Fprintf(w, "event: %s\n", evt.Type)
-            }
-            fmt.Fprintf(w, "data: %s\n\n", string(evt.Marshal()))
-            flusher.Flush()
+			// Write event
+			writeEvent(evt)
 
-            // Close immediately on STREAM_END
-            if isStreamEnd {
-                return
-            }
-        case <-hb.C:
-            // Heartbeat to keep connections alive through proxies
-            fmt.Fprint(w, ": ping\n\n")
-            flusher.Flush()
-        }
-    }
+			// Close immediately on STREAM_END
+			if isStreamEnd {
+				return
+			}
+		case <-hb.C:
+			// Heartbeat to keep connections alive through proxies
+			fmt.Fprint(w, ": ping\n\n")
+			flusher.Flush()
+		}
+	}
 }

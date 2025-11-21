@@ -1,10 +1,12 @@
 """Agent API endpoints for HTTP communication with Agent-Core."""
 
 import logging
+import json
+from json import dumps
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import html
 from difflib import SequenceMatcher
 
@@ -105,6 +107,10 @@ class AgentQuery(BaseModel):
     model_override: Optional[str] = Field(
         default=None,
         description="Override the default model selection with a specific model ID",
+    )
+    stream: Optional[bool] = Field(
+        default=False,
+        description="Enable streaming responses (returns SSE-style chunked deltas)",
     )
 
 
@@ -555,6 +561,99 @@ async def agent_query(request: Request, query: AgentQuery):
                 if (force_tools and effective_allowed_tools)
                 else ("auto" if effective_allowed_tools else None)
             )
+
+            if query.stream:
+                providers = getattr(request.app.state, "providers", None)
+                if not providers or not providers.is_configured():
+                    raise HTTPException(
+                        status_code=503, detail="LLM service not configured"
+                    )
+                logger.info(
+                    f"[stream] agent_id={query.agent_id} mode={query.mode} tools={bool(effective_allowed_tools)}"
+                )
+
+                async def event_stream():
+                    import json as _json
+
+                    dumps = _json.dumps
+
+                    buffer: List[str] = []
+                    total_tokens = None
+                    input_tokens = None
+                    output_tokens = None
+                    cost_usd = None
+                    model_used = None
+                    provider_used = None
+                    async for chunk in providers.stream_completion(
+                        messages=messages,
+                        tier=tier,
+                        specific_model=model_override,
+                        provider_override=provider_override,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                        tools=tools_param,
+                        function_call=function_call,
+                        workflow_id=request.headers.get("X-Workflow-ID")
+                        or request.headers.get("x-workflow-id"),
+                        agent_id=query.agent_id,
+                    ):
+                        if not chunk:
+                            continue
+                        if isinstance(chunk, dict):
+                            # Optional structured chunk with usage/model info
+                            delta = chunk.get("delta") or chunk.get("content") or ""
+                            if chunk.get("usage"):
+                                usage = chunk["usage"]
+                                total_tokens = usage.get("total_tokens", total_tokens)
+                                input_tokens = usage.get("input_tokens", input_tokens)
+                                output_tokens = usage.get("output_tokens", output_tokens)
+                                cost_usd = usage.get("cost_usd", cost_usd)
+                            model_used = chunk.get("model") or model_used
+                            provider_used = chunk.get("provider") or provider_used
+                            if delta:
+                                buffer.append(delta)
+                                logger.debug(
+                                    f"[stream] delta len={len(delta)} agent_id={query.agent_id}"
+                                )
+                                yield dumps(
+                                    {
+                                        "event": "thread.message.delta",
+                                        "delta": delta,
+                                        "agent_id": query.agent_id,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        else:
+                            buffer.append(chunk)
+                            yield dumps(
+                                {
+                                    "event": "thread.message.delta",
+                                    "delta": chunk,
+                                    "agent_id": query.agent_id,
+                                },
+                                ensure_ascii=False,
+                            ) + "\n"
+
+                    final_text = "".join(buffer)
+                    yield dumps(
+                        {
+                            "event": "thread.message.completed",
+                            "response": final_text,
+                            "agent_id": query.agent_id,
+                            "model": model_used or model_override or "",
+                            "provider": provider_used or provider_override or "",
+                            "usage": {
+                                "total_tokens": total_tokens,
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "cost_usd": cost_usd,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
+
+                return StreamingResponse(event_stream(), media_type="text/event-stream")
 
             result_data = await request.app.state.providers.generate_completion(
                 messages=messages,

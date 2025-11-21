@@ -1,4 +1,5 @@
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
@@ -125,12 +126,8 @@ impl AgentServiceImpl {
                                     .unwrap_or_else(|| serde_json::Number::from(0)),
                             )
                         }
-                        Some(prost_types::value::Kind::BoolValue(b)) => {
-                            serde_json::Value::Bool(*b)
-                        }
-                        Some(prost_types::value::Kind::NullValue(_)) => {
-                            serde_json::Value::Null
-                        }
+                        Some(prost_types::value::Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+                        Some(prost_types::value::Kind::NullValue(_)) => serde_json::Value::Null,
                         Some(prost_types::value::Kind::ListValue(list)) => {
                             serde_json::Value::Array(
                                 list.values
@@ -1144,47 +1141,130 @@ impl AgentService for AgentServiceImpl {
 
         let (tx, rx) = mpsc::channel(128);
 
-        // Spawn task to send updates
+        let task_id = req
+            .metadata
+            .as_ref()
+            .map(|m| m.task_id.clone())
+            .unwrap_or_else(|| "stream-task".to_string());
+        let llm = self.llm.clone();
+
+        // Build minimal JSON context (including session history)
+        let mut ctx_json = serde_json::json!({});
+        if let Some(ctx) = &req.context {
+            let mut map = serde_json::Map::new();
+            for (k, v) in &ctx.fields {
+                map.insert(k.clone(), prost_value_to_json(v));
+            }
+            ctx_json = serde_json::Value::Object(map);
+        }
+        if let Some(session_ctx) = &req.session_context {
+            if !session_ctx.history.is_empty() {
+                let hist = session_ctx.history.join("\n");
+                if let Some(obj) = ctx_json.as_object_mut() {
+                    obj.insert("history".to_string(), serde_json::Value::String(hist));
+                }
+            }
+        }
+
+        let mode_str = match req.mode() {
+            proto::common::ExecutionMode::Simple => "simple",
+            proto::common::ExecutionMode::Complex => "complex",
+            _ => "standard",
+        };
+
         tokio::spawn(async move {
-            // Send initial update
             let _ = tx
                 .send(Ok(TaskUpdate {
-                    task_id: "test-task-1".to_string(),
+                    task_id: task_id.clone(),
                     state: proto::agent::AgentState::Planning.into(),
                     message: "Starting task execution".to_string(),
                     tool_call: None,
                     tool_result: None,
-                    progress: 0.1,
+                    progress: 0.0,
+                    delta: String::new(),
                 }))
                 .await;
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let tools_option = if req.available_tools.is_empty() {
+                None
+            } else {
+                Some(req.available_tools.clone())
+            };
 
-            // Send execution update
-            let _ = tx
-                .send(Ok(TaskUpdate {
-                    task_id: "test-task-1".to_string(),
-                    state: proto::agent::AgentState::Executing.into(),
-                    message: "Executing task".to_string(),
-                    tool_call: None,
-                    tool_result: None,
-                    progress: 0.5,
-                }))
-                .await;
+            match llm
+                .stream_query_agent(
+                    &req.query,
+                    "agent-core",
+                    mode_str,
+                    Some(ctx_json),
+                    tools_option,
+                )
+                .await
+            {
+                Ok(mut stream) => {
+                    let mut buffer = String::new();
+                    while let Some(item) = stream.next().await {
+                        match item {
+                            Ok(chunk) => {
+                                if let Some(d) = chunk.delta.clone() {
+                                    buffer.push_str(&d);
+                                    let _ = tx
+                                        .send(Ok(TaskUpdate {
+                                            task_id: task_id.clone(),
+                                            state: proto::agent::AgentState::Executing.into(),
+                                            message: String::new(),
+                                            tool_call: None,
+                                            tool_result: None,
+                                            progress: 0.0,
+                                            delta: d,
+                                        }))
+                                        .await;
+                                }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                if let Some(final_msg) = chunk.final_message {
+                                    let final_text = if final_msg.response.is_empty() {
+                                        buffer.clone()
+                                    } else {
+                                        final_msg.response
+                                    };
+                                    let _ = tx
+                                        .send(Ok(TaskUpdate {
+                                            task_id: task_id.clone(),
+                                            state: proto::agent::AgentState::Completed.into(),
+                                            message: final_text,
+                                            tool_call: None,
+                                            tool_result: None,
+                                            progress: 1.0,
+                                            delta: String::new(),
+                                        }))
+                                        .await;
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                                return;
+                            }
+                        }
+                    }
 
-            // Send completion update
-            let _ = tx
-                .send(Ok(TaskUpdate {
-                    task_id: "test-task-1".to_string(),
-                    state: proto::agent::AgentState::Completed.into(),
-                    message: "Task completed successfully".to_string(),
-                    tool_call: None,
-                    tool_result: None,
-                    progress: 1.0,
-                }))
-                .await;
+                    // If stream ends without an explicit final chunk, emit completion with buffered text
+                    let _ = tx
+                        .send(Ok(TaskUpdate {
+                            task_id: task_id.clone(),
+                            state: proto::agent::AgentState::Completed.into(),
+                            message: buffer,
+                            tool_call: None,
+                            tool_result: None,
+                            progress: 1.0,
+                            delta: String::new(),
+                        }))
+                        .await;
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                }
+            }
         });
 
         Ok(Response::new(

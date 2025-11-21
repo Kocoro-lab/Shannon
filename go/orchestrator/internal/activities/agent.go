@@ -9,7 +9,9 @@ package activities
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"reflect"
@@ -1188,51 +1190,70 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	grpcCtx, grpcCancel := context.WithTimeout(ctx, grpcTimeout)
 	defer grpcCancel()
 
-	var resp *agentpb.ExecuteTaskResponse
+	var stream agentpb.AgentService_StreamExecuteTaskClient
 	err = grpcWrapper.Execute(grpcCtx, func() error {
 		var execErr error
-		resp, execErr = client.ExecuteTask(grpcCtx, req)
+		stream, execErr = client.StreamExecuteTask(grpcCtx, req)
 		return execErr
 	})
 	if err != nil {
-		return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("ExecuteTask error: %v", err)}, err
+		return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("StreamExecuteTask error: %v", err)}, err
 	}
 
-	// Extract response output for events
-	out := ""
-	if resp != nil && resp.Result != "" {
-		out = resp.Result
+	var outBuilder strings.Builder
+	finalMessage := ""
+	partialBuf := strings.Builder{}
+	partialChunk := getenvInt("PARTIAL_PUBLISH_CHARS", 1)
+	if partialChunk <= 0 {
+		partialChunk = 1
 	}
 
-	// Emit LLM partials + final output (best-effort)
-	if wfID == "" {
-		if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-			wfID = info.WorkflowExecution.ID
+	flushPartial := func() {
+		if wfID == "" {
+			return
+		}
+		if partialBuf.Len() == 0 {
+			return
+		}
+		msg := partialBuf.String()
+		partialBuf.Reset()
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventLLMPartial),
+			AgentID:    input.AgentID,
+			Message:    msg,
+			Timestamp:  time.Now(),
+		})
+	}
+
+	for {
+		upd, recvErr := stream.Recv()
+		if errors.Is(recvErr, io.EOF) {
+			break
+		}
+		if recvErr != nil {
+			return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("stream recv error: %v", recvErr)}, recvErr
+		}
+
+		if delta := upd.GetDelta(); delta != "" {
+			outBuilder.WriteString(delta)
+			partialBuf.WriteString(delta)
+			if partialBuf.Len() >= partialChunk {
+				flushPartial()
+			}
+		}
+
+		if upd.Message != "" && upd.State == agentpb.AgentState_AGENT_STATE_COMPLETED {
+			finalMessage = upd.Message
 		}
 	}
-	if wfID != "" {
-		if out != "" {
-			chunk := getenvInt("PARTIAL_CHUNK_CHARS", 512)
-			if chunk <= 0 {
-				chunk = 512
-			}
-			if getenvInt("ENABLE_LLM_PARTIALS", 1) == 1 {
-				runes := []rune(out)
-				for i := 0; i < len(runes); i += chunk {
-					j := i + chunk
-					if j > len(runes) {
-						j = len(runes)
-					}
-					streaming.Get().Publish(wfID, streaming.Event{
-						WorkflowID: wfID,
-						Type:       string(StreamEventLLMPartial),
-						AgentID:    input.AgentID,
-						Message:    string(runes[i:j]),
-						Timestamp:  time.Now(),
-					})
-				}
-			}
-		}
+
+	// Flush any buffered partials
+	flushPartial()
+
+	out := strings.TrimSpace(finalMessage)
+	if out == "" {
+		out = strings.TrimSpace(outBuilder.String())
 	}
 
 	duration := time.Since(start).Milliseconds()
@@ -1242,28 +1263,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	provider := ""
 	promptTokens := 0
 	completionTokens := 0
-	var costUsd float64
-
-	if resp.Metrics != nil && resp.Metrics.TokenUsage != nil {
-		tokens = int(resp.Metrics.TokenUsage.TotalTokens)
-		model = resp.Metrics.TokenUsage.Model
-		// Provider becomes available via proto TokenUsage (option C)
-		if p := resp.Metrics.TokenUsage.Provider; p != "" {
-			provider = p
-		}
-		costUsd = resp.Metrics.TokenUsage.CostUsd
-		promptTokens = int(resp.Metrics.TokenUsage.PromptTokens)
-		completionTokens = int(resp.Metrics.TokenUsage.CompletionTokens)
-
-		logger.Info("Token usage from agent",
-			zap.Int("prompt_tokens", int(resp.Metrics.TokenUsage.PromptTokens)),
-			zap.Int("completion_tokens", int(resp.Metrics.TokenUsage.CompletionTokens)),
-			zap.Int("total_tokens", tokens),
-			zap.Float64("cost_usd", costUsd),
-			zap.String("model", model),
-			zap.String("provider", provider),
-		)
-	}
+	costUsd := 0.0
 
 	// Fallback: if provider is still empty, use provider_override from context when present
 	if provider == "" && input.Context != nil {
@@ -1295,115 +1295,14 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	}
 
 	// Capture tool usage and outputs if present
-	var toolsUsed []string
-	var toolExecs []ToolExecution
-	if resp != nil && len(resp.ToolResults) > 0 {
-		toolsUsed = make([]string, 0, len(resp.ToolResults))
-		toolExecs = make([]ToolExecution, 0, len(resp.ToolResults))
-		for _, tr := range resp.ToolResults {
-			if tr == nil {
-				continue
-			}
-			tool := tr.ToolId
-			toolsUsed = append(toolsUsed, tool)
-			success := tr.Status == commonpb.StatusCode_STATUS_CODE_OK
+	toolsUsed := []string{}
+	toolExecs := []ToolExecution{}
 
-			// Emit human-readable tool invocation event
-			if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-				message := humanizeToolCall(tool, nil)
-				eventData := EmitTaskUpdateInput{
-					WorkflowID: wfID,
-					EventType:  StreamEventToolInvoked,
-					AgentID:    input.AgentID,
-					Message:    message,
-					Timestamp:  time.Now(),
-				}
-				activity.RecordHeartbeat(ctx, eventData)
-				// Also publish to Redis Streams for SSE (use parent workflow ID when available)
-				streaming.Get().Publish(wfID, streaming.Event{
-					WorkflowID: eventData.WorkflowID,
-					Type:       string(eventData.EventType),
-					AgentID:    eventData.AgentID,
-					Message:    eventData.Message,
-					Timestamp:  eventData.Timestamp,
-				})
-			}
-
-			var out interface{}
-			if tr.Output != nil {
-				// Safely handle potential panic from malformed protobuf
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							logger.Error("Panic in AsInterface() - malformed protobuf output",
-								zap.Any("panic", r),
-								zap.String("tool_id", tr.ToolId),
-							)
-							out = fmt.Sprintf("Error: malformed tool output (%v)", r)
-						}
-					}()
-					out = tr.Output.AsInterface()
-				}()
-			}
-			// Emit tool observation (truncated)
-			if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-				obs := ""
-				switch v := out.(type) {
-				case string:
-					obs = v
-				default:
-					if b, err := json.Marshal(v); err == nil {
-						obs = string(b)
-					}
-				}
-				streaming.Get().Publish(wfID, streaming.Event{
-					WorkflowID: wfID,
-					Type:       string(StreamEventToolObs),
-					AgentID:    input.AgentID,
-					Message:    truncateQuery(fmt.Sprintf("%s: %s", tool, obs), 2000),
-					Timestamp:  time.Now(),
-				})
-			}
-
-			toolExecs = append(toolExecs, ToolExecution{
-				Tool:    tool,
-				Success: success,
-				Output:  out,
-				Error:   tr.ErrorMessage,
-			})
-		}
-	}
-
-	// Optional: map tool cost_per_use (USD) to token-equivalent (cost*1000) for budget accounting.
-	// Guarded by MCP_COST_TO_TOKENS env (default: 0/off). Uses a small TTL cache to avoid hot-path HTTP.
-	if getenvInt("MCP_COST_TO_TOKENS", 0) > 0 {
-		extraTokens := 0
-		if resp != nil && len(resp.ToolResults) > 0 {
-			base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
-			for _, tr := range resp.ToolResults {
-				name := tr.ToolId
-				if name == "" {
-					continue
-				}
-				if cost := getToolCostPerUse(ctx, base, name); cost > 0 {
-					extraTokens += int(cost * 1000.0)
-				}
-			}
-			if extraTokens > 0 {
-				tokens += extraTokens
-				logger.Debug("Applied MCP tool cost tokens",
-					zap.Int("extra_tokens", extraTokens),
-					zap.String("agent_id", input.AgentID),
-				)
-			}
-		}
-	}
-
-	success := resp.Status == commonpb.StatusCode_STATUS_CODE_OK
+	success := true
 
 	return AgentExecutionResult{
 		AgentID:        input.AgentID,
-		Response:       resp.Result,
+		Response:       out,
 		TokensUsed:     tokens,
 		ModelUsed:      model,
 		Provider:       provider,
@@ -1411,7 +1310,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		OutputTokens:   completionTokens,
 		DurationMs:     duration,
 		Success:        success,
-		Error:          resp.ErrorMessage,
+		Error:          "",
 		ToolsUsed:      toolsUsed,
 		ToolExecutions: toolExecs,
 	}, nil
@@ -1870,4 +1769,3 @@ func truncateURL(url string) string {
 	// Otherwise truncate at character boundary
 	return string(runes[:47]) + "..."
 }
-
