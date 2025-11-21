@@ -42,6 +42,7 @@ pub struct AgentResponse {
 pub struct StreamResponseLine {
     pub event: Option<String>,
     pub delta: Option<String>,
+    pub content: Option<String>,
     pub response: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
@@ -50,6 +51,17 @@ pub struct StreamResponseLine {
     pub input_tokens: Option<u32>,
     pub output_tokens: Option<u32>,
     pub cost_usd: Option<f64>,
+    pub usage: Option<StreamUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamUsage {
+    pub total_tokens: Option<u32>,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub cost_usd: Option<f64>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
 }
 
 #[derive(Debug)]
@@ -361,6 +373,8 @@ impl LLMClient {
                     ))
                 })?;
 
+                let usage = parsed.usage.clone();
+
                 let is_final = parsed
                     .event
                     .as_deref()
@@ -368,23 +382,44 @@ impl LLMClient {
                     .unwrap_or(false)
                     || parsed.response.is_some();
 
+                let delta = parsed.delta.clone().or(parsed.content.clone());
+
                 let final_message = if is_final {
+                    let total_tokens = usage
+                        .as_ref()
+                        .and_then(|u| u.total_tokens)
+                        .or(parsed.tokens_used);
+                    let input_tokens = usage
+                        .as_ref()
+                        .and_then(|u| u.input_tokens)
+                        .or(parsed.input_tokens);
+                    let output_tokens = usage
+                        .as_ref()
+                        .and_then(|u| u.output_tokens)
+                        .or(parsed.output_tokens);
+                    let cost_usd = usage.as_ref().and_then(|u| u.cost_usd).or(parsed.cost_usd);
+                    let model_used = parsed
+                        .model
+                        .or_else(|| usage.as_ref().and_then(|u| u.model.clone()));
+                    let provider = parsed
+                        .provider
+                        .or_else(|| usage.as_ref().and_then(|u| u.provider.clone()));
                     Some(StreamFinal {
                         response: parsed.response.unwrap_or_default(),
-                        model_used: parsed.model,
-                        provider: parsed.provider,
+                        model_used,
+                        provider,
                         finish_reason: parsed.finish_reason,
-                        input_tokens: parsed.input_tokens,
-                        output_tokens: parsed.output_tokens,
-                        total_tokens: parsed.tokens_used,
-                        cost_usd: parsed.cost_usd,
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                        cost_usd,
                     })
                 } else {
                     None
                 };
 
                 Ok(StreamChunk {
-                    delta: parsed.delta,
+                    delta,
                     final_message,
                 })
             }

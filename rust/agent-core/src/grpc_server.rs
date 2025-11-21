@@ -1227,13 +1227,43 @@ impl AgentService for AgentServiceImpl {
                                     } else {
                                         final_msg.response
                                     };
+                                    // Attach usage metadata when available so downstream can track budgets
+                                    let usage_result = {
+                                        let has_usage = final_msg.total_tokens.is_some()
+                                            || final_msg.input_tokens.is_some()
+                                            || final_msg.output_tokens.is_some()
+                                            || final_msg.cost_usd.is_some()
+                                            || final_msg.model_used.is_some()
+                                            || final_msg.provider.is_some();
+                                        if has_usage {
+                                            let usage_json = serde_json::json!({
+                                                "total_tokens": final_msg.total_tokens,
+                                                "input_tokens": final_msg.input_tokens,
+                                                "output_tokens": final_msg.output_tokens,
+                                                "cost_usd": final_msg.cost_usd,
+                                                "model": final_msg.model_used.clone().unwrap_or_default(),
+                                                "provider": final_msg.provider.clone().unwrap_or_default(),
+                                            });
+                                            Some(proto::common::ToolResult {
+                                                tool_id: "usage_metrics".to_string(),
+                                                output: Some(crate::grpc_server::prost_value_to_json_to_prost(
+                                                    &usage_json,
+                                                )),
+                                                status: proto::common::StatusCode::Ok.into(),
+                                                error_message: String::new(),
+                                                execution_time_ms: 0,
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    };
                                     let _ = tx
                                         .send(Ok(TaskUpdate {
                                             task_id: task_id.clone(),
                                             state: proto::agent::AgentState::Completed.into(),
                                             message: final_text,
                                             tool_call: None,
-                                            tool_result: None,
+                                            tool_result: usage_result,
                                             progress: 1.0,
                                             delta: String::new(),
                                         }))

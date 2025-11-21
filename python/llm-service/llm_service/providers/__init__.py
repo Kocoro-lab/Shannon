@@ -228,9 +228,6 @@ class ProviderManager:
             if field in passthrough_fields and params[field] is not None:
                 manager_kwargs[field] = params.pop(field)
 
-        # Force streaming mode downstream
-        manager_kwargs["stream"] = True
-
         if "temperature" not in manager_kwargs or manager_kwargs["temperature"] is None:
             manager_kwargs["temperature"] = self.settings.temperature
 

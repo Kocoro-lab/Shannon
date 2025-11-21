@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"reflect"
@@ -91,6 +92,40 @@ func getToolCostPerUse(ctx context.Context, baseURL, toolName string) float64 {
 	ent := toolCostCacheEntry{cost: m.CostPerUse, expiresAt: time.Now().Add(time.Duration(ttlSec) * time.Second)}
 	toolCostCache.Store(toolName, ent)
 	return m.CostPerUse
+}
+
+// parseFlexibleFloat attempts to parse a value as float64 from various JSON types
+func parseFlexibleFloat(v interface{}) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int:
+		return float64(val), true
+	case int64:
+		return float64(val), true
+	case string:
+		if f, err := strconv.ParseFloat(val, 64); err == nil {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+// parseFlexibleInt attempts to parse a value as int from various JSON types
+func parseFlexibleInt(v interface{}) (int, bool) {
+	switch val := v.(type) {
+	case float64:
+		return int(val), true
+	case int:
+		return val, true
+	case int64:
+		return int(val), true
+	case string:
+		if i, err := strconv.Atoi(val); err == nil {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // validateContext sanitizes user-provided context to prevent injection attacks
@@ -756,8 +791,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 	}
 
-	start := time.Now()
-
 	addr := os.Getenv("AGENT_CORE_ADDR")
 	if addr == "" {
 		addr = "agent-core:50051"
@@ -1187,133 +1220,439 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
-	grpcCtx, grpcCancel := context.WithTimeout(ctx, grpcTimeout)
-	defer grpcCancel()
+	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+	mcpCostToTokens := getenvInt("MCP_COST_TO_TOKENS", 0)
 
-	var stream agentpb.AgentService_StreamExecuteTaskClient
-	err = grpcWrapper.Execute(grpcCtx, func() error {
-		var execErr error
-		stream, execErr = client.StreamExecuteTask(grpcCtx, req)
-		return execErr
-	})
-	if err != nil {
-		return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("StreamExecuteTask error: %v", err)}, err
+	// Streaming is opt-in and only used when no tools are required.
+	useStreaming := getenvInt("ENABLE_AGENT_STREAMING", 1) > 0
+	if len(allowedByRole) > 0 || len(selectedToolCalls) > 0 || (input.ToolParameters != nil && len(input.ToolParameters) > 0) {
+		useStreaming = false
 	}
 
-	var outBuilder strings.Builder
-	finalMessage := ""
-	partialBuf := strings.Builder{}
-	partialChunk := getenvInt("PARTIAL_PUBLISH_CHARS", 1)
-	if partialChunk <= 0 {
-		partialChunk = 1
-	}
+	runStreaming := func() (AgentExecutionResult, error) {
+		callStart := time.Now()
+		grpcCtx, grpcCancel := context.WithTimeout(ctx, grpcTimeout)
+		defer grpcCancel()
 
-	flushPartial := func() {
-		if wfID == "" {
-			return
-		}
-		if partialBuf.Len() == 0 {
-			return
-		}
-		msg := partialBuf.String()
-		partialBuf.Reset()
-		streaming.Get().Publish(wfID, streaming.Event{
-			WorkflowID: wfID,
-			Type:       string(StreamEventLLMPartial),
-			AgentID:    input.AgentID,
-			Message:    msg,
-			Timestamp:  time.Now(),
+		var stream agentpb.AgentService_StreamExecuteTaskClient
+		err := grpcWrapper.Execute(grpcCtx, func() error {
+			var execErr error
+			stream, execErr = client.StreamExecuteTask(grpcCtx, req)
+			return execErr
 		})
-	}
-
-	for {
-		upd, recvErr := stream.Recv()
-		if errors.Is(recvErr, io.EOF) {
-			break
-		}
-		if recvErr != nil {
-			return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("stream recv error: %v", recvErr)}, recvErr
+		if err != nil {
+			return AgentExecutionResult{}, err
 		}
 
-		if delta := upd.GetDelta(); delta != "" {
-			outBuilder.WriteString(delta)
-			partialBuf.WriteString(delta)
-			if partialBuf.Len() >= partialChunk {
-				flushPartial()
+		var outBuilder strings.Builder
+		finalMessage := ""
+		partialBuf := strings.Builder{}
+		partialChunk := getenvInt("PARTIAL_PUBLISH_CHARS", 1)
+		if partialChunk <= 0 {
+			partialChunk = 1
+		}
+
+		flushPartial := func() {
+			if wfID == "" || partialBuf.Len() == 0 {
+				return
+			}
+			msg := partialBuf.String()
+			partialBuf.Reset()
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMPartial),
+				AgentID:    input.AgentID,
+				Message:    msg,
+				Timestamp:  time.Now(),
+			})
+		}
+
+		tokens := 0
+		model := ""
+		provider := ""
+		promptTokens := 0
+		completionTokens := 0
+		costUsd := 0.0
+		toolsUsed := []string{}
+		toolExecs := []ToolExecution{}
+		success := true
+		toolCostUsd := 0.0
+		toolTokenBump := 0
+		seenTools := map[string]struct{}{}
+
+		for {
+			upd, recvErr := stream.Recv()
+			if errors.Is(recvErr, io.EOF) {
+				break
+			}
+			if recvErr != nil {
+				return AgentExecutionResult{}, recvErr
+			}
+
+			if delta := upd.GetDelta(); delta != "" {
+				outBuilder.WriteString(delta)
+				partialBuf.WriteString(delta)
+				if partialBuf.Len() >= partialChunk {
+					flushPartial()
+				}
+			}
+
+			if tr := upd.GetToolResult(); tr != nil {
+				toolName := tr.GetToolId()
+				if toolName == "usage_metrics" && tr.Output != nil {
+					if m, ok := tr.Output.AsInterface().(map[string]interface{}); ok {
+						// Use flexible parsing to handle int/float/string from JSON
+						if v, ok := parseFlexibleInt(m["total_tokens"]); ok {
+							tokens = v
+						}
+						if v, ok := parseFlexibleInt(m["input_tokens"]); ok {
+							promptTokens = v
+						}
+						if v, ok := parseFlexibleInt(m["output_tokens"]); ok {
+							completionTokens = v
+						}
+						if v, ok := parseFlexibleFloat(m["cost_usd"]); ok {
+							costUsd = v
+						}
+						if v, ok2 := m["model"].(string); ok2 && v != "" {
+							model = v
+						}
+						if v, ok2 := m["provider"].(string); ok2 && v != "" {
+							provider = v
+						}
+					}
+				} else {
+					output := interface{}(nil)
+					if tr.Output != nil {
+						output = tr.Output.AsInterface()
+					}
+
+					// Emit TOOL_OBSERVATION event with output/error for UI visibility
+					if wfID != "" && toolName != "" {
+						msg := ""
+						if tr.Status == commonpb.StatusCode_STATUS_CODE_OK {
+							// Format output for message
+							if output != nil {
+								if str, ok := output.(string); ok {
+									msg = str
+								} else if bytes, err := json.Marshal(output); err == nil {
+									msg = string(bytes)
+								}
+							}
+						} else {
+							msg = tr.ErrorMessage
+						}
+
+						// Truncate message if too long (match Python's 2000 char limit)
+						if len(msg) > 2000 {
+							msg = msg[:2000]
+						}
+
+						streaming.Get().Publish(wfID, streaming.Event{
+							WorkflowID: wfID,
+							Type:       string(StreamEventToolObs),
+							AgentID:    input.AgentID,
+							Message:    msg,
+							Payload: map[string]interface{}{
+								"tool":    toolName,
+								"success": tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+							},
+							Timestamp: time.Now(),
+						})
+					}
+
+					toolExecs = append(toolExecs, ToolExecution{
+						Tool:    toolName,
+						Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+						Output:  output,
+						Error:   tr.ErrorMessage,
+					})
+
+					if toolName != "" {
+						// Track unique tools
+						if _, ok := seenTools[toolName]; !ok {
+							seenTools[toolName] = struct{}{}
+							toolsUsed = append(toolsUsed, toolName)
+						}
+
+						// Apply MCP cost-to-token bump (parity with unary path)
+						if mcpCostToTokens > 0 {
+							if costPerUse := getToolCostPerUse(ctx, llmServiceURL, toolName); costPerUse > 0 {
+								toolCostUsd += costPerUse
+								toolTokenBump += int(math.Round(costPerUse * float64(mcpCostToTokens)))
+							}
+						}
+					}
+				}
+			}
+
+			if upd.Message != "" && upd.State == agentpb.AgentState_AGENT_STATE_COMPLETED {
+				finalMessage = upd.Message
+			}
+			if upd.State == agentpb.AgentState_AGENT_STATE_FAILED {
+				success = false
 			}
 		}
 
-		if upd.Message != "" && upd.State == agentpb.AgentState_AGENT_STATE_COMPLETED {
-			finalMessage = upd.Message
+		// Flush any buffered partials
+		flushPartial()
+
+		out := strings.TrimSpace(finalMessage)
+		if out == "" {
+			out = strings.TrimSpace(outBuilder.String())
 		}
-	}
 
-	// Flush any buffered partials
-	flushPartial()
+		duration := time.Since(callStart).Milliseconds()
+		if tokens == 0 && promptTokens+completionTokens > 0 {
+			tokens = promptTokens + completionTokens
+		}
 
-	out := strings.TrimSpace(finalMessage)
-	if out == "" {
-		out = strings.TrimSpace(outBuilder.String())
-	}
-
-	duration := time.Since(start).Milliseconds()
-
-	tokens := 0
-	model := ""
-	provider := ""
-	promptTokens := 0
-	completionTokens := 0
-	costUsd := 0.0
-
-	// Fallback: if provider is still empty, use provider_override from context when present
-	if provider == "" && input.Context != nil {
-		if v, ok := input.Context["provider_override"].(string); ok {
-			if pv := strings.TrimSpace(strings.ToLower(v)); pv != "" {
-				provider = pv
+		// Fallback: if provider is still empty, use provider_override from context when present
+		if provider == "" && input.Context != nil {
+			if v, ok := input.Context["provider_override"].(string); ok {
+				if pv := strings.TrimSpace(strings.ToLower(v)); pv != "" {
+					provider = pv
+				}
 			}
 		}
+
+		if model == "" && input.Context != nil {
+			if v, ok := input.Context["model_override"].(string); ok {
+				if mv := strings.TrimSpace(v); mv != "" {
+					model = mv
+				}
+			}
+		}
+
+		if len(toolsUsed) > 0 {
+			seen := map[string]struct{}{}
+			uniq := make([]string, 0, len(toolsUsed))
+			for _, t := range toolsUsed {
+				if t == "" {
+					continue
+				}
+				if _, ok := seen[t]; ok {
+					continue
+				}
+				seen[t] = struct{}{}
+				uniq = append(uniq, t)
+			}
+			toolsUsed = uniq
+		}
+
+		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
+			if model != "" {
+				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
+			} else {
+				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
+			}
+		} else if costUsd == 0 && tokens > 0 {
+			costUsd = pricing.CostForTokens(model, tokens)
+		}
+
+		// Add tool costs (MCP cost bump)
+		costUsd += toolCostUsd
+		tokens += toolTokenBump
+
+		// Emit LLM_OUTPUT event with usage metadata in Payload
+		if wfID != "" && out != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    input.AgentID,
+				Message:    truncateQuery(out, MaxLLMOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used":   tokens,
+					"model_used":    model,
+					"provider":      provider,
+					"input_tokens":  promptTokens,
+					"output_tokens": completionTokens,
+					"cost_usd":      costUsd,
+					"duration_ms":   duration,
+				},
+				Timestamp: time.Now(),
+			})
+		}
+
+		return AgentExecutionResult{
+			AgentID:        input.AgentID,
+			Response:       out,
+			TokensUsed:     tokens,
+			ModelUsed:      model,
+			Provider:       provider,
+			InputTokens:    promptTokens,
+			OutputTokens:   completionTokens,
+			DurationMs:     duration,
+			Success:        success,
+			Error:          "",
+			ToolsUsed:      toolsUsed,
+			ToolExecutions: toolExecs,
+		}, nil
 	}
 
-	// Emit LLM_OUTPUT event with usage metadata in Payload
-	if wfID != "" && out != "" {
-		streaming.Get().Publish(wfID, streaming.Event{
-			WorkflowID: wfID,
-			Type:       string(StreamEventLLMOutput),
-			AgentID:    input.AgentID,
-			Message:    truncateQuery(out, MaxLLMOutputChars),
-			Payload: map[string]interface{}{
-				"tokens_used":   tokens,
-				"model_used":    model,
-				"provider":      provider,
-				"input_tokens":  promptTokens,
-				"output_tokens": completionTokens,
-				"cost_usd":      costUsd,
-				"duration_ms":   duration,
-			},
-			Timestamp: time.Now(),
+	runUnary := func() (AgentExecutionResult, error) {
+		callStart := time.Now()
+		grpcCtx, grpcCancel := context.WithTimeout(ctx, grpcTimeout)
+		defer grpcCancel()
+
+		var resp *agentpb.ExecuteTaskResponse
+		err := grpcWrapper.Execute(grpcCtx, func() error {
+			var execErr error
+			resp, execErr = client.ExecuteTask(grpcCtx, req)
+			return execErr
 		})
+		if err != nil {
+			return AgentExecutionResult{}, err
+		}
+
+		out := strings.TrimSpace(resp.GetResult())
+		duration := time.Since(callStart).Milliseconds()
+		if resp.GetMetrics() != nil && resp.GetMetrics().LatencyMs > 0 {
+			duration = resp.GetMetrics().LatencyMs
+		}
+
+		tokens := 0
+		model := ""
+		provider := ""
+		promptTokens := 0
+		completionTokens := 0
+		costUsd := 0.0
+
+		if mu := resp.GetMetrics(); mu != nil && mu.TokenUsage != nil {
+			tokens = int(mu.TokenUsage.TotalTokens)
+			promptTokens = int(mu.TokenUsage.PromptTokens)
+			completionTokens = int(mu.TokenUsage.CompletionTokens)
+			costUsd = mu.TokenUsage.CostUsd
+			model = mu.TokenUsage.Model
+			provider = mu.TokenUsage.Provider
+		}
+		if tokens == 0 && (promptTokens+completionTokens) > 0 {
+			tokens = promptTokens + completionTokens
+		}
+
+		toolExecs := []ToolExecution{}
+		toolsUsed := []string{}
+		seenTools := map[string]struct{}{}
+		toolCostUsd := 0.0
+		toolTokenBump := 0
+		for _, tr := range resp.ToolResults {
+			toolName := tr.GetToolId()
+			output := interface{}(nil)
+			if tr.Output != nil {
+				output = tr.Output.AsInterface()
+			}
+			toolExecs = append(toolExecs, ToolExecution{
+				Tool:    toolName,
+				Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+				Output:  output,
+				Error:   tr.ErrorMessage,
+			})
+			if toolName != "" {
+				if _, ok := seenTools[toolName]; !ok {
+					seenTools[toolName] = struct{}{}
+					toolsUsed = append(toolsUsed, toolName)
+				}
+				if mcpCostToTokens > 0 {
+					if costPerUse := getToolCostPerUse(ctx, llmServiceURL, toolName); costPerUse > 0 {
+						toolCostUsd += costPerUse
+						toolTokenBump += int(math.Round(costPerUse * float64(mcpCostToTokens)))
+					}
+				}
+			}
+		}
+		if len(toolsUsed) == 0 {
+			for _, tc := range resp.ToolCalls {
+				if tc.Name != "" {
+					if _, ok := seenTools[tc.Name]; !ok {
+						seenTools[tc.Name] = struct{}{}
+						toolsUsed = append(toolsUsed, tc.Name)
+					}
+				}
+			}
+		}
+
+		// Fallback: if provider is still empty, use provider_override from context when present
+		if provider == "" && input.Context != nil {
+			if v, ok := input.Context["provider_override"].(string); ok {
+				if pv := strings.TrimSpace(strings.ToLower(v)); pv != "" {
+					provider = pv
+				}
+			}
+		}
+
+		if model == "" && input.Context != nil {
+			if v, ok := input.Context["model_override"].(string); ok {
+				if mv := strings.TrimSpace(v); mv != "" {
+					model = mv
+				}
+			}
+		}
+
+		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
+			if model != "" {
+				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
+			} else {
+				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
+			}
+		} else if costUsd == 0 && tokens > 0 {
+			costUsd = pricing.CostForTokens(model, tokens)
+		}
+
+		tokens += toolTokenBump
+		costUsd += toolCostUsd
+
+		success := resp.Status == commonpb.StatusCode_STATUS_CODE_OK
+		errMsg := ""
+		if !success && resp.ErrorMessage != "" {
+			errMsg = resp.ErrorMessage
+		} else if !success {
+			errMsg = "agent execution failed"
+		}
+
+		if wfID != "" && out != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventLLMOutput),
+				AgentID:    input.AgentID,
+				Message:    truncateQuery(out, MaxLLMOutputChars),
+				Payload: map[string]interface{}{
+					"tokens_used":   tokens,
+					"model_used":    model,
+					"provider":      provider,
+					"input_tokens":  promptTokens,
+					"output_tokens": completionTokens,
+					"cost_usd":      costUsd,
+					"duration_ms":   duration,
+				},
+				Timestamp: time.Now(),
+			})
+		}
+
+		return AgentExecutionResult{
+			AgentID:        input.AgentID,
+			Response:       out,
+			TokensUsed:     tokens,
+			ModelUsed:      model,
+			Provider:       provider,
+			InputTokens:    promptTokens,
+			OutputTokens:   completionTokens,
+			DurationMs:     duration,
+			Success:        success,
+			Error:          errMsg,
+			ToolsUsed:      toolsUsed,
+			ToolExecutions: toolExecs,
+		}, nil
 	}
 
-	// Capture tool usage and outputs if present
-	toolsUsed := []string{}
-	toolExecs := []ToolExecution{}
+	if useStreaming {
+		if res, serr := runStreaming(); serr == nil {
+			return res, nil
+		} else {
+			logger.Warn("Streaming execution failed, falling back to unary ExecuteTask", zap.Error(serr))
+		}
+	}
 
-	success := true
-
-	return AgentExecutionResult{
-		AgentID:        input.AgentID,
-		Response:       out,
-		TokensUsed:     tokens,
-		ModelUsed:      model,
-		Provider:       provider,
-		InputTokens:    promptTokens,
-		OutputTokens:   completionTokens,
-		DurationMs:     duration,
-		Success:        success,
-		Error:          "",
-		ToolsUsed:      toolsUsed,
-		ToolExecutions: toolExecs,
-	}, nil
+	return runUnary()
 }
 
 // ExecuteAgent is the activity that executes an agent by calling Agent-Core over gRPC
