@@ -342,7 +342,8 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 	}
 
 	// Persist to DB if configured (best-effort, non-blocking)
-	if m.dbClient != nil && m.persistCh != nil {
+	// Only persist important events, not streaming deltas
+	if m.dbClient != nil && m.persistCh != nil && shouldPersistEvent(evt.Type) {
 		// Non-blocking enqueue; drop if full (we never block streaming)
 		el := db.EventLog{
 			WorkflowID: evt.WorkflowID,
@@ -386,6 +387,35 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 func (e Event) Marshal() []byte {
 	b, _ := json.Marshal(e)
 	return b
+}
+
+// shouldPersistEvent determines if an event type should be persisted to PostgreSQL.
+// We only persist important events, not streaming deltas, to reduce DB write load.
+func shouldPersistEvent(eventType string) bool {
+	switch eventType {
+	// ✅ Persist: Important workflow events
+	case "WORKFLOW_COMPLETED",
+		"WORKFLOW_FAILED",
+		"AGENT_COMPLETED",
+		"AGENT_FAILED",
+		"TOOL_INVOKED",
+		"TOOL_OBSERVATION",
+		"TOOL_ERROR",
+		"ERROR_OCCURRED",
+		"LLM_OUTPUT",
+		"STREAM_END":
+		return true
+
+	// ❌ Don't persist: Streaming deltas and intermediate states
+	case "LLM_PARTIAL", // thread.message.delta events
+		"HEARTBEAT",
+		"PING":
+		return false
+
+	// Default: persist unknown event types (safe default)
+	default:
+		return true
+	}
 }
 
 // sanitizeUTF8 ensures invalid UTF-8 bytes are removed before persistence.

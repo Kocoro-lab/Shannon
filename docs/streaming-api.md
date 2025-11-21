@@ -2,6 +2,32 @@
 
 This document describes the minimal, deterministic streaming interfaces exposed by the orchestrator. It covers gRPC, Server‑Sent Events (SSE), and WebSocket (WS) endpoints, including filters and resume semantics for rejoining sessions.
 
+## Event Persistence Strategy
+
+Shannon uses a **two-tier persistence model** optimized for performance:
+
+### Redis (All Events)
+- **Purpose**: Real-time SSE/WebSocket delivery
+- **Retention**: Last 256 events per workflow, 24-hour TTL
+- **Events**: ALL events including `LLM_PARTIAL` (streaming tokens)
+- **Storage**: ~30-50KB per 500-token response
+
+### PostgreSQL (Important Events Only)
+- **Purpose**: Historical audit trail and replay
+- **Retention**: Permanent (or per retention policy)
+- **Events**: Only critical events persisted:
+  - ✅ `WORKFLOW_COMPLETED`, `WORKFLOW_FAILED`
+  - ✅ `AGENT_COMPLETED`, `AGENT_FAILED`
+  - ✅ `TOOL_INVOKED`, `TOOL_OBSERVATION`, `TOOL_ERROR`
+  - ✅ `ERROR_OCCURRED`, `LLM_OUTPUT`, `STREAM_END`
+  - ❌ `LLM_PARTIAL` (thread.message.delta) - **NOT persisted**
+  - ❌ `HEARTBEAT`, `PING` - **NOT persisted**
+- **Reduction**: ~95% fewer DB writes (500 deltas → 5-10 important events)
+
+**Rationale**: Streaming deltas are ephemeral and only needed for real-time delivery. Redis provides sufficient retention (24h) for debugging, while PostgreSQL stores the permanent audit trail.
+
+---
+
 ## Event Model
 
 - Fields: `workflow_id`, `type`, `agent_id?`, `message?`, `timestamp`, `seq`.
@@ -9,6 +35,32 @@ This document describes the minimal, deterministic streaming interfaces exposed 
   - `WORKFLOW_STARTED`, `AGENT_STARTED`, `AGENT_COMPLETED`, `ERROR_OCCURRED`.
   - P2P v1 adds: `MESSAGE_SENT`, `MESSAGE_RECEIVED`, `WORKSPACE_UPDATED`.
 - Determinism: events are emitted from workflows as activities, recorded in Temporal history, and published to a local stream manager.
+
+### Enhanced Event Types
+
+**LLM Response Events:**
+- `LLM_OUTPUT`: Emitted during agent execution with streaming text deltas and usage metadata
+  - Streaming text: `message` contains text chunks as they arrive
+  - Usage metadata: JSON structure in `message` field when available:
+    ```json
+    {
+      "usage": {
+        "total_tokens": 174,
+        "input_tokens": 104,
+        "output_tokens": 70
+      },
+      "model": "gpt-5-nano-2025-08-07",
+      "provider": "openai"
+    }
+    ```
+
+**Tool Execution Events:**
+- `TOOL_INVOKED`: Emitted when agent-core executes a tool (web_search, calculator, file_read, etc.)
+  - `message` contains JSON: `{"tool": "web_search", "parameters": {...}}`
+- `TOOL_OBSERVATION`: Emitted when tool execution completes with results
+  - `message` contains tool output (truncated to 2000 UTF-8 characters if needed)
+
+**Note**: Python-only tools (vendor adapters, custom integrations) use internal function calling and do not emit `TOOL_INVOKED`/`TOOL_OBSERVATION` events by design. Results are embedded in LLM response text.
 
 ## gRPC: StreamingService
 
@@ -44,12 +96,23 @@ for {
 Example (curl):
 
 ```bash
+# Watch agent lifecycle events
 curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=AGENT_STARTED,AGENT_COMPLETED"
+
+# Watch LLM output and usage metadata
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=LLM_OUTPUT"
+
+# Watch tool execution
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=TOOL_INVOKED,TOOL_OBSERVATION"
+
+# Watch everything
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF"
 ```
 
 Notes:
 - Server emits `id` as the Redis `stream_id` when available (preferred) or falls back to numeric `seq`. You can reconnect using the `Last-Event-ID` header or `last_event_id` query param with either form.
 - Heartbeats are sent as SSE comments every ~10s to keep intermediaries alive.
+- `LLM_OUTPUT` events contain both text chunks (string) and usage metadata (JSON) in the `message` field
 
 ## WebSocket: HTTP `/stream/ws`
 
@@ -233,27 +296,57 @@ import React, { useEffect, useState } from 'react';
 
 function WorkflowStream({ workflowId }) {
   const [events, setEvents] = useState([]);
-  
+  const [llmOutput, setLlmOutput] = useState('');
+  const [usage, setUsage] = useState(null);
+
   useEffect(() => {
     const eventSource = new EventSource(
-      `/stream/sse?workflow_id=${workflowId}&types=AGENT_COMPLETED`
+      `/stream/sse?workflow_id=${workflowId}&types=LLM_OUTPUT,AGENT_COMPLETED,TOOL_OBSERVATION`
     );
-    
+
     eventSource.onmessage = (e) => {
       const event = JSON.parse(e.data);
+
+      if (event.type === 'LLM_OUTPUT') {
+        // Check if message is usage metadata (JSON) or text chunk (string)
+        try {
+          const parsed = JSON.parse(event.message);
+          if (parsed.usage) {
+            // Usage metadata
+            setUsage(parsed);
+          }
+        } catch {
+          // Text chunk
+          setLlmOutput(prev => prev + event.message);
+        }
+      }
+
       setEvents(prev => [...prev, event]);
     };
-    
+
     return () => eventSource.close();
   }, [workflowId]);
-  
+
   return (
     <div>
-      {events.map(event => (
-        <div key={event.seq}>
-          {event.type}: {event.agent_id}
-        </div>
-      ))}
+      <div className="llm-output">
+        <pre>{llmOutput}</pre>
+        {usage && (
+          <div className="usage-stats">
+            Model: {usage.model} ({usage.provider})<br/>
+            Tokens: {usage.usage.total_tokens}
+            (in: {usage.usage.input_tokens}, out: {usage.usage.output_tokens})
+          </div>
+        )}
+      </div>
+
+      <div className="events">
+        {events.map(event => (
+          <div key={event.seq}>
+            {event.type}: {event.agent_id || event.message?.substring(0, 50)}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -304,13 +397,88 @@ grpcurl -plaintext localhost:50052 list shannon.orchestrator.StreamingService
 docker compose logs orchestrator | grep "stream"
 ```
 
+## Provider Compatibility
+
+### Usage Metadata Streaming Support
+
+Shannon's LLM providers emit usage metadata in `LLM_OUTPUT` streaming events with varying levels of support:
+
+| Provider | Streaming | Usage Metadata | Implementation |
+|----------|-----------|----------------|----------------|
+| **OpenAI** | ✅ | ✅ | Uses `stream_options: {"include_usage": true}` |
+| **Anthropic** | ✅ | ✅ | Uses `await stream.get_final_message()` after streaming |
+| **Groq** | ✅ | ✅ | Usage available in final streaming chunk |
+| **Google** | ✅ | ✅ | Usage available via `usage_metadata` in final chunk |
+| **xAI** | ✅ | ⚠️ API Limitation | REST API does not emit usage in streaming mode |
+| **OpenAI-compatible** | ✅ | ⚠️ Varies | Depends on endpoint; some don't support `stream_options` |
+
+### Known Limitations
+
+**xAI Streaming**
+- xAI's REST API (OpenAI-compatible endpoint at `api.x.ai/v1`) does **not** emit usage metadata during streaming
+- Usage is only available in non-streaming responses
+- This is a limitation of xAI's API, not Shannon's implementation
+- Alternative: Use non-streaming mode for xAI if usage metadata is required
+- Native xAI gRPC SDK (`xai-sdk` package) has different behavior but would require complete provider rewrite
+
+**OpenAI GPT-5 Models**
+- GPT-5-nano and GPT-5-mini models do not stream text deltas (OpenAI API bug)
+- Only usage metadata is streamed; no content chunks
+- This affects models: `gpt-5-nano-2025-08-07`, `gpt-5-mini-2025-08-07`
+- Workaround: Use GPT-4o models for streaming text + usage
+
+**OpenAI-Compatible Endpoints**
+- Some OpenAI-compatible endpoints (DeepSeek, Qwen, local models) may not support the `stream_options` parameter
+- Shannon gracefully handles this - streaming will work without usage metadata
+- Usage metadata will still be available in final task completion response
+
+**Python-Only Tools**
+- Vendor-specific tools (GA4, custom adapters) execute via internal function calling
+- Do not emit `TOOL_INVOKED`/`TOOL_OBSERVATION` events (by architectural design)
+- Results are embedded in LLM response text
+- This avoids complex cross-language parameter mapping between Python ↔ Go ↔ Rust
+
+### Implementation Details
+
+**Fallback Streaming**
+- When primary provider fails, Shannon automatically falls back to alternate providers
+- Usage metadata dict chunks are now preserved through the fallback path
+- Fix applied: `manager.py:737-738` accepts `(str, dict)` instead of just `str`
+
+**UTF-8 Safety**
+- Tool observation messages truncated to 2000 characters using UTF-8 safe truncation
+- Uses rune-based truncation (Go's `truncateQuery()`) to prevent splitting multi-byte characters
+- Fix applied: `agent.go:1346-1347`
+
+**Usage Metadata Structure**
+All providers that support usage metadata emit a consistent structure:
+```json
+{
+  "usage": {
+    "total_tokens": 174,
+    "input_tokens": 104,
+    "output_tokens": 70
+  },
+  "model": "gpt-5-nano-2025-08-07",
+  "provider": "openai"
+}
+```
+
+This metadata is also aggregated and available in:
+- Final task completion API response (`GET /api/v1/tasks/{id}`)
+- Task execution database records
+- Temporal workflow metadata
+
 ## Roadmap
 
 ### Phase 1 (Current)
 - ✅ Minimal event types: WORKFLOW_STARTED, AGENT_STARTED, AGENT_COMPLETED, ERROR_OCCURRED
+- ✅ Extended event types: LLM_OUTPUT, TOOL_INVOKED, TOOL_OBSERVATION
+- ✅ Usage metadata streaming for OpenAI, Anthropic, Groq, Google providers
 - ✅ Three protocols: gRPC, SSE, WebSocket
 - ✅ Replay support using bounded Redis Streams
-- ✅ Operational defaults are code-level; no env knob for stream capacity
+- ✅ UTF-8 safe message truncation
+- ✅ Fallback streaming preserves usage metadata
 
 ### Phase 2 (Multi-Agent Features)
 - Extended event types after `roles_v1/supervisor_v1/mailbox_v1` are enabled:
