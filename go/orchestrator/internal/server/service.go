@@ -1305,7 +1305,29 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		// Calculate execution time in ms
 		executionTimeMs := int64(durationSeconds * 1000)
 
-		// Transform to unified response format
+		// Update result.Metadata with aggregated DB values before creating unified_response
+		// This ensures unified_response contains accurate cost/token data from token_usage aggregation
+		if hasDBMetrics {
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]interface{})
+			}
+			if dbTotalTokens > 0 {
+				result.Metadata["total_tokens"] = dbTotalTokens
+			}
+			if dbPromptTokens > 0 {
+				result.Metadata["input_tokens"] = dbPromptTokens
+			}
+			if dbCompletionTokens > 0 {
+				result.Metadata["output_tokens"] = dbCompletionTokens
+			}
+			if dbTotalCost > 0 {
+				result.Metadata["cost_usd"] = dbTotalCost
+			}
+			// Also update result.TokensUsed for consistency
+			result.TokensUsed = dbTotalTokens
+		}
+
+		// Transform to unified response format (now with accurate aggregated values)
 		unifiedResp := TransformToUnifiedResponse(result, sessionID, executionTimeMs)
 
 		// Store unified response in result metadata for clients that want it

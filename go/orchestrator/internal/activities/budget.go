@@ -351,6 +351,46 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		outputTokens = result.TokensUsed * 4 / 10
 	}
 
+	// Respect optional zero-token audit flag from context
+	recordZeroToken := false
+	if ctxMap := input.AgentInput.Context; ctxMap != nil {
+		if v, ok := ctxMap["record_zero_token"]; ok {
+			switch t := v.(type) {
+			case bool:
+				recordZeroToken = t
+			case string:
+				if strings.EqualFold(t, "true") {
+					recordZeroToken = true
+				}
+			}
+		}
+	}
+
+	// Treat empty output with no tokens/tools as a failure and skip recording unless explicitly requested
+	noOutput := strings.TrimSpace(result.Response) == "" &&
+		len(result.ToolExecutions) == 0 &&
+		result.TokensUsed == 0 &&
+		inputTokens == 0 &&
+		outputTokens == 0
+	if noOutput {
+		result.Success = false
+		if result.Error == "" {
+			result.Error = "agent produced no output or token usage"
+		}
+		if !recordZeroToken {
+			return &result, nil
+		}
+	}
+
+	// Skip recording zero-token runs unless explicitly requested
+	if (inputTokens+outputTokens) == 0 && !recordZeroToken {
+		b.logger.Warn("Skipping token usage record: zero tokens and no record_zero_token flag",
+			zap.String("agent_id", input.AgentInput.AgentID),
+			zap.String("task_id", input.TaskID),
+		)
+		return &result, nil
+	}
+
 	err = b.budgetManager.RecordUsage(ctx, &budget.BudgetTokenUsage{
 		UserID:         input.UserID,
 		SessionID:      input.AgentInput.SessionID,
