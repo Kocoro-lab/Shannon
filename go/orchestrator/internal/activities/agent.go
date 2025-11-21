@@ -1343,10 +1343,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 							msg = tr.ErrorMessage
 						}
 
-						// Truncate message if too long (match Python's 2000 char limit)
-						if len(msg) > 2000 {
-							msg = msg[:2000]
-						}
+						// Truncate message if too long (UTF-8 safe, match Python's 2000 char limit)
+						msg = truncateQuery(msg, 2000)
 
 						streaming.Get().Publish(wfID, streaming.Event{
 							WorkflowID: wfID,

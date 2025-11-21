@@ -514,6 +514,8 @@ class XAIProvider(LLMProvider):
             "messages": clean_messages,
             "temperature": request.temperature,
             "stream": True,
+            # Note: xAI does NOT support stream_options parameter (returns 400 error)
+            # xAI includes usage data in streaming chunks by default
         }
 
         if request.max_tokens:
@@ -554,8 +556,22 @@ class XAIProvider(LLMProvider):
         try:
             stream = await self.client.chat.completions.create(**payload)
             async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta and getattr(delta, "content", None):
-                    yield delta.content
+                # Yield text content if present
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if delta and getattr(delta, "content", None):
+                        yield delta.content
+
+                # Check for usage in the chunk (usually the last one)
+                if chunk.usage:
+                    yield {
+                        "usage": {
+                            "total_tokens": chunk.usage.total_tokens,
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
+                        },
+                        "model": chunk.model,
+                        "provider": "xai",
+                    }
         except Exception as exc:
             raise Exception(f"xAI streaming error ({self.base_url}): {exc}")

@@ -337,6 +337,7 @@ class OpenAICompatibleProvider(LLMProvider):
             "messages": request.messages,
             "temperature": request.temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},  # Request usage statistics
         }
 
         if request.max_tokens:
@@ -349,6 +350,18 @@ class OpenAICompatibleProvider(LLMProvider):
             async for chunk in stream:
                 if chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
+
+                # Check for usage in the chunk (usually the last one)
+                if chunk.usage:
+                    yield {
+                        "usage": {
+                            "total_tokens": chunk.usage.total_tokens,
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
+                        },
+                        "model": chunk.model,
+                        "provider": "openai_compatible",
+                    }
 
         except Exception as e:
             raise Exception(f"OpenAI-compatible streaming error ({self.base_url}): {e}")

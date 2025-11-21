@@ -734,7 +734,8 @@ class LLMManager:
                 request.model = None
                 try:
                     async for chunk in fallback[1].stream_complete(request):
-                        if isinstance(chunk, str) and chunk:
+                        # Pass through strings and dicts (for usage metadata)
+                        if isinstance(chunk, (str, dict)) and chunk:
                             yield chunk
                 except Exception:
                     # Restore original model before re-raising
