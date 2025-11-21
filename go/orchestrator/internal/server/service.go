@@ -915,8 +915,8 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			taskExecution.DurationMs = &durationMs
 		}
 
-			// Extract metadata from result
-			if result.Metadata != nil {
+		// Extract metadata from result
+		if result.Metadata != nil {
 			if complexity, ok := result.Metadata["complexity_score"].(float64); ok {
 				taskExecution.ComplexityScore = complexity
 			}
@@ -974,15 +974,15 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 				taskExecution.TotalCostUSD = calculateTokenCost(result.TokensUsed, result.Metadata)
 			}
 
-				taskExecution.Metadata = db.JSONB(result.Metadata)
-			}
+			taskExecution.Metadata = db.JSONB(result.Metadata)
+		}
 
-            // If model/provider missing, derive dominant from token_usage
-            if s.dbClient != nil {
-                if taskExecution.ModelUsed == "" || taskExecution.Provider == "" || strings.EqualFold(taskExecution.Provider, "unknown") {
-                    var topModel sql.NullString
-                    var topProvider sql.NullString
-                    row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+		// If model/provider missing, derive dominant from token_usage
+		if s.dbClient != nil {
+			if taskExecution.ModelUsed == "" || taskExecution.Provider == "" || strings.EqualFold(taskExecution.Provider, "unknown") {
+				var topModel sql.NullString
+				var topProvider sql.NullString
+				row := s.dbClient.Wrapper().QueryRowContext(ctx, `
                         SELECT COALESCE(model, '') AS model, COALESCE(provider, '') AS provider
                         FROM (
                             SELECT tu.model, tu.provider, SUM(tu.total_tokens) AS tt
@@ -993,54 +993,60 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
                             ORDER BY tt DESC
                             LIMIT 1
                         ) t`, workflowID)
-                    if err := row.Scan(&topModel, &topProvider); err == nil {
-                        if taskExecution.ModelUsed == "" && topModel.Valid && topModel.String != "" {
-                            taskExecution.ModelUsed = topModel.String
-                        }
-                        if (taskExecution.Provider == "" || strings.EqualFold(taskExecution.Provider, "unknown")) && topProvider.Valid && topProvider.String != "" {
-                            taskExecution.Provider = topProvider.String
-                        }
-                        // Fallback: detect provider from model when still empty
-                        if taskExecution.Provider == "" && taskExecution.ModelUsed != "" {
-                            taskExecution.Provider = detectProviderFromModel(taskExecution.ModelUsed)
-                        }
-                    }
-                }
+				if err := row.Scan(&topModel, &topProvider); err == nil {
+					if taskExecution.ModelUsed == "" && topModel.Valid && topModel.String != "" {
+						taskExecution.ModelUsed = topModel.String
+					}
+					if (taskExecution.Provider == "" || strings.EqualFold(taskExecution.Provider, "unknown")) && topProvider.Valid && topProvider.String != "" {
+						taskExecution.Provider = topProvider.String
+					}
+					// Fallback: detect provider from model when still empty
+					if taskExecution.Provider == "" && taskExecution.ModelUsed != "" {
+						taskExecution.Provider = detectProviderFromModel(taskExecution.ModelUsed)
+					}
+				}
+			}
 
-                // Enrich agent_usages in metadata from token_usage if missing or zero
-                // Build per-agent summary (agent_id, model, provider, input/output/total, cost)
-                type agentUsageRow struct {
-                    AgentID          sql.NullString
-                    Model            sql.NullString
-                    Provider         sql.NullString
-                    InputTokens      sql.NullInt64
-                    OutputTokens     sql.NullInt64
-                    TotalTokens      sql.NullInt64
-                    CostUSD          sql.NullFloat64
-                }
+			// Enrich agent_usages in metadata from token_usage if missing or zero
+			// Build per-agent summary (agent_id, model, provider, input/output/total, cost)
+			type agentUsageRow struct {
+				AgentID      sql.NullString
+				Model        sql.NullString
+				Provider     sql.NullString
+				InputTokens  sql.NullInt64
+				OutputTokens sql.NullInt64
+				TotalTokens  sql.NullInt64
+				CostUSD      sql.NullFloat64
+			}
 
-                needAgentUsages := true
-                if result.Metadata != nil {
-                    if au, ok := result.Metadata["agent_usages"]; ok {
-                        // If existing usages contain any non-zero totals, keep them
-                        if list, ok2 := au.([]map[string]interface{}); ok2 {
-                            for _, m := range list {
-                                if v, ok := m["total_tokens"]; ok {
-                                    switch t := v.(type) {
-                                    case int:
-                                        if t > 0 { needAgentUsages = false }
-                                    case float64:
-                                        if int(t) > 0 { needAgentUsages = false }
-                                    }
-                                }
-                                if !needAgentUsages { break }
-                            }
-                        }
-                    }
-                }
+			needAgentUsages := true
+			if result.Metadata != nil {
+				if au, ok := result.Metadata["agent_usages"]; ok {
+					// If existing usages contain any non-zero totals, keep them
+					if list, ok2 := au.([]map[string]interface{}); ok2 {
+						for _, m := range list {
+							if v, ok := m["total_tokens"]; ok {
+								switch t := v.(type) {
+								case int:
+									if t > 0 {
+										needAgentUsages = false
+									}
+								case float64:
+									if int(t) > 0 {
+										needAgentUsages = false
+									}
+								}
+							}
+							if !needAgentUsages {
+								break
+							}
+						}
+					}
+				}
+			}
 
-                if needAgentUsages {
-                    rows, err := s.dbClient.Wrapper().QueryContext(ctx, `
+			if needAgentUsages {
+				rows, err := s.dbClient.Wrapper().QueryContext(ctx, `
                         SELECT COALESCE(agent_id, '') AS agent_id,
                                COALESCE(model, '')     AS model,
                                COALESCE(provider, '')  AS provider,
@@ -1053,43 +1059,55 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
                         WHERE te.workflow_id = $1
                         GROUP BY agent_id, model, provider
                         ORDER BY total_tokens DESC`, workflowID)
-                    if err == nil {
-                        defer rows.Close()
-                        var usages []map[string]interface{}
-                        for rows.Next() {
-                            var r agentUsageRow
-                            if scanErr := rows.Scan(&r.AgentID, &r.Model, &r.Provider, &r.InputTokens, &r.OutputTokens, &r.TotalTokens, &r.CostUSD); scanErr != nil {
-                                continue
-                            }
-                            usage := map[string]interface{}{}
-                            if r.AgentID.Valid { usage["agent_id"] = r.AgentID.String }
-                            if r.Model.Valid && r.Model.String != "" { usage["model"] = r.Model.String }
-                            if r.InputTokens.Valid { usage["input_tokens"] = int(r.InputTokens.Int64) }
-                            if r.OutputTokens.Valid { usage["output_tokens"] = int(r.OutputTokens.Int64) }
-                            if r.TotalTokens.Valid { usage["total_tokens"] = int(r.TotalTokens.Int64) }
-                            if r.CostUSD.Valid { usage["cost_usd"] = r.CostUSD.Float64 }
-                            usages = append(usages, usage)
-                        }
-                        if len(usages) > 0 {
-                            if result.Metadata == nil {
-                                result.Metadata = make(map[string]interface{})
-                            }
-                            result.Metadata["agent_usages"] = usages
-                            taskExecution.Metadata = db.JSONB(result.Metadata)
-                        }
-                    } else {
-                        s.logger.Debug("agent_usages enrichment query failed", zap.Error(err))
-                    }
-                }
-            }
+				if err == nil {
+					defer rows.Close()
+					var usages []map[string]interface{}
+					for rows.Next() {
+						var r agentUsageRow
+						if scanErr := rows.Scan(&r.AgentID, &r.Model, &r.Provider, &r.InputTokens, &r.OutputTokens, &r.TotalTokens, &r.CostUSD); scanErr != nil {
+							continue
+						}
+						usage := map[string]interface{}{}
+						if r.AgentID.Valid {
+							usage["agent_id"] = r.AgentID.String
+						}
+						if r.Model.Valid && r.Model.String != "" {
+							usage["model"] = r.Model.String
+						}
+						if r.InputTokens.Valid {
+							usage["input_tokens"] = int(r.InputTokens.Int64)
+						}
+						if r.OutputTokens.Valid {
+							usage["output_tokens"] = int(r.OutputTokens.Int64)
+						}
+						if r.TotalTokens.Valid {
+							usage["total_tokens"] = int(r.TotalTokens.Int64)
+						}
+						if r.CostUSD.Valid {
+							usage["cost_usd"] = r.CostUSD.Float64
+						}
+						usages = append(usages, usage)
+					}
+					if len(usages) > 0 {
+						if result.Metadata == nil {
+							result.Metadata = make(map[string]interface{})
+						}
+						result.Metadata["agent_usages"] = usages
+						taskExecution.Metadata = db.JSONB(result.Metadata)
+					}
+				} else {
+					s.logger.Debug("agent_usages enrichment query failed", zap.Error(err))
+				}
+			}
+		}
 
-        // Always aggregate from token_usage as the source of truth for all workflow phases
-        if s.dbClient != nil {
-            var aggCost sql.NullFloat64
-            var aggTotalTokens sql.NullInt64
-            var aggPromptTokens sql.NullInt64
-            var aggCompletionTokens sql.NullInt64
-            row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+		// Always aggregate from token_usage as the source of truth for all workflow phases
+		if s.dbClient != nil {
+			var aggCost sql.NullFloat64
+			var aggTotalTokens sql.NullInt64
+			var aggPromptTokens sql.NullInt64
+			var aggCompletionTokens sql.NullInt64
+			row := s.dbClient.Wrapper().QueryRowContext(ctx, `
                 SELECT
                     COALESCE(SUM(tu.cost_usd), 0),
                     COALESCE(SUM(tu.total_tokens), 0),
@@ -1098,63 +1116,63 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
                 FROM token_usage tu
                 JOIN task_executions te ON tu.task_id = te.id
                 WHERE te.workflow_id = $1`, workflowID)
-            if err := row.Scan(&aggCost, &aggTotalTokens, &aggPromptTokens, &aggCompletionTokens); err == nil {
-                // Only overwrite with DB aggregates when non-zero (preserves workflow metadata when token_usage rows don't exist yet)
-                s.logger.Info("Token usage aggregation succeeded",
-                    zap.String("workflow_id", workflowID),
-                    zap.Float64("cost", aggCost.Float64),
-                    zap.Int64("total_tokens", aggTotalTokens.Int64),
-                    zap.Int64("prompt_tokens", aggPromptTokens.Int64),
-                    zap.Int64("completion_tokens", aggCompletionTokens.Int64))
-                if aggCost.Valid && aggCost.Float64 > 0 {
-                    taskExecution.TotalCostUSD = aggCost.Float64
-                    dbTotalCost = aggCost.Float64
-                }
-                if aggTotalTokens.Valid && aggTotalTokens.Int64 > 0 {
-                    taskExecution.TotalTokens = int(aggTotalTokens.Int64)
-                    dbTotalTokens = int(aggTotalTokens.Int64)
-                }
-                if aggPromptTokens.Valid && aggPromptTokens.Int64 > 0 {
-                    taskExecution.PromptTokens = int(aggPromptTokens.Int64)
-                    dbPromptTokens = int(aggPromptTokens.Int64)
-                }
-                if aggCompletionTokens.Valid && aggCompletionTokens.Int64 > 0 {
-                    taskExecution.CompletionTokens = int(aggCompletionTokens.Int64)
-                    dbCompletionTokens = int(aggCompletionTokens.Int64)
-                }
-                // Mark that we have DB metrics available
-                if dbTotalTokens > 0 {
-                    hasDBMetrics = true
-                }
-            } else {
-                s.logger.Warn("Token usage aggregation failed",
-                    zap.String("workflow_id", workflowID),
-                    zap.Error(err))
-            }
+			if err := row.Scan(&aggCost, &aggTotalTokens, &aggPromptTokens, &aggCompletionTokens); err == nil {
+				// Only overwrite with DB aggregates when non-zero (preserves workflow metadata when token_usage rows don't exist yet)
+				s.logger.Info("Token usage aggregation succeeded",
+					zap.String("workflow_id", workflowID),
+					zap.Float64("cost", aggCost.Float64),
+					zap.Int64("total_tokens", aggTotalTokens.Int64),
+					zap.Int64("prompt_tokens", aggPromptTokens.Int64),
+					zap.Int64("completion_tokens", aggCompletionTokens.Int64))
+				if aggCost.Valid && aggCost.Float64 > 0 {
+					taskExecution.TotalCostUSD = aggCost.Float64
+					dbTotalCost = aggCost.Float64
+				}
+				if aggTotalTokens.Valid && aggTotalTokens.Int64 > 0 {
+					taskExecution.TotalTokens = int(aggTotalTokens.Int64)
+					dbTotalTokens = int(aggTotalTokens.Int64)
+				}
+				if aggPromptTokens.Valid && aggPromptTokens.Int64 > 0 {
+					taskExecution.PromptTokens = int(aggPromptTokens.Int64)
+					dbPromptTokens = int(aggPromptTokens.Int64)
+				}
+				if aggCompletionTokens.Valid && aggCompletionTokens.Int64 > 0 {
+					taskExecution.CompletionTokens = int(aggCompletionTokens.Int64)
+					dbCompletionTokens = int(aggCompletionTokens.Int64)
+				}
+				// Mark that we have DB metrics available
+				if dbTotalTokens > 0 {
+					hasDBMetrics = true
+				}
+			} else {
+				s.logger.Warn("Token usage aggregation failed",
+					zap.String("workflow_id", workflowID),
+					zap.Error(err))
+			}
 
-            // Secondary fallback: derive from agent_executions only if token_usage aggregation returned zero
-            if taskExecution.TotalTokens == 0 {
-                var aeTokens sql.NullInt64
-                row2 := s.dbClient.Wrapper().QueryRowContext(ctx, `
+			// Secondary fallback: derive from agent_executions only if token_usage aggregation returned zero
+			if taskExecution.TotalTokens == 0 {
+				var aeTokens sql.NullInt64
+				row2 := s.dbClient.Wrapper().QueryRowContext(ctx, `
                     SELECT COALESCE(SUM(ae.tokens_used), 0)
                     FROM agent_executions ae
                     WHERE ae.workflow_id = $1`, workflowID)
-                if err2 := row2.Scan(&aeTokens); err2 == nil {
-                    if aeTokens.Valid && aeTokens.Int64 > 0 {
-                        taskExecution.TotalTokens = int(aeTokens.Int64)
-                        // Compute cost using model from metadata when available
-                        taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
-                    }
-                } else {
-                    s.logger.Warn("Agent execution aggregation failed",
-                        zap.String("workflow_id", workflowID),
-                        zap.Error(err2))
-                }
-            }
-        }
+				if err2 := row2.Scan(&aeTokens); err2 == nil {
+					if aeTokens.Valid && aeTokens.Int64 > 0 {
+						taskExecution.TotalTokens = int(aeTokens.Int64)
+						// Compute cost using model from metadata when available
+						taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
+					}
+				} else {
+					s.logger.Warn("Agent execution aggregation failed",
+						zap.String("workflow_id", workflowID),
+						zap.Error(err2))
+				}
+			}
+		}
 
-        // Queue async write to database
-        err := s.dbClient.QueueWrite(db.WriteTypeTaskExecution, taskExecution, func(err error) {
+		// Queue async write to database
+		err := s.dbClient.QueueWrite(db.WriteTypeTaskExecution, taskExecution, func(err error) {
 			if err != nil {
 				s.logger.Error("Failed to persist task execution",
 					zap.String("workflow_id", workflowID),
@@ -1802,17 +1820,21 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 	if s.temporalClient == nil || s.dbClient == nil {
 		return
 	}
-	// Use 5-minute timeout to prevent goroutine leaks on stuck workflows
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
+	// Wait for workflow completion with a long safety timeout to prevent leaks on stuck workflows
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer waitCancel()
 
 	// Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
-	we := s.temporalClient.GetWorkflow(ctx, workflowID, runID)
+	we := s.temporalClient.GetWorkflow(waitCtx, workflowID, runID)
 	var tmp interface{}
-	_ = we.Get(ctx, &tmp)
+	_ = we.Get(waitCtx, &tmp)
+
+	// Short TTL for post-completion persistence
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer persistCancel()
 
 	// Describe to fetch status and times
-	desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, workflowID, runID)
+	desc, err := s.temporalClient.DescribeWorkflowExecution(persistCtx, workflowID, runID)
 	if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
 		s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(err))
 		return
@@ -1841,65 +1863,65 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 	}
 	end := getWorkflowEndTime(desc)
 
-    // Only update terminal fields to avoid clobbering richer data written elsewhere.
-    // Do not overwrite tokens/cost/model/provider/metadata.
-    durationMs := int(end.Sub(start).Milliseconds())
-    // Update terminal fields only if row already exists (created by SubmitTask or GetTaskStatus)
-    // Use UPDATE instead of INSERT to avoid NOT NULL constraint violations on required fields
-    if _, err2 := s.dbClient.Wrapper().ExecContext(
-        ctx,
-        `UPDATE task_executions
+	// Only update terminal fields to avoid clobbering richer data written elsewhere.
+	// Do not overwrite tokens/cost/model/provider/metadata.
+	durationMs := int(end.Sub(start).Milliseconds())
+	// Update terminal fields only if row already exists (created by SubmitTask or GetTaskStatus)
+	// Use UPDATE instead of INSERT to avoid NOT NULL constraint violations on required fields
+	if _, err2 := s.dbClient.Wrapper().ExecContext(
+		persistCtx,
+		`UPDATE task_executions
          SET status = $2,
              completed_at = $3,
              duration_ms = COALESCE(duration_ms, $4)
          WHERE workflow_id = $1
            AND status NOT IN ('COMPLETED', 'FAILED')`,
-        workflowID, statusStr, end, durationMs,
-    ); err2 != nil {
-        s.logger.Warn("watchAndPersist: final status update failed", zap.String("workflow_id", workflowID), zap.Error(err2))
-    } else {
-        s.logger.Debug("watchAndPersist: final status updated", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
-    }
+		workflowID, statusStr, end, durationMs,
+	); err2 != nil {
+		s.logger.Warn("watchAndPersist: final status update failed", zap.String("workflow_id", workflowID), zap.Error(err2))
+	} else {
+		s.logger.Debug("watchAndPersist: final status updated", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
+	}
 
-    // Trigger rich persistence (result + token/cost aggregation) using the same logic as GetTaskStatus.
-    // This ensures DB has full metrics even if no client polls status.
-    // Safe to call here: SaveTaskExecution is idempotent by workflow_id.
-    if _, err := s.GetTaskStatus(ctx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
-        s.logger.Warn("watchAndPersist: GetTaskStatus persistence failed", zap.String("workflow_id", workflowID), zap.Error(err))
-    } else {
-        s.logger.Debug("watchAndPersist: terminal metrics persisted", zap.String("workflow_id", workflowID))
-    }
+	// Trigger rich persistence (result + token/cost aggregation) using the same logic as GetTaskStatus.
+	// This ensures DB has full metrics even if no client polls status.
+	// Safe to call here: SaveTaskExecution is idempotent by workflow_id.
+	if _, err := s.GetTaskStatus(persistCtx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
+		s.logger.Warn("watchAndPersist: GetTaskStatus persistence failed", zap.String("workflow_id", workflowID), zap.Error(err))
+	} else {
+		s.logger.Debug("watchAndPersist: terminal metrics persisted", zap.String("workflow_id", workflowID))
+	}
 
-    // Best-effort polling to tolerate visibility lag: re-run persistence until totals or result appear
-    // Poll every ~2 seconds up to ~12 seconds total (6 attempts)
-    // Exit early once total_tokens > 0 or result is non-empty
-    const maxAttempts = 6
-    for attempt := 0; attempt < maxAttempts; attempt++ {
-        // Check current DB state
-        var tokens sql.NullInt64
-        var res sql.NullString
-        row := s.dbClient.Wrapper().QueryRowContext(ctx,
-            `SELECT total_tokens, result FROM task_executions WHERE workflow_id = $1`, workflowID,
-        )
-        if err := row.Scan(&tokens, &res); err == nil {
-            hasTokens := tokens.Valid && tokens.Int64 > 0
-            hasResult := res.Valid && res.String != ""
-            if hasTokens || hasResult {
-                s.logger.Debug("watchAndPersist: persistence confirmed",
-                    zap.String("workflow_id", workflowID),
-                    zap.Bool("has_tokens", hasTokens),
-                    zap.Bool("has_result", hasResult),
-                )
-                break
-            }
-        }
+	// Best-effort polling to tolerate visibility lag: re-run persistence until totals or result appear
+	// Poll every ~2 seconds up to ~12 seconds total (6 attempts)
+	// Exit early once total_tokens > 0 or result is non-empty
+	const maxAttempts = 6
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		// Check current DB state
+		var tokens sql.NullInt64
+		var res sql.NullString
+		row := s.dbClient.Wrapper().QueryRowContext(persistCtx,
+			`SELECT total_tokens, result FROM task_executions WHERE workflow_id = $1`, workflowID,
+		)
+		if err := row.Scan(&tokens, &res); err == nil {
+			hasTokens := tokens.Valid && tokens.Int64 > 0
+			hasResult := res.Valid && res.String != ""
+			if hasTokens || hasResult {
+				s.logger.Debug("watchAndPersist: persistence confirmed",
+					zap.String("workflow_id", workflowID),
+					zap.Bool("has_tokens", hasTokens),
+					zap.Bool("has_result", hasResult),
+				)
+				break
+			}
+		}
 
-        // Retry persistence and sleep before next check
-        if _, err := s.GetTaskStatus(ctx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
-            s.logger.Debug("watchAndPersist: retry GetTaskStatus failed", zap.String("workflow_id", workflowID), zap.Error(err))
-        }
-        time.Sleep(2 * time.Second)
-    }
+		// Retry persistence and sleep before next check
+		if _, err := s.GetTaskStatus(persistCtx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
+			s.logger.Debug("watchAndPersist: retry GetTaskStatus failed", zap.String("workflow_id", workflowID), zap.Error(err))
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 // getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.
