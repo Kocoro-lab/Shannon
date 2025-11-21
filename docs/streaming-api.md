@@ -471,7 +471,7 @@ This metadata is also aggregated and available in:
 
 ## Roadmap
 
-### Phase 1 (Current)
+### Phase 1 (Complete)
 - ✅ Minimal event types: WORKFLOW_STARTED, AGENT_STARTED, AGENT_COMPLETED, ERROR_OCCURRED
 - ✅ Extended event types: LLM_OUTPUT, TOOL_INVOKED, TOOL_OBSERVATION
 - ✅ Usage metadata streaming for OpenAI, Anthropic, Groq, Google providers
@@ -479,13 +479,28 @@ This metadata is also aggregated and available in:
 - ✅ Replay support using bounded Redis Streams
 - ✅ UTF-8 safe message truncation
 - ✅ Fallback streaming preserves usage metadata
+- ✅ Selective PostgreSQL persistence (filters ephemeral events)
 
-### Phase 2 (Multi-Agent Features)
-- Extended event types after `roles_v1/supervisor_v1/mailbox_v1` are enabled:
-  - `ROLE_ASSIGNED`, `AGENT_MESSAGE_SENT`, `SUPERVISOR_DELEGATED`
-  - `POLICY_EVALUATED`, `BUDGET_THRESHOLD`, `WASI_SANDBOX_EVENT`
+### Phase 2A: Multi-Agent Coordination (Complete)
+Quick wins leveraging existing infrastructure:
+- ✅ **ROLE_ASSIGNED**: Emitted when role-based agents are activated (e.g., `data_analytics`, `ga4_analytics`)
+  - Payload: role name, available tools, tool count
+  - Location: `orchestrator_router.go:205-217`
+- ✅ **DELEGATION**: Emitted when orchestrator delegates subtasks to agents
+  - Already implemented in `orchestrator_router.go`
+- ✅ **BUDGET_THRESHOLD**: Emitted when token budget crosses warning thresholds
+  - Payload: usage_percent, tokens_used, budget_type (task/session)
+  - Location: `budget/manager.go:258-274`
 
-### Phase 3 (Advanced Features)
+**Database Persistence**: All Phase 2A events persisted to PostgreSQL (via `shouldPersistEvent` filter)
+
+### Phase 2B: Advanced Multi-Agent (Planned)
+Requires new system implementations:
+- ⏳ **AGENT_MESSAGE_SENT**: Inter-agent communication (requires `mailbox_v1` system)
+- ⏳ **POLICY_EVALUATED**: Policy framework events (OPA integration exists, needs streaming)
+- ⏳ **WASI_SANDBOX_EVENT**: Python code execution events (requires Rust→Go event bridge)
+
+### Phase 3 (Future)
 - WebSocket multiplexing for multiple workflows in one connection
 - SDK helpers in Python/TypeScript for easy consumption
 - Real-time dashboard components and visualization tools

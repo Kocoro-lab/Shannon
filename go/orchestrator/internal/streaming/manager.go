@@ -403,13 +403,19 @@ func shouldPersistEvent(eventType string) bool {
 		"TOOL_ERROR",
 		"ERROR_OCCURRED",
 		"LLM_OUTPUT",
-		"STREAM_END":
+		"STREAM_END",
+		// Phase 2A: Multi-agent coordination events
+		"ROLE_ASSIGNED",
+		"DELEGATION",
+		"BUDGET_THRESHOLD":
 		return true
 
 	// ❌ Don't persist: Streaming deltas and intermediate states
 	case "LLM_PARTIAL", // thread.message.delta events
 		"HEARTBEAT",
-		"PING":
+		"PING",
+		"AGENT_THINKING", // Ephemeral thinking states
+		"LLM_PROMPT":     // Prompts are logged separately
 		return false
 
 	// Default: persist unknown event types (safe default)

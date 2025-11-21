@@ -202,6 +202,20 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			roleTools := roles.AllowedTools(role)
 			logger.Info("Role specified - bypassing LLM decomposition", "role", role, "tool_count", len(roleTools))
 
+			// Emit ROLE_ASSIGNED event
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+				EventType:  activities.StreamEventRoleAssigned,
+				AgentID:    role,
+				Message:    fmt.Sprintf("Role '%s' assigned with %d tools available", role, len(roleTools)),
+				Timestamp:  workflow.Now(ctx),
+				Payload: map[string]interface{}{
+					"role":       role,
+					"tools":      roleTools,
+					"tool_count": len(roleTools),
+				},
+			}).Get(ctx, nil)
+
 			// Create a simple single-subtask plan
 			decomp = activities.DecompositionResult{
 				Mode:              "simple",
