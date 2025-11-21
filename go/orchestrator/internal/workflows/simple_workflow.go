@@ -295,19 +295,18 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}, err
 	}
 
-	// Persist agent execution using fire-and-forget Temporal activity
+	// Persist agent execution (await result to ensure completion)
 	if result.Success {
-		detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
 		persistOpts := workflow.ActivityOptions{
 			StartToCloseTimeout: 30 * time.Second,
 			RetryPolicy: &temporal.RetryPolicy{
 				MaximumAttempts: 3,
 			},
 		}
-		detachedCtx = workflow.WithActivityOptions(detachedCtx, persistOpts)
+		persistCtx := workflow.WithActivityOptions(ctx, persistOpts)
 
 		// Persist agent execution
-		workflow.ExecuteActivity(detachedCtx,
+		_ = workflow.ExecuteActivity(persistCtx,
 			activities.PersistAgentExecutionStandalone,
 			activities.PersistAgentExecutionInput{
 				WorkflowID: workflowID,
@@ -323,7 +322,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					"workflow": "simple",
 					"strategy": "simple",
 				},
-			})
+			}).Get(ctx, nil)
 
 		// Persist tool executions if any
 		for _, tool := range result.ToolExecutions {
@@ -342,7 +341,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				}
 			}
 
-			workflow.ExecuteActivity(detachedCtx,
+			_ = workflow.ExecuteActivity(persistCtx,
 				activities.PersistToolExecutionStandalone,
 				activities.PersistToolExecutionInput{
 					WorkflowID: workflowID,
@@ -351,17 +350,17 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					Output:     outputStr,
 					Success:    tool.Success,
 					Error:      tool.Error,
-				})
+				}).Get(ctx, nil)
 		}
 	}
 
-	// Persist to vector store for future context retrieval (fire-and-forget)
+	// Persist to vector store for future context retrieval (await result)
 	if input.SessionID != "" {
 		ro := workflow.ActivityOptions{StartToCloseTimeout: 30 * time.Second, RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 3}}
-		detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
-		dctx := workflow.WithActivityOptions(detachedCtx, ro)
-		// Schedule without waiting on result
-		workflow.ExecuteActivity(dctx, activities.RecordQuery, activities.RecordQueryInput{
+		// Use regular context to ensure we wait for completion
+		dctx := workflow.WithActivityOptions(ctx, ro)
+		// Schedule and wait for result
+		_ = workflow.ExecuteActivity(dctx, activities.RecordQuery, activities.RecordQueryInput{
 			SessionID: input.SessionID,
 			UserID:    input.UserID,
 			Query:     input.Query,
@@ -369,7 +368,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			Model:     "simple-agent",
 			Metadata:  map[string]interface{}{"workflow": "simple", "mode": "simple", "tenant_id": input.TenantID},
 			RedactPII: true,
-		})
+		}).Get(ctx, nil)
 	}
 
 	// Update session with token usage

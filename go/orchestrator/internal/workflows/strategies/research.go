@@ -1717,14 +1717,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				AgentsUsed: len(agentResults),
 				CostUSD:    finalCost, // Pass explicit cost to avoid default fallback
 			}).Get(ctx, &updRes)
-
 		if err != nil {
 			logger.Error("Failed to update session", "error", err)
 		}
 
-		// Persist to vector store (fire-and-forget)
-		detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
-		workflow.ExecuteActivity(detachedCtx,
+		// Persist to vector store (await result to prevent race condition)
+		_ = workflow.ExecuteActivity(ctx,
 			activities.RecordQuery,
 			activities.RecordQueryInput{
 				SessionID: input.SessionID,
@@ -1740,7 +1738,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					"tenant_id":     input.TenantID,
 				},
 				RedactPII: true,
-			})
+			}).Get(ctx, nil)
 	}
 
 	// Include synthesis finish_reason and requested_max_tokens for observability/debugging
