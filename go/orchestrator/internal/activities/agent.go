@@ -1424,21 +1424,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			}
 		}
 
-		if len(toolsUsed) > 0 {
-			seen := map[string]struct{}{}
-			uniq := make([]string, 0, len(toolsUsed))
-			for _, t := range toolsUsed {
-				if t == "" {
-					continue
-				}
-				if _, ok := seen[t]; ok {
-					continue
-				}
-				seen[t] = struct{}{}
-				uniq = append(uniq, t)
-			}
-			toolsUsed = uniq
-		}
+		// Note: toolsUsed already deduplicated via seenTools map during collection (line 1371-1373)
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
 			if model != "" {

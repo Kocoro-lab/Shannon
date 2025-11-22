@@ -1294,7 +1294,8 @@ impl AgentService for AgentServiceImpl {
                                 }
                             }
                             Err(e) => {
-                                return Err(Status::internal(e.to_string()));
+                                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                                break;
                             }
                         }
                     }
