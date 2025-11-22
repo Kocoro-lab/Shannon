@@ -1286,6 +1286,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				break
 			}
 			if recvErr != nil {
+				// Flush any buffered content before returning error
+				flushPartial()
 				return AgentExecutionResult{}, recvErr
 			}
 

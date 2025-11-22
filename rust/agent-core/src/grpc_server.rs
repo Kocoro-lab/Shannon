@@ -30,6 +30,10 @@ pub mod proto {
 use proto::agent::agent_service_server::{AgentService, AgentServiceServer};
 use proto::agent::*;
 
+// Streaming limits to prevent resource exhaustion
+const MAX_STREAM_BUFFER_SIZE: usize = 1_000_000; // 1MB max buffer size
+const STREAM_TIMEOUT_SECS: u64 = 300; // 5 minutes timeout
+
 pub struct AgentServiceImpl {
     memory_pool: MemoryPool,
     #[cfg(feature = "wasi")]
@@ -1203,23 +1207,33 @@ impl AgentService for AgentServiceImpl {
             {
                 Ok(mut stream) => {
                     let mut buffer = String::new();
-                    while let Some(item) = stream.next().await {
-                        match item {
-                            Ok(chunk) => {
-                                if let Some(d) = chunk.delta.clone() {
-                                    buffer.push_str(&d);
-                                    let _ = tx
-                                        .send(Ok(TaskUpdate {
-                                            task_id: task_id.clone(),
-                                            state: proto::agent::AgentState::Executing.into(),
-                                            message: String::new(),
-                                            tool_call: None,
-                                            tool_result: None,
-                                            progress: 0.0,
-                                            delta: d,
-                                        }))
-                                        .await;
-                                }
+                    // Wrap stream consumption in timeout to prevent hanging
+                    let stream_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(STREAM_TIMEOUT_SECS),
+                        async {
+                            while let Some(item) = stream.next().await {
+                                match item {
+                                    Ok(chunk) => {
+                                        if let Some(d) = chunk.delta.clone() {
+                                            // Check buffer size limit before appending
+                                            if buffer.len() + d.len() > MAX_STREAM_BUFFER_SIZE {
+                                                return Err(Status::resource_exhausted(
+                                                    format!("Response exceeds maximum size of {} bytes", MAX_STREAM_BUFFER_SIZE)
+                                                ));
+                                            }
+                                            buffer.push_str(&d);
+                                            let _ = tx
+                                                .send(Ok(TaskUpdate {
+                                                    task_id: task_id.clone(),
+                                                    state: proto::agent::AgentState::Executing.into(),
+                                                    message: String::new(),
+                                                    tool_call: None,
+                                                    tool_result: None,
+                                                    progress: 0.0,
+                                                    delta: d,
+                                                }))
+                                                .await;
+                                        }
 
                                 if let Some(final_msg) = chunk.final_message {
                                     let final_text = if final_msg.response.is_empty() {
@@ -1236,11 +1250,19 @@ impl AgentService for AgentServiceImpl {
                                             || final_msg.model_used.is_some()
                                             || final_msg.provider.is_some();
                                         if has_usage {
+                                            // Validate token values are within reasonable bounds
+                                            let validate_tokens = |val: Option<u32>| -> Option<u32> {
+                                                val.filter(|&t| t > 0 && t < 10_000_000)
+                                            };
+                                            let validate_cost = |val: Option<f64>| -> Option<f64> {
+                                                val.filter(|&c| c >= 0.0 && c < 10000.0)
+                                            };
+
                                             let usage_json = serde_json::json!({
-                                                "total_tokens": final_msg.total_tokens,
-                                                "input_tokens": final_msg.input_tokens,
-                                                "output_tokens": final_msg.output_tokens,
-                                                "cost_usd": final_msg.cost_usd,
+                                                "total_tokens": validate_tokens(final_msg.total_tokens),
+                                                "input_tokens": validate_tokens(final_msg.input_tokens),
+                                                "output_tokens": validate_tokens(final_msg.output_tokens),
+                                                "cost_usd": validate_cost(final_msg.cost_usd),
                                                 "model": final_msg.model_used.clone().unwrap_or_default(),
                                                 "provider": final_msg.provider.clone().unwrap_or_default(),
                                             });
@@ -1268,12 +1290,11 @@ impl AgentService for AgentServiceImpl {
                                             delta: String::new(),
                                         }))
                                         .await;
-                                    return;
+                                    return Ok(());
                                 }
                             }
                             Err(e) => {
-                                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                                return;
+                                return Err(Status::internal(e.to_string()));
                             }
                         }
                     }
@@ -1290,6 +1311,25 @@ impl AgentService for AgentServiceImpl {
                             delta: String::new(),
                         }))
                         .await;
+                    Ok(())
+                        },
+                    )
+                    .await;
+
+                    // Handle timeout result
+                    match stream_result {
+                        Ok(Ok(())) => {
+                            // Stream completed successfully
+                        }
+                        Ok(Err(e)) => {
+                            let _ = tx.send(Err(e)).await;
+                        }
+                        Err(_) => {
+                            let _ = tx.send(Err(Status::deadline_exceeded(
+                                format!("Stream timeout after {} seconds", STREAM_TIMEOUT_SECS)
+                            ))).await;
+                        }
+                    }
                 }
                 Err(e) => {
                     let _ = tx.send(Err(Status::internal(e.to_string()))).await;
