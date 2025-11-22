@@ -34,13 +34,13 @@ There are many ways to contribute to Shannon:
 | Orchestrator (Go) | 50052 | gRPC service for workflow orchestration |
 | LLM Service (Python) | 8000 | HTTP service for LLM providers |
 | Gateway | 8080 | REST API gateway |
-| Dashboard | 3000 | Real-time observability UI |
+| Dashboard | 2111 | Real-time observability UI |
 | PostgreSQL | 5432 | Primary database |
 | Redis | 6379 | Session cache and pub/sub |
 | Qdrant | 6333 | Vector database |
 | Temporal | 7233 | Workflow engine (UI on 8088) |
 | Prometheus | 9090 | Metrics collection |
-| Grafana | 3001 | Metrics visualization |
+| Grafana | 3030 | Metrics visualization |
 
 ### Development Setup
 
@@ -89,8 +89,8 @@ There are many ways to contribute to Shannon:
    cd go/gateway
    go run ./cmd/server
 
-   # Terminal 5: Dashboard (UI on port 3000)
-   cd dashboard
+   # Terminal 5: Dashboard (UI on port 2111)
+   cd observability/dashboard
    npm install && npm run dev
    ```
 

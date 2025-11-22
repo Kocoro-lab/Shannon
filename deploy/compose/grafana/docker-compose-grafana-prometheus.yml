@@ -20,7 +20,7 @@ services:
     image: grafana/grafana:latest
     container_name: shannon-grafana-1
     ports:
-      - "3000:3000"
+      - "3030:3000"
     volumes:
       - ./data/grafana-data:/var/lib/grafana
       - ./config/grafana.ini:/etc/grafana/grafana.ini

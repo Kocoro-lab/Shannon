@@ -123,7 +123,7 @@ echo -e "${GREEN}================================${NC}"
 
 echo -e "\n${YELLOW}Manual verification steps:${NC}"
 echo "1. Check Temporal UI at http://localhost:8088 for workflow details"
-echo "2. Check Grafana at http://localhost:3000 for metrics"
+echo "2. Check Grafana at http://localhost:3030 for metrics"
 echo "3. Run: docker compose -f deploy/compose/docker-compose.yml logs -f orchestrator"
 echo "4. Run: docker compose -f deploy/compose/docker-compose.yml logs -f llm-service"
 echo "5. Run: docker compose -f deploy/compose/docker-compose.yml logs -f agent-core"

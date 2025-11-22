@@ -137,7 +137,7 @@ make smoke
 <summary><b>Optional: Enable Grafana & Prometheus</b> (click to expand)</summary>
 
 ```bash
-# Start monitoring stack (Grafana on :3000, Prometheus on :9090)
+# Start monitoring stack (Grafana on :3030, Prometheus on :9090)
 cd deploy/compose/grafana
 docker compose -f docker-compose-grafana-prometheus.yml up -d
 ```

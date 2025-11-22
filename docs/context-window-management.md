@@ -279,7 +279,7 @@ Watch for these events to understand system behavior:
 curl http://localhost:2112/metrics | grep shannon_compression
 
 # Import Grafana dashboard
-curl -X POST http://localhost:3000/api/dashboards/db \
+curl -X POST http://localhost:3030/api/dashboards/db \
   -H "Content-Type: application/json" \
   -d @observability/dashboard/context-window.json
 ```
