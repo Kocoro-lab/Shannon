@@ -1014,6 +1014,68 @@ async def _execute_and_format_tools(
             "x-agent-id"
         )
 
+    def _sanitize_payload(
+        value: Any,
+        *,
+        max_str: int = 1000,
+        max_items: int = 50,
+        depth: int = 0,
+        max_depth: int = 4,
+        redact_keys: Optional[List[str]] = None,
+    ) -> Any:
+        """Recursively sanitize payloads to avoid secret leaks and stream floods."""
+        if redact_keys is None:
+            redact_keys = ["api_key", "token", "secret", "password", "credential", "auth"]
+
+        if depth > max_depth:
+            return "[TRUNCATED]"
+
+        # Strings: truncate
+        if isinstance(value, str):
+            return value if len(value) <= max_str else value[:max_str] + "..."
+
+        # Dicts: redact secret-looking keys, limit size, recurse
+        if isinstance(value, dict):
+            out = {}
+            for idx, (k, v) in enumerate(value.items()):
+                if idx >= max_items:
+                    out["..."] = "[TRUNCATED]"
+                    break
+                if isinstance(k, str) and any(sk in k.lower() for sk in redact_keys):
+                    out[k] = "[REDACTED]"
+                    continue
+                out[k] = _sanitize_payload(
+                    v,
+                    max_str=max_str,
+                    max_items=max_items,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    redact_keys=redact_keys,
+                )
+            return out
+
+        # Lists/Tuples: cap length, recurse
+        if isinstance(value, (list, tuple)):
+            out_list = []
+            for idx, item in enumerate(value):
+                if idx >= max_items:
+                    out_list.append("[TRUNCATED]")
+                    break
+                out_list.append(
+                    _sanitize_payload(
+                        item,
+                        max_str=max_str,
+                        max_items=max_items,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        redact_keys=redact_keys,
+                    )
+                )
+            return out_list
+
+        # Other primitives: return as-is
+        return value
+
     for call in tool_calls:
         tool_name = call.get("name")
         if tool_name not in allowed_tools:
@@ -1054,15 +1116,48 @@ async def _execute_and_format_tools(
             # Emit TOOL_INVOKED event
             if emitter and wf_id:
                 try:
+                    sanitized_params = _sanitize_payload(args)
                     emitter.emit(
                         wf_id,
                         "TOOL_INVOKED",
                         agent_id=agent_id,
                         message=f"Executing {tool_name}",
-                        payload={"tool": tool_name, "params": args},
+                        payload={"tool": tool_name, "params": sanitized_params},
                     )
                 except Exception:
                     pass
+
+            # Define observer for intermediate updates
+            def tool_observer(event_name: str, payload: Any):
+                if emitter and wf_id:
+                    try:
+                        # Ensure payload is a dict
+                        if not isinstance(payload, dict):
+                            payload = {"data": payload}
+
+                        # Add tool name and phase to payload
+                        payload["tool"] = tool_name
+                        payload["intermediate"] = True
+                        payload["event"] = event_name
+
+                        # Sanitize payload (redact secrets, truncate strings, cap collections)
+                        payload = _sanitize_payload(payload, max_str=2000, max_items=50)
+
+                        # Truncate message for stream safety
+                        msg = str(payload.get("message", ""))
+                        if len(msg) > 1000:
+                            msg = msg[:1000] + "..."
+                            payload["message"] = msg
+
+                        emitter.emit(
+                            wf_id,
+                            "TOOL_OBSERVATION",
+                            agent_id=agent_id,
+                            message=msg,
+                            payload=payload,
+                        )
+                    except Exception:
+                        pass
 
             # Sanitize session context before passing to tools
             if isinstance(context, dict):
@@ -1074,7 +1169,11 @@ async def _execute_and_format_tools(
             logger.info(
                 f"Executing tool {tool_name} with context keys: {list(sanitized_context.keys()) if isinstance(sanitized_context, dict) else 'None'}, args: {args}"
             )
-            result = await tool.execute(session_context=sanitized_context, **args)
+            
+            # Execute with observer
+            start_time = __import__("time").time()
+            result = await tool.execute(session_context=sanitized_context, observer=tool_observer, **args)
+            duration_ms = int((__import__("time").time() - start_time) * 1000)
 
             if result.success:
                 # Format based on tool type
@@ -1182,6 +1281,10 @@ async def _execute_and_format_tools(
                         payload={
                             "tool": tool_name,
                             "success": bool(result and result.success),
+                            "usage": {
+                                "duration_ms": duration_ms,
+                                "tokens": result.tokens_used if result and result.tokens_used else 0
+                            }
                         },
                     )
                 except Exception:
@@ -1190,6 +1293,23 @@ async def _execute_and_format_tools(
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")
             formatted_results.append(f"Failed to execute {tool_name}")
+            
+            # Emit failure TOOL_OBSERVATION
+            if emitter and wf_id:
+                try:
+                    emitter.emit(
+                        wf_id,
+                        "TOOL_OBSERVATION",
+                        agent_id=agent_id,
+                        message=f"Tool execution failed: {str(e)}",
+                        payload={
+                            "tool": tool_name,
+                            "success": False,
+                            "error": str(e),
+                        },
+                    )
+                except Exception:
+                    pass
 
     return "\n\n".join(formatted_results) if formatted_results else ""
 

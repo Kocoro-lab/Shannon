@@ -115,7 +115,10 @@ class Tool(ABC):
         pass
 
     async def execute(
-        self, session_context: Optional[Dict] = None, **kwargs
+        self,
+        session_context: Optional[Dict] = None,
+        observer: Optional[Any] = None,
+        **kwargs,
     ) -> ToolResult:
         """
         Execute the tool with given parameters.
@@ -123,6 +126,7 @@ class Tool(ABC):
 
         Args:
             session_context: Optional session context containing history, user info, etc.
+            observer: Optional callback(event_name, payload) for intermediate status updates
             **kwargs: Tool-specific parameters
         """
         import time
@@ -149,10 +153,12 @@ class Tool(ABC):
             # Execute the tool with session context if tool is session-aware
             if self.metadata.session_aware:
                 result = await self._execute_impl(
-                    session_context=session_context, **kwargs
+                    session_context=session_context, observer=observer, **kwargs
                 )
             else:
-                result = await self._execute_impl(session_context=None, **kwargs)
+                result = await self._execute_impl(
+                    session_context=None, observer=observer, **kwargs
+                )
 
             # Track execution
             self._execution_count += 1

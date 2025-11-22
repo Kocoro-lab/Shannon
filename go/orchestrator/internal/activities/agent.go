@@ -1743,10 +1743,72 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		return AgentExecutionResult{Success: false, Error: "Failed to construct request"}, nil
 	}
 
+	// Publish TOOL_INVOKED event
+	// Prefer ParentWorkflowID (task ID) for SSE streaming, fall back to Temporal workflow ID
+	wfID := ""
+	if input.ParentWorkflowID != "" {
+		wfID = input.ParentWorkflowID
+	} else if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		wfID = info.WorkflowExecution.ID
+	}
+
+	// Helper to sanitize parameters for event emission
+	sanitizeParams := func(params map[string]interface{}) map[string]interface{} {
+		sanitized := make(map[string]interface{})
+		for k, v := range params {
+			// Redact common secret keys
+			keyLower := strings.ToLower(k)
+			if strings.Contains(keyLower, "key") ||
+				strings.Contains(keyLower, "token") ||
+				strings.Contains(keyLower, "secret") ||
+				strings.Contains(keyLower, "password") ||
+				strings.Contains(keyLower, "auth") {
+				sanitized[k] = "[REDACTED]"
+			} else if s, ok := v.(string); ok && len(s) > 500 {
+				// Truncate long strings
+				sanitized[k] = s[:500] + "...(truncated)"
+			} else {
+				sanitized[k] = v
+			}
+		}
+		return sanitized
+	}
+
+	if wfID != "" {
+		message := humanizeToolCall(toolName, input.ToolParameters)
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventToolInvoked),
+			AgentID:    input.AgentID,
+			Message:    message,
+			Payload: map[string]interface{}{
+				"tool":   toolName,
+				"params": sanitizeParams(input.ToolParameters),
+			},
+			Timestamp: time.Now(),
+		})
+	}
+
+	toolStartTime := time.Now()
 	client := &http.Client{Timeout: 2 * time.Minute, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payloadBytes)))
 	if err != nil {
 		logger.Error("Failed to create HTTP request", "error", err)
+		// Emit failure observation
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventToolObs),
+				AgentID:    input.AgentID,
+				Message:    "Tool execution failed: request creation error",
+				Payload: map[string]interface{}{
+					"tool":        toolName,
+					"success":     false,
+					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+				},
+				Timestamp: time.Now(),
+			})
+		}
 		return AgentExecutionResult{Success: false, Error: "Failed to create request"}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -1755,12 +1817,42 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.Error("HTTP request failed", "error", err)
+		// Emit failure observation
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventToolObs),
+				AgentID:    input.AgentID,
+				Message:    fmt.Sprintf("Tool execution failed: %v", err),
+				Payload: map[string]interface{}{
+					"tool":        toolName,
+					"success":     false,
+					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+				},
+				Timestamp: time.Now(),
+			})
+		}
 		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Error("Non-2xx response from /agent/query", "status", resp.StatusCode)
+		// Emit failure observation
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventToolObs),
+				AgentID:    input.AgentID,
+				Message:    fmt.Sprintf("Tool execution failed: HTTP %d", resp.StatusCode),
+				Payload: map[string]interface{}{
+					"tool":        toolName,
+					"success":     false,
+					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+				},
+				Timestamp: time.Now(),
+			})
+		}
 		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
 	}
 
@@ -1777,6 +1869,21 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 
 	if err := json.NewDecoder(resp.Body).Decode(&agentResponse); err != nil {
 		logger.Error("Failed to decode /agent/query response", "error", err)
+		// Emit failure observation
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventToolObs),
+				AgentID:    input.AgentID,
+				Message:    "Tool execution failed: invalid response",
+				Payload: map[string]interface{}{
+					"tool":        toolName,
+					"success":     false,
+					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+				},
+				Timestamp: time.Now(),
+			})
+		}
 		return AgentExecutionResult{Success: false, Error: "Failed to parse response"}, nil
 	}
 
@@ -1801,8 +1908,27 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		"output_tokens", outputTokens,
 	)
 
+	// Publish TOOL_OBSERVATION event
+	if wfID != "" {
+		msg := "Tool execution completed"
+		if !agentResponse.Success {
+			msg = "Tool execution failed"
+		}
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventToolObs),
+			AgentID:    input.AgentID,
+			Message:    msg,
+			Payload: map[string]interface{}{
+				"tool":        toolName,
+				"success":     agentResponse.Success,
+				"duration_ms": time.Since(toolStartTime).Milliseconds(),
+			},
+			Timestamp: time.Now(),
+		})
+	}
+
 	// Publish LLM_OUTPUT SSE event with complete metadata
-	wfID := ""
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
 		wfID = info.WorkflowExecution.ID
 	}

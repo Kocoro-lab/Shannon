@@ -302,7 +302,14 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		"max_tokens", input.MaxTokens,
 	)
 	logger := zap.L()
-	result, err := executeAgentCore(ctx, input.AgentInput, logger)
+	var result AgentExecutionResult
+
+	// If we have pre-computed tool parameters and tools, use the forced-tools path (emits SSE events).
+	if input.AgentInput.ToolParameters != nil && len(input.AgentInput.ToolParameters) > 0 && len(input.AgentInput.SuggestedTools) > 0 {
+		result, err = ExecuteAgentWithForcedTools(ctx, input.AgentInput)
+	} else {
+		result, err = executeAgentCore(ctx, input.AgentInput, logger)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
