@@ -1,266 +1,108 @@
-'use client';
+"use client";
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { MessageList } from '@/components/chat/MessageList';
-import { TaskSubmissionForm } from '@/components/chat/TaskSubmissionForm';
-import { useAppDispatch, useAppSelector } from '@/lib/store/hooks';
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
-  setCurrentSession,
-  addMessage,
-  updateMessage,
-  addEvent,
-  clearEventsForWorkflow,
-} from '@/lib/store/sessionSlice';
-import {
-  setCurrentWorkflow,
-  setWorkflowStatus,
-  addToHistory,
-} from '@/lib/store/workflowSlice';
-import { submitTask, getTask } from '@/lib/shannon/api';
-import { useShannonStream, useLLMOutput } from '@/lib/shannon/stream';
-import type { TaskSubmission, TaskStatusResponse } from '@/lib/shannon/types';
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { RunDialog } from "@/components/run-dialog";
+import { PlusCircle } from "lucide-react";
+import { useState } from "react";
 
-export default function HomePage() {
-  const dispatch = useAppDispatch();
-  const { messages, events: storedEvents, currentSessionId } = useAppSelector((state) => state.session);
-  const { current } = useAppSelector((state) => state.workflow);
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [currentAssistantMessageId, setCurrentAssistantMessageId] =
-    useState<string | null>(null);
-
-  // Stream events for current workflow (only when we have one)
-  const { events, isConnected } = useShannonStream(current.workflowId, {
-    autoConnect: true,
-    onEvent: (event) => {
-      // Add each event to Redux store as it arrives
-      dispatch(addEvent(event));
-    },
-  });
-
-  // Extract LLM output from events
-  const { partialText, finalText, isStreaming } = useLLMOutput(events);
-
-  // Update assistant message with streaming text
-  useEffect(() => {
-    if (!currentAssistantMessageId) return;
-    if (!current.workflowId) return;
-    if (!events.length) return;
-
-    // Only update when the latest event belongs to the current workflow.
-    // This prevents reusing output from a previous workflow when starting a new one.
-    const latestWorkflowId = events[events.length - 1]?.workflow_id;
-    if (latestWorkflowId !== current.workflowId) return;
-
-    const displayText = finalText || partialText;
-    if (displayText) {
-      dispatch(
-        updateMessage({
-          id: currentAssistantMessageId,
-          updates: { content: displayText },
-        })
-      );
-    }
-  }, [events, partialText, finalText, currentAssistantMessageId, current.workflowId, dispatch]);
-
-  // Fetch final result when workflow completes
-  useEffect(() => {
-    if (!current.workflowId || current.status === 'completed') return;
-
-    // Only fetch the final result once the workflow has actually completed.
-    const hasWorkflowCompleted = events.some(
-      (e) => e.type === 'WORKFLOW_COMPLETED'
-    );
-    if (!hasWorkflowCompleted) return;
-
-    const fetchFinalResult = async () => {
-      try {
-        const task: TaskStatusResponse = await getTask(current.workflowId!);
-
-        const isCompleted = task.status === 'COMPLETED';
-        const isFailed = task.status === 'FAILED';
-
-        if (isCompleted && task.result) {
-          dispatch(setWorkflowStatus('completed'));
-
-          if (currentAssistantMessageId) {
-            dispatch(
-              updateMessage({
-                id: currentAssistantMessageId,
-                updates: {
-                  content: task.result,
-                  metadata: {
-                    tokens: task.usage?.total_tokens,
-                    cost: task.usage?.estimated_cost || task.metadata?.cost_usd,
-                    citations: task.metadata?.citations?.length,
-                    mode: task.mode,
-                  },
-                },
-              })
-            );
-          }
-
-          dispatch(
-            addToHistory({
-              workflowId: current.workflowId!,
-              query: task.query,
-              status: task.status,
-            })
-          );
-        } else if (isFailed) {
-          dispatch(setWorkflowStatus('error'));
-          if (currentAssistantMessageId) {
-            dispatch(
-              updateMessage({
-                id: currentAssistantMessageId,
-                updates: {
-                  content: task.error || 'Task failed',
-                },
-              })
-            );
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch final result:', error);
-        dispatch(setWorkflowStatus('error'));
-      }
-    };
-
-    const timer = setTimeout(fetchFinalResult, 1000);
-    return () => clearTimeout(timer);
-  }, [events, current.workflowId, current.status, currentAssistantMessageId, dispatch]);
-
-  const handleSubmit = useCallback(
-    async (submission: TaskSubmission) => {
-      setIsSubmitting(true);
-
-      try {
-        // Ensure we have a session ID for this window
-        let sessionId = currentSessionId;
-        if (!sessionId) {
-          if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-            sessionId = crypto.randomUUID();
-          } else {
-            sessionId = `session-${Date.now()}`;
-          }
-          dispatch(setCurrentSession(sessionId));
-        }
-
-        // Add user message
-        const userMessageId = `user-${Date.now()}`;
-        dispatch(
-          addMessage({
-            id: userMessageId,
-            role: 'user',
-            content: submission.query,
-            timestamp: new Date().toISOString(),
-          })
-        );
-
-        // Submit task (using /api/v1/tasks/stream endpoint)
-        const task = await submitTask({
-          ...submission,
-          session_id: sessionId,
-        });
-
-        // Clear events from previous workflow
-        dispatch(clearEventsForWorkflow());
-
-        // Set workflow (task.workflow_id is now guaranteed to exist)
-        dispatch(setCurrentWorkflow(task.workflow_id));
-
-        // Add placeholder assistant message
-        const assistantMessageId = `assistant-${Date.now()}`;
-        setCurrentAssistantMessageId(assistantMessageId);
-        dispatch(
-          addMessage({
-            id: assistantMessageId,
-            role: 'assistant',
-            content: 'Processing...',
-            timestamp: new Date().toISOString(),
-            workflowId: task.workflow_id,
-          })
-        );
-      } catch (error) {
-        console.error('Failed to submit task:', error);
-        dispatch(
-          addMessage({
-            id: `error-${Date.now()}`,
-            role: 'assistant',
-            content: 'Failed to submit task. Please try again.',
-            timestamp: new Date().toISOString(),
-          })
-        );
-      } finally {
-        setIsSubmitting(false);
-      }
-    },
-    [currentSessionId, dispatch]
-  );
+export default function Home() {
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
 
   return (
-    <div className="flex flex-col h-screen">
-      <header className="border-b p-4 flex items-center justify-between">
+    <div className="p-8 space-y-8">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Shannon Desktop</h1>
-          <p className="text-sm text-muted-foreground">
-            Multi-agent AI orchestration
+          <h1 className="text-3xl font-bold tracking-tight">Shannon Desktop</h1>
+          <p className="text-muted-foreground">
+            Submit tasks and monitor AI agent workflows.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {(() => {
-            if (!current.workflowId) {
-              return (
-                <span className="text-sm text-muted-foreground">○ Idle</span>
-              );
-            }
+        <RunDialog 
+          scenarioName="New Task" 
+          triggerButton={
+            <Button>
+              <PlusCircle className="mr-2 h-4 w-4" />
+              Create New Task
+            </Button>
+          }
+        />
+      </div>
 
-            const hasWorkflowCompleted = events.some(
-              (e) => e.type === 'WORKFLOW_COMPLETED'
-            );
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        <Card className="border-dashed border-2 hover:border-primary/50 transition-colors">
+          <CardHeader className="text-center py-12">
+            <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+              <PlusCircle className="h-6 w-6 text-primary" />
+            </div>
+            <CardTitle>Submit Your First Task</CardTitle>
+            <CardDescription className="pt-2">
+              Click &quot;Create New Task&quot; above to submit a query to Shannon&apos;s AI agents.
+            </CardDescription>
+          </CardHeader>
+        </Card>
 
-            if (current.status === 'completed' || hasWorkflowCompleted) {
-              return (
-                <span className="text-sm text-green-500">✓ Completed</span>
-              );
-            }
+        <Card>
+          <CardHeader>
+            <div className="space-y-1">
+              <CardTitle className="text-lg">Quick Start</CardTitle>
+              <CardDescription>
+                Try these example queries:
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex items-start gap-2">
+              <Badge variant="outline" className="mt-0.5">1</Badge>
+              <div>&quot;What is the capital of France?&quot;</div>
+            </div>
+            <div className="flex items-start gap-2">
+              <Badge variant="outline" className="mt-0.5">2</Badge>
+              <div>&quot;Calculate 25 * 47 + 123&quot;</div>
+            </div>
+            <div className="flex items-start gap-2">
+              <Badge variant="outline" className="mt-0.5">3</Badge>
+              <div>&quot;Search for latest news about AI&quot;</div>
+            </div>
+          </CardContent>
+        </Card>
 
-            return (
-              <>
-                <span
-                  className={`text-sm ${
-                    isConnected ? 'text-green-500' : 'text-muted-foreground'
-                  }`}
-                >
-                  {isConnected ? '● Connected' : '○ Disconnected'}
-                </span>
-                {isStreaming && (
-                  <span className="text-sm text-blue-500 animate-pulse">
-                    ● Streaming...
-                  </span>
-                )}
-              </>
-            );
-          })()}
-        </div>
-      </header>
-
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex-1 min-h-0">
-          <MessageList
-            messages={messages}
-            events={storedEvents}
-            currentWorkflowId={current.workflowId}
-          />
-        </div>
-
-        <div className="p-4 border-t">
-          <TaskSubmissionForm
-            onSubmit={handleSubmit}
-            isSubmitting={isSubmitting}
-          />
-        </div>
-      </main>
+        <Card>
+          <CardHeader>
+            <div className="space-y-1">
+              <CardTitle className="text-lg">Features</CardTitle>
+              <CardDescription>
+                Shannon Desktop offers:
+              </CardDescription>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">✓</Badge>
+              <span>Real-time streaming responses</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">✓</Badge>
+              <span>Tool execution visibility</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">✓</Badge>
+              <span>Token usage tracking</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant="secondary">✓</Badge>
+              <span>Multi-agent orchestration</span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
