@@ -517,12 +517,30 @@ class OpenAIProvider(LLMProvider):
             api_request["user"] = request.user
 
         # Make streaming API call
+        # Make streaming API call
+        # Request usage statistics for streaming
+        # Add stream options for usage
+        api_request["stream_options"] = {"include_usage": True}
+
         try:
             stream = await self.client.chat.completions.create(**api_request)
 
             async for chunk in stream:
-                if chunk.choices[0].delta.content:
+                if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
+                
+                # Check for usage in the chunk (usually the last one)
+                if chunk.usage:
+                    yield {
+                        "usage": {
+                            "total_tokens": chunk.usage.total_tokens,
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
+                            # Cost calculation could be done here or downstream
+                        },
+                        "model": chunk.model,
+                        "provider": "openai",
+                    }
 
         except openai.APIError as e:
             raise Exception(f"OpenAI API error: {e}")

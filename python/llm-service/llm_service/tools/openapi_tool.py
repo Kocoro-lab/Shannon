@@ -496,6 +496,17 @@ class OpenAPILoader:
 
                 for attempt in range(1, retries + 1):
                     try:
+                        # Emit progress
+                        observer = kwargs.get("observer")
+                        if observer:
+                            try:
+                                msg = f"Requesting {method} {url}"
+                                if attempt > 1:
+                                    msg += f" (Attempt {attempt}/{retries})"
+                                observer("progress", {"message": msg})
+                            except Exception:
+                                pass
+
                         # Execute request with configured timeout
                         start_time = time.time()
                         async with httpx.AsyncClient(timeout=timeout_seconds) as client:

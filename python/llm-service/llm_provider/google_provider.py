@@ -322,7 +322,7 @@ class GoogleProvider(LLMProvider):
 
             # Stream chunks
             accumulated_text = ""
-            for chunk in response_stream:
+            async for chunk in response_stream:
                 if hasattr(chunk, "text") and chunk.text:
                     accumulated_text += chunk.text
 
@@ -416,8 +416,19 @@ class GoogleProvider(LLMProvider):
         return TokenCounter.count_messages_tokens(messages, model)
 
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
-        """Stream text chunks only (normalized streaming)."""
-        # Use complete_stream and yield only text portions
+        """Stream text chunks and usage metadata (normalized streaming)."""
+        # Use complete_stream and yield text chunks and usage metadata
         async for chunk in self.complete_stream(request):
             if chunk and isinstance(chunk.content, str) and chunk.content:
                 yield chunk.content
+            # Yield usage metadata when available (final chunk with empty content)
+            elif chunk and chunk.usage and chunk.usage.total_tokens > 0:
+                yield {
+                    "usage": {
+                        "total_tokens": chunk.usage.total_tokens,
+                        "input_tokens": chunk.usage.input_tokens,
+                        "output_tokens": chunk.usage.output_tokens,
+                    },
+                    "model": chunk.model,
+                    "provider": chunk.provider,
+                }

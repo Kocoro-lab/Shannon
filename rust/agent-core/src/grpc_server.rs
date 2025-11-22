@@ -1,4 +1,5 @@
 use tokio::sync::mpsc;
+use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
@@ -28,6 +29,10 @@ pub mod proto {
 
 use proto::agent::agent_service_server::{AgentService, AgentServiceServer};
 use proto::agent::*;
+
+// Streaming limits to prevent resource exhaustion
+const MAX_STREAM_BUFFER_SIZE: usize = 1_000_000; // 1MB max buffer size
+const STREAM_TIMEOUT_SECS: u64 = 300; // 5 minutes timeout
 
 pub struct AgentServiceImpl {
     memory_pool: MemoryPool,
@@ -125,12 +130,8 @@ impl AgentServiceImpl {
                                     .unwrap_or_else(|| serde_json::Number::from(0)),
                             )
                         }
-                        Some(prost_types::value::Kind::BoolValue(b)) => {
-                            serde_json::Value::Bool(*b)
-                        }
-                        Some(prost_types::value::Kind::NullValue(_)) => {
-                            serde_json::Value::Null
-                        }
+                        Some(prost_types::value::Kind::BoolValue(b)) => serde_json::Value::Bool(*b),
+                        Some(prost_types::value::Kind::NullValue(_)) => serde_json::Value::Null,
                         Some(prost_types::value::Kind::ListValue(list)) => {
                             serde_json::Value::Array(
                                 list.values
@@ -1144,47 +1145,197 @@ impl AgentService for AgentServiceImpl {
 
         let (tx, rx) = mpsc::channel(128);
 
-        // Spawn task to send updates
+        let task_id = req
+            .metadata
+            .as_ref()
+            .map(|m| m.task_id.clone())
+            .unwrap_or_else(|| "stream-task".to_string());
+        let llm = self.llm.clone();
+
+        // Build minimal JSON context (including session history)
+        let mut ctx_json = serde_json::json!({});
+        if let Some(ctx) = &req.context {
+            let mut map = serde_json::Map::new();
+            for (k, v) in &ctx.fields {
+                map.insert(k.clone(), prost_value_to_json(v));
+            }
+            ctx_json = serde_json::Value::Object(map);
+        }
+        if let Some(session_ctx) = &req.session_context {
+            if !session_ctx.history.is_empty() {
+                let hist = session_ctx.history.join("\n");
+                if let Some(obj) = ctx_json.as_object_mut() {
+                    obj.insert("history".to_string(), serde_json::Value::String(hist));
+                }
+            }
+        }
+
+        let mode_str = match req.mode() {
+            proto::common::ExecutionMode::Simple => "simple",
+            proto::common::ExecutionMode::Complex => "complex",
+            _ => "standard",
+        };
+
         tokio::spawn(async move {
-            // Send initial update
             let _ = tx
                 .send(Ok(TaskUpdate {
-                    task_id: "test-task-1".to_string(),
+                    task_id: task_id.clone(),
                     state: proto::agent::AgentState::Planning.into(),
                     message: "Starting task execution".to_string(),
                     tool_call: None,
                     tool_result: None,
-                    progress: 0.1,
+                    progress: 0.0,
+                    delta: String::new(),
                 }))
                 .await;
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            let tools_option = if req.available_tools.is_empty() {
+                None
+            } else {
+                Some(req.available_tools.clone())
+            };
 
-            // Send execution update
-            let _ = tx
-                .send(Ok(TaskUpdate {
-                    task_id: "test-task-1".to_string(),
-                    state: proto::agent::AgentState::Executing.into(),
-                    message: "Executing task".to_string(),
-                    tool_call: None,
-                    tool_result: None,
-                    progress: 0.5,
-                }))
-                .await;
+            match llm
+                .stream_query_agent(
+                    &req.query,
+                    "agent-core",
+                    mode_str,
+                    Some(ctx_json),
+                    tools_option,
+                )
+                .await
+            {
+                Ok(mut stream) => {
+                    let mut buffer = String::new();
+                    // Wrap stream consumption in timeout to prevent hanging
+                    let stream_result = tokio::time::timeout(
+                        std::time::Duration::from_secs(STREAM_TIMEOUT_SECS),
+                        async {
+                            while let Some(item) = stream.next().await {
+                                match item {
+                                    Ok(chunk) => {
+                                        if let Some(d) = chunk.delta.clone() {
+                                            // Check buffer size limit before appending
+                                            if buffer.len() + d.len() > MAX_STREAM_BUFFER_SIZE {
+                                                return Err(Status::resource_exhausted(
+                                                    format!("Response exceeds maximum size of {} bytes", MAX_STREAM_BUFFER_SIZE)
+                                                ));
+                                            }
+                                            buffer.push_str(&d);
+                                            let _ = tx
+                                                .send(Ok(TaskUpdate {
+                                                    task_id: task_id.clone(),
+                                                    state: proto::agent::AgentState::Executing.into(),
+                                                    message: String::new(),
+                                                    tool_call: None,
+                                                    tool_result: None,
+                                                    progress: 0.0,
+                                                    delta: d,
+                                                }))
+                                                .await;
+                                        }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                if let Some(final_msg) = chunk.final_message {
+                                    let final_text = if final_msg.response.is_empty() {
+                                        buffer.clone()
+                                    } else {
+                                        final_msg.response
+                                    };
+                                    // Attach usage metadata when available so downstream can track budgets
+                                    let usage_result = {
+                                        let has_usage = final_msg.total_tokens.is_some()
+                                            || final_msg.input_tokens.is_some()
+                                            || final_msg.output_tokens.is_some()
+                                            || final_msg.cost_usd.is_some()
+                                            || final_msg.model_used.is_some()
+                                            || final_msg.provider.is_some();
+                                        if has_usage {
+                                            // Validate token values are within reasonable bounds
+                                            let validate_tokens = |val: Option<u32>| -> Option<u32> {
+                                                val.filter(|&t| t > 0 && t < 10_000_000)
+                                            };
+                                            let validate_cost = |val: Option<f64>| -> Option<f64> {
+                                                val.filter(|&c| c >= 0.0 && c < 10000.0)
+                                            };
 
-            // Send completion update
-            let _ = tx
-                .send(Ok(TaskUpdate {
-                    task_id: "test-task-1".to_string(),
-                    state: proto::agent::AgentState::Completed.into(),
-                    message: "Task completed successfully".to_string(),
-                    tool_call: None,
-                    tool_result: None,
-                    progress: 1.0,
-                }))
-                .await;
+                                            let usage_json = serde_json::json!({
+                                                "total_tokens": validate_tokens(final_msg.total_tokens),
+                                                "input_tokens": validate_tokens(final_msg.input_tokens),
+                                                "output_tokens": validate_tokens(final_msg.output_tokens),
+                                                "cost_usd": validate_cost(final_msg.cost_usd),
+                                                "model": final_msg.model_used.clone().unwrap_or_default(),
+                                                "provider": final_msg.provider.clone().unwrap_or_default(),
+                                            });
+                                            Some(proto::common::ToolResult {
+                                                tool_id: "usage_metrics".to_string(),
+                                                output: Some(crate::grpc_server::prost_value_to_json_to_prost(
+                                                    &usage_json,
+                                                )),
+                                                status: proto::common::StatusCode::Ok.into(),
+                                                error_message: String::new(),
+                                                execution_time_ms: 0,
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    let _ = tx
+                                        .send(Ok(TaskUpdate {
+                                            task_id: task_id.clone(),
+                                            state: proto::agent::AgentState::Completed.into(),
+                                            message: final_text,
+                                            tool_call: None,
+                                            tool_result: usage_result,
+                                            progress: 1.0,
+                                            delta: String::new(),
+                                        }))
+                                        .await;
+                                    return Ok(());
+                                }
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                                break;
+                            }
+                        }
+                    }
+
+                    // If stream ends without an explicit final chunk, emit completion with buffered text
+                    let _ = tx
+                        .send(Ok(TaskUpdate {
+                            task_id: task_id.clone(),
+                            state: proto::agent::AgentState::Completed.into(),
+                            message: buffer,
+                            tool_call: None,
+                            tool_result: None,
+                            progress: 1.0,
+                            delta: String::new(),
+                        }))
+                        .await;
+                    Ok(())
+                        },
+                    )
+                    .await;
+
+                    // Handle timeout result
+                    match stream_result {
+                        Ok(Ok(())) => {
+                            // Stream completed successfully
+                        }
+                        Ok(Err(e)) => {
+                            let _ = tx.send(Err(e)).await;
+                        }
+                        Err(_) => {
+                            let _ = tx.send(Err(Status::deadline_exceeded(
+                                format!("Stream timeout after {} seconds", STREAM_TIMEOUT_SECS)
+                            ))).await;
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                }
+            }
         });
 
         Ok(Response::new(

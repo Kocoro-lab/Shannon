@@ -212,7 +212,6 @@ class AnthropicProvider(LLMProvider):
             "messages": claude_messages,
             "max_tokens": request.max_tokens or 4096,
             "temperature": request.temperature,
-            "stream": True,
         }
 
         if system_message:
@@ -223,6 +222,19 @@ class AnthropicProvider(LLMProvider):
             async with self.client.messages.stream(**api_request) as stream:
                 async for text in stream.text_stream:
                     yield text
+
+                # After streaming completes, get the final message with usage
+                final_message = await stream.get_final_message()
+                if final_message and hasattr(final_message, "usage"):
+                    yield {
+                        "usage": {
+                            "total_tokens": final_message.usage.input_tokens + final_message.usage.output_tokens,
+                            "input_tokens": final_message.usage.input_tokens,
+                            "output_tokens": final_message.usage.output_tokens,
+                        },
+                        "model": final_message.model,
+                        "provider": "anthropic",
+                    }
 
         except anthropic.APIError as e:
             raise Exception(f"Anthropic API error: {e}")

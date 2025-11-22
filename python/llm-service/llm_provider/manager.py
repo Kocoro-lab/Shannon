@@ -721,8 +721,8 @@ class LLMManager:
         # Stream from provider
         try:
             async for chunk in provider.stream_complete(request):
-                # Expect string chunks; providers were normalized accordingly
-                if isinstance(chunk, str) and chunk:
+                # Pass through strings and dicts (for usage metadata)
+                if isinstance(chunk, (str, dict)) and chunk:
                     yield chunk
         except Exception as e:
             self.logger.error(f"Provider {provider_name} streaming failed: {e}")
@@ -734,7 +734,8 @@ class LLMManager:
                 request.model = None
                 try:
                     async for chunk in fallback[1].stream_complete(request):
-                        if isinstance(chunk, str) and chunk:
+                        # Pass through strings and dicts (for usage metadata)
+                        if isinstance(chunk, (str, dict)) and chunk:
                             yield chunk
                 except Exception:
                     # Restore original model before re-raising

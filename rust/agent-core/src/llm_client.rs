@@ -1,6 +1,12 @@
+use futures::TryStreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
+use std::pin::Pin;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio_stream::wrappers::LinesStream;
+use tokio_stream::StreamExt;
+use tokio_util::io::StreamReader;
 use tracing::{debug, info, instrument, warn};
 
 use crate::config::Config;
@@ -17,6 +23,7 @@ pub struct AgentQuery<'a> {
     pub max_tokens: u32,
     pub temperature: f32,
     pub model_tier: Cow<'a, str>,
+    pub stream: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +36,50 @@ pub struct AgentResponse {
     pub provider: String,
     #[serde(default = "default_finish_reason")]
     pub finish_reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StreamResponseLine {
+    pub event: Option<String>,
+    pub delta: Option<String>,
+    pub content: Option<String>,
+    pub response: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub finish_reason: Option<String>,
+    pub tokens_used: Option<u32>,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub cost_usd: Option<f64>,
+    pub usage: Option<StreamUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamUsage {
+    pub total_tokens: Option<u32>,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub cost_usd: Option<f64>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct StreamFinal {
+    pub response: String,
+    pub model_used: Option<String>,
+    pub provider: Option<String>,
+    pub finish_reason: Option<String>,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub total_tokens: Option<u32>,
+    pub cost_usd: Option<f64>,
+}
+
+#[derive(Debug)]
+pub struct StreamChunk {
+    pub delta: Option<String>,
+    pub final_message: Option<StreamFinal>,
 }
 
 fn default_finish_reason() -> String {
@@ -136,6 +187,7 @@ impl LLMClient {
             max_tokens,
             temperature: 0.7,
             model_tier: Cow::Owned(effective_tier),
+            stream: false,
         };
 
         debug!("Sending query to LLM service: {:?}", request);
@@ -208,6 +260,176 @@ impl LLMClient {
         );
 
         Ok((agent_response.response, token_usage))
+    }
+
+    #[instrument(skip(self, context), fields(agent_id = %agent_id, mode = %mode))]
+    pub async fn stream_query_agent(
+        &self,
+        query: &str,
+        agent_id: &str,
+        mode: &str,
+        context: Option<serde_json::Value>,
+        tools: Option<Vec<String>>,
+    ) -> AgentResult<Pin<Box<dyn tokio_stream::Stream<Item = AgentResult<StreamChunk>> + Send>>>
+    {
+        let url = format!("{}/agent/query", self.base_url);
+
+        let tools_vec = tools
+            .unwrap_or_default()
+            .into_iter()
+            .map(Cow::Owned)
+            .collect();
+
+        let ctx_val = context.clone().unwrap_or_else(|| serde_json::json!({}));
+        let tier_from_mode = match mode {
+            "simple" => "small".to_string(),
+            "complex" => "large".to_string(),
+            _ => "medium".to_string(),
+        };
+        let mut effective_tier = tier_from_mode.clone();
+        if let Some(obj) = ctx_val.as_object() {
+            if let Some(mt) = obj.get("model_tier").and_then(|v| v.as_str()) {
+                let mt_l = mt.to_lowercase();
+                if mt_l == "small" || mt_l == "medium" || mt_l == "large" {
+                    effective_tier = mt_l;
+                }
+            }
+        }
+
+        let max_tokens = if let Some(obj) = ctx_val.as_object() {
+            obj.get("max_tokens")
+                .and_then(|v| {
+                    v.as_u64().or_else(|| {
+                        v.as_f64()
+                            .filter(|&f| f.is_finite() && f >= 0.0 && f <= u64::MAX as f64)
+                            .map(|f| f as u64)
+                    })
+                })
+                .map(|n| n as u32)
+                .unwrap_or(16384)
+        } else {
+            16384
+        };
+
+        let request = AgentQuery {
+            query: Cow::Borrowed(query),
+            context: ctx_val,
+            agent_id: Cow::Borrowed(agent_id),
+            mode: Cow::Borrowed(mode),
+            tools: tools_vec,
+            max_tokens,
+            temperature: 0.7,
+            model_tier: Cow::Owned(effective_tier),
+            stream: true,
+        };
+
+        let headers = http::HeaderMap::new();
+        let mut request_builder = self.client.post(&url).json(&request);
+        for (key, value) in headers.iter() {
+            if let Ok(header_value) = value.to_str() {
+                request_builder = request_builder.header(key.as_str(), header_value);
+            }
+        }
+
+        let response = request_builder.send().await.map_err(|e| {
+            AgentError::NetworkError(format!(
+                "Failed to send streaming request to LLM service: {}",
+                e
+            ))
+        })?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            warn!(
+                "LLM streaming service returned error: {} - {}",
+                status, body
+            );
+
+            return Err(AgentError::HttpError {
+                status: status.as_u16(),
+                message: format!("LLM streaming service error: {} - {}", status, body),
+            });
+        }
+
+        let byte_stream = response
+            .bytes_stream()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e));
+        let reader = StreamReader::new(byte_stream);
+        let lines = LinesStream::new(BufReader::new(reader).lines());
+
+        let mapped = lines.map(|line_res| match line_res {
+            Ok(line) => {
+                if line.trim().is_empty() {
+                    return Ok(StreamChunk {
+                        delta: None,
+                        final_message: None,
+                    });
+                }
+                let parsed: StreamResponseLine = serde_json::from_str(&line).map_err(|e| {
+                    AgentError::LlmResponseParseError(format!(
+                        "Failed to parse stream chunk: {}",
+                        e
+                    ))
+                })?;
+
+                let usage = parsed.usage.clone();
+
+                let is_final = parsed
+                    .event
+                    .as_deref()
+                    .map(|ev| ev == "thread.message.completed")
+                    .unwrap_or(false)
+                    || parsed.response.is_some();
+
+                let delta = parsed.delta.clone().or(parsed.content.clone());
+
+                let final_message = if is_final {
+                    let total_tokens = usage
+                        .as_ref()
+                        .and_then(|u| u.total_tokens)
+                        .or(parsed.tokens_used);
+                    let input_tokens = usage
+                        .as_ref()
+                        .and_then(|u| u.input_tokens)
+                        .or(parsed.input_tokens);
+                    let output_tokens = usage
+                        .as_ref()
+                        .and_then(|u| u.output_tokens)
+                        .or(parsed.output_tokens);
+                    let cost_usd = usage.as_ref().and_then(|u| u.cost_usd).or(parsed.cost_usd);
+                    let model_used = parsed
+                        .model
+                        .or_else(|| usage.as_ref().and_then(|u| u.model.clone()));
+                    let provider = parsed
+                        .provider
+                        .or_else(|| usage.as_ref().and_then(|u| u.provider.clone()));
+                    Some(StreamFinal {
+                        response: parsed.response.unwrap_or_default(),
+                        model_used,
+                        provider,
+                        finish_reason: parsed.finish_reason,
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                        cost_usd,
+                    })
+                } else {
+                    None
+                };
+
+                Ok(StreamChunk {
+                    delta,
+                    final_message,
+                })
+            }
+            Err(e) => Err(AgentError::NetworkError(format!(
+                "Stream read error: {}",
+                e
+            ))),
+        });
+
+        Ok(Box::pin(mapped))
     }
     // Complexity analysis removed with FSM
 }

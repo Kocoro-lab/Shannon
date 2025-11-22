@@ -26,6 +26,7 @@ const (
 	StreamEventRoleAssigned        StreamEventType = "ROLE_ASSIGNED"
 	StreamEventDelegation          StreamEventType = "DELEGATION"
 	StreamEventDependencySatisfied StreamEventType = "DEPENDENCY_SATISFIED"
+	StreamEventBudgetThreshold     StreamEventType = "BUDGET_THRESHOLD"
 
 	// Human-readable UX events
 	StreamEventToolInvoked    StreamEventType = "TOOL_INVOKED"    // Tool usage with details in message

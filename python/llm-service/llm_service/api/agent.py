@@ -1,10 +1,12 @@
 """Agent API endpoints for HTTP communication with Agent-Core."""
 
 import logging
+import json
+from json import dumps
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 import html
 from difflib import SequenceMatcher
 
@@ -105,6 +107,10 @@ class AgentQuery(BaseModel):
     model_override: Optional[str] = Field(
         default=None,
         description="Override the default model selection with a specific model ID",
+    )
+    stream: Optional[bool] = Field(
+        default=False,
+        description="Enable streaming responses (returns SSE-style chunked deltas)",
     )
 
 
@@ -556,6 +562,99 @@ async def agent_query(request: Request, query: AgentQuery):
                 else ("auto" if effective_allowed_tools else None)
             )
 
+            if query.stream:
+                providers = getattr(request.app.state, "providers", None)
+                if not providers or not providers.is_configured():
+                    raise HTTPException(
+                        status_code=503, detail="LLM service not configured"
+                    )
+                logger.info(
+                    f"[stream] agent_id={query.agent_id} mode={query.mode} tools={bool(effective_allowed_tools)}"
+                )
+
+                async def event_stream():
+                    import json as _json
+
+                    dumps = _json.dumps
+
+                    buffer: List[str] = []
+                    total_tokens = None
+                    input_tokens = None
+                    output_tokens = None
+                    cost_usd = None
+                    model_used = None
+                    provider_used = None
+                    async for chunk in providers.stream_completion(
+                        messages=messages,
+                        tier=tier,
+                        specific_model=model_override,
+                        provider_override=provider_override,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                        tools=tools_param,
+                        function_call=function_call,
+                        workflow_id=request.headers.get("X-Workflow-ID")
+                        or request.headers.get("x-workflow-id"),
+                        agent_id=query.agent_id,
+                    ):
+                        if not chunk:
+                            continue
+                        if isinstance(chunk, dict):
+                            # Optional structured chunk with usage/model info
+                            delta = chunk.get("delta") or chunk.get("content") or ""
+                            if chunk.get("usage"):
+                                usage = chunk["usage"]
+                                total_tokens = usage.get("total_tokens", total_tokens)
+                                input_tokens = usage.get("input_tokens", input_tokens)
+                                output_tokens = usage.get("output_tokens", output_tokens)
+                                cost_usd = usage.get("cost_usd", cost_usd)
+                            model_used = chunk.get("model") or model_used
+                            provider_used = chunk.get("provider") or provider_used
+                            if delta:
+                                buffer.append(delta)
+                                logger.debug(
+                                    f"[stream] delta len={len(delta)} agent_id={query.agent_id}"
+                                )
+                                yield dumps(
+                                    {
+                                        "event": "thread.message.delta",
+                                        "delta": delta,
+                                        "agent_id": query.agent_id,
+                                    },
+                                    ensure_ascii=False,
+                                ) + "\n"
+                        else:
+                            buffer.append(chunk)
+                            yield dumps(
+                                {
+                                    "event": "thread.message.delta",
+                                    "delta": chunk,
+                                    "agent_id": query.agent_id,
+                                },
+                                ensure_ascii=False,
+                            ) + "\n"
+
+                    final_text = "".join(buffer)
+                    yield dumps(
+                        {
+                            "event": "thread.message.completed",
+                            "response": final_text,
+                            "agent_id": query.agent_id,
+                            "model": model_used or model_override or "",
+                            "provider": provider_used or provider_override or "",
+                            "usage": {
+                                "total_tokens": total_tokens,
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "cost_usd": cost_usd,
+                            },
+                        },
+                        ensure_ascii=False,
+                    ) + "\n"
+
+                return StreamingResponse(event_stream(), media_type="text/event-stream")
+
             result_data = await request.app.state.providers.generate_completion(
                 messages=messages,
                 tier=tier,
@@ -915,6 +1014,68 @@ async def _execute_and_format_tools(
             "x-agent-id"
         )
 
+    def _sanitize_payload(
+        value: Any,
+        *,
+        max_str: int = 1000,
+        max_items: int = 50,
+        depth: int = 0,
+        max_depth: int = 4,
+        redact_keys: Optional[List[str]] = None,
+    ) -> Any:
+        """Recursively sanitize payloads to avoid secret leaks and stream floods."""
+        if redact_keys is None:
+            redact_keys = ["api_key", "token", "secret", "password", "credential", "auth"]
+
+        if depth > max_depth:
+            return "[TRUNCATED]"
+
+        # Strings: truncate
+        if isinstance(value, str):
+            return value if len(value) <= max_str else value[:max_str] + "..."
+
+        # Dicts: redact secret-looking keys, limit size, recurse
+        if isinstance(value, dict):
+            out = {}
+            for idx, (k, v) in enumerate(value.items()):
+                if idx >= max_items:
+                    out["..."] = "[TRUNCATED]"
+                    break
+                if isinstance(k, str) and any(sk in k.lower() for sk in redact_keys):
+                    out[k] = "[REDACTED]"
+                    continue
+                out[k] = _sanitize_payload(
+                    v,
+                    max_str=max_str,
+                    max_items=max_items,
+                    depth=depth + 1,
+                    max_depth=max_depth,
+                    redact_keys=redact_keys,
+                )
+            return out
+
+        # Lists/Tuples: cap length, recurse
+        if isinstance(value, (list, tuple)):
+            out_list = []
+            for idx, item in enumerate(value):
+                if idx >= max_items:
+                    out_list.append("[TRUNCATED]")
+                    break
+                out_list.append(
+                    _sanitize_payload(
+                        item,
+                        max_str=max_str,
+                        max_items=max_items,
+                        depth=depth + 1,
+                        max_depth=max_depth,
+                        redact_keys=redact_keys,
+                    )
+                )
+            return out_list
+
+        # Other primitives: return as-is
+        return value
+
     for call in tool_calls:
         tool_name = call.get("name")
         if tool_name not in allowed_tools:
@@ -955,15 +1116,48 @@ async def _execute_and_format_tools(
             # Emit TOOL_INVOKED event
             if emitter and wf_id:
                 try:
+                    sanitized_params = _sanitize_payload(args)
                     emitter.emit(
                         wf_id,
                         "TOOL_INVOKED",
                         agent_id=agent_id,
                         message=f"Executing {tool_name}",
-                        payload={"tool": tool_name, "params": args},
+                        payload={"tool": tool_name, "params": sanitized_params},
                     )
                 except Exception:
                     pass
+
+            # Define observer for intermediate updates
+            def tool_observer(event_name: str, payload: Any):
+                if emitter and wf_id:
+                    try:
+                        # Ensure payload is a dict
+                        if not isinstance(payload, dict):
+                            payload = {"data": payload}
+
+                        # Add tool name and phase to payload
+                        payload["tool"] = tool_name
+                        payload["intermediate"] = True
+                        payload["event"] = event_name
+
+                        # Sanitize payload (redact secrets, truncate strings, cap collections)
+                        payload = _sanitize_payload(payload, max_str=2000, max_items=50)
+
+                        # Truncate message for stream safety
+                        msg = str(payload.get("message", ""))
+                        if len(msg) > 1000:
+                            msg = msg[:1000] + "..."
+                            payload["message"] = msg
+
+                        emitter.emit(
+                            wf_id,
+                            "TOOL_OBSERVATION",
+                            agent_id=agent_id,
+                            message=msg,
+                            payload=payload,
+                        )
+                    except Exception:
+                        pass
 
             # Sanitize session context before passing to tools
             if isinstance(context, dict):
@@ -975,7 +1169,11 @@ async def _execute_and_format_tools(
             logger.info(
                 f"Executing tool {tool_name} with context keys: {list(sanitized_context.keys()) if isinstance(sanitized_context, dict) else 'None'}, args: {args}"
             )
-            result = await tool.execute(session_context=sanitized_context, **args)
+            
+            # Execute with observer
+            start_time = __import__("time").time()
+            result = await tool.execute(session_context=sanitized_context, observer=tool_observer, **args)
+            duration_ms = int((__import__("time").time() - start_time) * 1000)
 
             if result.success:
                 # Format based on tool type
@@ -1083,6 +1281,10 @@ async def _execute_and_format_tools(
                         payload={
                             "tool": tool_name,
                             "success": bool(result and result.success),
+                            "usage": {
+                                "duration_ms": duration_ms,
+                                "tokens": result.tokens_used if result and result.tokens_used else 0
+                            }
                         },
                     )
                 except Exception:
@@ -1091,6 +1293,23 @@ async def _execute_and_format_tools(
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")
             formatted_results.append(f"Failed to execute {tool_name}")
+            
+            # Emit failure TOOL_OBSERVATION
+            if emitter and wf_id:
+                try:
+                    emitter.emit(
+                        wf_id,
+                        "TOOL_OBSERVATION",
+                        agent_id=agent_id,
+                        message=f"Tool execution failed: {str(e)}",
+                        payload={
+                            "tool": tool_name,
+                            "success": False,
+                            "error": str(e),
+                        },
+                    )
+                except Exception:
+                    pass
 
     return "\n\n".join(formatted_results) if formatted_results else ""
 
