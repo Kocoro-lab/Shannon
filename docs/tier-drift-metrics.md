@@ -31,7 +31,7 @@ The tier drift metrics help catch regressions in:
 
 Access the **Shannon - Model Tier Drift Monitoring** dashboard at:
 ```
-http://localhost:3000/d/shannon-tier-drift
+http://localhost:3030/d/shannon-tier-drift
 ```
 
 Login credentials (default):

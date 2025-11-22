@@ -13,12 +13,12 @@ This is a Docker Compose based monitoring solution that integrates Grafana, Prom
 │ (Collect Metrics)│     │  (Store Metrics) │     │ (Visualization)│
 │                 │◀────│                  │◀────│                │
 └─────────────────┘     └──────────────────┘     └────────────────┘
-     :9100                    :9090                    :3000
+     :9100                    :9090                    :3030
 ```
 
 ## Component Description
 
-**Note**: Grafana service uses port 3000. Shannon Dashboard has been moved to port 2111 to avoid conflicts.
+**Note**: Grafana service uses port 3030 (changed from 3000 to avoid conflicts with React dev servers). Shannon Dashboard uses port 2111.
 
 ### 1. **shannon-prometheus-1** (v2.39.0)
 - **Function**: Time-series database responsible for collecting and storing metric data
@@ -28,8 +28,8 @@ This is a Docker Compose based monitoring solution that integrates Grafana, Prom
 
 ### 2. **shannon-grafana-1** (latest)
 - **Function**: Data visualization platform providing rich dashboards
-- **Port**: 3000
-- **Web UI**: http://localhost:3000
+- **Port**: 3030
+- **Web UI**: http://localhost:3030
 - **Default Credentials**: shannon / shannon
 - **Features**: Auto-configured data sources and dashboards
 
@@ -59,8 +59,8 @@ This is a Docker Compose based monitoring solution that integrates Grafana, Prom
 
 ### Prerequisites
 - Docker and Docker Compose installed
-- Ports 3000 (for Grafana), 9090, 9100 not in use
-- Note: Shannon Dashboard now uses port 2111 instead of 3000
+- Ports 3030 (for Grafana), 9090, 9100 not in use
+- Note: Shannon Dashboard uses port 2111, Grafana uses port 3030 (leaving 3000 free for React development)
 
 ### Start Services
 
@@ -150,7 +150,7 @@ docker exec -it shannon-dashboard-importer /import-dashboards.sh
 ### Configuration Parameters
 
 The importer supports the following environment variables (set in docker-compose.yml):
-- `GRAFANA_URL`: Grafana service address (default: http://shannon-grafana-1:3000)
+- `GRAFANA_URL`: Grafana service address (default: http://shannon-grafana-1:3000 - internal Docker network, not affected by external port mapping)
 - `GRAFANA_USER`: Grafana admin username (default: shannon)
 - `GRAFANA_PASSWORD`: Grafana admin password (default: shannon)
 - `DATASOURCE_NAME`: Prometheus data source name (default: Prometheus)
@@ -175,8 +175,8 @@ The following configurations are automatically completed at system startup:
 
 ### 1. Access Grafana
 
-1. Open http://localhost:3000 in browser (Grafana)
-   Note: Shannon Dashboard is now accessible at http://localhost:2111
+1. Open http://localhost:3030 in browser (Grafana)
+   Note: Shannon Dashboard is accessible at http://localhost:2111
 2. Login with default credentials: shannon / shannon
 3. You may be prompted to change password on first login
 
@@ -230,8 +230,8 @@ du -sh data/grafana-data/
 
 ```bash
 # Check port usage
-netstat -tunlp | grep -E "3000|9090|9100|2111"
-# Port 3000: Grafana
+netstat -tunlp | grep -E "3030|9090|9100|2111"
+# Port 3030: Grafana
 # Port 2111: Shannon Dashboard
 # Port 9090: Prometheus
 # Port 9100: Node Exporter
