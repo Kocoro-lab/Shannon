@@ -136,6 +136,14 @@ class WebFetchTool(Tool):
             )
 
         try:
+            # Emit progress
+            observer = kwargs.get("observer")
+            if observer:
+                try:
+                    observer("progress", {"message": f"Fetching content from {url}..."})
+                except Exception:
+                    pass
+
             # Choose method: Exa API or Pure Python
             if use_exa and self.exa_api_key:
                 logger.info(f"Fetching with Exa API: {url}")

@@ -716,6 +716,14 @@ class WebSearchTool(Tool):
                 f"Executing web search with {self.provider.__class__.__name__}: {query}"
             )
 
+            # Emit progress via observer if available
+            observer = kwargs.get("observer")
+            if observer:
+                try:
+                    observer("progress", {"message": f"Searching with {self.provider.__class__.__name__}..."})
+                except Exception:
+                    pass
+
             # Pass Exa-specific parameters if using ExaSearchProvider
             if isinstance(self.provider, ExaSearchProvider):
                 results = await self.provider.search(

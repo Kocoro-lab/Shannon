@@ -302,7 +302,14 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		"max_tokens", input.MaxTokens,
 	)
 	logger := zap.L()
-	result, err := executeAgentCore(ctx, input.AgentInput, logger)
+	var result AgentExecutionResult
+
+	// If we have pre-computed tool parameters and tools, use the forced-tools path (emits SSE events).
+	if input.AgentInput.ToolParameters != nil && len(input.AgentInput.ToolParameters) > 0 && len(input.AgentInput.SuggestedTools) > 0 {
+		result, err = ExecuteAgentWithForcedTools(ctx, input.AgentInput)
+	} else {
+		result, err = executeAgentCore(ctx, input.AgentInput, logger)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("agent execution failed: %w", err)
 	}
@@ -349,6 +356,46 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		// Fallback if result still doesn't have splits
 		inputTokens = result.TokensUsed * 6 / 10
 		outputTokens = result.TokensUsed * 4 / 10
+	}
+
+	// Respect optional zero-token audit flag from context
+	recordZeroToken := false
+	if ctxMap := input.AgentInput.Context; ctxMap != nil {
+		if v, ok := ctxMap["record_zero_token"]; ok {
+			switch t := v.(type) {
+			case bool:
+				recordZeroToken = t
+			case string:
+				if strings.EqualFold(t, "true") {
+					recordZeroToken = true
+				}
+			}
+		}
+	}
+
+	// Treat empty output with no tokens/tools as a failure and skip recording unless explicitly requested
+	noOutput := strings.TrimSpace(result.Response) == "" &&
+		len(result.ToolExecutions) == 0 &&
+		result.TokensUsed == 0 &&
+		inputTokens == 0 &&
+		outputTokens == 0
+	if noOutput {
+		result.Success = false
+		if result.Error == "" {
+			result.Error = "agent produced no output or token usage"
+		}
+		if !recordZeroToken {
+			return &result, nil
+		}
+	}
+
+	// Skip recording zero-token runs unless explicitly requested
+	if (inputTokens+outputTokens) == 0 && !recordZeroToken {
+		b.logger.Warn("Skipping token usage record: zero tokens and no record_zero_token flag",
+			zap.String("agent_id", input.AgentInput.AgentID),
+			zap.String("task_id", input.TaskID),
+		)
+		return &result, nil
 	}
 
 	err = b.budgetManager.RecordUsage(ctx, &budget.BudgetTokenUsage{

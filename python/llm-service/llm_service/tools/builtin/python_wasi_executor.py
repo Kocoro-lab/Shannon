@@ -298,6 +298,14 @@ print("__SESSION_STATE__", json.dumps({
                     f"Executing in session {session_id} (run #{session.execution_count})"
                 )
 
+            # Emit progress via observer if available
+            observer = kwargs.get("observer")
+            if observer:
+                try:
+                    observer("progress", {"message": "Preparing Python environment..."})
+                except Exception:
+                    pass
+
             # Prepare execution request with proper structure for agent-core
             # Note: Using file path instead of base64 due to gRPC 4MB message limit
             # Python WASM needs argv[0] to be program name, then -c flag to execute stdin

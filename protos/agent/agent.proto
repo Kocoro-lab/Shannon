@@ -80,6 +80,7 @@ message TaskUpdate {
   shannon.common.ToolCall tool_call = 4;
   shannon.common.ToolResult tool_result = 5;
   double progress = 6;
+  string delta = 7; // Token delta for streaming
 }
 
 message GetCapabilitiesRequest {}

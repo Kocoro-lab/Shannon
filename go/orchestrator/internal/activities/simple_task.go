@@ -61,7 +61,7 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 	}
 
 	// Step 2: Execute agent using shared helper (not calling activity directly)
-	agentResult, err := executeAgentCore(ctx, AgentExecutionInput{
+	agentInput := AgentExecutionInput{
 		Query:            input.Query,
 		AgentID:          "simple-agent",
 		Context:          mergedContext,
@@ -72,7 +72,17 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		SuggestedTools:   input.SuggestedTools,
 		ToolParameters:   input.ToolParameters,
 		ParentWorkflowID: input.ParentWorkflowID,
-	}, logger)
+	}
+
+	var agentResult AgentExecutionResult
+	var err error
+
+	// If we have pre-computed tool parameters and tools, use the forced-tools path so events are emitted.
+	if agentInput.ToolParameters != nil && len(agentInput.ToolParameters) > 0 && len(agentInput.SuggestedTools) > 0 {
+		agentResult, err = ExecuteAgentWithForcedTools(ctx, agentInput)
+	} else {
+		agentResult, err = executeAgentCore(ctx, agentInput, logger)
+	}
 
 	if err != nil {
 		logger.Error("Agent execution failed", zap.Error(err))

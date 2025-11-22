@@ -15,10 +15,10 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	ometrics "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/templates"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 )
 
 // TemplateWorkflowInput carries data required to execute a compiled template.
@@ -799,14 +799,14 @@ func updateTemplateSession(ctx workflow.Context, task TaskInput, plan *templates
 }
 
 func recordTemplateToVectorStore(ctx workflow.Context, task TaskInput, plan *templates.ExecutablePlan, answer string) {
-	detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
+	// Await result to prevent race condition
 	activityOpts := workflow.ActivityOptions{
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 		},
 	}
-	detachedCtx = workflow.WithActivityOptions(detachedCtx, activityOpts)
+	ctx = workflow.WithActivityOptions(ctx, activityOpts)
 	metadata := map[string]interface{}{
 		"workflow":          "template_v1",
 		"template_name":     plan.TemplateName,
@@ -814,7 +814,7 @@ func recordTemplateToVectorStore(ctx workflow.Context, task TaskInput, plan *tem
 		"template_checksum": plan.Checksum,
 		"tenant_id":         task.TenantID,
 	}
-	workflow.ExecuteActivity(detachedCtx,
+	_ = workflow.ExecuteActivity(ctx,
 		activities.RecordQuery,
 		activities.RecordQueryInput{
 			SessionID: task.SessionID,
@@ -825,5 +825,5 @@ func recordTemplateToVectorStore(ctx workflow.Context, task TaskInput, plan *tem
 			Model:     determineModelTierForTemplate(plan.Defaults.ModelTier, nil),
 			Metadata:  metadata,
 			RedactPII: true,
-		})
+		}).Get(ctx, nil)
 }

@@ -1306,11 +1306,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				// Strategy-aware gap detection (pass baseContext instead of strategy string)
 				gapAnalysis := analyzeGaps(synthesis.FinalResult, refineResult.ResearchAreas, baseContext)
 
-        if len(gapAnalysis.UndercoveredAreas) > 0 {
-            logger.Info("Detected coverage gaps; triggering targeted re-search",
-                "gaps", gapAnalysis.UndercoveredAreas,
-                "iteration", iterationCount,
-            )
+				if len(gapAnalysis.UndercoveredAreas) > 0 {
+					logger.Info("Detected coverage gaps; triggering targeted re-search",
+						"gaps", gapAnalysis.UndercoveredAreas,
+						"iteration", iterationCount,
+					)
 
 					// Build targeted search queries for gaps
 					gapQueries := buildGapQueries(gapAnalysis.UndercoveredAreas, input.Query)
@@ -1581,41 +1581,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 
 	// Step 5: Update session and persist results
-	if input.SessionID != "" {
-		var updRes activities.SessionUpdateResult
-		err = workflow.ExecuteActivity(ctx,
-			constants.UpdateSessionResultActivity,
-			activities.SessionUpdateInput{
-				SessionID:  input.SessionID,
-				Result:     finalResult,
-				TokensUsed: totalTokens,
-				AgentsUsed: len(agentResults),
-			}).Get(ctx, &updRes)
-
-		if err != nil {
-			logger.Error("Failed to update session", "error", err)
-		}
-
-		// Persist to vector store (fire-and-forget)
-		detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
-		workflow.ExecuteActivity(detachedCtx,
-			activities.RecordQuery,
-			activities.RecordQueryInput{
-				SessionID: input.SessionID,
-				UserID:    input.UserID,
-				Query:     input.Query,
-				Answer:    finalResult,
-				Model:     modelTier,
-				Metadata: map[string]interface{}{
-					"workflow":      "research_flow_v2",
-					"complexity":    decomp.ComplexityScore,
-					"quality_score": qualityScore,
-					"patterns_used": []string{"react", "parallel", "reflection"},
-					"tenant_id":     input.TenantID,
-				},
-				RedactPII: true,
-			})
-	}
+	// Session update moved to after usage report generation to ensure accurate cost/token tracking
 
 	logger.Info("ResearchWorkflow completed successfully",
 		"total_tokens", totalTokens,
@@ -1711,8 +1677,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 	// Finalize accurate cost by aggregating recorded token usage for this task
 	// Ensures task_executions.total_cost_usd reflects sum of per-agent and synthesis usage
+	var report *budget.UsageReport
 	{
-		var report *budget.UsageReport
 		err := workflow.ExecuteActivity(ctx, constants.GenerateUsageReportActivity, activities.UsageReportInput{
 			// Aggregate by task_id across all user_id records to avoid partial sums
 			UserID:    "",
@@ -1729,6 +1695,50 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		} else if err != nil {
 			logger.Warn("Usage report aggregation failed", "error", err)
 		}
+	}
+
+	// Step 5: Update session and persist results (Moved here to use accurate cost/token data)
+	if input.SessionID != "" {
+		// Use report values if available, otherwise fallback to local estimates
+		finalCost := estCost
+		finalTokens := totalTokens
+		if report != nil {
+			finalCost = report.TotalCostUSD
+			finalTokens = report.TotalTokens
+		}
+
+		var updRes activities.SessionUpdateResult
+		err = workflow.ExecuteActivity(ctx,
+			constants.UpdateSessionResultActivity,
+			activities.SessionUpdateInput{
+				SessionID:  input.SessionID,
+				Result:     finalResult,
+				TokensUsed: finalTokens,
+				AgentsUsed: len(agentResults),
+				CostUSD:    finalCost, // Pass explicit cost to avoid default fallback
+			}).Get(ctx, &updRes)
+		if err != nil {
+			logger.Error("Failed to update session", "error", err)
+		}
+
+		// Persist to vector store (await result to prevent race condition)
+		_ = workflow.ExecuteActivity(ctx,
+			activities.RecordQuery,
+			activities.RecordQueryInput{
+				SessionID: input.SessionID,
+				UserID:    input.UserID,
+				Query:     input.Query,
+				Answer:    finalResult,
+				Model:     modelTier,
+				Metadata: map[string]interface{}{
+					"workflow":      "research_flow_v2",
+					"complexity":    decomp.ComplexityScore,
+					"quality_score": qualityScore,
+					"patterns_used": []string{"react", "parallel", "reflection"},
+					"tenant_id":     input.TenantID,
+				},
+				RedactPII: true,
+			}).Get(ctx, nil)
 	}
 
 	// Include synthesis finish_reason and requested_max_tokens for observability/debugging
@@ -1848,27 +1858,27 @@ func analyzeGaps(synthesisText string, researchAreas []string, context map[strin
 		}
 		sectionContent := strings.TrimSpace(content[:nextSectionIdx])
 
-    // Check: Explicit gap indicator phrases (high precision only)
-    gapPhrases := []string{
-        "limited information available",
-        "insufficient data",
-        "not enough information",
-        "no clear evidence",
-        "data unavailable",
-        "no information found",
-    }
+		// Check: Explicit gap indicator phrases (high precision only)
+		gapPhrases := []string{
+			"limited information available",
+			"insufficient data",
+			"not enough information",
+			"no clear evidence",
+			"data unavailable",
+			"no information found",
+		}
 
-    // CJK gap detection phrases (version-gated for Temporal determinism)
-    if enableCJK, ok := context["enable_cjk_gap_phrases"].(bool); ok && enableCJK {
-        gapPhrases = append(gapPhrases,
-            "未找到足够信息", // Chinese: not enough information found
-            "数据不足",       // Chinese: insufficient data
-            "信息不足",       // Chinese: insufficient information
-            "情報不足",       // Japanese: information insufficient
-            "情報が不足",     // Japanese: lacking information
-            "정보가 부족",     // Korean: lacking information
-        )
-    }
+		// CJK gap detection phrases (version-gated for Temporal determinism)
+		if enableCJK, ok := context["enable_cjk_gap_phrases"].(bool); ok && enableCJK {
+			gapPhrases = append(gapPhrases,
+				"未找到足够信息", // Chinese: not enough information found
+				"数据不足",    // Chinese: insufficient data
+				"信息不足",    // Chinese: insufficient information
+				"情報不足",    // Japanese: information insufficient
+				"情報が不足",   // Japanese: lacking information
+				"정보가 부족",  // Korean: lacking information
+			)
+		}
 
 		hasExplicitGap := false
 		for _, phrase := range gapPhrases {
@@ -1879,14 +1889,14 @@ func analyzeGaps(synthesisText string, researchAreas []string, context map[strin
 			}
 		}
 
-    // Citation density (only for deep/academic strategies and if no explicit gap found)
-    if !hasExplicitGap && checkCitationDensity {
-        citationCount := countInlineCitationsInSection(sectionContent)
-        // Minimal rule: flag only if there are zero citations
-        if citationCount == 0 {
-            gaps.UndercoveredAreas = append(gaps.UndercoveredAreas, area)
-        }
-    }
+		// Citation density (only for deep/academic strategies and if no explicit gap found)
+		if !hasExplicitGap && checkCitationDensity {
+			citationCount := countInlineCitationsInSection(sectionContent)
+			// Minimal rule: flag only if there are zero citations
+			if citationCount == 0 {
+				gaps.UndercoveredAreas = append(gaps.UndercoveredAreas, area)
+			}
+		}
 	}
 
 	return gaps

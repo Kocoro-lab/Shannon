@@ -1,44 +1,47 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { TaskSubmitter } from '../components/shannon/TaskSubmitter';
+import { useEffect, useState } from 'react';
+import { TaskSubmitterEnhanced } from '../components/shannon/TaskSubmitterEnhanced';
 import { EventStream } from '../components/shannon/EventStream';
 import { TopOverview } from '../components/shannon/TopOverview';
 import { InsightsPanel } from '../components/shannon/InsightsPanel';
 import { GlobalQueue } from '../components/shannon/GlobalQueue';
 import { ATCRadarPanel } from '../components/shannon/ATCRadarPanel';
-// import { TimelineStatusBar } from '../components/shannon/TimelineStatusBar';
+import { LLMStreamViewer } from '../components/shannon/LLMStreamViewer';
 import { MasterControlPanel } from '../components/shannon/MasterControlPanel';
 import { DashboardProvider, useDashboardContext } from '../shannon/dashboardContext';
-import { useSSE } from '../shannon/useSSE';
-import type { TaskSubmitResponse } from '../shannon/types';
+import { usePlatformTasks } from '../shannon/usePlatformTasks';
+import { useMultiSSE } from '../shannon/useMultiSSE';
 
 const SKIP_AUTH = process.env.NEXT_PUBLIC_GATEWAY_SKIP_AUTH === 'true';
 
+let shellRenderCount = 0;
+
 function DashboardShell() {
+  shellRenderCount++;
+  console.log(`[DashboardShell] RENDER #${shellRenderCount}`);
+
   const [apiKey, setApiKey] = useState('');
   const [tempApiKey, setTempApiKey] = useState('');
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
-  const [currentTask, setCurrentTask] = useState<TaskSubmitResponse | null>(null);
   const { ingestEvent, reset } = useDashboardContext();
 
-  const activeWorkflowId = useMemo(
-    () => currentTask?.workflow_id || currentTask?.task_id || '',
-    [currentTask]
-  );
+  // Poll for active workflows across the platform
+  const { activeWorkflowIds } = usePlatformTasks(apiKey, {
+    pollInterval: 15000, // 15 seconds to avoid rate limiting
+    includeStatuses: ['RUNNING', 'QUEUED'],
+  });
 
-  const { events, status, error } = useSSE(activeWorkflowId, apiKey, {
-    maxEvents: 200,
+  // Subscribe to SSE streams for all active workflows
+  const { events, status, error } = useMultiSSE(activeWorkflowIds, apiKey, {
+    maxEventsPerWorkflow: 200,
     onEvent: ingestEvent,
   });
 
+  // Reset dashboard state once on mount
   useEffect(() => {
-    if (!activeWorkflowId) {
-      reset('');
-      return;
-    }
-    reset(activeWorkflowId);
-  }, [activeWorkflowId, reset]);
+    reset();
+  }, [reset]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -49,10 +52,6 @@ function DashboardShell() {
       setShowApiKeyModal(true);
     }
   }, []);
-
-  const handleTaskSubmitted = (response: TaskSubmitResponse) => {
-    setCurrentTask(response);
-  };
 
   const handleSaveApiKey = (event: React.FormEvent) => {
     event.preventDefault();
@@ -70,8 +69,7 @@ function DashboardShell() {
     if (typeof window !== 'undefined') {
       window.sessionStorage.removeItem('api_key');
     }
-    setCurrentTask(null);
-    reset('');
+    reset();
     if (!SKIP_AUTH) {
       setShowApiKeyModal(true);
     }
@@ -96,19 +94,18 @@ function DashboardShell() {
 
       <div className="flex-1 overflow-hidden p-4">
         <div className="grid grid-cols-1 xl:grid-cols-[28%_72%] gap-4 h-full">
+          {/* Left Column: Task Submission & Event Log */}
           <section className="grid grid-rows-[auto_1fr] gap-4 min-h-0 min-w-0 overflow-hidden">
-            <div className="border border-[#352b19] bg-black p-4">
-              <TaskSubmitter
-                apiKey={apiKey}
-                workflowId={activeWorkflowId || ''}
-                onTaskSubmitted={handleTaskSubmitted}
-              />
+            {/* Task Submitter */}
+            <div className="border border-[#352b19] bg-black">
+              <TaskSubmitterEnhanced apiKey={apiKey} />
             </div>
+
+            {/* Event Stream Log (Platform Timeline) */}
             <div className="border border-[#352b19] bg-black flex flex-col min-h-0 min-w-0">
-              <div className="ui-label ui-label--tab">Event Stream Log</div>
+              <div className="ui-label ui-label--tab">Platform Event Timeline</div>
               <div className="flex-1 min-h-0 min-w-0">
                 <EventStream
-                  workflowId={activeWorkflowId || null}
                   events={events}
                   status={status}
                   error={error}
@@ -117,13 +114,20 @@ function DashboardShell() {
             </div>
           </section>
 
+          {/* Right Column: Visualizations */}
           <aside className="grid grid-rows-[auto_auto_1fr_auto] gap-4 min-h-0 overflow-hidden">
             <TopOverview />
             <InsightsPanel />
-            <div className="grid grid-cols-[18%_82%] gap-4 min-h-0">
+
+            {/* ATC Radar & LLM Output split */}
+            <div className="grid grid-cols-[18%_40%_42%] gap-4 min-h-0">
               <GlobalQueue />
-              <ATCRadarPanel workflowId={activeWorkflowId} events={events} />
+              <ATCRadarPanel events={events} />
+              <div className="border border-[#352b19] bg-black flex flex-col min-h-0">
+                <LLMStreamViewer events={events} />
+              </div>
             </div>
+
             <MasterControlPanel />
           </aside>
         </div>

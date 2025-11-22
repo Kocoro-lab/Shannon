@@ -10,8 +10,8 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 )
@@ -358,9 +358,8 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			logger.Error("Failed to update session", "error", err)
 		}
 
-		// Persist to vector store (fire-and-forget)
-		detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
-		workflow.ExecuteActivity(detachedCtx,
+		// Persist to vector store (await result to prevent race condition)
+		_ = workflow.ExecuteActivity(ctx,
 			activities.RecordQuery,
 			activities.RecordQueryInput{
 				SessionID: input.SessionID,
@@ -378,7 +377,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 					"tenant_id":     input.TenantID,
 				},
 				RedactPII: true,
-			})
+			}).Get(ctx, nil)
 	}
 
 	logger.Info("ReactWorkflow completed successfully",

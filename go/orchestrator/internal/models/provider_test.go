@@ -37,9 +37,10 @@ func TestDetectProvider(t *testing.T) {
 		{"Qwen Instruct", "qwen3-4b-instruct-2507", "qwen"},
 
 		// X.AI models
-		{"XAI Grok", "grok-4", "xai"},
+		{"XAI Grok 3 Mini", "grok-3-mini", "xai"},
 		{"XAI Grok Beta", "grok-beta", "xai"},
-		{"XAI Grok Fast", "grok-4-fast-non-reasoning", "xai"},
+		{"XAI Grok 4 Fast Non-Reasoning", "grok-4-fast-non-reasoning", "xai"},
+		{"XAI Grok 4 Fast Reasoning", "grok-4-fast-reasoning", "xai"},
 
 		// Mistral models (should be detected before llama check)
 		{"Mistral Small", "mistral-small-3.2-24b-instruct-2506", "mistral"},

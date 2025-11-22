@@ -248,7 +248,18 @@ class GroqProvider(LLMProvider):
     # backed by models.yaml via the manager's configuration.
 
     async def stream_complete(self, request: CompletionRequest) -> AsyncIterator[str]:
-        """Normalized streaming: yield text chunks only."""
+        """Normalized streaming: yield text chunks and usage metadata."""
         async for chunk in self.complete_stream(request):
             if chunk and isinstance(chunk.content, str) and chunk.content:
                 yield chunk.content
+            # Yield usage metadata when available (final chunk with empty content)
+            elif chunk and chunk.usage and chunk.usage.total_tokens > 0:
+                yield {
+                    "usage": {
+                        "total_tokens": chunk.usage.total_tokens,
+                        "input_tokens": chunk.usage.input_tokens,
+                        "output_tokens": chunk.usage.output_tokens,
+                    },
+                    "model": chunk.model,
+                    "provider": chunk.provider,
+                }

@@ -64,20 +64,29 @@ class XAIProvider(LLMProvider):
         """Populate a minimal catalog if models were not provided via config."""
 
         defaults: Dict[str, Dict[str, Any]] = {
-            "grok-4": {
-                "model_id": "grok-4",
-                "tier": "medium",
+            "grok-3-mini": {
+                "model_id": "grok-3-mini",
+                "tier": "small",
                 "context_window": 131072,
-                "max_tokens": 8192,
+                "max_tokens": 32768,
+                "supports_functions": True,
+                "supports_streaming": True,
+                "supports_reasoning": False,
+            },
+            "grok-4-fast-reasoning": {
+                "model_id": "grok-4-fast-reasoning",
+                "tier": "large",
+                "context_window": 2000000,
+                "max_tokens": 128000,
                 "supports_functions": True,
                 "supports_streaming": True,
                 "supports_reasoning": True,
             },
-            "grok-4-fast": {
-                "model_id": "grok-4-fast",
-                "tier": "small",
-                "context_window": 65536,
-                "max_tokens": 8192,
+            "grok-4-fast-non-reasoning": {
+                "model_id": "grok-4-fast-non-reasoning",
+                "tier": "medium",
+                "context_window": 2000000,
+                "max_tokens": 128000,
                 "supports_functions": True,
                 "supports_streaming": True,
                 "supports_reasoning": False,
@@ -505,6 +514,8 @@ class XAIProvider(LLMProvider):
             "messages": clean_messages,
             "temperature": request.temperature,
             "stream": True,
+            # Note: xAI does NOT support stream_options parameter (returns 400 error)
+            # xAI includes usage data in streaming chunks by default
         }
 
         if request.max_tokens:
@@ -545,8 +556,22 @@ class XAIProvider(LLMProvider):
         try:
             stream = await self.client.chat.completions.create(**payload)
             async for chunk in stream:
-                delta = chunk.choices[0].delta
-                if delta and getattr(delta, "content", None):
-                    yield delta.content
+                # Yield text content if present
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    if delta and getattr(delta, "content", None):
+                        yield delta.content
+
+                # Check for usage in the chunk (usually the last one)
+                if chunk.usage:
+                    yield {
+                        "usage": {
+                            "total_tokens": chunk.usage.total_tokens,
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
+                        },
+                        "model": chunk.model,
+                        "provider": "xai",
+                    }
         except Exception as exc:
             raise Exception(f"xAI streaming error ({self.base_url}): {exc}")

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
@@ -255,12 +256,22 @@ func (bm *BudgetManager) CheckBudget(ctx context.Context, userID, sessionID, tas
 
 	// Daily budget check removed - task and session budgets provide sufficient control
 
-	// Check warning threshold
+	// Check warning threshold and emit streaming event
 	taskUsagePercent := float64(taskTokensUsed) / float64(taskBudget)
 	if taskUsagePercent > warningThreshold {
-		result.Warnings = append(result.Warnings,
-			fmt.Sprintf("Task budget at %.1f%% (threshold: %.1f%%)",
-				taskUsagePercent*100, warningThreshold*100))
+		warningMsg := fmt.Sprintf("Task budget at %.1f%% (threshold: %.1f%%)",
+			taskUsagePercent*100, warningThreshold*100)
+		result.Warnings = append(result.Warnings, warningMsg)
+
+		// Emit BUDGET_THRESHOLD event for streaming observability
+		bm.emitBudgetThresholdEvent(taskID, sessionID, warningMsg, map[string]interface{}{
+			"usage_percent":     taskUsagePercent * 100,
+			"threshold_percent": warningThreshold * 100,
+			"tokens_used":       taskTokensUsed,
+			"tokens_budget":     taskBudget,
+			"level":             "warning",
+			"budget_type":       "task",
+		})
 	}
 
 	// Estimate cost using priority-1 small tier model from config
@@ -1005,4 +1016,29 @@ func (bm *BudgetManager) ReallocateBudgetsByUsage(ctx context.Context, sessions 
 // NewEnhancedBudgetManager creates an enhanced budget manager (compatibility wrapper)
 func NewEnhancedBudgetManager(db *sql.DB, logger *zap.Logger) *BudgetManager {
 	return NewBudgetManager(db, logger)
+}
+
+// emitBudgetThresholdEvent emits a streaming event when budget thresholds are crossed
+func (bm *BudgetManager) emitBudgetThresholdEvent(taskID, sessionID, message string, payload map[string]interface{}) {
+	// This is best-effort, non-blocking - we don't want budget monitoring to fail the task
+	// The streaming manager will publish to Redis for SSE/WebSocket delivery
+	if taskID == "" {
+		return // No workflow ID to emit event to
+	}
+
+	event := streaming.Event{
+		WorkflowID: taskID,
+		Type:       "BUDGET_THRESHOLD",
+		AgentID:    "budget-manager",
+		Message:    message,
+		Payload:    payload,
+		Timestamp:  time.Now(),
+	}
+
+	streaming.Get().Publish(taskID, event)
+	bm.logger.Debug("Emitted BUDGET_THRESHOLD event",
+		zap.String("task_id", taskID),
+		zap.String("session_id", sessionID),
+		zap.String("message", message),
+	)
 }

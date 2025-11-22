@@ -15,7 +15,7 @@ default-no-wasi = []
 [dependencies]
 # Async runtime
 tokio = { version = "1.41", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync", "io-util"] }
 
 # gRPC
 tonic = { version = "0.12", features = ["tls"] }
@@ -38,7 +38,7 @@ base64 = "0.22"
 meval = "0.2"
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 http = "1.1"
 
 # Error handling
@@ -57,7 +57,7 @@ tracing-opentelemetry = "0.28"
 # Metrics
 prometheus = "0.13"
 hyper = { version = "1.5", features = ["server", "http1"] }
-tokio-util = { version = "0.7", features = ["codec"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
 http-body-util = "0.1"
 
 # Redis (optional distributed rate limiting)

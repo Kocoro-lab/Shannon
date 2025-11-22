@@ -297,6 +297,78 @@ class ProviderManager:
 
         return result
 
+    async def stream_completion(
+        self,
+        messages: List[dict],
+        tier: LegacyModelTier = None,
+        specific_model: str = None,
+        provider_override: Optional[str] = None,
+        **kwargs,
+    ):
+        params = dict(kwargs)
+
+        tier = tier or LegacyModelTier.SMALL
+        try:
+            core_tier = CoreModelTier(tier.value)
+        except ValueError:
+            core_tier = CoreModelTier.SMALL
+
+        manager_kwargs: Dict[str, Any] = {}
+
+        passthrough_fields = {
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "stop",
+            "response_format",
+            "seed",
+            "user",
+            "function_call",
+            "stream",
+            "cache_key",
+            "cache_ttl",
+            "session_id",
+            "task_id",
+            "agent_id",
+            "max_tokens_budget",
+        }
+
+        for field in list(params.keys()):
+            if field in passthrough_fields and params[field] is not None:
+                manager_kwargs[field] = params.pop(field)
+
+        if "temperature" not in manager_kwargs or manager_kwargs["temperature"] is None:
+            manager_kwargs["temperature"] = self.settings.temperature
+
+        tools = params.pop("tools", None)
+        if tools:
+            functions: List[Dict[str, Any]] = []
+            try:
+                for t in tools:
+                    if isinstance(t, dict) and t.get("type") == "function" and isinstance(t.get("function"), dict):
+                        functions.append(t["function"])
+                    elif isinstance(t, dict):
+                        functions.append(t)
+            except Exception:
+                functions = tools  # type: ignore[assignment]
+            if functions:
+                manager_kwargs["functions"] = functions
+
+        if specific_model:
+            manager_kwargs["model"] = specific_model
+        if provider_override:
+            manager_kwargs["provider_override"] = provider_override
+
+        async for chunk in self._manager.stream_complete(
+            messages=messages,
+            model_tier=core_tier,
+            **manager_kwargs,
+        ):
+            if chunk:
+                yield chunk
+
     def _serialize_completion(self, response: CompletionResponse) -> Dict[str, Any]:
         usage = self._serialize_usage(response.usage)
 
