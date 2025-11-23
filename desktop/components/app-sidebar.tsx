@@ -5,9 +5,9 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Play, History, Settings, LayoutDashboard } from "lucide-react";
+import { Play, History, Settings, LayoutDashboard, MessageSquare } from "lucide-react";
 
-interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> {}
+interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> { }
 
 export function AppSidebar({ className }: SidebarProps) {
   const pathname = usePathname();

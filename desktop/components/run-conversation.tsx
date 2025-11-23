@@ -9,6 +9,8 @@ interface Message {
     sender?: string;
     timestamp: string;
     isStreaming?: boolean;
+    isGenerating?: boolean;
+    taskId?: string;
     metadata?: {
         usage?: {
             total_tokens: number;
@@ -62,9 +64,19 @@ export function RunConversation({ messages }: RunConversationProps) {
                                 message.role === "user" ? "bg-primary text-primary-foreground" :
                                     message.role === "tool" ? "bg-muted/50 font-mono text-xs" : "bg-muted"
                             )}>
-                                {message.content}
-                                {message.isStreaming && (
-                                    <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
+                                {message.isGenerating ? (
+                                    <span className="flex items-center gap-1 text-muted-foreground">
+                                        <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                                        <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                                        <span className="inline-block w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                                    </span>
+                                ) : (
+                                    <>
+                                        {message.content}
+                                        {message.isStreaming && (
+                                            <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
+                                        )}
+                                    </>
                                 )}
                             </Card>
                             {message.metadata?.usage && (

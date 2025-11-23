@@ -11,9 +11,10 @@ interface ChatInputProps {
     sessionId?: string;
     disabled?: boolean;
     isTaskComplete?: boolean;
+    onTaskCreated?: (taskId: string, query: string, workflowId?: string) => void;
 }
 
-export function ChatInput({ sessionId, disabled, isTaskComplete }: ChatInputProps) {
+export function ChatInput({ sessionId, disabled, isTaskComplete, onTaskCreated }: ChatInputProps) {
     const [query, setQuery] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -21,7 +22,7 @@ export function ChatInput({ sessionId, disabled, isTaskComplete }: ChatInputProp
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
-        
+
         if (!query.trim() || !sessionId) {
             return;
         }
@@ -37,8 +38,13 @@ export function ChatInput({ sessionId, disabled, isTaskComplete }: ChatInputProp
             });
 
             setQuery("");
-            // Navigate to the new task
-            router.push(`/run-detail?id=${response.task_id}`);
+
+            if (onTaskCreated) {
+                onTaskCreated(response.task_id, query.trim(), response.workflow_id);
+            } else {
+                // Fallback if no callback provided
+                router.push(`/run-detail?id=${response.task_id}`);
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to submit");
         } finally {
@@ -71,8 +77,8 @@ export function ChatInput({ sessionId, disabled, isTaskComplete }: ChatInputProp
                         }
                     }}
                 />
-                <Button 
-                    type="submit" 
+                <Button
+                    type="submit"
                     size="icon"
                     disabled={!query.trim() || isInputDisabled || isSubmitting}
                 >
@@ -95,4 +101,3 @@ export function ChatInput({ sessionId, disabled, isTaskComplete }: ChatInputProp
         </form>
     );
 }
-
