@@ -9,13 +9,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { RunDialog } from "@/components/run-dialog";
+import Link from "next/link";
 import { PlusCircle } from "lucide-react";
-import { useState } from "react";
 
 export default function Home() {
-  const [showCreateDialog, setShowCreateDialog] = useState(false);
-
   return (
     <div className="p-8 space-y-8">
       <div className="flex items-center justify-between">
@@ -25,30 +22,15 @@ export default function Home() {
             Submit tasks and monitor AI agent workflows.
           </p>
         </div>
-        <RunDialog 
-          scenarioName="New Task" 
-          triggerButton={
-            <Button>
-              <PlusCircle className="mr-2 h-4 w-4" />
-              Create New Task
-            </Button>
-          }
-        />
+        <Button asChild>
+          <Link href="/runs">
+            <PlusCircle className="mr-2 h-4 w-4" />
+            Go to Runs
+          </Link>
+        </Button>
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        <Card className="border-dashed border-2 hover:border-primary/50 transition-colors">
-          <CardHeader className="text-center py-12">
-            <div className="mx-auto mb-4 h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-              <PlusCircle className="h-6 w-6 text-primary" />
-            </div>
-            <CardTitle>Submit Your First Task</CardTitle>
-            <CardDescription className="pt-2">
-              Click &quot;Create New Task&quot; above to submit a query to Shannon&apos;s AI agents.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-
         <Card>
           <CardHeader>
             <div className="space-y-1">

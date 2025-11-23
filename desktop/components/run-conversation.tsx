@@ -1,6 +1,27 @@
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+"use client";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import "highlight.js/styles/github-dark.css";
+import { ExternalLink } from "lucide-react";
+import type { ReactNode } from "react";
+
+interface Citation {
+    url: string;
+    title?: string;
+    source?: string;
+    source_type?: string;
+    retrieved_at?: string;
+    published_date?: string;
+    credibility_score?: number;
+}
 
 interface Message {
     id: string;
@@ -19,6 +40,7 @@ interface Message {
         };
         model?: string;
         provider?: string;
+        citations?: Citation[];
     };
     toolData?: any;
 }
@@ -27,9 +49,153 @@ interface RunConversationProps {
     messages: readonly Message[];
 }
 
-export function RunConversation({ messages }: RunConversationProps) {
+// Component to render a single citation with tooltip
+function CitationLink({ index, citation }: { index: number; citation: Citation }) {
+    const displayTitle = citation.title || citation.source || citation.url;
+    const publishedDate = citation.published_date ? new Date(citation.published_date).toLocaleDateString() : null;
+    
     return (
-        <div className="space-y-4 p-4">
+        <TooltipProvider delayDuration={200}>
+            <Tooltip>
+                <TooltipTrigger asChild>
+                    <a
+                        href={citation.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-baseline text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium no-underline hover:underline mx-0.5 cursor-pointer"
+                        onClick={(e) => {
+                            e.preventDefault();
+                            window.open(citation.url, '_blank', 'noopener,noreferrer');
+                        }}
+                    >
+                        [{index}]
+                    </a>
+                </TooltipTrigger>
+                <TooltipContent 
+                    side="top" 
+                    className="max-w-sm p-3 space-y-2"
+                    sideOffset={5}
+                >
+                    <div className="space-y-1">
+                        <div className="font-semibold text-sm line-clamp-2">
+                            {displayTitle}
+                        </div>
+                        {citation.source && (
+                            <div className="text-xs text-muted-foreground flex items-center gap-1">
+                                <ExternalLink className="h-3 w-3" />
+                                <span className="truncate">{citation.source}</span>
+                            </div>
+                        )}
+                        {publishedDate && (
+                            <div className="text-xs text-muted-foreground">
+                                Published: {publishedDate}
+                            </div>
+                        )}
+                        {citation.credibility_score !== undefined && citation.credibility_score > 0 && (
+                            <div className="text-xs text-muted-foreground">
+                                Credibility: {(citation.credibility_score * 100).toFixed(0)}%
+                            </div>
+                        )}
+                    </div>
+                </TooltipContent>
+            </Tooltip>
+        </TooltipProvider>
+    );
+}
+
+// Component to render text with citation links
+function TextWithCitations({ text, citations }: { text: string; citations?: Citation[] }) {
+    if (!citations || citations.length === 0 || typeof text !== 'string') {
+        return <>{text}</>;
+    }
+
+    console.log("[Citations] Processing text:", text.substring(0, 100), "Citations count:", citations.length);
+
+    // Parse citations like [1], [2], etc.
+    const citationRegex = /\[(\d+)\]/g;
+    const parts: (string | ReactNode)[] = [];
+    let lastIndex = 0;
+    let match;
+    let matchCount = 0;
+
+    while ((match = citationRegex.exec(text)) !== null) {
+        matchCount++;
+        const fullMatch = match[0];
+        const citationIndex = parseInt(match[1], 10);
+        const citation = citations[citationIndex - 1]; // Citations are 1-indexed
+
+        console.log("[Citations] Found match:", fullMatch, "Index:", citationIndex, "Has citation:", !!citation);
+
+        // Add text before citation
+        if (match.index > lastIndex) {
+            parts.push(text.substring(lastIndex, match.index));
+        }
+
+        // Add citation link with tooltip
+        if (citation) {
+            parts.push(
+                <CitationLink
+                    key={`citation-${match.index}-${citationIndex}`}
+                    index={citationIndex}
+                    citation={citation}
+                />
+            );
+        } else {
+            // Citation not found in metadata, render as plain text
+            parts.push(fullMatch);
+        }
+
+        lastIndex = match.index + fullMatch.length;
+    }
+
+    console.log("[Citations] Total matches found:", matchCount);
+
+    // Add remaining text
+    if (lastIndex < text.length) {
+        parts.push(text.substring(lastIndex));
+    }
+
+    return <>{parts}</>;
+}
+
+// Pre-process markdown content to convert citations [1], [2] into markdown links [1](#cite-1)
+function preprocessCitations(content: string, citations?: Citation[]): string {
+    if (!citations || citations.length === 0) {
+        console.log("[Preprocess] No citations, returning original content");
+        return content;
+    }
+    
+    console.log("[Preprocess] Processing citations, count:", citations.length);
+    console.log("[Preprocess] Content preview:", content.substring(0, 200));
+    
+    // Replace [1], [2], etc. with [1](#cite-1), [2](#cite-2)
+    // Using hash anchors because ReactMarkdown preserves them
+    const processed = content.replace(/\[(\d+)\]/g, (match, num) => {
+        const index = parseInt(num, 10);
+        // Only convert if citation exists
+        if (index >= 1 && index <= citations.length) {
+            console.log(`[Preprocess] Converting ${match} to citation link`);
+            return `[${num}](#cite-${num})`;
+        }
+        return match;
+    });
+    
+    console.log("[Preprocess] Processed preview:", processed.substring(0, 200));
+    return processed;
+}
+
+export function RunConversation({ messages }: RunConversationProps) {
+    // Debug: Check if any messages have citations
+    const messagesWithCitations = messages.filter(m => m.metadata?.citations && m.metadata.citations.length > 0);
+    if (messagesWithCitations.length > 0) {
+        console.log("[Citations] Messages with citations:", messagesWithCitations.length);
+        messagesWithCitations.forEach(m => {
+            console.log("[Citations] Message:", m.id, "Citations:", m.metadata?.citations?.length);
+        });
+    }
+
+    return (
+        <div className="space-y-2 p-4">
             {messages.map((message) => (
                 <div
                     key={message.id}
@@ -60,9 +226,9 @@ export function RunConversation({ messages }: RunConversationProps) {
                         </div>
                         <div className="space-y-2">
                             <Card className={cn(
-                                "p-3 text-sm",
-                                message.role === "user" ? "bg-primary text-primary-foreground" :
-                                    message.role === "tool" ? "bg-muted/50 font-mono text-xs" : "bg-muted"
+                                "px-3 py-1 text-sm prose prose-sm max-w-none prose-p:my-0.5 prose-p:leading-relaxed prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:mt-2 prose-headings:mb-0.5 prose-headings:leading-tight",
+                                message.role === "user" ? "bg-primary text-primary-foreground prose-invert" :
+                                    message.role === "tool" ? "bg-muted/50 font-mono text-xs prose-pre:bg-transparent" : "bg-muted dark:prose-invert"
                             )}>
                                 {message.isGenerating ? (
                                     <span className="flex items-center gap-1 text-muted-foreground">
@@ -72,7 +238,79 @@ export function RunConversation({ messages }: RunConversationProps) {
                                     </span>
                                 ) : (
                                     <>
-                                        {message.content}
+                                        <ReactMarkdown
+                                            remarkPlugins={[remarkGfm]}
+                                            rehypePlugins={[rehypeHighlight]}
+                                            components={{
+                                                // Intercept citation links (#cite-N) and render as tooltips
+                                                a: ({ children, href, ...props }: any) => {
+                                                    // Check if this is a citation link
+                                                    if (href && href.startsWith('#cite-')) {
+                                                        const citationIndex = parseInt(href.replace('#cite-', ''), 10);
+                                                        const citation = message.metadata?.citations?.[citationIndex - 1];
+                                                        
+                                                        if (citation) {
+                                                            console.log(`[Citations] Rendering citation link for [${citationIndex}]`);
+                                                            return <CitationLink index={citationIndex} citation={citation} />;
+                                                        }
+                                                    }
+                                                    
+                                                    // Regular link
+                                                    return <a className="underline hover:text-primary cursor-pointer" href={href} {...props}>{children}</a>;
+                                                },
+                                                code: ({ inline, className, children, ...props }: any) => {
+                                                    return inline ? (
+                                                        <code className={cn("px-1.5 py-0.5 rounded bg-muted/50 font-mono text-xs", className)} {...props}>
+                                                            {children}
+                                                        </code>
+                                                    ) : (
+                                                        <code className={cn("block p-3 rounded-lg bg-muted/50 overflow-x-auto", className)} {...props}>
+                                                            {children}
+                                                        </code>
+                                                    );
+                                                },
+                                                pre: ({ children, ...props }) => (
+                                                    <pre className="my-2 overflow-x-auto rounded-lg bg-black/90 dark:bg-black/50 p-0" {...props}>
+                                                        {children}
+                                                    </pre>
+                                                ),
+                                                p: ({ children, ...props }) => (
+                                                    <p className="leading-relaxed" {...props}>{children}</p>
+                                                ),
+                                                // Headings - adapted from shadcn AI Response component
+                                                h1: ({ children, ...props }) => (
+                                                    <h1 className="mt-2 mb-1 font-semibold text-2xl" {...props}>{children}</h1>
+                                                ),
+                                                h2: ({ children, ...props }) => (
+                                                    <h2 className="mt-2 mb-1 font-semibold text-xl" {...props}>{children}</h2>
+                                                ),
+                                                h3: ({ children, ...props }) => (
+                                                    <h3 className="mt-1.5 mb-1 font-semibold text-lg" {...props}>{children}</h3>
+                                                ),
+                                                h4: ({ children, ...props }) => (
+                                                    <h4 className="mt-1.5 mb-0.5 font-semibold text-base" {...props}>{children}</h4>
+                                                ),
+                                                h5: ({ children, ...props }) => (
+                                                    <h5 className="mt-1 mb-0.5 font-semibold text-sm" {...props}>{children}</h5>
+                                                ),
+                                                h6: ({ children, ...props }) => (
+                                                    <h6 className="mt-1 mb-0.5 font-semibold text-xs" {...props}>{children}</h6>
+                                                ),
+                                                // Lists
+                                                ul: ({ children, ...props }) => (
+                                                    <ul className="ml-4 list-outside list-disc space-y-0.5" {...props}>{children}</ul>
+                                                ),
+                                                ol: ({ children, ...props }) => (
+                                                    <ol className="ml-4 list-outside list-decimal space-y-0.5" {...props}>{children}</ol>
+                                                ),
+                                                // Blockquote
+                                                blockquote: ({ children, ...props }) => (
+                                                    <blockquote className="border-l-4 pl-4 italic text-muted-foreground my-2" {...props}>{children}</blockquote>
+                                                ),
+                                            }}
+                                        >
+                                            {preprocessCitations(message.content, message.metadata?.citations)}
+                                        </ReactMarkdown>
                                         {message.isStreaming && (
                                             <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
                                         )}

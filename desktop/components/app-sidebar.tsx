@@ -2,14 +2,19 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { cn } from "@/lib/utils";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Play, History, Settings, LayoutDashboard, MessageSquare } from "lucide-react";
+import { Play, History } from "lucide-react";
+import { ThemeToggle } from "@/components/theme-toggle";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+} from "@/components/ui/sidebar";
 
-interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> { }
-
-export function AppSidebar({ className }: SidebarProps) {
+export function AppSidebar() {
   const pathname = usePathname();
 
   const routes = [
@@ -28,32 +33,34 @@ export function AppSidebar({ className }: SidebarProps) {
   ];
 
   return (
-    <div className={cn("pb-12 w-64 border-r bg-sidebar", className)}>
-      <div className="space-y-4 py-4">
-        <div className="px-3 py-2">
-          <h2 className="mb-2 px-4 text-lg font-semibold tracking-tight text-sidebar-foreground">
+    <Sidebar>
+      <SidebarHeader>
+        <div className="px-2 py-2">
+          <h2 className="text-lg font-semibold tracking-tight">
             Shannon
           </h2>
-          <div className="space-y-1">
-            {routes.map((route) => (
-              <Button
-                key={route.href}
-                variant={route.active ? "secondary" : "ghost"}
-                className={cn(
-                  "w-full justify-start",
-                  route.active ? "bg-sidebar-accent text-sidebar-accent-foreground" : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                )}
-                asChild
-              >
-                <Link href={route.href}>
-                  <route.icon className="mr-2 h-4 w-4" />
-                  {route.label}
-                </Link>
-              </Button>
-            ))}
-          </div>
         </div>
-      </div>
-    </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarMenu>
+          {routes.map((route) => (
+            <SidebarMenuItem key={route.href}>
+              <SidebarMenuButton asChild isActive={route.active}>
+                <Link href={route.href}>
+                  <route.icon />
+                  <span>{route.label}</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarContent>
+      <SidebarFooter>
+        <div className="flex items-center justify-between px-2 py-2">
+          <span className="text-sm">Theme</span>
+          <ThemeToggle />
+        </div>
+      </SidebarFooter>
+    </Sidebar>
   );
 }

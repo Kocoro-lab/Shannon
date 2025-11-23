@@ -42,7 +42,6 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
             const response = await submitTask({
                 query: query.trim(),
                 research_strategy: "standard",
-                model_tier: "medium",
             });
 
             setOpen(false);

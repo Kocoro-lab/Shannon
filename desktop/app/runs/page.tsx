@@ -1,19 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-    Select,
-    SelectContent,
-    SelectItem,
-    SelectTrigger,
-    SelectValue,
-} from "@/components/ui/select";
 import { Search, Loader2, RefreshCw, MessageSquare, Layers, Coins, Calendar, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
-import { listSessions, Session, SessionListResponse } from "@/lib/shannon/api";
+import { listSessions, Session } from "@/lib/shannon/api";
 import { useRouter } from "next/navigation";
 
 export default function RunsPage() {
@@ -39,10 +31,6 @@ export default function RunsPage() {
     useEffect(() => {
         fetchSessions();
     }, []);
-
-    const handleNewSession = () => {
-        router.push("/run-detail?session_id=new");
-    };
 
     // Filter sessions based on search
     const filteredSessions = sessions.filter(session => {
@@ -70,9 +58,9 @@ export default function RunsPage() {
                         <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
                         Refresh
                     </Button>
-                    <Button onClick={handleNewSession} size="sm">
+                    <Button onClick={() => router.push("/run-detail?session_id=new")} size="sm">
                         <Plus className="h-4 w-4 mr-2" />
-                        New Session
+                        New Task
                     </Button>
                 </div>
             </div>

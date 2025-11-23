@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useSearchParams, useRouter } from "next/navigation";
@@ -8,15 +9,16 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RunTimeline } from "@/components/run-timeline";
 import { RunConversation } from "@/components/run-conversation";
-import { ChatInput } from "@/components/chat-input";
+import { ChatInput, AgentSelection } from "@/components/chat-input";
 import { ArrowLeft, Download, Share, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { Suspense, useEffect, useState, useRef, useCallback } from "react";
 import { useRunStream } from "@/lib/shannon/stream";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
-import { getSessionEvents, getTask, Turn, Event } from "@/lib/shannon/api";
-import { resetRun, addMessage, addEvent } from "@/lib/features/runSlice";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { getSessionEvents, getSessionHistory, getTask, Turn, Event } from "@/lib/shannon/api";
+import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setMainWorkflowId } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -27,7 +29,10 @@ function RunDetailContent() {
     const [isLoading, setIsLoading] = useState(!isNewSession);
     const [error, setError] = useState<string | null>(null);
     const [sessionData, setSessionData] = useState<{ turns: Turn[], events: Event[] } | null>(null);
+    const [sessionHistory, setSessionHistory] = useState<any>(null);
     const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
+    const [streamRestartKey, setStreamRestartKey] = useState(0);
+    const [activeTab, setActiveTab] = useState("conversation");
     const dispatch = useDispatch();
     const router = useRouter();
     
@@ -36,12 +41,22 @@ function RunDetailContent() {
     const conversationScrollRef = useRef<HTMLDivElement>(null);
 
     // Connect to SSE stream for the current task if one is running
-    useRunStream(currentTaskId);
+    useRunStream(currentTaskId, streamRestartKey);
 
     // Get data from Redux (streaming state)
     const runEvents = useSelector((state: RootState) => state.run.events);
     const runMessages = useSelector((state: RootState) => state.run.messages);
     const runStatus = useSelector((state: RootState) => state.run.status);
+    const connectionState = useSelector((state: RootState) => state.run.connectionState);
+    const streamError = useSelector((state: RootState) => state.run.streamError);
+    const sessionTitle = useSelector((state: RootState) => state.run.sessionTitle);
+    const selectedAgent = useSelector((state: RootState) => state.run.selectedAgent);
+    const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
+
+    const handleRetryStream = () => {
+        dispatch(setStreamError(null));
+        setStreamRestartKey(key => key + 1);
+    };
 
     // Reset Redux state only when switching sessions or starting fresh
     const prevSessionIdRef = useRef<string | null>(null);
@@ -50,7 +65,9 @@ function RunDetailContent() {
     useEffect(() => {
         // Reset on initial mount or when session changes
         const sessionChanged = sessionId !== prevSessionIdRef.current;
-        const shouldReset = !hasInitializedRef.current || (sessionChanged && prevSessionIdRef.current !== null);
+        // Don't reset when transitioning from "new" to a real session ID (task creation flow)
+        const isNewToReal = prevSessionIdRef.current === "new" && sessionId && sessionId !== "new";
+        const shouldReset = !hasInitializedRef.current || (sessionChanged && prevSessionIdRef.current !== null && !isNewToReal);
         
         if (shouldReset) {
             dispatch(resetRun());
@@ -60,6 +77,9 @@ function RunDetailContent() {
             hasLoadedMessagesRef.current = false;
             hasInitializedTaskRef.current = null;
             setCurrentTaskId(null);
+        } else if (sessionChanged) {
+            // Update session ref even if not resetting (for "new" -> real ID transition)
+            prevSessionIdRef.current = sessionId;
         }
     }, [dispatch, sessionId]);
 
@@ -84,6 +104,9 @@ function RunDetailContent() {
 
                 // Ensure streaming uses the workflow ID we got back from the API
                 setCurrentTaskId(workflowId);
+                
+                // Set this as the main workflow ID in Redux
+                dispatch(setMainWorkflowId(workflowId));
 
                 // Add the user message immediately
                 dispatch(addMessage({
@@ -140,7 +163,7 @@ function RunDetailContent() {
         setIsLoading(true);
         setError(null);
         try {
-            // Fetch events to build the timeline
+            // Fetch events to build the timeline and conversation
             // Backend validation limits to 100 turns per request
             const eventsData = await getSessionEvents(sessionId, 100, 0);
 
@@ -150,6 +173,10 @@ function RunDetailContent() {
 
             setSessionData({ turns: eventsData.turns, events: allEvents });
 
+            // Fetch history to get cost data for Summary tab
+            const historyData = await getSessionHistory(sessionId);
+            setSessionHistory(historyData);
+
             // Only populate Redux messages if we haven't loaded them yet
             // This prevents duplicates when navigating with an active task
             if (!hasLoadedMessagesRef.current || forceReload) {
@@ -158,14 +185,58 @@ function RunDetailContent() {
                     dispatch(resetRun());
                 }
 
-                // Add historical events to Redux
-                allEvents.forEach((event: Event) => {
-                    dispatch(addEvent(event as any));
-                });
+                // Extract and set session title from title_generator events (before filtering them out)
+                const titleEvent = allEvents.find((event: Event) => 
+                    (event as any).agent_id === 'title_generator'
+                );
+                if (titleEvent) {
+                    const title = (titleEvent as any).message || (titleEvent as any).response || (titleEvent as any).content;
+                    if (title) {
+                        dispatch(addEvent({ 
+                            type: 'thread.message.completed',
+                            agent_id: 'title_generator',
+                            response: title,
+                            workflow_id: (titleEvent as any).workflow_id,
+                            timestamp: new Date().toISOString()
+                        } as any));
+                        console.log("[RunDetail] Loaded session title from history:", title);
+                    }
+                }
+
+                // Add historical events to Redux (filter out title_generator messages)
+                allEvents
+                    .filter((event: Event) => (event as any).agent_id !== 'title_generator')
+                    .forEach((event: Event) => {
+                        dispatch(addEvent(event as any));
+                    });
 
                 // Add historical messages (turns) to Redux
                 // We need to reconstruct messages from turns
+                // Fetch full task details in parallel to get citations
+                // Use workflow_id from events as the API expects workflow_id, not task_id
+                const taskDetailsPromises = eventsData.turns.map(turn => {
+                    // Get workflow_id from the first event in the turn
+                    const workflowId = turn.events.length > 0 ? turn.events[0].workflow_id : turn.task_id;
+                    return getTask(workflowId).catch(err => {
+                        console.warn(`[RunDetail] Failed to fetch task details for workflow ${workflowId}:`, err);
+                        return null;
+                    });
+                });
+                
+                const taskDetails = await Promise.all(taskDetailsPromises);
+                const taskDetailsMap = new Map(
+                    taskDetails
+                        .filter(t => t !== null)
+                        .map((t, index) => {
+                            const turn = eventsData.turns[index];
+                            const workflowId = turn.events.length > 0 ? turn.events[0].workflow_id : turn.task_id;
+                            return [workflowId, t];
+                        })
+                );
+                
                 eventsData.turns.forEach(turn => {
+                    const workflowId = turn.events.length > 0 ? turn.events[0].workflow_id : turn.task_id;
+                    
                     // User message
                     dispatch(addMessage({
                         id: `user-${turn.task_id}`,
@@ -177,12 +248,22 @@ function RunDetailContent() {
 
                     // Assistant message (final output)
                     if (turn.final_output) {
+                        // Get full task details (includes citations)
+                        const fullTaskDetails = taskDetailsMap.get(workflowId);
+                        const metadata = fullTaskDetails?.metadata || turn.metadata;
+                        
+                        if (metadata?.citations) {
+                            console.log(`[RunDetail] Loaded ${metadata.citations.length} citations for turn ${turn.task_id} (workflow: ${workflowId})`);
+                        } else {
+                            console.log(`[RunDetail] No citations found for turn ${turn.task_id} (workflow: ${workflowId})`);
+                        }
+                        
                         dispatch(addMessage({
                             id: `assistant-${turn.task_id}`,
                             role: "assistant",
                             content: turn.final_output,
                             timestamp: new Date(turn.timestamp).toLocaleTimeString(), // Approximate
-                            metadata: turn.metadata,
+                            metadata: metadata,
                             taskId: turn.task_id,
                         }));
                     }
@@ -209,18 +290,22 @@ function RunDetailContent() {
             fetchSessionHistory();
             hasFetchedHistoryRef.current = true;
         }
-    }, [sessionId]);
+    }, [sessionId, fetchSessionHistory, currentTaskId]);
     
     // Refetch session history when a task completes to update the summary
-    // But don't refetch immediately - wait for user to switch tabs or explicitly refresh
+    // Title updates via streaming title_generator events
     useEffect(() => {
         if (runStatus === "completed" && sessionId && sessionId !== "new") {
-            // Just update the sessionData for the summary, don't reset messages
+            // Update both events (for timeline) and history (for costs in summary)
             const timer = setTimeout(async () => {
                 try {
                     const eventsData = await getSessionEvents(sessionId, 100, 0);
                     const allEvents: Event[] = (eventsData as any).events || eventsData.turns.flatMap(t => t.events || []);
                     setSessionData({ turns: eventsData.turns, events: allEvents });
+                    
+                    // Fetch history for cost data
+                    const historyData = await getSessionHistory(sessionId);
+                    setSessionHistory(historyData);
                 } catch (err) {
                     console.error("Failed to refresh session data:", err);
                 }
@@ -233,19 +318,9 @@ function RunDetailContent() {
         const activeWorkflowId = workflowId || newTaskId;
         console.log("New task created:", newTaskId, "workflow:", activeWorkflowId);
         setCurrentTaskId(activeWorkflowId);
-
-        // If this was a new session, we need to update the URL
-        if (isNewSession) {
-            // We don't have the new session ID immediately available from submitTask response in all cases
-            // But usually the backend creates a session. 
-            // For now, let's assume we stay on "new" until we get a session ID, 
-            // OR we should have gotten the session ID from the task creation if possible.
-            // Since the current API doesn't easily give us the session ID on creation without fetching the task,
-            // we might need to fetch the task details.
-
-            // However, for the streaming to work, we just need the task ID.
-            // The session ID update can happen later or we can redirect.
-        }
+        
+        // Set this as the main workflow ID in Redux
+        dispatch(setMainWorkflowId(activeWorkflowId));
 
         // Add user query to messages immediately
         dispatch(addMessage({
@@ -265,12 +340,74 @@ function RunDetailContent() {
             isGenerating: true,
             taskId: activeWorkflowId,
         }));
+
+        // If this was a new session, fetch the task to obtain the session ID and update the URL
+        if (isNewSession) {
+            try {
+                const taskDetails = await getTask(activeWorkflowId);
+                if (taskDetails.session_id) {
+                    const newParams = new URLSearchParams(searchParams.toString());
+                    newParams.set("session_id", taskDetails.session_id);
+                    router.replace(`/run-detail?${newParams.toString()}`);
+                }
+            } catch (err) {
+                console.warn("Failed to refresh session ID after task creation:", err);
+            }
+        }
     };
 
     const messageMatchesTask = (message: any, taskId: string | null) => {
         if (!taskId) return false;
         if (message.taskId && message.taskId === taskId) return true;
         return typeof message.id === "string" && message.id.includes(taskId);
+    };
+
+    const fetchFinalOutput = useCallback(async () => {
+        if (!currentTaskId) return;
+        console.log("[RunDetail] Fetching final output for task:", currentTaskId);
+        try {
+            const task = await getTask(currentTaskId);
+            console.log("[RunDetail] Task metadata:", task.metadata);
+            if (task.metadata?.citations) {
+                console.log("[RunDetail] Citations found in task metadata:", task.metadata.citations.length);
+            }
+            
+            // Check if we already have a streaming message for this task
+            const hasExistingMessage = runMessages.some(m => 
+                m.role === "assistant" && m.taskId === currentTaskId
+            );
+            
+            if (hasExistingMessage && task.metadata) {
+                // Update existing message with metadata (including citations)
+                console.log("[RunDetail] Updating existing message with metadata");
+                dispatch(updateMessageMetadata({
+                    taskId: currentTaskId,
+                    metadata: task.metadata,
+                }));
+            } else if (task.result) {
+                // No existing message, create new one
+                console.log("[RunDetail] Creating new message with result");
+                dispatch(addMessage({
+                    id: `assistant-${currentTaskId}`,
+                    role: "assistant",
+                    content: task.result,
+                    timestamp: new Date().toLocaleTimeString(),
+                    metadata: task.metadata,
+                    taskId: currentTaskId,
+                }));
+            } else {
+                console.warn("[RunDetail] Task has no result field:", task);
+            }
+            
+            dispatch(setStreamError(null));
+        } catch (err) {
+            console.error("[RunDetail] Failed to fetch task result:", err);
+            dispatch(setStreamError("Failed to fetch final output"));
+        }
+    }, [currentTaskId, dispatch, runMessages]);
+
+    const handleFetchFinalOutputClick = () => {
+        fetchFinalOutput();
     };
 
     // Watch for task completion and fetch final output if needed
@@ -281,9 +418,9 @@ function RunDetailContent() {
             if (runStatus === "completed" && currentTaskId) {
                 console.log("[RunDetail] Task completed, checking if we need to fetch final output");
                 
-                // Check if we have an assistant message for this task
+                // Check if we have an assistant message for this task (including streaming ones to avoid duplicate fetches)
                 const hasAssistantResponse = runMessages.some(m => 
-                    m.role === "assistant" && !m.isStreaming && !m.isGenerating && messageMatchesTask(m, currentTaskId)
+                    m.role === "assistant" && !m.isGenerating && messageMatchesTask(m, currentTaskId)
                 );
                 
                 console.log("[RunDetail] Has assistant response:", hasAssistantResponse);
@@ -291,25 +428,7 @@ function RunDetailContent() {
 
                 if (!hasAssistantResponse) {
                     console.log("[RunDetail] No assistant response found, fetching task result from API");
-                    try {
-                        const task = await getTask(currentTaskId);
-                        console.log("[RunDetail] Task fetched:", task);
-                        if (task.result) {
-                            dispatch(addMessage({
-                                id: `assistant-${currentTaskId}`,
-                                role: "assistant",
-                                content: task.result,
-                                timestamp: new Date().toLocaleTimeString(),
-                                metadata: task.metadata,
-                                taskId: currentTaskId,
-                            }));
-                            console.log("[RunDetail] Added final output from task API:", task.result.substring(0, 100));
-                        } else {
-                            console.warn("[RunDetail] Task has no result field:", task);
-                        }
-                    } catch (err) {
-                        console.error("[RunDetail] Failed to fetch task result:", err);
-                    }
+                    await fetchFinalOutput();
                 } else {
                     console.log("[RunDetail] Assistant response already exists, skipping fallback fetch");
                 }
@@ -317,7 +436,7 @@ function RunDetailContent() {
         };
 
         fetchTaskResult();
-    }, [runStatus, currentTaskId, runMessages, dispatch]);
+    }, [runStatus, currentTaskId, runMessages, dispatch, fetchFinalOutput]);
 
     // Helper to categorize event type
     const categorizeEvent = (eventType: string): "agent" | "llm" | "tool" | "system" => {
@@ -376,28 +495,50 @@ function RunDetailContent() {
 
     const excludedEventTypes = new Set([
         "thread.message.delta",
+        "thread.message.completed",
         "LLM_PROMPT",
+        "LLM_OUTPUT",
     ]);
 
-    const timelineEvents = runEvents
-        .filter((event: any) => !excludedEventTypes.has(event.type) && event.type)
-        .map((event: any, index) => ({
-            id: event.stream_id || `event-${index}`,
-            type: categorizeEvent(event.type),
-            status: getEventStatus(event.type),
-            title: getFriendlyTitle(event),
-            timestamp: event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : "",
-            details: event.payload ? JSON.stringify(event.payload, null, 2) : undefined
-        }));
+    const filteredRunEvents = runEvents
+        .filter((event: any) => !excludedEventTypes.has(event.type) && event.type);
+
+    // Track which workflows have completed by looking for WORKFLOW_COMPLETED events
+    const completedWorkflows = new Set(
+        runEvents
+            .filter((e: any) => e.type === "WORKFLOW_COMPLETED")
+            .map((e: any) => e.workflow_id)
+    );
+
+    const timelineEvents = filteredRunEvents
+        .map((event: any, index) => {
+            // Check if this event's workflow has completed
+            const workflowCompleted = completedWorkflows.has(event.workflow_id);
+            
+            // If this workflow is completed, mark all its events as completed (static)
+            // Otherwise, use the event's natural status (may be running/breathing)
+            const eventStatus = workflowCompleted 
+                ? "completed" 
+                : getEventStatus(event.type);
+            
+            return {
+                id: event.stream_id || `event-${index}`,
+                type: categorizeEvent(event.type),
+                status: eventStatus,
+                title: getFriendlyTitle(event),
+                timestamp: event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : "",
+                details: event.payload ? JSON.stringify(event.payload, null, 2) : undefined
+            };
+        });
 
     // Combine historical messages with streaming messages
     // Redux `runMessages` should now contain both if we populated it correctly
     const messages = runMessages;
 
-    // Auto-scroll timeline to bottom when new events arrive
+    // Auto-scroll timeline to bottom when events change
     useEffect(() => {
         if (timelineScrollRef.current) {
-            const scrollContainer = timelineScrollRef.current.querySelector('[data-radix-scroll-area-viewport]');
+            const scrollContainer = timelineScrollRef.current.querySelector('[data-slot="scroll-area-viewport"]');
             if (scrollContainer) {
                 // Use requestAnimationFrame to avoid blocking render
                 requestAnimationFrame(() => {
@@ -405,12 +546,12 @@ function RunDetailContent() {
                 });
             }
         }
-    }, [timelineEvents.length]);
+    }, [timelineEvents]);
 
-    // Auto-scroll conversation to bottom when new messages arrive
+    // Auto-scroll conversation to bottom when messages change (including content updates during streaming)
     useEffect(() => {
-        if (conversationScrollRef.current) {
-            const scrollContainer = conversationScrollRef.current.querySelector('[data-radix-scroll-area-viewport]');
+        if (conversationScrollRef.current && activeTab === "conversation") {
+            const scrollContainer = conversationScrollRef.current.querySelector('[data-slot="scroll-area-viewport"]');
             if (scrollContainer) {
                 // Use requestAnimationFrame to avoid blocking render
                 requestAnimationFrame(() => {
@@ -418,7 +559,7 @@ function RunDetailContent() {
                 });
             }
         }
-    }, [messages.length]);
+    }, [messages, activeTab]);
 
     if (isLoading) {
         return (
@@ -448,10 +589,15 @@ function RunDetailContent() {
         );
     }
 
+    const agentLabelMap: Record<AgentSelection, string> = {
+        normal: "Normal task",
+        deep_research: "Deep research",
+    };
+
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full flex-col overflow-hidden">
             {/* Header */}
-            <header className="flex h-14 items-center justify-between border-b px-6 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+            <header className="flex h-14 items-center justify-between border-b px-6 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 shrink-0">
                 <div className="flex items-center gap-4">
                     <Button variant="ghost" size="icon" asChild>
                         <Link href="/runs">
@@ -460,14 +606,32 @@ function RunDetailContent() {
                     </Button>
                     <div className="flex items-center gap-2">
                         <h1 className="text-lg font-semibold">
-                            {isNewSession ? "New Session" : `Session ${sessionId?.slice(0, 8)}...`}
+                            {sessionTitle || (isNewSession ? "New Session" : `Session ${sessionId?.slice(0, 8)}...`)}
                         </h1>
                         <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
                             {isNewSession ? "New" : "Active"}
                         </Badge>
+                        <Badge variant="secondary" className="text-xs">
+                            {agentLabelMap[selectedAgent] || "Normal chat"}
+                        </Badge>
                     </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">Agent</span>
+                        <Select
+                            value={selectedAgent}
+                            onValueChange={(val) => dispatch(setSelectedAgent(val as AgentSelection))}
+                        >
+                            <SelectTrigger className="h-9 w-44 text-sm">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="normal">Normal task</SelectItem>
+                                <SelectItem value="deep_research">Deep research</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
                     <Button variant="outline" size="sm">
                         <Share className="mr-2 h-4 w-4" />
                         Share
@@ -479,64 +643,90 @@ function RunDetailContent() {
                 </div>
             </header>
 
+            {(connectionState === "error" || streamError) && (
+                <div className="flex items-center justify-between gap-3 border-b border-red-200 bg-red-50 px-6 py-3 shrink-0">
+                    <div className="text-sm text-red-700">
+                        {streamError || "Stream connection error"}
+                    </div>
+                    <div className="flex gap-2">
+                        <Button variant="outline" size="sm" onClick={handleRetryStream}>
+                            Retry stream
+                        </Button>
+                        <Button size="sm" onClick={handleFetchFinalOutputClick}>
+                            Fetch final output
+                        </Button>
+                    </div>
+                </div>
+            )}
+
             {/* Main Content - Split View */}
             <div className="flex flex-1 overflow-hidden">
                 {/* Left Column: Timeline */}
-                <div className="w-1/3 border-r bg-muted/10">
-                    <div className="p-4 font-medium text-sm text-muted-foreground uppercase tracking-wider">
-                        Execution Timeline
-                    </div>
-                    <ScrollArea className="h-[calc(100vh-8rem)]" ref={timelineScrollRef}>
-                        {timelineEvents.length > 0 ? (
-                            <RunTimeline events={timelineEvents as any} />
-                        ) : (
-                            <div className="p-4 text-sm text-muted-foreground text-center">
-                                No events yet.
-                            </div>
+                <div className="w-1/3 border-r bg-muted/10 flex flex-col">
+                    <div className="p-4 flex items-center justify-between gap-2 shrink-0">
+                        <div className="font-medium text-sm text-muted-foreground uppercase tracking-wider">
+                            Execution Timeline
+                        </div>
+                        {isReconnecting && (
+                            <span className="text-xs text-muted-foreground">Reconnecting...</span>
                         )}
-                    </ScrollArea>
+                    </div>
+                    <div className="flex-1 min-h-0">
+                        <ScrollArea className="h-full" ref={timelineScrollRef}>
+                            {timelineEvents.length > 0 ? (
+                                <RunTimeline events={timelineEvents as any} />
+                            ) : (
+                                <div className="p-4 text-sm text-muted-foreground text-center">
+                                    No events yet.
+                                </div>
+                            )}
+                        </ScrollArea>
+                    </div>
                 </div>
 
                 {/* Right Column: Tabs */}
-                <div className="flex-1 bg-background">
-                    <Tabs defaultValue="conversation" className="h-full flex flex-col">
-                        <div className="border-b px-4">
-                            <TabsList className="h-12 w-full justify-start bg-transparent p-0">
-                                <TabsTrigger value="conversation" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-4">
+                <div className="flex-1 bg-background flex flex-col">
+                    <Tabs defaultValue="conversation" value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
+                        <div className="px-4 pt-4 shrink-0">
+                            <TabsList>
+                                <TabsTrigger value="conversation">
                                     Conversation
                                 </TabsTrigger>
-                                <TabsTrigger value="summary" className="data-[state=active]:bg-transparent data-[state=active]:shadow-none data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none h-full px-4">
+                                <TabsTrigger value="summary">
                                     Summary
                                 </TabsTrigger>
                             </TabsList>
                         </div>
 
                         <TabsContent value="conversation" className="flex-1 p-0 m-0 data-[state=active]:flex flex-col overflow-hidden">
-                            <ScrollArea className="h-[calc(100vh-16rem)]" ref={conversationScrollRef}>
-                                {messages.length > 0 ? (
-                                    <RunConversation messages={messages as any} />
-                                ) : (
-                                    <div className="flex items-center justify-center h-full">
-                                        <div className="text-center text-muted-foreground">
-                                            <p className="text-lg mb-2">Start a conversation</p>
-                                            <p className="text-sm">Messages will appear here</p>
+                            <div className="flex-1 min-h-0">
+                                <ScrollArea className="h-full" ref={conversationScrollRef}>
+                                    {messages.length > 0 ? (
+                                        <RunConversation messages={messages as any} />
+                                    ) : (
+                                        <div className="flex items-center justify-center h-full">
+                                            <div className="text-center text-muted-foreground">
+                                                <p className="text-lg mb-2">Start a conversation</p>
+                                                <p className="text-sm">Messages will appear here</p>
+                                            </div>
                                         </div>
-                                    </div>
-                                )}
-                            </ScrollArea>
+                                    )}
+                                </ScrollArea>
+                            </div>
 
                             {/* Chat Input Box */}
-                            <div className="border-t bg-background p-4">
+                            <div className="border-t bg-background p-4 shrink-0">
                                 <ChatInput
-                                    sessionId={isNewSession ? undefined : sessionId}
+                                    sessionId={isNewSession ? undefined : sessionId ?? undefined}
                                     disabled={runStatus === "running"}
                                     isTaskComplete={runStatus !== "running"}
+                                    selectedAgent={selectedAgent}
                                     onTaskCreated={handleTaskCreated}
                                 />
                             </div>
                         </TabsContent>
 
-                        <TabsContent value="summary" className="flex-1 p-6 m-0 overflow-auto">
+                        <TabsContent value="summary" className="flex-1 p-6 m-0 overflow-auto min-h-0">
                             <div className="max-w-4xl mx-auto space-y-4">
                                 <div>
                                     <h2 className="text-xl font-bold">Session Summary</h2>
@@ -547,44 +737,50 @@ function RunDetailContent() {
                                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                                     <Card className="p-3">
                                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Turns</div>
-                                        <div className="text-xl sm:text-2xl font-bold mt-1">{sessionData?.turns.length || 0}</div>
+                                        <div className="text-xl sm:text-2xl font-bold mt-1">{sessionHistory?.tasks.length || sessionData?.turns.length || 0}</div>
                                     </Card>
                                     <Card className="p-3">
-                                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Events</div>
-                                        <div className="text-xl sm:text-2xl font-bold mt-1">{runEvents.length || 0}</div>
+                                        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Costs</div>
+                                        <div className="text-xl sm:text-2xl font-bold mt-1">
+                                            ${(sessionHistory?.tasks.reduce((sum: number, task: any) => sum + (task.total_cost_usd || 0), 0) || 0).toFixed(4)}
+                                        </div>
                                     </Card>
                                     <Card className="p-3">
                                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Tokens</div>
                                         <div className="text-xl sm:text-2xl font-bold mt-1">
-                                            {(sessionData?.turns.reduce((sum, turn) => sum + (turn.metadata?.tokens_used || 0), 0) || 0).toLocaleString()}
+                                            {(sessionHistory?.tasks.reduce((sum: number, task: any) => sum + (task.total_tokens || 0), 0) || sessionData?.turns.reduce((sum, turn) => sum + (turn.metadata?.tokens_used || 0), 0) || 0).toLocaleString()}
                                         </div>
                                     </Card>
                                     <Card className="p-3">
                                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Time</div>
                                         <div className="text-xl sm:text-2xl font-bold mt-1">
-                                            {((sessionData?.turns.reduce((sum, turn) => sum + (turn.metadata?.execution_time_ms || 0), 0) || 0) / 1000).toFixed(1)}s
+                                            {((sessionHistory?.tasks.reduce((sum: number, task: any) => sum + (task.duration_ms || 0), 0) || sessionData?.turns.reduce((sum, turn) => sum + (turn.metadata?.execution_time_ms || 0), 0) || 0) / 1000).toFixed(1)}s
                                         </div>
                                     </Card>
                                 </div>
 
                                 {/* Token Usage Details */}
-                                {sessionData?.turns && sessionData.turns.length > 0 && (
+                                {sessionHistory?.tasks && sessionHistory.tasks.length > 0 && (
                                     <Card className="p-4">
                                         <h3 className="text-base font-semibold mb-3">Token Usage by Turn</h3>
                                         <div className="space-y-2">
-                                            {sessionData.turns.map((turn, index) => (
-                                                <div key={turn.task_id} className="flex items-center justify-between py-2 border-b last:border-b-0">
+                                            {sessionHistory.tasks.map((task: any, index: number) => (
+                                                <div key={task.task_id} className="flex items-center justify-between py-2 border-b last:border-b-0">
                                                     <div className="flex-1 min-w-0">
                                                         <div className="text-xs font-medium truncate">Turn {index + 1}</div>
-                                                        <div className="text-xs text-muted-foreground truncate">{turn.user_query}</div>
+                                                        <div className="text-xs text-muted-foreground truncate">{task.query}</div>
                                                     </div>
                                                     <div className="flex items-center gap-3 sm:gap-4 ml-4">
                                                         <div className="text-right">
-                                                            <div className="text-sm font-medium">{(turn.metadata?.tokens_used || 0).toLocaleString()}</div>
+                                                            <div className="text-sm font-medium">{(task.total_tokens || 0).toLocaleString()}</div>
                                                             <div className="text-xs text-muted-foreground">tokens</div>
                                                         </div>
                                                         <div className="text-right">
-                                                            <div className="text-sm font-medium">{((turn.metadata?.execution_time_ms || 0) / 1000).toFixed(1)}s</div>
+                                                            <div className="text-sm font-medium">${(task.total_cost_usd || 0).toFixed(4)}</div>
+                                                            <div className="text-xs text-muted-foreground">cost</div>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            <div className="text-sm font-medium">{((task.duration_ms || 0) / 1000).toFixed(1)}s</div>
                                                             <div className="text-xs text-muted-foreground">time</div>
                                                         </div>
                                                     </div>
@@ -595,10 +791,12 @@ function RunDetailContent() {
                                 )}
 
                                 {/* Agents Involved */}
-                                {sessionData?.turns && sessionData.turns.length > 0 && (() => {
+                                {sessionHistory?.tasks && sessionHistory.tasks.length > 0 && (() => {
                                     const allAgents = new Set<string>();
-                                    sessionData.turns.forEach(turn => {
-                                        turn.metadata?.agents_involved?.forEach((agent: string) => allAgents.add(agent));
+                                    sessionHistory.tasks.forEach((task: any) => {
+                                        // Extract agents from metadata if available
+                                        const agents = task.metadata?.agents_involved || [];
+                                        agents.forEach((agent: any) => allAgents.add(agent));
                                     });
                                     return allAgents.size > 0 ? (
                                         <Card className="p-4">
@@ -615,7 +813,7 @@ function RunDetailContent() {
                                 })()}
 
                                 {/* Average Metrics */}
-                                {sessionData?.turns && sessionData.turns.length > 0 && (
+                                {sessionHistory?.tasks && sessionHistory.tasks.length > 0 && (
                                     <Card className="p-4">
                                         <h3 className="text-base font-semibold mb-3">Average Metrics</h3>
                                         <div className="grid grid-cols-2 gap-4">
@@ -623,7 +821,7 @@ function RunDetailContent() {
                                                 <div className="text-xs text-muted-foreground">Avg. Tokens per Turn</div>
                                                 <div className="text-lg font-bold mt-1">
                                                     {Math.round(
-                                                        sessionData.turns.reduce((sum, turn) => sum + (turn.metadata?.tokens_used || 0), 0) / sessionData.turns.length
+                                                        sessionHistory.tasks.reduce((sum: number, task: any) => sum + (task.total_tokens || 0), 0) / sessionHistory.tasks.length
                                                     ).toLocaleString()}
                                                 </div>
                                             </div>
@@ -631,8 +829,8 @@ function RunDetailContent() {
                                                 <div className="text-xs text-muted-foreground">Avg. Time per Turn</div>
                                                 <div className="text-lg font-bold mt-1">
                                                     {(
-                                                        sessionData.turns.reduce((sum, turn) => sum + (turn.metadata?.execution_time_ms || 0), 0) / 
-                                                        sessionData.turns.length / 1000
+                                                        sessionHistory.tasks.reduce((sum: number, task: any) => sum + (task.duration_ms || 0), 0) / 
+                                                        sessionHistory.tasks.length / 1000
                                                     ).toFixed(1)}s
                                                 </div>
                                             </div>
