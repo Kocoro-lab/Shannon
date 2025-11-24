@@ -39,6 +39,7 @@ type ResearchStrategiesConfig struct {
 		VerificationEnabled      bool `yaml:"verification_enabled"`
 		MaxConcurrentAgents      int  `yaml:"max_concurrent_agents"`
 		ReactMaxIterations       int  `yaml:"react_max_iterations"`
+		BudgetAgentMin           int  `yaml:"budget_agent_min"`
 		GapFillingEnabled        bool `yaml:"gap_filling_enabled"`
 		GapFillingMaxGaps        int  `yaml:"gap_filling_max_gaps"`
 		GapFillingMaxIterations  int  `yaml:"gap_filling_max_iterations"`
@@ -100,6 +101,10 @@ func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
 	// Seed max_concurrent_agents
 	if _, ok := ctxMap["max_concurrent_agents"]; !ok && preset.MaxConcurrentAgents >= 1 && preset.MaxConcurrentAgents <= 20 {
 		ctxMap["max_concurrent_agents"] = preset.MaxConcurrentAgents
+	}
+	// Seed budget_agent_min (minimum per-agent token budget)
+	if _, ok := ctxMap["budget_agent_min"]; !ok && preset.BudgetAgentMin > 0 {
+		ctxMap["budget_agent_min"] = preset.BudgetAgentMin
 	}
 	// Seed enable_verification
 	if _, ok := ctxMap["enable_verification"]; !ok {

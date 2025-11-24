@@ -468,6 +468,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	if v, ok := baseContext["budget_agent_max"].(float64); ok && v > 0 {
 		agentMaxTokens = int(v)
 	}
+	// Apply minimum budget if configured
+	if minBudget, ok := baseContext["budget_agent_min"].(int); ok && minBudget > agentMaxTokens {
+		agentMaxTokens = minBudget
+	}
+	if minBudget, ok := baseContext["budget_agent_min"].(float64); ok && int(minBudget) > agentMaxTokens {
+		agentMaxTokens = int(minBudget)
+	}
 
 	modelTier := determineModelTier(baseContext, "medium")
 	var agentResults []activities.AgentExecutionResult

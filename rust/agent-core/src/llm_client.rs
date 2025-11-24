@@ -36,6 +36,8 @@ pub struct AgentResponse {
     pub provider: String,
     #[serde(default = "default_finish_reason")]
     pub finish_reason: String,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,6 +98,12 @@ pub struct TokenUsage {
     pub provider: String,
 }
 
+pub struct AgentQueryResult {
+    pub response: String,
+    pub usage: TokenUsage,
+    pub metadata: Option<serde_json::Value>,
+}
+
 pub struct LLMClient {
     client: Client,
     base_url: String,
@@ -127,7 +135,7 @@ impl LLMClient {
         mode: &str,
         context: Option<serde_json::Value>,
         tools: Option<Vec<String>>,
-    ) -> AgentResult<(String, TokenUsage)> {
+    ) -> AgentResult<AgentQueryResult> {
         let url = format!("{}/agent/query", self.base_url);
 
         // Use Cow to avoid unnecessary string allocations
@@ -232,9 +240,9 @@ impl LLMClient {
 
         if !agent_response.success {
             warn!("LLM service returned unsuccessful response");
-            return Ok((
-                format!("Error response for: {}", query),
-                TokenUsage {
+            return Ok(AgentQueryResult {
+                response: format!("Error response for: {}", query),
+                usage: TokenUsage {
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     total_tokens: 0,
@@ -242,7 +250,8 @@ impl LLMClient {
                     model: "error".to_string(),
                     provider: "unknown".to_string(),
                 },
-            ));
+                metadata: agent_response.metadata,
+            });
         }
 
         let token_usage = TokenUsage {
@@ -259,7 +268,11 @@ impl LLMClient {
             token_usage.total_tokens, token_usage.model
         );
 
-        Ok((agent_response.response, token_usage))
+        Ok(AgentQueryResult {
+            response: agent_response.response,
+            usage: token_usage,
+            metadata: agent_response.metadata,
+        })
     }
 
     #[instrument(skip(self, context), fields(agent_id = %agent_id, mode = %mode))]
