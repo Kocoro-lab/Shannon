@@ -12,8 +12,9 @@ import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import { ExternalLink } from "lucide-react";
 import React, { type ReactNode } from "react";
+import { CollapsibleMessage } from "@/components/collapsible-message";
 
-interface Citation {
+export interface Citation {
     url: string;
     title?: string;
     source?: string;
@@ -47,6 +48,7 @@ interface Message {
 
 interface RunConversationProps {
     messages: readonly Message[];
+    showAgentTrace?: boolean;
 }
 
 // Component to render a single citation with tooltip
@@ -159,7 +161,7 @@ function TextWithCitations({ text, citations }: { text: string; citations?: Cita
 }
 
 // Component to render markdown with inline citation components
-function MarkdownWithCitations({ content, citations }: { content: string; citations?: Citation[] }) {
+export function MarkdownWithCitations({ content, citations }: { content: string; citations?: Citation[] }) {
     if (!citations || citations.length === 0) {
         return (
             <ReactMarkdown
@@ -277,7 +279,7 @@ function getMarkdownComponents() {
     };
 }
 
-export function RunConversation({ messages }: RunConversationProps) {
+export function RunConversation({ messages, showAgentTrace = false }: RunConversationProps) {
     // Debug: Check if any messages have citations
     const messagesWithCitations = messages.filter(m => m.metadata?.citations && m.metadata.citations.length > 0);
     if (messagesWithCitations.length > 0) {
@@ -287,9 +289,37 @@ export function RunConversation({ messages }: RunConversationProps) {
         });
     }
 
+    // Determine if a message is intermediate (from a specific agent in multi-agent flow)
+    const isIntermediateMessage = (msg: Message) => {
+        if (msg.role !== "assistant") return false;
+        const sender = msg.sender || "";
+        // Intermediate agents: reasoner-*, actor-*, react-synthesizer, etc.
+        // Final synthesis: "synthesis" or empty/undefined (default assistant)
+        return sender && sender !== "synthesis" && sender !== "assistant" && sender !== "";
+    };
+
+    // Filter messages based on showAgentTrace toggle
+    const displayedMessages = showAgentTrace 
+        ? messages 
+        : messages.filter(msg => !isIntermediateMessage(msg));
+
     return (
         <div className="space-y-2 p-4">
-            {messages.map((message) => (
+            {displayedMessages.map((message) => {
+                // Render intermediate messages with CollapsibleMessage
+                if (isIntermediateMessage(message) && showAgentTrace) {
+                    return (
+                        <CollapsibleMessage
+                            key={message.id}
+                            sender={message.sender || "agent"}
+                            content={message.content}
+                            timestamp={message.timestamp}
+                        />
+                    );
+                }
+
+                // Render user and final assistant messages normally
+                return (
                 <div
                     key={message.id}
                     className={cn(
@@ -354,7 +384,8 @@ export function RunConversation({ messages }: RunConversationProps) {
                         </div>
                     </div>
                 </div>
-            ))}
+                );
+            })}
         </div>
     );
 }

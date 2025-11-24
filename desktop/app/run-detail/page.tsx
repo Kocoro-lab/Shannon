@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RunTimeline } from "@/components/run-timeline";
 import { RunConversation } from "@/components/run-conversation";
 import { ChatInput, AgentSelection } from "@/components/chat-input";
-import { ArrowLeft, Download, Share, Loader2 } from "lucide-react";
+import { ArrowLeft, Download, Share, Loader2, Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
 import { Suspense, useEffect, useState, useRef, useCallback } from "react";
 import { useRunStream } from "@/lib/shannon/stream";
@@ -33,6 +33,7 @@ function RunDetailContent() {
     const [currentTaskId, setCurrentTaskId] = useState<string | null>(null);
     const [streamRestartKey, setStreamRestartKey] = useState(0);
     const [activeTab, setActiveTab] = useState("conversation");
+    const [showAgentTrace, setShowAgentTrace] = useState(false);
     const dispatch = useDispatch();
     const router = useRouter();
     
@@ -333,8 +334,43 @@ function RunDetailContent() {
                         taskId: turn.task_id,
                     }));
 
-                    // Assistant message (final output)
-                    if (turn.final_output) {
+                    // Add all intermediate agent messages from thread.message.completed events
+                    turn.events
+                        .filter((event: any) => 
+                            (event.type === 'thread.message.completed' || event.type === 'LLM_OUTPUT') &&
+                            event.agent_id !== 'title_generator'
+                        )
+                        .forEach((event: any) => {
+                            const content = event.response || event.message || event.content || "";
+                            if (content) {
+                                const messageId = `${event.agent_id || 'assistant'}-${event.workflow_id}-${event.seq || event.timestamp || Date.now()}`;
+                                // For synthesis agent, get citations from task metadata instead of event metadata
+                                const fullTaskDetails = taskDetailsMap.get(workflowId);
+                                const metadata = (event.agent_id === 'synthesis' && fullTaskDetails?.metadata?.citations)
+                                    ? { ...event.metadata, citations: fullTaskDetails.metadata.citations }
+                                    : event.metadata;
+                                
+                                dispatch(addMessage({
+                                    id: messageId,
+                                    role: "assistant",
+                                    sender: event.agent_id,
+                                    content: content,
+                                    timestamp: event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : new Date(turn.timestamp).toLocaleTimeString(),
+                                    metadata: metadata,
+                                    taskId: event.workflow_id,
+                                }));
+                            }
+                        });
+
+                    // Assistant message (final output) - as fallback if no LLM_OUTPUT events
+                    // Only add if we don't already have messages from events
+                    const hasEventsWithContent = turn.events.some((event: any) => 
+                        (event.type === 'thread.message.completed' || event.type === 'LLM_OUTPUT') &&
+                        event.agent_id !== 'title_generator' &&
+                        (event.response || event.message || event.content)
+                    );
+                    
+                    if (turn.final_output && !hasEventsWithContent) {
                         // Get full task details (includes citations)
                         const fullTaskDetails = taskDetailsMap.get(workflowId);
                         const metadata = fullTaskDetails?.metadata || turn.metadata;
@@ -349,7 +385,7 @@ function RunDetailContent() {
                             id: `assistant-${turn.task_id}`,
                             role: "assistant",
                             content: turn.final_output,
-                            timestamp: new Date(turn.timestamp).toLocaleTimeString(), // Approximate
+                            timestamp: new Date(turn.timestamp).toLocaleTimeString(),
                             metadata: metadata,
                             taskId: turn.task_id,
                         }));
@@ -806,7 +842,7 @@ function RunDetailContent() {
                 {/* Right Column: Tabs */}
                 <div className="flex-1 bg-background flex flex-col">
                     <Tabs defaultValue="conversation" value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
-                        <div className="px-4 pt-4 shrink-0">
+                        <div className="px-4 pt-4 shrink-0 flex items-center justify-between gap-4">
                             <TabsList>
                                 <TabsTrigger value="conversation">
                                     Conversation
@@ -815,13 +851,24 @@ function RunDetailContent() {
                                     Summary
                                 </TabsTrigger>
                             </TabsList>
+                            {activeTab === "conversation" && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setShowAgentTrace(!showAgentTrace)}
+                                    className="gap-2"
+                                >
+                                    {showAgentTrace ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                                    {showAgentTrace ? "Hide Agent Trace" : "Show Agent Trace"}
+                                </Button>
+                            )}
                         </div>
 
                         <TabsContent value="conversation" className="flex-1 p-0 m-0 data-[state=active]:flex flex-col overflow-hidden">
                             <div className="flex-1 min-h-0">
                                 <ScrollArea className="h-full" ref={conversationScrollRef}>
                                     {messages.length > 0 ? (
-                                        <RunConversation messages={messages as any} />
+                                        <RunConversation messages={messages as any} showAgentTrace={showAgentTrace} />
                                     ) : (
                                         <div className="flex items-center justify-center h-full">
                                             <div className="text-center text-muted-foreground">
