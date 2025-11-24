@@ -1150,10 +1150,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			// Perform synthesis for JSON-like results or when role requires formatting
 			logger.Info("Single result requires synthesis (JSON/role formatting)")
 			if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-				Query:            input.Query,
-				AgentResults:     childResults,
-				Context:          ctxForSynth,
-				ParentWorkflowID: workflowID,
+				Query:              input.Query,
+				AgentResults:       childResults,
+				Context:            ctxForSynth,
+				CollectedCitations: collectedCitations,
+				ParentWorkflowID:   workflowID,
 			}).Get(ctx, &synth); err != nil {
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
@@ -1180,10 +1181,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			logger.Info("Performing standard synthesis of agent results")
 		}
 		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-			Query:            input.Query,
-			AgentResults:     childResults,
-			Context:          ctxForSynth, // Pass role/prompt_params for role-aware synthesis
-			ParentWorkflowID: workflowID,  // For observability correlation
+			Query:              input.Query,
+			AgentResults:       childResults,
+			Context:            ctxForSynth, // Pass role/prompt_params for role-aware synthesis
+			CollectedCitations: collectedCitations,
+			ParentWorkflowID:   workflowID, // For observability correlation
 		}).Get(ctx, &synth); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}

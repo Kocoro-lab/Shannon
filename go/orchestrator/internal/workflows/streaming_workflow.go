@@ -11,8 +11,8 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
 )
 
 // StreamingWorkflow executes tasks with streaming output and typed state management
@@ -293,6 +293,76 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		totalTokens += result.TokensUsed
 	}
 
+	// Collect citations from streaming agent results (best-effort)
+	var collectedCitations []metadata.Citation
+	if len(results) > 0 {
+		var resultsForCitations []interface{}
+		for _, ar := range results {
+			var toolExecs []interface{}
+			if len(ar.ToolExecutions) > 0 {
+				for _, te := range ar.ToolExecutions {
+					toolExecs = append(toolExecs, map[string]interface{}{
+						"tool":    te.Tool,
+						"success": te.Success,
+						"output":  te.Output,
+						"error":   te.Error,
+					})
+				}
+			}
+			resultsForCitations = append(resultsForCitations, map[string]interface{}{
+				"agent_id":        ar.AgentID,
+				"tool_executions": toolExecs,
+				"response":        ar.Response,
+			})
+		}
+		collectedCitations, _ = metadata.CollectCitations(resultsForCitations, workflow.Now(ctx), 0)
+	}
+
+	// Prepare synthesis context (copy input context, set defaults, inject citations)
+	buildContext := func() map[string]interface{} {
+		ctxMap := map[string]interface{}{}
+		if input.Context != nil {
+			for k, v := range input.Context {
+				ctxMap[k] = v
+			}
+		}
+		if _, ok := ctxMap["synthesis_style"]; !ok {
+			if _, hasAreas := ctxMap["research_areas"]; hasAreas {
+				ctxMap["synthesis_style"] = "comprehensive"
+			}
+		}
+		if len(collectedCitations) > 0 {
+			var b strings.Builder
+			for i, c := range collectedCitations {
+				idx := i + 1
+				title := c.Title
+				if title == "" {
+					title = c.Source
+				}
+				if c.PublishedDate != nil {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+				} else {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+				}
+			}
+			ctxMap["available_citations"] = strings.TrimRight(b.String(), "\n")
+			ctxMap["citation_count"] = len(collectedCitations)
+
+			out := make([]map[string]interface{}, 0, len(collectedCitations))
+			for _, c := range collectedCitations {
+				out = append(out, map[string]interface{}{
+					"url":               c.URL,
+					"title":             c.Title,
+					"source":            c.Source,
+					"credibility_score": c.CredibilityScore,
+					"quality_score":     c.QualityScore,
+				})
+			}
+			ctxMap["citations"] = out
+		}
+		return ctxMap
+	}
+
 	// Synthesize results (LLM-first)
 	var synthesis activities.SynthesisResult
 
@@ -322,24 +392,13 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			synthesis = activities.SynthesisResult{FinalResult: agentResults[0].Response, TokensUsed: agentResults[0].TokensUsed}
 		} else {
 			var err error
-            err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-                Query:        input.Query,
-                AgentResults: agentResults,
-                // Prefer comprehensive synthesis style when research cues are present
-                Context: func() map[string]interface{} {
-                    ctxMap := map[string]interface{}{}
-                    for k, v := range input.Context {
-                        ctxMap[k] = v
-                    }
-                    if _, ok := ctxMap["synthesis_style"]; !ok {
-                        if _, hasAreas := ctxMap["research_areas"]; hasAreas {
-                            ctxMap["synthesis_style"] = "comprehensive"
-                        }
-                    }
-                    return ctxMap
-                }(),
-                ParentWorkflowID: workflowID,
-            }).Get(ctx, &synthesis)
+			err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+				Query:              input.Query,
+				AgentResults:       agentResults,
+				Context:            buildContext(),
+				CollectedCitations: collectedCitations,
+				ParentWorkflowID:   workflowID,
+			}).Get(ctx, &synthesis)
 			if err != nil {
 				logger.Error("Result synthesis failed", "error", err)
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -347,24 +406,13 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	} else {
 		var err error
-        err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-            Query:        input.Query,
-            AgentResults: agentResults,
-            // Prefer comprehensive synthesis style when research cues are present
-            Context: func() map[string]interface{} {
-                ctxMap := map[string]interface{}{}
-                for k, v := range input.Context {
-                    ctxMap[k] = v
-                }
-                if _, ok := ctxMap["synthesis_style"]; !ok {
-                    if _, hasAreas := ctxMap["research_areas"]; hasAreas {
-                        ctxMap["synthesis_style"] = "comprehensive"
-                    }
-                }
-                return ctxMap
-            }(),
-            ParentWorkflowID: workflowID,
-        }).Get(ctx, &synthesis)
+		err = workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+			Query:              input.Query,
+			AgentResults:       agentResults,
+			Context:            buildContext(),
+			CollectedCitations: collectedCitations,
+			ParentWorkflowID:   workflowID,
+		}).Get(ctx, &synthesis)
 		if err != nil {
 			logger.Error("Result synthesis failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err

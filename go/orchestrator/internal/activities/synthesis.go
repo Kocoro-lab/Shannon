@@ -381,6 +381,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// Add citation instructions for research workflows
 	// Calculate minimum citations required (default to 6, clamp by available citations)
 	minCitations := 6
+	availableCitations := 0
 	// Derive citation count from context if available
 	if input.Context != nil {
 		if v, ok := input.Context["citation_count"]; ok {
@@ -389,19 +390,23 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				if t < minCitations {
 					minCitations = t
 				}
+				availableCitations = t
 			case int32:
 				if int(t) < minCitations {
 					minCitations = int(t)
 				}
+				availableCitations = int(t)
 			case int64:
 				if int(t) < minCitations {
 					minCitations = int(t)
 				}
+				availableCitations = int(t)
 			case float64:
 				// JSON numbers may be float64; clamp safely
 				if int(t) < minCitations {
 					minCitations = int(t)
 				}
+				availableCitations = int(t)
 			}
 		} else if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
 			// Fallback: count non-empty lines
@@ -415,9 +420,17 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			if count > 0 && count < minCitations {
 				minCitations = count
 			}
+			availableCitations = count
 		}
 	}
-	if minCitations < 3 {
+	if availableCitations > 0 && minCitations > availableCitations {
+		minCitations = availableCitations
+	}
+	if availableCitations > 0 {
+		if minCitations < 3 && availableCitations >= 3 {
+			minCitations = 3
+		}
+	} else if minCitations < 3 {
 		minCitations = 3 // Minimum floor for research synthesis
 	}
 

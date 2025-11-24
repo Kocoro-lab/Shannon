@@ -203,7 +203,7 @@ func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (st
 
 	reqBody := map[string]interface{}{
 		"query":       prompt,
-		"max_tokens":  1024, // Allow 3-5 words + safety margin for large original queries
+		"max_tokens":  9126, // Increased for long input queries + output
 		"temperature": 0.3,  // Low temperature for consistency
 		"agent_id":    "title_generator",
 		"context": map[string]interface{}{
@@ -258,6 +258,14 @@ func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (st
 
 	if title == "" {
 		return "", fmt.Errorf("LLM returned empty title")
+	}
+
+	// Detect error messages that shouldn't be used as titles
+	if strings.Contains(title, "[Incomplete response:") ||
+		strings.Contains(title, "token limit") ||
+		strings.Contains(title, "truncated") ||
+		len(title) > 200 { // Titles should be short, if it's too long it's probably an error
+		return "", fmt.Errorf("LLM returned invalid title (likely an error message)")
 	}
 
 	// Truncate by runes (characters) not bytes to avoid corrupting UTF-8

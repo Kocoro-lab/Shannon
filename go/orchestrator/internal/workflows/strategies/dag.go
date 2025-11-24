@@ -373,10 +373,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			err = workflow.ExecuteActivity(ctx,
 				activities.SynthesizeResultsLLM,
 				activities.SynthesisInput{
-					Query:            input.Query,
-					AgentResults:     agentResults,
-					Context:          baseContext,
-					ParentWorkflowID: input.ParentWorkflowID,
+					Query:              input.Query,
+					AgentResults:       agentResults,
+					Context:            baseContext,
+					CollectedCitations: collectedCitations,
+					ParentWorkflowID:   input.ParentWorkflowID,
 				},
 			).Get(ctx, &synthesis)
 
@@ -421,10 +422,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			err = workflow.ExecuteActivity(ctx,
 				activities.SynthesizeResultsLLM,
 				activities.SynthesisInput{
-					Query:            input.Query,
-					AgentResults:     agentResults,
-					Context:          baseContext,
-					ParentWorkflowID: input.ParentWorkflowID,
+					Query:              input.Query,
+					AgentResults:       agentResults,
+					Context:            baseContext,
+					CollectedCitations: collectedCitations,
+					ParentWorkflowID:   input.ParentWorkflowID,
 				},
 			).Get(ctx, &synthesis)
 
@@ -454,10 +456,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		err = workflow.ExecuteActivity(ctx,
 			activities.SynthesizeResultsLLM,
 			activities.SynthesisInput{
-				Query:            input.Query,
-				AgentResults:     agentResults,
-				Context:          baseContext,
-				ParentWorkflowID: input.ParentWorkflowID,
+				Query:              input.Query,
+				AgentResults:       agentResults,
+				Context:            baseContext,
+				CollectedCitations: collectedCitations,
+				ParentWorkflowID:   input.ParentWorkflowID,
 			}).Get(ctx, &synthesis)
 
 		if err != nil {
