@@ -11,7 +11,7 @@ import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import { ExternalLink } from "lucide-react";
-import type { ReactNode } from "react";
+import React, { type ReactNode } from "react";
 
 interface Citation {
     url: string;
@@ -174,63 +174,49 @@ function MarkdownWithCitations({ content, citations }: { content: string; citati
     
     console.log("[MarkdownWithCitations] Rendering with citations:", citations.length);
     
-    // Split content by citation markers and render each part
-    const citationRegex = /\[(\d+)\]/g;
-    const parts: (string | JSX.Element)[] = [];
-    let lastIndex = 0;
-    let match;
-    let key = 0;
+    // Custom component to handle text nodes with citations
+    const components = {
+        ...getMarkdownComponents(),
+        // Override paragraph to process citations inline
+        p: ({ children, ...props }: any) => {
+            const processedChildren = React.Children.map(children, (child, index) => {
+                if (typeof child === 'string') {
+                    return <TextWithCitations key={index} text={child} citations={citations} />;
+                }
+                return child;
+            });
+            return <p className="leading-relaxed" {...props}>{processedChildren}</p>;
+        },
+        // Also handle other text containers
+        li: ({ children, ...props }: any) => {
+            const processedChildren = React.Children.map(children, (child, index) => {
+                if (typeof child === 'string') {
+                    return <TextWithCitations key={index} text={child} citations={citations} />;
+                }
+                return child;
+            });
+            return <li {...props}>{processedChildren}</li>;
+        },
+        td: ({ children, ...props }: any) => {
+            const processedChildren = React.Children.map(children, (child, index) => {
+                if (typeof child === 'string') {
+                    return <TextWithCitations key={index} text={child} citations={citations} />;
+                }
+                return child;
+            });
+            return <td {...props}>{processedChildren}</td>;
+        },
+    };
     
-    while ((match = citationRegex.exec(content)) !== null) {
-        const citationNum = parseInt(match[1], 10);
-        const citation = citations[citationNum - 1];
-        
-        // Add markdown content before citation
-        if (match.index > lastIndex) {
-            const markdownChunk = content.substring(lastIndex, match.index);
-            parts.push(
-                <ReactMarkdown
-                    key={`md-${key++}`}
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeHighlight]}
-                    components={getMarkdownComponents()}
-                >
-                    {markdownChunk}
-                </ReactMarkdown>
-            );
-        }
-        
-        // Add citation component
-        if (citation) {
-            parts.push(
-                <CitationLink
-                    key={`cite-${key++}`}
-                    index={citationNum}
-                    citation={citation}
-                />
-            );
-        } else {
-            parts.push(match[0]); // Plain text if no citation data
-        }
-        
-        lastIndex = match.index + match[0].length;
-    }
-    
-    // Add remaining markdown content
-    if (lastIndex < content.length) {
-        parts.push(
-            <ReactMarkdown
-                key={`md-${key++}`}
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
-                components={getMarkdownComponents()}
-            >
-                {content.substring(lastIndex)}
-            </ReactMarkdown>
-        );
-    }
-    
-    return <>{parts}</>;
+    return (
+        <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            rehypePlugins={[rehypeHighlight]}
+            components={components}
+        >
+            {content}
+        </ReactMarkdown>
+    );
 }
 
 // Extract markdown components for reuse

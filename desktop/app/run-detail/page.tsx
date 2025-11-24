@@ -17,8 +17,8 @@ import { useRunStream } from "@/lib/shannon/stream";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getSessionEvents, getSessionHistory, getTask, Turn, Event } from "@/lib/shannon/api";
-import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setMainWorkflowId } from "@/lib/features/runSlice";
+import { getSessionEvents, getSessionHistory, getTask, getSession, Turn, Event } from "@/lib/shannon/api";
+import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -51,6 +51,7 @@ function RunDetailContent() {
     const streamError = useSelector((state: RootState) => state.run.streamError);
     const sessionTitle = useSelector((state: RootState) => state.run.sessionTitle);
     const selectedAgent = useSelector((state: RootState) => state.run.selectedAgent);
+    const researchStrategy = useSelector((state: RootState) => state.run.researchStrategy);
     const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
 
     const handleRetryStream = () => {
@@ -108,6 +109,26 @@ function RunDetailContent() {
                 // Set this as the main workflow ID in Redux
                 dispatch(setMainWorkflowId(workflowId));
 
+                // Extract agent type and research strategy from task context
+                // Context is stored in metadata.task_context
+                let taskContext = task.context;
+                if (!taskContext && task.metadata?.task_context) {
+                    taskContext = task.metadata.task_context;
+                }
+                
+                if (taskContext) {
+                    const isDeepResearch = taskContext.force_research === true;
+                    const strategy = taskContext.research_strategy || "quick";
+                    
+                    console.log("[RunDetail] Task context - Agent type:", isDeepResearch ? "deep_research" : "normal", "Strategy:", strategy);
+                    console.log("[RunDetail] Task context details:", taskContext);
+                    
+                    dispatch(setSelectedAgent(isDeepResearch ? "deep_research" : "normal"));
+                    if (isDeepResearch) {
+                        dispatch(setResearchStrategy(strategy as "quick" | "standard" | "deep" | "academic"));
+                    }
+                }
+
                 // Add the user message immediately
                 dispatch(addMessage({
                     id: `user-query-${workflowId}`,
@@ -163,9 +184,66 @@ function RunDetailContent() {
         setIsLoading(true);
         setError(null);
         try {
+            // Fetch session details to get context (agent type and research strategy)
+            let sessionContext: Record<string, any> = {};
+            try {
+                const sessionDetails = await getSession(sessionId);
+                console.log("[RunDetail] Session details:", sessionDetails);
+                console.log("[RunDetail] Session context:", sessionDetails.context);
+                sessionContext = sessionDetails.context || {};
+            } catch (err) {
+                console.error("[RunDetail] Failed to fetch session details:", err);
+            }
+            
+            // Extract agent type and research strategy from session context
+            let isDeepResearch = sessionContext.force_research === true;
+            let strategy = sessionContext.research_strategy || "quick";
+            
+            console.log("[RunDetail] Session context parsed - force_research:", sessionContext.force_research, "research_strategy:", sessionContext.research_strategy);
+            console.log("[RunDetail] Initial detection - Agent type:", isDeepResearch ? "deep_research" : "normal", "Strategy:", strategy);
+
             // Fetch events to build the timeline and conversation
             // Backend validation limits to 100 turns per request
             const eventsData = await getSessionEvents(sessionId, 100, 0);
+            
+            // If session context is empty or doesn't have agent info, check the first task's context
+            if (!isDeepResearch && eventsData.turns.length > 0) {
+                const firstTaskId = eventsData.turns[0].task_id;
+                const firstWorkflowId = eventsData.turns[0].events.length > 0 ? eventsData.turns[0].events[0].workflow_id : firstTaskId;
+                console.log("[RunDetail] Session context empty, checking first task context. TaskId:", firstTaskId, "WorkflowId:", firstWorkflowId);
+                
+                try {
+                    const firstTask = await getTask(firstWorkflowId);
+                    console.log("[RunDetail] First task details:", firstTask);
+                    console.log("[RunDetail] First task context:", firstTask.context);
+                    console.log("[RunDetail] First task metadata:", firstTask.metadata);
+                    
+                    // Context may be in task.context or metadata.task_context
+                    let taskContext = firstTask.context;
+                    if (!taskContext && firstTask.metadata?.task_context) {
+                        taskContext = firstTask.metadata.task_context;
+                        console.log("[RunDetail] Found context in metadata.task_context:", taskContext);
+                    }
+                    
+                    if (taskContext && taskContext.force_research === true) {
+                        isDeepResearch = true;
+                        strategy = taskContext.research_strategy || "quick";
+                        console.log("[RunDetail] Found deep research in first task - Strategy:", strategy);
+                    }
+                } catch (err) {
+                    console.warn("[RunDetail] Failed to fetch first task details:", err);
+                }
+            }
+            
+            // Update Redux state with final agent selection and research strategy
+            console.log("[RunDetail] Final detection - Agent type:", isDeepResearch ? "deep_research" : "normal", "Strategy:", strategy);
+            dispatch(setSelectedAgent(isDeepResearch ? "deep_research" : "normal"));
+            if (isDeepResearch) {
+                dispatch(setResearchStrategy(strategy as "quick" | "standard" | "deep" | "academic"));
+            }
+            console.log("[RunDetail] Redux state updated");
+
+            // Continue with events processing...
 
             // The API response might not have a top-level 'events' array if it's just returning turns with embedded events.
             // Let's collect all events from all turns if top-level events is missing.
@@ -203,13 +281,18 @@ function RunDetailContent() {
                     }
                 }
 
-                // Add historical events to Redux (filter out title_generator and LLM_OUTPUT messages)
-                // LLM_OUTPUT creates duplicate messages - we'll use turn.final_output instead
+                // Add historical events to Redux (filter out events that create conversation messages)
+                // For history: LLM_OUTPUT, TOOL_INVOKED, TOOL_OBSERVATION create messages - skip them
+                // We'll use turn.final_output for the conversation instead
                 allEvents
-                    .filter((event: Event) => 
-                        (event as any).agent_id !== 'title_generator' && 
-                        (event as any).type !== 'LLM_OUTPUT'
-                    )
+                    .filter((event: Event) => {
+                        const type = (event as any).type;
+                        const agentId = (event as any).agent_id;
+                        return agentId !== 'title_generator' && 
+                               type !== 'LLM_OUTPUT' &&
+                               type !== 'TOOL_INVOKED' &&
+                               type !== 'TOOL_OBSERVATION';
+                    })
                     .forEach((event: Event) => {
                         dispatch(addEvent(event as any));
                     });
@@ -276,6 +359,33 @@ function RunDetailContent() {
                 hasLoadedMessagesRef.current = true;
             } else {
                 console.log("[RunDetail] Skipping message population - already loaded messages for this session");
+            }
+
+            // Check if there's a running task in this session and establish SSE connection
+            if (eventsData.turns.length > 0 && !currentTaskId) {
+                const lastTurn = eventsData.turns[eventsData.turns.length - 1];
+                const lastWorkflowId = lastTurn.events.length > 0 ? lastTurn.events[0].workflow_id : lastTurn.task_id;
+                
+                if (lastWorkflowId) {
+                    console.log("[RunDetail] Checking if last task is still running:", lastWorkflowId);
+                    
+                    // Always check the task status via API to see if it's running
+                    // Can't rely on final_output because deep research stores REASON messages there
+                    try {
+                        const taskStatus = await getTask(lastWorkflowId);
+                        console.log("[RunDetail] Task status:", taskStatus.status, "Has result:", !!taskStatus.result);
+                        
+                        if ((taskStatus.status === "TASK_STATUS_RUNNING" || taskStatus.status === "TASK_STATUS_QUEUED") && !taskStatus.result) {
+                            console.log("[RunDetail] Detected running task, connecting to SSE stream");
+                            setCurrentTaskId(lastWorkflowId);
+                            dispatch(setMainWorkflowId(lastWorkflowId));
+                        } else {
+                            console.log("[RunDetail] Task is completed or has final result, not establishing SSE connection");
+                        }
+                    } catch (err) {
+                        console.warn("[RunDetail] Failed to check task status:", err);
+                    }
+                }
             }
 
         } catch (err) {
@@ -525,8 +635,13 @@ function RunDetailContent() {
                 ? "completed" 
                 : getEventStatus(event.type);
             
+            // Create a unique ID by combining multiple properties
+            // Use stream_id if available, otherwise create a composite key
+            const uniqueId = event.stream_id || 
+                `${event.workflow_id || 'unknown'}-${event.type}-${event.seq || event.timestamp || index}`;
+            
             return {
-                id: event.stream_id || `event-${index}`,
+                id: uniqueId,
                 type: categorizeEvent(event.type),
                 status: eventStatus,
                 title: getFriendlyTitle(event),
@@ -725,6 +840,7 @@ function RunDetailContent() {
                                     disabled={runStatus === "running"}
                                     isTaskComplete={runStatus !== "running"}
                                     selectedAgent={selectedAgent}
+                                    initialResearchStrategy={researchStrategy}
                                     onTaskCreated={handleTaskCreated}
                                 />
                             </div>

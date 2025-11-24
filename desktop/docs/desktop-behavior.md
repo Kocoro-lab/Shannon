@@ -11,6 +11,11 @@
 - Timeline filters let you toggle agent/llm/tool/system events.
 - When streaming ends, status flips to completed; if no assistant reply is present, the client fetches the final result via `GET /api/v1/tasks/{workflow_id}` as a fallback.
 
+### SSE payloads and completion
+- Events arrive under their type names (e.g., `WORKFLOW_STARTED`, `ROLE_ASSIGNED`, `TEAM_RECRUITED/RETIRED/STATUS`, `WAITING`, `ERROR_RECOVERY`, `ERROR_OCCURRED`, `BUDGET_THRESHOLD`, `DEPENDENCY_SATISFIED`, `APPROVAL_REQUESTED/APPROVAL_DECISION`, `MESSAGE_SENT/MESSAGE_RECEIVED`, `WORKSPACE_UPDATED`, `LLM_PROMPT/OUTPUT/PARTIAL`, `TOOL_INVOKED/TOOL_OBSERVATION`, `PROGRESS`, `DELEGATION`, `DATA_PROCESSING`, `STREAM_END`). `thread.message.delta` carries `{delta, workflow_id, agent_id, seq?, stream_id?}`; `thread.message.completed` carries `{response, workflow_id, agent_id, metadata?, seq?, stream_id?}`; other types carry `{workflow_id, type, agent_id, message, payload?, timestamp, seq?, stream_id?}`.
+- `WORKFLOW_STARTED` includes `payload.task_context` (force_research, research_strategy, etc.) for immediate badge/strategy rendering. The same context is seeded into `GET /api/v1/tasks/{id}` even while RUNNING, and is persisted again on completion.
+- Treat `STREAM_END` (SSE name `done`/`STREAM_END`) as the definitive end of the round; `WORKFLOW_COMPLETED` precedes it. On either, stop spinners and optionally poll `GET /api/v1/tasks/{id}` to hydrate final result/metadata.
+
 ## Sessions and navigation
 - The runs list links to `run-detail?session_id=...`; session history uses `GET /api/v1/sessions/{session_id}/events` (up to 100 turns) to rebuild past turns and events.
 - The summary tab aggregates tokens, durations, and agent badges from turn metadata; event counts come from the live Redux event list.

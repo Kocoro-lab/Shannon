@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -16,16 +16,22 @@ interface ChatInputProps {
     disabled?: boolean;
     isTaskComplete?: boolean;
     selectedAgent?: AgentSelection;
+    initialResearchStrategy?: ResearchStrategy;
     onTaskCreated?: (taskId: string, query: string, workflowId?: string) => void;
 }
 
-export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent = "normal", onTaskCreated }: ChatInputProps) {
+export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent = "normal", initialResearchStrategy = "quick", onTaskCreated }: ChatInputProps) {
     const [query, setQuery] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isComposing, setIsComposing] = useState(false);
-    const [researchStrategy, setResearchStrategy] = useState<ResearchStrategy>("quick");
+    const [researchStrategy, setResearchStrategy] = useState<ResearchStrategy>(initialResearchStrategy);
     const router = useRouter();
+
+    // Update research strategy when prop changes (e.g., loading historical session)
+    useEffect(() => {
+        setResearchStrategy(initialResearchStrategy);
+    }, [initialResearchStrategy]);
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -68,7 +74,7 @@ export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent =
         }
     };
 
-    const isInputDisabled = disabled && !isTaskComplete;
+    const isInputDisabled = disabled;
 
     return (
         <form onSubmit={handleSubmit} className="space-y-2">
