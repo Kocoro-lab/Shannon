@@ -81,7 +81,8 @@ type SynthesisInput struct {
 	AgentResults []AgentExecutionResult
 	Context      map[string]interface{} // Optional context for synthesis
 	// Parent workflow ID for unified event streaming
-	ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
+	ParentWorkflowID   string      `json:"parent_workflow_id,omitempty"`
+	CollectedCitations interface{} `json:"collected_citations,omitempty"` // []metadata.Citation to avoid import cycle
 }
 
 // SynthesisResult is the result of synthesis

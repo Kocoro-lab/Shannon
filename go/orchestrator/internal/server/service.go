@@ -699,6 +699,17 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			CreatedAt:  started,
 		}
 
+		// Persist submission context early so GET status can surface it while running
+		if len(ctxMap) > 0 {
+			taskCtx := make(map[string]interface{}, len(ctxMap))
+			for k, v := range ctxMap {
+				taskCtx[k] = v
+			}
+			initial.Metadata = db.JSONB{
+				"task_context": taskCtx,
+			}
+		}
+
 		// Synchronous save to task_executions to ensure it exists before workflow activities execute
 		// This prevents foreign key violations when token_usage tries to reference the task
 		if err := s.dbClient.SaveTaskExecution(ctx, initial); err != nil {

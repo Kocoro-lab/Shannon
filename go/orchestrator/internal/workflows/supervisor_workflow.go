@@ -1007,6 +1007,19 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
             }
             ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
             ctxForSynth["citation_count"] = len(citations)
+            
+            // Also store structured citations for SSE emission
+            out := make([]map[string]interface{}, 0, len(citations))
+            for _, c := range citations {
+                out = append(out, map[string]interface{}{
+                    "url":               c.URL,
+                    "title":             c.Title,
+                    "source":            c.Source,
+                    "credibility_score": c.CredibilityScore,
+                    "quality_score":     c.QualityScore,
+                })
+            }
+            ctxForSynth["citations"] = out
         }
     }
 

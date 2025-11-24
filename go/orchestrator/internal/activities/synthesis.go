@@ -106,22 +106,31 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 	// This ordering ensures content is visible before status changes to "ready"
 	if wfID != "" {
 		// Event 1: LLM_OUTPUT with final content (simple path)
+		payload := map[string]interface{}{
+			"tokens_used":          res.TokensUsed,
+			"model_used":           res.ModelUsed,
+			"provider":             res.Provider,
+			"input_tokens":         res.InputTokens,
+			"output_tokens":        res.CompletionTokens,
+			"cost_usd":             res.CostUsd,
+			"finish_reason":        res.FinishReason,
+			"requested_max_tokens": res.RequestedMaxTokens,
+		}
+		
+		// Include citations if available in context
+		if input.Context != nil {
+			if citations, ok := input.Context["citations"].([]map[string]interface{}); ok && len(citations) > 0 {
+				payload["citations"] = citations
+			}
+		}
+		
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventLLMOutput),
 			AgentID:    "synthesis",
 			Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
-			Payload: map[string]interface{}{
-				"tokens_used":          res.TokensUsed,
-				"model_used":           res.ModelUsed,
-				"provider":             res.Provider,
-				"input_tokens":         res.InputTokens,
-				"output_tokens":        res.CompletionTokens,
-				"cost_usd":             res.CostUsd,
-				"finish_reason":        res.FinishReason,
-				"requested_max_tokens": res.RequestedMaxTokens,
-			},
-			Timestamp: time.Now(),
+			Payload:    payload,
+			Timestamp:  time.Now(),
 		})
 		// Event 2: Lightweight tokens summary
 		msgSummary := fmt.Sprintf("~%d tokens", res.TokensUsed)
@@ -743,15 +752,20 @@ Section requirements:
 		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
+		payload := map[string]interface{}{
+			"tokens_used": res.TokensUsed,
+		}
+		// Include citations if available (already in correct format from workflow)
+		if input.CollectedCitations != nil {
+			payload["citations"] = input.CollectedCitations
+		}
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventLLMOutput),
 				AgentID:    "synthesis",
 				Message:    truncateQuery(res.FinalResult, MaxSynthesisOutputChars),
-				Payload: map[string]interface{}{
-					"tokens_used": res.TokensUsed,
-				},
-				Timestamp: time.Now(),
+				Payload:    payload,
+				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
@@ -1113,22 +1127,30 @@ Section requirements:
 	// This ordering ensures content is visible before status changes to "ready"
 	if wfID != "" {
 		// Event 1: LLM_OUTPUT with final content (LLM path)
+		payload := map[string]interface{}{
+			"tokens_used":          out.TokensUsed,
+			"model_used":           model,
+			"provider":             provider,
+			"input_tokens":         inputTokens,
+			"output_tokens":        outputTokens,
+			"cost_usd":             costUsd,
+			"finish_reason":        finishReason,
+			"requested_max_tokens": maxTokens,
+		}
+		
+	// Include citations if available (already in correct format from workflow)
+	if input.CollectedCitations != nil {
+		payload["citations"] = input.CollectedCitations
+		diagLogger.Info("Including citations in SSE event")
+	}
+		
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventLLMOutput),
 			AgentID:    "synthesis",
 			Message:    truncateQuery(finalResponse, MaxSynthesisOutputChars),
-			Payload: map[string]interface{}{
-				"tokens_used":          out.TokensUsed,
-				"model_used":           model,
-				"provider":             provider,
-				"input_tokens":         inputTokens,
-				"output_tokens":        outputTokens,
-				"cost_usd":             costUsd,
-				"finish_reason":        finishReason,
-				"requested_max_tokens": maxTokens,
-			},
-			Timestamp: time.Now(),
+			Payload:    payload,
+			Timestamp:  time.Now(),
 		})
 		// Event 2: Synthesis summary with model and token usage (omit model if unknown)
 		summary := fmt.Sprintf("~%d tokens", out.TokensUsed)
