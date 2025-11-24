@@ -31,7 +31,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		"session_id", input.SessionID,
 	)
 
-	// Emit workflow started event
+	// Emit workflow started event with task context
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
@@ -42,6 +42,9 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		AgentID:    "orchestrator",
 		Message:    "Task processing started",
 		Timestamp:  workflow.Now(ctx),
+		Payload: map[string]interface{}{
+			"task_context": input.Context, // Include context for frontend
+		},
 	}).Get(ctx, nil); err != nil {
 		logger.Warn("Failed to emit workflow started event", "error", err)
 	}
@@ -156,6 +159,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				// Allow router to proceed to decomposition path below
 				templateFound = false
 			} else {
+				result = AddTaskContextToMetadata(result, input.Context)
 				return result, err
 			}
 		} else if !result.Success {
@@ -166,10 +170,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				templateFound = false
 			} else {
 				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				result = AddTaskContextToMetadata(result, input.Context)
 				return result, nil
 			}
 		} else {
 			scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+			result = AddTaskContextToMetadata(result, input.Context)
 			return result, nil
 		}
 	}
@@ -257,7 +263,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			}).Get(ctx, nil)
 			// Best-effort title generation even on planning failures
 			scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			res := AddTaskContextToMetadata(TaskResult{Success: false, ErrorMessage: err.Error()}, input.Context)
+			return res, err
 		}
 	}
 
@@ -325,7 +332,9 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			if !res.CanProceed {
 				// Best-effort title generation even when budget preflight blocks execution
 				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-				return TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}, nil
+				out := TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}
+				out = AddTaskContextToMetadata(out, input.Context)
+				return out, nil
 			}
 			// Pass budget info to child workflows via context
 			if input.Context == nil {
@@ -369,7 +378,9 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			if ar, err := RequestAndWaitApproval(ctx, input, reason); err != nil {
 				// Best-effort title generation even on approval flow errors
 				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}, err
+				out := TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}
+				out = AddTaskContextToMetadata(out, input.Context)
+				return out, err
 			} else if ar == nil || !ar.Approved {
 				msg := reason
 				if ar != nil && ar.Feedback != "" {
@@ -377,7 +388,9 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				}
 				// Best-effort title generation even when approval is denied
 				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}, nil
+				out := TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}
+				out = AddTaskContextToMetadata(out, input.Context)
+				return out, nil
 			}
 		}
 	}
@@ -477,8 +490,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 
 		if execErr != nil {
+			result = AddTaskContextToMetadata(result, input.Context)
 			return result, execErr
 		}
+		// Add task context to metadata for API exposure
+		result = AddTaskContextToMetadata(result, input.Context)
 		return result, nil
 
 	case len(decomp.Subtasks) > 5 || hasDeps:
@@ -500,8 +516,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 
 		if execErr != nil {
+			result = AddTaskContextToMetadata(result, input.Context)
 			return result, execErr
 		}
+		// Add task context to metadata for API exposure
+		result = AddTaskContextToMetadata(result, input.Context)
 		return result, nil
 
 	default:
@@ -525,9 +544,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 
 		if execErr != nil {
-			return TaskResult{Success: false, ErrorMessage: execErr.Error()}, execErr
+			out := AddTaskContextToMetadata(TaskResult{Success: false, ErrorMessage: execErr.Error()}, input.Context)
+			return out, execErr
 		}
-		return convertFromStrategiesResult(strategiesResult), nil
+		// Add task context to metadata for API exposure
+		result := convertFromStrategiesResult(strategiesResult)
+		result = AddTaskContextToMetadata(result, input.Context)
+		return result, nil
 	}
 }
 
@@ -667,8 +690,11 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 
 		if execErr != nil {
+			result = AddTaskContextToMetadata(result, input.Context)
 			return result, true, execErr
 		}
+		// Add task context to metadata for API exposure
+		result = AddTaskContextToMetadata(result, input.Context)
 		return result, true, nil
 	case "react", "exploratory", "research", "scientific":
 		var wfName string
@@ -706,9 +732,13 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
 
 		if execErr != nil {
-			return TaskResult{}, true, execErr
+			res := AddTaskContextToMetadata(TaskResult{}, input.Context)
+			return res, true, execErr
 		}
-		return convertFromStrategiesResult(strategiesResult), true, nil
+		// Add task context to metadata for API exposure
+		result := convertFromStrategiesResult(strategiesResult)
+		result = AddTaskContextToMetadata(result, input.Context)
+		return result, true, nil
 	default:
 		return TaskResult{}, false, nil
 	}

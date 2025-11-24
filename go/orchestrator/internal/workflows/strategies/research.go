@@ -1168,6 +1168,19 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			}
 			baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
 			baseContext["citation_count"] = len(citations)
+			
+			// Also store structured citations for SSE emission
+			out := make([]map[string]interface{}, 0, len(citations))
+			for _, c := range citations {
+				out = append(out, map[string]interface{}{
+					"url":               c.URL,
+					"title":             c.Title,
+					"source":            c.Source,
+					"credibility_score": c.CredibilityScore,
+					"quality_score":     c.QualityScore,
+				})
+			}
+			baseContext["citations"] = out
 		}
 	}
 
@@ -1199,7 +1212,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				}
 				return baseContext
 			}(),
-			ParentWorkflowID: input.ParentWorkflowID,
+			CollectedCitations: collectedCitations,
+			ParentWorkflowID:   input.ParentWorkflowID,
 		}).Get(ctx, &synthesis)
 
 	if err != nil {
@@ -1486,16 +1500,30 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								}
 								enhancedContext["available_citations"] = strings.TrimRight(b.String(), "\n")
 								enhancedContext["citation_count"] = len(allCitations)
+								
+								// Also store structured citations for SSE emission
+								out := make([]map[string]interface{}, 0, len(allCitations))
+								for _, c := range allCitations {
+									out = append(out, map[string]interface{}{
+										"url":               c.URL,
+										"title":             c.Title,
+										"source":            c.Source,
+										"credibility_score": c.CredibilityScore,
+										"quality_score":     c.QualityScore,
+									})
+								}
+								enhancedContext["citations"] = out
 							}
 
-							err = workflow.ExecuteActivity(ctx,
-								activities.SynthesizeResultsLLM,
-								activities.SynthesisInput{
-									Query:            input.Query,
-									AgentResults:     combinedAgentResults, // Combined results with global dedup
-									Context:          enhancedContext,
-									ParentWorkflowID: input.ParentWorkflowID,
-								}).Get(ctx, &enhancedSynthesis)
+						err = workflow.ExecuteActivity(ctx,
+							activities.SynthesizeResultsLLM,
+							activities.SynthesisInput{
+								Query:              input.Query,
+								AgentResults:       combinedAgentResults, // Combined results with global dedup
+								Context:            enhancedContext,
+								CollectedCitations: allCitations,
+								ParentWorkflowID:   input.ParentWorkflowID,
+							}).Get(ctx, &enhancedSynthesis)
 
 							if err == nil {
 								synthesis = enhancedSynthesis

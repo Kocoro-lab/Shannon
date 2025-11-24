@@ -34,16 +34,16 @@ type TaskHandler struct {
 
 // ResearchStrategiesConfig represents research strategy presets loaded from YAML
 type ResearchStrategiesConfig struct {
-    Strategies map[string]struct {
-        MaxIterations              int  `yaml:"max_iterations"` // deprecated
-        VerificationEnabled        bool `yaml:"verification_enabled"`
-        MaxConcurrentAgents        int  `yaml:"max_concurrent_agents"`
-        ReactMaxIterations         int  `yaml:"react_max_iterations"`
-        GapFillingEnabled          bool `yaml:"gap_filling_enabled"`
-        GapFillingMaxGaps          int  `yaml:"gap_filling_max_gaps"`
-        GapFillingMaxIterations    int  `yaml:"gap_filling_max_iterations"`
-        GapFillingCheckCitations   bool `yaml:"gap_filling_check_citations"`
-    } `yaml:"strategies"`
+	Strategies map[string]struct {
+		MaxIterations            int  `yaml:"max_iterations"` // deprecated
+		VerificationEnabled      bool `yaml:"verification_enabled"`
+		MaxConcurrentAgents      int  `yaml:"max_concurrent_agents"`
+		ReactMaxIterations       int  `yaml:"react_max_iterations"`
+		GapFillingEnabled        bool `yaml:"gap_filling_enabled"`
+		GapFillingMaxGaps        int  `yaml:"gap_filling_max_gaps"`
+		GapFillingMaxIterations  int  `yaml:"gap_filling_max_iterations"`
+		GapFillingCheckCitations bool `yaml:"gap_filling_check_citations"`
+	} `yaml:"strategies"`
 }
 
 // Cached research strategies configuration
@@ -167,17 +167,19 @@ type TaskResponse struct {
 
 // TaskStatusResponse represents a task status response
 type TaskStatusResponse struct {
-	TaskID    string                 `json:"task_id"`
-	Status    string                 `json:"status"`
-	Result    string                 `json:"result,omitempty"`   // Raw result from LLM (plain text or JSON)
-	Response  map[string]interface{} `json:"response,omitempty"` // Parsed JSON (backward compatibility)
-	Error     string                 `json:"error,omitempty"`
-	CreatedAt time.Time              `json:"created_at"`
-	UpdatedAt time.Time              `json:"updated_at"`
+	TaskID     string                 `json:"task_id"`
+	WorkflowID string                 `json:"workflow_id,omitempty"` // Same as task_id, for clarity
+	Status     string                 `json:"status"`
+	Result     string                 `json:"result,omitempty"`   // Raw result from LLM (plain text or JSON)
+	Response   map[string]interface{} `json:"response,omitempty"` // Parsed JSON (backward compatibility)
+	Error      string                 `json:"error,omitempty"`
+	CreatedAt  time.Time              `json:"created_at"`
+	UpdatedAt  time.Time              `json:"updated_at"`
 	// Extra metadata to enable "reply" UX
-	Query     string `json:"query,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	Mode      string `json:"mode,omitempty"`
+	Query     string                 `json:"query,omitempty"`
+	SessionID string                 `json:"session_id,omitempty"`
+	Mode      string                 `json:"mode,omitempty"`
+	Context   map[string]interface{} `json:"context,omitempty"` // Task context (force_research, research_strategy, etc.)
 	// Usage metadata
 	ModelUsed string                 `json:"model_used,omitempty"`
 	Provider  string                 `json:"provider,omitempty"`
@@ -317,9 +319,9 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		}
 		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
 	}
-    if req.EnableVerification != nil {
-        ctxMap["enable_verification"] = *req.EnableVerification
-    }
+	if req.EnableVerification != nil {
+		ctxMap["enable_verification"] = *req.EnableVerification
+	}
 
 	// Apply research strategy presets (seed defaults only when absent)
 	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
@@ -547,9 +549,9 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 		}
 		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
 	}
-    if req.EnableVerification != nil {
-        ctxMap["enable_verification"] = *req.EnableVerification
-    }
+	if req.EnableVerification != nil {
+		ctxMap["enable_verification"] = *req.EnableVerification
+	}
 
 	// Apply research strategy presets (seed defaults only when absent)
 	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
@@ -701,10 +703,11 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Prepare response with raw result
 	statusResp := TaskStatusResponse{
-		TaskID: resp.TaskId,
-		Status: resp.Status.String(),
-		Result: resp.Result, // Always include raw result (plain text or JSON string)
-		Error:  resp.ErrorMessage,
+		TaskID:     resp.TaskId,
+		WorkflowID: resp.TaskId, // Same as task_id
+		Status:     resp.Status.String(),
+		Result:     resp.Result, // Always include raw result (plain text or JSON string)
+		Error:      resp.ErrorMessage,
 	}
 
 	// Optionally parse as JSON for backward compatibility (response field)
@@ -780,6 +783,11 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		var metadata map[string]interface{}
 		if err := json.Unmarshal(metadataJSON, &metadata); err == nil {
 			statusResp.Metadata = metadata
+
+			// Extract context from metadata if available (stored as metadata.task_context)
+			if taskContext, ok := metadata["task_context"].(map[string]interface{}); ok {
+				statusResp.Context = taskContext
+			}
 		}
 	}
 

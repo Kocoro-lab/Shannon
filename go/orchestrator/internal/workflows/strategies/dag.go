@@ -335,6 +335,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				collectedCitations = citations
 				baseContext["available_citations"] = formatted
 				baseContext["citation_count"] = len(citations)
+				baseContext["citations"] = citationsToStructuredMap(citations)
 			}
 		}
 		// Enforce role-aware synthesis for data_analytics even with single result
@@ -366,6 +367,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 					collectedCitations = citations
 					baseContext["available_citations"] = formatted
 					baseContext["citation_count"] = len(citations)
+					baseContext["citations"] = citationsToStructuredMap(citations)
 				}
 			}
 			err = workflow.ExecuteActivity(ctx,
@@ -396,6 +398,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				collectedCitations = citations
 				baseContext["available_citations"] = formatted
 				baseContext["citation_count"] = len(citations)
+				baseContext["citations"] = citationsToStructuredMap(citations)
 			}
 		}
 
@@ -445,6 +448,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				// formatted citations prepared by helper
 				baseContext["available_citations"] = formatted
 				baseContext["citation_count"] = len(citations)
+				baseContext["citations"] = citationsToStructuredMap(citations)
 			}
 		}
 		err = workflow.ExecuteActivity(ctx,
@@ -784,6 +788,21 @@ func collectAndFormatCitations(ctx workflow.Context, agentResults []activities.A
 		}
 	}
 	return citations, strings.TrimRight(b.String(), "\n")
+}
+
+// citationsToStructuredMap converts citations to a structured map format for SSE emission
+func citationsToStructuredMap(citations []metadata.Citation) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(citations))
+	for _, c := range citations {
+		out = append(out, map[string]interface{}{
+			"url":               c.URL,
+			"title":             c.Title,
+			"source":            c.Source,
+			"credibility_score": c.CredibilityScore,
+			"quality_score":     c.QualityScore,
+		})
+	}
+	return out
 }
 
 // executeParallelPattern uses the parallel execution pattern

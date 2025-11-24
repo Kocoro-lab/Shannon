@@ -169,3 +169,16 @@ func detectProviderFromModel(model string) string {
 // aggregateAgentMetadata extracts model, provider, and token information from agent results
 // Returns metadata map with model_used, provider, input_tokens, output_tokens
 // aggregateAgentMetadata removed; use metadata.AggregateAgentMetadata at call sites
+
+// AddTaskContextToMetadata enriches TaskResult metadata with task submission context
+// for API exposure (force_research, research_strategy, etc.). Call before returning
+// from workflows to ensure context is persisted and available via GET /tasks/{id}.
+func AddTaskContextToMetadata(result TaskResult, taskContext map[string]interface{}) TaskResult {
+	if result.Metadata == nil {
+		result.Metadata = make(map[string]interface{})
+	}
+	if taskContext != nil && len(taskContext) > 0 {
+		result.Metadata["task_context"] = taskContext
+	}
+	return result
+}
