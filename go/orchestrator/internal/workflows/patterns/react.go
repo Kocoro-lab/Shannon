@@ -1,18 +1,18 @@
 package patterns
 
 import (
-    "fmt"
-    "strings"
-    "time"
+	"fmt"
+	"strings"
+	"time"
 
-    "go.temporal.io/sdk/temporal"
-    "go.temporal.io/sdk/workflow"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
-    pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-    imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
-    wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
 // ReactConfig controls the Reason-Act-Observe loop behavior
@@ -84,60 +84,60 @@ func ReactLoop(
 		reasonContext["actions"] = actions
 		reasonContext["iteration"] = iteration
 
-        reasonQuery := fmt.Sprintf(
-            "REASON (1–2 sentences) about the single next action for: %s\nConstraints:\n- Keep response in the same language as the user's query.\n- State exactly what to do, why it's needed, and expected outcome.\n- If external information is required, say 'search'.\nContext: Previous observations: %v",
-            query,
-            getRecentObservations(observations, config.ObservationWindow),
-        )
+		reasonQuery := fmt.Sprintf(
+			"REASON (1–2 sentences) about the single next action for: %s\nConstraints:\n- Keep response in the same language as the user's query.\n- State exactly what to do, why it's needed, and expected outcome.\n- If external information is required, say 'search'.\nContext: Previous observations: %v",
+			query,
+			getRecentObservations(observations, config.ObservationWindow),
+		)
 
 		var reasonResult activities.AgentExecutionResult
 		var err error
 
 		// Execute reasoning with optional budget
-        if opts.BudgetAgentMax > 0 {
-            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-            if reasonContext != nil {
-                if p, ok := reasonContext["parent_workflow_id"].(string); ok && p != "" {
-                    wid = p
-                }
-            }
-            err = workflow.ExecuteActivity(ctx,
-                constants.ExecuteAgentWithBudgetActivity,
-                activities.BudgetedAgentInput{
-                    AgentInput: activities.AgentExecutionInput{
-                        Query:     reasonQuery,
-                        AgentID:   fmt.Sprintf("reasoner-%d", iteration),
-                        Context:   reasonContext,
-                        Mode:      "standard",
-                        SessionID: sessionID,
-                        History:   history,
-                        ParentWorkflowID: wid,
-                    },
-                    MaxTokens: opts.BudgetAgentMax,
-                    UserID:    opts.UserID,
-                    TaskID:    wid,
-                    ModelTier: opts.ModelTier,
-                }).Get(ctx, &reasonResult)
-        } else {
-            // Determine parent workflow for streaming correlation
-            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-            if reasonContext != nil {
-                if p, ok := reasonContext["parent_workflow_id"].(string); ok && p != "" {
-                    wid = p
-                }
-            }
-            err = workflow.ExecuteActivity(ctx,
-                "ExecuteAgent",
-                activities.AgentExecutionInput{
-                    Query:     reasonQuery,
-                    AgentID:   fmt.Sprintf("reasoner-%d", iteration),
-                    Context:   reasonContext,
-                    Mode:      "standard",
-                    SessionID: sessionID,
-                    History:   history,
-                    ParentWorkflowID: wid,
-                }).Get(ctx, &reasonResult)
-        }
+		if opts.BudgetAgentMax > 0 {
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if reasonContext != nil {
+				if p, ok := reasonContext["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
+			err = workflow.ExecuteActivity(ctx,
+				constants.ExecuteAgentWithBudgetActivity,
+				activities.BudgetedAgentInput{
+					AgentInput: activities.AgentExecutionInput{
+						Query:            reasonQuery,
+						AgentID:          fmt.Sprintf("reasoner-%d", iteration),
+						Context:          reasonContext,
+						Mode:             "standard",
+						SessionID:        sessionID,
+						History:          history,
+						ParentWorkflowID: wid,
+					},
+					MaxTokens: opts.BudgetAgentMax,
+					UserID:    opts.UserID,
+					TaskID:    wid,
+					ModelTier: opts.ModelTier,
+				}).Get(ctx, &reasonResult)
+		} else {
+			// Determine parent workflow for streaming correlation
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if reasonContext != nil {
+				if p, ok := reasonContext["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
+			err = workflow.ExecuteActivity(ctx,
+				"ExecuteAgent",
+				activities.AgentExecutionInput{
+					Query:            reasonQuery,
+					AgentID:          fmt.Sprintf("reasoner-%d", iteration),
+					Context:          reasonContext,
+					Mode:             "standard",
+					SessionID:        sessionID,
+					History:          history,
+					ParentWorkflowID: wid,
+				}).Get(ctx, &reasonResult)
+		}
 
 		if err != nil {
 			logger.Error("Reasoning failed", "error", err)
@@ -149,46 +149,46 @@ func ReactLoop(
 		if len(thoughts) > config.MaxThoughts {
 			thoughts = thoughts[len(thoughts)-config.MaxThoughts:]
 		}
-    totalTokens += reasonResult.TokensUsed
-    // Record token usage for the reasoner step
-    // Avoid double-recording when budgeted execution already recorded usage inside the activity
-    if opts.BudgetAgentMax <= 0 {
-        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-        if baseContext != nil {
-            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
-                wid = p
-            }
-        }
-        inTok := reasonResult.InputTokens
-        outTok := reasonResult.OutputTokens
-        if inTok == 0 && outTok == 0 && reasonResult.TokensUsed > 0 {
-            inTok = reasonResult.TokensUsed * 6 / 10
-            outTok = reasonResult.TokensUsed - inTok
-        }
-        // Fallbacks for missing model/provider
-        model := reasonResult.ModelUsed
-        if strings.TrimSpace(model) == "" {
-            if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
-                model = m
-            }
-        }
-        provider := reasonResult.Provider
-        if strings.TrimSpace(provider) == "" {
-            provider = imodels.DetectProvider(model)
-        }
-        recCtx := wopts.WithTokenRecordOptions(ctx)
-        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-            UserID:       opts.UserID,
-            SessionID:    sessionID,
-            TaskID:       wid,
-            AgentID:      fmt.Sprintf("reasoner-%d", iteration),
-            Model:        model,
-            Provider:     provider,
-            InputTokens:  inTok,
-            OutputTokens: outTok,
-            Metadata:     map[string]interface{}{"phase": "react_reason"},
-        }).Get(recCtx, nil)
-    }
+		totalTokens += reasonResult.TokensUsed
+		// Record token usage for the reasoner step
+		// Avoid double-recording when budgeted execution already recorded usage inside the activity
+		if opts.BudgetAgentMax <= 0 {
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if baseContext != nil {
+				if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
+			inTok := reasonResult.InputTokens
+			outTok := reasonResult.OutputTokens
+			if inTok == 0 && outTok == 0 && reasonResult.TokensUsed > 0 {
+				inTok = reasonResult.TokensUsed * 6 / 10
+				outTok = reasonResult.TokensUsed - inTok
+			}
+			// Fallbacks for missing model/provider
+			model := reasonResult.ModelUsed
+			if strings.TrimSpace(model) == "" {
+				if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+					model = m
+				}
+			}
+			provider := reasonResult.Provider
+			if strings.TrimSpace(provider) == "" {
+				provider = imodels.DetectProvider(model)
+			}
+			recCtx := wopts.WithTokenRecordOptions(ctx)
+			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:       opts.UserID,
+				SessionID:    sessionID,
+				TaskID:       wid,
+				AgentID:      fmt.Sprintf("reasoner-%d", iteration),
+				Model:        model,
+				Provider:     provider,
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+				Metadata:     map[string]interface{}{"phase": "react_reason"},
+			}).Get(recCtx, nil)
+		}
 
 		// Check if reasoning indicates completion
 		if isTaskComplete(reasonResult.Response) {
@@ -207,154 +207,187 @@ func ReactLoop(
 		actionContext["current_thought"] = reasonResult.Response
 		actionContext["observations"] = getRecentObservations(observations, config.ObservationWindow)
 
-        // Let LLM decide tools - no pattern matching
-        // The agent will select appropriate tools based on the action query
-        var suggestedTools []string
-        // Bias toward web_search when running in research mode to ensure citations
-        if baseContext != nil {
-            if fr, ok := baseContext["force_research"].(bool); ok && fr {
-                suggestedTools = []string{"web_search"}
-            } else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
-                suggestedTools = []string{"web_search"}
-            }
-        }
+		// Let LLM decide tools - no pattern matching
+		// The agent will select appropriate tools based on the action query
+		var suggestedTools []string
+		// Bias toward web_search when running in research mode to ensure citations
+		if baseContext != nil {
+			if fr, ok := baseContext["force_research"].(bool); ok && fr {
+				suggestedTools = []string{"web_search"}
+			} else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+				suggestedTools = []string{"web_search"}
+			}
+		}
 
-        actionQuery := ""
-        if len(suggestedTools) > 0 {
-            // Research mode: be explicit about tool usage and reporting
-            // Build quoted queries and site filters from context when available
-            quoted := ""
-            if actionContext != nil {
-                if eq, ok := actionContext["exact_queries"]; ok {
-                    switch t := eq.(type) {
-                    case []string:
-                        if len(t) > 0 { quoted = strings.Join(t, " OR ") }
-                    case []interface{}:
-                        parts := make([]string, 0, len(t))
-                        for _, it := range t { if s, ok := it.(string); ok && s != "" { parts = append(parts, s) } }
-                        if len(parts) > 0 { quoted = strings.Join(parts, " OR ") }
-                    }
-                }
-            }
-            domains := ""
-            if actionContext != nil {
-                if od, ok := actionContext["official_domains"]; ok {
-                    switch t := od.(type) {
-                    case []string:
-                        if len(t) > 0 { for i, d := range t { t[i] = fmt.Sprintf("site:%s", d) }; domains = strings.Join(t, " OR ") }
-                    case []interface{}:
-                        parts := []string{}
-                        for _, it := range t { if s, ok := it.(string); ok && s != "" { parts = append(parts, fmt.Sprintf("site:%s", s)) } }
-                        if len(parts) > 0 { domains = strings.Join(parts, " OR ") }
-                    }
-                }
-            }
-            disamb := ""
-            if actionContext != nil {
-                if dt, ok := actionContext["disambiguation_terms"]; ok {
-                    switch t := dt.(type) {
-                    case []string:
-                        if len(t) > 0 { disamb = strings.Join(t, ", ") }
-                    case []interface{}:
-                        parts := []string{}
-                        for _, it := range t { if s, ok := it.(string); ok && s != "" { parts = append(parts, s) } }
-                        if len(parts) > 0 { disamb = strings.Join(parts, ", ") }
-                    }
-                }
-            }
+		actionQuery := ""
+		if len(suggestedTools) > 0 {
+			// Research mode: be explicit about tool usage and reporting
+			// Build quoted queries and site filters from context when available
+			quoted := ""
+			if actionContext != nil {
+				if eq, ok := actionContext["exact_queries"]; ok {
+					switch t := eq.(type) {
+					case []string:
+						if len(t) > 0 {
+							quoted = strings.Join(t, " OR ")
+						}
+					case []interface{}:
+						parts := make([]string, 0, len(t))
+						for _, it := range t {
+							if s, ok := it.(string); ok && s != "" {
+								parts = append(parts, s)
+							}
+						}
+						if len(parts) > 0 {
+							quoted = strings.Join(parts, " OR ")
+						}
+					}
+				}
+			}
+			domains := ""
+			if actionContext != nil {
+				if od, ok := actionContext["official_domains"]; ok {
+					switch t := od.(type) {
+					case []string:
+						if len(t) > 0 {
+							for i, d := range t {
+								t[i] = fmt.Sprintf("site:%s", d)
+							}
+							domains = strings.Join(t, " OR ")
+						}
+					case []interface{}:
+						parts := []string{}
+						for _, it := range t {
+							if s, ok := it.(string); ok && s != "" {
+								parts = append(parts, fmt.Sprintf("site:%s", s))
+							}
+						}
+						if len(parts) > 0 {
+							domains = strings.Join(parts, " OR ")
+						}
+					}
+				}
+			}
+			disamb := ""
+			if actionContext != nil {
+				if dt, ok := actionContext["disambiguation_terms"]; ok {
+					switch t := dt.(type) {
+					case []string:
+						if len(t) > 0 {
+							disamb = strings.Join(t, ", ")
+						}
+					case []interface{}:
+						parts := []string{}
+						for _, it := range t {
+							if s, ok := it.(string); ok && s != "" {
+								parts = append(parts, s)
+							}
+						}
+						if len(parts) > 0 {
+							disamb = strings.Join(parts, ", ")
+						}
+					}
+				}
+			}
 
-            searchLine := fmt.Sprintf("Use web_search with queries: %s", quoted)
-            if quoted == "" { searchLine = fmt.Sprintf("Use web_search to find authoritative information about: %s", query) }
-            if domains != "" { searchLine += fmt.Sprintf("; prefer domains (%s)", domains) }
-            if disamb != "" { searchLine += fmt.Sprintf("; add disambiguation: %s", disamb) }
+			searchLine := fmt.Sprintf("Use web_search with queries: %s", quoted)
+			if quoted == "" {
+				searchLine = fmt.Sprintf("Use web_search to find authoritative information about: %s", query)
+			}
+			if domains != "" {
+				searchLine += fmt.Sprintf("; prefer domains (%s)", domains)
+			}
+			if disamb != "" {
+				searchLine += fmt.Sprintf("; add disambiguation: %s", disamb)
+			}
 
-            actionQuery = fmt.Sprintf(
-                "ACT on this plan: %s\n\nIMPORTANT:\n- %s\n- For web_search parameters: search_type ∈ {neural|keyword|auto} (default 'auto' if unsure); category ∈ {company|research paper|news|pdf|github|tweet|personal site|linkedin|financial report}; if unsure, omit category.\n- Execute NOW and return findings in the SAME language as the user's query.\n- For each source used, include a 1–2 sentence summary plus Title and URL inline.\n- Keep the action atomic.\n- Do NOT include a '## Sources' section (the system will append Sources).",
-                reasonResult.Response,
-                searchLine,
-            )
-        } else {
-            actionQuery = fmt.Sprintf(
-                "ACT on this plan: %s\nConstraints:\n- Execute the next step with available tools.\n- Keep response in the SAME language as the user's query.\n- Keep actions atomic. If you used a tool that fetched information, add a brief 1–2 sentence summary of the key finding.",
-                reasonResult.Response,
-            )
-        }
+			actionQuery = fmt.Sprintf(
+				"ACT on this plan: %s\n\nIMPORTANT:\n- %s\n- For web_search parameters: search_type ∈ {neural|keyword|auto} (default 'auto' if unsure); category ∈ {company|research paper|news|pdf|github|tweet|personal site|linkedin|financial report}; NEVER leave category blank. If the query targets a specific domain (site:example.com or explicit host), default category=personal site; otherwise pick the closest match.\n- After web_search, run web_fetch on the selected URLs to read content before summarizing; do not summarize from snippets alone.\n- Execute NOW and return findings in the SAME language as the user's query.\n- For each source used, include a 1–2 sentence summary plus Title and URL inline.\n- Keep the action atomic.\n- Do NOT include a '## Sources' section (the system will append Sources).",
+				reasonResult.Response,
+				searchLine,
+			)
+		} else {
+			actionQuery = fmt.Sprintf(
+				"ACT on this plan: %s\nConstraints:\n- Execute the next step with available tools.\n- Keep response in the SAME language as the user's query.\n- Keep actions atomic. If you used a tool that fetched information, add a brief 1–2 sentence summary of the key finding.",
+				reasonResult.Response,
+			)
+		}
 
 		var actionResult activities.AgentExecutionResult
 
 		// Execute action with optional budget
-        if opts.BudgetAgentMax > 0 {
-            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-            if actionContext != nil {
-                if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
-                    wid = p
-                }
-            }
-            err = workflow.ExecuteActivity(ctx,
-                constants.ExecuteAgentWithBudgetActivity,
-                activities.BudgetedAgentInput{
-                    AgentInput: activities.AgentExecutionInput{
-                        Query:          actionQuery,
-                        AgentID:        fmt.Sprintf("actor-%d", iteration),
-                        Context:        actionContext,
-                        Mode:           "standard",
-                        SessionID:      sessionID,
-                        History:        history,
-                        SuggestedTools: suggestedTools,
-                        ParentWorkflowID: wid,
-                    },
-                    MaxTokens: opts.BudgetAgentMax,
-                    UserID:    opts.UserID,
-                    TaskID:    wid,
-                    ModelTier: opts.ModelTier,
-                }).Get(ctx, &actionResult)
-        } else {
-            // Determine parent workflow for streaming correlation
-            wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-            if actionContext != nil {
-                if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
-                    wid = p
-                }
-            }
-            err = workflow.ExecuteActivity(ctx,
-                "ExecuteAgent",
-                activities.AgentExecutionInput{
-                    Query:          actionQuery,
-                    AgentID:        fmt.Sprintf("actor-%d", iteration),
-                    Context:        actionContext,
-                    Mode:           "standard",
-                    SessionID:      sessionID,
-                    History:        history,
-                    SuggestedTools: suggestedTools,
-                    ParentWorkflowID: wid,
-                }).Get(ctx, &actionResult)
-        }
+		if opts.BudgetAgentMax > 0 {
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if actionContext != nil {
+				if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
+			err = workflow.ExecuteActivity(ctx,
+				constants.ExecuteAgentWithBudgetActivity,
+				activities.BudgetedAgentInput{
+					AgentInput: activities.AgentExecutionInput{
+						Query:            actionQuery,
+						AgentID:          fmt.Sprintf("actor-%d", iteration),
+						Context:          actionContext,
+						Mode:             "standard",
+						SessionID:        sessionID,
+						History:          history,
+						SuggestedTools:   suggestedTools,
+						ParentWorkflowID: wid,
+					},
+					MaxTokens: opts.BudgetAgentMax,
+					UserID:    opts.UserID,
+					TaskID:    wid,
+					ModelTier: opts.ModelTier,
+				}).Get(ctx, &actionResult)
+		} else {
+			// Determine parent workflow for streaming correlation
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if actionContext != nil {
+				if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
+			err = workflow.ExecuteActivity(ctx,
+				"ExecuteAgent",
+				activities.AgentExecutionInput{
+					Query:            actionQuery,
+					AgentID:          fmt.Sprintf("actor-%d", iteration),
+					Context:          actionContext,
+					Mode:             "standard",
+					SessionID:        sessionID,
+					History:          history,
+					SuggestedTools:   suggestedTools,
+					ParentWorkflowID: wid,
+				}).Get(ctx, &actionResult)
+		}
 
 		if err != nil {
 			logger.Error("Action execution failed", "error", err)
 			observations = append(observations, fmt.Sprintf("Error: %v", err))
 			// Continue to next iteration to try recovery
-        } else {
-            // Always track tokens and tool executions for citations
-            totalTokens += actionResult.TokensUsed
-            agentResults = append(agentResults, actionResult)
+		} else {
+			// Always track tokens and tool executions for citations
+			totalTokens += actionResult.TokensUsed
+			agentResults = append(agentResults, actionResult)
 
-            // Skip recording empty action responses (treat as no-op)
-            if strings.TrimSpace(actionResult.Response) != "" {
-                actions = append(actions, actionResult.Response)
-                // Trim actions if exceeding limit
-                if len(actions) > config.MaxActions {
-                    actions = actions[len(actions)-config.MaxActions:]
-                }
-                // Phase 3: OBSERVE - Record and analyze the result
-                observation := fmt.Sprintf("Action result: %s", actionResult.Response)
-                observations = append(observations, observation)
-            } else {
-                logger.Warn("Empty action response; skipping record",
-                    "iteration", iteration+1,
-                    "agent_id", fmt.Sprintf("actor-%d", iteration),
-                )
-            }
+			// Skip recording empty action responses (treat as no-op)
+			if strings.TrimSpace(actionResult.Response) != "" {
+				actions = append(actions, actionResult.Response)
+				// Trim actions if exceeding limit
+				if len(actions) > config.MaxActions {
+					actions = actions[len(actions)-config.MaxActions:]
+				}
+				// Phase 3: OBSERVE - Record and analyze the result
+				observation := fmt.Sprintf("Action result: %s", actionResult.Response)
+				observations = append(observations, observation)
+			} else {
+				logger.Warn("Empty action response; skipping record",
+					"iteration", iteration+1,
+					"agent_id", fmt.Sprintf("actor-%d", iteration),
+				)
+			}
 
 			// Keep only recent observations to prevent memory growth
 			if len(observations) > config.MaxObservations {
@@ -364,50 +397,50 @@ func ReactLoop(
 				observations = append([]string{summary}, observations[len(observations)-config.MaxObservations+1:]...)
 			}
 
-            // Record token usage for the action step
-            // Avoid double-recording when budgeted execution already recorded usage inside the activity
-            if opts.BudgetAgentMax <= 0 {
-                wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-                if actionContext != nil {
-                    if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
-                        wid = p
-                    }
-                }
-                inTok := actionResult.InputTokens
-                outTok := actionResult.OutputTokens
-                if inTok == 0 && outTok == 0 && actionResult.TokensUsed > 0 {
-                    inTok = actionResult.TokensUsed * 6 / 10
-                    outTok = actionResult.TokensUsed - inTok
-                }
-                // Fallbacks for missing model/provider
-                model := actionResult.ModelUsed
-                if strings.TrimSpace(model) == "" {
-                    if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
-                        model = m
-                    }
-                }
-                provider := actionResult.Provider
-                if strings.TrimSpace(provider) == "" {
-                    provider = imodels.DetectProvider(model)
-                }
-                recCtx := wopts.WithTokenRecordOptions(ctx)
-                _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-                    UserID:       opts.UserID,
-                    SessionID:    sessionID,
-                    TaskID:       wid,
-                    AgentID:      fmt.Sprintf("actor-%d", iteration),
-                    Model:        model,
-                    Provider:     provider,
-                    InputTokens:  inTok,
-                    OutputTokens: outTok,
-                    Metadata:     map[string]interface{}{"phase": "react_action"},
-                }).Get(recCtx, nil)
-            }
+			// Record token usage for the action step
+			// Avoid double-recording when budgeted execution already recorded usage inside the activity
+			if opts.BudgetAgentMax <= 0 {
+				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+				if actionContext != nil {
+					if p, ok := actionContext["parent_workflow_id"].(string); ok && p != "" {
+						wid = p
+					}
+				}
+				inTok := actionResult.InputTokens
+				outTok := actionResult.OutputTokens
+				if inTok == 0 && outTok == 0 && actionResult.TokensUsed > 0 {
+					inTok = actionResult.TokensUsed * 6 / 10
+					outTok = actionResult.TokensUsed - inTok
+				}
+				// Fallbacks for missing model/provider
+				model := actionResult.ModelUsed
+				if strings.TrimSpace(model) == "" {
+					if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+						model = m
+					}
+				}
+				provider := actionResult.Provider
+				if strings.TrimSpace(provider) == "" {
+					provider = imodels.DetectProvider(model)
+				}
+				recCtx := wopts.WithTokenRecordOptions(ctx)
+				_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       opts.UserID,
+					SessionID:    sessionID,
+					TaskID:       wid,
+					AgentID:      fmt.Sprintf("actor-%d", iteration),
+					Model:        model,
+					Provider:     provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata:     map[string]interface{}{"phase": "react_action"},
+				}).Get(recCtx, nil)
+			}
 
-            logger.Info("Observation recorded",
-                "iteration", iteration+1,
-                "total_observations", len(observations),
-            )
+			logger.Info("Observation recorded",
+				"iteration", iteration+1,
+				"total_observations", len(observations),
+			)
 		}
 
 		iteration++
@@ -436,101 +469,101 @@ func ReactLoop(
 	var finalResult activities.AgentExecutionResult
 
 	// Execute final synthesis with optional budget
-    if opts.BudgetAgentMax > 0 {
-        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-        if baseContext != nil {
-            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
-                wid = p
-            }
-        }
-        err := workflow.ExecuteActivity(ctx,
-            constants.ExecuteAgentWithBudgetActivity,
-            activities.BudgetedAgentInput{
-                AgentInput: activities.AgentExecutionInput{
-                    Query:     synthesisQuery,
-                    AgentID:   "react-synthesizer",
-                    Context:   baseContext,
-                    Mode:      "standard",
-                    SessionID: sessionID,
-                    History:   history,
-                    ParentWorkflowID: wid,
-                },
-                MaxTokens: opts.BudgetAgentMax,
-                UserID:    opts.UserID,
-                TaskID:    wid,
-                ModelTier: opts.ModelTier,
-            }).Get(ctx, &finalResult)
+	if opts.BudgetAgentMax > 0 {
+		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		if baseContext != nil {
+			if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+				wid = p
+			}
+		}
+		err := workflow.ExecuteActivity(ctx,
+			constants.ExecuteAgentWithBudgetActivity,
+			activities.BudgetedAgentInput{
+				AgentInput: activities.AgentExecutionInput{
+					Query:            synthesisQuery,
+					AgentID:          "react-synthesizer",
+					Context:          baseContext,
+					Mode:             "standard",
+					SessionID:        sessionID,
+					History:          history,
+					ParentWorkflowID: wid,
+				},
+				MaxTokens: opts.BudgetAgentMax,
+				UserID:    opts.UserID,
+				TaskID:    wid,
+				ModelTier: opts.ModelTier,
+			}).Get(ctx, &finalResult)
 
 		if err != nil {
 			return nil, fmt.Errorf("final synthesis failed: %w", err)
 		}
-    } else {
-        // Determine parent workflow for streaming correlation
-        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-        if baseContext != nil {
-            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
-                wid = p
-            }
-        }
-        err := workflow.ExecuteActivity(ctx,
-            "ExecuteAgent",
-            activities.AgentExecutionInput{
-                Query:     synthesisQuery,
-                AgentID:   "react-synthesizer",
-                Context:   baseContext,
-                Mode:      "standard",
-                SessionID: sessionID,
-                History:   history,
-                ParentWorkflowID: wid,
-            }).Get(ctx, &finalResult)
+	} else {
+		// Determine parent workflow for streaming correlation
+		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		if baseContext != nil {
+			if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+				wid = p
+			}
+		}
+		err := workflow.ExecuteActivity(ctx,
+			"ExecuteAgent",
+			activities.AgentExecutionInput{
+				Query:            synthesisQuery,
+				AgentID:          "react-synthesizer",
+				Context:          baseContext,
+				Mode:             "standard",
+				SessionID:        sessionID,
+				History:          history,
+				ParentWorkflowID: wid,
+			}).Get(ctx, &finalResult)
 
 		if err != nil {
 			return nil, fmt.Errorf("final synthesis failed: %w", err)
 		}
 	}
 
-totalTokens += finalResult.TokensUsed
-agentResults = append(agentResults, finalResult)
+	totalTokens += finalResult.TokensUsed
+	agentResults = append(agentResults, finalResult)
 
-    // Record token usage for the react-synthesizer step
-    // Avoid double-recording when budgeted execution already recorded usage inside the activity
-    if opts.BudgetAgentMax <= 0 {
-        wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-        if baseContext != nil {
-            if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
-                wid = p
-            }
-        }
-        inTok := finalResult.InputTokens
-        outTok := finalResult.OutputTokens
-        if inTok == 0 && outTok == 0 && finalResult.TokensUsed > 0 {
-            inTok = finalResult.TokensUsed * 6 / 10
-            outTok = finalResult.TokensUsed - inTok
-        }
-        // Fallbacks for missing model/provider
-        model := finalResult.ModelUsed
-        if strings.TrimSpace(model) == "" {
-            if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
-                model = m
-            }
-        }
-        provider := finalResult.Provider
-        if strings.TrimSpace(provider) == "" {
-            provider = imodels.DetectProvider(model)
-        }
-        recCtx := wopts.WithTokenRecordOptions(ctx)
-        _ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-            UserID:       opts.UserID,
-            SessionID:    sessionID,
-            TaskID:       wid,
-            AgentID:      "react-synthesizer",
-            Model:        model,
-            Provider:     provider,
-            InputTokens:  inTok,
-            OutputTokens: outTok,
-            Metadata:     map[string]interface{}{"phase": "react_synth"},
-        }).Get(recCtx, nil)
-    }
+	// Record token usage for the react-synthesizer step
+	// Avoid double-recording when budgeted execution already recorded usage inside the activity
+	if opts.BudgetAgentMax <= 0 {
+		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		if baseContext != nil {
+			if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+				wid = p
+			}
+		}
+		inTok := finalResult.InputTokens
+		outTok := finalResult.OutputTokens
+		if inTok == 0 && outTok == 0 && finalResult.TokensUsed > 0 {
+			inTok = finalResult.TokensUsed * 6 / 10
+			outTok = finalResult.TokensUsed - inTok
+		}
+		// Fallbacks for missing model/provider
+		model := finalResult.ModelUsed
+		if strings.TrimSpace(model) == "" {
+			if m := pricing.GetPriorityOneModel(opts.ModelTier); m != "" {
+				model = m
+			}
+		}
+		provider := finalResult.Provider
+		if strings.TrimSpace(provider) == "" {
+			provider = imodels.DetectProvider(model)
+		}
+		recCtx := wopts.WithTokenRecordOptions(ctx)
+		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       opts.UserID,
+			SessionID:    sessionID,
+			TaskID:       wid,
+			AgentID:      "react-synthesizer",
+			Model:        model,
+			Provider:     provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata:     map[string]interface{}{"phase": "react_synth"},
+		}).Get(recCtx, nil)
+	}
 
 	return &ReactLoopResult{
 		Thoughts:     thoughts,

@@ -134,12 +134,35 @@ func validateContext(ctx map[string]interface{}, logger *zap.Logger) map[string]
 		return make(map[string]interface{})
 	}
 
+	// Blacklist of internal metadata fields that should never reach the LLM
+	internalFields := map[string]bool{
+		"budget_agent_max":       true,
+		"budget_agent_remaining": true,
+		"budget_agent_min":       true,
+		"last_tokens_used":       true,
+		"total_cost_usd":         true,
+		"model_used":             true,
+		"provider":               true,
+		"total_tokens":           true,
+		"input_tokens":           true,
+		"output_tokens":          true,
+		"prompt_tokens":          true,
+		"completion_tokens":      true,
+	}
+
 	validated := make(map[string]interface{}, len(ctx))
 
 	for key, value := range ctx {
 		if key == "" {
 			continue
 		}
+
+		// Filter out internal metadata fields
+		if internalFields[key] {
+			logger.Debug("Filtering internal metadata field from context", zap.String("key", key))
+			continue
+		}
+
 		if len(key) > 100 {
 			keyRunes := []rune(key)
 			truncatedKey := key
@@ -1944,15 +1967,46 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		})
 	}
 
+	// Extract tools used + executions from metadata when present
+	toolsUsed := []string{toolName}
+	var toolExecs []ToolExecution
+	if agentResponse.Metadata != nil {
+		if tu, ok := agentResponse.Metadata["tools_used"].([]interface{}); ok {
+			toolsUsed = toolsUsed[:0]
+			for _, t := range tu {
+				if s, ok2 := t.(string); ok2 && s != "" {
+					toolsUsed = append(toolsUsed, s)
+				}
+			}
+		}
+		if te, ok := agentResponse.Metadata["tool_executions"].([]interface{}); ok {
+			for _, raw := range te {
+				if m, ok2 := raw.(map[string]interface{}); ok2 {
+					name, _ := m["tool"].(string)
+					success, _ := m["success"].(bool)
+					output := m["output"]
+					errStr, _ := m["error"].(string)
+					toolExecs = append(toolExecs, ToolExecution{
+						Tool:    name,
+						Success: success,
+						Output:  output,
+						Error:   errStr,
+					})
+				}
+			}
+		}
+	}
+
 	return AgentExecutionResult{
-		Success:      agentResponse.Success,
-		Response:     agentResponse.Response,
-		TokensUsed:   agentResponse.TokensUsed,
-		ModelUsed:    agentResponse.ModelUsed,
-		Provider:     agentResponse.Provider,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		ToolsUsed:    []string{toolName},
+		Success:        agentResponse.Success,
+		Response:       agentResponse.Response,
+		TokensUsed:     agentResponse.TokensUsed,
+		ModelUsed:      agentResponse.ModelUsed,
+		Provider:       agentResponse.Provider,
+		InputTokens:    inputTokens,
+		OutputTokens:   outputTokens,
+		ToolsUsed:      toolsUsed,
+		ToolExecutions: toolExecs,
 	}, nil
 }
 

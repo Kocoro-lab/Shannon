@@ -3,6 +3,8 @@ package activities
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -70,6 +72,130 @@ func sanitizeAgentOutput(text string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
+// --- Result preprocessing (Phase 1 dedup + basic filtering) ---
+var (
+	nonWordPattern   = regexp.MustCompile(`[\p{P}\p{S}]+`)
+	noInfoPatterns   = []string{"i couldn't find", "no information available", "unable to find", "no results found", "couldn't locate", "not able to find", "没有找到", "無法找到", "見つかりませんでした"}
+	similarityThresh = 0.85
+)
+
+func preprocessAgentResults(results []AgentExecutionResult, logger interface{}) []AgentExecutionResult {
+	if len(results) == 0 {
+		return results
+	}
+
+	original := len(results)
+	exact := deduplicateExact(results)
+	near := deduplicateSimilar(exact, similarityThresh)
+	filtered := filterLowQuality(near)
+
+	// Log using zap directly for consistent structured logging
+	zap.L().Info("Preprocessed agent results for synthesis",
+		zap.Int("original_count", original),
+		zap.Int("after_exact", len(exact)),
+		zap.Int("after_similarity", len(near)),
+		zap.Int("after_filter", len(filtered)),
+	)
+
+	return filtered
+}
+
+func deduplicateExact(results []AgentExecutionResult) []AgentExecutionResult {
+	seen := make(map[string]bool, len(results))
+	var out []AgentExecutionResult
+
+	for _, r := range results {
+		normalized := strings.TrimSpace(strings.ToLower(r.Response))
+		if normalized == "" {
+			continue
+		}
+		hash := sha256.Sum256([]byte(normalized))
+		key := hex.EncodeToString(hash[:])
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func deduplicateSimilar(results []AgentExecutionResult, threshold float64) []AgentExecutionResult {
+	var unique []AgentExecutionResult
+
+	for _, candidate := range results {
+		isDup := false
+		cTokens := tokenize(candidate.Response)
+		for _, existing := range unique {
+			sTokens := tokenize(existing.Response)
+			if jaccardSimilarity(cTokens, sTokens) > threshold {
+				isDup = true
+				break
+			}
+		}
+		if !isDup {
+			unique = append(unique, candidate)
+		}
+	}
+	return unique
+}
+
+func tokenize(text string) map[string]bool {
+	lower := strings.ToLower(text)
+	clean := nonWordPattern.ReplaceAllString(lower, " ")
+	tokens := strings.Fields(clean)
+	out := make(map[string]bool, len(tokens))
+	for _, t := range tokens {
+		if t != "" {
+			out[t] = true
+		}
+	}
+	return out
+}
+
+func jaccardSimilarity(a, b map[string]bool) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	union := len(a)
+	for token := range b {
+		if a[token] {
+			intersection++
+		} else {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
+func filterLowQuality(results []AgentExecutionResult) []AgentExecutionResult {
+	var filtered []AgentExecutionResult
+	for _, r := range results {
+		resp := strings.TrimSpace(r.Response)
+		if !r.Success || resp == "" {
+			continue
+		}
+		if len([]rune(resp)) < 200 && containsNoInfoPatterns(resp) {
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+	return filtered
+}
+
+func containsNoInfoPatterns(text string) bool {
+	lower := strings.ToLower(text)
+	for _, p := range noInfoPatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // SynthesizeResults synthesizes results from multiple agents (baseline concatenation)
 func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
 	// Emit synthesis start once for the simple (non-LLM) path
@@ -116,14 +242,14 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 			"finish_reason":        res.FinishReason,
 			"requested_max_tokens": res.RequestedMaxTokens,
 		}
-		
+
 		// Include citations if available in context
 		if input.Context != nil {
 			if citations, ok := input.Context["citations"].([]map[string]interface{}); ok && len(citations) > 0 {
 				payload["citations"] = citations
 			}
 		}
-		
+
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventLLMOutput),
@@ -168,6 +294,11 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// Use direct zap logger for detailed diagnostic fields (Temporal adapter strips zap fields)
 	diagLogger := zap.L().With(zap.String("activity", "SynthesizeResultsLLM"))
 
+	if len(input.AgentResults) == 0 {
+		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
+	}
+
+	input.AgentResults = preprocessAgentResults(input.AgentResults, logger)
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
 	}
@@ -231,7 +362,6 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	// Build synthesis query that includes agent results
-	const maxAgents = 6
 	const maxPerAgentChars = 4000 // Increased for data-heavy responses (analytics, structured data)
 
 	var b strings.Builder
@@ -395,12 +525,12 @@ Use exactly these top-level headings in your response, and start your answer dir
 
 ## Executive Summary
 ## Detailed Findings
-## Limitations and Uncertainties
+## Limitations and Uncertainties (ONLY if significant gaps/conflicts exist)
 
 Section requirements:
 - Executive Summary: 150–250 words; capture key insights and conclusions
 - Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
-- Limitations and Uncertainties: 100–150 words
+- Limitations and Uncertainties: 100–150 words IF evidence is incomplete, contradictory, or outdated; OMIT this section entirely if findings are well-supported and comprehensive
 `, targetWords, targetWords+600)
 	} else {
 		// Default: concise synthesis (no Sources section; system appends it)
@@ -452,9 +582,11 @@ Section requirements:
 		citationGuidance := ""
 		if hasCitations {
 			citationGuidance = fmt.Sprintf(`## Citation Integration:
-    - You MUST use AT LEAST %d inline citations from Available Citations
-    - Use inline citations [1], [2] for ALL factual claims
+    - Use inline citations [1], [2] for ALL factual claims that have supporting sources
+    - Aim for AT LEAST %d inline citations IF sufficient relevant sources exist
     - Use ONLY the provided Available Citations and their existing indices [n]
+    - DO NOT cite irrelevant sources just to meet a quota (e.g., don't cite competitors when researching a specific company)
+    - If a research area lacks relevant citations, note explicitly: "Limited information available on [aspect]" rather than citing unrelated sources
     - DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
     - Each unique URL gets ONE citation number only
     - Do NOT include a "## Sources" section; the system will append Sources automatically
@@ -499,9 +631,10 @@ Section requirements:
     %s
 
     ## Quality Standards:
+    - State findings confidently when well-supported by citations
     - If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
-    - Flag gaps: "Limited information available on [aspect]"
-    - Include a short "Limitations and Uncertainties" section summarizing contested or weak evidence
+    - Flag gaps ONLY when evidence is genuinely insufficient: "Limited information available on [aspect]"
+    - Include a "Limitations and Uncertainties" section ONLY if evidence is incomplete, contradictory, or outdated; omit if findings are comprehensive
     - NEVER fabricate or hallucinate sources
     - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
@@ -521,12 +654,59 @@ Section requirements:
 		}
 	}
 
+	// Configure maxAgents based on workflow type (must be after isResearch is determined)
+	maxAgents := 6
+	if isResearch || len(input.AgentResults) > 10 {
+		// For research workflows or many agents, include all agents (up to 50)
+		// to avoid losing intermediate synthesis results from React loops
+		maxAgents = 50
+		logger.Info("Increased maxAgents for research synthesis",
+			zap.Int("maxAgents", maxAgents),
+			zap.Int("totalAgents", len(input.AgentResults)),
+		)
+	}
+
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
 
-	count := 0
+	// Prioritize intermediate synthesis results (react-synthesizer, synthesizer agents)
+	// by including them first, then individual agent outputs
+	var synthesisResults []AgentExecutionResult
+	var otherResults []AgentExecutionResult
+
 	for _, r := range input.AgentResults {
 		if !r.Success || r.Response == "" {
 			continue
+		}
+		// Prioritize synthesis/aggregation agents
+		if strings.Contains(strings.ToLower(r.AgentID), "synthesis") ||
+			strings.Contains(strings.ToLower(r.AgentID), "synthesizer") {
+			synthesisResults = append(synthesisResults, r)
+		} else {
+			otherResults = append(otherResults, r)
+		}
+	}
+
+	// Include synthesis results first (these contain aggregated insights)
+	count := 0
+	for _, r := range synthesisResults {
+		// Sanitize agent output to remove duplicate sources/citations
+		sanitized := sanitizeAgentOutput(r.Response)
+		// Apply length cap after sanitization (synthesis results get more space)
+		maxSynthesisChars := maxPerAgentChars * 2 // Double the space for synthesis results
+		if len([]rune(sanitized)) > maxSynthesisChars {
+			sanitized = string([]rune(sanitized)[:maxSynthesisChars]) + "..."
+		}
+		fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
+		count++
+		if count >= maxAgents {
+			break
+		}
+	}
+
+	// Then include individual agent outputs
+	for _, r := range otherResults {
+		if count >= maxAgents {
+			break
 		}
 		// Sanitize agent output to remove duplicate sources/citations
 		sanitized := sanitizeAgentOutput(r.Response)
@@ -536,9 +716,6 @@ Section requirements:
 		}
 		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, sanitized)
 		count++
-		if count >= maxAgents {
-			break
-		}
 	}
 
 	if count == 0 {
@@ -752,13 +929,13 @@ Section requirements:
 		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
-		payload := map[string]interface{}{
-			"tokens_used": res.TokensUsed,
-		}
-		// Include citations if available (already in correct format from workflow)
-		if input.CollectedCitations != nil {
-			payload["citations"] = input.CollectedCitations
-		}
+			payload := map[string]interface{}{
+				"tokens_used": res.TokensUsed,
+			}
+			// Include citations if available (already in correct format from workflow)
+			if input.CollectedCitations != nil {
+				payload["citations"] = input.CollectedCitations
+			}
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventLLMOutput),
@@ -1137,13 +1314,13 @@ Section requirements:
 			"finish_reason":        finishReason,
 			"requested_max_tokens": maxTokens,
 		}
-		
-	// Include citations if available (already in correct format from workflow)
-	if input.CollectedCitations != nil {
-		payload["citations"] = input.CollectedCitations
-		diagLogger.Info("Including citations in SSE event")
-	}
-		
+
+		// Include citations if available (already in correct format from workflow)
+		if input.CollectedCitations != nil {
+			payload["citations"] = input.CollectedCitations
+			diagLogger.Info("Including citations in SSE event")
+		}
+
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventLLMOutput),
@@ -1222,6 +1399,11 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 		zap.Int("num_results", len(input.AgentResults)),
 	)
 
+	if len(input.AgentResults) == 0 {
+		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
+	}
+
+	input.AgentResults = preprocessAgentResults(input.AgentResults, logger)
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
 	}

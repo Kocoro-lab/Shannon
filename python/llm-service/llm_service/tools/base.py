@@ -220,12 +220,23 @@ class Tool(ABC):
                         # Handle simple numeric strings (no locale/separators)
                         if s.isdigit() or (s.startswith("-") and s[1:].isdigit()):
                             out[name] = int(s)
+                    # Clamp to allowed min/max to avoid validation failures on oversized inputs
+                    if isinstance(out[name], int):
+                        if param.max_value is not None and out[name] > param.max_value:
+                            out[name] = param.max_value
+                        if param.min_value is not None and out[name] < param.min_value:
+                            out[name] = param.min_value
                 elif param.type == ToolParameterType.FLOAT:
                     if isinstance(val, int):
                         out[name] = float(val)
                     elif isinstance(val, str):
                         s = val.strip()
                         out[name] = float(s)
+                    if isinstance(out[name], float):
+                        if param.max_value is not None and out[name] > param.max_value:
+                            out[name] = float(param.max_value)
+                        if param.min_value is not None and out[name] < param.min_value:
+                            out[name] = float(param.min_value)
                 elif param.type == ToolParameterType.BOOLEAN:
                     if isinstance(val, str):
                         s = val.strip().lower()

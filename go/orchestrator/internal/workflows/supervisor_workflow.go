@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -335,7 +336,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				outTok = decomp.TokensUsed - inTok
 			}
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		recCtx := opts.WithTokenRecordOptions(ctx)
+			recCtx := opts.WithTokenRecordOptions(ctx)
 			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 				UserID:       input.UserID,
 				SessionID:    input.SessionID,
@@ -449,6 +450,39 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Version gate for context compression determinism
 	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
+
+	// Lightweight sanitizer to keep tool_execution payloads small and serializable
+	truncate := func(s string, max int) string {
+		if len(s) <= max {
+			return s
+		}
+		return s[:max] + "...(truncated)"
+	}
+	sanitizeToolExecutions := func(exec []activities.ToolExecution) []map[string]interface{} {
+		const maxLen = 512
+		out := make([]map[string]interface{}, 0, len(exec))
+		for _, te := range exec {
+			entry := map[string]interface{}{
+				"tool":    te.Tool,
+				"success": te.Success,
+			}
+			if te.Error != "" {
+				entry["error"] = te.Error
+			}
+			if te.Output != nil {
+				switch v := te.Output.(type) {
+				case string:
+					entry["output"] = truncate(v, maxLen)
+				default:
+					if b, err := json.Marshal(v); err == nil {
+						entry["output"] = truncate(string(b), maxLen)
+					}
+				}
+			}
+			out = append(out, entry)
+		}
+		return out
+	}
 
 	for i, st := range decomp.Subtasks {
 		// Emit progress event for this subtask
@@ -694,9 +728,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			for j, prevResult := range childResults {
 				if j < i && j < len(decomp.Subtasks) {
 					resultMap := map[string]interface{}{
-						"response": prevResult.Response,
-						"tokens":   prevResult.TokensUsed,
-						"success":  prevResult.Success,
+						"response":        prevResult.Response,
+						"tokens":          prevResult.TokensUsed,
+						"success":         prevResult.Success,
+						"tools_used":      prevResult.ToolsUsed,
+						"tool_executions": sanitizeToolExecutions(prevResult.ToolExecutions),
 					}
 					// Try to extract numeric value from response (standardize key name)
 					if numVal, ok := util.ParseNumericValue(prevResult.Response); ok {
@@ -711,6 +747,13 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		// Clear tool_parameters for dependent tasks to avoid placeholder issues
 		if len(st.Dependencies) > 0 && st.ToolParameters != nil {
 			st.ToolParameters = nil
+		}
+
+		// If tool parameters imply a tool but suggested_tools is empty, add it so the agent can use the tool
+		if len(st.SuggestedTools) == 0 && st.ToolParameters != nil {
+			if t, ok := st.ToolParameters["tool"].(string); ok && strings.TrimSpace(t) != "" {
+				st.SuggestedTools = []string{t}
+			}
 		}
 
 		// Performance-based agent selection (epsilon-greedy)
@@ -824,6 +867,40 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					},
 				)
 
+				// Persist tool executions (fire-and-forget)
+				if len(res.ToolExecutions) > 0 {
+					for _, texec := range res.ToolExecutions {
+						outputStr := ""
+						switch v := texec.Output.(type) {
+						case string:
+							outputStr = v
+						default:
+							if b, err := json.Marshal(v); err == nil {
+								outputStr = string(b)
+							}
+						}
+						workflow.ExecuteActivity(
+							persistCtx,
+							activities.PersistToolExecutionStandalone,
+							activities.PersistToolExecutionInput{
+								WorkflowID:     workflowID,
+								AgentID:        fmt.Sprintf("agent-%s", st.ID),
+								ToolName:       texec.Tool,
+								InputParams:    st.ToolParameters,
+								Output:         outputStr,
+								Success:        texec.Success,
+								TokensConsumed: 0,
+								DurationMs:     0,
+								Error:          texec.Error,
+								Metadata: map[string]interface{}{
+									"workflow": "supervisor",
+									"task_id":  st.ID,
+								},
+							},
+						)
+					}
+				}
+
 				// Record agent performance (fire-and-forget)
 				execDuration := workflow.Now(ctx).Sub(execStartTime).Milliseconds()
 				workflow.ExecuteActivity(
@@ -935,8 +1012,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			ctxForSynth[k] = v
 		}
 	}
-    var collectedCitations []metadata.Citation
-    {
+	var collectedCitations []metadata.Citation
+	{
 		var resultsForCitations []interface{}
 		for _, ar := range childResults {
 			var toolExecs []interface{}
@@ -957,7 +1034,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			})
 		}
 		now := workflow.Now(ctx)
-        citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+		citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
 
 		// Apply entity-based citation filtering if canonical name is present
 		if len(citations) > 0 {
@@ -990,38 +1067,38 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 		}
 
-        if len(citations) > 0 {
-            collectedCitations = citations
-            var b strings.Builder
-            for i, c := range citations {
-                idx := i + 1
-                title := c.Title
-                if title == "" {
-                    title = c.Source
-                }
-                if c.PublishedDate != nil {
-                    fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-                } else {
-                    fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
-                }
-            }
-            ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
-            ctxForSynth["citation_count"] = len(citations)
-            
-            // Also store structured citations for SSE emission
-            out := make([]map[string]interface{}, 0, len(citations))
-            for _, c := range citations {
-                out = append(out, map[string]interface{}{
-                    "url":               c.URL,
-                    "title":             c.Title,
-                    "source":            c.Source,
-                    "credibility_score": c.CredibilityScore,
-                    "quality_score":     c.QualityScore,
-                })
-            }
-            ctxForSynth["citations"] = out
-        }
-    }
+		if len(citations) > 0 {
+			collectedCitations = citations
+			var b strings.Builder
+			for i, c := range citations {
+				idx := i + 1
+				title := c.Title
+				if title == "" {
+					title = c.Source
+				}
+				if c.PublishedDate != nil {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+				} else {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+				}
+			}
+			ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
+			ctxForSynth["citation_count"] = len(citations)
+
+			// Also store structured citations for SSE emission
+			out := make([]map[string]interface{}, 0, len(citations))
+			for _, c := range citations {
+				out = append(out, map[string]interface{}{
+					"url":               c.URL,
+					"title":             c.Title,
+					"source":            c.Source,
+					"credibility_score": c.CredibilityScore,
+					"quality_score":     c.QualityScore,
+				})
+			}
+			ctxForSynth["citations"] = out
+		}
+	}
 
 	// Check if the decomposition included a synthesis/summarization subtask
 	// This commonly happens when users request specific output formats (e.g., "summarize in Chinese")
@@ -1106,7 +1183,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			Query:            input.Query,
 			AgentResults:     childResults,
 			Context:          ctxForSynth, // Pass role/prompt_params for role-aware synthesis
-			ParentWorkflowID: workflowID,    // For observability correlation
+			ParentWorkflowID: workflowID,  // For observability correlation
 		}).Get(ctx, &synth); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
@@ -1236,19 +1313,19 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	meta := map[string]interface{}{
 		"num_children": len(childResults),
 	}
-    if len(collectedCitations) > 0 {
-        out := make([]map[string]interface{}, 0, len(collectedCitations))
-        for _, c := range collectedCitations {
-            out = append(out, map[string]interface{}{
-                "url":               c.URL,
-                "title":             c.Title,
-                "source":            c.Source,
-                "credibility_score": c.CredibilityScore,
-                "quality_score":     c.QualityScore,
-            })
-        }
-        meta["citations"] = out
-    }
+	if len(collectedCitations) > 0 {
+		out := make([]map[string]interface{}, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			out = append(out, map[string]interface{}{
+				"url":               c.URL,
+				"title":             c.Title,
+				"source":            c.Source,
+				"credibility_score": c.CredibilityScore,
+				"quality_score":     c.QualityScore,
+			})
+		}
+		meta["citations"] = out
+	}
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
 	}
