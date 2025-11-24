@@ -1049,23 +1049,31 @@ function RunDetailContent() {
                                         <h3 className="text-base font-semibold mb-3">Token Usage by Turn</h3>
                                         <div className="space-y-2">
                                             {sessionHistory.tasks.map((task: any, index: number) => (
-                                                <div key={task.task_id} className="flex items-center justify-between py-2 border-b last:border-b-0">
-                                                    <div className="flex-1 min-w-0">
-                                                        <div className="text-xs font-medium truncate">Turn {index + 1}</div>
-                                                        <div className="text-xs text-muted-foreground truncate">{task.query}</div>
-                                                    </div>
-                                                    <div className="flex items-center gap-3 sm:gap-4 ml-4">
-                                                        <div className="text-right">
-                                                            <div className="text-sm font-medium">{(task.total_tokens || 0).toLocaleString()}</div>
-                                                            <div className="text-xs text-muted-foreground">tokens</div>
+                                                <div key={task.task_id} className="py-2 border-b last:border-b-0">
+                                                    <div className="flex items-center justify-between">
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="text-xs font-medium truncate">Turn {index + 1}</div>
+                                                            <div className="text-xs text-muted-foreground truncate">{task.query}</div>
+                                                            {(task.model_used || task.metadata?.model) && (
+                                                                <div className="text-xs text-muted-foreground mt-0.5">
+                                                                    {task.model_used || task.metadata?.model}
+                                                                    {(task.provider || task.metadata?.provider) && ` (${task.provider || task.metadata?.provider})`}
+                                                                </div>
+                                                            )}
                                                         </div>
-                                                        <div className="text-right">
-                                                            <div className="text-sm font-medium">${(task.total_cost_usd || 0).toFixed(4)}</div>
-                                                            <div className="text-xs text-muted-foreground">cost</div>
-                                                        </div>
-                                                        <div className="text-right">
-                                                            <div className="text-sm font-medium">{formatDuration((task.duration_ms || 0) / 1000)}</div>
-                                                            <div className="text-xs text-muted-foreground">time</div>
+                                                        <div className="flex items-center gap-3 sm:gap-4 ml-4">
+                                                            <div className="text-right">
+                                                                <div className="text-sm font-medium">{(task.total_tokens || 0).toLocaleString()}</div>
+                                                                <div className="text-xs text-muted-foreground">tokens</div>
+                                                            </div>
+                                                            <div className="text-right">
+                                                                <div className="text-sm font-medium">${(task.total_cost_usd || 0).toFixed(4)}</div>
+                                                                <div className="text-xs text-muted-foreground">cost</div>
+                                                            </div>
+                                                            <div className="text-right">
+                                                                <div className="text-sm font-medium">{formatDuration((task.duration_ms || 0) / 1000)}</div>
+                                                                <div className="text-xs text-muted-foreground">time</div>
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </div>
@@ -1073,6 +1081,41 @@ function RunDetailContent() {
                                         </div>
                                     </Card>
                                 )}
+
+                                {/* Models Used */}
+                                {sessionHistory?.tasks && sessionHistory.tasks.length > 0 && (() => {
+                                    const modelUsage = new Map<string, { count: number; tokens: number; cost: number }>();
+                                    sessionHistory.tasks.forEach((task: any) => {
+                                        const model = task.model_used || task.metadata?.model;
+                                        const provider = task.provider || task.metadata?.provider;
+                                        if (model) {
+                                            const key = provider ? `${model} (${provider})` : model;
+                                            const existing = modelUsage.get(key) || { count: 0, tokens: 0, cost: 0 };
+                                            modelUsage.set(key, {
+                                                count: existing.count + 1,
+                                                tokens: existing.tokens + (task.total_tokens || 0),
+                                                cost: existing.cost + (task.total_cost_usd || 0)
+                                            });
+                                        }
+                                    });
+                                    return modelUsage.size > 0 ? (
+                                        <Card className="p-4">
+                                            <h3 className="text-base font-semibold mb-3">Models Used</h3>
+                                            <div className="space-y-2">
+                                                {Array.from(modelUsage.entries()).map(([model, usage]) => (
+                                                    <div key={model} className="flex items-center justify-between py-1.5 text-xs">
+                                                        <div className="font-medium flex-1">{model}</div>
+                                                        <div className="flex items-center gap-4 text-muted-foreground">
+                                                            <span>{usage.count} {usage.count === 1 ? 'call' : 'calls'}</span>
+                                                            <span>{usage.tokens.toLocaleString()} tokens</span>
+                                                            <span>${usage.cost.toFixed(4)}</span>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </Card>
+                                    ) : null;
+                                })()}
 
                                 {/* Agents Involved */}
                                 {sessionHistory?.tasks && sessionHistory.tasks.length > 0 && (() => {
