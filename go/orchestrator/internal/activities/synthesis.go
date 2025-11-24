@@ -116,14 +116,14 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 			"finish_reason":        res.FinishReason,
 			"requested_max_tokens": res.RequestedMaxTokens,
 		}
-		
+
 		// Include citations if available in context
 		if input.Context != nil {
 			if citations, ok := input.Context["citations"].([]map[string]interface{}); ok && len(citations) > 0 {
 				payload["citations"] = citations
 			}
 		}
-		
+
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventLLMOutput),
@@ -251,6 +251,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// Add citation instructions for research workflows
 	// Calculate minimum citations required (default to 6, clamp by available citations)
 	minCitations := 6
+	availableCitations := 0
 	// Derive citation count from context if available
 	if input.Context != nil {
 		if v, ok := input.Context["citation_count"]; ok {
@@ -259,19 +260,23 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				if t < minCitations {
 					minCitations = t
 				}
+				availableCitations = t
 			case int32:
 				if int(t) < minCitations {
 					minCitations = int(t)
 				}
+				availableCitations = int(t)
 			case int64:
 				if int(t) < minCitations {
 					minCitations = int(t)
 				}
+				availableCitations = int(t)
 			case float64:
 				// JSON numbers may be float64; clamp safely
 				if int(t) < minCitations {
 					minCitations = int(t)
 				}
+				availableCitations = int(t)
 			}
 		} else if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
 			// Fallback: count non-empty lines
@@ -285,9 +290,17 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			if count > 0 && count < minCitations {
 				minCitations = count
 			}
+			availableCitations = count
 		}
 	}
-	if minCitations < 3 {
+	if availableCitations > 0 && minCitations > availableCitations {
+		minCitations = availableCitations
+	}
+	if availableCitations > 0 {
+		if minCitations < 3 && availableCitations >= 3 {
+			minCitations = 3
+		}
+	} else if minCitations < 3 {
 		minCitations = 3 // Minimum floor for research synthesis
 	}
 
@@ -752,13 +765,13 @@ Section requirements:
 		}
 		// Emit standard 3-event sequence (fallback path)
 		if wfID != "" {
-		payload := map[string]interface{}{
-			"tokens_used": res.TokensUsed,
-		}
-		// Include citations if available (already in correct format from workflow)
-		if input.CollectedCitations != nil {
-			payload["citations"] = input.CollectedCitations
-		}
+			payload := map[string]interface{}{
+				"tokens_used": res.TokensUsed,
+			}
+			// Include citations if available (already in correct format from workflow)
+			if input.CollectedCitations != nil {
+				payload["citations"] = input.CollectedCitations
+			}
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventLLMOutput),
@@ -1137,13 +1150,13 @@ Section requirements:
 			"finish_reason":        finishReason,
 			"requested_max_tokens": maxTokens,
 		}
-		
-	// Include citations if available (already in correct format from workflow)
-	if input.CollectedCitations != nil {
-		payload["citations"] = input.CollectedCitations
-		diagLogger.Info("Including citations in SSE event")
-	}
-		
+
+		// Include citations if available (already in correct format from workflow)
+		if input.CollectedCitations != nil {
+			payload["citations"] = input.CollectedCitations
+			diagLogger.Info("Including citations in SSE event")
+		}
+
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventLLMOutput),

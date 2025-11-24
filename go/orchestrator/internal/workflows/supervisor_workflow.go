@@ -335,7 +335,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				outTok = decomp.TokensUsed - inTok
 			}
 			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		recCtx := opts.WithTokenRecordOptions(ctx)
+			recCtx := opts.WithTokenRecordOptions(ctx)
 			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 				UserID:       input.UserID,
 				SessionID:    input.SessionID,
@@ -935,8 +935,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			ctxForSynth[k] = v
 		}
 	}
-    var collectedCitations []metadata.Citation
-    {
+	var collectedCitations []metadata.Citation
+	{
 		var resultsForCitations []interface{}
 		for _, ar := range childResults {
 			var toolExecs []interface{}
@@ -957,7 +957,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			})
 		}
 		now := workflow.Now(ctx)
-        citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+		citations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
 
 		// Apply entity-based citation filtering if canonical name is present
 		if len(citations) > 0 {
@@ -990,38 +990,38 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 		}
 
-        if len(citations) > 0 {
-            collectedCitations = citations
-            var b strings.Builder
-            for i, c := range citations {
-                idx := i + 1
-                title := c.Title
-                if title == "" {
-                    title = c.Source
-                }
-                if c.PublishedDate != nil {
-                    fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-                } else {
-                    fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
-                }
-            }
-            ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
-            ctxForSynth["citation_count"] = len(citations)
-            
-            // Also store structured citations for SSE emission
-            out := make([]map[string]interface{}, 0, len(citations))
-            for _, c := range citations {
-                out = append(out, map[string]interface{}{
-                    "url":               c.URL,
-                    "title":             c.Title,
-                    "source":            c.Source,
-                    "credibility_score": c.CredibilityScore,
-                    "quality_score":     c.QualityScore,
-                })
-            }
-            ctxForSynth["citations"] = out
-        }
-    }
+		if len(citations) > 0 {
+			collectedCitations = citations
+			var b strings.Builder
+			for i, c := range citations {
+				idx := i + 1
+				title := c.Title
+				if title == "" {
+					title = c.Source
+				}
+				if c.PublishedDate != nil {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+				} else {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+				}
+			}
+			ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
+			ctxForSynth["citation_count"] = len(citations)
+
+			// Also store structured citations for SSE emission
+			out := make([]map[string]interface{}, 0, len(citations))
+			for _, c := range citations {
+				out = append(out, map[string]interface{}{
+					"url":               c.URL,
+					"title":             c.Title,
+					"source":            c.Source,
+					"credibility_score": c.CredibilityScore,
+					"quality_score":     c.QualityScore,
+				})
+			}
+			ctxForSynth["citations"] = out
+		}
+	}
 
 	// Check if the decomposition included a synthesis/summarization subtask
 	// This commonly happens when users request specific output formats (e.g., "summarize in Chinese")
@@ -1073,10 +1073,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			// Perform synthesis for JSON-like results or when role requires formatting
 			logger.Info("Single result requires synthesis (JSON/role formatting)")
 			if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-				Query:            input.Query,
-				AgentResults:     childResults,
-				Context:          ctxForSynth,
-				ParentWorkflowID: workflowID,
+				Query:              input.Query,
+				AgentResults:       childResults,
+				Context:            ctxForSynth,
+				CollectedCitations: collectedCitations,
+				ParentWorkflowID:   workflowID,
 			}).Get(ctx, &synth); err != nil {
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
@@ -1103,10 +1104,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			logger.Info("Performing standard synthesis of agent results")
 		}
 		if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
-			Query:            input.Query,
-			AgentResults:     childResults,
-			Context:          ctxForSynth, // Pass role/prompt_params for role-aware synthesis
-			ParentWorkflowID: workflowID,    // For observability correlation
+			Query:              input.Query,
+			AgentResults:       childResults,
+			Context:            ctxForSynth, // Pass role/prompt_params for role-aware synthesis
+			CollectedCitations: collectedCitations,
+			ParentWorkflowID:   workflowID, // For observability correlation
 		}).Get(ctx, &synth); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
@@ -1236,19 +1238,19 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	meta := map[string]interface{}{
 		"num_children": len(childResults),
 	}
-    if len(collectedCitations) > 0 {
-        out := make([]map[string]interface{}, 0, len(collectedCitations))
-        for _, c := range collectedCitations {
-            out = append(out, map[string]interface{}{
-                "url":               c.URL,
-                "title":             c.Title,
-                "source":            c.Source,
-                "credibility_score": c.CredibilityScore,
-                "quality_score":     c.QualityScore,
-            })
-        }
-        meta["citations"] = out
-    }
+	if len(collectedCitations) > 0 {
+		out := make([]map[string]interface{}, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			out = append(out, map[string]interface{}{
+				"url":               c.URL,
+				"title":             c.Title,
+				"source":            c.Source,
+				"credibility_score": c.CredibilityScore,
+				"quality_score":     c.QualityScore,
+			})
+		}
+		meta["citations"] = out
+	}
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
 	}

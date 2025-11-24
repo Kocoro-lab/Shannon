@@ -748,7 +748,9 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		FROM task_executions
 		WHERE workflow_id = $1
 		LIMIT 1`, taskID)
-	_ = row.Scan(&q, &sid, &mode, &modelUsed, &provider, &totalTokens, &promptTokens, &completionTokens, &totalCost, &metadataJSON)
+	if err := row.Scan(&q, &sid, &mode, &modelUsed, &provider, &totalTokens, &promptTokens, &completionTokens, &totalCost, &metadataJSON); err != nil {
+		h.logger.Warn("Failed to scan task metadata", zap.Error(err), zap.String("workflow_id", taskID))
+	}
 	statusResp.Query = q.String
 	statusResp.SessionID = sid.String
 	statusResp.Mode = mode.String

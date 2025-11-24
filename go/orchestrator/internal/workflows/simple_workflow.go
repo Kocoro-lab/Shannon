@@ -11,6 +11,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
@@ -425,6 +426,64 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	if needsSynthesis && result.Success {
 		logger.Info("Response appears to be web_search results or JSON, performing synthesis")
 
+		// Collect citations from tool executions (best-effort)
+		var collectedCitations []metadata.Citation
+		if len(result.ToolExecutions) > 0 {
+			var resultsForCitations []interface{}
+			for _, te := range result.ToolExecutions {
+				resultsForCitations = append(resultsForCitations, map[string]interface{}{
+					"agent_id": "simple-agent",
+					"tool_executions": []interface{}{
+						map[string]interface{}{
+							"tool":    te.Tool,
+							"success": te.Success,
+							"output":  te.Output,
+							"error":   te.Error,
+						},
+					},
+					"response": result.Response,
+				})
+			}
+			collectedCitations, _ = metadata.CollectCitations(resultsForCitations, workflow.Now(ctx), 0)
+		}
+
+		// Build context for synthesis and inject citations for inline formatting
+		ctxForSynth := make(map[string]interface{})
+		if input.Context != nil {
+			for k, v := range input.Context {
+				ctxForSynth[k] = v
+			}
+		}
+		if len(collectedCitations) > 0 {
+			var b strings.Builder
+			for i, c := range collectedCitations {
+				idx := i + 1
+				title := c.Title
+				if title == "" {
+					title = c.Source
+				}
+				if c.PublishedDate != nil {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+				} else {
+					fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx, title, c.URL, c.Source)
+				}
+			}
+			ctxForSynth["available_citations"] = strings.TrimRight(b.String(), "\n")
+			ctxForSynth["citation_count"] = len(collectedCitations)
+
+			out := make([]map[string]interface{}, 0, len(collectedCitations))
+			for _, c := range collectedCitations {
+				out = append(out, map[string]interface{}{
+					"url":               c.URL,
+					"title":             c.Title,
+					"source":            c.Source,
+					"credibility_score": c.CredibilityScore,
+					"quality_score":     c.QualityScore,
+				})
+			}
+			ctxForSynth["citations"] = out
+		}
+
 		// Convert to agent results format for synthesis
 		agentResults := []activities.AgentExecutionResult{
 			{
@@ -439,10 +498,11 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		err = workflow.ExecuteActivity(ctx,
 			activities.SynthesizeResultsLLM,
 			activities.SynthesisInput{
-				Query:            input.Query,
-				AgentResults:     agentResults,
-				Context:          input.Context,
-				ParentWorkflowID: workflowID,
+				Query:              input.Query,
+				AgentResults:       agentResults,
+				Context:            ctxForSynth,
+				CollectedCitations: collectedCitations,
+				ParentWorkflowID:   workflowID,
 			},
 		).Get(ctx, &synthesis)
 
