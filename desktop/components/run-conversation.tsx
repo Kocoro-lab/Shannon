@@ -299,9 +299,14 @@ export function RunConversation({ messages, showAgentTrace = false }: RunConvers
             return true;
         }
         
-        // Intermediate agents: reasoner-*, actor-*, react-synthesizer, etc.
-        // Final synthesis: "synthesis" or empty/undefined (default assistant)
-        return sender && sender !== "synthesis" && sender !== "assistant" && sender !== "";
+        // Final answer agents: synthesis, simple-agent, assistant, or empty
+        const finalAnswerAgents = ["synthesis", "simple-agent", "assistant", ""];
+        if (finalAnswerAgents.includes(sender)) {
+            return false;
+        }
+        
+        // All other agents are intermediate (reasoner-*, actor-*, react-synthesizer, etc.)
+        return true;
     };
 
     // Filter messages based on showAgentTrace toggle

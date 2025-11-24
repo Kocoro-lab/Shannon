@@ -18,7 +18,7 @@ export function RunTimeline({ events }: RunTimelineProps) {
     return (
         <div className="space-y-6 p-4">
             {events.map((event, index) => (
-                <div key={event.id} className="relative pl-8">
+                <div key={`${event.id}-${index}`} className="relative pl-8">
                     {/* Vertical line */}
                     {index !== events.length - 1 && (
                         <div className="absolute left-[11px] top-8 h-full w-px bg-border" />

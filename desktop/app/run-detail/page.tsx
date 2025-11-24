@@ -12,7 +12,7 @@ import { RunConversation } from "@/components/run-conversation";
 import { ChatInput, AgentSelection } from "@/components/chat-input";
 import { ArrowLeft, Download, Share, Loader2, Eye, EyeOff } from "lucide-react";
 import Link from "next/link";
-import { Suspense, useEffect, useState, useRef, useCallback } from "react";
+import { Suspense, useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useRunStream } from "@/lib/shannon/stream";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
@@ -40,6 +40,13 @@ function RunDetailContent() {
     // Refs for auto-scrolling
     const timelineScrollRef = useRef<HTMLDivElement>(null);
     const conversationScrollRef = useRef<HTMLDivElement>(null);
+    
+    // Refs for tracking history/message loading state
+    const hasLoadedMessagesRef = useRef(false);
+    const hasFetchedHistoryRef = useRef(false);
+    const hasInitializedTaskRef = useRef<string | null>(null);
+    const prevSessionIdRef = useRef<string | null>(null);
+    const hasInitializedRef = useRef(false);
 
     // Connect to SSE stream for the current task if one is running
     useRunStream(currentTaskId, streamRestartKey);
@@ -61,9 +68,6 @@ function RunDetailContent() {
     };
 
     // Reset Redux state only when switching sessions or starting fresh
-    const prevSessionIdRef = useRef<string | null>(null);
-    const hasInitializedRef = useRef(false);
-    
     useEffect(() => {
         // Reset on initial mount or when session changes
         const sessionChanged = sessionId !== prevSessionIdRef.current;
@@ -77,6 +81,7 @@ function RunDetailContent() {
             hasInitializedRef.current = true;
             // Reset the loaded messages flag when session changes
             hasLoadedMessagesRef.current = false;
+            hasFetchedHistoryRef.current = false;
             hasInitializedTaskRef.current = null;
             setCurrentTaskId(null);
         } else if (sessionChanged) {
@@ -86,8 +91,6 @@ function RunDetailContent() {
     }, [dispatch, sessionId]);
 
     // Handle direct task access (e.g. from New Task dialog)
-    const hasInitializedTaskRef = useRef<string | null>(null);
-    
     useEffect(() => {
         const initializeFromTask = async () => {
             if (!taskIdParam) return;
@@ -168,9 +171,6 @@ function RunDetailContent() {
         initializeFromTask();
     }, [taskIdParam, sessionId, router, searchParams, dispatch]);
 
-    // Track if we've already loaded messages for this session
-    const hasLoadedMessagesRef = useRef(false);
-    
     // Fetch full session history
     const fetchSessionHistory = useCallback(async (forceReload = false) => {
         if (isNewSession) return;
@@ -432,8 +432,6 @@ function RunDetailContent() {
     }, [isNewSession, sessionId, runStatus, currentTaskId, dispatch]);
 
     // Only fetch session history on initial load, not during active tasks
-    const hasFetchedHistoryRef = useRef(false);
-    
     useEffect(() => {
         // Only fetch history once when the session first loads
         if (sessionId && sessionId !== "new" && !hasFetchedHistoryRef.current && !currentTaskId) {
@@ -447,15 +445,21 @@ function RunDetailContent() {
     useEffect(() => {
         if (runStatus === "completed" && sessionId && sessionId !== "new") {
             // Update both events (for timeline) and history (for costs in summary)
+            // Don't trigger message reload - messages are already in Redux from streaming
             const timer = setTimeout(async () => {
                 try {
                     const eventsData = await getSessionEvents(sessionId, 100, 0);
                     const allEvents: Event[] = (eventsData as any).events || eventsData.turns.flatMap(t => t.events || []);
                     setSessionData({ turns: eventsData.turns, events: allEvents });
                     
-                    // Fetch history for cost data
+                    // Fetch history for cost data only (don't reload messages)
                     const historyData = await getSessionHistory(sessionId);
                     setSessionHistory(historyData);
+                    
+                    // Mark that we've loaded messages to prevent fetchSessionHistory from reloading them
+                    if (!hasLoadedMessagesRef.current) {
+                        hasLoadedMessagesRef.current = true;
+                    }
                 } catch (err) {
                     console.error("Failed to refresh session data:", err);
                 }
@@ -688,7 +692,17 @@ function RunDetailContent() {
 
     // Combine historical messages with streaming messages
     // Redux `runMessages` should now contain both if we populated it correctly
-    const messages = runMessages;
+    // Use a stable reference to messages to prevent unnecessary re-renders
+    const messages = useMemo(() => runMessages, [runMessages]);
+    
+    // Debug logging to track message disappearance issue
+    useEffect(() => {
+        const userMessages = messages.filter((m: any) => m.role === "user");
+        console.log(`[RunDetail] Messages updated: ${messages.length} total, ${userMessages.length} user messages`);
+        if (userMessages.length > 0) {
+            console.log(`[RunDetail] User message IDs:`, userMessages.map((m: any) => m.id));
+        }
+    }, [messages]);
 
     // Auto-scroll timeline to bottom when events change
     useEffect(() => {
@@ -759,14 +773,14 @@ function RunDetailContent() {
                             <ArrowLeft className="h-4 w-4" />
                         </Link>
                     </Button>
-                    <div className="flex items-center gap-2">
-                        <h1 className="text-lg font-semibold">
+                    <div className="flex items-center gap-2 min-w-0 flex-1 max-w-2xl">
+                        <h1 className="text-lg font-semibold truncate" title={sessionTitle || (isNewSession ? "New Session" : `Session ${sessionId?.slice(0, 8)}...`)}>
                             {sessionTitle || (isNewSession ? "New Session" : `Session ${sessionId?.slice(0, 8)}...`)}
                         </h1>
-                        <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                        <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 shrink-0">
                             {isNewSession ? "New" : "Active"}
                         </Badge>
-                        <Badge variant="secondary" className="text-xs">
+                        <Badge variant="secondary" className="text-xs shrink-0">
                             {agentLabelMap[selectedAgent] || "Normal chat"}
                         </Badge>
                     </div>
