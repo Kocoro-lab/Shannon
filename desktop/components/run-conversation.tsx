@@ -293,6 +293,12 @@ export function RunConversation({ messages, showAgentTrace = false }: RunConvers
     const isIntermediateMessage = (msg: Message) => {
         if (msg.role !== "assistant") return false;
         const sender = msg.sender || "";
+        
+        // Check if it's a tool call message (JSON with selected_tools)
+        if (msg.content && msg.content.trim().startsWith('{') && msg.content.includes('"selected_tools"')) {
+            return true;
+        }
+        
         // Intermediate agents: reasoner-*, actor-*, react-synthesizer, etc.
         // Final synthesis: "synthesis" or empty/undefined (default assistant)
         return sender && sender !== "synthesis" && sender !== "assistant" && sender !== "";
