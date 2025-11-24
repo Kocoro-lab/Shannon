@@ -1,5 +1,6 @@
 import { CheckCircle2, Circle, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { CollapsibleDetails } from "./collapsible-details";
 
 interface TimelineEvent {
     id: string;
@@ -8,6 +9,7 @@ interface TimelineEvent {
     title: string;
     timestamp: string;
     details?: string;
+    detailsType?: "json" | "text";
 }
 
 interface RunTimelineProps {
@@ -18,7 +20,7 @@ export function RunTimeline({ events }: RunTimelineProps) {
     return (
         <div className="space-y-6 p-4">
             {events.map((event, index) => (
-                <div key={`${event.id}-${index}`} className="relative pl-8">
+                <div key={`${event.id}-${index}`} className="relative pl-8 pr-2">
                     {/* Vertical line */}
                     {index !== events.length - 1 && (
                         <div className="absolute left-[11px] top-8 h-full w-px bg-border" />
@@ -47,10 +49,11 @@ export function RunTimeline({ events }: RunTimelineProps) {
                                 {event.timestamp}
                             </span>
                         </div>
-                        {event.details && (
-                            <p className="text-sm text-muted-foreground">
-                                {event.details}
-                            </p>
+                        {event.details && event.detailsType && (
+                            <CollapsibleDetails
+                                content={event.details}
+                                type={event.detailsType}
+                            />
                         )}
                     </div>
                 </div>
