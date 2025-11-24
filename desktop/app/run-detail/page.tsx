@@ -67,6 +67,16 @@ function RunDetailContent() {
         setStreamRestartKey(key => key + 1);
     };
 
+    // Helper to format duration in a human-readable way
+    const formatDuration = (seconds: number): string => {
+        if (seconds < 60) {
+            return `${seconds.toFixed(1)}s`;
+        }
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.round(seconds % 60);
+        return `${minutes}m ${remainingSeconds}s`;
+    };
+
     // Reset Redux state only when switching sessions or starting fresh
     useEffect(() => {
         // Reset on initial mount or when session changes
@@ -256,6 +266,9 @@ function RunDetailContent() {
             const historyData = await getSessionHistory(sessionId);
             setSessionHistory(historyData);
 
+            // Declare at function scope so it's accessible later for SSE connection
+            let lastRunningWorkflowId: string | null = null;
+
             // Only populate Redux messages if we haven't loaded them yet
             // This prevents duplicates when navigating with an active task
             if (!hasLoadedMessagesRef.current || forceReload) {
@@ -285,7 +298,8 @@ function RunDetailContent() {
                 // Add historical events to Redux (filter out events that create conversation messages)
                 // For history: LLM_OUTPUT, TOOL_INVOKED, TOOL_OBSERVATION create messages - skip them
                 // We'll use turn.final_output for the conversation instead
-                allEvents
+                // Also deduplicate excessive BUDGET_THRESHOLD events here to reduce Redux state size
+                const eventsToAdd = allEvents
                     .filter((event: Event) => {
                         const type = (event as any).type;
                         const agentId = (event as any).agent_id;
@@ -293,10 +307,58 @@ function RunDetailContent() {
                                type !== 'LLM_OUTPUT' &&
                                type !== 'TOOL_INVOKED' &&
                                type !== 'TOOL_OBSERVATION';
-                    })
-                    .forEach((event: Event) => {
-                        dispatch(addEvent(event as any));
                     });
+                
+                // Deduplicate BUDGET_THRESHOLD events before adding to Redux
+                // Only show first warning and then every 100% increase to minimize clutter
+                const deduplicatedHistoricalEvents: Event[] = [];
+                let lastBudgetPercent = 0;
+                let budgetEventCount = 0;
+                const MAX_BUDGET_EVENTS = 5; // Limit total budget events shown
+                
+                eventsToAdd.forEach((event: Event) => {
+                    if ((event as any).type === 'BUDGET_THRESHOLD') {
+                        const match = (event as any).message?.match(/Task budget at ([\d.]+)%/);
+                        if (match) {
+                            const currentPercent = parseFloat(match[1]);
+                            // Keep first event, then only 100%+ increases, with a max limit
+                            if (budgetEventCount < MAX_BUDGET_EVENTS && 
+                                (lastBudgetPercent === 0 || currentPercent - lastBudgetPercent >= 100)) {
+                                deduplicatedHistoricalEvents.push(event);
+                                lastBudgetPercent = currentPercent;
+                                budgetEventCount++;
+                            }
+                            // Skip other budget events to reduce clutter
+                        } else {
+                            // Can't parse, keep it
+                            deduplicatedHistoricalEvents.push(event);
+                        }
+                    } else {
+                        // Not a budget event, keep it
+                        deduplicatedHistoricalEvents.push(event);
+                    }
+                });
+                
+                // Add deduplicated events to Redux
+                deduplicatedHistoricalEvents.forEach((event: Event) => {
+                    dispatch(addEvent(event as any));
+                });
+
+                // Check if the last task is running before loading messages
+                if (eventsData.turns.length > 0) {
+                    const lastTurn = eventsData.turns[eventsData.turns.length - 1];
+                    const lastWorkflowId = lastTurn.events.length > 0 ? lastTurn.events[0].workflow_id : lastTurn.task_id;
+                    
+                    try {
+                        const taskStatus = await getTask(lastWorkflowId);
+                        if ((taskStatus.status === "TASK_STATUS_RUNNING" || taskStatus.status === "TASK_STATUS_QUEUED") && !taskStatus.result) {
+                            lastRunningWorkflowId = lastWorkflowId;
+                            console.log("[RunDetail] Last task is running:", lastWorkflowId, "- will show generating indicator");
+                        }
+                    } catch (err) {
+                        console.warn("[RunDetail] Failed to check last task status:", err);
+                    }
+                }
 
                 // Add historical messages (turns) to Redux
                 // We need to reconstruct messages from turns
@@ -322,8 +384,12 @@ function RunDetailContent() {
                         })
                 );
                 
-                eventsData.turns.forEach(turn => {
+                console.log("[RunDetail] Loading", eventsData.turns.length, "turns into messages");
+                eventsData.turns.forEach((turn, turnIndex) => {
                     const workflowId = turn.events.length > 0 ? turn.events[0].workflow_id : turn.task_id;
+                    console.log(`[RunDetail] Processing turn ${turnIndex + 1}/${eventsData.turns.length}, task_id: ${turn.task_id}, workflow_id: ${workflowId}`);
+                    
+                    const isCurrentlyRunning = workflowId === lastRunningWorkflowId;
                     
                     // User message
                     dispatch(addMessage({
@@ -333,54 +399,65 @@ function RunDetailContent() {
                         timestamp: new Date(turn.timestamp).toLocaleTimeString(),
                         taskId: turn.task_id,
                     }));
+                    console.log(`[RunDetail] Added user message for turn ${turnIndex + 1}`);
 
-                    // Add all intermediate agent messages from thread.message.completed events
-                    turn.events
-                        .filter((event: any) => 
-                            (event.type === 'thread.message.completed' || event.type === 'LLM_OUTPUT') &&
-                            event.agent_id !== 'title_generator'
-                        )
-                        .forEach((event: any) => {
-                            const content = event.response || event.message || event.content || "";
-                            if (content) {
-                                const messageId = `${event.agent_id || 'assistant'}-${event.workflow_id}-${event.seq || event.timestamp || Date.now()}`;
-                                // For synthesis agent, get citations from task metadata instead of event metadata
-                                const fullTaskDetails = taskDetailsMap.get(workflowId);
-                                const metadata = (event.agent_id === 'synthesis' && fullTaskDetails?.metadata?.citations)
-                                    ? { ...event.metadata, citations: fullTaskDetails.metadata.citations }
-                                    : event.metadata;
-                                
-                                dispatch(addMessage({
-                                    id: messageId,
-                                    role: "assistant",
-                                    sender: event.agent_id,
-                                    content: content,
-                                    timestamp: event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : new Date(turn.timestamp).toLocaleTimeString(),
-                                    metadata: metadata,
-                                    taskId: event.workflow_id,
-                                }));
-                            }
-                        });
+                    // For running tasks, show generating indicator instead of intermediate messages
+                    if (isCurrentlyRunning) {
+                        console.log("[RunDetail] Task is running - adding generating placeholder instead of intermediate messages");
+                        dispatch(addMessage({
+                            id: `generating-${workflowId}`,
+                            role: "assistant",
+                            content: "Generating...",
+                            timestamp: new Date().toLocaleTimeString(),
+                            isGenerating: true,
+                            taskId: workflowId,
+                        }));
+                        return; // Skip loading intermediate/final messages for this turn
+                    }
 
-                    // Assistant message (final output) - as fallback if no LLM_OUTPUT events
-                    // Only add if we don't already have messages from events
-                    const hasEventsWithContent = turn.events.some((event: any) => 
-                        (event.type === 'thread.message.completed' || event.type === 'LLM_OUTPUT') &&
+                    // Add intermediate agent trace messages from events (for "Show Agent Trace" feature)
+                    // These are LLM_OUTPUT and thread.message.completed events with agent_id
+                    const intermediateEvents = turn.events.filter((event: any) => 
+                        (event.type === 'LLM_OUTPUT' || event.type === 'thread.message.completed') &&
+                        event.agent_id && 
                         event.agent_id !== 'title_generator' &&
-                        (event.response || event.message || event.content)
+                        event.agent_id !== 'synthesis' && // synthesis is the final answer
+                        event.agent_id !== 'simple-agent' && // simple-agent is the final answer
+                        event.agent_id !== 'assistant' &&
+                        (event.message || event.response || event.content)
                     );
-                    
-                    if (turn.final_output && !hasEventsWithContent) {
-                        // Get full task details (includes citations)
+
+                    intermediateEvents.forEach((event: any, eventIndex: number) => {
+                        const content = event.message || event.response || event.content || '';
+                        if (content) {
+                            const uniqueId = `${event.agent_id}-${turn.task_id}-${eventIndex}`;
+                            dispatch(addMessage({
+                                id: uniqueId,
+                                role: "assistant",
+                                sender: event.agent_id, // Set sender for agent trace filtering
+                                content: content,
+                                timestamp: new Date(event.timestamp || turn.timestamp).toLocaleTimeString(),
+                                taskId: turn.task_id,
+                            }));
+                        }
+                    });
+
+                    if (intermediateEvents.length > 0) {
+                        console.log(`[RunDetail] Added ${intermediateEvents.length} intermediate agent trace messages for turn ${turnIndex + 1}`);
+                    }
+
+                    // Assistant message: Use final_output as the authoritative answer
+                    // final_output comes from the task's result field (canonical value)
+                    if (turn.final_output) {
+                        // Get full task details (includes citations and metadata)
                         const fullTaskDetails = taskDetailsMap.get(workflowId);
                         const metadata = fullTaskDetails?.metadata || turn.metadata;
                         
                         if (metadata?.citations) {
-                            console.log(`[RunDetail] Loaded ${metadata.citations.length} citations for turn ${turn.task_id} (workflow: ${workflowId})`);
-                        } else {
-                            console.log(`[RunDetail] No citations found for turn ${turn.task_id} (workflow: ${workflowId})`);
+                            console.log(`[RunDetail] Loaded ${metadata.citations.length} citations for turn ${turn.task_id}`);
                         }
                         
+                        console.log(`[RunDetail] Adding assistant message from final_output (authoritative result)`);
                         dispatch(addMessage({
                             id: `assistant-${turn.task_id}`,
                             role: "assistant",
@@ -389,6 +466,8 @@ function RunDetailContent() {
                             metadata: metadata,
                             taskId: turn.task_id,
                         }));
+                    } else {
+                        console.warn(`[RunDetail] Turn ${turnIndex + 1} has no final_output!`);
                     }
                 });
                 
@@ -397,31 +476,11 @@ function RunDetailContent() {
                 console.log("[RunDetail] Skipping message population - already loaded messages for this session");
             }
 
-            // Check if there's a running task in this session and establish SSE connection
-            if (eventsData.turns.length > 0 && !currentTaskId) {
-                const lastTurn = eventsData.turns[eventsData.turns.length - 1];
-                const lastWorkflowId = lastTurn.events.length > 0 ? lastTurn.events[0].workflow_id : lastTurn.task_id;
-                
-                if (lastWorkflowId) {
-                    console.log("[RunDetail] Checking if last task is still running:", lastWorkflowId);
-                    
-                    // Always check the task status via API to see if it's running
-                    // Can't rely on final_output because deep research stores REASON messages there
-                    try {
-                        const taskStatus = await getTask(lastWorkflowId);
-                        console.log("[RunDetail] Task status:", taskStatus.status, "Has result:", !!taskStatus.result);
-                        
-                        if ((taskStatus.status === "TASK_STATUS_RUNNING" || taskStatus.status === "TASK_STATUS_QUEUED") && !taskStatus.result) {
-                            console.log("[RunDetail] Detected running task, connecting to SSE stream");
-                            setCurrentTaskId(lastWorkflowId);
-                            dispatch(setMainWorkflowId(lastWorkflowId));
-                        } else {
-                            console.log("[RunDetail] Task is completed or has final result, not establishing SSE connection");
-                        }
-                    } catch (err) {
-                        console.warn("[RunDetail] Failed to check task status:", err);
-                    }
-                }
+            // Establish SSE connection if we detected a running task earlier
+            if (lastRunningWorkflowId && !currentTaskId) {
+                console.log("[RunDetail] Establishing SSE connection for running task:", lastRunningWorkflowId);
+                setCurrentTaskId(lastRunningWorkflowId);
+                dispatch(setMainWorkflowId(lastRunningWorkflowId));
             }
 
         } catch (err) {
@@ -517,45 +576,57 @@ function RunDetailContent() {
     };
 
     const fetchFinalOutput = useCallback(async () => {
-        if (!currentTaskId) return;
-        console.log("[RunDetail] Fetching final output for task:", currentTaskId);
+        if (!currentTaskId) {
+            console.warn("[RunDetail] fetchFinalOutput called but no currentTaskId");
+            return;
+        }
+        console.log("[RunDetail] 🔍 Fetching authoritative result from task API for:", currentTaskId);
         try {
             const task = await getTask(currentTaskId);
+            console.log("[RunDetail] ✓ Task fetched - status:", task.status);
+            console.log("[RunDetail] Task result (first 200 chars):", task.result?.substring(0, 200));
             console.log("[RunDetail] Task metadata:", task.metadata);
             if (task.metadata?.citations) {
-                console.log("[RunDetail] Citations found in task metadata:", task.metadata.citations.length);
+                console.log("[RunDetail] ✓ Citations found:", task.metadata.citations.length);
             }
             
-            // Check if we already have a streaming message for this task
-            const hasExistingMessage = runMessages.some(m => 
-                m.role === "assistant" && m.taskId === currentTaskId
+            if (!task.result) {
+                console.warn("[RunDetail] ⚠️ Task has no result field - task may still be running:", task.status);
+                return;
+            }
+            
+            // Check if we already have the authoritative result (exact match)
+            const hasAuthoritativeResult = runMessages.some(m => 
+                m.role === "assistant" && 
+                m.taskId === currentTaskId && 
+                m.content === task.result &&
+                !m.isStreaming
             );
             
-            if (hasExistingMessage && task.metadata) {
-                // Update existing message with metadata (including citations)
-                console.log("[RunDetail] Updating existing message with metadata");
-                dispatch(updateMessageMetadata({
-                    taskId: currentTaskId,
-                    metadata: task.metadata,
-                }));
-            } else if (task.result) {
-                // No existing message, create new one
-                console.log("[RunDetail] Creating new message with result");
-                dispatch(addMessage({
-                    id: `assistant-${currentTaskId}`,
-                    role: "assistant",
-                    content: task.result,
-                    timestamp: new Date().toLocaleTimeString(),
-                    metadata: task.metadata,
-                    taskId: currentTaskId,
-                }));
-            } else {
-                console.warn("[RunDetail] Task has no result field:", task);
+            if (hasAuthoritativeResult) {
+                console.log("[RunDetail] ✓ Authoritative result already present in messages");
+                return;
             }
             
+            // Add the authoritative result from task.result (canonical value)
+            // This ensures the final answer comes from the task record, not intermediate stream messages
+            console.log("[RunDetail] ➕ Adding authoritative result to messages (length:", task.result.length, "chars)");
+            const messageId = `assistant-final-${currentTaskId}`;
+            console.log("[RunDetail] Message ID:", messageId);
+            
+            dispatch(addMessage({
+                id: messageId,
+                role: "assistant",
+                content: task.result,
+                timestamp: new Date().toLocaleTimeString(),
+                metadata: task.metadata,
+                taskId: currentTaskId,
+            }));
+            
+            console.log("[RunDetail] ✓ Message dispatched to Redux");
             dispatch(setStreamError(null));
         } catch (err) {
-            console.error("[RunDetail] Failed to fetch task result:", err);
+            console.error("[RunDetail] ❌ Failed to fetch task result:", err);
             dispatch(setStreamError("Failed to fetch final output"));
         }
     }, [currentTaskId, dispatch, runMessages]);
@@ -564,33 +635,24 @@ function RunDetailContent() {
         fetchFinalOutput();
     };
 
-    // Watch for task completion and fetch final output if needed
+    // Watch for task completion and fetch authoritative final result
+    // Per best practice: when WORKFLOW_COMPLETED or STREAM_END arrives, fetch task.result (authoritative)
     useEffect(() => {
         const fetchTaskResult = async () => {
-            console.log("[RunDetail] Fallback fetch check - status:", runStatus, "taskId:", currentTaskId, "messages:", runMessages.length);
+            console.log("[RunDetail] Completion check - status:", runStatus, "taskId:", currentTaskId, "messages:", runMessages.length);
             
             if (runStatus === "completed" && currentTaskId) {
-                console.log("[RunDetail] Task completed, checking if we need to fetch final output");
-                
-                // Check if we have an assistant message for this task (including streaming ones to avoid duplicate fetches)
-                const hasAssistantResponse = runMessages.some(m => 
-                    m.role === "assistant" && !m.isGenerating && messageMatchesTask(m, currentTaskId)
-                );
-                
-                console.log("[RunDetail] Has assistant response:", hasAssistantResponse);
-                console.log("[RunDetail] Messages:", runMessages.map(m => ({ role: m.role, isStreaming: m.isStreaming, contentPreview: m.content?.substring(0, 50) })));
-
-                if (!hasAssistantResponse) {
-                    console.log("[RunDetail] No assistant response found, fetching task result from API");
-                    await fetchFinalOutput();
-                } else {
-                    console.log("[RunDetail] Assistant response already exists, skipping fallback fetch");
-                }
+                console.log("[RunDetail] ✓ Task completed! Fetching authoritative result from task API");
+                // Always fetch the authoritative result when completion is signaled
+                // The task.result field is the canonical value, not intermediate stream messages
+                await fetchFinalOutput();
+            } else if (runStatus !== "completed") {
+                console.log("[RunDetail] Waiting for completion signal... current status:", runStatus);
             }
         };
 
         fetchTaskResult();
-    }, [runStatus, currentTaskId, runMessages, dispatch, fetchFinalOutput]);
+    }, [runStatus, currentTaskId, fetchFinalOutput]);
 
     // Helper to categorize event type
     const categorizeEvent = (eventType: string): "agent" | "llm" | "tool" | "system" => {
@@ -657,6 +719,47 @@ function RunDetailContent() {
     const filteredRunEvents = runEvents
         .filter((event: any) => !excludedEventTypes.has(event.type) && event.type);
 
+    // Deduplicate excessive BUDGET_THRESHOLD events
+    // Keep only the first one and then one every 100% increase, with a max limit
+    const deduplicatedEvents = filteredRunEvents.reduce((acc: any[], event: any) => {
+        if (event.type === "BUDGET_THRESHOLD") {
+            // Extract percentage from message like "Task budget at 85.0% (threshold: 80.0%)"
+            const match = event.message?.match(/Task budget at ([\d.]+)%/);
+            if (match) {
+                const currentPercent = parseFloat(match[1]);
+                
+                // Find all budget events we've kept
+                const budgetEventsKept = acc.filter((e: any) => e.type === "BUDGET_THRESHOLD");
+                const MAX_BUDGET_EVENTS = 5; // Limit total budget events in timeline
+                
+                if (budgetEventsKept.length === 0) {
+                    // First budget event, keep it
+                    acc.push(event);
+                } else if (budgetEventsKept.length < MAX_BUDGET_EVENTS) {
+                    // Check if this is a significant increase (100% or more)
+                    const lastBudgetEvent = budgetEventsKept[budgetEventsKept.length - 1];
+                    const lastMatch = lastBudgetEvent.message?.match(/Task budget at ([\d.]+)%/);
+                    if (lastMatch) {
+                        const lastPercent = parseFloat(lastMatch[1]);
+                        if (currentPercent - lastPercent >= 100) {
+                            // Significant increase, keep this event
+                            acc.push(event);
+                        }
+                        // Otherwise skip this duplicate budget event
+                    }
+                }
+                // Skip if we've already kept MAX_BUDGET_EVENTS
+            } else {
+                // Can't parse percentage, keep the event anyway
+                acc.push(event);
+            }
+        } else {
+            // Not a budget event, keep it
+            acc.push(event);
+        }
+        return acc;
+    }, []);
+
     // Track which workflows have completed by looking for WORKFLOW_COMPLETED events
     const completedWorkflows = new Set(
         runEvents
@@ -664,7 +767,7 @@ function RunDetailContent() {
             .map((e: any) => e.workflow_id)
     );
 
-    const timelineEvents = filteredRunEvents
+    const timelineEvents = deduplicatedEvents
         .map((event: any, index) => {
             // Check if this event's workflow has completed
             const workflowCompleted = completedWorkflows.has(event.workflow_id);
@@ -759,8 +862,8 @@ function RunDetailContent() {
     }
 
     const agentLabelMap: Record<AgentSelection, string> = {
-        normal: "Normal task",
-        deep_research: "Deep research",
+        normal: "Everyday Agent",
+        deep_research: "Deep Research",
     };
 
     return (
@@ -778,10 +881,10 @@ function RunDetailContent() {
                             {sessionTitle || (isNewSession ? "New Session" : `Session ${sessionId?.slice(0, 8)}...`)}
                         </h1>
                         <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200 shrink-0">
-                            {isNewSession ? "New" : "Active"}
+                            {agentLabelMap[selectedAgent] || "Normal chat"}
                         </Badge>
                         <Badge variant="secondary" className="text-xs shrink-0">
-                            {agentLabelMap[selectedAgent] || "Normal chat"}
+                            {isNewSession ? "New" : "Active"}
                         </Badge>
                     </div>
                 </div>
@@ -796,8 +899,8 @@ function RunDetailContent() {
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="normal">Normal task</SelectItem>
-                                <SelectItem value="deep_research">Deep research</SelectItem>
+                                <SelectItem value="normal">Everyday Agent</SelectItem>
+                                <SelectItem value="deep_research">Deep Research</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
@@ -935,7 +1038,7 @@ function RunDetailContent() {
                                     <Card className="p-3">
                                         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Total Time</div>
                                         <div className="text-xl sm:text-2xl font-bold mt-1">
-                                            {((sessionHistory?.tasks.reduce((sum: number, task: any) => sum + (task.duration_ms || 0), 0) || sessionData?.turns.reduce((sum, turn) => sum + (turn.metadata?.execution_time_ms || 0), 0) || 0) / 1000).toFixed(1)}s
+                                            {formatDuration((sessionHistory?.tasks.reduce((sum: number, task: any) => sum + (task.duration_ms || 0), 0) || sessionData?.turns.reduce((sum, turn) => sum + (turn.metadata?.execution_time_ms || 0), 0) || 0) / 1000)}
                                         </div>
                                     </Card>
                                 </div>
@@ -961,7 +1064,7 @@ function RunDetailContent() {
                                                             <div className="text-xs text-muted-foreground">cost</div>
                                                         </div>
                                                         <div className="text-right">
-                                                            <div className="text-sm font-medium">{((task.duration_ms || 0) / 1000).toFixed(1)}s</div>
+                                                            <div className="text-sm font-medium">{formatDuration((task.duration_ms || 0) / 1000)}</div>
                                                             <div className="text-xs text-muted-foreground">time</div>
                                                         </div>
                                                     </div>
@@ -1009,10 +1112,10 @@ function RunDetailContent() {
                                             <div>
                                                 <div className="text-xs text-muted-foreground">Avg. Time per Turn</div>
                                                 <div className="text-lg font-bold mt-1">
-                                                    {(
+                                                    {formatDuration(
                                                         sessionHistory.tasks.reduce((sum: number, task: any) => sum + (task.duration_ms || 0), 0) / 
                                                         sessionHistory.tasks.length / 1000
-                                                    ).toFixed(1)}s
+                                                    )}
                                                 </div>
                                             </div>
                                         </div>

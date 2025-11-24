@@ -131,13 +131,20 @@ export default function RunsPage() {
                                         >
                                             <td className="p-4 align-middle [&:has([role=checkbox])]:pr-0">
                                                 <div className="flex flex-col">
-                                                    <span className="font-medium truncate max-w-[300px]" title={session.title || session.session_id}>
+                                                    <Link
+                                                        href={`/run-detail?session_id=${session.session_id}`}
+                                                        className="font-medium truncate max-w-[300px] hover:text-primary hover:underline transition-colors"
+                                                        title={session.title || session.session_id}
+                                                    >
                                                         {session.title || session.session_id}
-                                                    </span>
+                                                    </Link>
                                                     {session.title && (
-                                                        <span className="text-xs text-muted-foreground font-mono truncate max-w-[300px]">
+                                                        <Link
+                                                            href={`/run-detail?session_id=${session.session_id}`}
+                                                            className="text-xs text-muted-foreground font-mono truncate max-w-[300px] hover:text-primary transition-colors"
+                                                        >
                                                             {session.session_id}
-                                                        </span>
+                                                        </Link>
                                                     )}
                                                 </div>
                                             </td>

@@ -5,13 +5,14 @@
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
-import { ExternalLink } from "lucide-react";
-import React, { type ReactNode } from "react";
+import { ExternalLink, Copy, Check } from "lucide-react";
+import React, { type ReactNode, useState } from "react";
 import { CollapsibleMessage } from "@/components/collapsible-message";
 
 export interface Citation {
@@ -187,7 +188,7 @@ export function MarkdownWithCitations({ content, citations }: { content: string;
                 }
                 return child;
             });
-            return <p className="leading-relaxed" {...props}>{processedChildren}</p>;
+            return <p className="leading-relaxed break-words" {...props}>{processedChildren}</p>;
         },
         // Also handle other text containers
         li: ({ children, ...props }: any) => {
@@ -226,60 +227,62 @@ function getMarkdownComponents() {
     return {
         code: ({ inline, className, children, ...props }: any) => {
             return inline ? (
-                <code className={cn("px-1.5 py-0.5 rounded bg-muted/50 font-mono text-xs", className)} {...props}>
+                <code className={cn("px-1.5 py-0.5 rounded bg-muted/50 font-mono text-xs break-all", className)} {...props}>
                     {children}
                 </code>
             ) : (
-                <code className={cn("block p-3 rounded-lg bg-muted/50 overflow-x-auto", className)} {...props}>
+                <code className={cn("block p-3 rounded-lg bg-muted/50 overflow-x-auto whitespace-pre-wrap break-words", className)} {...props}>
                     {children}
                 </code>
             );
         },
-        pre: ({ children, ...props }) => (
+        pre: ({ children, ...props }: any) => (
             <pre className="my-2 overflow-x-auto rounded-lg bg-black/90 dark:bg-black/50 p-0" {...props}>
                 {children}
             </pre>
         ),
-        p: ({ children, ...props }) => (
-            <p className="leading-relaxed" {...props}>{children}</p>
+        p: ({ children, ...props }: any) => (
+            <p className="leading-relaxed break-words" {...props}>{children}</p>
         ),
         // Headings
-        h1: ({ children, ...props }) => (
+        h1: ({ children, ...props }: any) => (
             <h1 className="mt-2 mb-1 font-semibold text-2xl" {...props}>{children}</h1>
         ),
-        h2: ({ children, ...props }) => (
+        h2: ({ children, ...props }: any) => (
             <h2 className="mt-2 mb-1 font-semibold text-xl" {...props}>{children}</h2>
         ),
-        h3: ({ children, ...props }) => (
+        h3: ({ children, ...props }: any) => (
             <h3 className="mt-1.5 mb-1 font-semibold text-lg" {...props}>{children}</h3>
         ),
-        h4: ({ children, ...props }) => (
+        h4: ({ children, ...props }: any) => (
             <h4 className="mt-1.5 mb-0.5 font-semibold text-base" {...props}>{children}</h4>
         ),
-        h5: ({ children, ...props }) => (
+        h5: ({ children, ...props }: any) => (
             <h5 className="mt-1 mb-0.5 font-semibold text-sm" {...props}>{children}</h5>
         ),
-        h6: ({ children, ...props }) => (
+        h6: ({ children, ...props }: any) => (
             <h6 className="mt-1 mb-0.5 font-semibold text-xs" {...props}>{children}</h6>
         ),
         // Lists
-        ul: ({ children, ...props }) => (
+        ul: ({ children, ...props }: any) => (
             <ul className="ml-4 list-outside list-disc space-y-0.5" {...props}>{children}</ul>
         ),
-        ol: ({ children, ...props }) => (
+        ol: ({ children, ...props }: any) => (
             <ol className="ml-4 list-outside list-decimal space-y-0.5" {...props}>{children}</ol>
         ),
         // Blockquote
-        blockquote: ({ children, ...props }) => (
+        blockquote: ({ children, ...props }: any) => (
             <blockquote className="border-l-4 pl-4 italic text-muted-foreground my-2" {...props}>{children}</blockquote>
         ),
-        a: ({ children, ...props }) => (
-            <a className="underline hover:text-primary cursor-pointer" {...props}>{children}</a>
+        a: ({ children, ...props }: any) => (
+            <a className="underline hover:text-primary cursor-pointer break-all" {...props}>{children}</a>
         ),
     };
 }
 
 export function RunConversation({ messages, showAgentTrace = false }: RunConversationProps) {
+    const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+
     // Debug: Check if any messages have citations
     const messagesWithCitations = messages.filter(m => m.metadata?.citations && m.metadata.citations.length > 0);
     if (messagesWithCitations.length > 0) {
@@ -288,6 +291,20 @@ export function RunConversation({ messages, showAgentTrace = false }: RunConvers
             console.log("[Citations] Message:", m.id, "Citations:", m.metadata?.citations?.length);
         });
     }
+
+    // Copy message content to clipboard
+    const handleCopyMessage = async (messageId: string, content: string) => {
+        try {
+            await navigator.clipboard.writeText(content);
+            setCopiedMessageId(messageId);
+            // Reset the copied state after 2 seconds
+            setTimeout(() => {
+                setCopiedMessageId(null);
+            }, 2000);
+        } catch (err) {
+            console.error("Failed to copy message:", err);
+        }
+    };
 
     // Determine if a message is intermediate (from a specific agent in multi-agent flow)
     const isIntermediateMessage = (msg: Message) => {
@@ -360,7 +377,7 @@ export function RunConversation({ messages, showAgentTrace = false }: RunConvers
                         </div>
                         <div className="space-y-2">
                             <Card className={cn(
-                                "px-3 py-1 text-sm prose prose-sm max-w-none prose-p:my-0.5 prose-p:leading-relaxed prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:mt-2 prose-headings:mb-0.5 prose-headings:leading-tight",
+                                "px-3 py-1 text-sm prose prose-sm max-w-none prose-p:my-0.5 prose-p:leading-relaxed prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:mt-2 prose-headings:mb-0.5 prose-headings:leading-tight break-words overflow-wrap-anywhere",
                                 message.role === "user" ? "bg-primary text-primary-foreground prose-invert" :
                                     message.role === "tool" ? "bg-muted/50 font-mono text-xs prose-pre:bg-transparent" : "bg-muted dark:prose-invert"
                             )}>
@@ -382,6 +399,32 @@ export function RunConversation({ messages, showAgentTrace = false }: RunConvers
                                     </>
                                 )}
                             </Card>
+                            {/* Action buttons below the card - modern design pattern */}
+                            {!message.isGenerating && (
+                                <div className="flex items-center gap-1 ml-1">
+                                    <TooltipProvider>
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    className="h-5 w-5 p-0 hover:bg-muted"
+                                                    onClick={() => handleCopyMessage(message.id, message.content)}
+                                                >
+                                                    {copiedMessageId === message.id ? (
+                                                        <Check className="h-3 w-3" />
+                                                    ) : (
+                                                        <Copy className="h-3 w-3" />
+                                                    )}
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                                <p>{copiedMessageId === message.id ? "Copied!" : "Copy"}</p>
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </TooltipProvider>
+                                </div>
+                            )}
                             {message.metadata?.usage && (
                                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                                     <span>{message.metadata.usage.total_tokens} tokens</span>
