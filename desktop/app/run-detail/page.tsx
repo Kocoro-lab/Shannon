@@ -203,9 +203,13 @@ function RunDetailContent() {
                     }
                 }
 
-                // Add historical events to Redux (filter out title_generator messages)
+                // Add historical events to Redux (filter out title_generator and LLM_OUTPUT messages)
+                // LLM_OUTPUT creates duplicate messages - we'll use turn.final_output instead
                 allEvents
-                    .filter((event: Event) => (event as any).agent_id !== 'title_generator')
+                    .filter((event: Event) => 
+                        (event as any).agent_id !== 'title_generator' && 
+                        (event as any).type !== 'LLM_OUTPUT'
+                    )
                     .forEach((event: Event) => {
                         dispatch(addEvent(event as any));
                     });

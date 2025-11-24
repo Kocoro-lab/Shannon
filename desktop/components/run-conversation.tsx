@@ -158,30 +158,137 @@ function TextWithCitations({ text, citations }: { text: string; citations?: Cita
     return <>{parts}</>;
 }
 
-// Pre-process markdown content to convert citations [1], [2] into markdown links [1](#cite-1)
-function preprocessCitations(content: string, citations?: Citation[]): string {
+// Component to render markdown with inline citation components
+function MarkdownWithCitations({ content, citations }: { content: string; citations?: Citation[] }) {
     if (!citations || citations.length === 0) {
-        console.log("[Preprocess] No citations, returning original content");
-        return content;
+        return (
+            <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                components={getMarkdownComponents()}
+            >
+                {content}
+            </ReactMarkdown>
+        );
     }
     
-    console.log("[Preprocess] Processing citations, count:", citations.length);
-    console.log("[Preprocess] Content preview:", content.substring(0, 200));
+    console.log("[MarkdownWithCitations] Rendering with citations:", citations.length);
     
-    // Replace [1], [2], etc. with [1](#cite-1), [2](#cite-2)
-    // Using hash anchors because ReactMarkdown preserves them
-    const processed = content.replace(/\[(\d+)\]/g, (match, num) => {
-        const index = parseInt(num, 10);
-        // Only convert if citation exists
-        if (index >= 1 && index <= citations.length) {
-            console.log(`[Preprocess] Converting ${match} to citation link`);
-            return `[${num}](#cite-${num})`;
+    // Split content by citation markers and render each part
+    const citationRegex = /\[(\d+)\]/g;
+    const parts: (string | JSX.Element)[] = [];
+    let lastIndex = 0;
+    let match;
+    let key = 0;
+    
+    while ((match = citationRegex.exec(content)) !== null) {
+        const citationNum = parseInt(match[1], 10);
+        const citation = citations[citationNum - 1];
+        
+        // Add markdown content before citation
+        if (match.index > lastIndex) {
+            const markdownChunk = content.substring(lastIndex, match.index);
+            parts.push(
+                <ReactMarkdown
+                    key={`md-${key++}`}
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeHighlight]}
+                    components={getMarkdownComponents()}
+                >
+                    {markdownChunk}
+                </ReactMarkdown>
+            );
         }
-        return match;
-    });
+        
+        // Add citation component
+        if (citation) {
+            parts.push(
+                <CitationLink
+                    key={`cite-${key++}`}
+                    index={citationNum}
+                    citation={citation}
+                />
+            );
+        } else {
+            parts.push(match[0]); // Plain text if no citation data
+        }
+        
+        lastIndex = match.index + match[0].length;
+    }
     
-    console.log("[Preprocess] Processed preview:", processed.substring(0, 200));
-    return processed;
+    // Add remaining markdown content
+    if (lastIndex < content.length) {
+        parts.push(
+            <ReactMarkdown
+                key={`md-${key++}`}
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeHighlight]}
+                components={getMarkdownComponents()}
+            >
+                {content.substring(lastIndex)}
+            </ReactMarkdown>
+        );
+    }
+    
+    return <>{parts}</>;
+}
+
+// Extract markdown components for reuse
+function getMarkdownComponents() {
+    return {
+        code: ({ inline, className, children, ...props }: any) => {
+            return inline ? (
+                <code className={cn("px-1.5 py-0.5 rounded bg-muted/50 font-mono text-xs", className)} {...props}>
+                    {children}
+                </code>
+            ) : (
+                <code className={cn("block p-3 rounded-lg bg-muted/50 overflow-x-auto", className)} {...props}>
+                    {children}
+                </code>
+            );
+        },
+        pre: ({ children, ...props }) => (
+            <pre className="my-2 overflow-x-auto rounded-lg bg-black/90 dark:bg-black/50 p-0" {...props}>
+                {children}
+            </pre>
+        ),
+        p: ({ children, ...props }) => (
+            <p className="leading-relaxed" {...props}>{children}</p>
+        ),
+        // Headings
+        h1: ({ children, ...props }) => (
+            <h1 className="mt-2 mb-1 font-semibold text-2xl" {...props}>{children}</h1>
+        ),
+        h2: ({ children, ...props }) => (
+            <h2 className="mt-2 mb-1 font-semibold text-xl" {...props}>{children}</h2>
+        ),
+        h3: ({ children, ...props }) => (
+            <h3 className="mt-1.5 mb-1 font-semibold text-lg" {...props}>{children}</h3>
+        ),
+        h4: ({ children, ...props }) => (
+            <h4 className="mt-1.5 mb-0.5 font-semibold text-base" {...props}>{children}</h4>
+        ),
+        h5: ({ children, ...props }) => (
+            <h5 className="mt-1 mb-0.5 font-semibold text-sm" {...props}>{children}</h5>
+        ),
+        h6: ({ children, ...props }) => (
+            <h6 className="mt-1 mb-0.5 font-semibold text-xs" {...props}>{children}</h6>
+        ),
+        // Lists
+        ul: ({ children, ...props }) => (
+            <ul className="ml-4 list-outside list-disc space-y-0.5" {...props}>{children}</ul>
+        ),
+        ol: ({ children, ...props }) => (
+            <ol className="ml-4 list-outside list-decimal space-y-0.5" {...props}>{children}</ol>
+        ),
+        // Blockquote
+        blockquote: ({ children, ...props }) => (
+            <blockquote className="border-l-4 pl-4 italic text-muted-foreground my-2" {...props}>{children}</blockquote>
+        ),
+        a: ({ children, ...props }) => (
+            <a className="underline hover:text-primary cursor-pointer" {...props}>{children}</a>
+        ),
+    };
 }
 
 export function RunConversation({ messages }: RunConversationProps) {
@@ -238,79 +345,10 @@ export function RunConversation({ messages }: RunConversationProps) {
                                     </span>
                                 ) : (
                                     <>
-                                        <ReactMarkdown
-                                            remarkPlugins={[remarkGfm]}
-                                            rehypePlugins={[rehypeHighlight]}
-                                            components={{
-                                                // Intercept citation links (#cite-N) and render as tooltips
-                                                a: ({ children, href, ...props }: any) => {
-                                                    // Check if this is a citation link
-                                                    if (href && href.startsWith('#cite-')) {
-                                                        const citationIndex = parseInt(href.replace('#cite-', ''), 10);
-                                                        const citation = message.metadata?.citations?.[citationIndex - 1];
-                                                        
-                                                        if (citation) {
-                                                            console.log(`[Citations] Rendering citation link for [${citationIndex}]`);
-                                                            return <CitationLink index={citationIndex} citation={citation} />;
-                                                        }
-                                                    }
-                                                    
-                                                    // Regular link
-                                                    return <a className="underline hover:text-primary cursor-pointer" href={href} {...props}>{children}</a>;
-                                                },
-                                                code: ({ inline, className, children, ...props }: any) => {
-                                                    return inline ? (
-                                                        <code className={cn("px-1.5 py-0.5 rounded bg-muted/50 font-mono text-xs", className)} {...props}>
-                                                            {children}
-                                                        </code>
-                                                    ) : (
-                                                        <code className={cn("block p-3 rounded-lg bg-muted/50 overflow-x-auto", className)} {...props}>
-                                                            {children}
-                                                        </code>
-                                                    );
-                                                },
-                                                pre: ({ children, ...props }) => (
-                                                    <pre className="my-2 overflow-x-auto rounded-lg bg-black/90 dark:bg-black/50 p-0" {...props}>
-                                                        {children}
-                                                    </pre>
-                                                ),
-                                                p: ({ children, ...props }) => (
-                                                    <p className="leading-relaxed" {...props}>{children}</p>
-                                                ),
-                                                // Headings - adapted from shadcn AI Response component
-                                                h1: ({ children, ...props }) => (
-                                                    <h1 className="mt-2 mb-1 font-semibold text-2xl" {...props}>{children}</h1>
-                                                ),
-                                                h2: ({ children, ...props }) => (
-                                                    <h2 className="mt-2 mb-1 font-semibold text-xl" {...props}>{children}</h2>
-                                                ),
-                                                h3: ({ children, ...props }) => (
-                                                    <h3 className="mt-1.5 mb-1 font-semibold text-lg" {...props}>{children}</h3>
-                                                ),
-                                                h4: ({ children, ...props }) => (
-                                                    <h4 className="mt-1.5 mb-0.5 font-semibold text-base" {...props}>{children}</h4>
-                                                ),
-                                                h5: ({ children, ...props }) => (
-                                                    <h5 className="mt-1 mb-0.5 font-semibold text-sm" {...props}>{children}</h5>
-                                                ),
-                                                h6: ({ children, ...props }) => (
-                                                    <h6 className="mt-1 mb-0.5 font-semibold text-xs" {...props}>{children}</h6>
-                                                ),
-                                                // Lists
-                                                ul: ({ children, ...props }) => (
-                                                    <ul className="ml-4 list-outside list-disc space-y-0.5" {...props}>{children}</ul>
-                                                ),
-                                                ol: ({ children, ...props }) => (
-                                                    <ol className="ml-4 list-outside list-decimal space-y-0.5" {...props}>{children}</ol>
-                                                ),
-                                                // Blockquote
-                                                blockquote: ({ children, ...props }) => (
-                                                    <blockquote className="border-l-4 pl-4 italic text-muted-foreground my-2" {...props}>{children}</blockquote>
-                                                ),
-                                            }}
-                                        >
-                                            {preprocessCitations(message.content, message.metadata?.citations)}
-                                        </ReactMarkdown>
+                                        <MarkdownWithCitations 
+                                            content={message.content} 
+                                            citations={message.metadata?.citations}
+                                        />
                                         {message.isStreaming && (
                                             <span className="inline-block w-2 h-4 ml-1 bg-current animate-pulse" />
                                         )}
