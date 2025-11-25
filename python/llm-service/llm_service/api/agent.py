@@ -3,7 +3,7 @@
 import logging
 import json
 from json import dumps
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -284,21 +284,48 @@ async def agent_query(request: Request, query: AgentQuery):
             # Add current query as the final user message
             messages.append({"role": "user", "content": query.query})
 
-            # Add remaining context to system prompt if there's any
-            # Exclude large/duplicate fields that are already embedded in the user query
+            # Add semantic context to system prompt (WHITELIST approach for security)
+            # Only include fields explicitly meant for LLM consumption.
+            # Session-scoped fields are minimal; task-scoped fields are included only when a workflow/task marker is present.
             if context_without_history:
-                excluded_keys = {
-                    "history",
-                    "system_prompt",
-                    "available_citations",
-                    "previous_response",
-                    "reflection_feedback",
-                    "previous_results",
+                session_allowed = {
+                    "agent_memory",    # Conversation memory items (injected by workflows)
+                    "context_summary", # Compressed context history (injected by workflows)
                 }
+                task_allowed = {
+                    # ReAct / dependency context (transient)
+                    "observations",
+                    "thoughts",
+                    "actions",
+                    "current_thought",
+                    "iteration",
+                    "previous_results",
+                    # Research hints (transient)
+                    "exact_queries",
+                    "official_domains",
+                    "disambiguation_terms",
+                    "canonical_name",
+                }
+
+                # Treat context as task-scoped if workflow metadata is present
+                is_task_scoped = any(
+                    key in context_without_history
+                    for key in (
+                        "parent_workflow_id",
+                        "workflow_id",
+                        "task_id",
+                        "force_research",
+                        "research_strategy",
+                        "previous_results",
+                    )
+                )
+
+                allowed_keys = session_allowed | (task_allowed if is_task_scoped else set())
+
                 safe_items = [
                     (k, v)
                     for k, v in context_without_history.items()
-                    if k not in excluded_keys and v is not None
+                    if k in allowed_keys and v is not None
                 ]
                 if safe_items:
                     context_str = "\n".join([f"{k}: {v}" for k, v in safe_items])
@@ -424,6 +451,9 @@ async def agent_query(request: Request, query: AgentQuery):
                 logger.warning(f"Failed to compute effective allowed tools: {e}")
                 effective_allowed_tools = query.allowed_tools or []
 
+            # Collect structured tool executions for upstream observability/persistence
+            tool_execution_records: List[Dict[str, Any]] = []
+
             # Generate completion with tools if specified
             if effective_allowed_tools:
                 logger.info(f"Allowed tools: {effective_allowed_tools}")
@@ -480,13 +510,14 @@ async def agent_query(request: Request, query: AgentQuery):
                 logger.info(
                     f"Executing forced tool sequence: {[fc['name'] for fc in forced_calls]}"
                 )
-                tool_results = await _execute_and_format_tools(
+                tool_results, exec_records = await _execute_and_format_tools(
                     forced_calls,
                     effective_allowed_tools or [],
                     query.query,
                     request,
                     query.context,
                 )
+                tool_execution_records.extend(exec_records)
 
                 # Add messages and interpret results with LLM (no tools enabled)
                 if forced_calls:
@@ -701,13 +732,14 @@ async def agent_query(request: Request, query: AgentQuery):
             total_tokens = result_data.get("usage", {}).get("total_tokens", 0)
 
             if tool_calls_from_output and effective_allowed_tools:
-                tool_results = await _execute_and_format_tools(
+                tool_results, exec_records = await _execute_and_format_tools(
                     tool_calls_from_output,
                     effective_allowed_tools,
                     query.query,
                     request,
                     query.context,
                 )
+                tool_execution_records.extend(exec_records)
                 if tool_results:
                     # Re-engage LLM to interpret tool results
                     # Add the assistant's tool call and the tool results to conversation
@@ -840,13 +872,14 @@ async def agent_query(request: Request, query: AgentQuery):
                         calls = []
 
                     if calls:
-                        auto_results = await _execute_and_format_tools(
+                        auto_results, exec_records = await _execute_and_format_tools(
                             calls,
                             effective_allowed_tools,
                             query.query,
                             request,
                             query.context,
                         )
+                        tool_execution_records.extend(exec_records)
                         # Add the selection + results to the dialogue and interpret
                         if calls:
                             messages.append(
@@ -920,6 +953,10 @@ async def agent_query(request: Request, query: AgentQuery):
                 "model_used": result_data.get("model", "unknown"),
             }
 
+            tools_used = sorted(
+                {rec.get("tool") for rec in tool_execution_records if rec.get("tool")}
+            )
+
             return AgentResponse(
                 success=True,
                 response=result["response"],
@@ -941,6 +978,8 @@ async def agent_query(request: Request, query: AgentQuery):
                     "output_tokens": (result_data.get("usage", {}) or {}).get("output_tokens"),
                     "cost_usd": (result_data.get("usage", {}) or {}).get("cost_usd", 0.0),
                     "effective_max_completion": result_data.get("effective_max_completion"),
+                    "tools_used": tools_used,
+                    "tool_executions": tool_execution_records,
                 },
             )
         else:
@@ -983,16 +1022,17 @@ async def _execute_and_format_tools(
     query: str = "",
     request=None,
     context: Optional[Dict[str, Any]] = None,
-) -> str:
+) -> Tuple[str, List[Dict[str, Any]]]:
     """Execute tool calls and format results into natural language."""
     if not tool_calls:
-        return ""
+        return "", []
 
     from ..tools import get_registry
 
     registry = get_registry()
 
     formatted_results = []
+    tool_execution_records: List[Dict[str, Any]] = []
 
     # Set up event emitter and workflow/agent IDs for tool events
     emitter = None
@@ -1013,6 +1053,47 @@ async def _execute_and_format_tools(
         agent_id = request.headers.get("X-Agent-ID") or request.headers.get(
             "x-agent-id"
         )
+    # Fallback to context when headers are missing (e.g., forced tool execution)
+    if not wf_id and isinstance(context, dict):
+        wf_id = context.get("workflow_id") or context.get("parent_workflow_id")
+    if not agent_id and isinstance(context, dict):
+        agent_id = context.get("agent_id")
+
+    def _audit(event: str, tool_name: str, *, success: Optional[bool] = None, error: Any = None, duration_ms: Any = None) -> None:
+        payload = {
+            "workflow_id": wf_id,
+            "agent_id": agent_id,
+            "tool": tool_name,
+            "event": event,
+        }
+        if success is not None:
+            payload["success"] = success
+        if error is not None:
+            payload["error"] = str(error)
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        try:
+            logger.info(f"[tool_audit] {payload}")
+        except Exception:
+            pass
+
+    def _audit(event: str, tool_name: str, *, success: Optional[bool] = None, error: Any = None, duration_ms: Any = None) -> None:
+        payload = {
+            "workflow_id": wf_id,
+            "agent_id": agent_id,
+            "tool": tool_name,
+            "event": event,
+        }
+        if success is not None:
+            payload["success"] = success
+        if error is not None:
+            payload["error"] = str(error)
+        if duration_ms is not None:
+            payload["duration_ms"] = duration_ms
+        try:
+            logger.info(f"[tool_audit] {payload}")
+        except Exception:
+            pass
 
     def _sanitize_payload(
         value: Any,
@@ -1113,6 +1194,18 @@ async def _execute_and_format_tools(
                     )
                     continue
 
+            # Drop convenience/unknown parameters to avoid validation failures
+            if isinstance(args, dict):
+                allowed = {p.name for p in tool.parameters}
+                if "tool" in args and args.get("tool") == tool_name:
+                    args = {k: v for k, v in args.items() if k != "tool"}
+                unknown_keys = set(args.keys()) - allowed
+                if unknown_keys:
+                    logger.warning(
+                        f"Dropping unknown parameters for {tool_name}: {sorted(unknown_keys)}"
+                    )
+                    args = {k: v for k, v in args.items() if k in allowed}
+
             # Emit TOOL_INVOKED event
             if emitter and wf_id:
                 try:
@@ -1169,11 +1262,20 @@ async def _execute_and_format_tools(
             logger.info(
                 f"Executing tool {tool_name} with context keys: {list(sanitized_context.keys()) if isinstance(sanitized_context, dict) else 'None'}, args: {args}"
             )
-            
+
             # Execute with observer
             start_time = __import__("time").time()
-            result = await tool.execute(session_context=sanitized_context, observer=tool_observer, **args)
+            result = await tool.execute(
+                session_context=sanitized_context, observer=tool_observer, **args
+            )
             duration_ms = int((__import__("time").time() - start_time) * 1000)
+            _audit(
+                "tool_end",
+                tool_name,
+                success=bool(result and result.success),
+                error=(result.error if result else None),
+                duration_ms=duration_ms,
+            )
 
             if result.success:
                 # Format based on tool type
@@ -1283,12 +1385,26 @@ async def _execute_and_format_tools(
                             "success": bool(result and result.success),
                             "usage": {
                                 "duration_ms": duration_ms,
-                                "tokens": result.tokens_used if result and result.tokens_used else 0
-                            }
+                                "tokens": result.tokens_used if result and result.tokens_used else 0,
+                            },
                         },
                     )
                 except Exception:
                     pass
+
+            # Record execution for upstream observability/persistence
+            tool_execution_records.append(
+                {
+                    "tool": tool_name,
+                    "success": bool(result and result.success),
+                    "output": _sanitize_payload(
+                        result.output if result else None, max_str=2000, max_items=20
+                    ),
+                    "error": result.error if result else None,
+                    "duration_ms": duration_ms,
+                    "tokens_used": result.tokens_used if result else None,
+                }
+            )
 
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")
@@ -1311,7 +1427,18 @@ async def _execute_and_format_tools(
                 except Exception:
                     pass
 
-    return "\n\n".join(formatted_results) if formatted_results else ""
+            tool_execution_records.append(
+                {
+                    "tool": tool_name,
+                    "success": False,
+                    "output": None,
+                    "error": str(e),
+                    "duration_ms": None,
+                    "tokens_used": None,
+                }
+            )
+
+    return ("\n\n".join(formatted_results) if formatted_results else "", tool_execution_records)
 
 
 class Subtask(BaseModel):

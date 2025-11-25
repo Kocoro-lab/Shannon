@@ -475,6 +475,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 			offset = n
 		}
 	}
+	includePayload := q.Get("include_payload") == "true"
 
 	// Shapes
 	type Event struct {
@@ -485,6 +486,7 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 		Timestamp  time.Time `json:"timestamp"`
 		Seq        uint64    `json:"seq"`
 		StreamID   string    `json:"stream_id,omitempty"`
+		Payload    string    `json:"payload,omitempty"`
 	}
 	type Turn struct {
 		Turn        int       `json:"turn"`
@@ -569,8 +571,13 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 	eventsByWF := make(map[string][]Event, len(wfIDs))
 	if len(wfIDs) > 0 {
 		// Safe IN expansion using sqlx.In and rebind for Postgres
+		// Conditionally include payload based on query parameter
 		baseQuery := `
-            SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,'')
+            SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,'')`
+		if includePayload {
+			baseQuery += `, COALESCE(payload::text,'')`
+		}
+		baseQuery += `
             FROM event_logs
             WHERE workflow_id IN (?) AND type <> 'LLM_PARTIAL'
             ORDER BY timestamp ASC`
@@ -602,10 +609,18 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 				return
 			}
 			var e Event
-			if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
-				h.logger.Error("Failed to scan event row", zap.Error(err), zap.Strings("workflow_ids", wfIDs))
-				h.sendError(w, "Failed to read events", http.StatusInternalServerError)
-				return
+			if includePayload {
+				if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID, &e.Payload); err != nil {
+					h.logger.Error("Failed to scan event row with payload", zap.Error(err), zap.Strings("workflow_ids", wfIDs))
+					h.sendError(w, "Failed to read events", http.StatusInternalServerError)
+					return
+				}
+			} else {
+				if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
+					h.logger.Error("Failed to scan event row", zap.Error(err), zap.Strings("workflow_ids", wfIDs))
+					h.sendError(w, "Failed to read events", http.StatusInternalServerError)
+					return
+				}
 			}
 			eventsByWF[e.WorkflowID] = append(eventsByWF[e.WorkflowID], e)
 			totalEvents++
@@ -798,7 +813,51 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
     `, userCtx.UserID.String())
 	if err != nil {
 		h.logger.Warn("Failed to get total session count", zap.Error(err))
+		// Don't fail the request, just return 0 total
 		totalCount = len(sessions)
+	}
+
+	// Enrich with real-time token usage from Redis if available
+	if h.redis != nil && len(sessions) > 0 {
+		// Prepare keys for MGET
+		// We need to check both session ID and external ID (if present)
+		// Since MGET is simple key-value, we'll fetch both possible keys for each session
+		// and take the max value found.
+		var keys []string
+		for _, s := range sessions {
+			keys = append(keys, fmt.Sprintf("session:%s", s.SessionID))
+			// We don't have external_id in SessionSummary easily available without parsing context
+			// For list view, we'll stick to session ID for now to keep it efficient.
+			// If external_id is critical for token counts in list view, we'd need to fetch it.
+		}
+
+		// Execute MGET
+		if len(keys) > 0 {
+			values, err := h.redis.MGet(ctx, keys...).Result()
+			if err != nil {
+				h.logger.Warn("Failed to fetch session data from Redis", zap.Error(err))
+			} else {
+				// Update sessions with Redis data
+				for i, val := range values {
+					if val == nil {
+						continue
+					}
+
+					// Redis returns interface{}, needs type assertion
+					if strVal, ok := val.(string); ok {
+						var sessionData map[string]interface{}
+						if err := json.Unmarshal([]byte(strVal), &sessionData); err == nil {
+							if tokens, ok := sessionData["total_tokens_used"].(float64); ok {
+								// Update if Redis has more current data
+								if int(tokens) > sessions[i].TokensUsed {
+									sessions[i].TokensUsed = int(tokens)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	h.logger.Debug("Sessions retrieved",

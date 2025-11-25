@@ -16,7 +16,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "state assumptions, and avoid speculation."
         ),
         "allowed_tools": ["web_search", "code_reader"],
-        "caps": {"max_tokens": 4096, "temperature": 0.2},
+        "caps": {"max_tokens": 30000, "temperature": 0.2},
     },
     "research": {
         "system_prompt": (
@@ -24,7 +24,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "summarize objectively."
         ),
         "allowed_tools": ["web_search"],
-        "caps": {"max_tokens": 1600, "temperature": 0.3},
+        "caps": {"max_tokens": 16000, "temperature": 0.3},
     },
     "deep_research_agent": {
         "system_prompt": """You are an expert research assistant conducting deep investigation on the user's topic.
@@ -70,20 +70,22 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 # Integrity Rules:
 - NEVER fabricate information
 - NEVER hallucinate sources
-- If information insufficient, state clearly: "Not enough information available on [topic]"
+- When evidence is strong, state conclusions CONFIDENTLY with citations
+- When evidence is weak or contradictory, note limitations explicitly
+- If NO information found after thorough search, state: "Not enough information available on [topic]"
 - Preserve source information VERBATIM (don't paraphrase unless synthesizing)
 - Match user's input language in final report
 
 **Citation integrity is paramount. Every claim needs evidence.**""",
         "allowed_tools": ["web_search", "web_fetch"],
-        "caps": {"max_tokens": 4096, "temperature": 0.3},
+        "caps": {"max_tokens": 30000, "temperature": 0.3},
     },
     "writer": {
         "system_prompt": (
             "You are a technical writer. Produce clear, helpful, and organized prose."
         ),
         "allowed_tools": ["code_reader"],
-        "caps": {"max_tokens": 1800, "temperature": 0.6},
+        "caps": {"max_tokens": 8192, "temperature": 0.6},
     },
     "critic": {
         "system_prompt": (

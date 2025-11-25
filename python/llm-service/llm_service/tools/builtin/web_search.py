@@ -8,9 +8,12 @@ import re
 from typing import List, Dict, Any, Optional
 import logging
 from enum import Enum
+from urllib.parse import urlparse, urljoin
+from bs4 import BeautifulSoup
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ...config import Settings
+from ..openapi_parser import _is_private_ip
 
 logger = logging.getLogger(__name__)
 
@@ -516,6 +519,90 @@ class WebSearchTool(Tool):
         self.settings = Settings()
         super().__init__()
 
+    def _extract_site_url(self, query: str) -> Optional[str]:
+        """Extract a single site URL from the query for providerless fallback."""
+        if not query:
+            return None
+        urls = re.findall(r"https?://[^\s]+", query)
+        if urls:
+            return urls[0]
+        m = re.search(r"site:([A-Za-z0-9\.\-]+(/[^\s]+)?)", query)
+        if m:
+            return f"https://{m.group(1).lstrip('/')}"
+        m = re.search(
+            r"\b([A-Za-z0-9][A-Za-z0-9\-\._]*\.[A-Za-z]{2,}(?:/[^\s]*)?)\b", query
+        )
+        if m:
+            return f"https://{m.group(1).lstrip('/')}"
+        return None
+
+    async def _fallback_site_scrape(self, site_url: str, max_results: int) -> ToolResult:
+        """If no provider is configured, fetch the target site and extract same-domain links."""
+        try:
+            parsed = urlparse(site_url)
+            if not parsed.scheme or not parsed.netloc:
+                return ToolResult(success=False, output=None, error="Invalid URL in query")
+            if parsed.scheme not in ("http", "https"):
+                return ToolResult(success=False, output=None, error="Only HTTP/HTTPS URLs are supported")
+            if _is_private_ip(parsed.hostname or ""):
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error="Access to private/internal IP addresses is not allowed.",
+                )
+
+            timeout = aiohttp.ClientTimeout(total=WebSearchProvider.DEFAULT_TIMEOUT)
+            headers = {"User-Agent": "Shannon-Search/1.0 (+https://shannon.kocoro.dev)"}
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(site_url, headers=headers, allow_redirects=True) as resp:
+                    if resp.status != 200:
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"Fallback fetch failed: HTTP {resp.status}",
+                        )
+                    html = await resp.text(errors="ignore")
+
+            soup = BeautifulSoup(html, "lxml")
+            links = []
+            seen = set()
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                full = urljoin(site_url, href)
+                parsed_href = urlparse(full)
+                if parsed_href.netloc != parsed.netloc:
+                    continue
+                if full in seen:
+                    continue
+                seen.add(full)
+                title = (a.get_text() or "").strip()
+                links.append(
+                    {
+                        "title": title or full,
+                        "snippet": "",
+                        "content": "",
+                        "url": full,
+                        "source": "fallback_scrape",
+                    }
+                )
+                if len(links) >= max_results:
+                    break
+
+            if not links:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error="Fallback scrape found no same-domain links.",
+                )
+
+            return ToolResult(success=True, output=links)
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Fallback scrape failed: {str(e)}",
+            )
+
     def _initialize_provider(self) -> Optional[WebSearchProvider]:
         """Initialize the search provider based on environment configuration"""
 
@@ -673,7 +760,14 @@ class WebSearchTool(Tool):
         """
         Execute web search using configured provider
         """
+        query = kwargs["query"]
+        max_results = kwargs.get("max_results", 10)
+        search_type = kwargs.get("search_type", "auto")
         if not self.provider:
+            # If no provider is configured but the query targets a single site, attempt a lightweight scrape
+            site_url = self._extract_site_url(query)
+            if site_url:
+                return await self._fallback_site_scrape(site_url, max_results)
             return ToolResult(
                 success=False,
                 output=None,
@@ -686,10 +780,6 @@ class WebSearchTool(Tool):
                     "- FIRECRAWL_API_KEY for Firecrawl search"
                 ),
             )
-
-        query = kwargs["query"]
-        max_results = kwargs.get("max_results", 10)
-        search_type = kwargs.get("search_type", "auto")
         # Sanitize/normalize search_type to avoid hard failures from invalid values
         if not isinstance(search_type, str) or search_type.strip() == "":
             logger.warning("Missing or empty search_type, falling back to 'auto'")
@@ -701,7 +791,56 @@ class WebSearchTool(Tool):
                     f"Invalid search_type '{search_type}', falling back to 'auto'"
                 )
                 search_type = "auto"
-        category = kwargs.get("category")
+        category_raw = kwargs.get("category")
+
+        # Normalize/validate category; default to personal site for domain-scoped queries
+        category_aliases = {
+            "company": "company",
+            "companies": "company",
+            "research paper": "research paper",
+            "research papers": "research paper",
+            "paper": "research paper",
+            "papers": "research paper",
+            "news": "news",
+            "pdf": "pdf",
+            "github": "github",
+            "tweet": "tweet",
+            "tweets": "tweet",
+            "personal site": "personal site",
+            "personal sites": "personal site",
+            "personal-site": "personal site",
+            "personal_sites": "personal site",
+            "personalsite": "personal site",
+            "linkedin": "linkedin",
+            "financial report": "financial report",
+            "financial reports": "financial report",
+        }
+        category = None
+        if isinstance(category_raw, str):
+            normalized = re.sub(r"[\s_\-]+", " ", category_raw.strip().lower())
+            if normalized:
+                category = category_aliases.get(normalized)
+        elif category_raw is not None:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Invalid parameter: category must be a string matching one of the allowed values.",
+            )
+
+        if category is None:
+            # If the query is domain-scoped, default to personal site; otherwise default to news
+            domains = set(re.findall(r"site:([A-Za-z0-9\.\-]+)", query or ""))
+            for url in re.findall(r"https?://[^\s]+", query or ""):
+                parsed = urlparse(url)
+                if parsed.netloc:
+                    domains.add(parsed.netloc)
+            for token in re.findall(r"\b([A-Za-z0-9][A-Za-z0-9\-\._]*\.[A-Za-z]{2,})\b", query or ""):
+                domains.add(token.lower())
+
+            if len(domains) == 1:
+                category = "personal site"
+            else:
+                category = "news"
 
         # Validate max_results parameter
         try:

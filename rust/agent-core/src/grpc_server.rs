@@ -952,7 +952,7 @@ impl AgentService for AgentServiceImpl {
                     None
                 };
 
-                let (result, usage) = enforcer
+                let agent_result = enforcer
                     .enforce(&key, est, || async {
                         llm.query_agent(&q, "agent-core", mode_str, Some(ctx), tools_option.clone())
                             .await
@@ -967,6 +967,11 @@ impl AgentService for AgentServiceImpl {
                         _ => Status::internal(e.to_string()),
                     })?;
 
+                let (meta_tool_calls, meta_tool_results) =
+                    tool_meta_to_proto(&agent_result.metadata);
+                let usage = agent_result.usage;
+                let result = agent_result.response;
+
                 // Save values for logging before move
                 let log_provider = usage.provider.clone();
                 let log_model = usage.model.clone();
@@ -980,8 +985,8 @@ impl AgentService for AgentServiceImpl {
                         .unwrap_or_default(),
                     status: proto::common::StatusCode::Ok.into(),
                     result,
-                    tool_calls: vec![],
-                    tool_results: vec![],
+                    tool_calls: meta_tool_calls,
+                    tool_results: meta_tool_results,
                     metrics: Some(proto::common::ExecutionMetrics {
                         latency_ms: 100,
                         token_usage: Some(proto::common::TokenUsage {
@@ -1063,7 +1068,7 @@ impl AgentService for AgentServiceImpl {
             None
         };
 
-        let (result, usage) = enforcer
+        let agent_result = enforcer
             .enforce(&key, est, || async {
                 llm.query_agent(
                     &q,
@@ -1084,6 +1089,11 @@ impl AgentService for AgentServiceImpl {
                 _ => Status::internal(e.to_string()),
             })?;
 
+        let (meta_tool_calls, meta_tool_results) =
+            tool_meta_to_proto(&agent_result.metadata);
+        let usage = agent_result.usage;
+        let result = agent_result.response;
+
         // Save values for logging before move
         let log_provider = usage.provider.clone();
         let log_model = usage.model.clone();
@@ -1097,8 +1107,8 @@ impl AgentService for AgentServiceImpl {
                 .unwrap_or_default(),
             status: proto::common::StatusCode::Ok.into(),
             result,
-            tool_calls: vec![],
-            tool_results: vec![],
+            tool_calls: meta_tool_calls,
+            tool_results: meta_tool_results,
             metrics: Some(proto::common::ExecutionMetrics {
                 latency_ms: 100,
                 token_usage: Some(proto::common::TokenUsage {
@@ -1419,6 +1429,66 @@ impl AgentService for AgentServiceImpl {
 }
 
 // Helper: convert prost_types::Value to serde_json::Value for passing context to Python
+fn tool_meta_to_proto(
+    meta: &Option<serde_json::Value>,
+) -> (Vec<proto::common::ToolCall>, Vec<proto::common::ToolResult>) {
+    if let Some(meta_val) = meta {
+        if let Some(exec_list) = meta_val
+            .get("tool_executions")
+            .and_then(|v| v.as_array())
+        {
+            let mut calls = Vec::new();
+            let mut results = Vec::new();
+            for exec in exec_list {
+                let tool_name = exec
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if tool_name.is_empty() {
+                    continue;
+                }
+                let output_val = exec
+                    .get("output")
+                    .map(crate::grpc_server::prost_value_to_json_to_prost);
+                let status = if exec
+                    .get("success")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    proto::common::StatusCode::Ok.into()
+                } else {
+                    proto::common::StatusCode::Error.into()
+                };
+                let err_msg = exec
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let duration_ms = exec
+                    .get("duration_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+
+                calls.push(proto::common::ToolCall {
+                    name: tool_name.clone(),
+                    parameters: None,
+                    tool_id: tool_name.clone(),
+                });
+                results.push(proto::common::ToolResult {
+                    tool_id: tool_name,
+                    output: output_val,
+                    status,
+                    error_message: err_msg,
+                    execution_time_ms: duration_ms,
+                });
+            }
+            return (calls, results);
+        }
+    }
+    (Vec::new(), Vec::new())
+}
+
 pub fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
     use prost_types::value::Kind::*;
     match v.kind.as_ref() {
