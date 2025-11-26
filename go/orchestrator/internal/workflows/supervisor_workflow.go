@@ -1160,17 +1160,40 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}
 		}
 	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success && len(collectedCitations) == 0 {
-		// Use the synthesis subtask's result as the final result ONLY if no citations
-		// If citations exist, we need to re-run synthesis to inject inline citation numbers
+		// Use the synthesis subtask's result as the final result ONLY if:
+		// - No citations exist (citations require re-synthesis for inline formatting)
+		// - The response is substantial (not a placeholder)
+		// - Tokens were consumed (LLM actually ran)
 		synthesisResult := childResults[synthesisTaskIdx]
-		synth = activities.SynthesisResult{
-			FinalResult: synthesisResult.Response,
-			TokensUsed:  0, // Don't double-count tokens as they're already counted in agent execution
+		const minSynthesisResponseLen = 100
+
+		if len(strings.TrimSpace(synthesisResult.Response)) >= minSynthesisResponseLen && synthesisResult.TokensUsed > 0 {
+			synth = activities.SynthesisResult{
+				FinalResult: synthesisResult.Response,
+				TokensUsed:  0, // Don't double-count tokens as they're already counted in agent execution
+			}
+			logger.Info("Using synthesis subtask result as final output",
+				"agent_id", synthesisResult.AgentID,
+				"response_length", len(synthesisResult.Response),
+				"tokens_used", synthesisResult.TokensUsed,
+			)
+		} else {
+			logger.Warn("Synthesis subtask result too short or zero tokens; falling back to LLM synthesis",
+				"agent_id", synthesisResult.AgentID,
+				"response_length", len(synthesisResult.Response),
+				"tokens_used", synthesisResult.TokensUsed,
+				"min_required_length", minSynthesisResponseLen,
+			)
+			if err := workflow.ExecuteActivity(ctx, activities.SynthesizeResultsLLM, activities.SynthesisInput{
+				Query:              input.Query,
+				AgentResults:       childResults,
+				Context:            ctxForSynth,
+				CollectedCitations: collectedCitations,
+				ParentWorkflowID:   workflowID,
+			}).Get(ctx, &synth); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
 		}
-		logger.Info("Using synthesis subtask result as final output",
-			"agent_id", synthesisResult.AgentID,
-			"response_length", len(synthesisResult.Response),
-		)
 	} else {
 		// Perform synthesis: either no synthesis subtask, or we have citations that need formatting
 		if len(collectedCitations) > 0 {

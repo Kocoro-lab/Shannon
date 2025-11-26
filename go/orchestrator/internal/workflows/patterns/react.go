@@ -18,6 +18,7 @@ import (
 // ReactConfig controls the Reason-Act-Observe loop behavior
 type ReactConfig struct {
 	MaxIterations     int // Maximum number of ReAct loops
+	MinIterations     int // Minimum iterations before allowing completion
 	ObservationWindow int // How many recent observations to consider
 	MaxObservations   int // Maximum observations to keep
 	MaxThoughts       int // Maximum thoughts to track
@@ -64,6 +65,21 @@ func ReactLoop(
 	var actions []string
 	totalTokens := 0
 	iteration := 0
+	toolExecuted := false
+
+	// Default minimum iterations to 1 if unset to keep backwards compatibility
+	if config.MinIterations <= 0 {
+		config.MinIterations = 1
+	}
+
+	isResearch := false
+	if baseContext != nil {
+		if fr, ok := baseContext["force_research"].(bool); ok && fr {
+			isResearch = true
+		} else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+			isResearch = true
+		}
+	}
 
 	// Main Reason-Act-Observe loop
 	var agentResults []activities.AgentExecutionResult
@@ -191,7 +207,35 @@ func ReactLoop(
 		}
 
 		// Check if reasoning indicates completion
-		if isTaskComplete(reasonResult.Response) {
+		canComplete := isTaskComplete(reasonResult.Response)
+		if canComplete {
+			// Enforce minimum iterations
+			if iteration+1 < config.MinIterations {
+				logger.Info("Completion deferred due to MinIterations",
+					"iteration", iteration+1,
+					"min_iterations", config.MinIterations,
+				)
+				canComplete = false
+			}
+			// Research flows must produce evidence before stopping
+			if isResearch && (!toolExecuted || len(observations) == 0) {
+				logger.Info("Completion deferred to collect research evidence",
+					"iteration", iteration+1,
+					"tool_executed", toolExecuted,
+					"observations", len(observations),
+				)
+				canComplete = false
+			}
+			// Avoid stopping with zero observations in any flow
+			if len(observations) == 0 && len(actions) == 0 {
+				logger.Info("Completion deferred because no observations/actions recorded",
+					"iteration", iteration+1,
+				)
+				canComplete = false
+			}
+		}
+
+		if canComplete {
 			logger.Info("Task marked complete by reasoning",
 				"iteration", iteration+1,
 			)
@@ -368,6 +412,11 @@ func ReactLoop(
 			observations = append(observations, fmt.Sprintf("Error: %v", err))
 			// Continue to next iteration to try recovery
 		} else {
+			// Track whether any tool actually executed successfully
+			if hasSuccessfulToolExecution(actionResult.ToolExecutions) {
+				toolExecuted = true
+			}
+
 			// Always track tokens and tool executions for citations
 			totalTokens += actionResult.TokensUsed
 			agentResults = append(agentResults, actionResult)
@@ -583,6 +632,15 @@ func getRecentObservations(observations []string, window int) []string {
 		return observations
 	}
 	return observations[len(observations)-window:]
+}
+
+func hasSuccessfulToolExecution(exec []activities.ToolExecution) bool {
+	for _, te := range exec {
+		if te.Success {
+			return true
+		}
+	}
+	return false
 }
 
 func isTaskComplete(reasoning string) bool {

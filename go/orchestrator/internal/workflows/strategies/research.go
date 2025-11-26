@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -169,15 +170,11 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 	// Step 3: Safety floor with backfill
 	if len(filtered) < minKeep {
 		// Sort all citations by combined score (quality × credibility + entity relevance)
-		for i := 0; i < len(scored); i++ {
-			for j := i + 1; j < len(scored); j++ {
-				scoreI := (scored[i].citation.QualityScore * scored[i].citation.CredibilityScore) + scored[i].score
-				scoreJ := (scored[j].citation.QualityScore * scored[j].citation.CredibilityScore) + scored[j].score
-				if scoreJ > scoreI {
-					scored[i], scored[j] = scored[j], scored[i]
-				}
-			}
-		}
+		sort.Slice(scored, func(i, j int) bool {
+			scoreI := (scored[i].citation.QualityScore * scored[i].citation.CredibilityScore) + scored[i].score
+			scoreJ := (scored[j].citation.QualityScore * scored[j].citation.CredibilityScore) + scored[j].score
+			return scoreI > scoreJ
+		})
 
 		// Backfill from top-scored citations
 		existingURLs := make(map[string]bool)
@@ -193,6 +190,17 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 	}
 
 	return filtered
+}
+
+func hasSuccessfulToolExecutions(results []activities.AgentExecutionResult) bool {
+	for _, ar := range results {
+		for _, te := range ar.ToolExecutions {
+			if te.Success {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // ResearchWorkflow demonstrates composed patterns for complex research tasks.
@@ -511,6 +519,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 		reactConfig := patterns.ReactConfig{
 			MaxIterations:     reactMaxIterations,
+			MinIterations:     2,
 			ObservationWindow: 3,
 			MaxObservations:   20,
 			MaxThoughts:       10,
@@ -650,6 +659,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 					reactConfig := patterns.ReactConfig{
 						MaxIterations:     reactMaxIterations,
+						MinIterations:     2,
 						ObservationWindow: 3,
 						MaxObservations:   20,
 						MaxThoughts:       10,
@@ -756,6 +766,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						}
 						reactConfig := patterns.ReactConfig{
 							MaxIterations:     reactMaxIterations,
+							MinIterations:     2,
 							ObservationWindow: 3,
 							MaxObservations:   20,
 							MaxThoughts:       10,
@@ -1094,6 +1105,42 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		"agent_count", len(agentResults),
 	)
 
+	// Fallback: if no tool executions were recorded in research phase, force a single search
+	if !hasSuccessfulToolExecutions(agentResults) {
+		logger.Warn("No successful tool executions found in research phase; running fallback web search")
+
+		fallbackCtx := make(map[string]interface{})
+		for k, v := range baseContext {
+			fallbackCtx[k] = v
+		}
+		fallbackCtx["force_research"] = true
+
+		var fallbackResult activities.AgentExecutionResult
+		err := workflow.ExecuteActivity(ctx,
+			"ExecuteAgent",
+			activities.AgentExecutionInput{
+				Query:            fmt.Sprintf("Use web_search to gather authoritative information about: %s", refinedQuery),
+				AgentID:          "fallback-search",
+				Context:          fallbackCtx,
+				Mode:             "standard",
+				SessionID:        input.SessionID,
+				History:          convertHistoryForAgent(input.History),
+				SuggestedTools:   []string{"web_search"},
+				ParentWorkflowID: input.ParentWorkflowID,
+			}).Get(ctx, &fallbackResult)
+
+		if err == nil {
+			agentResults = append(agentResults, fallbackResult)
+			totalTokens += fallbackResult.TokensUsed
+			originalAgentResults = append(originalAgentResults, fallbackResult)
+			logger.Info("Fallback web search completed",
+				"tokens_used", fallbackResult.TokensUsed,
+			)
+		} else {
+			logger.Warn("Fallback web search failed", "error", err)
+		}
+	}
+
 	// Per-agent token usage is recorded inside execution patterns (ReactLoop/Parallel/Hybrid).
 	// Avoid double-counting here to prevent duplicate token_usage rows.
 
@@ -1175,7 +1222,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			}
 			baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
 			baseContext["citation_count"] = len(citations)
-			
+
 			// Also store structured citations for SSE emission
 			out := make([]map[string]interface{}, 0, len(citations))
 			for _, c := range citations {
@@ -1394,8 +1441,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 							reactConfig := patterns.ReactConfig{
 								MaxIterations:     gapReactMaxIterations, // Respect react_max_iterations from strategy
-								ObservationWindow: 3,                     // Keep last 3 observations in context
-								MaxObservations:   20,                    // Prevent unbounded growth
+								MinIterations:     2,
+								ObservationWindow: 3,  // Keep last 3 observations in context
+								MaxObservations:   20, // Prevent unbounded growth
 								MaxThoughts:       10,
 								MaxActions:        10,
 							}
@@ -1507,7 +1555,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								}
 								enhancedContext["available_citations"] = strings.TrimRight(b.String(), "\n")
 								enhancedContext["citation_count"] = len(allCitations)
-								
+
 								// Also store structured citations for SSE emission
 								out := make([]map[string]interface{}, 0, len(allCitations))
 								for _, c := range allCitations {
@@ -1522,15 +1570,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								enhancedContext["citations"] = out
 							}
 
-						err = workflow.ExecuteActivity(ctx,
-							activities.SynthesizeResultsLLM,
-							activities.SynthesisInput{
-								Query:              input.Query,
-								AgentResults:       combinedAgentResults, // Combined results with global dedup
-								Context:            enhancedContext,
-								CollectedCitations: allCitations,
-								ParentWorkflowID:   input.ParentWorkflowID,
-							}).Get(ctx, &enhancedSynthesis)
+							err = workflow.ExecuteActivity(ctx,
+								activities.SynthesizeResultsLLM,
+								activities.SynthesisInput{
+									Query:              input.Query,
+									AgentResults:       combinedAgentResults, // Combined results with global dedup
+									Context:            enhancedContext,
+									CollectedCitations: allCitations,
+									ParentWorkflowID:   input.ParentWorkflowID,
+								}).Get(ctx, &enhancedSynthesis)
 
 							if err == nil {
 								synthesis = enhancedSynthesis

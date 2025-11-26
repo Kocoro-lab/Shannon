@@ -188,6 +188,7 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	// Configure React pattern
 	reactConfig := patterns.ReactConfig{
 		MaxIterations:     config.ReactMaxIterations,
+		MinIterations:     1,
 		ObservationWindow: config.ReactObservationWindow,
 		MaxObservations:   100, // Safety limit
 		MaxThoughts:       50,  // Safety limit

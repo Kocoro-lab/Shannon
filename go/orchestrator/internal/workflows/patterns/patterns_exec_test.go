@@ -39,7 +39,7 @@ func TestReactLoopExecutes(t *testing.T) {
 
 	// Wrap ReactLoop into a small workflow for testing
 	wf := func(ctx workflow.Context) (string, error) {
-		cfg := ReactConfig{MaxIterations: 2, ObservationWindow: 1, MaxObservations: 10, MaxThoughts: 10, MaxActions: 10}
+		cfg := ReactConfig{MaxIterations: 2, MinIterations: 1, ObservationWindow: 1, MaxObservations: 10, MaxThoughts: 10, MaxActions: 10}
 		opts := Options{BudgetAgentMax: 0, SessionID: "s", UserID: "u", ModelTier: "small"}
 		res, err := ReactLoop(ctx, "solve x", map[string]interface{}{}, "s", []string{}, cfg, opts)
 		if err != nil {

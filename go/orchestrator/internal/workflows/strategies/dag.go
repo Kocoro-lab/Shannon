@@ -406,14 +406,45 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		if len(collectedCitations) == 0 {
 			// No citations: use the synthesis subtask's result as-is
 			synthesisResult := agentResults[synthesisTaskIdx]
-			synthesis = activities.SynthesisResult{
-				FinalResult: synthesisResult.Response,
-				TokensUsed:  0, // Already counted in agent execution
+			const minSynthesisResponseLen = 100
+			if len(strings.TrimSpace(synthesisResult.Response)) >= minSynthesisResponseLen && synthesisResult.TokensUsed > 0 {
+				synthesis = activities.SynthesisResult{
+					FinalResult: synthesisResult.Response,
+					TokensUsed:  0, // Already counted in agent execution
+				}
+				logger.Info("Using synthesis subtask result as final output",
+					"agent_id", synthesisResult.AgentID,
+					"note", "no citations found",
+					"response_length", len(synthesisResult.Response),
+					"tokens_used", synthesisResult.TokensUsed,
+				)
+			} else {
+				logger.Warn("Synthesis subtask result too short or zero tokens; falling back to LLM synthesis",
+					"agent_id", synthesisResult.AgentID,
+					"response_length", len(synthesisResult.Response),
+					"tokens_used", synthesisResult.TokensUsed,
+					"min_required_length", minSynthesisResponseLen,
+				)
+				err = workflow.ExecuteActivity(ctx,
+					activities.SynthesizeResultsLLM,
+					activities.SynthesisInput{
+						Query:              input.Query,
+						AgentResults:       agentResults,
+						Context:            baseContext,
+						CollectedCitations: collectedCitations,
+						ParentWorkflowID:   input.ParentWorkflowID,
+					},
+				).Get(ctx, &synthesis)
+
+				if err != nil {
+					logger.Error("Synthesis failed", "error", err)
+					return TaskResult{
+						Success:      false,
+						ErrorMessage: fmt.Sprintf("Failed to synthesize results: %v", err),
+					}, err
+				}
+				totalTokens += synthesis.TokensUsed
 			}
-			logger.Info("Using synthesis subtask result as final output",
-				"agent_id", synthesisResult.AgentID,
-				"note", "no citations found",
-			)
 		} else {
 			// Citations present: re-run synthesis to inject inline citations and sources
 			logger.Info("Re-running synthesis to inject inline citations",
