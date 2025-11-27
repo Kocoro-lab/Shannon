@@ -699,7 +699,6 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 			}
 		}
 
-		beforeCount := len(allCitations)
 		for _, toolExecInterface := range toolExecutions {
 			toolExecMap, ok := toolExecInterface.(map[string]interface{})
 			if !ok {
@@ -719,18 +718,16 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 			allCitations = append(allCitations, citations...)
 		}
 
-		// Fallbacks when this result yielded no citations via tools
+		// Also attempt extraction from the agent's response text (helps when tool payloads are truncated or missing)
 		if responseStr, ok := resultMap["response"].(string); ok && strings.TrimSpace(responseStr) != "" {
-			if len(toolExecutions) == 0 || beforeCount == len(allCitations) {
-				// 1) Try structured JSON array fallback
-				fallbackCitations := extractCitationsFromResponse(responseStr, agentID, now)
-				if len(fallbackCitations) > 0 {
-					allCitations = append(allCitations, fallbackCitations...)
-				} else {
-					// 2) Plain-text URL scan fallback
-					plain := extractCitationsFromPlainTextResponse(responseStr, agentID, now)
-					allCitations = append(allCitations, plain...)
-				}
+			// 1) Try structured JSON array fallback
+			fallbackCitations := extractCitationsFromResponse(responseStr, agentID, now)
+			if len(fallbackCitations) > 0 {
+				allCitations = append(allCitations, fallbackCitations...)
+			} else {
+				// 2) Plain-text URL scan fallback
+				plain := extractCitationsFromPlainTextResponse(responseStr, agentID, now)
+				allCitations = append(allCitations, plain...)
 			}
 		}
 	}

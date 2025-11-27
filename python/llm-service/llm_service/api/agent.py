@@ -560,6 +560,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "tokens_used": total_tokens,
                     "model_used": interpretation_result.get("model", "unknown"),
                 }
+                tools_used = sorted(
+                    {rec.get("tool") for rec in tool_execution_records if rec.get("tool")}
+                )
 
                 return AgentResponse(
                     success=True,
@@ -582,6 +585,8 @@ async def agent_query(request: Request, query: AgentQuery):
                         "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
                         or interpretation_result.get("usage", {}).get("output_tokens"),
                         "cost_usd": (interpretation_result.get("usage", {}) or {}).get("cost_usd", 0.0),
+                        "tools_used": tools_used,
+                        "tool_executions": tool_execution_records,
                     },
                 )
 
@@ -920,6 +925,9 @@ async def agent_query(request: Request, query: AgentQuery):
                             "tokens_used": total_tokens,
                             "model_used": interpretation_result.get("model", "unknown"),
                         }
+                        tools_used = sorted(
+                            {rec.get("tool") for rec in tool_execution_records if rec.get("tool")}
+                        )
                         return AgentResponse(
                             success=True,
                             response=result["response"],
@@ -942,6 +950,8 @@ async def agent_query(request: Request, query: AgentQuery):
                                 "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
                                 or interpretation_result.get("usage", {}).get("output_tokens"),
                                 "cost_usd": (interpretation_result.get("usage", {}) or {}).get("cost_usd", 0.0),
+                                "tools_used": tools_used,
+                                "tool_executions": tool_execution_records,
                             },
                         )
                 except Exception as e:

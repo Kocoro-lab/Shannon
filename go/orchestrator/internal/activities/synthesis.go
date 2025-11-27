@@ -553,12 +553,12 @@ Use exactly these top-level headings in your response, and start your answer dir
 
 ## Executive Summary
 ## Detailed Findings
-## Limitations and Uncertainties
+## Limitations and Uncertainties (ONLY if significant gaps exist)
 
 Section requirements:
-- Executive Summary: 2–3 sentences
-- Detailed Findings: include inline citations
-- Limitations and Uncertainties: bullet list
+- Executive Summary: 2–3 sentences; state findings confidently
+- Detailed Findings: include inline citations; state facts authoritatively
+- Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
 `
 	}
 
@@ -615,11 +615,10 @@ Section requirements:
 
     IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with "## Executive Summary".
 
-    ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
-    ✓ Each of the %d research areas has a dedicated subsection (### heading)
-    ✓ Each subsection contains 150–250 words minimum
-    ✓ Executive Summary captures key insights (150–250 words)
-    ✓ Limitations section addresses gaps and conflicts
+	## Coverage Checklist (DO NOT STOP until ALL are satisfied):
+	✓ Each of the %d research areas has a dedicated subsection (### heading)
+	✓ Each subsection contains 150–250 words minimum
+	✓ Executive Summary captures key insights (150–250 words)
 %s    ✓ Response written in the SAME language as the query
 
     ## CRITICAL - Language Matching:
@@ -643,13 +642,16 @@ Section requirements:
     %s
     %s
 
-    ## Quality Standards:
-    - State findings confidently when well-supported by citations
-    - If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
-    - Flag gaps ONLY when evidence is genuinely insufficient: "Limited information available on [aspect]"
-    - Include a "Limitations and Uncertainties" section ONLY if evidence is incomplete, contradictory, or outdated; omit if findings are comprehensive
-    - NEVER fabricate or hallucinate sources
-    - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+	## Quality Standards:
+	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
+	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm", "at present we have not found") unless evidence is genuinely missing
+	- Present well-cited facts as definitive conclusions, not tentative observations
+	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
+	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
+	- Flag gaps ONLY when evidence is genuinely insufficient for a specific aspect: "No public data available on [specific aspect]"
+	- If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
+	- NEVER fabricate or hallucinate sources
+	- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
     `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
 	} else {

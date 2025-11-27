@@ -340,3 +340,6 @@ CLAUDE.md
 docs/archive-historical/
 tests/verify_rust_pricing
 scripts/benchmark_HLE.py
+
+# Desktop application (Tauri-based GUI)
+desktop/
