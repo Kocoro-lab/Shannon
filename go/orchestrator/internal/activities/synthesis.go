@@ -725,7 +725,7 @@ Section requirements:
 			// Lightweight summarizer (non-research): no heavy structure or checklists
 			fmt.Fprintf(&b, "# Synthesis Requirements:\n\n")
 			fmt.Fprintf(&b, "%s\n", languageInstruction)
-			fmt.Fprintf(&b, "Produce a concise, directly helpful answer. Avoid unnecessary headings.\n")
+			fmt.Fprintf(&b, "Produce a comprehensive, directly helpful answer. Avoid unnecessary headings.\n")
 			fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n\n")
 		}
 
