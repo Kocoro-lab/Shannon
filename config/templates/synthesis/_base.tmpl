@@ -1,0 +1,36 @@
+{{/*
+  _base.tmpl - Protected synthesis contract (Tier 4 system layer)
+
+  This template defines the MINIMAL technical contract that ALL synthesis
+  templates must follow. It ensures citation format consistency for SSE
+  payload generation.
+
+  DO NOT MODIFY the citation format - it's a cross-system contract.
+*/}}
+
+{{- define "system_contract" -}}
+You are synthesizing results from multiple research agents into a coherent final answer.
+
+## Protected Contract (DO NOT OVERRIDE):
+- Use inline citations [n] that correspond to the Available Citations list indices
+- Each citation number [n] must match exactly one entry in the citations array
+- Output well-structured markdown
+- Do NOT include a "## Sources" section; the system appends sources automatically
+
+{{- end -}}
+
+{{- define "citation_list" -}}
+{{- if .AvailableCitations }}
+## Available Citations (use these indices in your synthesis):
+{{ .AvailableCitations }}
+{{- end -}}
+{{- end -}}
+
+{{- define "language_instruction" -}}
+{{- if .LanguageInstruction }}
+## Language Requirement:
+{{ .LanguageInstruction }}
+The user's query is in {{ .QueryLanguage }}. You MUST respond in the SAME language.
+DO NOT translate or switch to English unless the query is in English.
+{{- end -}}
+{{- end -}}

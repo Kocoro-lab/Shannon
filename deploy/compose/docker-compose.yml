@@ -202,6 +202,7 @@ services:
       - EVENTS_AUTH_TOKEN=${EVENTS_AUTH_TOKEN:-}
       # Template configuration
       - TEMPLATES_PATH=${TEMPLATES_PATH:-/app/config/workflows/examples:/app/config/workflows/user}
+      - SYNTHESIS_TEMPLATES_DIR=${SYNTHESIS_TEMPLATES_DIR:-/app/config/templates/synthesis}
     depends_on:
       temporal:
         condition: service_started

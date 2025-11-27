@@ -1,0 +1,39 @@
+{{/*
+  test_bullet_summary.tmpl - Custom template for testing style overrides
+
+  Use for: Testing custom template selection via context["synthesis_template"]
+  Style: Bullet-point summary with key takeaways format
+*/}}
+
+{{- template "system_contract" . -}}
+
+# Synthesis Requirements:
+
+{{ template "language_instruction" . }}
+
+Synthesize the agent results into a **bullet-point summary** format.
+
+## Output Structure (REQUIRED):
+
+### Key Takeaways
+- List 3-5 main points as bullet points
+- Each bullet should be one clear, actionable insight
+- Keep each bullet under 25 words
+
+### Details
+For each key takeaway, provide 1-2 sentences of supporting context.
+
+### Bottom Line
+End with a single sentence that directly answers: "{{ .Query }}"
+
+## Formatting Rules:
+- Use bullet points (-) not numbered lists
+- Bold key terms using **term**
+- Keep total response under 300 words
+{{- if gt .CitationCount 0 }}
+- Include inline citations [n] where facts are sourced
+{{- end }}
+- Do NOT include a "## Sources" section; the system appends sources automatically
+- Do NOT mention agents, tools, or internal processes
+
+{{ template "citation_list" . }}

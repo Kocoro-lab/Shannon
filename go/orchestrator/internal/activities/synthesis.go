@@ -522,9 +522,76 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
-	// Define output structure based on synthesis style
-	outputStructure := ""
-	if synthesisStyle == "comprehensive" {
+	// Calculate target words for research synthesis
+	targetWords := 1200
+	if len(areas) > 0 {
+		targetWords = len(areas) * 200
+	}
+
+	// Get available citations string
+	availableCitationsStr := ""
+	if input.Context != nil {
+		if citList, ok := input.Context["available_citations"].(string); ok {
+			availableCitationsStr = citList
+		}
+	}
+
+	// Try template-based synthesis (Phase 3: Template System)
+	templateUsed := false
+	if input.Context != nil {
+		templateName, explicit := SelectSynthesisTemplate(input.Context)
+		logger.Info("Selected synthesis template",
+			zap.String("template", templateName),
+			zap.Bool("explicit", explicit),
+			zap.Bool("isResearch", isResearch),
+		)
+
+		// Check for verbatim template override first
+		if override, ok := input.Context["synthesis_template_override"].(string); ok && override != "" {
+			// User provided verbatim template text - use directly
+			fmt.Fprintf(&b, "%s\n\n", override)
+			templateUsed = true
+			logger.Info("Using verbatim synthesis template override")
+		} else if tmpl := LoadSynthesisTemplate(templateName, nil); tmpl != nil {
+			// Try to render the template
+			data := SynthesisTemplateData{
+				Query:               input.Query,
+				QueryLanguage:       queryLanguage,
+				ResearchAreas:       areas,
+				AvailableCitations:  availableCitationsStr,
+				CitationCount:       availableCitations,
+				MinCitations:        minCitations,
+				LanguageInstruction: languageInstruction,
+				AgentResults:        "", // Agent results appended separately below
+				TargetWords:         targetWords,
+				IsResearch:          isResearch,
+				SynthesisStyle:      synthesisStyle,
+			}
+
+			rendered, err := RenderSynthesisTemplate(tmpl, data)
+			if err != nil {
+				logger.Warn("Failed to render synthesis template, using fallback",
+					zap.String("template", templateName),
+					zap.Error(err),
+				)
+			} else {
+				fmt.Fprintf(&b, "%s\n\n", rendered)
+				templateUsed = true
+				logger.Info("Successfully rendered synthesis template",
+					zap.String("template", templateName),
+					zap.Int("rendered_length", len(rendered)),
+				)
+			}
+		}
+	}
+
+	// Fallback: Use hardcoded prompt if no template was used
+	if !templateUsed {
+		logger.Debug("Using hardcoded synthesis prompt (no template)")
+
+		// Define output structure based on synthesis style
+		outputStructure := ""
+		if synthesisStyle == "comprehensive" {
 		// For deep research: comprehensive multi-section report (no Sources section; system appends it)
 		targetWords := 1200
 		if len(areas) > 0 {
@@ -654,20 +721,21 @@ Section requirements:
 	- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
     `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
-	} else {
-		// Lightweight summarizer (non-research): no heavy structure or checklists
-		fmt.Fprintf(&b, "# Synthesis Requirements:\n\n")
-		fmt.Fprintf(&b, "%s\n", languageInstruction)
-		fmt.Fprintf(&b, "Produce a concise, directly helpful answer. Avoid unnecessary headings.\n")
-		fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n\n")
-	}
-
-	// Include available citations if present (Phase 2.5 fix)
-	if input.Context != nil {
-		if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
-			fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
+		} else {
+			// Lightweight summarizer (non-research): no heavy structure or checklists
+			fmt.Fprintf(&b, "# Synthesis Requirements:\n\n")
+			fmt.Fprintf(&b, "%s\n", languageInstruction)
+			fmt.Fprintf(&b, "Produce a concise, directly helpful answer. Avoid unnecessary headings.\n")
+			fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n\n")
 		}
-	}
+
+		// Include available citations if present (Phase 2.5 fix)
+		if input.Context != nil {
+			if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
+				fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
+			}
+		}
+	} // End of !templateUsed fallback block
 
 	// Configure maxAgents based on workflow type (must be after isResearch is determined)
 	maxAgents := 6
@@ -1094,6 +1162,8 @@ Section requirements:
 	}
 
 	// Continuation fallback: if model stopped early and output looks incomplete, ask it to continue
+	// This function is STRUCTURE-AGNOSTIC - it only checks for truncation signals,
+	// not specific heading formats or per-section requirements (those belong in templates).
 	looksComplete := func(s string) bool {
 		txt := strings.TrimSpace(s)
 		if txt == "" {
@@ -1117,55 +1187,42 @@ Section requirements:
 				}
 			}
 
-			// Check structural completeness: if research areas were specified, ensure each has content
+			// Style-aware minimum length check (structure-agnostic)
+			// Instead of checking specific headings, use total length thresholds
+			minLength := 1000 // Default: ~250 words
 			if input.Context != nil {
+				if style, ok := input.Context["synthesis_style"].(string); ok {
+					switch style {
+					case "comprehensive":
+						minLength = 3000 // ~750 words for deep research
+					case "concise":
+						minLength = 500 // ~125 words for concise mode
+					}
+				}
+				// If research areas are specified, scale minimum by area count
 				if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
-					var expectedAreas []string
+					var areaCount int
 					switch t := rawAreas.(type) {
 					case []string:
-						expectedAreas = t
+						areaCount = len(t)
 					case []interface{}:
-						for _, it := range t {
-							if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
-								expectedAreas = append(expectedAreas, s)
-							}
-						}
+						areaCount = len(t)
 					}
-					// Check if all expected sections have non-trivial content
-					for _, area := range expectedAreas {
-						areaHeading := "### " + area
-						idx := strings.Index(txt, areaHeading)
-						if idx == -1 {
-							// Missing section heading
-							return false
-						}
-						// Find content after this heading (before next ### or ## or end)
-						content := txt[idx+len(areaHeading):]
-
-						// IMPROVED: Use ### for subsections first, ## as fallback
-						nextSectionIdx := strings.Index(content, "\n### ")
-						if nextSectionIdx == -1 {
-							nextSectionIdx = strings.Index(content, "\n## ")
-						}
-						if nextSectionIdx == -1 {
-							nextSectionIdx = len(content)
-						}
-						sectionContent := strings.TrimSpace(content[:nextSectionIdx])
-
-						if len([]rune(sectionContent)) < 600 {
-							// Section too short (< 600 chars, ~150 words minimum)
-							return false
-						}
-
-						// Check minimum citations per section (≥2)
-						citationCount := countInlineCitations(sectionContent)
-						if citationCount < 2 {
-							// Section needs more citations
-							return false
+					if areaCount > 0 {
+						// ~400 chars per area minimum (comprehensive expects more)
+						areaMin := areaCount * 400
+						if areaMin > minLength {
+							minLength = areaMin
 						}
 					}
 				}
 			}
+
+			// Check if response meets minimum length threshold
+			if len(runes) < minLength {
+				return false
+			}
+
 			return true
 		}
 

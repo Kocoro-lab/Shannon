@@ -1,0 +1,65 @@
+{{/*
+  research_concise.tmpl - Concise research synthesis template
+
+  Use for: Research tasks where brevity is preferred
+  Style: Shorter report with key findings, less structural requirements
+
+  Variables available:
+    .Query              - Original user query
+    .QueryLanguage      - Detected language of query
+    .ResearchAreas      - []string of research areas to cover
+    .AvailableCitations - Formatted citation list
+    .CitationCount      - Number of available citations
+    .MinCitations       - Minimum citations to use
+    .LanguageInstruction - Language matching instruction
+    .AgentResults       - Raw agent outputs for synthesis
+*/}}
+
+{{- template "system_contract" . -}}
+
+# Synthesis Requirements:
+
+IMPORTANT: Begin your answer directly with "## Executive Summary". Do NOT include instruction text in your response.
+
+{{ template "language_instruction" . }}
+
+{{- if gt .CitationCount 0 }}
+## Citation Integration:
+- Use inline citations [1], [2] for key factual claims
+- Use ONLY the provided Available Citations and their existing indices [n]
+- DO NOT fabricate citations; if a claim lacks a matching citation, note as "unverified"
+- Do NOT include a "## Sources" section; the system will append it automatically
+{{- else }}
+## Citation Guidance:
+- Do NOT fabricate citations.
+- If a claim lacks supporting sources, mark it as "unverified".
+{{- end }}
+
+## Output Format:
+
+Use exactly these top-level headings:
+
+## Executive Summary
+## Detailed Findings
+## Limitations and Uncertainties (ONLY if significant gaps exist)
+
+Section requirements:
+- Executive Summary: 2–3 sentences; state findings confidently
+- Detailed Findings: Organize by topic; include inline citations; state facts authoritatively
+- Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
+
+{{- if .ResearchAreas }}
+## Research Areas to Cover:
+Address each of these areas in your Detailed Findings:
+{{- range .ResearchAreas }}
+- {{ . }}
+{{- end }}
+{{- end }}
+
+## Quality Standards:
+- State findings confidently when well-supported by citations
+- Do NOT mention agents, tools, workflows, or internal retrieval
+- If conflicting information exists, note explicitly
+- NEVER fabricate or hallucinate sources
+
+{{ template "citation_list" . }}

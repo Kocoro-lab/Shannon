@@ -8,6 +8,7 @@ This guide outlines simple, supported ways to extend Shannon without forking lar
 
 - [Extend Decomposition (System 2)](#extend-decomposition-system-2)
 - [Add/Customize Templates (System 1)](#addcustomize-templates-system-1)
+- [**Synthesis Templates (Output Customization)**](#synthesis-templates-output-customization)
 - [Add Tools Safely](#add-tools-safely)
 - [**Vendor Extensions (Domain-Specific Integrations)**](#vendor-extensions)
 - [Human Approval](#human-approval)
@@ -40,6 +41,130 @@ Lightweight option: add heuristics to `go/orchestrator/internal/activities/decom
 - For experimental integrations, keep them behind config flags.
 
 **See:** [Adding Custom Tools Guide](adding-custom-tools.md)
+
+---
+
+## Synthesis Templates (Output Customization)
+
+Shannon's synthesis layer combines multi-agent results into final answers. You can customize the output format without modifying core code.
+
+### Two Customization Methods
+
+| Method | Use Case | Precedence |
+|--------|----------|------------|
+| `synthesis_template` | Reusable named templates (`.tmpl` files) | Medium |
+| `synthesis_template_override` | One-time verbatim prompt text | **Highest** |
+
+### Method 1: Named Templates (`synthesis_template`)
+
+Use pre-defined template files for consistent, reusable output formats.
+
+**Example: Using the bullet summary template**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "What are the benefits of daily exercise?",
+    "session_id": "my-session",
+    "context": {
+      "synthesis_template": "test_bullet_summary",
+      "force_research": true
+    }
+  }'
+```
+
+- Template name is the filename without `.tmpl` extension
+- Templates live in `config/templates/synthesis/`
+- Named templates include the protected `_base.tmpl` contract (citation format `[n]`)
+
+**Creating custom templates:**
+
+```bash
+# 1. Create your template file
+cat > config/templates/synthesis/my_format.tmpl << 'EOF'
+{{- template "system_contract" . -}}
+
+# My Custom Format
+
+{{ template "language_instruction" . }}
+
+## Summary
+Provide a 3-sentence summary.
+
+## Key Points
+List the top 5 findings as bullet points.
+
+{{ template "citation_list" . }}
+EOF
+
+# 2. Use it via context
+# context: { "synthesis_template": "my_format" }
+```
+
+### Method 2: Verbatim Override (`synthesis_template_override`)
+
+For one-time custom formats, pass the complete synthesis prompt as text.
+
+**Important**: This bypasses `_base.tmpl` entirely. You must:
+1. Restate the citation rules (`[n]` format, matching citations array)
+2. Specify not to add a `## Sources` section (system appends automatically)
+
+**Example: Custom market research format (Chinese)**
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "日本鞋垫市场调研",
+    "session_id": "market-research",
+    "context": {
+      "force_research": true,
+      "synthesis_template_override": "你是市场分析专家...\n\n## 引用规则\n- 使用 [n] 格式引用\n- 不要添加参考来源章节\n\n## 报告结构\n### 1. 市场格局\n### 2. 价格定位\n..."
+    }
+  }'
+```
+
+### Override Precedence
+
+```
+synthesis_template_override  (verbatim text - HIGHEST)
+    ↓
+synthesis_template  (named template file)
+    ↓
+Auto-selected based on workflow signals
+    ↓
+Hardcoded fallback
+```
+
+### Auto-Selection Logic
+
+When no explicit template is specified:
+
+| Condition | Template Selected |
+|-----------|-------------------|
+| `workflow_type == "research"` | `research_comprehensive.tmpl` |
+| `force_research == true` | `research_comprehensive.tmpl` |
+| `synthesis_style == "comprehensive"` | `research_comprehensive.tmpl` |
+| `research_areas` present | `research_comprehensive.tmpl` |
+| `synthesis_style == "concise"` | `research_concise.tmpl` |
+| Default | `normal_default.tmpl` |
+
+### Available Templates
+
+| Template | Description |
+|----------|-------------|
+| `_base.tmpl` | **Protected** - Citation contract (do not modify) |
+| `research_comprehensive.tmpl` | Deep research with Executive Summary, Detailed Findings, Limitations |
+| `research_concise.tmpl` | Shorter research format |
+| `normal_default.tmpl` | Simple tasks - concise, direct answers |
+| `test_bullet_summary.tmpl` | Example custom format - bullet points |
+
+### Limitation
+
+The system automatically appends a `## Sources` section in English at the end. Your template/override should instruct the model not to create its own references section, but the system-appended heading cannot be localized without deeper changes.
+
+**Full documentation:** See `config/templates/synthesis/README.md`
 
 ---
 
