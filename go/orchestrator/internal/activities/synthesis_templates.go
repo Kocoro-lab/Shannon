@@ -72,6 +72,12 @@ type SynthesisLogger interface {
 // It first checks the cache, then loads from disk if not cached.
 // Returns nil if the template doesn't exist (caller should use fallback).
 // logger can be nil if logging is not needed.
+//
+// IMPORTANT: Temporal Determinism Warning
+// This function reads from the filesystem on cache miss. It is safe to call
+// from Temporal ACTIVITY code (like SynthesizeResultsLLM), but must NOT be
+// called directly from WORKFLOW code as filesystem access breaks determinism
+// and would cause replay failures. The caching mitigates repeated disk reads.
 func LoadSynthesisTemplate(name string, logger *zap.Logger) *template.Template {
 	// Check cache first
 	synthesisTemplateMutex.RLock()

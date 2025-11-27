@@ -85,6 +85,19 @@ To create a custom template:
 3. Include `{{ template "citation_list" . }}` where citations should appear
 4. Use context to select: `context["synthesis_template"] = "my_custom"`
 
+### Continuation Behavior Control
+
+Custom templates with unusual length requirements can override the automatic continuation threshold via `context["synthesis_min_length"]`:
+
+```json
+{
+  "synthesis_template": "test_bullet_summary",
+  "synthesis_min_length": 300
+}
+```
+
+This tells the system that a 300-character response is considered "complete" for this template, preventing unnecessary continuation attempts. Without this override, the system uses style-based defaults (1000 chars for normal, 3000 for comprehensive, 500 for concise).
+
 ## Protected Contract
 
 The `_base.tmpl` defines the citation contract that MUST remain stable:

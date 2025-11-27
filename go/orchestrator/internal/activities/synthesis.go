@@ -1191,28 +1191,42 @@ Section requirements:
 			// Instead of checking specific headings, use total length thresholds
 			minLength := 1000 // Default: ~250 words
 			if input.Context != nil {
-				if style, ok := input.Context["synthesis_style"].(string); ok {
-					switch style {
-					case "comprehensive":
-						minLength = 3000 // ~750 words for deep research
-					case "concise":
-						minLength = 500 // ~125 words for concise mode
+				// Allow explicit override via context for custom templates
+				// This takes highest precedence over style/area-based calculations
+				if explicitMin, ok := input.Context["synthesis_min_length"]; ok {
+					switch v := explicitMin.(type) {
+					case int:
+						minLength = v
+					case int64:
+						minLength = int(v)
+					case float64:
+						minLength = int(v)
 					}
-				}
-				// If research areas are specified, scale minimum by area count
-				if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
-					var areaCount int
-					switch t := rawAreas.(type) {
-					case []string:
-						areaCount = len(t)
-					case []interface{}:
-						areaCount = len(t)
+				} else {
+					// Style-based defaults
+					if style, ok := input.Context["synthesis_style"].(string); ok {
+						switch style {
+						case "comprehensive":
+							minLength = 3000 // ~750 words for deep research
+						case "concise":
+							minLength = 500 // ~125 words for concise mode
+						}
 					}
-					if areaCount > 0 {
-						// ~400 chars per area minimum (comprehensive expects more)
-						areaMin := areaCount * 400
-						if areaMin > minLength {
-							minLength = areaMin
+					// If research areas are specified, scale minimum by area count
+					if rawAreas, ok := input.Context["research_areas"]; ok && rawAreas != nil {
+						var areaCount int
+						switch t := rawAreas.(type) {
+						case []string:
+							areaCount = len(t)
+						case []interface{}:
+							areaCount = len(t)
+						}
+						if areaCount > 0 {
+							// ~400 chars per area minimum (comprehensive expects more)
+							areaMin := areaCount * 400
+							if areaMin > minLength {
+								minLength = areaMin
+							}
 						}
 					}
 				}

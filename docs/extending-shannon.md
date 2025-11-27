@@ -160,6 +160,24 @@ When no explicit template is specified:
 | `normal_default.tmpl` | Simple tasks - concise, direct answers |
 | `test_bullet_summary.tmpl` | Example custom format - bullet points |
 
+### Continuation Behavior Control
+
+Custom templates with unusual length requirements may trigger unwanted continuation attempts. Override the minimum length threshold via `synthesis_min_length`:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "...",
+    "context": {
+      "synthesis_template": "test_bullet_summary",
+      "synthesis_min_length": 300
+    }
+  }'
+```
+
+This tells the system that a 300-character response is "complete" for this template, preventing unnecessary continuation. Default thresholds: 1000 (normal), 3000 (comprehensive), 500 (concise).
+
 ### Limitation
 
 The system automatically appends a `## Sources` section in English at the end. Your template/override should instruct the model not to create its own references section, but the system-appended heading cannot be localized without deeper changes.
