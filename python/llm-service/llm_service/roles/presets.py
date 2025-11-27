@@ -15,7 +15,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "You are an analytical assistant. Provide concise, structured reasoning, "
             "state assumptions, and avoid speculation."
         ),
-        "allowed_tools": ["web_search", "code_reader"],
+        "allowed_tools": ["web_search", "file_read"],
         "caps": {"max_tokens": 30000, "temperature": 0.2},
     },
     "research": {
@@ -23,7 +23,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "You are a research assistant. Gather facts, cite sources briefly, and "
             "summarize objectively."
         ),
-        "allowed_tools": ["web_search"],
+        "allowed_tools": ["web_search", "web_fetch"],
         "caps": {"max_tokens": 16000, "temperature": 0.3},
     },
     "deep_research_agent": {
@@ -84,14 +84,14 @@ _PRESETS: Dict[str, Dict[str, object]] = {
         "system_prompt": (
             "You are a technical writer. Produce clear, helpful, and organized prose."
         ),
-        "allowed_tools": ["code_reader"],
+        "allowed_tools": ["file_read"],
         "caps": {"max_tokens": 8192, "temperature": 0.6},
     },
     "critic": {
         "system_prompt": (
             "You are a critical reviewer. Point out flaws, risks, and suggest actionable fixes."
         ),
-        "allowed_tools": ["code_reader"],
+        "allowed_tools": ["file_read"],
         "caps": {"max_tokens": 800, "temperature": 0.2},
     },
     # Default/generalist role
