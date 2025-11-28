@@ -752,7 +752,6 @@ class WebSearchTool(Tool):
                 type=ToolParameterType.STRING,
                 description="Content category filter (Exa only): company, research paper, news, pdf, github, tweet, personal site, linkedin, financial report",
                 required=False,
-                enum=["company", "research paper", "news", "pdf", "github", "tweet", "personal site", "linkedin", "financial report"],
             ),
         ]
 
