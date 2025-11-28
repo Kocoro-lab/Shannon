@@ -2,8 +2,8 @@
 Web Fetch Tool - Extract full page content for deep analysis
 
 Hybrid approach:
-- Default: Pure Python (free, fast, works 80% of time)
-- Optional: Exa content API (premium, handles JS-heavy sites)
+- Default: Exa content API when configured (handles JS-heavy sites)
+- Fallback: Pure Python (free, fast, works for most pages)
 
 Security features:
 - SSRF protection (blocks private IPs, cloud metadata endpoints)
@@ -30,8 +30,8 @@ class WebFetchTool(Tool):
     Fetch full content from a web page for detailed analysis.
 
     Two modes:
-    1. Pure Python (default): Fast, free, works for most pages
-    2. Exa API: Premium content extraction with JS rendering
+    1. Exa API (default when configured): Premium content extraction with JS rendering
+    2. Pure Python (fallback): Fast, free, works for most pages
     """
 
     def __init__(self):
@@ -55,7 +55,8 @@ class WebFetchTool(Tool):
                 "Fetch full content from a web page for detailed analysis. "
                 "Extracts clean markdown text from any URL. "
                 "Use this after web_search to deep-dive into specific pages. "
-                "Default: pure Python (fast, free). Optional: Exa API for JS-heavy sites."
+                "Default: Exa API when available (handles JS-heavy sites, premium extraction). "
+                "Fallback: pure Python (fast, free) when Exa is unavailable or disabled."
             ),
             category="retrieval",
             author="Shannon",
@@ -65,7 +66,7 @@ class WebFetchTool(Tool):
             memory_limit_mb=256,
             sandboxed=False,
             dangerous=False,
-            cost_per_use=0.0,  # Free by default (Exa mode: $0.001/page)
+            cost_per_use=0.001,  # Default: Exa ($0.001/page). Free fallback: pure Python
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
@@ -79,9 +80,9 @@ class WebFetchTool(Tool):
             ToolParameter(
                 name="use_exa",
                 type=ToolParameterType.BOOLEAN,
-                description="Use Exa API for premium content extraction (handles JS, costs $0.001/page)",
+                description="Whether to use Exa API (default: true, recommended for best results). Handles JS-heavy sites. Set to false only for debugging or when Exa is unavailable.",
                 required=False,
-                default=False,
+                default=True,
             ),
             ToolParameter(
                 name="max_length",
@@ -100,7 +101,7 @@ class WebFetchTool(Tool):
         """Execute web content fetch."""
 
         url = kwargs.get("url")
-        use_exa = kwargs.get("use_exa", False)
+        use_exa = kwargs.get("use_exa", True)
         max_length = kwargs.get("max_length", 10000)
 
         if not url:
