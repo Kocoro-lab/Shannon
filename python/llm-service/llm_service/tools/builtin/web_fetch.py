@@ -15,7 +15,7 @@ import aiohttp
 import os
 import logging
 from typing import Dict, Optional, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 import html2text
 
@@ -178,8 +178,8 @@ class WebFetchTool(Tool):
                 logger.info(f"Fetching with Exa API: {url} (subpages={subpages})")
                 return await self._fetch_with_exa(url, max_length, subpages, subpage_target)
             else:
-                logger.info(f"Fetching with pure Python: {url}")
-                return await self._fetch_pure_python(url, max_length)
+                logger.info(f"Fetching with pure Python: {url} (subpages={subpages})")
+                return await self._fetch_pure_python(url, max_length, subpages)
 
         except Exception as e:
             logger.error(f"Failed to fetch {url}: {str(e)}")
@@ -187,10 +187,227 @@ class WebFetchTool(Tool):
                 success=False, output=None, error=f"Failed to fetch page: {str(e)}"
             )
 
-    async def _fetch_pure_python(self, url: str, max_length: int) -> ToolResult:
+    def _extract_same_domain_links(self, soup: BeautifulSoup, base_url: str, root_domain: str) -> List[str]:
+        """Extract all same-domain links from parsed HTML."""
+        links = []
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"]
+            # Skip anchors, javascript, mailto, etc.
+            if href.startswith(("#", "javascript:", "mailto:", "tel:")):
+                continue
+            # Resolve relative URLs
+            full_url = urljoin(base_url, href)
+            parsed = urlparse(full_url)
+            # Only same-domain links
+            if parsed.netloc == root_domain and parsed.scheme in ("http", "https"):
+                # Normalize: remove fragments, keep path
+                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                if parsed.query:
+                    clean_url += f"?{parsed.query}"
+                links.append(clean_url)
+        return links
+
+    async def _fetch_single_page(
+        self, session: aiohttp.ClientSession, url: str, max_length: int
+    ) -> Optional[Dict]:
+        """
+        Fetch a single page and return structured data.
+        Returns None on failure (silent fail for subpages).
+        """
+        try:
+            headers = {"User-Agent": self.user_agent}
+            async with session.get(
+                url,
+                headers=headers,
+                allow_redirects=True,
+                max_redirects=self.max_redirects,
+            ) as response:
+                if response.status != 200:
+                    return None
+
+                html_content = await response.text(errors="ignore")
+                if len(html_content) > self.max_response_bytes:
+                    return None
+
+                soup = BeautifulSoup(html_content, "lxml")
+
+                # Extract metadata
+                title = soup.find("title")
+                title = title.get_text().strip() if title else ""
+
+                # Extract links before removing elements
+                root_domain = urlparse(url).netloc
+                links = self._extract_same_domain_links(soup, str(response.url), root_domain)
+
+                # Remove unwanted elements
+                for element in soup(
+                    ["script", "style", "nav", "header", "footer", "aside", "iframe", "noscript"]
+                ):
+                    element.decompose()
+
+                # Extract main content
+                main_content = (
+                    soup.find("article")
+                    or soup.find("main")
+                    or soup.find("div", class_="content")
+                    or soup.find("div", class_="post")
+                    or soup.find("body")
+                    or soup
+                )
+
+                # Convert to markdown
+                h = html2text.HTML2Text()
+                h.ignore_links = False
+                h.ignore_images = False
+                h.ignore_emphasis = False
+                h.body_width = 0
+                h.unicode_snob = True
+                h.skip_internal_links = True
+
+                markdown = h.handle(str(main_content))
+
+                # Clean up whitespace
+                lines = [line.rstrip() for line in markdown.split("\n")]
+                markdown = "\n".join(lines)
+                while "\n\n\n" in markdown:
+                    markdown = markdown.replace("\n\n\n", "\n\n")
+
+                # Truncate if needed
+                if len(markdown) > max_length:
+                    markdown = markdown[:max_length]
+
+                return {
+                    "url": str(response.url),
+                    "title": title,
+                    "content": markdown,
+                    "links": links,
+                }
+        except Exception as e:
+            logger.debug(f"Failed to fetch subpage {url}: {str(e)}")
+            return None
+
+    async def _crawl_with_subpages(
+        self, session: aiohttp.ClientSession, url: str, max_length: int, subpages: int
+    ) -> ToolResult:
+        """
+        Crawl main page plus subpages using BFS with page count limit.
+        Returns merged markdown content from all fetched pages.
+        """
+        root_domain = urlparse(url).netloc
+        visited = set()
+        queue = [url]
+        pages = []
+        max_pages = subpages + 1  # Main page + N subpages
+
+        logger.info(f"Starting pure-Python crawl: {url} (max_pages={max_pages})")
+
+        while queue and len(pages) < max_pages:
+            current_url = queue.pop(0)
+
+            # Skip if already visited
+            if current_url in visited:
+                continue
+            visited.add(current_url)
+
+            # Fetch the page
+            page_data = await self._fetch_single_page(session, current_url, max_length)
+            if page_data:
+                pages.append(page_data)
+                logger.debug(f"Crawled page {len(pages)}/{max_pages}: {current_url}")
+
+                # Add new links to queue (only if we need more pages)
+                if len(pages) < max_pages:
+                    for link in page_data.get("links", []):
+                        if link not in visited and link not in queue:
+                            queue.append(link)
+
+        if not pages:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Failed to fetch any pages",
+            )
+
+        # Merge pages into markdown format
+        if len(pages) == 1:
+            # Single page result
+            page = pages[0]
+            return ToolResult(
+                success=True,
+                output={
+                    "url": page["url"],
+                    "title": page["title"],
+                    "content": page["content"],
+                    "author": None,
+                    "published_date": None,
+                    "word_count": len(page["content"].split()),
+                    "char_count": len(page["content"]),
+                    "truncated": False,
+                    "method": "pure_python",
+                    "pages_fetched": 1,
+                },
+                metadata={
+                    "fetch_method": "pure_python_crawl",
+                    "pages_requested": max_pages,
+                },
+            )
+        else:
+            # Multiple pages - merge with markdown separators
+            merged_content = []
+            total_words = 0
+            total_chars = 0
+
+            for i, page in enumerate(pages):
+                page_url = page.get("url", "")
+                page_title = page.get("title", "")
+                page_content = page.get("content", "")
+
+                if i == 0:
+                    # Main page
+                    merged_content.append(f"# Main Page: {page_url}\n")
+                    if page_title:
+                        merged_content.append(f"**{page_title}**\n")
+                else:
+                    # Subpage
+                    merged_content.append(f"\n---\n\n## Subpage {i}: {page_url}\n")
+                    if page_title:
+                        merged_content.append(f"**{page_title}**\n")
+
+                merged_content.append(f"\n{page_content}\n")
+                total_words += len(page_content.split())
+                total_chars += len(page_content)
+
+            final_content = "".join(merged_content)
+            logger.info(f"Crawl complete: {len(pages)} pages, {total_chars} chars")
+
+            return ToolResult(
+                success=True,
+                output={
+                    "url": pages[0]["url"],
+                    "title": pages[0]["title"],
+                    "content": final_content,
+                    "author": None,
+                    "published_date": None,
+                    "word_count": total_words,
+                    "char_count": total_chars,
+                    "truncated": False,
+                    "method": "pure_python",
+                    "pages_fetched": len(pages),
+                },
+                metadata={
+                    "fetch_method": "pure_python_crawl",
+                    "pages_requested": max_pages,
+                    "pages_fetched": len(pages),
+                    "urls_crawled": [p["url"] for p in pages],
+                },
+            )
+
+    async def _fetch_pure_python(self, url: str, max_length: int, subpages: int = 0) -> ToolResult:
         """
         Fetch using pure Python: requests + BeautifulSoup + html2text.
         Fast, free, works for most pages (80%).
+
+        When subpages > 0, crawls same-domain links up to the specified count.
 
         Security features:
         - Max response size limit (prevents memory exhaustion)
@@ -208,6 +425,11 @@ class WebFetchTool(Tool):
                 connector=connector,
             )
 
+            # Crawl mode: fetch main page + subpages
+            if subpages > 0:
+                return await self._crawl_with_subpages(session, url, max_length, subpages)
+
+            # Single page mode (original behavior)
             headers = {"User-Agent": self.user_agent}
 
             async with session.get(
@@ -330,6 +552,7 @@ class WebFetchTool(Tool):
                     "char_count": len(markdown),
                     "truncated": truncated,
                     "method": "pure_python",
+                    "pages_fetched": 1,
                 },
                 metadata={
                     "fetch_method": "pure_python",
