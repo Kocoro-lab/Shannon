@@ -70,15 +70,42 @@ type ListSessionsResponse struct {
 
 // SessionSummary represents a single session in listing
 type SessionSummary struct {
-	SessionID   string     `json:"session_id"`
-	UserID      string     `json:"user_id"`
-	Title       string     `json:"title,omitempty"`
-	TaskCount   int        `json:"task_count"`
-	TokensUsed  int        `json:"tokens_used"`
-	TokenBudget int        `json:"token_budget,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	SessionID   string                 `json:"session_id"`
+	UserID      string                 `json:"user_id"`
+	Title       string                 `json:"title,omitempty"`
+	TaskCount   int                    `json:"task_count"`
+	TokensUsed  int                    `json:"tokens_used"`
+	TokenBudget int                    `json:"token_budget,omitempty"`
+	CreatedAt   time.Time              `json:"created_at"`
+	UpdatedAt   *time.Time             `json:"updated_at,omitempty"`
+	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
+	Context     map[string]interface{} `json:"context,omitempty"`
+
+	// Activity tracking
+	LastActivityAt *time.Time `json:"last_activity_at,omitempty"`
+	IsActive       bool       `json:"is_active"`
+
+	// Task success metrics
+	SuccessfulTasks int     `json:"successful_tasks"`
+	FailedTasks     int     `json:"failed_tasks"`
+	SuccessRate     float64 `json:"success_rate,omitempty"`
+
+	// Cost tracking
+	TotalCostUSD       float64 `json:"total_cost_usd"`
+	AverageCostPerTask float64 `json:"average_cost_per_task,omitempty"`
+
+	// Budget utilization (computed)
+	BudgetUtilization float64 `json:"budget_utilization,omitempty"`
+	BudgetRemaining   int     `json:"budget_remaining,omitempty"`
+	IsNearBudgetLimit bool    `json:"is_near_budget_limit"`
+
+	// Latest task preview
+	LatestTaskQuery  string `json:"latest_task_query,omitempty"`
+	LatestTaskStatus string `json:"latest_task_status,omitempty"`
+
+	// Research detection (computed from first task)
+	IsResearchSession bool   `json:"is_research_session"`
+	FirstTaskMode     string `json:"first_task_mode,omitempty"`
 }
 
 // TaskHistory represents a task in session history
@@ -757,12 +784,43 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
             s.id,
             s.user_id,
             COALESCE(s.context->>'title', '') as title,
+            s.context as context,
             COALESCE(s.token_budget, 0) as token_budget,
             COALESCE(SUM(t.total_tokens), 0)::int as tokens_used,
             s.created_at,
             s.updated_at,
             s.expires_at,
-            COUNT(t.id) as task_count
+            COUNT(t.id) as task_count,
+
+            -- Activity tracking (no additional cost - uses existing JOIN)
+            MAX(t.completed_at) as last_activity_at,
+
+            -- Task success metrics (conditional COUNT - efficient)
+            COUNT(CASE WHEN t.status = 'COMPLETED' THEN 1 END)::int as successful_tasks,
+            COUNT(CASE WHEN t.status = 'FAILED' THEN 1 END)::int as failed_tasks,
+
+            -- Cost tracking (simple SUM - no additional JOIN)
+            COALESCE(SUM(t.total_cost_usd), 0) as total_cost_usd,
+
+            -- Latest task preview (correlated subqueries - indexed on session_id)
+            (SELECT query FROM task_executions
+             WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
+             AND user_id = s.user_id
+             ORDER BY created_at DESC LIMIT 1) as latest_task_query,
+            (SELECT status FROM task_executions
+             WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
+             AND user_id = s.user_id
+             ORDER BY created_at DESC LIMIT 1) as latest_task_status,
+
+            -- First task metadata for research detection
+            (SELECT mode FROM task_executions
+             WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
+             AND user_id = s.user_id
+             ORDER BY created_at ASC LIMIT 1) as first_task_mode,
+            (SELECT metadata FROM task_executions
+             WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
+             AND user_id = s.user_id
+             ORDER BY created_at ASC LIMIT 1) as first_task_metadata
         FROM sessions s
         LEFT JOIN task_executions t ON (t.session_id = s.id::text OR t.session_id = s.context->>'external_id')
             AND t.user_id = s.user_id
@@ -783,15 +841,24 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	sessions := make([]SessionSummary, 0)
 	for rows.Next() {
 		var sess struct {
-			ID          string       `db:"id"`
-			UserID      string       `db:"user_id"`
-			Title       string       `db:"title"`
-			TokenBudget int          `db:"token_budget"`
-			TokensUsed  int          `db:"tokens_used"`
-			CreatedAt   time.Time    `db:"created_at"`
-			UpdatedAt   sql.NullTime `db:"updated_at"`
-			ExpiresAt   sql.NullTime `db:"expires_at"`
-			TaskCount   int          `db:"task_count"`
+			ID                 string         `db:"id"`
+			UserID             string         `db:"user_id"`
+			Title              string         `db:"title"`
+			Context            sql.NullString `db:"context"`
+			TokenBudget        int            `db:"token_budget"`
+			TokensUsed         int            `db:"tokens_used"`
+			CreatedAt          time.Time      `db:"created_at"`
+			UpdatedAt          sql.NullTime   `db:"updated_at"`
+			ExpiresAt          sql.NullTime   `db:"expires_at"`
+			TaskCount          int            `db:"task_count"`
+			LastActivityAt     sql.NullTime   `db:"last_activity_at"`
+			SuccessfulTasks    int            `db:"successful_tasks"`
+			FailedTasks        int            `db:"failed_tasks"`
+			TotalCostUSD       float64        `db:"total_cost_usd"`
+			LatestTaskQuery    sql.NullString `db:"latest_task_query"`
+			LatestTaskStatus   sql.NullString `db:"latest_task_status"`
+			FirstTaskMode      sql.NullString `db:"first_task_mode"`
+			FirstTaskMetadata  sql.NullString `db:"first_task_metadata"`
 		}
 
 		if err := rows.StructScan(&sess); err != nil {
@@ -800,17 +867,108 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		summary := SessionSummary{
-			SessionID:  sess.ID,
-			UserID:     sess.UserID,
-			Title:      sess.Title,
-			TaskCount:  sess.TaskCount,
-			TokensUsed: sess.TokensUsed,
-			CreatedAt:  sess.CreatedAt,
+			SessionID:       sess.ID,
+			UserID:          sess.UserID,
+			Title:           sess.Title,
+			TaskCount:       sess.TaskCount,
+			TokensUsed:      sess.TokensUsed,
+			CreatedAt:       sess.CreatedAt,
+			SuccessfulTasks: sess.SuccessfulTasks,
+			FailedTasks:     sess.FailedTasks,
+			TotalCostUSD:    sess.TotalCostUSD,
 		}
 
+		// Parse context JSON
+		if sess.Context.Valid && sess.Context.String != "" {
+			var ctxMap map[string]interface{}
+			if err := json.Unmarshal([]byte(sess.Context.String), &ctxMap); err == nil {
+				summary.Context = ctxMap
+			}
+		}
+
+		// Activity tracking
+		if sess.LastActivityAt.Valid {
+			summary.LastActivityAt = &sess.LastActivityAt.Time
+			// Consider active if last activity within 24 hours
+			summary.IsActive = time.Since(sess.LastActivityAt.Time) < 24*time.Hour
+		}
+
+		// Task success rate
+		if sess.TaskCount > 0 {
+			summary.SuccessRate = float64(sess.SuccessfulTasks) / float64(sess.TaskCount)
+		}
+
+		// Average cost per task
+		if sess.TaskCount > 0 && sess.TotalCostUSD > 0 {
+			summary.AverageCostPerTask = sess.TotalCostUSD / float64(sess.TaskCount)
+		}
+
+		// Budget utilization (computed fields)
 		if sess.TokenBudget > 0 {
 			summary.TokenBudget = sess.TokenBudget
+			summary.BudgetUtilization = float64(sess.TokensUsed) / float64(sess.TokenBudget)
+			summary.BudgetRemaining = sess.TokenBudget - sess.TokensUsed
+			if summary.BudgetRemaining < 0 {
+				summary.BudgetRemaining = 0 // Prevent negative
+			}
+			summary.IsNearBudgetLimit = summary.BudgetUtilization > 0.9
 		}
+
+		// Latest task preview
+		if sess.LatestTaskQuery.Valid {
+			summary.LatestTaskQuery = sess.LatestTaskQuery.String
+		}
+		if sess.LatestTaskStatus.Valid {
+			summary.LatestTaskStatus = sess.LatestTaskStatus.String
+		}
+
+		// Research detection - check multiple indicators
+		if sess.FirstTaskMode.Valid {
+			summary.FirstTaskMode = sess.FirstTaskMode.String
+		}
+
+		isResearch := false
+		// Check 1: Session context has force_research or research_mode
+		if summary.Context != nil {
+			if fr, ok := summary.Context["force_research"].(bool); ok && fr {
+				isResearch = true
+			}
+			if rm, ok := summary.Context["research_mode"].(string); ok && rm != "" {
+				isResearch = true
+			}
+		}
+
+		// Check 2: First task metadata contains research indicators
+		if !isResearch && sess.FirstTaskMetadata.Valid && sess.FirstTaskMetadata.String != "" {
+			var metadata map[string]interface{}
+			if err := json.Unmarshal([]byte(sess.FirstTaskMetadata.String), &metadata); err == nil {
+				// Check for research workflow indicators
+				if wfType, ok := metadata["workflow_type"].(string); ok {
+					if strings.Contains(strings.ToLower(wfType), "research") {
+						isResearch = true
+					}
+				}
+				// Check for synthesis_style = comprehensive (research indicator)
+				if style, ok := metadata["synthesis_style"].(string); ok && style == "comprehensive" {
+					isResearch = true
+				}
+				// Check for citations (research workflows collect citations)
+				if citations, ok := metadata["citations"].([]interface{}); ok && len(citations) > 0 {
+					isResearch = true
+				}
+			}
+		}
+
+		// Check 3: Query text starts with "Deep research" (Chrome extension pattern)
+		if !isResearch && sess.LatestTaskQuery.Valid {
+			query := strings.ToLower(sess.LatestTaskQuery.String)
+			if strings.HasPrefix(query, "deep research") {
+				isResearch = true
+			}
+		}
+
+		summary.IsResearchSession = isResearch
+
 		if sess.UpdatedAt.Valid {
 			summary.UpdatedAt = &sess.UpdatedAt.Time
 		}
@@ -840,10 +998,9 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Enrich with real-time token usage from Redis if available
 	if h.redis != nil && len(sessions) > 0 {
-		// Prepare keys for MGET
-		// We need to check both session ID and external ID (if present)
-		// Since MGET is simple key-value, we'll fetch both possible keys for each session
-		// and take the max value found.
+		// Prepare keys for MGET using the canonical session ID.
+		// For list view, we only use "session:<uuid>" to keep the call efficient.
+		// External IDs are still honored for per-session views (GetSession / history / events).
 		var keys []string
 		for _, s := range sessions {
 			keys = append(keys, fmt.Sprintf("session:%s", s.SessionID))

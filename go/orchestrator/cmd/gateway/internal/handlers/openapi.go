@@ -927,7 +927,7 @@ func generateOpenAPISpec() map[string]interface{} {
 						},
 						"tokens_used": map[string]interface{}{
 							"type":        "integer",
-							"description": "Total tokens consumed in this session",
+							"description": "Total tokens consumed in this session (from DB, optionally enriched by Redis)",
 						},
 						"token_budget": map[string]interface{}{
 							"type":        "integer",
@@ -947,6 +947,71 @@ func generateOpenAPISpec() map[string]interface{} {
 							"type":        "string",
 							"format":      "date-time",
 							"description": "Session expiration timestamp",
+						},
+						"context": map[string]interface{}{
+							"type":        "object",
+							"description": "Session context metadata (includes title, external_id, and feature flags)",
+						},
+						"last_activity_at": map[string]interface{}{
+							"type":        "string",
+							"format":      "date-time",
+							"description": "Timestamp of the latest completed task in this session",
+						},
+						"is_active": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Whether the session is considered active (recent activity in the last 24 hours)",
+						},
+						"successful_tasks": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of successfully completed tasks",
+						},
+						"failed_tasks": map[string]interface{}{
+							"type":        "integer",
+							"description": "Number of failed tasks",
+						},
+						"success_rate": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Task success rate in the range 0.0-1.0 (successful_tasks / task_count)",
+						},
+						"total_cost_usd": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Total cost of all tasks in this session, in USD",
+						},
+						"average_cost_per_task": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Average cost per task (total_cost_usd / task_count)",
+						},
+						"budget_utilization": map[string]interface{}{
+							"type":        "number",
+							"format":      "double",
+							"description": "Fraction of token budget consumed (tokens_used / token_budget)",
+						},
+						"budget_remaining": map[string]interface{}{
+							"type":        "integer",
+							"description": "Remaining tokens in the budget (never negative)",
+						},
+						"is_near_budget_limit": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Whether the session is nearing its token budget (utilization > 90%)",
+						},
+						"latest_task_query": map[string]interface{}{
+							"type":        "string",
+							"description": "Query text of the most recent task in this session",
+						},
+						"latest_task_status": map[string]interface{}{
+							"type":        "string",
+							"description": "Status of the most recent task (e.g., COMPLETED, FAILED, RUNNING)",
+						},
+						"is_research_session": map[string]interface{}{
+							"type":        "boolean",
+							"description": "Whether this session is inferred to be a research session",
+						},
+						"first_task_mode": map[string]interface{}{
+							"type":        "string",
+							"description": "Mode of the first task in the session (used for research detection)",
 						},
 					},
 				},
