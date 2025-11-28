@@ -180,7 +180,8 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 
 	// Try to get real-time token usage from Redis (if available)
 	// Session manager stores sessions as JSON values with SET, not as Redis hashes
-	tokensUsed := int(session.TokensUsed.Int32)
+	// Note: Don't use session.TokensUsed - it's not reliably updated. Always get from Redis or task_executions.
+	tokensUsed := 0
 	if h.redis != nil {
 		// Try both possible Redis keys: the input sessionID and any external_id
 		keysToTry := []string{fmt.Sprintf("session:%s", sessionID)}
@@ -198,6 +199,25 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+		}
+	}
+
+	// If still 0, aggregate from task_executions as fallback (most accurate source)
+	if tokensUsed == 0 {
+		var aggregatedTokens int
+		if extID, ok := contextData["external_id"].(string); ok && extID != "" {
+			err = h.db.GetContext(ctx, &aggregatedTokens, `
+				SELECT COALESCE(SUM(total_tokens), 0)::int FROM task_executions
+				WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+			`, session.ID, extID, userCtx.UserID.String())
+		} else {
+			err = h.db.GetContext(ctx, &aggregatedTokens, `
+				SELECT COALESCE(SUM(total_tokens), 0)::int FROM task_executions
+				WHERE session_id = $1 AND user_id = $2
+			`, session.ID, userCtx.UserID.String())
+		}
+		if err == nil && aggregatedTokens > 0 {
+			tokensUsed = aggregatedTokens
 		}
 	}
 
@@ -731,13 +751,14 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 
 	// Query sessions for this user
 	// Note: task_executions.session_id is VARCHAR, sessions.id is UUID - match by id or external_id
+	// Aggregate tokens_used from task_executions (more accurate than sessions.tokens_used which may not be updated)
 	rows, err := h.db.QueryxContext(ctx, `
         SELECT
             s.id,
             s.user_id,
             COALESCE(s.context->>'title', '') as title,
             COALESCE(s.token_budget, 0) as token_budget,
-            COALESCE(s.tokens_used, 0) as tokens_used,
+            COALESCE(SUM(t.total_tokens), 0)::int as tokens_used,
             s.created_at,
             s.updated_at,
             s.expires_at,
@@ -746,7 +767,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
         LEFT JOIN task_executions t ON (t.session_id = s.id::text OR t.session_id = s.context->>'external_id')
             AND t.user_id = s.user_id
         WHERE s.user_id = $1 AND s.deleted_at IS NULL
-        GROUP BY s.id, s.user_id, s.context, s.token_budget, s.tokens_used, s.created_at, s.updated_at, s.expires_at
+        GROUP BY s.id, s.user_id, s.context, s.token_budget, s.created_at, s.updated_at, s.expires_at
         ORDER BY s.created_at DESC
         LIMIT $2 OFFSET $3
     `, userCtx.UserID.String(), limit, offset)

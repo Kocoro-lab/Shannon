@@ -343,3 +343,6 @@ scripts/benchmark_HLE.py
 
 # Desktop application (Tauri-based GUI)
 desktop/
+
+# Chrome extension (browser integration)
+chrome-extension/

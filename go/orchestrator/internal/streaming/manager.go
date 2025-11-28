@@ -28,18 +28,35 @@ type Event struct {
 	StreamID   string                 `json:"stream_id,omitempty"` // Redis stream ID for deduplication
 }
 
+// subscription tracks a subscriber with its cancellation mechanism
+type subscription struct {
+	cancel context.CancelFunc
+}
+
 // Manager provides Redis Streams-based pub/sub for workflow events.
+//
+// Lifecycle:
+//   1. Subscribe() creates a channel and starts a background reader goroutine
+//   2. The reader forwards Redis stream events to the channel
+//   3. Unsubscribe() stops the reader and closes the channel
+//
+// IMPORTANT: Callers must NOT close subscription channels themselves.
+// The reader owns the channel lifetime. Always call Unsubscribe() to clean up.
+//
+// Thread-safety: All methods are goroutine-safe.
 type Manager struct {
-	mu    sync.RWMutex
-	redis *redis.Client
-	// optional persistent store
+	mu          sync.RWMutex
+	redis       *redis.Client
 	dbClient    *db.Client
 	persistCh   chan db.EventLog
 	batchSize   int
 	flushEvery  time.Duration
-	subscribers map[string]map[chan Event]struct{}
+	subscribers map[string]map[chan Event]*subscription
 	capacity    int
 	logger      *zap.Logger
+	shutdownCh  chan struct{}
+	wg          sync.WaitGroup
+	persistWg   sync.WaitGroup
 }
 
 var (
@@ -53,9 +70,10 @@ func Get() *Manager {
 	once.Do(func() {
 		// This will be properly initialized via InitializeRedis
 		defaultMgr = &Manager{
-			subscribers: make(map[string]map[chan Event]struct{}),
+			subscribers: make(map[string]map[chan Event]*subscription),
 			capacity:    defaultCapacity,
 			logger:      zap.L(),
+			shutdownCh:  make(chan struct{}),
 		}
 	})
 	return defaultMgr
@@ -102,6 +120,7 @@ func InitializeEventStore(store *db.Client, logger *zap.Logger) {
 		defaultMgr.persistCh = make(chan db.EventLog, bs*4)
 		defaultMgr.batchSize = bs
 		defaultMgr.flushEvery = iv
+		defaultMgr.persistWg.Add(1)
 		go defaultMgr.persistWorker()
 		defaultMgr.logger.Info("Initialized event log batcher", zap.Int("batch_size", bs), zap.Duration("interval", iv))
 	}
@@ -138,36 +157,44 @@ func (m *Manager) Subscribe(workflowID string, buffer int) chan Event {
 // SubscribeFrom adds a subscriber starting from a specific stream ID
 func (m *Manager) SubscribeFrom(workflowID string, buffer int, startID string) chan Event {
 	ch := make(chan Event, buffer)
+
+	// Create context with cancellation for this subscription
+	ctx, cancel := context.WithCancel(context.Background())
+
 	m.mu.Lock()
 	subs := m.subscribers[workflowID]
 	if subs == nil {
-		subs = make(map[chan Event]struct{})
+		subs = make(map[chan Event]*subscription)
 		m.subscribers[workflowID] = subs
 	}
-	subs[ch] = struct{}{}
+	subs[ch] = &subscription{cancel: cancel}
 	m.mu.Unlock()
 
 	// Start Redis stream reader goroutine with specific start position
-	go m.streamReaderFrom(workflowID, ch, startID)
+	m.wg.Add(1)
+	go m.streamReaderFrom(ctx, workflowID, ch, startID)
 
 	return ch
 }
 
-// streamReader reads from Redis stream and forwards to channel
-func (m *Manager) streamReader(workflowID string, ch chan Event) {
-	m.streamReaderFrom(workflowID, ch, "0-0")
-}
+// streamReaderFrom reads from Redis stream starting from specific ID with context support
+func (m *Manager) streamReaderFrom(ctx context.Context, workflowID string, ch chan Event, startID string) {
+	defer m.wg.Done()
+	defer close(ch) // Always close channel when reader exits
 
-// streamReaderFrom reads from Redis stream starting from specific ID
-func (m *Manager) streamReaderFrom(workflowID string, ch chan Event, startID string) {
 	if m.redis == nil {
-		m.logger.Warn("Redis client not initialized for streaming")
+		// In-memory mode: keep channel open until cancelled
+		select {
+		case <-ctx.Done():
+		case <-m.shutdownCh:
+		}
 		return
 	}
 
-	ctx := context.Background()
 	streamKey := m.streamKey(workflowID)
 	lastID := startID
+	retryDelay := time.Second
+	maxRetryDelay := 30 * time.Second
 
 	m.logger.Debug("Starting stream reader",
 		zap.String("workflow_id", workflowID),
@@ -175,24 +202,18 @@ func (m *Manager) streamReaderFrom(workflowID string, ch chan Event, startID str
 		zap.String("start_id", lastID))
 
 	for {
-		// Check if channel is still subscribed
-		m.mu.RLock()
-		subs, ok := m.subscribers[workflowID]
-		if !ok {
-			m.mu.RUnlock()
-			m.logger.Debug("Stream reader stopping - workflow unsubscribed",
+		// Check for context cancellation or shutdown
+		select {
+		case <-ctx.Done():
+			m.logger.Debug("Stream reader stopping - context cancelled",
 				zap.String("workflow_id", workflowID))
-			close(ch) // Reader closes the channel
-			break
-		}
-		if _, exists := subs[ch]; !exists {
-			m.mu.RUnlock()
-			m.logger.Debug("Stream reader stopping - channel unsubscribed",
+			return
+		case <-m.shutdownCh:
+			m.logger.Debug("Stream reader stopping - manager shutdown",
 				zap.String("workflow_id", workflowID))
-			close(ch) // Reader closes the channel
-			break
+			return
+		default:
 		}
-		m.mu.RUnlock()
 
 		// Read from stream with blocking
 		result, err := m.redis.XRead(ctx, &redis.XReadArgs{
@@ -202,18 +223,38 @@ func (m *Manager) streamReaderFrom(workflowID string, ch chan Event, startID str
 		}).Result()
 
 		if err == redis.Nil {
-			// Timeout, no new messages
+			// Timeout, no new messages - reset retry delay
+			retryDelay = time.Second
 			continue
 		}
+
 		if err != nil {
+			// Check if context was cancelled
+			if ctx.Err() != nil {
+				return
+			}
+
 			m.logger.Error("Failed to read from Redis stream",
 				zap.String("workflow_id", workflowID),
 				zap.String("stream_key", streamKey),
 				zap.String("last_id", lastID),
+				zap.Duration("retry_in", retryDelay),
 				zap.Error(err))
-			time.Sleep(1 * time.Second)
+
+			// Exponential backoff on errors
+			select {
+			case <-time.After(retryDelay):
+				retryDelay = min(retryDelay*2, maxRetryDelay)
+			case <-ctx.Done():
+				return
+			case <-m.shutdownCh:
+				return
+			}
 			continue
 		}
+
+		// Success - reset retry delay
+		retryDelay = time.Second
 
 		// Process messages
 		for _, stream := range result {
@@ -252,7 +293,7 @@ func (m *Manager) streamReaderFrom(workflowID string, ch chan Event, startID str
 					}
 				}
 
-				// Send to channel (non-blocking)
+				// Send to channel (non-blocking to avoid deadlock)
 				select {
 				case ch <- event:
 					m.logger.Debug("Sent event to subscriber",
@@ -261,26 +302,61 @@ func (m *Manager) streamReaderFrom(workflowID string, ch chan Event, startID str
 						zap.Uint64("seq", event.Seq),
 						zap.String("stream_id", message.ID))
 				default:
-					// Drop if subscriber is slow
-					m.logger.Warn("Dropped event - subscriber slow",
-						zap.String("workflow_id", workflowID),
-						zap.String("type", event.Type),
-						zap.Uint64("seq", event.Seq))
+					// Escalate log severity for critical events
+					if isCriticalEvent(event.Type) {
+						m.logger.Error("CRITICAL: Dropped important event - subscriber slow",
+							zap.String("workflow_id", workflowID),
+							zap.String("type", event.Type),
+							zap.Uint64("seq", event.Seq))
+					} else {
+						m.logger.Warn("Dropped event - subscriber slow",
+							zap.String("workflow_id", workflowID),
+							zap.String("type", event.Type),
+							zap.Uint64("seq", event.Seq))
+					}
 				}
 			}
 		}
 	}
 }
 
-// Unsubscribe removes the subscriber channel (channel should be closed by reader).
+// min returns the minimum of two durations
+func min(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// isCriticalEvent determines if an event type is critical and should not be dropped silently
+func isCriticalEvent(eventType string) bool {
+	switch eventType {
+	case "WORKFLOW_FAILED",
+		"WORKFLOW_COMPLETED",
+		"AGENT_FAILED",
+		"ERROR_OCCURRED",
+		"TOOL_ERROR":
+		return true
+	default:
+		return false
+	}
+}
+
+// Unsubscribe removes the subscriber channel and cancels its reader goroutine.
+// The channel will be closed by the reader goroutine after cancellation.
 func (m *Manager) Unsubscribe(workflowID string, ch chan Event) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	if subs, ok := m.subscribers[workflowID]; ok {
-		delete(subs, ch)
-		// Don't close channel here - let the reader detect and close it
-		if len(subs) == 0 {
-			delete(m.subscribers, workflowID)
+		if sub, exists := subs[ch]; exists {
+			// Cancel the context to stop the reader goroutine
+			sub.cancel()
+			delete(subs, ch)
+
+			if len(subs) == 0 {
+				delete(m.subscribers, workflowID)
+			}
 		}
 	}
 }
@@ -337,8 +413,9 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 		}
 
 		// Set TTL on stream key (24 hours)
+		// Use longer TTL for sequence counter to prevent resets
 		m.redis.Expire(ctx, streamKey, 24*time.Hour)
-		m.redis.Expire(ctx, m.seqKey(workflowID), 24*time.Hour)
+		m.redis.Expire(ctx, m.seqKey(workflowID), 48*time.Hour)
 	}
 
 	// Persist to DB if configured (best-effort, non-blocking)
@@ -360,7 +437,16 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 		select {
 		case m.persistCh <- el:
 		default:
-			m.logger.Warn("eventlog batcher full; dropping event", zap.String("workflow_id", evt.WorkflowID), zap.String("type", evt.Type))
+			// Escalate log severity for critical events
+			if isCriticalEvent(evt.Type) {
+				m.logger.Error("CRITICAL: eventlog batcher full; dropping important event",
+					zap.String("workflow_id", evt.WorkflowID),
+					zap.String("type", evt.Type))
+			} else {
+				m.logger.Warn("eventlog batcher full; dropping event",
+					zap.String("workflow_id", evt.WorkflowID),
+					zap.String("type", evt.Type))
+			}
 		}
 	}
 
@@ -368,8 +454,8 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 	// When Redis is available, the streamReader will deliver events
 	if m.redis == nil {
 		m.mu.RLock()
+		defer m.mu.RUnlock()
 		subs := m.subscribers[workflowID]
-		m.mu.RUnlock()
 		if len(subs) == 0 {
 			return
 		}
@@ -410,13 +496,16 @@ func shouldPersistEvent(eventType string) bool {
 		"BUDGET_THRESHOLD":
 		return true
 
-	// ❌ Don't persist: Streaming deltas and intermediate states
+	// ❌ Don't persist: Streaming deltas and heartbeats
 	case "LLM_PARTIAL", // thread.message.delta events
 		"HEARTBEAT",
 		"PING",
-		"AGENT_THINKING", // Ephemeral thinking states
-		"LLM_PROMPT":     // Prompts are logged separately
+		"LLM_PROMPT": // Prompts are logged separately
 		return false
+
+	// ✅ Persist AGENT_THINKING so timeline is consistent between live and history
+	case "AGENT_THINKING":
+		return true
 
 	// Default: persist unknown event types (safe default)
 	default:
@@ -446,6 +535,7 @@ func sanitizeUTF8(s string) string {
 
 // persistWorker batches event logs and writes them asynchronously.
 func (m *Manager) persistWorker() {
+	defer m.persistWg.Done()
 	batch := make([]db.EventLog, 0, m.batchSize)
 	ticker := time.NewTicker(m.flushEvery)
 	defer ticker.Stop()
@@ -609,3 +699,60 @@ func (m *Manager) GetLastStreamID(workflowID string) string {
 	return messages[0].ID
 }
 
+// Shutdown gracefully shuts down the manager, stopping all stream readers and flushing persistence.
+// It waits for all goroutines to complete with the provided context timeout.
+func (m *Manager) Shutdown(ctx context.Context) error {
+	m.logger.Info("Shutting down streaming manager")
+
+	// Signal shutdown to all stream readers
+	close(m.shutdownCh)
+
+	// Cancel all subscriptions
+	m.mu.Lock()
+	for workflowID, subs := range m.subscribers {
+		for ch, sub := range subs {
+			sub.cancel()
+			delete(subs, ch)
+		}
+		delete(m.subscribers, workflowID)
+	}
+	m.mu.Unlock()
+
+	// Wait for all stream readers to exit
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		m.logger.Info("All stream readers stopped")
+	case <-ctx.Done():
+		m.logger.Warn("Shutdown timeout waiting for stream readers")
+		return ctx.Err()
+	}
+
+	// Close persistence channel and wait for flush
+	if m.persistCh != nil {
+		close(m.persistCh)
+
+		// Wait for persist worker to exit
+		persistDone := make(chan struct{})
+		go func() {
+			m.persistWg.Wait()
+			close(persistDone)
+		}()
+
+		select {
+		case <-persistDone:
+			m.logger.Info("Event persistence flushed")
+		case <-ctx.Done():
+			m.logger.Warn("Shutdown timeout waiting for persistence flush")
+			return ctx.Err()
+		}
+	}
+
+	m.logger.Info("Streaming manager shutdown complete")
+	return nil
+}

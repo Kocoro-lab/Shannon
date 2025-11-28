@@ -356,18 +356,20 @@ func (bm *BudgetManager) GetUsageReport(ctx context.Context, filters UsageFilter
 	}
 
 	// Query database for usage records using migration schema
+	// Join with task_executions to support filtering by workflow_id (common case) or task_id
 	rows, err := bm.db.QueryContext(ctx, `
-		SELECT user_id, task_id, model, provider,
-		       SUM(prompt_tokens) as input_total,
-		       SUM(completion_tokens) as output_total,
-		       SUM(total_tokens) as total_tokens,
-		       SUM(cost_usd) as total_cost,
+		SELECT tu.user_id, tu.task_id, tu.model, tu.provider,
+		       SUM(tu.prompt_tokens) as input_total,
+		       SUM(tu.completion_tokens) as output_total,
+		       SUM(tu.total_tokens) as total_tokens,
+		       SUM(tu.cost_usd) as total_cost,
 		       COUNT(*) as request_count
-		FROM token_usage
-		WHERE created_at BETWEEN $1 AND $2
-		  AND ($3 = '' OR user_id::text = $3)
-		  AND ($4 = '' OR task_id::text = $4)
-		GROUP BY user_id, task_id, model, provider
+		FROM token_usage tu
+		LEFT JOIN task_executions te ON tu.task_id = te.id
+		WHERE tu.created_at BETWEEN $1 AND $2
+		  AND ($3 = '' OR tu.user_id::text = $3)
+		  AND ($4 = '' OR tu.task_id::text = $4 OR te.workflow_id = $4)
+		GROUP BY tu.user_id, tu.task_id, tu.model, tu.provider
 		ORDER BY total_tokens DESC
 	`, filters.StartTime, filters.EndTime, filters.UserID, filters.TaskID)
 
