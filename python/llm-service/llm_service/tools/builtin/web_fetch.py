@@ -16,7 +16,7 @@ import asyncio
 import os
 import logging
 from typing import Dict, Optional, List
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qsl, urlencode
 from bs4 import BeautifulSoup
 import html2text
 
@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_SUBPAGES = 5
-CRAWL_DELAY_SECONDS = 0.5  # Rate limiting between crawl requests
+CRAWL_DELAY_SECONDS = float(os.getenv("WEB_FETCH_CRAWL_DELAY", "0.5"))
+MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  # 150KB total
+CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
 
 
 class WebFetchTool(Tool):
@@ -196,19 +198,21 @@ class WebFetchTool(Tool):
         """
         Normalize URL for deduplication:
         - Remove trailing slash (except for root path)
-        - Sort query parameters
+        - Sort query parameters properly (handles duplicates and encoded chars)
         - Remove fragments
         """
         parsed = urlparse(url)
-        path = parsed.path
+        path = parsed.path or "/"
         # Remove trailing slash (except for root)
         if path != "/" and path.endswith("/"):
             path = path[:-1]
         # Build normalized URL
         normalized = f"{parsed.scheme}://{parsed.netloc}{path}"
-        # Sort query parameters for consistent deduplication
+        # Sort query parameters properly using parse_qsl/urlencode
+        # This handles duplicate params (?a=1&a=2) and encoded chars correctly
         if parsed.query:
-            sorted_params = "&".join(sorted(parsed.query.split("&")))
+            params = parse_qsl(parsed.query, keep_blank_values=True)
+            sorted_params = urlencode(sorted(params))
             normalized += f"?{sorted_params}"
         return normalized
 
@@ -229,13 +233,16 @@ class WebFetchTool(Tool):
         links = []
         seen = set()
         for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
-            # Skip anchors, javascript, mailto, etc.
-            if href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            href = a_tag["href"].strip()
+            # Skip empty hrefs, anchors, and non-HTTP schemes
+            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:", "ftp:", "file:")):
                 continue
             # Resolve relative URLs
-            full_url = urljoin(base_url, href)
-            parsed = urlparse(full_url)
+            try:
+                full_url = urljoin(base_url, href)
+                parsed = urlparse(full_url)
+            except Exception:
+                continue  # Skip malformed URLs
             # Only same-domain links with HTTP/HTTPS
             if parsed.netloc == root_domain and parsed.scheme in ("http", "https"):
                 # Normalize URL for deduplication
@@ -247,11 +254,13 @@ class WebFetchTool(Tool):
         return links
 
     async def _fetch_single_page(
-        self, session: aiohttp.ClientSession, url: str, max_length: int
+        self, session: aiohttp.ClientSession, url: str, max_length: int, root_domain: str
     ) -> Optional[Dict]:
         """
         Fetch a single page and return structured data.
         Returns None on failure (silent fail for subpages).
+
+        Security: Validates redirect destination stays on same domain.
         """
         try:
             headers = {"User-Agent": self.user_agent}
@@ -264,9 +273,21 @@ class WebFetchTool(Tool):
                 if response.status != 200:
                     return None
 
-                # Content-Type validation: skip non-HTML responses
+                # SSRF protection: Check redirect destination is same domain
+                final_host = response.url.host
+                if final_host != root_domain:
+                    logger.debug(f"Redirect to different domain blocked: {url} -> {response.url}")
+                    return None
+
+                # SSRF protection: Check final URL is not private IP
+                if not self._is_safe_url(str(response.url)):
+                    logger.debug(f"Redirect to unsafe URL blocked: {url} -> {response.url}")
+                    return None
+
+                # Content-Type validation: skip explicitly non-HTML responses
+                # Allow missing Content-Type (attempt to parse anyway)
                 content_type = response.headers.get("Content-Type", "")
-                if content_type and "text/html" not in content_type.lower():
+                if content_type and "text/html" not in content_type.lower() and "text/plain" not in content_type.lower():
                     logger.debug(f"Skipping non-HTML content: {url} ({content_type})")
                     return None
 
@@ -281,7 +302,6 @@ class WebFetchTool(Tool):
                 title = title.get_text().strip() if title else ""
 
                 # Extract links before removing elements
-                root_domain = urlparse(url).netloc
                 links = self._extract_same_domain_links(soup, str(response.url), root_domain)
 
                 # Remove unwanted elements
@@ -340,8 +360,11 @@ class WebFetchTool(Tool):
 
         Security features:
         - SSRF protection on all crawled URLs
-        - Rate limiting between requests (500ms delay)
+        - Redirect domain validation
+        - Rate limiting between requests (configurable delay)
         - URL normalization for deduplication
+        - Total crawl timeout
+        - Cumulative content size limit
         """
         root_domain = urlparse(url).netloc
         visited = set()
@@ -350,11 +373,25 @@ class WebFetchTool(Tool):
         visited.add(normalized_start)
         pages = []
         max_pages = subpages + 1  # Main page + N subpages
+        total_chars = 0
 
         logger.info(f"Starting pure-Python crawl: {url} (max_pages={max_pages})")
 
+        crawl_start = asyncio.get_event_loop().time()
         is_first_request = True
+
         while queue and len(pages) < max_pages:
+            # Check total crawl timeout
+            elapsed = asyncio.get_event_loop().time() - crawl_start
+            if elapsed > CRAWL_TIMEOUT_SECONDS:
+                logger.info(f"Crawl timeout reached ({CRAWL_TIMEOUT_SECONDS}s), stopping")
+                break
+
+            # Check cumulative content size
+            if total_chars >= MAX_TOTAL_CRAWL_CHARS:
+                logger.info(f"Content size limit reached ({MAX_TOTAL_CRAWL_CHARS} chars), stopping")
+                break
+
             current_url = queue.pop(0)
 
             # Rate limiting: delay between requests (skip first request)
@@ -364,18 +401,21 @@ class WebFetchTool(Tool):
 
             # SSRF check before fetching
             if not self._is_safe_url(current_url):
-                logger.warning(f"Skipping unsafe URL (SSRF protection): {current_url}")
+                logger.debug(f"Skipping unsafe URL (SSRF protection): {current_url}")
                 continue
 
-            # Fetch the page
-            page_data = await self._fetch_single_page(session, current_url, max_length)
+            # Fetch the page (includes redirect domain validation)
+            page_data = await self._fetch_single_page(session, current_url, max_length, root_domain)
             if page_data:
                 pages.append(page_data)
+                total_chars += len(page_data.get("content", ""))
                 logger.debug(f"Crawled page {len(pages)}/{max_pages}: {current_url}")
 
-                # Add new links to queue (only if we need more pages)
+                # Add new links to queue (only what we need)
                 if len(pages) < max_pages:
-                    for link in page_data.get("links", []):
+                    remaining_pages = max_pages - len(pages)
+                    new_links = page_data.get("links", [])[:remaining_pages * 3]  # Buffer for failed fetches
+                    for link in new_links:
                         normalized_link = self._normalize_url(link)
                         if normalized_link not in visited:
                             visited.add(normalized_link)
