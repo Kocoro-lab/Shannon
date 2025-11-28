@@ -44,15 +44,17 @@ func NewSessionHandler(
 
 // SessionResponse represents a session metadata response
 type SessionResponse struct {
-	SessionID   string                 `json:"session_id"`
-	UserID      string                 `json:"user_id"`
-	Context     map[string]interface{} `json:"context,omitempty"`
-	TokenBudget int                    `json:"token_budget,omitempty"`
-	TokensUsed  int                    `json:"tokens_used"`
-	TaskCount   int                    `json:"task_count"`
-	CreatedAt   time.Time              `json:"created_at"`
-	UpdatedAt   *time.Time             `json:"updated_at,omitempty"`
-	ExpiresAt   *time.Time             `json:"expires_at,omitempty"`
+	SessionID         string                 `json:"session_id"`
+	UserID            string                 `json:"user_id"`
+	Context           map[string]interface{} `json:"context,omitempty"`
+	TokenBudget       int                    `json:"token_budget,omitempty"`
+	TokensUsed        int                    `json:"tokens_used"`
+	TaskCount         int                    `json:"task_count"`
+	CreatedAt         time.Time              `json:"created_at"`
+	UpdatedAt         *time.Time             `json:"updated_at,omitempty"`
+	ExpiresAt         *time.Time             `json:"expires_at,omitempty"`
+	IsResearchSession bool                   `json:"is_research_session"`
+	ResearchStrategy  string                 `json:"research_strategy,omitempty"`
 }
 
 // SessionHistoryResponse represents session task history
@@ -248,14 +250,47 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Check if this is a research session by looking at first task's metadata.task_context.force_research
+	isResearchSession := false
+	researchStrategy := ""
+	var firstTaskMetadata sql.NullString
+	if extID, ok := contextData["external_id"].(string); ok && extID != "" {
+		err = h.db.GetContext(ctx, &firstTaskMetadata, `
+			SELECT metadata FROM task_executions
+			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+			ORDER BY created_at ASC LIMIT 1
+		`, session.ID, extID, userCtx.UserID.String())
+	} else {
+		err = h.db.GetContext(ctx, &firstTaskMetadata, `
+			SELECT metadata FROM task_executions
+			WHERE session_id = $1 AND user_id = $2
+			ORDER BY created_at ASC LIMIT 1
+		`, session.ID, userCtx.UserID.String())
+	}
+	if err == nil && firstTaskMetadata.Valid && firstTaskMetadata.String != "" {
+		var metadata map[string]interface{}
+		if err := json.Unmarshal([]byte(firstTaskMetadata.String), &metadata); err == nil {
+			if taskContext, ok := metadata["task_context"].(map[string]interface{}); ok {
+				if fr, ok := taskContext["force_research"].(bool); ok && fr {
+					isResearchSession = true
+				}
+				if rs, ok := taskContext["research_strategy"].(string); ok {
+					researchStrategy = rs
+				}
+			}
+		}
+	}
+
 	// Build response
 	resp := SessionResponse{
-		SessionID:  session.ID,
-		UserID:     session.UserID,
-		Context:    contextData,
-		TokensUsed: tokensUsed,
-		TaskCount:  taskCount,
-		CreatedAt:  session.CreatedAt,
+		SessionID:         session.ID,
+		UserID:            session.UserID,
+		Context:           contextData,
+		TokensUsed:        tokensUsed,
+		TaskCount:         taskCount,
+		CreatedAt:         session.CreatedAt,
+		IsResearchSession: isResearchSession,
+		ResearchStrategy:  researchStrategy,
 	}
 
 	if session.TokenBudget.Valid {
@@ -922,48 +957,22 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 			summary.LatestTaskStatus = sess.LatestTaskStatus.String
 		}
 
-		// Research detection - check multiple indicators
+		// Research detection - only check force_research from first task's context
 		if sess.FirstTaskMode.Valid {
 			summary.FirstTaskMode = sess.FirstTaskMode.String
 		}
 
 		isResearch := false
-		// Check 1: Session context has force_research or research_mode
-		if summary.Context != nil {
-			if fr, ok := summary.Context["force_research"].(bool); ok && fr {
-				isResearch = true
-			}
-			if rm, ok := summary.Context["research_mode"].(string); ok && rm != "" {
-				isResearch = true
-			}
-		}
-
-		// Check 2: First task metadata contains research indicators
-		if !isResearch && sess.FirstTaskMetadata.Valid && sess.FirstTaskMetadata.String != "" {
+		// Check first task's metadata.task_context.force_research
+		if sess.FirstTaskMetadata.Valid && sess.FirstTaskMetadata.String != "" {
 			var metadata map[string]interface{}
 			if err := json.Unmarshal([]byte(sess.FirstTaskMetadata.String), &metadata); err == nil {
-				// Check for research workflow indicators
-				if wfType, ok := metadata["workflow_type"].(string); ok {
-					if strings.Contains(strings.ToLower(wfType), "research") {
+				// Check task_context.force_research (where frontend stores the flag)
+				if taskContext, ok := metadata["task_context"].(map[string]interface{}); ok {
+					if fr, ok := taskContext["force_research"].(bool); ok && fr {
 						isResearch = true
 					}
 				}
-				// Check for synthesis_style = comprehensive (research indicator)
-				if style, ok := metadata["synthesis_style"].(string); ok && style == "comprehensive" {
-					isResearch = true
-				}
-				// Check for citations (research workflows collect citations)
-				if citations, ok := metadata["citations"].([]interface{}); ok && len(citations) > 0 {
-					isResearch = true
-				}
-			}
-		}
-
-		// Check 3: Query text starts with "Deep research" (Chrome extension pattern)
-		if !isResearch && sess.LatestTaskQuery.Valid {
-			query := strings.ToLower(sess.LatestTaskQuery.String)
-			if strings.HasPrefix(query, "deep research") {
-				isResearch = true
 			}
 		}
 
