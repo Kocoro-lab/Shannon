@@ -55,6 +55,7 @@ class WebFetchTool(Tool):
                 "Fetch full content from a web page for detailed analysis. "
                 "Extracts clean markdown text from any URL. "
                 "Use this after web_search to deep-dive into specific pages. "
+                "Supports fetching subpages from the same domain (set subpages>0). "
                 "Default: Exa API when available (handles JS-heavy sites, premium extraction). "
                 "Fallback: pure Python (fast, free) when Exa is unavailable or disabled."
             ),
@@ -93,6 +94,31 @@ class WebFetchTool(Tool):
                 min_value=1000,
                 max_value=50000,
             ),
+            ToolParameter(
+                name="subpages",
+                type=ToolParameterType.INTEGER,
+                description=(
+                    "Number of same-domain subpages to include (0-5). "
+                    "0 = only main page (default). "
+                    "Use subpages>0 for: documentation sites, API references, multi-part guides. "
+                    "Use subpages=0 for: blog posts, news articles, PDFs, single-page content. "
+                    "WARNING: Higher values consume more tokens/cost."
+                ),
+                required=False,
+                default=0,
+                min_value=0,
+                max_value=5,
+            ),
+            ToolParameter(
+                name="subpage_target",
+                type=ToolParameterType.STRING,
+                description=(
+                    "Optional keywords to prioritize certain subpages (Exa only). "
+                    "Example: 'API' to focus on API documentation subpages. "
+                    "Ignored in pure-Python mode."
+                ),
+                required=False,
+            ),
         ]
 
     async def _execute_impl(
@@ -103,6 +129,8 @@ class WebFetchTool(Tool):
         url = kwargs.get("url")
         use_exa = kwargs.get("use_exa", True)
         max_length = kwargs.get("max_length", 10000)
+        subpages = kwargs.get("subpages", 0)
+        subpage_target = kwargs.get("subpage_target")
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")
@@ -147,8 +175,8 @@ class WebFetchTool(Tool):
 
             # Choose method: Exa API or Pure Python
             if use_exa and self.exa_api_key:
-                logger.info(f"Fetching with Exa API: {url}")
-                return await self._fetch_with_exa(url, max_length)
+                logger.info(f"Fetching with Exa API: {url} (subpages={subpages})")
+                return await self._fetch_with_exa(url, max_length, subpages, subpage_target)
             else:
                 logger.info(f"Fetching with pure Python: {url}")
                 return await self._fetch_pure_python(url, max_length)
@@ -335,10 +363,14 @@ class WebFetchTool(Tool):
             if session and not session.closed:
                 await session.close()
 
-    async def _fetch_with_exa(self, url: str, max_length: int) -> ToolResult:
+    async def _fetch_with_exa(
+        self, url: str, max_length: int, subpages: int = 0, subpage_target: str = None
+    ) -> ToolResult:
         """
         Fetch using Exa content API.
         Premium: handles JS-heavy sites, costs $0.001/page.
+
+        Supports fetching subpages when subpages > 0.
 
         Improved error handling with detailed logging for auth/rate limit failures.
         """
@@ -360,6 +392,16 @@ class WebFetchTool(Tool):
                 "numResults": 1,
                 "includeDomains": [urlparse(url).netloc],
             }
+
+            # Add subpages parameters if requested
+            if subpages > 0:
+                search_payload["subpages"] = subpages
+                search_payload["livecrawl"] = "preferred"  # Force fresh crawling for subpages
+                if subpage_target:
+                    search_payload["subpageTarget"] = subpage_target
+                logger.info(f"Exa subpages enabled: count={subpages}, target={subpage_target}")
+            else:
+                search_payload["livecrawl"] = "fallback"  # Use cached when possible for single pages
 
             async with session.post(
                 "https://api.exa.ai/search",
@@ -389,11 +431,13 @@ class WebFetchTool(Tool):
                     logger.info("Exa found no results, falling back to pure Python")
                     return await self._fetch_pure_python(url, max_length)
 
-                result_id = results[0].get("id")
+                # Collect all result IDs (main page + subpages if applicable)
+                result_ids = [r.get("id") for r in results if r.get("id")]
+                logger.info(f"Exa search returned {len(result_ids)} result(s)")
 
-            # Step 2: Get full content using ID
+            # Step 2: Get full content using ID(s)
             content_payload = {
-                "ids": [result_id],
+                "ids": result_ids,
                 "text": {
                     "maxCharacters": max_length,
                     "includeHtmlTags": False,
@@ -431,28 +475,80 @@ class WebFetchTool(Tool):
                         error="Exa API returned no content",
                     )
 
-                result = results[0]
-                content = result.get("text", "")
+                # Handle single page vs multiple pages (subpages)
+                if len(results) == 1:
+                    # Single page - return as before
+                    result = results[0]
+                    content = result.get("text", "")
 
-                return ToolResult(
-                    success=True,
-                    output={
-                        "url": result.get("url", url),
-                        "title": result.get("title", ""),
-                        "content": content,
-                        "author": result.get("author"),
-                        "published_date": result.get("publishedDate"),
-                        "word_count": len(content.split()),
-                        "char_count": len(content),
-                        "truncated": len(content) >= max_length,
-                        "method": "exa",
-                    },
-                    metadata={
-                        "fetch_method": "exa",
-                        "exa_id": result_id,
-                        "exa_score": result.get("score"),
-                    },
-                )
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "url": result.get("url", url),
+                            "title": result.get("title", ""),
+                            "content": content,
+                            "author": result.get("author"),
+                            "published_date": result.get("publishedDate"),
+                            "word_count": len(content.split()),
+                            "char_count": len(content),
+                            "truncated": len(content) >= max_length,
+                            "method": "exa",
+                            "pages_fetched": 1,
+                        },
+                        metadata={
+                            "fetch_method": "exa",
+                            "exa_id": result_ids[0],
+                            "exa_score": result.get("score"),
+                        },
+                    )
+                else:
+                    # Multiple pages - merge with markdown separators
+                    merged_content = []
+                    total_words = 0
+                    total_chars = 0
+
+                    for i, result in enumerate(results):
+                        page_url = result.get("url", "")
+                        page_title = result.get("title", "")
+                        page_content = result.get("text", "")
+
+                        if i == 0:
+                            # Main page
+                            merged_content.append(f"# Main Page: {page_url}\n")
+                            if page_title:
+                                merged_content.append(f"**{page_title}**\n")
+                        else:
+                            # Subpage
+                            merged_content.append(f"\n---\n\n## Subpage {i}: {page_url}\n")
+                            if page_title:
+                                merged_content.append(f"**{page_title}**\n")
+
+                        merged_content.append(f"\n{page_content}\n")
+                        total_words += len(page_content.split())
+                        total_chars += len(page_content)
+
+                    final_content = "".join(merged_content)
+
+                    return ToolResult(
+                        success=True,
+                        output={
+                            "url": results[0].get("url", url),
+                            "title": results[0].get("title", ""),
+                            "content": final_content,
+                            "author": results[0].get("author"),
+                            "published_date": results[0].get("publishedDate"),
+                            "word_count": total_words,
+                            "char_count": total_chars,
+                            "truncated": False,
+                            "method": "exa",
+                            "pages_fetched": len(results),
+                        },
+                        metadata={
+                            "fetch_method": "exa",
+                            "exa_ids": result_ids,
+                            "num_pages": len(results),
+                        },
+                    )
 
         except aiohttp.ClientError as e:
             logger.error(f"Exa network error: {str(e)}, falling back to pure Python")
