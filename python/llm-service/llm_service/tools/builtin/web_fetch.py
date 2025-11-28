@@ -12,6 +12,7 @@ Security features:
 """
 
 import aiohttp
+import asyncio
 import os
 import logging
 from typing import Dict, Optional, List
@@ -23,6 +24,10 @@ from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolRes
 from ..openapi_parser import _is_private_ip
 
 logger = logging.getLogger(__name__)
+
+# Constants
+MAX_SUBPAGES = 5
+CRAWL_DELAY_SECONDS = 0.5  # Rate limiting between crawl requests
 
 
 class WebFetchTool(Tool):
@@ -98,7 +103,7 @@ class WebFetchTool(Tool):
                 name="subpages",
                 type=ToolParameterType.INTEGER,
                 description=(
-                    "Number of same-domain subpages to include (0-5). "
+                    f"Number of same-domain subpages to include (0-{MAX_SUBPAGES}). "
                     "0 = only main page (default). "
                     "Use subpages>0 for: documentation sites, API references, multi-part guides. "
                     "Use subpages=0 for: blog posts, news articles, PDFs, single-page content. "
@@ -107,7 +112,7 @@ class WebFetchTool(Tool):
                 required=False,
                 default=0,
                 min_value=0,
-                max_value=5,
+                max_value=MAX_SUBPAGES,
             ),
             ToolParameter(
                 name="subpage_target",
@@ -187,9 +192,42 @@ class WebFetchTool(Tool):
                 success=False, output=None, error=f"Failed to fetch page: {str(e)}"
             )
 
+    def _normalize_url(self, url: str) -> str:
+        """
+        Normalize URL for deduplication:
+        - Remove trailing slash (except for root path)
+        - Sort query parameters
+        - Remove fragments
+        """
+        parsed = urlparse(url)
+        path = parsed.path
+        # Remove trailing slash (except for root)
+        if path != "/" and path.endswith("/"):
+            path = path[:-1]
+        # Build normalized URL
+        normalized = f"{parsed.scheme}://{parsed.netloc}{path}"
+        # Sort query parameters for consistent deduplication
+        if parsed.query:
+            sorted_params = "&".join(sorted(parsed.query.split("&")))
+            normalized += f"?{sorted_params}"
+        return normalized
+
+    def _is_safe_url(self, url: str) -> bool:
+        """
+        SSRF protection: check if URL is safe to fetch.
+        Returns False for private IPs, internal networks, cloud metadata endpoints.
+        """
+        try:
+            parsed = urlparse(url)
+            host = parsed.netloc.split(":")[0]  # Remove port if present
+            return not _is_private_ip(host)
+        except Exception:
+            return False
+
     def _extract_same_domain_links(self, soup: BeautifulSoup, base_url: str, root_domain: str) -> List[str]:
-        """Extract all same-domain links from parsed HTML."""
+        """Extract all same-domain links from parsed HTML with SSRF protection."""
         links = []
+        seen = set()
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             # Skip anchors, javascript, mailto, etc.
@@ -198,13 +236,14 @@ class WebFetchTool(Tool):
             # Resolve relative URLs
             full_url = urljoin(base_url, href)
             parsed = urlparse(full_url)
-            # Only same-domain links
+            # Only same-domain links with HTTP/HTTPS
             if parsed.netloc == root_domain and parsed.scheme in ("http", "https"):
-                # Normalize: remove fragments, keep path
-                clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                if parsed.query:
-                    clean_url += f"?{parsed.query}"
-                links.append(clean_url)
+                # Normalize URL for deduplication
+                clean_url = self._normalize_url(full_url)
+                # SSRF protection for each extracted link
+                if clean_url not in seen and self._is_safe_url(clean_url):
+                    seen.add(clean_url)
+                    links.append(clean_url)
         return links
 
     async def _fetch_single_page(
@@ -223,6 +262,12 @@ class WebFetchTool(Tool):
                 max_redirects=self.max_redirects,
             ) as response:
                 if response.status != 200:
+                    return None
+
+                # Content-Type validation: skip non-HTML responses
+                content_type = response.headers.get("Content-Type", "")
+                if content_type and "text/html" not in content_type.lower():
+                    logger.debug(f"Skipping non-HTML content: {url} ({content_type})")
                     return None
 
                 html_content = await response.text(errors="ignore")
@@ -292,22 +337,35 @@ class WebFetchTool(Tool):
         """
         Crawl main page plus subpages using BFS with page count limit.
         Returns merged markdown content from all fetched pages.
+
+        Security features:
+        - SSRF protection on all crawled URLs
+        - Rate limiting between requests (500ms delay)
+        - URL normalization for deduplication
         """
         root_domain = urlparse(url).netloc
         visited = set()
-        queue = [url]
+        normalized_start = self._normalize_url(url)
+        queue = [normalized_start]
+        visited.add(normalized_start)
         pages = []
         max_pages = subpages + 1  # Main page + N subpages
 
         logger.info(f"Starting pure-Python crawl: {url} (max_pages={max_pages})")
 
+        is_first_request = True
         while queue and len(pages) < max_pages:
             current_url = queue.pop(0)
 
-            # Skip if already visited
-            if current_url in visited:
+            # Rate limiting: delay between requests (skip first request)
+            if not is_first_request:
+                await asyncio.sleep(CRAWL_DELAY_SECONDS)
+            is_first_request = False
+
+            # SSRF check before fetching
+            if not self._is_safe_url(current_url):
+                logger.warning(f"Skipping unsafe URL (SSRF protection): {current_url}")
                 continue
-            visited.add(current_url)
 
             # Fetch the page
             page_data = await self._fetch_single_page(session, current_url, max_length)
@@ -318,8 +376,10 @@ class WebFetchTool(Tool):
                 # Add new links to queue (only if we need more pages)
                 if len(pages) < max_pages:
                     for link in page_data.get("links", []):
-                        if link not in visited and link not in queue:
-                            queue.append(link)
+                        normalized_link = self._normalize_url(link)
+                        if normalized_link not in visited:
+                            visited.add(normalized_link)
+                            queue.append(normalized_link)
 
         if not pages:
             return ToolResult(
