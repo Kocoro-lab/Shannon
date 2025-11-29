@@ -254,12 +254,13 @@ func ReactLoop(
 		// Let LLM decide tools - no pattern matching
 		// The agent will select appropriate tools based on the action query
 		var suggestedTools []string
-		// Bias toward web_search when running in research mode to ensure citations
+		// Bias toward web_search + web_fetch when running in research mode to ensure citations
+		// The LLM can use web_search to find sources, then web_fetch to read full content
 		if baseContext != nil {
 			if fr, ok := baseContext["force_research"].(bool); ok && fr {
-				suggestedTools = []string{"web_search"}
+				suggestedTools = []string{"web_search", "web_fetch"}
 			} else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
-				suggestedTools = []string{"web_search"}
+				suggestedTools = []string{"web_search", "web_fetch"}
 			}
 		}
 

@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ...config import Settings
 from ..openapi_parser import _is_private_ip
+from .web_fetch import WebFetchTool
 
 logger = logging.getLogger(__name__)
 
@@ -717,6 +718,7 @@ class WebSearchTool(Tool):
             sandboxed=True,
             dangerous=False,
             cost_per_use=0.001,  # Approximate cost per search
+            session_aware=True,  # Enable session context for official_domains auto-fetch
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
@@ -755,7 +757,7 @@ class WebSearchTool(Tool):
             ),
         ]
 
-    async def _execute_impl(self, **kwargs) -> ToolResult:
+    async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
         """
         Execute web search using configured provider
         """
@@ -882,6 +884,144 @@ class WebSearchTool(Tool):
                 )
 
             logger.info(f"Web search returned {len(results)} results")
+
+            # Optional: auto-fetch top results when using Exa to ensure deep reads
+            auto_fetch_meta = None
+            auto_fetch_enabled = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_ENABLED", "1")) > 0
+            if isinstance(self.provider, ExaSearchProvider) and auto_fetch_enabled:
+                ctx = session_context if isinstance(session_context, dict) else {}
+                is_research = bool(ctx.get("research_mode"))
+
+                # Base defaults (safer): disabled by default, small caps
+                auto_fetch_top_k_env = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_TOP_K", "0"))
+                fetch_max_length_env = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_MAX_LENGTH", "8000"))
+                fetch_subpages_env = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_SUBPAGES", "0"))
+                official_subpages_env = int(os.getenv("WEB_SEARCH_EXA_OFFICIAL_SUBPAGES", "5"))  # keep 5 per request
+
+                # Allow per-request overrides via session_context (passed through safe_keys)
+                auto_fetch_top_k = int(ctx.get("auto_fetch_k", auto_fetch_top_k_env))
+                fetch_max_length = int(ctx.get("auto_fetch_max_length", fetch_max_length_env))
+                fetch_subpages = int(ctx.get("auto_fetch_subpages", fetch_subpages_env))
+                official_subpages = int(ctx.get("auto_fetch_official_subpages", official_subpages_env))
+
+                # Gate: only fetch if research OR explicit top_k > 0
+                should_auto_fetch = False
+
+                official_domains = ctx.get("official_domains", [])
+                if not isinstance(official_domains, list):
+                    official_domains = []
+                has_official = len(official_domains) > 0
+
+                if (is_research and (auto_fetch_top_k > 0 or has_official)) or auto_fetch_top_k > 0:
+                    should_auto_fetch = True
+
+                if should_auto_fetch:
+                    fetcher = WebFetchTool()
+                    total_chars_cap = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_TOTAL_CHARS_CAP", "30000"))
+                    consumed_chars = 0
+                    auto_fetch_results: List[Dict[str, Any]] = []
+
+                    # Step 1: Official domains (deep)
+                    for domain in official_domains[:3]:
+                        if consumed_chars >= total_chars_cap:
+                            break
+                        if not domain or not isinstance(domain, str):
+                            continue
+                        official_url = f"https://{domain}" if not domain.startswith("http") else domain
+                        try:
+                            fetch_res = await fetcher.execute(
+                                session_context=session_context,
+                                url=official_url,
+                                use_exa=True,
+                                max_length=fetch_max_length,
+                                subpages=official_subpages,
+                            )
+                            fetched_content = fetch_res.output if fetch_res.success else None
+                            if isinstance(fetched_content, str):
+                                consumed_chars += len(fetched_content)
+                            auto_fetch_results.append(
+                                {
+                                    "url": official_url,
+                                    "title": f"Official: {domain}",
+                                    "is_official": True,
+                                    "fetch_success": fetch_res.success,
+                                    "fetch_error": fetch_res.error,
+                                    "fetched_content": fetched_content,
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Auto-fetch failed for official domain {official_url}: {e}")
+                            auto_fetch_results.append(
+                                {
+                                    "url": official_url,
+                                    "title": f"Official: {domain}",
+                                    "is_official": True,
+                                    "fetch_success": False,
+                                    "fetch_error": str(e),
+                                    "fetched_content": None,
+                                }
+                            )
+
+                    # Step 2: Top-K third-party results (shallow by default)
+                    for result in results[:auto_fetch_top_k]:
+                        if consumed_chars >= total_chars_cap:
+                            break
+                        url = result.get("url")
+                        if not url or not isinstance(url, str):
+                            auto_fetch_results.append(
+                                {
+                                    "url": url,
+                                    "title": result.get("title"),
+                                    "is_official": False,
+                                    "fetch_success": False,
+                                    "fetch_error": "Missing URL for auto-fetch",
+                                    "fetched_content": None,
+                                }
+                            )
+                            continue
+                        try:
+                            fetch_res = await fetcher.execute(
+                                session_context=session_context,
+                                url=url,
+                                use_exa=True,
+                                max_length=fetch_max_length,
+                                subpages=fetch_subpages,
+                            )
+                            fetched_content = fetch_res.output if fetch_res.success else None
+                            if isinstance(fetched_content, str):
+                                consumed_chars += len(fetched_content)
+                            auto_fetch_results.append(
+                                {
+                                    "url": url,
+                                    "title": result.get("title"),
+                                    "is_official": False,
+                                    "fetch_success": fetch_res.success,
+                                    "fetch_error": fetch_res.error,
+                                    "fetched_content": fetched_content,
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Auto-fetch failed for {url}: {e}")
+                            auto_fetch_results.append(
+                                {
+                                    "url": url,
+                                    "title": result.get("title"),
+                                    "is_official": False,
+                                    "fetch_success": False,
+                                    "fetch_error": str(e),
+                                    "fetched_content": None,
+                                }
+                            )
+
+                    auto_fetch_meta = {
+                        "auto_fetch_results": auto_fetch_results,
+                        "auto_fetch_top_k": auto_fetch_top_k,
+                        "auto_fetch_subpages": fetch_subpages,
+                        "auto_fetch_official_subpages": official_subpages,
+                        "auto_fetch_max_length": fetch_max_length,
+                        "auto_fetch_total_chars": consumed_chars,
+                    }
+
             return ToolResult(
                 success=True,
                 output=results,
@@ -889,6 +1029,7 @@ class WebSearchTool(Tool):
                     "query": query,
                     "provider": self.provider.__class__.__name__,
                     "result_count": len(results),
+                    "auto_fetch": auto_fetch_meta,
                 },
             )
 

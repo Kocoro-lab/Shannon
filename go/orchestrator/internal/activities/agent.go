@@ -1007,6 +1007,18 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	// Respect the decomposition decision: if no tools suggested, don't override with tool selection
 	var selectedToolCalls []map[string]interface{}
 
+	// Detect research-style contexts where we prefer LLM-native tool selection
+	isResearch := false
+	if input.Context != nil {
+		if fr, ok := input.Context["force_research"].(bool); ok && fr {
+			isResearch = true
+		} else if rs, ok := input.Context["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+			isResearch = true
+		} else if rm, ok := input.Context["research_mode"].(string); ok && strings.TrimSpace(rm) != "" {
+			isResearch = true
+		}
+	}
+
 	// Detect ptengine-style roles that use forced tool execution (ExecuteAgentWithForcedTools).
 	// These roles have pre-computed tool parameters and don't need /tools/select.
 	// GA4-style roles (ga4_analytics, etc.) still need /tools/select to work correctly.
@@ -1028,7 +1040,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	}
 
 	// Skip tool selection if we already have tool_parameters from decomposition
-	if !disableToolSelectRole && len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
+	if !disableToolSelectRole && !isResearch && len(input.SuggestedTools) > 0 && len(allowedByRole) > 0 && (input.ToolParameters == nil || len(input.ToolParameters) == 0) {
 		if getenvInt("ENABLE_TOOL_SELECTION", 1) > 0 {
 			// Only select tools if we have valid parameters or the tool doesn't require them
 			// Skip tools that require parameters when none are provided to avoid execution errors
@@ -1036,7 +1048,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
 				// Filter out tools that require parameters when none are provided
 				filtered := make([]string, 0, len(allowedByRole))
-				skippedWebFetch := false
 				for _, tool := range allowedByRole {
 					// Skip tools that require specific parameters when none are provided
 					switch tool {
@@ -1058,33 +1069,10 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 							zap.String("agent_id", input.AgentID),
 						)
 						continue
-					case "web_fetch":
-						// web_fetch requires URL parameter (should come from web_search results)
-						logger.Info("Skipping web_fetch tool - no URL provided. Use web_search first.",
-							zap.String("agent_id", input.AgentID),
-						)
-						skippedWebFetch = true
-						continue
-						// web_search and file_read can work with minimal/inferred parameters
+						// web_search, web_fetch and file_read can work with minimal/inferred parameters
 						// so we don't skip them
 					}
 					filtered = append(filtered, tool)
-				}
-				// If we skipped web_fetch but web_search is not already present, suggest it
-				if skippedWebFetch {
-					hasWebSearch := false
-					for _, tool := range filtered {
-						if tool == "web_search" {
-							hasWebSearch = true
-							break
-						}
-					}
-					if !hasWebSearch {
-						filtered = append(filtered, "web_search")
-						logger.Info("Added web_search as alternative to web_fetch",
-							zap.String("agent_id", input.AgentID),
-						)
-					}
 				}
 				toolsToSelect = filtered
 			}

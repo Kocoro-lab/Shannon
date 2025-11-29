@@ -223,6 +223,24 @@ async def agent_query(request: Request, query: AgentQuery):
                         language_instruction = f"\n\nCRITICAL: Respond in {target_lang}. The user's query is in {target_lang}. You MUST respond in the SAME language. DO NOT translate to English."
                         system_prompt = language_instruction + "\n\n" + system_prompt
 
+                # Add research-mode instruction for deep content retrieval
+                if isinstance(query.context, dict):
+                    is_research = (
+                        query.context.get("force_research")
+                        or query.context.get("research_strategy")
+                        or query.context.get("research_mode")
+                        or query.context.get("workflow_type") == "research"
+                    )
+                    if is_research:
+                        research_instruction = (
+                            "\n\nRESEARCH MODE: Do not rely only on web_search snippets. "
+                            "For each important question, use web_search to find sources, "
+                            "then call web_fetch on the top 3-5 relevant URLs to read the full content before answering. "
+                            "This ensures you have comprehensive information, not just summaries."
+                        )
+                        system_prompt = system_prompt + research_instruction
+                        logger.info("Applied RESEARCH MODE instruction to system prompt")
+
                 cap_overrides = preset.get("caps") or {}
                 # GPT-5 models need more tokens for reasoning + output (default 4096 instead of 2048)
                 default_max_tokens = 4096  # Increased for GPT-5 reasoning models
@@ -1264,7 +1282,19 @@ async def _execute_and_format_tools(
 
             # Sanitize session context before passing to tools
             if isinstance(context, dict):
-                safe_keys = {"session_id", "user_id", "prompt_params"}
+                safe_keys = {
+                    "session_id",
+                    "user_id",
+                    "prompt_params",
+                    "official_domains",
+                    # Controls for auto-fetch in web_search
+                    "auto_fetch_k",
+                    "auto_fetch_subpages",
+                    "auto_fetch_max_length",
+                    "auto_fetch_official_subpages",
+                    # Lightweight research flag for tool-level gating
+                    "research_mode",
+                }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
             else:
                 sanitized_context = None
