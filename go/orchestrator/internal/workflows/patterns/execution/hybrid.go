@@ -21,14 +21,16 @@ type HybridConfig struct {
 
 // HybridTask represents a task with dependencies
 type HybridTask struct {
-    ID             string
-    Description    string
-    SuggestedTools []string
-    ToolParameters map[string]interface{}
-    PersonaID      string
-    Role           string
-    ParentArea     string
-    Dependencies   []string // IDs of tasks this depends on
+	ID             string
+	Description    string
+	SuggestedTools []string
+	ToolParameters map[string]interface{}
+	PersonaID      string
+	Role           string
+	ParentArea     string
+	Dependencies   []string // IDs of tasks this depends on
+	// Optional per-task context overrides (e.g., task contracts)
+	ContextOverrides map[string]interface{}
 }
 
 // HybridResult contains results from hybrid execution
@@ -213,11 +215,16 @@ func executeHybridTask(
 	for k, v := range config.Context {
 		taskContext[k] = v
 	}
-    taskContext["role"] = task.Role
-    taskContext["task_id"] = task.ID
-    if task.ParentArea != "" {
-        taskContext["parent_area"] = task.ParentArea
-    }
+	if task.ContextOverrides != nil {
+		for k, v := range task.ContextOverrides {
+			taskContext[k] = v
+		}
+	}
+	taskContext["role"] = task.Role
+	taskContext["task_id"] = task.ID
+	if task.ParentArea != "" {
+		taskContext["parent_area"] = task.ParentArea
+	}
 
 	// Add dependency results if configured
 	if config.PassDependencyResults && len(task.Dependencies) > 0 {
@@ -258,12 +265,13 @@ func executeHybridTask(
 
 	// Execute the task using parallel or sequential execution patterns
 	parallelTask := ParallelTask{
-		ID:             task.ID,
-		Description:    task.Description,
-		SuggestedTools: task.SuggestedTools,
-		ToolParameters: task.ToolParameters,
-		PersonaID:      task.PersonaID,
-		Role:           task.Role,
+		ID:               task.ID,
+		Description:      task.Description,
+		SuggestedTools:   task.SuggestedTools,
+		ToolParameters:   task.ToolParameters,
+		PersonaID:        task.PersonaID,
+		Role:             task.Role,
+		ContextOverrides: task.ContextOverrides,
 	}
 
 	parallelConfig := ParallelConfig{

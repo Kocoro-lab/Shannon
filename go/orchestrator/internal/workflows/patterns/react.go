@@ -295,10 +295,12 @@ func ReactLoop(
 					switch t := od.(type) {
 					case []string:
 						if len(t) > 0 {
+							// Create new slice to avoid mutating the original context
+							prefixed := make([]string, len(t))
 							for i, d := range t {
-								t[i] = fmt.Sprintf("site:%s", d)
+								prefixed[i] = fmt.Sprintf("site:%s", d)
 							}
-							domains = strings.Join(t, " OR ")
+							domains = strings.Join(prefixed, " OR ")
 						}
 					case []interface{}:
 						parts := []string{}

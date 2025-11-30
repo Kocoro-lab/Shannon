@@ -1029,10 +1029,13 @@ func executeHybridPattern(
 		return nil, 0
 	}
 
-	// Convert map results to slice
+	// Convert map results to slice in original task order (deterministic)
+	// Map iteration is non-deterministic in Go, so we must iterate by original task order
 	var agentResults []activities.AgentExecutionResult
-	for _, result := range result.Results {
-		agentResults = append(agentResults, result)
+	for _, task := range hybridTasks {
+		if taskResult, found := result.Results[task.ID]; found {
+			agentResults = append(agentResults, taskResult)
+		}
 	}
 
 	return agentResults, result.TotalTokens

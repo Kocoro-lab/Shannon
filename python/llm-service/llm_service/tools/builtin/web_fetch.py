@@ -166,6 +166,19 @@ class WebFetchTool(Tool):
                     error=f"Access to private/internal IP addresses is not allowed: {parsed.netloc}",
                 )
 
+            # Check if this URL/domain was previously marked as failed
+            if session_context:
+                failed_domains = session_context.get("failed_domains", [])
+                for failed_url in failed_domains:
+                    # Check if URL matches or domain matches
+                    if url == failed_url or parsed.netloc in failed_url:
+                        logger.info(f"Skipping previously failed domain: {url}")
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"Domain previously failed, skipping: {parsed.netloc}",
+                        )
+
         except Exception as e:
             return ToolResult(
                 success=False, output=None, error=f"Invalid URL format: {str(e)}"

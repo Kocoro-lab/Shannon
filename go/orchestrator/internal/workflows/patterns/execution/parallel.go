@@ -34,6 +34,8 @@ type ParallelTask struct {
 	Role           string
 	ParentArea     string
 	Dependencies   []string // For hybrid parallel/sequential execution
+	// Optional per-task context overrides (e.g., task contracts)
+	ContextOverrides map[string]interface{}
 }
 
 // ParallelResult contains results from parallel execution
@@ -108,6 +110,11 @@ func ExecuteParallel(
 			taskContext := make(map[string]interface{})
 			for k, v := range config.Context {
 				taskContext[k] = v
+			}
+			if task.ContextOverrides != nil {
+				for k, v := range task.ContextOverrides {
+					taskContext[k] = v
+				}
 			}
 			taskContext["role"] = task.Role
 			taskContext["task_id"] = task.ID

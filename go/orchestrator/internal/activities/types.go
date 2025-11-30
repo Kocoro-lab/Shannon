@@ -13,6 +13,32 @@ type ComplexityAnalysisResult struct {
 	Subtasks        []Subtask
 }
 
+// OutputFormatSpec defines expected output structure for a subtask
+type OutputFormatSpec struct {
+    Type           string   `json:"type,omitempty"`            // "structured", "narrative", "list"
+    RequiredFields []string `json:"required_fields,omitempty"` // Fields that must be present
+    OptionalFields []string `json:"optional_fields,omitempty"` // Nice-to-have fields
+}
+
+// SourceGuidanceSpec defines source type recommendations for a subtask
+type SourceGuidanceSpec struct {
+    Required []string `json:"required,omitempty"` // Must use these source types (official, aggregator, news, academic)
+    Optional []string `json:"optional,omitempty"` // May use these source types
+    Avoid    []string `json:"avoid,omitempty"`    // Should not use (social, forums)
+}
+
+// SearchBudgetSpec defines search limits for a subtask
+type SearchBudgetSpec struct {
+    MaxQueries int `json:"max_queries,omitempty"` // Maximum web_search calls
+    MaxFetches int `json:"max_fetches,omitempty"` // Maximum web_fetch calls
+}
+
+// BoundariesSpec defines scope boundaries for a subtask
+type BoundariesSpec struct {
+    InScope    []string `json:"in_scope,omitempty"`    // Topics explicitly within scope
+    OutOfScope []string `json:"out_of_scope,omitempty"` // Topics to avoid (prevent overlap)
+}
+
 // Subtask represents a decomposed subtask
 type Subtask struct {
     ID              string
@@ -31,6 +57,11 @@ type Subtask struct {
     ToolParameters map[string]interface{} `json:"tool_parameters"`
     // Persona assignment for specialized agent behavior
     SuggestedPersona string `json:"suggested_persona"`
+    // Deep Research 2.0: Task Contract fields for explicit boundaries
+    OutputFormat   *OutputFormatSpec   `json:"output_format,omitempty"`   // Expected output structure
+    SourceGuidance *SourceGuidanceSpec `json:"source_guidance,omitempty"` // Source type recommendations
+    SearchBudget   *SearchBudgetSpec   `json:"search_budget,omitempty"`   // Search limits
+    Boundaries     *BoundariesSpec     `json:"boundaries,omitempty"`      // Scope boundaries
 }
 
 // AgentExecutionInput is the input for agent execution

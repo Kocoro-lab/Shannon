@@ -1,0 +1,710 @@
+# Source Type Configuration for Deep Research 2.0
+# This file defines how different source types map to search strategies and site filters.
+
+# Source type definitions with search strategies
+source_types:
+  # Official sources - highest authority for entity facts
+  official:
+    description: "Company websites, .gov, .edu domains, official documentation"
+    strategy: "site_filter"
+    exa_category: null
+    fallback_query_suffix: "official site"
+    priority_boost: 1.5
+    max_results: 5
+
+  # Aggregator sources - consolidated business intelligence
+  aggregator:
+    description: "Business intelligence platforms, company databases"
+    strategy: "site_filter"
+    exa_category: "company"
+    sites:
+      # Global business intelligence
+      - crunchbase.com
+      - pitchbook.com
+      - linkedin.com
+      - bloomberg.com
+      - owler.com
+      - craft.co
+      - zoominfo.com
+      - cbinsights.com
+      - tracxn.com
+      - dealroom.co
+      - apollo.io
+      - dnb.com
+      # Reference/Encyclopedia
+      - wikipedia.org
+      - britannica.com
+    priority_boost: 1.3
+    max_results: 10
+
+  # News sources - recent developments
+  news:
+    description: "Tech news, business journalism, industry publications"
+    strategy: "category"
+    exa_category: "news"
+    recency_days: 365
+    sites:
+      # Global tech/business news
+      - techcrunch.com
+      - reuters.com
+      - bloomberg.com
+      - wsj.com
+      - ft.com
+      - theinformation.com
+      - venturebeat.com
+      - wired.com
+      - arstechnica.com
+      - theverge.com
+      - engadget.com
+      - cnet.com
+      - zdnet.com
+      - forbes.com
+      - businessinsider.com
+      - inc.com
+      - fastcompany.com
+      - entrepreneur.com
+      - hbr.org
+      # AI/ML specific
+      - artificialintelligence-news.com
+      - analyticsindiamag.com
+      - unite.ai
+    priority_boost: 1.0
+    max_results: 12
+
+  # Academic sources - research papers, scientific findings
+  academic:
+    description: "Research papers, academic journals, preprints"
+    strategy: "category"
+    exa_category: "research paper"
+    sites:
+      # Preprint servers
+      - arxiv.org
+      - biorxiv.org
+      - medrxiv.org
+      - ssrn.com
+      # Search engines
+      - scholar.google.com
+      - semanticscholar.org
+      # Databases
+      - pubmed.ncbi.nlm.nih.gov
+      - researchgate.net
+      # Publishers
+      - nature.com
+      - science.org
+      - cell.com
+      - springer.com
+      - wiley.com
+      - elsevier.com
+      - tandfonline.com
+      - plos.org
+      # CS/Engineering
+      - ieee.org
+      - acm.org
+      - dl.acm.org
+    priority_boost: 1.3
+    max_results: 10
+
+  # GitHub/Code repositories
+  github:
+    description: "Code repositories, open source projects, documentation"
+    strategy: "category"
+    exa_category: "github"
+    sites:
+      - github.com
+      - gitlab.com
+      - bitbucket.org
+      - huggingface.co
+      - kaggle.com
+    priority_boost: 1.0
+    max_results: 5
+
+  # Financial sources
+  financial:
+    description: "Financial reports, SEC filings, investor relations"
+    strategy: "category"
+    exa_category: "financial report"
+    sites:
+      # US regulatory
+      - sec.gov
+      - edgar-online.com
+      # Market data
+      - nasdaq.com
+      - nyse.com
+      - finance.yahoo.com
+      - marketwatch.com
+      - seekingalpha.com
+      - morningstar.com
+      - investing.com
+      # VC/PE data
+      - preqin.com
+      - privateequityinternational.com
+    priority_boost: 1.2
+    max_results: 8
+
+  # Documentation & Technical Reference
+  documentation:
+    description: "Technical documentation, API references, tutorials"
+    strategy: "site_filter"
+    sites:
+      - docs.github.com
+      - developer.mozilla.org
+      - devdocs.io
+      - readthedocs.io
+      - gitbook.io
+      - confluence.atlassian.com
+      - stackoverflow.com
+      - stackexchange.com
+      - medium.com
+      - dev.to
+      - hashnode.dev
+    priority_boost: 1.1
+    max_results: 8
+
+  # Product & Review sites
+  product_review:
+    description: "Product reviews, comparisons, user feedback"
+    strategy: "site_filter"
+    sites:
+      - g2.com
+      - capterra.com
+      - trustradius.com
+      - getapp.com
+      - softwareadvice.com
+      - trustpilot.com
+      - producthunt.com
+      - alternativeto.net
+    priority_boost: 1.1
+    max_results: 6
+
+  # Social & Community
+  social:
+    description: "Social media, forums, community discussions"
+    strategy: "site_filter"
+    sites:
+      - twitter.com
+      - x.com
+      - reddit.com
+      - news.ycombinator.com
+      - quora.com
+      - discord.com
+      - slack.com
+    priority_boost: 0.8
+    max_results: 5
+
+# Regional/Local source configurations
+regional_sources:
+  # Japanese sources
+  local_jp:
+    description: "Japanese business and tech sources"
+    language: "ja"
+    strategy: "site_filter"
+    sites:
+      # Major business news
+      - nikkei.com
+      - toyokeizai.net
+      - diamond.jp
+      - president.jp
+      - newswitch.jp
+      - businessinsider.jp
+      # Tech news
+      - itmedia.co.jp
+      - impress.co.jp
+      - ascii.jp
+      - gigazine.net
+      - gizmodo.jp
+      - techcrunch.com/ja
+      - cnet.com/ja
+      # Startup/VC
+      - prtimes.jp
+      - thebridge.jp
+      - initial.inc
+      - startuptimes.jp
+      - venturetimes.jp
+      # Company databases
+      - corporate-data.jp
+      - baseconnect.in
+      - startup-db.com
+      # Academic
+      - jstage.jst.go.jp
+      - ci.nii.ac.jp
+    query_template: "{localized_name} {dimension}"
+    priority_boost: 1.2
+    max_results: 8
+
+  # Chinese sources
+  local_cn:
+    description: "Chinese business and tech sources"
+    language: "zh"
+    strategy: "site_filter"
+    sites:
+      # Tech news
+      - 36kr.com
+      - iyiou.com
+      - huxiu.com
+      - geekpark.net
+      - pingwest.com
+      - leiphone.com
+      - jiqizhixin.com
+      # Company databases
+      - tianyancha.com
+      - qichacha.com
+      - qixin.com
+      - aiqicha.baidu.com
+      # Investment/VC
+      - it-juzi.com
+      - pedaily.cn
+      - chinaventure.com.cn
+      - investorscn.com
+      # General portals
+      - tech.sina.com.cn
+      - tech.qq.com
+      - tech.163.com
+      - cnbeta.com
+      # Academic
+      - cnki.net
+      - wanfangdata.com.cn
+      - cqvip.com
+      # Reference
+      - baike.baidu.com
+      - zhihu.com
+    query_template: "{localized_name} {dimension}"
+    priority_boost: 1.2
+    max_results: 8
+
+  # Korean sources
+  local_kr:
+    description: "Korean business and tech sources"
+    language: "ko"
+    strategy: "site_filter"
+    sites:
+      # Tech/Startup news
+      - platum.kr
+      - besuccess.com
+      - venturesquare.net
+      - startuptoday.kr
+      - byline.network
+      - bloter.net
+      - zdnet.co.kr
+      # Business news
+      - mk.co.kr
+      - hankyung.com
+      - sedaily.com
+      # Company databases
+      - thevc.kr
+      - rocketpunch.com
+    query_template: "{localized_name} {dimension}"
+    priority_boost: 1.1
+    max_results: 6
+
+  # German sources
+  local_de:
+    description: "German business and tech sources"
+    language: "de"
+    strategy: "site_filter"
+    sites:
+      - handelsblatt.com
+      - wiwo.de
+      - manager-magazin.de
+      - gruenderszene.de
+      - t3n.de
+      - heise.de
+      - golem.de
+    query_template: "{localized_name} {dimension}"
+    priority_boost: 1.0
+    max_results: 5
+
+  # French sources
+  local_fr:
+    description: "French business and tech sources"
+    language: "fr"
+    strategy: "site_filter"
+    sites:
+      - lesechos.fr
+      - latribune.fr
+      - bfmtv.com
+      - maddyness.com
+      - frenchweb.fr
+      - journaldunet.com
+      - usine-digitale.fr
+    query_template: "{localized_name} {dimension}"
+    priority_boost: 1.0
+    max_results: 5
+
+# Dimension to source type mapping
+# Default source types recommended for each dimension category
+dimension_source_mapping:
+  # Company research dimensions
+  entity_identity:
+    primary: ["official", "aggregator"]
+    secondary: ["news"]
+    gap_queries:
+      - "{entity} founded when year"
+      - "{entity} headquarters location"
+      - "{entity} company overview"
+  business_model:
+    primary: ["official", "news", "product_review"]
+    secondary: ["aggregator"]
+    gap_queries:
+      - "{entity} products services"
+      - "{entity} pricing model"
+      - "{entity} how it works"
+  market_position:
+    primary: ["aggregator", "news", "product_review"]
+    secondary: ["financial"]
+    gap_queries:
+      - "{entity} market share"
+      - "{entity} competitors comparison"
+      - "{entity} industry ranking"
+  financial_performance:
+    primary: ["aggregator", "financial"]
+    secondary: ["news"]
+    gap_queries:
+      - "{entity} funding round series"
+      - "{entity} revenue ARR"
+      - "{entity} valuation"
+      - "{entity} investors"
+  leadership_team:
+    primary: ["official", "aggregator"]
+    secondary: ["news", "social"]
+    gap_queries:
+      - "{entity} CEO founder"
+      - "{entity} leadership team executives"
+      - "{entity} board of directors"
+  recent_developments:
+    primary: ["news"]
+    secondary: ["official", "social"]
+    gap_queries:
+      - "{entity} latest news announcement"
+      - "{entity} partnership acquisition"
+
+  # Industry research dimensions
+  industry_definition:
+    primary: ["aggregator", "academic"]
+    secondary: ["news"]
+    gap_queries:
+      - "{topic} industry overview definition"
+      - "{topic} market segments"
+  market_size:
+    primary: ["aggregator", "financial"]
+    secondary: ["news"]
+    gap_queries:
+      - "{topic} market size TAM"
+      - "{topic} growth rate CAGR"
+  key_players:
+    primary: ["aggregator", "news"]
+    secondary: ["financial", "product_review"]
+    gap_queries:
+      - "{topic} major companies leaders"
+      - "{topic} market share by company"
+  technology_trends:
+    primary: ["news", "academic", "documentation"]
+    secondary: ["github"]
+    gap_queries:
+      - "{topic} technology trends innovations"
+      - "{topic} emerging technologies"
+  challenges_risks:
+    primary: ["news", "academic"]
+    secondary: ["financial"]
+    gap_queries:
+      - "{topic} challenges barriers"
+      - "{topic} regulatory risks"
+
+  # Scientific research dimensions
+  background_context:
+    primary: ["academic", "aggregator"]
+    secondary: ["documentation"]
+    gap_queries:
+      - "{topic} history background"
+      - "{topic} fundamentals basics"
+  current_state:
+    primary: ["academic", "news"]
+    secondary: ["github"]
+    gap_queries:
+      - "{topic} state of the art"
+      - "{topic} recent breakthroughs"
+  key_researchers:
+    primary: ["academic", "official"]
+    secondary: ["social"]
+    gap_queries:
+      - "{topic} leading researchers labs"
+      - "{topic} key publications authors"
+  applications:
+    primary: ["news", "official", "documentation"]
+    secondary: ["academic", "github"]
+    gap_queries:
+      - "{topic} applications use cases"
+      - "{topic} commercial implementations"
+  open_questions:
+    primary: ["academic"]
+    secondary: ["news", "social"]
+    gap_queries:
+      - "{topic} open problems challenges"
+      - "{topic} future research directions"
+
+  # Comparative research dimensions
+  entity_profiles:
+    primary: ["official", "aggregator", "product_review"]
+    secondary: ["news"]
+    gap_queries:
+      - "{entity} company profile overview"
+  comparison_criteria:
+    primary: ["aggregator", "product_review"]
+    secondary: ["news"]
+    gap_queries:
+      - "{entities} comparison features"
+      - "{entities} vs differences"
+  strengths_weaknesses:
+    primary: ["product_review", "news"]
+    secondary: ["aggregator", "social"]
+    gap_queries:
+      - "{entity} pros cons"
+      - "{entity} strengths weaknesses"
+  use_cases:
+    primary: ["product_review", "documentation"]
+    secondary: ["news", "social"]
+    gap_queries:
+      - "{entity} use cases scenarios"
+      - "{entity} best for when to use"
+
+  # Exploratory research dimensions
+  core_concepts:
+    primary: ["aggregator", "academic", "documentation"]
+    secondary: []
+    gap_queries:
+      - "{topic} definition explanation"
+      - "{topic} key concepts"
+  historical_context:
+    primary: ["aggregator", "academic"]
+    secondary: ["news"]
+    gap_queries:
+      - "{topic} history evolution timeline"
+  current_landscape:
+    primary: ["news", "aggregator"]
+    secondary: ["social"]
+    gap_queries:
+      - "{topic} current state overview"
+  expert_perspectives:
+    primary: ["news", "academic", "social"]
+    secondary: []
+    gap_queries:
+      - "{topic} expert opinions analysis"
+  future_outlook:
+    primary: ["news", "academic"]
+    secondary: ["social"]
+    gap_queries:
+      - "{topic} future predictions trends"
+
+# Query type to dimension mapping
+query_type_dimensions:
+  company:
+    - entity_identity
+    - business_model
+    - market_position
+    - financial_performance
+    - leadership_team
+    - recent_developments
+  industry:
+    - industry_definition
+    - market_size
+    - key_players
+    - technology_trends
+    - challenges_risks
+  scientific:
+    - background_context
+    - current_state
+    - key_researchers
+    - applications
+    - open_questions
+  comparative:
+    - entity_profiles
+    - comparison_criteria
+    - strengths_weaknesses
+    - use_cases
+  exploratory:
+    - core_concepts
+    - historical_context
+    - current_landscape
+    - expert_perspectives
+    - future_outlook
+
+# Entity-specific gap-filling queries (used when key info is missing)
+# These are fallback queries when standard dimension searches fail
+entity_gap_queries:
+  # For company research - query patterns when info is missing
+  founder_ceo:
+    queries:
+      - '"{entity}" founder CEO'
+      - '"{entity}" site:linkedin.com founder'
+      - '"{entity}" site:crunchbase.com'
+    source_types: ["aggregator", "social"]
+  funding_history:
+    queries:
+      - '"{entity}" funding round series investors'
+      - '"{entity}" site:crunchbase.com funding'
+      - '"{entity}" raised million'
+    source_types: ["aggregator", "financial", "news"]
+  employee_count:
+    queries:
+      - '"{entity}" employees headcount team size'
+      - '"{entity}" site:linkedin.com'
+    source_types: ["aggregator", "social"]
+  founding_year:
+    queries:
+      - '"{entity}" founded established year'
+      - '"{entity}" company history'
+    source_types: ["aggregator", "official"]
+  headquarters:
+    queries:
+      - '"{entity}" headquarters location office'
+      - '"{entity}" based in'
+    source_types: ["official", "aggregator"]
+  revenue:
+    queries:
+      - '"{entity}" revenue ARR annual'
+      - '"{entity}" financial results'
+    source_types: ["financial", "news"]
+
+# Search strategy configurations
+search_strategies:
+  # Site filter strategy - use site: prefix
+  site_filter:
+    query_format: "site:{site} {query}"
+    merge_strategy: "interleave"
+
+  # Category strategy - use Exa category parameter
+  category:
+    use_exa_category: true
+    fallback_to_site_filter: true
+
+  # Neural search - Exa semantic search
+  neural:
+    search_type: "neural"
+    use_autoprompt: true
+
+  # Exact match strategy - for entity names
+  exact_match:
+    query_format: '"{entity}" {query}'
+    boost_exact: true
+
+# Result merging configuration
+result_merging:
+  # Deduplication settings
+  url_normalization: true
+  similarity_threshold: 0.85
+
+  # Diversity settings
+  max_per_domain: 3
+  ensure_source_diversity: true
+
+  # Ranking settings
+  relevance_weight: 0.4
+  credibility_weight: 0.3
+  recency_weight: 0.2
+  source_type_boost_weight: 0.1
+
+# Entity relevance filtering
+# Used to filter out citations that don't mention the target entity
+entity_relevance:
+  # Require entity mention in title or snippet
+  require_entity_mention: true
+  # Minimum similarity between entity name and content (0.0-1.0)
+  min_name_similarity: 0.6
+  # Allow partial matches (e.g., "Ptmind" matches "PTMIND Inc.")
+  allow_partial_match: true
+  # Skip relevance check for these source types (they're always relevant)
+  skip_for_source_types: ["official"]
+
+# Forced prefetch sources for company research
+# These URLs are fetched early in the research workflow to ensure key info is gathered
+# {slug} = lowercased entity name with spaces replaced by hyphens
+# {slug_underscore} = lowercased entity name with spaces replaced by underscores
+# {localized_name} = entity name in local language (passed from refinement)
+prefetch_sources:
+  company:
+    # === Global/English Sources ===
+    # NOTE: Crunchbase/LinkedIn/PitchBook removed - they block web scraping.
+    # Use web_search with site: filter instead to find cached/indexed content.
+    # Competitor data (Owler allows scraping)
+    - pattern: "owler.com/company/{slug}"
+      priority: 1
+      info_types: ["competitors", "revenue", "employees"]
+      subpages: 0
+
+  # Japanese company sources (use localized_name for Japanese entity names)
+  company_ja:
+    # Japanese startup database - detailed funding/founder info
+    - pattern: "initial.inc/companies/{slug}"
+      priority: 1
+      info_types: ["funding", "founders", "investors"]
+      subpages: 0
+    # Japanese startup DB
+    - pattern: "startup-db.com/companies/{slug}"
+      priority: 2
+      info_types: ["funding", "founders", "employees"]
+      subpages: 0
+    # Press releases (often has founder/leadership info)
+    - pattern: "prtimes.jp/main/html/searchrlp/company_id/{slug}"
+      priority: 3
+      info_types: ["news", "leadership", "announcements"]
+      subpages: 0
+    # Japanese company database
+    - pattern: "baseconnect.in/companies/{slug}"
+      priority: 4
+      info_types: ["overview", "employees", "financials"]
+      subpages: 0
+    # Nikkei company profiles
+    - pattern: "nikkei.com/nkd/company/?scode={slug}"
+      priority: 5
+      info_types: ["financials", "news", "overview"]
+      subpages: 0
+
+  # Chinese company sources (use localized_name for Chinese entity names)
+  company_zh:
+    # 天眼查 - Most comprehensive Chinese company database
+    - pattern: "tianyancha.com/company/{slug}"
+      priority: 1
+      info_types: ["registration", "founders", "shareholders", "financials"]
+      subpages: 0
+    # 企查查 - Business registration database
+    - pattern: "qichacha.com/firm/{slug}"
+      priority: 2
+      info_types: ["registration", "legal", "shareholders"]
+      subpages: 0
+    # IT桔子 - Chinese startup/VC database (like Crunchbase)
+    - pattern: "itjuzi.com/company/{slug}"
+      priority: 3
+      info_types: ["funding", "investors", "founders"]
+      subpages: 0
+    # 百度企业信用 - Baidu's company credit database
+    - pattern: "aiqicha.baidu.com/company_detail_{slug}"
+      priority: 4
+      info_types: ["registration", "credit", "shareholders"]
+      subpages: 0
+    # 36氪 company profiles
+    - pattern: "36kr.com/projectDetails/{slug}"
+      priority: 5
+      info_types: ["funding", "news", "overview"]
+      subpages: 0
+
+  person:
+    # Professional profile
+    - pattern: "linkedin.com/in/{slug}"
+      priority: 1
+      info_types: ["career", "education", "connections"]
+      subpages: 0
+    # Business profile
+    - pattern: "crunchbase.com/person/{slug}"
+      priority: 2
+      info_types: ["investments", "companies", "background"]
+      subpages: 0
+
+  product:
+    # Software reviews
+    - pattern: "g2.com/products/{slug}/reviews"
+      priority: 1
+      info_types: ["reviews", "ratings", "alternatives"]
+      subpages: 0
+    - pattern: "capterra.com/software/{slug}"
+      priority: 2
+      info_types: ["reviews", "pricing", "features"]
+      subpages: 0

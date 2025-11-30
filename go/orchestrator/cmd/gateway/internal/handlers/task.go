@@ -35,15 +35,17 @@ type TaskHandler struct {
 // ResearchStrategiesConfig represents research strategy presets loaded from YAML
 type ResearchStrategiesConfig struct {
 	Strategies map[string]struct {
-		MaxIterations            int  `yaml:"max_iterations"` // deprecated
-		VerificationEnabled      bool `yaml:"verification_enabled"`
-		MaxConcurrentAgents      int  `yaml:"max_concurrent_agents"`
-		ReactMaxIterations       int  `yaml:"react_max_iterations"`
-		BudgetAgentMin           int  `yaml:"budget_agent_min"`
-		GapFillingEnabled        bool `yaml:"gap_filling_enabled"`
-		GapFillingMaxGaps        int  `yaml:"gap_filling_max_gaps"`
-		GapFillingMaxIterations  int  `yaml:"gap_filling_max_iterations"`
-		GapFillingCheckCitations bool `yaml:"gap_filling_check_citations"`
+		MaxIterations            int    `yaml:"max_iterations"` // deprecated
+		VerificationEnabled      bool   `yaml:"verification_enabled"`
+		MaxConcurrentAgents      int    `yaml:"max_concurrent_agents"`
+		ReactMaxIterations       int    `yaml:"react_max_iterations"`
+		BudgetAgentMin           int    `yaml:"budget_agent_min"`
+		GapFillingEnabled        bool   `yaml:"gap_filling_enabled"`
+		GapFillingMaxGaps        int    `yaml:"gap_filling_max_gaps"`
+		GapFillingMaxIterations  int    `yaml:"gap_filling_max_iterations"`
+		GapFillingCheckCitations bool   `yaml:"gap_filling_check_citations"`
+		AgentModelTier           string `yaml:"agent_model_tier"`           // small/medium/large for agent execution
+		IterativeMaxIterations   int    `yaml:"iterative_max_iterations"`   // coverage evaluation iterations (1-5)
 	} `yaml:"strategies"`
 }
 
@@ -122,6 +124,14 @@ func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
 	}
 	if _, ok := ctxMap["gap_filling_check_citations"]; !ok {
 		ctxMap["gap_filling_check_citations"] = preset.GapFillingCheckCitations
+	}
+	// Seed model_tier from agent_model_tier (only if not already set by user)
+	if _, ok := ctxMap["model_tier"]; !ok && preset.AgentModelTier != "" {
+		ctxMap["model_tier"] = preset.AgentModelTier
+	}
+	// Seed iterative_max_iterations for coverage evaluation loop (1-5)
+	if _, ok := ctxMap["iterative_max_iterations"]; !ok && preset.IterativeMaxIterations >= 1 && preset.IterativeMaxIterations <= 5 {
+		ctxMap["iterative_max_iterations"] = preset.IterativeMaxIterations
 	}
 }
 

@@ -356,10 +356,10 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	// Ensure synthesis uses capable model tier for high-quality output
-	// Default to "large" if not specified, since synthesis is the final user-facing output
-	if _, hasModelTier := contextMap["model_tier"]; !hasModelTier {
-		contextMap["model_tier"] = "large"
-	}
+	// ALWAYS use "large" tier for synthesis regardless of context, since this is
+	// the final user-facing output. Agent execution uses smaller tiers for cost
+	// optimization, but synthesis quality is critical.
+	contextMap["model_tier"] = "large"
 
 	// Build synthesis query that includes agent results
 	const maxPerAgentChars = 4000 // Increased for data-heavy responses (analytics, structured data)
@@ -488,7 +488,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				var sb strings.Builder
 				sb.WriteString("## MANDATORY Research Area Coverage:\n")
 				sb.WriteString(fmt.Sprintf("You MUST create a subsection for EACH of the %d research areas below.\n", len(areas)))
-				sb.WriteString("Each subsection should be 150–250 words with inline citations.\n")
+				sb.WriteString("Each subsection should be 250–400 words with inline citations.\n")
 				sb.WriteString("Structure your Detailed Findings section with these exact headings:\n")
 				for _, a := range areas {
 					if strings.TrimSpace(a) != "" {
@@ -523,9 +523,14 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	// Calculate target words for research synthesis
+	// Deep Research 2.0: Increased multiplier to capture more intermediate findings
 	targetWords := 1200
 	if len(areas) > 0 {
-		targetWords = len(areas) * 200
+		targetWords = len(areas) * 400 // 400 words per area for comprehensive coverage
+	}
+	// Ensure minimum for comprehensive reports
+	if targetWords < 1800 {
+		targetWords = 1800
 	}
 
 	// Get available citations string
@@ -595,8 +600,8 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		// For deep research: comprehensive multi-section report (no Sources section; system appends it)
 		targetWords := 1200
 		if len(areas) > 0 {
-			// Calculate target based on research areas (150-250 words per area)
-			targetWords = len(areas) * 200
+			// Calculate target based on research areas (250-400 words per area)
+			targetWords = len(areas) * 400
 		}
 		// Use explicit top-level headings and forbid copying instruction text into the answer
 		outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
@@ -608,7 +613,7 @@ Use exactly these top-level headings in your response, and start your answer dir
 ## Limitations and Uncertainties (ONLY if significant gaps/conflicts exist)
 
 Section requirements:
-- Executive Summary: 150–250 words; capture key insights and conclusions
+- Executive Summary: 250–400 words; capture key insights and conclusions
 - Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 - Limitations and Uncertainties: 100–150 words IF evidence is incomplete, contradictory, or outdated; OMIT this section entirely if findings are well-supported and comprehensive
 `, targetWords, targetWords+600)
@@ -684,8 +689,8 @@ Section requirements:
 
 	## Coverage Checklist (DO NOT STOP until ALL are satisfied):
 	✓ Each of the %d research areas has a dedicated subsection (### heading)
-	✓ Each subsection contains 150–250 words minimum
-	✓ Executive Summary captures key insights (150–250 words)
+	✓ Each subsection contains 250–400 words minimum
+	✓ Executive Summary captures key insights (250–400 words)
 %s    ✓ Response written in the SAME language as the query
 
     ## CRITICAL - Language Matching:
