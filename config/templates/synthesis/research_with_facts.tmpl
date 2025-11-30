@@ -1,8 +1,9 @@
 {{/*
-  research_comprehensive.tmpl - Deep research synthesis template
+  research_with_facts.tmpl - Research synthesis with structured fact extraction
 
-  Use for: ResearchWorkflow, deep_research_agent role, force_research=true
-  Style: Comprehensive multi-section report with strict coverage requirements
+  Use for: ResearchWorkflow with fact extraction enabled
+  Style: Comprehensive report PLUS structured facts JSON appendix
+  Enable: Set context.enable_fact_extraction = true
 
   Variables available:
     .Query              - Original user query
@@ -20,12 +21,12 @@
 
 # Synthesis Requirements:
 
-IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with "## Executive Summary".
+IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections, their content, AND the structured facts appendix.
 
 ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
 {{- if .ResearchAreas }}
 ✓ Each of the {{ len .ResearchAreas }} research areas has a dedicated subsection (### heading)
-✓ Each subsection contains 250–400 words to fully capture intermediate findings
+✓ Each subsection contains 150–250 words minimum
 {{- end }}
 ✓ Executive Summary captures key insights (150–250 words)
 {{- if gt .CitationCount 0 }}
@@ -36,6 +37,7 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as "unverified"
 {{- end }}
 ✓ Response written in the SAME language as the query
+✓ Structured Facts appendix contains all key factual claims
 
 {{ template "language_instruction" . }}
 
@@ -63,43 +65,70 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 - When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES when appropriate
 - Tables should compare: size, growth rates, market share, performance metrics, costs, timelines
 - Include inline citations [n] for ALL data points in tables
-- If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
-- Prioritize specific numbers over vague descriptors (e.g., "$5.2B revenue" not "significant revenue")
 
 ## Output Format:
 
-Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
+Use exactly these top-level headings in your response:
 
 ## Executive Summary
 ## Detailed Findings
 ## Limitations and Uncertainties (ONLY if significant gaps/conflicts exist)
+## Structured Facts
 
 Section requirements:
 - Executive Summary: 150–250 words; capture key insights and conclusions
-- Detailed Findings: {{ .TargetWords }}–{{ add .TargetWords 600 }} words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
-- Limitations and Uncertainties: 100–150 words IF evidence is incomplete, contradictory, or outdated; OMIT this section entirely if findings are well-supported and comprehensive
+- Detailed Findings: {{ .TargetWords }}–{{ add .TargetWords 600 }} words total; organize by research areas
+- Limitations and Uncertainties: 100–150 words IF evidence is incomplete; OMIT if well-supported
+- Structured Facts: JSON array of extracted facts (see format below)
 
 {{- if .ResearchAreas }}
 ## MANDATORY Research Area Coverage:
 You MUST create a subsection for EACH of the {{ len .ResearchAreas }} research areas below.
-Each subsection should be 250–400 words with inline citations. Include ALL relevant findings from research agents.
-Structure your Detailed Findings section with these exact headings:
 {{- range .ResearchAreas }}
 ### {{ . }}
 {{- end }}
-
-Do NOT skip any research areas. Generate comprehensive content for ALL sections above.
 {{- end }}
+
+## Structured Facts Appendix Format:
+
+After the main report, include a "## Structured Facts" section with a JSON code block:
+
+```json
+{
+  "facts": [
+    {
+      "id": "fact-1",
+      "statement": "Factual claim extracted from synthesis",
+      "category": "funding|product|market|technical|team|partnership|regulatory|performance",
+      "confidence": 0.95,
+      "source_citations": [1, 3],
+      "entities": ["Company X", "Product Y"],
+      "temporal": "2024-Q2",
+      "quantitative": true
+    }
+  ],
+  "summary": {
+    "total_facts": 15,
+    "high_confidence": 12,
+    "categories": {"funding": 3, "product": 5, "market": 4, "technical": 3}
+  }
+}
+```
+
+### Fact Extraction Guidelines:
+- Extract 10-20 discrete, verifiable factual claims from the synthesis
+- Each fact should be a single, atomic statement
+- Assign confidence based on citation quality: 0.9+ for multiple sources, 0.7-0.9 for single source
+- Include citation indices that support each fact
+- Categories: funding, product, market, technical, team, partnership, regulatory, performance
+- Mark quantitative facts (those with numbers, metrics, percentages) as quantitative: true
+- Include temporal markers when dates/periods are mentioned
 
 ## Quality Standards:
 - State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
-- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm", "at present we have not found") unless evidence is genuinely missing
+- DO NOT add unnecessary cautious disclaimers unless evidence is genuinely missing
 - Present well-cited facts as definitive conclusions, not tentative observations
 - Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
-- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
-- Flag gaps ONLY when evidence is genuinely insufficient for a specific aspect: "No public data available on [specific aspect]"
-- If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
 - NEVER fabricate or hallucinate sources
-- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
 
 {{ template "citation_list" . }}

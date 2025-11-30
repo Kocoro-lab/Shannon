@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -214,6 +215,8 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		userID = req.Metadata.GetUserId()
 	}
 	sessionID := req.Metadata.GetSessionId()
+	dbSessionID := sessionID      // Use the requested ID for DB persistence/metrics
+	runtimeSessionID := sessionID // Session ID used for Redis/session manager/history
 
 	// Get or create session
 	var sess *session.Session
@@ -224,6 +227,29 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		sess, err = s.sessionManager.GetSession(ctx, sessionID)
 		if err != nil && err != session.ErrSessionNotFound {
 			s.logger.Warn("Failed to retrieve session", zap.Error(err))
+		}
+
+		// If session not found and we have a DB client, check for external_id alias
+		// This handles the case where the client sends a UUID but the Redis session
+		// was created with an external_id (or vice versa)
+		if sess == nil && s.dbClient != nil {
+			var externalID sql.NullString
+			row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+				SELECT context->>'external_id'
+				FROM sessions
+				WHERE id::text = $1 AND deleted_at IS NULL`, sessionID)
+			if err := row.Scan(&externalID); err == nil && externalID.Valid && externalID.String != "" {
+				// Try to get session using the external_id
+				aliasedSession, aliasErr := s.sessionManager.GetSession(ctx, externalID.String)
+				if aliasErr == nil && aliasedSession != nil {
+					sess = aliasedSession
+					runtimeSessionID = aliasedSession.ID
+					dbSessionID = runtimeSessionID
+					s.logger.Debug("Resolved session via external_id alias",
+						zap.String("requested_id", sessionID),
+						zap.String("resolved_id", externalID.String))
+				}
+			}
 		}
 
 		// SECURITY: Validate session ownership
@@ -255,24 +281,26 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			})
 			sessionID = sess.ID
 		}
+		runtimeSessionID = sess.ID
+		dbSessionID = runtimeSessionID
 		if createErr != nil {
 			return nil, status.Error(codes.Internal, "failed to create session")
 		}
 		s.logger.Info("Created new session", zap.String("session_id", sessionID))
 	}
 	// Ensure session exists in PostgreSQL for FK integrity (idempotent)
-	if s.dbClient != nil && sessionID != "" {
+	if s.dbClient != nil && dbSessionID != "" {
 		// Prefer explicit userID from request; fall back to session's user
 		dbUserID := userID
 		if dbUserID == "" && sess != nil && sess.UserID != "" {
 			dbUserID = sess.UserID
 		}
 		s.logger.Debug("Ensuring session exists in PostgreSQL",
-			zap.String("session_id", sessionID),
+			zap.String("session_id", dbSessionID),
 			zap.String("user_id", dbUserID))
-		if err := s.dbClient.CreateSession(ctx, sessionID, dbUserID, tenantID); err != nil {
+		if err := s.dbClient.CreateSession(ctx, dbSessionID, dbUserID, tenantID); err != nil {
 			s.logger.Warn("Failed to ensure session in database",
-				zap.String("session_id", sessionID),
+				zap.String("session_id", dbSessionID),
 				zap.Error(err))
 			// Continue anyway - Redis session is available
 		}
@@ -281,12 +309,16 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	}
 
 	// Add current query to history
-	s.sessionManager.AddMessage(ctx, sessionID, session.Message{
+	if err := s.sessionManager.AddMessage(ctx, runtimeSessionID, session.Message{
 		ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
 		Role:      "user",
 		Content:   req.Query,
 		Timestamp: time.Now(),
-	})
+	}); err != nil {
+		s.logger.Warn("Failed to append message to session history",
+			zap.String("session_id", runtimeSessionID),
+			zap.Error(err))
+	}
 
 	// Create workflow ID
 	workflowID := fmt.Sprintf("task-%s-%d", userID, time.Now().Unix())
@@ -469,7 +501,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		Query:           req.Query,
 		UserID:          userID,
 		TenantID:        tenantID,
-		SessionID:       sessionID,
+		SessionID:       runtimeSessionID,
 		Context:         ctxMap,
 		Mode:            "",
 		TemplateName:    templateName,
@@ -509,7 +541,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	// Store metadata in workflow memo for retrieval later
 	memo := map[string]interface{}{
 		"user_id":    userID,
-		"session_id": sessionID,
+		"session_id": runtimeSessionID,
 		"tenant_id":  tenantID,
 		"query":      req.Query,
 	}
@@ -691,7 +723,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			ID:         taskID,
 			WorkflowID: workflowExecution.GetID(),
 			UserID:     uidPtr,
-			SessionID:  sessionID,
+			SessionID:  dbSessionID,
 			Query:      req.Query,
 			Mode:       modeStr,
 			Status:     "RUNNING",
@@ -983,6 +1015,37 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			} else if result.TokensUsed > 0 {
 				// Fallback: calculate cost from tokens
 				taskExecution.TotalCostUSD = calculateTokenCost(result.TokensUsed, result.Metadata)
+			}
+
+			// Preserve original request-level task_context fields (e.g., force_research)
+			// The initial task creation stores these at task submission, but they get lost
+			// when result.Metadata overwrites them. Fetch and merge them back.
+			if s.dbClient != nil {
+				var origMetadataJSON sql.NullString
+				row := s.dbClient.Wrapper().QueryRowContext(ctx, `
+					SELECT metadata::text FROM task_executions WHERE workflow_id = $1`, workflowID)
+				if err := row.Scan(&origMetadataJSON); err == nil && origMetadataJSON.Valid && origMetadataJSON.String != "" {
+					var origMetadata map[string]interface{}
+					if jsonErr := json.Unmarshal([]byte(origMetadataJSON.String), &origMetadata); jsonErr == nil {
+						if origTaskCtx, ok := origMetadata["task_context"].(map[string]interface{}); ok {
+							// Ensure task_context exists in result metadata
+							resultTaskCtx, hasResultCtx := result.Metadata["task_context"].(map[string]interface{})
+							if !hasResultCtx {
+								resultTaskCtx = make(map[string]interface{})
+							}
+							// Preserve request-level fields that shouldn't be overwritten by runtime fields
+							requestFields := []string{"force_research", "synthesis_template", "synthesis_template_override"}
+							for _, field := range requestFields {
+								if val, exists := origTaskCtx[field]; exists {
+									if _, alreadySet := resultTaskCtx[field]; !alreadySet {
+										resultTaskCtx[field] = val
+									}
+								}
+							}
+							result.Metadata["task_context"] = resultTaskCtx
+						}
+					}
+				}
 			}
 
 			taskExecution.Metadata = db.JSONB(result.Metadata)

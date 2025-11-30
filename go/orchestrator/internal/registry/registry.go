@@ -84,6 +84,14 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivity(activities.SynthesizeResultsLLM)
 	// Reflection activity for quality evaluation
 	w.RegisterActivity(acts.EvaluateResult)
+	// Deep Research 2.0 activities
+	w.RegisterActivityWithOptions(acts.EvaluateCoverage, activity.RegisterOptions{Name: "EvaluateCoverage"})
+	w.RegisterActivityWithOptions(acts.IntermediateSynthesis, activity.RegisterOptions{Name: "IntermediateSynthesis"})
+	w.RegisterActivityWithOptions(acts.GenerateSubqueries, activity.RegisterOptions{Name: "GenerateSubqueries"})
+	w.RegisterActivityWithOptions(acts.ExtractFacts, activity.RegisterOptions{Name: "ExtractFacts"})
+	w.RegisterActivityWithOptions(acts.DetectEntityLocalization, activity.RegisterOptions{Name: "DetectEntityLocalization"})
+	w.RegisterActivityWithOptions(acts.RouteSearch, activity.RegisterOptions{Name: "RouteSearch"})
+	w.RegisterActivityWithOptions(acts.MergeSearchResults, activity.RegisterOptions{Name: "MergeSearchResults"})
 	// Claim verification activity (Phase 4)
 	w.RegisterActivityWithOptions(acts.VerifyClaimsActivity, activity.RegisterOptions{Name: "VerifyClaimsActivity"})
 	// Configuration activity

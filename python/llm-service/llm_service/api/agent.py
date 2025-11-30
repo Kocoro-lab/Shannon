@@ -1,8 +1,6 @@
 """Agent API endpoints for HTTP communication with Agent-Core."""
 
 import logging
-import json
-from json import dumps
 from typing import Dict, Any, Optional, List, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -67,6 +65,73 @@ def filter_relevant_results(
     scored_results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
 
     return scored_results[:5]  # Return top 5 most relevant
+
+
+def build_task_contract_instructions(context: Dict[str, Any]) -> str:
+    """
+    Deep Research 2.0: Build task contract instructions for agent execution.
+
+    Extracts task contract fields from context and returns instructions
+    to append to the system prompt.
+    """
+    if not isinstance(context, dict):
+        return ""
+
+    instructions = []
+
+    # Output format instructions
+    output_format = context.get("output_format")
+    if output_format and isinstance(output_format, dict):
+        format_type = output_format.get("type", "narrative")
+        required_fields = output_format.get("required_fields", [])
+        optional_fields = output_format.get("optional_fields", [])
+
+        instructions.append(f"\n## Output Format: {format_type}")
+        if required_fields:
+            instructions.append(f"REQUIRED fields: {', '.join(required_fields)}")
+        if optional_fields:
+            instructions.append(f"OPTIONAL fields: {', '.join(optional_fields)}")
+
+    # Source guidance instructions
+    source_guidance = context.get("source_guidance")
+    if source_guidance and isinstance(source_guidance, dict):
+        required_sources = source_guidance.get("required", [])
+        optional_sources = source_guidance.get("optional", [])
+        avoid_sources = source_guidance.get("avoid", [])
+
+        instructions.append("\n## Source Guidance")
+        if required_sources:
+            instructions.append(f"PRIORITIZE sources from: {', '.join(required_sources)}")
+        if optional_sources:
+            instructions.append(f"May also use: {', '.join(optional_sources)}")
+        if avoid_sources:
+            instructions.append(f"AVOID sources like: {', '.join(avoid_sources)}")
+
+    # Search budget instructions
+    search_budget = context.get("search_budget")
+    if search_budget and isinstance(search_budget, dict):
+        max_queries = search_budget.get("max_queries", 10)
+        max_fetches = search_budget.get("max_fetches", 20)
+
+        instructions.append("\n## Search Budget")
+        instructions.append(f"Maximum {max_queries} web_search calls, {max_fetches} web_fetch calls")
+        instructions.append("Be efficient - focus on high-value sources first")
+
+    # Boundary instructions
+    boundaries = context.get("boundaries")
+    if boundaries and isinstance(boundaries, dict):
+        in_scope = boundaries.get("in_scope", [])
+        out_of_scope = boundaries.get("out_of_scope", [])
+
+        instructions.append("\n## Scope Boundaries")
+        if in_scope:
+            instructions.append(f"FOCUS ON: {', '.join(in_scope)}")
+        if out_of_scope:
+            instructions.append(f"DO NOT cover: {', '.join(out_of_scope)}")
+
+    if instructions:
+        return "\n\n--- TASK CONTRACT ---" + "\n".join(instructions)
+    return ""
 
 
 class ForcedToolCall(BaseModel):
@@ -237,9 +302,22 @@ async def agent_query(request: Request, query: AgentQuery):
                             "For each important question, use web_search to find sources, "
                             "then call web_fetch on the top 3-5 relevant URLs to read the full content before answering. "
                             "This ensures you have comprehensive information, not just summaries."
+                            "\n\nCOMPANY/ENTITY RESEARCH: When researching a company or organization:"
+                            "\n- FIRST try web_fetch on the likely official domain (e.g., 'companyname.com', 'companyname.io')"
+                            "\n- Try alternative domains: products may have different names (e.g., Ptmind → ptengine.com)"
+                            "\n- Search for '[company] site:linkedin.com' or '[company] site:crunchbase.com'"
+                            "\n- For Asian companies, try Japanese/Chinese name variants"
+                            "\n- If standard searches return only competitors/unrelated results, this indicates a search strategy problem - try direct URL fetches"
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
+
+                # Deep Research 2.0: Add task contract instructions if present in context
+                if isinstance(query.context, dict):
+                    task_contract_instructions = build_task_contract_instructions(query.context)
+                    if task_contract_instructions:
+                        system_prompt = system_prompt + task_contract_instructions
+                        logger.info("Applied Deep Research 2.0 task contract instructions to system prompt")
 
                 cap_overrides = preset.get("caps") or {}
                 # GPT-5 models need more tokens for reasoning + output (default 4096 instead of 2048)
@@ -1105,24 +1183,6 @@ async def _execute_and_format_tools(
         except Exception:
             pass
 
-    def _audit(event: str, tool_name: str, *, success: Optional[bool] = None, error: Any = None, duration_ms: Any = None) -> None:
-        payload = {
-            "workflow_id": wf_id,
-            "agent_id": agent_id,
-            "tool": tool_name,
-            "event": event,
-        }
-        if success is not None:
-            payload["success"] = success
-        if error is not None:
-            payload["error"] = str(error)
-        if duration_ms is not None:
-            payload["duration_ms"] = duration_ms
-        try:
-            logger.info(f"[tool_audit] {payload}")
-        except Exception:
-            pass
-
     def _sanitize_payload(
         value: Any,
         *,
@@ -1481,6 +1541,32 @@ async def _execute_and_format_tools(
     return ("\n\n".join(formatted_results) if formatted_results else "", tool_execution_records)
 
 
+class OutputFormatSpec(BaseModel):
+    """Deep Research 2.0: Expected output structure for a subtask."""
+    type: str = Field(default="narrative", description="'structured', 'narrative', or 'list'")
+    required_fields: List[str] = Field(default_factory=list, description="Fields that must be present")
+    optional_fields: List[str] = Field(default_factory=list, description="Nice-to-have fields")
+
+
+class SourceGuidanceSpec(BaseModel):
+    """Deep Research 2.0: Source type recommendations for a subtask."""
+    required: List[str] = Field(default_factory=list, description="Must use these source types")
+    optional: List[str] = Field(default_factory=list, description="May use these source types")
+    avoid: List[str] = Field(default_factory=list, description="Should not use these source types")
+
+
+class SearchBudgetSpec(BaseModel):
+    """Deep Research 2.0: Search limits for a subtask."""
+    max_queries: int = Field(default=10, description="Maximum web_search calls")
+    max_fetches: int = Field(default=20, description="Maximum web_fetch calls")
+
+
+class BoundariesSpec(BaseModel):
+    """Deep Research 2.0: Scope boundaries for a subtask."""
+    in_scope: List[str] = Field(default_factory=list, description="Topics explicitly within scope")
+    out_of_scope: List[str] = Field(default_factory=list, description="Topics to avoid")
+
+
 class Subtask(BaseModel):
     id: str
     description: str
@@ -1499,6 +1585,19 @@ class Subtask(BaseModel):
     )
     tool_parameters: Dict[str, Any] = Field(
         default_factory=dict, description="Pre-structured parameters for tool execution"
+    )
+    # Deep Research 2.0: Task Contract fields
+    output_format: Optional[OutputFormatSpec] = Field(
+        default=None, description="Expected output structure"
+    )
+    source_guidance: Optional[SourceGuidanceSpec] = Field(
+        default=None, description="Source type recommendations"
+    )
+    search_budget: Optional[SearchBudgetSpec] = Field(
+        default=None, description="Search limits"
+    )
+    boundaries: Optional[BoundariesSpec] = Field(
+        default=None, description="Scope boundaries"
     )
 
 
@@ -1646,6 +1745,21 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- If a domain name appears in the query (e.g., 'waylandz.com', 'this site: example.org'), use web_fetch with url='https://domain.com'\n"
             "- DO NOT use web_search with 'site:domain' queries - this often fails. Use web_fetch directly instead.\n"
             "- web_search is for discovering unknown information, NOT for accessing known websites.\n\n"
+            "COMPANY/ENTITY RESEARCH STRATEGY:\n"
+            "When researching a company or organization, create subtasks that include:\n"
+            "1. Direct URL fetch: Use web_fetch for likely official domain (e.g., 'research Ptmind' → fetch 'https://ptmind.com')\n"
+            "2. Product variations: Companies often have product names different from company name (e.g., Ptmind → Ptengine)\n"
+            "3. Business directories: Search '[company] site:crunchbase.com' or '[company] site:linkedin.com'\n"
+            "4. For Asian companies: Try Japanese/Chinese name variants in searches\n"
+            "5. If web_search returns only competitors, it's a sign the search terms are wrong - try alternative names/domains\n\n"
+            "## Deep Research 2.0: Task Contracts (Optional)\n"
+            "For research workflows, you MAY include these fields to define explicit task boundaries:\n"
+            "- output_format: {type: 'structured'|'narrative', required_fields: [...], optional_fields: [...]}\n"
+            "- source_guidance: {required: ['official', 'aggregator'], optional: ['news'], avoid: ['social']}\n"
+            "- search_budget: {max_queries: 5, max_fetches: 10}\n"
+            "- boundaries: {in_scope: ['topic1', 'topic2'], out_of_scope: ['topic3']}\n\n"
+            "Source type values: 'official' (company/.gov/.edu), 'aggregator' (crunchbase/wikipedia), "
+            "'news' (recent articles), 'academic' (arxiv/papers), 'github', 'financial', 'local_cn', 'local_jp'\n\n"
             "Return ONLY valid JSON with this EXACT structure (no additional text):\n"
             "{\n"
             '  "mode": "standard",\n'
@@ -1657,7 +1771,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "dependencies": [],\n'
             '      "estimated_tokens": 500,\n'
             '      "suggested_tools": [],\n'
-            '      "tool_parameters": {}\n'
+            '      "tool_parameters": {},\n'
+            '      "source_guidance": {"required": ["official"], "optional": ["news"]},\n'
+            '      "boundaries": {"in_scope": ["topic"], "out_of_scope": []}\n'
             "    }\n"
             "  ],\n"
             '  "execution_strategy": "sequential",\n'
@@ -1680,7 +1796,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "dependencies": [],\n'
             '      "estimated_tokens": 800,\n'
             '      "suggested_tools": ["web_search"],\n'
-            '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"}\n'
+            '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
+            '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
+            '      "boundaries": {"in_scope": ["stock price", "market analysis"], "out_of_scope": ["company history"]}\n'
             "    }\n"
             "  ],\n"
             '  "execution_strategy": "sequential",\n'
@@ -1694,6 +1812,8 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- dependencies: array of task ID strings or empty array []\n"
             "- suggested_tools: empty array [] if no tools needed, otherwise list tool names\n"
             "- tool_parameters: empty object {} if no tools, otherwise parameters for the tool\n"
+            "- source_guidance: (optional) object with required/optional/avoid source type arrays\n"
+            "- boundaries: (optional) object with in_scope/out_of_scope topic arrays\n"
             "- For subtasks with non-empty dependencies, DO NOT prefill tool_parameters; set it to {} and avoid placeholders (the agent will use previous_results to construct exact parameters).\n"
             "- Let the semantic meaning of the query guide tool selection\n"
         )
@@ -1998,6 +2118,36 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
                 # Keep tool_params as-is without template resolution
 
+                # Deep Research 2.0: Parse task contract fields
+                output_format = None
+                source_guidance = None
+                search_budget = None
+                boundaries = None
+
+                if st.get("output_format") and isinstance(st.get("output_format"), dict):
+                    try:
+                        output_format = OutputFormatSpec(**st["output_format"])
+                    except Exception as e:
+                        logger.warning(f"Failed to parse output_format: {e}")
+
+                if st.get("source_guidance") and isinstance(st.get("source_guidance"), dict):
+                    try:
+                        source_guidance = SourceGuidanceSpec(**st["source_guidance"])
+                    except Exception as e:
+                        logger.warning(f"Failed to parse source_guidance: {e}")
+
+                if st.get("search_budget") and isinstance(st.get("search_budget"), dict):
+                    try:
+                        search_budget = SearchBudgetSpec(**st["search_budget"])
+                    except Exception as e:
+                        logger.warning(f"Failed to parse search_budget: {e}")
+
+                if st.get("boundaries") and isinstance(st.get("boundaries"), dict):
+                    try:
+                        boundaries = BoundariesSpec(**st["boundaries"])
+                    except Exception as e:
+                        logger.warning(f"Failed to parse boundaries: {e}")
+
                 subtask = Subtask(
                     id=st.get("id", f"task-{len(subtasks) + 1}"),
                     description=st.get("description", ""),
@@ -2007,9 +2157,21 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     parent_area=str(st.get("parent_area", "")) if st.get("parent_area") is not None else "",
                     suggested_tools=suggested_tools,
                     tool_parameters=tool_params,
+                    output_format=output_format,
+                    source_guidance=source_guidance,
+                    search_budget=search_budget,
+                    boundaries=boundaries,
                 )
                 subtasks.append(subtask)
                 total_tokens += subtask.estimated_tokens
+
+                # Log task contract fields for debugging
+                if any([output_format, source_guidance, search_budget, boundaries]):
+                    logger.info(
+                        f"Deep Research 2.0 task contract for {subtask.id}: "
+                        f"output_format={output_format}, source_guidance={source_guidance}, "
+                        f"search_budget={search_budget}, boundaries={boundaries}"
+                    )
 
             # Extract extended fields
             exec_strategy = data.get("execution_strategy", "sequential")

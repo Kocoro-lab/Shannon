@@ -35,7 +35,47 @@ These optional fields are validated by the Gateway and then added to the workflo
 - `max_concurrent_agents` — integer (1..20)
 - `enable_verification` — boolean (enables claim verification when citations exist)
 
+#### Model Tier Architecture (Cost Optimization)
+
+Research strategies use a tiered model architecture for cost efficiency:
+
+| Activity Type | Model Tier | Rationale |
+|--------------|------------|-----------|
+| Utility activities (coverage eval, fact extraction, subquery gen) | small | Structured output tasks |
+| Agent execution (quick) | small | Fast, cheap research |
+| Agent execution (standard) | medium | Balanced quality/cost |
+| Agent execution (deep) | medium | Iterative refinement compensates |
+| Agent execution (academic) | medium | Iterative refinement compensates |
+| Final synthesis | large | User-facing quality critical |
+
+This tiered approach reduces costs by 50-70% while maintaining output quality. See `config/research_strategies.yaml` for configuration.
+
 **Note**: The `max_iterations` parameter is accepted by the gateway for backward compatibility but is not used by current workflows. Use `context.react_max_iterations` to control ReAct loop depth instead.
+
+### Deep Research 2.0 Controls
+
+When `context.force_research: true` is set, Deep Research 2.0 is **enabled by default**:
+
+- `context.iterative_research_enabled` — boolean (default: `true`) — Enable/disable iterative coverage loop
+- `context.iterative_max_iterations` — integer (1-5, default: `3`) — Max iterations for coverage improvement
+- `context.enable_fact_extraction` — boolean (default: `false`) — Extract structured facts into metadata
+
+```bash
+# Basic Deep Research 2.0 (default settings)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query": "AI trends 2025", "context": {"force_research": true}}'
+
+# Custom iterations
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Compare LLMs", "context": {"force_research": true, "iterative_max_iterations": 2}}'
+
+# Disable 2.0 (use legacy)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Explain ML", "context": {"force_research": true, "iterative_research_enabled": false}}'
+```
 
 ### Research Strategy Presets
 
@@ -54,8 +94,6 @@ curl -sS -X POST http://localhost:8080/api/v1/tasks \
     }
   }'
 ```
-
-Note: Verification effectiveness depends on passing citation content/snippets; see `docs/deep-research-overview.md` for current limitations.
 
 ### Citations (optional, mapped into context)
 
@@ -116,6 +154,10 @@ curl -sS -X POST http://localhost:8080/api/v1/tasks \
 - Advanced context window controls:
   - `history_window_size`, `use_case_preset`, `primers_count`, `recents_count`
   - `compression_trigger_ratio`, `compression_target_ratio`
+- Deep Research 2.0 controls (when `force_research: true`):
+  - `iterative_research_enabled` — Enable/disable iterative loop (default: `true`)
+  - `iterative_max_iterations` — Max iterations 1-5 (default: `3`)
+  - `enable_fact_extraction` — Extract structured facts (default: `false`)
 
 ## Common Scenarios
 

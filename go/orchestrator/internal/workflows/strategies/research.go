@@ -13,6 +13,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -47,14 +48,48 @@ import (
 //   - Phase 2: Soft rerank (multiply scores vs hard filter)
 //   - Phase 3: Verification entity coherence
 //   - Phase 4: Adaptive retry if coverage < target
+
+// containsAsWord checks if text contains term as a whole word (word boundary matching).
+// This prevents "mind" from matching "Minders.io" or "reminded".
+func containsAsWord(text, term string) bool {
+	if term == "" {
+		return false
+	}
+	idx := strings.Index(text, term)
+	if idx < 0 {
+		return false
+	}
+	// Check left boundary
+	if idx > 0 {
+		prev := text[idx-1]
+		if (prev >= 'a' && prev <= 'z') || (prev >= '0' && prev <= '9') {
+			// Previous char is alphanumeric, not a word boundary
+			// Try to find next occurrence
+			rest := text[idx+len(term):]
+			return containsAsWord(rest, term)
+		}
+	}
+	// Check right boundary
+	endIdx := idx + len(term)
+	if endIdx < len(text) {
+		next := text[endIdx]
+		if (next >= 'a' && next <= 'z') || (next >= '0' && next <= '9') {
+			// Next char is alphanumeric, not a word boundary
+			rest := text[idx+len(term):]
+			return containsAsWord(rest, term)
+		}
+	}
+	return true
+}
+
 func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string, aliases []string, officialDomains []string) []metadata.Citation {
 	if canonicalName == "" || len(citations) == 0 {
 		return citations
 	}
 
 	const (
-		threshold = 0.3 // Minimum relevance score to pass (lowered for recall)
-		minKeep   = 8   // Safety floor: keep at least this many for deep research
+		threshold = 0.5 // Minimum relevance score to pass (raised to reduce noise)
+		minKeep   = 5   // Safety floor: keep at least this many for deep research
 	)
 
 	// Normalize canonical name and aliases for matching
@@ -110,11 +145,15 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 		}
 
 		// Also check if URL contains any alias (broader domain matching)
+		// For URLs, we use substring matching since domains often contain the brand
+		// e.g., "ptmind.com" contains "ptmind"
 		if !isOfficial {
 			for alias := range aliasSet {
 				// Remove quotes from aliases for URL matching
 				cleanAlias := strings.Trim(alias, "\"")
-				if cleanAlias != "" && strings.Contains(urlLower, cleanAlias) {
+				// For URLs, require at least 5 char aliases to avoid false positives
+				// like "mind" matching "minders.io"
+				if cleanAlias != "" && len(cleanAlias) >= 5 && strings.Contains(urlLower, cleanAlias) {
 					score += 0.4 // Partial credit for alias in URL
 					matchedDomain = "alias-in-url:" + cleanAlias
 					break
@@ -130,10 +169,25 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 
 		for alias := range aliasSet {
 			cleanAlias := strings.Trim(alias, "\"")
-			if cleanAlias != "" && strings.Contains(combined, cleanAlias) {
-				score += 0.4 // Title/snippet match
-				matchedAlias = cleanAlias
-				break
+			// Use word boundary matching to prevent "mind" matching "Minders.io"
+			// For short aliases (<5 chars), require exact word match
+			// For longer aliases, allow partial matches (e.g., "ptmind" in "ptmind.com")
+			if cleanAlias != "" {
+				if len(cleanAlias) < 5 {
+					// Short alias: require word boundary
+					if containsAsWord(combined, cleanAlias) {
+						score += 0.4 // Title/snippet match
+						matchedAlias = cleanAlias
+						break
+					}
+				} else {
+					// Longer alias: allow substring match
+					if strings.Contains(combined, cleanAlias) {
+						score += 0.4 // Title/snippet match
+						matchedAlias = cleanAlias
+						break
+					}
+				}
 			}
 		}
 
@@ -201,6 +255,116 @@ func hasSuccessfulToolExecutions(results []activities.AgentExecutionResult) bool
 		}
 	}
 	return false
+}
+
+// buildCompanyPrefetchURLs constructs a small set of candidate URLs for company research.
+// Priority:
+//  1. Use official_domains from refinement when available.
+//  2. Add config-based aggregator sources (Crunchbase, LinkedIn, etc.)
+//  3. Fallback to a simple canonical_name-based .com heuristic.
+//
+// All outputs are normalized to https://host form and deduplicated.
+func buildCompanyPrefetchURLs(canonicalName string, officialDomains []string) []string {
+	return buildCompanyPrefetchURLsWithLocale(canonicalName, officialDomains, "")
+}
+
+func languageToCode(lang string) string {
+	l := strings.ToLower(strings.TrimSpace(lang))
+	switch l {
+	case "ja", "japanese":
+		return "ja"
+	case "zh", "chinese":
+		return "zh"
+	case "ko", "korean":
+		return "ko"
+	default:
+		if len(l) == 2 {
+			return l
+		}
+		return ""
+	}
+}
+
+// buildCompanyPrefetchURLsWithLocale constructs URLs including locale-specific sources
+func buildCompanyPrefetchURLsWithLocale(canonicalName string, officialDomains []string, detectedLanguage string) []string {
+	seen := make(map[string]bool)
+	var urls []string
+
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		// Strip scheme and common prefixes for domain-only inputs
+		if !strings.Contains(raw, "/") || strings.HasPrefix(raw, "http") {
+			raw = strings.TrimPrefix(raw, "https://")
+			raw = strings.TrimPrefix(raw, "http://")
+			raw = strings.TrimPrefix(raw, "www.")
+		}
+		// For domain-only inputs, cut at first path/query/fragment separator
+		if !strings.Contains(raw, "/") {
+			if idx := strings.IndexAny(raw, "/?#"); idx != -1 {
+				raw = raw[:idx]
+			}
+		}
+		if raw == "" {
+			return
+		}
+		url := raw
+		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+			url = "https://" + raw
+		}
+		if !seen[url] {
+			seen[url] = true
+			urls = append(urls, url)
+		}
+	}
+
+	// 1) Official domains (highest priority)
+	for _, d := range officialDomains {
+		add(d)
+	}
+
+	// 2) Config-based aggregator sources (Crunchbase, LinkedIn, etc.)
+	if canonicalName != "" {
+		// Always include global company sources
+		configURLs := config.GetPrefetchURLs(canonicalName, "company")
+		for _, u := range configURLs {
+			add(u)
+		}
+
+		// Add locale-specific sources based on detected language
+		if detectedLanguage == "ja" {
+			jaURLs := config.GetPrefetchURLs(canonicalName, "company_ja")
+			for _, u := range jaURLs {
+				add(u)
+			}
+		} else if detectedLanguage == "zh" {
+			zhURLs := config.GetPrefetchURLs(canonicalName, "company_zh")
+			for _, u := range zhURLs {
+				add(u)
+			}
+		}
+	}
+
+	// 3) Simple fallback: derive from canonical name when no official domains are present
+	if len(officialDomains) == 0 && canonicalName != "" {
+		name := strings.ToLower(strings.TrimSpace(canonicalName))
+		if name != "" {
+			var b strings.Builder
+			for _, r := range name {
+				if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+					b.WriteRune(r)
+				}
+			}
+			host := b.String()
+			if host != "" {
+				add(host + ".com")
+			}
+		}
+	}
+
+	return urls
 }
 
 // ResearchWorkflow demonstrates composed patterns for complex research tasks.
@@ -360,6 +524,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			"tokens_used", refineResult.TokensUsed,
 		)
 		refinedQuery = refineResult.RefinedQuery
+
+		// Deep Research 2.0: Fallback - extract dimension names when research_areas is empty/generic
+		// LLM may return structured research_dimensions but leave research_areas sparse
+		if len(refineResult.ResearchAreas) == 0 && len(refineResult.ResearchDimensions) > 0 {
+			for _, dim := range refineResult.ResearchDimensions {
+				refineResult.ResearchAreas = append(refineResult.ResearchAreas, dim.Dimension)
+			}
+			logger.Info("Used research_dimensions fallback for research_areas",
+				"dimension_count", len(refineResult.ResearchDimensions),
+			)
+		}
 		baseContext["research_areas"] = refineResult.ResearchAreas
 		baseContext["original_query"] = input.Query
 		baseContext["refinement_rationale"] = refineResult.Rationale
@@ -380,6 +555,23 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 		if len(refineResult.DisambiguationTerms) > 0 {
 			baseContext["disambiguation_terms"] = refineResult.DisambiguationTerms
+		}
+		// Deep Research 2.0: Pass query type and structured dimensions
+		if refineResult.QueryType != "" {
+			baseContext["query_type"] = refineResult.QueryType
+		}
+		if len(refineResult.ResearchDimensions) > 0 {
+			baseContext["research_dimensions"] = refineResult.ResearchDimensions
+		}
+		// Deep Research 2.0: Pass localization information
+		if refineResult.LocalizationNeeded {
+			baseContext["localization_needed"] = refineResult.LocalizationNeeded
+		}
+		if len(refineResult.TargetLanguages) > 0 {
+			baseContext["target_languages"] = refineResult.TargetLanguages
+		}
+		if len(refineResult.LocalizedNames) > 0 {
+			baseContext["localized_names"] = refineResult.LocalizedNames
 		}
 		// Account for refinement tokens in the workflow total
 		totalTokens += refineResult.TokensUsed
@@ -407,8 +599,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 
 		// Emit refinement complete event with details (include canonical/entity hints for diagnostics)
+		dimCount := len(refineResult.ResearchDimensions)
+		if dimCount == 0 {
+			dimCount = len(refineResult.ResearchAreas) // Fallback to old field count
+		}
 		emitTaskUpdatePayload(ctx, input, activities.StreamEventProgress, "research-refiner",
-			fmt.Sprintf("Expanded query into %d research areas", len(refineResult.ResearchAreas)),
+			fmt.Sprintf("Expanded query into %d research dimensions", dimCount),
 			map[string]interface{}{
 				"original_query":       input.Query,
 				"refined_query":        refineResult.RefinedQuery,
@@ -421,6 +617,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				"exact_queries":        refineResult.ExactQueries,
 				"official_domains":     refineResult.OfficialDomains,
 				"disambiguation_terms": refineResult.DisambiguationTerms,
+				// Deep Research 2.0 fields
+				"query_type":          refineResult.QueryType,
+				"research_dimensions": refineResult.ResearchDimensions,
+				"localization_needed": refineResult.LocalizationNeeded,
+				"target_languages":    refineResult.TargetLanguages,
 			})
 	} else if err != nil {
 		logger.Warn("Query refinement failed, using original query", "error", err)
@@ -443,6 +644,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{
 			Success:      false,
 			ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
+		}, err
+	}
+
+	// Validate task contracts before execution
+	if err := validateTaskContracts(decomp.Subtasks, logger); err != nil {
+		logger.Error("Task contract validation failed", "error", err)
+		return TaskResult{
+			Success:      false,
+			ErrorMessage: fmt.Sprintf("Task contract validation failed: %v", err),
 		}, err
 	}
 
@@ -486,6 +696,130 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 	modelTier := determineModelTier(baseContext, "medium")
 	var agentResults []activities.AgentExecutionResult
+	var domainPrefetchResults []activities.AgentExecutionResult
+	domainPrefetchTokens := 0
+
+	// Step 2.1: Programmatic domain prefetch for company research
+	// This uses refinement hints (canonical_name, official_domains) to force web_fetch
+	// on likely official sites before freeform exploration.
+	domainPrefetchVersion := workflow.GetVersion(ctx, "domain_prefetch_v1", workflow.DefaultVersion, 1)
+	if domainPrefetchVersion >= 1 && strings.EqualFold(refineResult.QueryType, "company") {
+		enabled := true
+		if v, ok := baseContext["enable_domain_prefetch"].(bool); ok {
+			enabled = v
+		}
+		if enabled {
+			langCode := languageToCode(refineResult.DetectedLanguage)
+			urls := buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, refineResult.OfficialDomains, langCode)
+			if len(urls) > 0 {
+				// Cap prefetch attempts to avoid excessive tool usage (official + top aggregators)
+				if len(urls) > 5 {
+					urls = urls[:5]
+				}
+				logger.Info("Running domain prefetch for company research",
+					"urls", urls,
+				)
+
+				type prefetchPayload struct {
+					Result activities.AgentExecutionResult
+					URL    string
+					Index  int
+					Err    error
+				}
+
+				prefetchChan := workflow.NewChannel(ctx)
+
+				for i, u := range urls {
+					url := u
+					idx := i + 1
+
+					workflow.Go(ctx, func(gctx workflow.Context) {
+						prefetchContext := make(map[string]interface{})
+						for k, v := range baseContext {
+							prefetchContext[k] = v
+						}
+						prefetchContext["research_mode"] = "prefetch"
+						prefetchContext["prefetch_url"] = url
+
+						var prefetchResult activities.AgentExecutionResult
+						err := workflow.ExecuteActivity(gctx,
+							"ExecuteAgent",
+							activities.AgentExecutionInput{
+								Query:          fmt.Sprintf("Use web_fetch on %s and summarize the key facts from the official site.", url),
+								AgentID:        fmt.Sprintf("domain-prefetch-%d", idx),
+								Context:        prefetchContext,
+								Mode:           "standard",
+								SessionID:      input.SessionID,
+								History:        convertHistoryForAgent(input.History),
+								SuggestedTools: []string{"web_fetch"},
+								ToolParameters: map[string]interface{}{
+									"tool":           "web_fetch",
+									"url":            url,
+									"subpages":       5,
+									"subpage_target": "about team leadership company founders management products services", // Target pages with org info
+								},
+								ParentWorkflowID: input.ParentWorkflowID,
+							}).Get(gctx, &prefetchResult)
+
+						prefetchChan.Send(gctx, prefetchPayload{
+							Result: prefetchResult,
+							URL:    url,
+							Index:  idx,
+							Err:    err,
+						})
+					})
+				}
+
+				// Track failed domains to prevent re-fetching in subsequent iterations
+				var failedDomains []string
+
+				for range urls {
+					var payload prefetchPayload
+					prefetchChan.Receive(ctx, &payload)
+
+					if payload.Err != nil {
+						logger.Warn("Domain prefetch failed", "url", payload.URL, "error", payload.Err)
+						failedDomains = append(failedDomains, payload.URL)
+						continue
+					}
+					if !payload.Result.Success {
+						logger.Info("Domain prefetch completed without success", "url", payload.URL)
+						failedDomains = append(failedDomains, payload.URL)
+						continue
+					}
+
+					domainPrefetchResults = append(domainPrefetchResults, payload.Result)
+					domainPrefetchTokens += payload.Result.TokensUsed
+
+					if payload.Result.TokensUsed > 0 || payload.Result.InputTokens > 0 || payload.Result.OutputTokens > 0 {
+						inTok := payload.Result.InputTokens
+						outTok := payload.Result.OutputTokens
+						recCtx := opts.WithTokenRecordOptions(ctx)
+						_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+							UserID:       input.UserID,
+							SessionID:    input.SessionID,
+							TaskID:       workflowID,
+							AgentID:      fmt.Sprintf("domain-prefetch-%d", payload.Index),
+							Model:        payload.Result.ModelUsed,
+							Provider:     payload.Result.Provider,
+							InputTokens:  inTok,
+							OutputTokens: outTok,
+							Metadata:     map[string]interface{}{"phase": "domain_prefetch"},
+						}).Get(recCtx, nil)
+					}
+				}
+
+				// Store failed domains in context to prevent re-fetching in subsequent iterations
+				if len(failedDomains) > 0 {
+					baseContext["failed_domains"] = failedDomains
+					logger.Info("Tracked failed domains for skip in future fetches",
+						"failed_count", len(failedDomains),
+						"failed_urls", failedDomains,
+					)
+				}
+			}
+		}
+	}
 
 	// Step 2: Execute based on complexity
 	if decomp.ComplexityScore < 0.5 || len(decomp.Subtasks) <= 1 {
@@ -623,6 +957,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					subtaskContext := make(map[string]interface{})
 					for k, v := range baseContext {
 						subtaskContext[k] = v
+					}
+					if contract := buildTaskContractContext(subtask); contract != nil {
+						for k, v := range contract {
+							subtaskContext[k] = v
+						}
 					}
 					if len(subtask.Dependencies) > 0 {
 						depResults := make(map[string]string)
@@ -849,14 +1188,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 
 					hybridTasks[i] = execution.HybridTask{
-						ID:             subtask.ID,
-						Description:    subtask.Description,
-						SuggestedTools: subtask.SuggestedTools,
-						ToolParameters: subtask.ToolParameters,
-						PersonaID:      subtask.SuggestedPersona,
-						Role:           role,
-						ParentArea:     subtask.ParentArea,
-						Dependencies:   subtask.Dependencies,
+						ID:               subtask.ID,
+						Description:      subtask.Description,
+						SuggestedTools:   subtask.SuggestedTools,
+						ToolParameters:   subtask.ToolParameters,
+						PersonaID:        subtask.SuggestedPersona,
+						Role:             role,
+						ParentArea:       subtask.ParentArea,
+						Dependencies:     subtask.Dependencies,
+						ContextOverrides: buildTaskContractContext(subtask),
 					}
 				}
 
@@ -877,6 +1217,36 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 					if !hasWebFetch {
 						hybridTasks[i].SuggestedTools = append(hybridTasks[i].SuggestedTools, "web_fetch")
+					}
+				}
+
+				// Generate search routing plans for tasks with source guidance
+				for i := range hybridTasks {
+					subtask := decomp.Subtasks[i]
+					if subtask.SourceGuidance != nil && len(subtask.SourceGuidance.Required) > 0 {
+						var routeResult activities.SearchRouteResult
+						err := workflow.ExecuteActivity(ctx,
+							"RouteSearch",
+							activities.SearchRouteInput{
+								Query:       subtask.Description,
+								Dimension:   subtask.ParentArea,
+								SourceTypes: subtask.SourceGuidance.Required,
+								Priority:    "high",
+								Context:     baseContext,
+							}).Get(ctx, &routeResult)
+
+						if err == nil && len(routeResult.Routes) > 0 {
+							if hybridTasks[i].ContextOverrides == nil {
+								hybridTasks[i].ContextOverrides = make(map[string]interface{})
+							}
+							hybridTasks[i].ContextOverrides["search_routes"] = routeResult.Routes
+							hybridTasks[i].ContextOverrides["search_strategy"] = routeResult.Strategy
+							logger.Info("Initial research: Search routing plan generated",
+								"task", subtask.ID,
+								"routes", len(routeResult.Routes),
+								"strategy", routeResult.Strategy,
+							)
+						}
 					}
 				}
 
@@ -944,13 +1314,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 
 					parallelTasks[i] = execution.ParallelTask{
-						ID:             subtask.ID,
-						Description:    subtask.Description,
-						SuggestedTools: subtask.SuggestedTools,
-						ToolParameters: subtask.ToolParameters,
-						PersonaID:      subtask.SuggestedPersona,
-						Role:           role,
-						ParentArea:     subtask.ParentArea,
+						ID:               subtask.ID,
+						Description:      subtask.Description,
+						SuggestedTools:   subtask.SuggestedTools,
+						ToolParameters:   subtask.ToolParameters,
+						PersonaID:        subtask.SuggestedPersona,
+						Role:             role,
+						ParentArea:       subtask.ParentArea,
+						ContextOverrides: buildTaskContractContext(subtask),
 					}
 				}
 
@@ -971,6 +1342,36 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 					if !hasWebFetch {
 						parallelTasks[i].SuggestedTools = append(parallelTasks[i].SuggestedTools, "web_fetch")
+					}
+				}
+
+				// Generate search routing plans for tasks with source guidance
+				for i := range parallelTasks {
+					subtask := decomp.Subtasks[i]
+					if subtask.SourceGuidance != nil && len(subtask.SourceGuidance.Required) > 0 {
+						var routeResult activities.SearchRouteResult
+						err := workflow.ExecuteActivity(ctx,
+							"RouteSearch",
+							activities.SearchRouteInput{
+								Query:       subtask.Description,
+								Dimension:   subtask.ParentArea,
+								SourceTypes: subtask.SourceGuidance.Required,
+								Priority:    "high",
+								Context:     baseContext,
+							}).Get(ctx, &routeResult)
+
+						if err == nil && len(routeResult.Routes) > 0 {
+							if parallelTasks[i].ContextOverrides == nil {
+								parallelTasks[i].ContextOverrides = make(map[string]interface{})
+							}
+							parallelTasks[i].ContextOverrides["search_routes"] = routeResult.Routes
+							parallelTasks[i].ContextOverrides["search_strategy"] = routeResult.Strategy
+							logger.Info("Initial research: Search routing plan generated",
+								"task", subtask.ID,
+								"routes", len(routeResult.Routes),
+								"strategy", routeResult.Strategy,
+							)
+						}
 					}
 				}
 
@@ -1019,6 +1420,188 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				agentResults = parallelResult.Results
 				totalTokens = parallelResult.TotalTokens
+			}
+		}
+	}
+
+	// Merge domain prefetch evidence (if any) before localized search and gap analysis.
+	if len(domainPrefetchResults) > 0 {
+		agentResults = append(domainPrefetchResults, agentResults...)
+		totalTokens += domainPrefetchTokens
+	}
+
+	// Step 2.5: Optional localized search for multi-language coverage
+	localizedSearchEnabled := false
+	if v, ok := baseContext["enable_localized_search"].(bool); ok {
+		localizedSearchEnabled = v
+	}
+	if localizedSearchEnabled {
+		// Get target languages from context
+		var targetLanguages []string
+		if langs, ok := baseContext["target_languages"].([]interface{}); ok {
+			for _, l := range langs {
+				if ls, ok := l.(string); ok {
+					targetLanguages = append(targetLanguages, ls)
+				}
+			}
+		} else if langs, ok := baseContext["target_languages"].([]string); ok {
+			targetLanguages = langs
+		}
+
+		if len(targetLanguages) > 0 {
+			logger.Info("Running localized search",
+				"target_languages", targetLanguages,
+			)
+
+			// Get entity name for localization
+			entityName := ""
+			if en, ok := baseContext["canonical_name"].(string); ok {
+				entityName = en
+			} else {
+				entityName = input.Query
+			}
+
+			// Step 2.5.1: Detect entity localizations
+			var localizedNames map[string][]string
+			if presetNames, ok := baseContext["localized_names"].(map[string][]string); ok {
+				localizedNames = presetNames
+			} else {
+				var locResult activities.EntityLocalizationResult
+				locErr := workflow.ExecuteActivity(ctx,
+					"DetectEntityLocalization",
+					activities.EntityLocalizationInput{
+						EntityName:       entityName,
+						TargetLanguages:  targetLanguages,
+						EntityType:       "company", // Default entity type
+						ParentWorkflowID: input.ParentWorkflowID,
+					}).Get(ctx, &locResult)
+
+				if locErr == nil {
+					localizedNames = locResult.LocalizedNames
+					totalTokens += locResult.TokensUsed
+					if locResult.TokensUsed > 0 || locResult.InputTokens > 0 || locResult.OutputTokens > 0 {
+						inTok := locResult.InputTokens
+						outTok := locResult.OutputTokens
+						if inTok == 0 && outTok == 0 && locResult.TokensUsed > 0 {
+							inTok = int(float64(locResult.TokensUsed) * 0.6)
+							outTok = locResult.TokensUsed - inTok
+						}
+						recCtx := opts.WithTokenRecordOptions(ctx)
+						_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+							UserID:       input.UserID,
+							SessionID:    input.SessionID,
+							TaskID:       workflowID,
+							AgentID:      "entity_localization",
+							Model:        locResult.ModelUsed,
+							Provider:     locResult.Provider,
+							InputTokens:  inTok,
+							OutputTokens: outTok,
+							Metadata:     map[string]interface{}{"phase": "localization"},
+						}).Get(recCtx, nil)
+					}
+					logger.Info("Entity localization detected",
+						"languages", len(localizedNames),
+					)
+				} else {
+					logger.Warn("Entity localization failed, using original name",
+						"error", locErr,
+					)
+					localizedNames = make(map[string][]string)
+					for _, lang := range targetLanguages {
+						localizedNames[lang] = []string{entityName}
+					}
+				}
+			}
+
+			// Step 2.5.2: Spawn parallel localized searches using Temporal-safe channels
+			if len(localizedNames) > 0 {
+				type localizedPayload struct {
+					Results []activities.AgentExecutionResult
+					Tokens  int
+				}
+
+				localizedChan := workflow.NewChannel(ctx)
+				numLocalizedSearches := len(targetLanguages)
+
+				for _, lang := range targetLanguages {
+					lang := lang // Capture for goroutine
+					names := localizedNames[lang]
+					if len(names) == 0 {
+						names = []string{entityName}
+					}
+
+					workflow.Go(ctx, func(gctx workflow.Context) {
+						// Build localized search context
+						localCtx := make(map[string]interface{})
+						for k, v := range baseContext {
+							localCtx[k] = v
+						}
+						localCtx["search_language"] = lang
+						localCtx["localized_query"] = names[0] // Use first localized name
+						localCtx["is_localized_search"] = true
+
+						// Get regional sites for this language
+						regionalSites := activities.GetRegionalSourceSites(lang)
+						if len(regionalSites) > 0 {
+							localCtx["target_sites"] = regionalSites
+						}
+
+						// Query to use for localized search
+						localQuery := names[0]
+
+						// Execute the localized search
+						reactConfig := patterns.ReactConfig{
+							MaxIterations:     2, // Shorter for localized searches
+							MinIterations:     1,
+							ObservationWindow: 3,
+							MaxObservations:   10,
+							MaxThoughts:       5,
+							MaxActions:        5,
+						}
+						reactOpts := patterns.Options{
+							BudgetAgentMax: agentMaxTokens / 2, // Use half budget for localized
+							SessionID:      input.SessionID,
+							ModelTier:      modelTier,
+							Context:        localCtx,
+						}
+
+						result, err := patterns.ReactLoop(
+							gctx,
+							localQuery,
+							localCtx,
+							input.SessionID,
+							[]string{},
+							reactConfig,
+							reactOpts,
+						)
+
+						payload := localizedPayload{}
+						if err == nil && len(result.AgentResults) > 0 {
+							// Mark results as localized
+							for i := range result.AgentResults {
+								result.AgentResults[i].AgentID = fmt.Sprintf("%s-local-%s", result.AgentResults[i].AgentID, lang)
+							}
+							payload.Results = result.AgentResults
+							payload.Tokens = result.TotalTokens
+						}
+						localizedChan.Send(gctx, payload)
+					})
+				}
+
+				// Collect localized search results
+				for i := 0; i < numLocalizedSearches; i++ {
+					var payload localizedPayload
+					localizedChan.Receive(ctx, &payload)
+					if len(payload.Results) > 0 {
+						agentResults = append(agentResults, payload.Results...)
+						totalTokens += payload.Tokens
+					}
+				}
+
+				logger.Info("Localized search complete",
+					"total_agent_results", len(agentResults),
+					"languages_searched", numLocalizedSearches,
+				)
 			}
 		}
 	}
@@ -1138,6 +1721,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			)
 		} else {
 			logger.Warn("Fallback web search failed", "error", err)
+		}
+	}
+
+	// If fact extraction is requested, use the facts-aware synthesis template unless overridden.
+	if enabled, ok := baseContext["enable_fact_extraction"].(bool); ok && enabled {
+		if tmpl, ok := baseContext["synthesis_template"].(string); !ok || strings.TrimSpace(tmpl) == "" {
+			baseContext["synthesis_template"] = "research_with_facts"
 		}
 	}
 
@@ -1307,298 +1897,820 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}).Get(recCtx, nil)
 	}
 
-	// Step 3.5: Gap-filling loop (iterative re-search for undercovered areas)
-	// Version-gated for safe rollout and Temporal determinism
-	gapFillingVersion := workflow.GetVersion(ctx, "gap_filling_v1", workflow.DefaultVersion, 1)
-	if gapFillingVersion >= 1 {
-		// Check if gap_filling_enabled is explicitly set in context
-		gapEnabled := true // default to enabled for backward compat
-		gapEnabledExplicit := false
-		if v, ok := baseContext["gap_filling_enabled"]; ok {
-			gapEnabledExplicit = true
-			if b, ok := v.(bool); ok {
-				gapEnabled = b
+	// Step 3.5: Deep Research 2.0 Iterative Loop OR legacy gap-filling
+	// Check for iterative research mode first (new Deep Research 2.0 approach)
+	// Deep Research 2.0 is now enabled by default; set iterative_research_enabled=false in context to disable
+	iterativeResearchVersion := workflow.GetVersion(ctx, "iterative_research_v1", workflow.DefaultVersion, 1)
+	iterativeEnabled := true // Default to true for Deep Research 2.0
+	if v, ok := baseContext["iterative_research_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			iterativeEnabled = b
+		}
+	}
+
+	if iterativeResearchVersion >= 1 && iterativeEnabled {
+		// Deep Research 2.0: New iterative loop with coverage evaluation
+		maxIterations := 3 // default
+		if v, ok := baseContext["iterative_max_iterations"]; ok {
+			switch t := v.(type) {
+			case int:
+				maxIterations = t
+			case float64:
+				maxIterations = int(t)
+			}
+			if maxIterations < 1 {
+				maxIterations = 1
+			}
+			if maxIterations > 5 {
+				maxIterations = 5
 			}
 		}
 
-		// If not explicitly set, use legacy strategy-based logic (backward compat)
-		if !gapEnabledExplicit {
-			strategy := ""
-			if sv, ok := baseContext["research_strategy"].(string); ok {
-				strategy = strings.ToLower(strings.TrimSpace(sv))
-			}
-			if strategy == "quick" {
-				gapEnabled = false
-				logger.Info("Gap-filling disabled for quick strategy (legacy logic)")
+		logger.Info("Deep Research 2.0: Starting iterative research loop",
+			"max_iterations", maxIterations,
+		)
+
+		// Track if gap-filling actually added new results
+		gapFillingOccurred := false
+
+		// Extract research dimensions from refinement
+		var researchDimensions []activities.ResearchDimension
+		if dims, ok := baseContext["research_dimensions"]; ok {
+			if dimSlice, ok := dims.([]activities.ResearchDimension); ok {
+				researchDimensions = dimSlice
+			} else if dimSlice, ok := dims.([]interface{}); ok {
+				// Convert from interface slice
+				for _, d := range dimSlice {
+					if dm, ok := d.(map[string]interface{}); ok {
+						dim := activities.ResearchDimension{}
+						if v, ok := dm["dimension"].(string); ok {
+							dim.Dimension = v
+						}
+						if v, ok := dm["priority"].(string); ok {
+							dim.Priority = v
+						}
+						if qs, ok := dm["questions"].([]interface{}); ok {
+							for _, q := range qs {
+								if s, ok := q.(string); ok {
+									dim.Questions = append(dim.Questions, s)
+								}
+							}
+						}
+						if sts, ok := dm["source_types"].([]interface{}); ok {
+							for _, st := range sts {
+								if s, ok := st.(string); ok {
+									dim.SourceTypes = append(dim.SourceTypes, s)
+								}
+							}
+						}
+						researchDimensions = append(researchDimensions, dim)
+					}
+				}
 			}
 		}
 
-		// Skip gap-filling if disabled
-		if !gapEnabled {
-			logger.Info("Gap-filling disabled via configuration")
-		} else {
-			// Check iteration count from context (prevents infinite loops)
-			iterationCount := 0
-			if baseContext != nil {
-				if v, ok := baseContext["gap_iteration"].(int); ok {
-					iterationCount = v
-				}
-			}
+		currentSynthesis := synthesis.FinalResult
+		currentKeyFindings := []string{}
+		currentCoveredAreas := []string{}
 
-			// Read max iterations from context with fallback to default and clamping
-			maxGapIterations := 2 // default
-			if v, ok := baseContext["gap_filling_max_iterations"]; ok {
-				switch t := v.(type) {
-				case int:
-					maxGapIterations = t
-				case float64:
-					maxGapIterations = int(t)
-				}
-				// Clamp to reasonable range
-				if maxGapIterations < 1 {
-					maxGapIterations = 1
-				}
-				if maxGapIterations > 5 {
-					maxGapIterations = 5
-				}
-			}
+		for iteration := 1; iteration <= maxIterations; iteration++ {
+			logger.Info("Deep Research 2.0: Iteration start",
+				"iteration", iteration,
+				"max_iterations", maxIterations,
+			)
 
-			// Only attempt gap-filling if we haven't exceeded max iterations
-			if iterationCount < maxGapIterations {
-				// Version gate for CJK gap detection phrases (for Temporal replay determinism)
-				cjkGapPhrasesVersion := workflow.GetVersion(ctx, "cjk_gap_phrases_v1", workflow.DefaultVersion, 1)
-				if cjkGapPhrasesVersion >= 1 {
-					baseContext["enable_cjk_gap_phrases"] = true
-				}
+			// Step 3.5.1: Intermediate synthesis (combine results so far)
+			if iteration > 1 && len(agentResults) > 0 {
+				var intermediateSynthResult activities.IntermediateSynthesisResult
+				err := workflow.ExecuteActivity(ctx,
+					"IntermediateSynthesis",
+					activities.IntermediateSynthesisInput{
+						Query:             refinedQuery,
+						Iteration:         iteration,
+						MaxIterations:     maxIterations,
+						AgentResults:      agentResults,
+						PreviousSynthesis: currentSynthesis,
+						CoverageGaps:      []string{}, // Will be filled by coverage evaluator
+						Context:           baseContext,
+						ParentWorkflowID:  input.ParentWorkflowID,
+					}).Get(ctx, &intermediateSynthResult)
 
-				// Strategy-aware gap detection (pass baseContext instead of strategy string)
-				gapAnalysis := analyzeGaps(synthesis.FinalResult, refineResult.ResearchAreas, baseContext)
+				if err == nil {
+					currentSynthesis = intermediateSynthResult.Synthesis
+					currentKeyFindings = intermediateSynthResult.KeyFindings
+					currentCoveredAreas = intermediateSynthResult.CoverageAreas
+					totalTokens += intermediateSynthResult.TokensUsed
+					if intermediateSynthResult.TokensUsed > 0 || intermediateSynthResult.InputTokens > 0 || intermediateSynthResult.OutputTokens > 0 {
+						inTok := intermediateSynthResult.InputTokens
+						outTok := intermediateSynthResult.OutputTokens
+						if inTok == 0 && outTok == 0 && intermediateSynthResult.TokensUsed > 0 {
+							inTok = int(float64(intermediateSynthResult.TokensUsed) * 0.6)
+							outTok = intermediateSynthResult.TokensUsed - inTok
+						}
+						recCtx := opts.WithTokenRecordOptions(ctx)
+						_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+							UserID:       input.UserID,
+							SessionID:    input.SessionID,
+							TaskID:       workflowID,
+							AgentID:      "intermediate_synthesis",
+							Model:        intermediateSynthResult.ModelUsed,
+							Provider:     intermediateSynthResult.Provider,
+							InputTokens:  inTok,
+							OutputTokens: outTok,
+							Metadata:     map[string]interface{}{"phase": "intermediate_synthesis"},
+						}).Get(recCtx, nil)
+					}
 
-				if len(gapAnalysis.UndercoveredAreas) > 0 {
-					logger.Info("Detected coverage gaps; triggering targeted re-search",
-						"gaps", gapAnalysis.UndercoveredAreas,
-						"iteration", iterationCount,
+					logger.Info("Deep Research 2.0: Intermediate synthesis complete",
+						"iteration", iteration,
+						"confidence", intermediateSynthResult.ConfidenceScore,
+						"key_findings", len(currentKeyFindings),
 					)
 
-					// Build targeted search queries for gaps
-					gapQueries := buildGapQueries(gapAnalysis.UndercoveredAreas, input.Query)
-
-					// Execute targeted searches in parallel using Temporal-safe channels
-					var allGapResults []activities.AgentExecutionResult
-					var gapTotalTokens int
-
-					// Define payload type once (shared between send and receive)
-					type gapResultPayload struct {
-						Results []activities.AgentExecutionResult
-						Tokens  int
+					// Early exit if confidence is high enough
+					if intermediateSynthResult.ConfidenceScore >= 0.85 && !intermediateSynthResult.NeedsMoreResearch {
+						logger.Info("Deep Research 2.0: High confidence achieved, exiting loop early",
+							"iteration", iteration,
+							"confidence", intermediateSynthResult.ConfidenceScore,
+						)
+						break
 					}
+				} else {
+					logger.Warn("Deep Research 2.0: Intermediate synthesis failed", "error", err)
+				}
+			}
 
-					// Use Temporal-safe channel to collect gap results
-					gapResultsChan := workflow.NewChannel(ctx)
-					numGapQueries := len(gapQueries)
+			// Step 3.5.2: Evaluate coverage and identify gaps
+			var coverageResult activities.CoverageEvaluationResult
+			err := workflow.ExecuteActivity(ctx,
+				"EvaluateCoverage",
+				activities.CoverageEvaluationInput{
+					Query:              refinedQuery,
+					ResearchDimensions: researchDimensions,
+					CurrentSynthesis:   currentSynthesis,
+					CoveredAreas:       currentCoveredAreas,
+					KeyFindings:        currentKeyFindings,
+					Iteration:          iteration,
+					MaxIterations:      maxIterations,
+					Context:            baseContext,
+					ParentWorkflowID:   input.ParentWorkflowID,
+				}).Get(ctx, &coverageResult)
 
-					// Concurrency cap: limit in-flight gap searches to 3
-					sem := workflow.NewSemaphore(ctx, 3)
+			if err != nil {
+				logger.Warn("Deep Research 2.0: Coverage evaluation failed", "error", err)
+				break // Exit loop on error
+			}
 
-					for _, gapQuery := range gapQueries {
-						gapQuery := gapQuery // Capture for goroutine
+			totalTokens += coverageResult.TokensUsed
+			if coverageResult.TokensUsed > 0 || coverageResult.InputTokens > 0 || coverageResult.OutputTokens > 0 {
+				inTok := coverageResult.InputTokens
+				outTok := coverageResult.OutputTokens
+				if inTok == 0 && outTok == 0 && coverageResult.TokensUsed > 0 {
+					inTok = int(float64(coverageResult.TokensUsed) * 0.6)
+					outTok = coverageResult.TokensUsed - inTok
+				}
+				recCtx := opts.WithTokenRecordOptions(ctx)
+				_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       input.UserID,
+					SessionID:    input.SessionID,
+					TaskID:       workflowID,
+					AgentID:      "coverage_evaluator",
+					Model:        coverageResult.ModelUsed,
+					Provider:     coverageResult.Provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata:     map[string]interface{}{"phase": "coverage_eval"},
+				}).Get(recCtx, nil)
+			}
 
-						workflow.Go(ctx, func(gctx workflow.Context) {
+			logger.Info("Deep Research 2.0: Coverage evaluation complete",
+				"iteration", iteration,
+				"overall_coverage", coverageResult.OverallCoverage,
+				"critical_gaps", len(coverageResult.CriticalGaps),
+				"should_continue", coverageResult.ShouldContinue,
+				"recommended_action", coverageResult.RecommendedAction,
+			)
 
-							// Acquire a permit; on failure, send empty payload to keep counts balanced
-							if err := sem.Acquire(gctx, 1); err != nil {
-								var empty gapResultPayload
-								gapResultsChan.Send(gctx, empty)
-								return
-							}
-							defer sem.Release(1)
+			// Check if we should stop
+			if !coverageResult.ShouldContinue || coverageResult.RecommendedAction == "complete" {
+				logger.Info("Deep Research 2.0: Coverage sufficient, exiting loop",
+					"iteration", iteration,
+					"coverage", coverageResult.OverallCoverage,
+				)
+				break
+			}
 
-							gapContext := make(map[string]interface{})
-							for k, v := range baseContext {
-								gapContext[k] = v
-							}
-							gapContext["research_mode"] = "gap_fill"
-							gapContext["target_area"] = gapQuery.TargetArea
-							gapContext["gap_iteration"] = iterationCount + 1
+			// No critical gaps to fill - exit
+			if len(coverageResult.CriticalGaps) == 0 && len(coverageResult.OptionalGaps) == 0 {
+				logger.Info("Deep Research 2.0: No gaps identified, exiting loop",
+					"iteration", iteration,
+				)
+				break
+			}
 
-							// Use react_max_iterations from context if provided, default to 2 for gap-filling efficiency
-							gapReactMaxIterations := 2
-							if v, ok := baseContext["react_max_iterations"]; ok {
-								switch t := v.(type) {
-								case int:
-									gapReactMaxIterations = t
-								case float64:
-									gapReactMaxIterations = int(t)
-								}
-								// Clamp to reasonable range
-								if gapReactMaxIterations < 1 {
-									gapReactMaxIterations = 1
-								}
-								if gapReactMaxIterations > 10 {
-									gapReactMaxIterations = 10
-								}
-							}
+			// Step 3.5.3: Generate subqueries to fill gaps
+			allGaps := append(coverageResult.CriticalGaps, coverageResult.OptionalGaps...)
+			var subqueryResult activities.SubqueryGeneratorResult
+			err = workflow.ExecuteActivity(ctx,
+				"GenerateSubqueries",
+				activities.SubqueryGeneratorInput{
+					Query:            refinedQuery,
+					CoverageGaps:     allGaps,
+					CurrentSynthesis: currentSynthesis,
+					Iteration:        iteration,
+					MaxSubqueries:    3, // Limit to 3 per iteration
+					Context:          baseContext,
+					ParentWorkflowID: input.ParentWorkflowID,
+					// Deep Research 2.0: Source-type aware search
+					EntityName:      refineResult.CanonicalName,
+					QueryType:       refineResult.QueryType,
+					TargetLanguages: refineResult.TargetLanguages,
+				}).Get(ctx, &subqueryResult)
 
-							reactConfig := patterns.ReactConfig{
-								MaxIterations:     gapReactMaxIterations, // Respect react_max_iterations from strategy
-								MinIterations:     2,
-								ObservationWindow: 3,  // Keep last 3 observations in context
-								MaxObservations:   20, // Prevent unbounded growth
-								MaxThoughts:       10,
-								MaxActions:        10,
-							}
-							reactOpts := patterns.Options{
-								BudgetAgentMax: agentMaxTokens,
-								SessionID:      input.SessionID,
-								ModelTier:      modelTier,
-								Context:        gapContext,
-							}
+			if err != nil {
+				logger.Warn("Deep Research 2.0: Subquery generation failed", "error", err)
+				break
+			}
 
-							gapResult, err := patterns.ReactLoop(
-								gctx,
-								gapQuery.Query,
-								gapContext,
-								input.SessionID,
-								[]string{}, // No history for gap queries
-								reactConfig,
-								reactOpts,
+			totalTokens += subqueryResult.TokensUsed
+			if subqueryResult.TokensUsed > 0 || subqueryResult.InputTokens > 0 || subqueryResult.OutputTokens > 0 {
+				inTok := subqueryResult.InputTokens
+				outTok := subqueryResult.OutputTokens
+				if inTok == 0 && outTok == 0 && subqueryResult.TokensUsed > 0 {
+					inTok = int(float64(subqueryResult.TokensUsed) * 0.6)
+					outTok = subqueryResult.TokensUsed - inTok
+				}
+				recCtx := opts.WithTokenRecordOptions(ctx)
+				_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       input.UserID,
+					SessionID:    input.SessionID,
+					TaskID:       workflowID,
+					AgentID:      "subquery_generator",
+					Model:        subqueryResult.ModelUsed,
+					Provider:     subqueryResult.Provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata:     map[string]interface{}{"phase": "subquery_generation"},
+				}).Get(recCtx, nil)
+			}
+
+			if len(subqueryResult.Subqueries) == 0 {
+				logger.Info("Deep Research 2.0: No subqueries generated, exiting loop",
+					"iteration", iteration,
+				)
+				break
+			}
+
+			logger.Info("Deep Research 2.0: Generated gap-filling subqueries",
+				"iteration", iteration,
+				"count", len(subqueryResult.Subqueries),
+			)
+
+			// Step 3.5.4: Execute gap-filling agents in parallel
+			type gapAgentResult struct {
+				Results []activities.AgentExecutionResult
+				Tokens  int
+			}
+			gapChan := workflow.NewChannel(ctx)
+			numGapAgents := len(subqueryResult.Subqueries)
+			sem := workflow.NewSemaphore(ctx, 3) // Max 3 concurrent
+
+			for _, sq := range subqueryResult.Subqueries {
+				sq := sq // Capture
+				workflow.Go(ctx, func(gctx workflow.Context) {
+					if err := sem.Acquire(gctx, 1); err != nil {
+						var empty gapAgentResult
+						gapChan.Send(gctx, empty)
+						return
+					}
+					defer sem.Release(1)
+
+					// Build context with task contract
+					gapContext := make(map[string]interface{})
+					for k, v := range baseContext {
+						gapContext[k] = v
+					}
+					gapContext["research_mode"] = "gap_fill"
+					gapContext["target_gap"] = sq.TargetGap
+					gapContext["iteration"] = iteration
+
+					// Apply task contract if present
+					if sq.SourceGuidance != nil {
+						gapContext["source_guidance"] = map[string]interface{}{
+							"required": sq.SourceGuidance.Required,
+							"optional": sq.SourceGuidance.Optional,
+							"avoid":    sq.SourceGuidance.Avoid,
+						}
+
+						// Generate search routing plan based on source guidance
+						var routeResult activities.SearchRouteResult
+						routeErr := workflow.ExecuteActivity(gctx,
+							"RouteSearch",
+							activities.SearchRouteInput{
+								Query:       sq.Query,
+								Dimension:   sq.TargetGap,
+								SourceTypes: sq.SourceGuidance.Required,
+								Priority:    "high", // Gap-filling is high priority
+								Context:     gapContext,
+							}).Get(gctx, &routeResult)
+
+						if routeErr == nil && len(routeResult.Routes) > 0 {
+							gapContext["search_routes"] = routeResult.Routes
+							gapContext["search_strategy"] = routeResult.Strategy
+							logger.Info("Deep Research 2.0: Search routing plan generated",
+								"query", sq.Query,
+								"routes", len(routeResult.Routes),
+								"strategy", routeResult.Strategy,
 							)
-
-							// Send result to channel
-							payload := gapResultPayload{}
-							if err == nil && len(gapResult.AgentResults) > 0 {
-								payload.Results = gapResult.AgentResults
-								payload.Tokens = gapResult.TotalTokens
-							}
-							gapResultsChan.Send(gctx, payload)
-						})
-					}
-
-					// Collect all gap results from channel (Temporal-safe)
-					for i := 0; i < numGapQueries; i++ {
-						var payload gapResultPayload
-						gapResultsChan.Receive(ctx, &payload)
-						if len(payload.Results) > 0 {
-							allGapResults = append(allGapResults, payload.Results...)
-							gapTotalTokens += payload.Tokens
+						} else {
+							logger.Warn("Deep Research 2.0: Failed to generate search routing plan",
+								"query", sq.Query,
+								"error", routeErr,
+							)
 						}
 					}
-					totalTokens += gapTotalTokens
+					if sq.OutputFormat != nil {
+						gapContext["output_format"] = map[string]interface{}{
+							"type":            sq.OutputFormat.Type,
+							"required_fields": sq.OutputFormat.RequiredFields,
+							"optional_fields": sq.OutputFormat.OptionalFields,
+						}
+					}
+					if sq.SearchBudget != nil {
+						gapContext["search_budget"] = map[string]interface{}{
+							"max_queries": sq.SearchBudget.MaxQueries,
+							"max_fetches": sq.SearchBudget.MaxFetches,
+						}
+					}
+					if sq.Boundaries != nil {
+						gapContext["boundaries"] = map[string]interface{}{
+							"in_scope":     sq.Boundaries.InScope,
+							"out_of_scope": sq.Boundaries.OutOfScope,
+						}
+					}
 
-					// If we got new evidence, re-collect citations and re-synthesize
-					if len(allGapResults) > 0 {
-						logger.Info("Gap-filling search completed",
-							"gap_results", len(allGapResults),
-							"iteration", iterationCount+1,
+					// Execute agent with ReactLoop for deeper exploration
+					reactConfig := patterns.ReactConfig{
+						MaxIterations:     2,
+						MinIterations:     1,
+						ObservationWindow: 3,
+						MaxObservations:   10,
+						MaxThoughts:       5,
+						MaxActions:        5,
+					}
+					reactOpts := patterns.Options{
+						BudgetAgentMax: agentMaxTokens,
+						SessionID:      input.SessionID,
+						UserID:         input.UserID,
+						ModelTier:      modelTier,
+						Context:        gapContext,
+					}
+
+					reactResult, err := patterns.ReactLoop(
+						gctx,
+						sq.Query,
+						gapContext,
+						input.SessionID,
+						[]string{},
+						reactConfig,
+						reactOpts,
+					)
+
+					payload := gapAgentResult{}
+					if err == nil && len(reactResult.AgentResults) > 0 {
+						payload.Results = reactResult.AgentResults
+						payload.Tokens = reactResult.TotalTokens
+					}
+					gapChan.Send(gctx, payload)
+				})
+			}
+
+			// Collect gap-filling results
+			for i := 0; i < numGapAgents; i++ {
+				var payload gapAgentResult
+				gapChan.Receive(ctx, &payload)
+				if len(payload.Results) > 0 {
+					agentResults = append(agentResults, payload.Results...)
+					originalAgentResults = append(originalAgentResults, payload.Results...)
+					totalTokens += payload.Tokens
+					gapFillingOccurred = true // Mark that new research was added
+				}
+			}
+
+			logger.Info("Deep Research 2.0: Gap-filling iteration complete",
+				"iteration", iteration,
+				"total_agent_results", len(agentResults),
+			)
+		}
+
+		// After iterative loop, re-collect citations (always) and re-synthesize (only if gap-filling occurred)
+		if len(agentResults) > 0 {
+			var resultsForCitations []interface{}
+			for _, ar := range originalAgentResults {
+				var toolExecs []interface{}
+				for _, te := range ar.ToolExecutions {
+					toolExecs = append(toolExecs, map[string]interface{}{
+						"tool":    te.Tool,
+						"success": te.Success,
+						"output":  te.Output,
+						"error":   te.Error,
+					})
+				}
+				resultsForCitations = append(resultsForCitations, map[string]interface{}{
+					"agent_id":        ar.AgentID,
+					"tool_executions": toolExecs,
+					"response":        ar.Response,
+				})
+			}
+
+			now := workflow.Now(ctx)
+			updatedCitations, _ := metadata.CollectCitations(resultsForCitations, now, 0)
+			if len(updatedCitations) > 0 {
+				// Apply entity-based filtering consistently (same as initial collection)
+				canonicalName, _ := baseContext["canonical_name"].(string)
+				if canonicalName != "" {
+					var domains []string
+					if d, ok := baseContext["official_domains"].([]string); ok {
+						domains = d
+					}
+					var aliases []string
+					if eq, ok := baseContext["exact_queries"].([]string); ok {
+						aliases = eq
+					}
+					beforeCount := len(updatedCitations)
+					updatedCitations = FilterCitationsByEntity(updatedCitations, canonicalName, aliases, domains)
+					logger.Info("Gap-filling citation filter applied",
+						"before", beforeCount,
+						"after", len(updatedCitations),
+						"removed", beforeCount-len(updatedCitations),
+					)
+				}
+				collectedCitations = updatedCitations
+
+				// Update context with new citations
+				var b strings.Builder
+				for idx, c := range updatedCitations {
+					title := c.Title
+					if title == "" {
+						title = c.Source
+					}
+					if c.PublishedDate != nil {
+						fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx+1, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+					} else {
+						fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx+1, title, c.URL, c.Source)
+					}
+				}
+				baseContext["available_citations"] = strings.TrimRight(b.String(), "\n")
+				baseContext["citation_count"] = len(updatedCitations)
+			}
+
+			// Only re-synthesize if gap-filling actually added new research results
+			// Skip if no gaps were filled to avoid degrading already-good synthesis
+			if gapFillingOccurred {
+				var finalSynthesis activities.SynthesisResult
+				err := workflow.ExecuteActivity(ctx,
+					activities.SynthesizeResultsLLM,
+					activities.SynthesisInput{
+						Query:              input.Query,
+						AgentResults:       agentResults,
+						Context:            baseContext,
+						CollectedCitations: collectedCitations,
+						ParentWorkflowID:   input.ParentWorkflowID,
+					}).Get(ctx, &finalSynthesis)
+
+				if err == nil {
+					synthesis = finalSynthesis
+					totalTokens += finalSynthesis.TokensUsed
+					logger.Info("Deep Research 2.0: Final synthesis complete (with gap-filling)",
+						"total_citations", len(collectedCitations),
+					)
+				}
+			} else {
+				logger.Info("Deep Research 2.0: Skipping final re-synthesis (no gap-filling occurred)",
+					"total_citations", len(collectedCitations),
+				)
+			}
+		}
+
+		logger.Info("Deep Research 2.0: Iterative loop complete",
+			"total_tokens", totalTokens,
+			"total_agents", len(agentResults),
+		)
+
+	} else {
+		// Legacy gap-filling loop (backward compatibility)
+		// Version-gated for safe rollout and Temporal determinism
+		gapFillingVersion := workflow.GetVersion(ctx, "gap_filling_v1", workflow.DefaultVersion, 1)
+		if gapFillingVersion >= 1 {
+			// Check if gap_filling_enabled is explicitly set in context
+			gapEnabled := true // default to enabled for backward compat
+			gapEnabledExplicit := false
+			if v, ok := baseContext["gap_filling_enabled"]; ok {
+				gapEnabledExplicit = true
+				if b, ok := v.(bool); ok {
+					gapEnabled = b
+				}
+			}
+
+			// If not explicitly set, use legacy strategy-based logic (backward compat)
+			if !gapEnabledExplicit {
+				strategy := ""
+				if sv, ok := baseContext["research_strategy"].(string); ok {
+					strategy = strings.ToLower(strings.TrimSpace(sv))
+				}
+				if strategy == "quick" {
+					gapEnabled = false
+					logger.Info("Gap-filling disabled for quick strategy (legacy logic)")
+				}
+			}
+
+			// Skip gap-filling if disabled
+			if !gapEnabled {
+				logger.Info("Gap-filling disabled via configuration")
+			} else {
+				// Check iteration count from context (prevents infinite loops)
+				iterationCount := 0
+				if baseContext != nil {
+					if v, ok := baseContext["gap_iteration"].(int); ok {
+						iterationCount = v
+					}
+				}
+
+				// Read max iterations from context with fallback to default and clamping
+				maxGapIterations := 2 // default
+				if v, ok := baseContext["gap_filling_max_iterations"]; ok {
+					switch t := v.(type) {
+					case int:
+						maxGapIterations = t
+					case float64:
+						maxGapIterations = int(t)
+					}
+					// Clamp to reasonable range
+					if maxGapIterations < 1 {
+						maxGapIterations = 1
+					}
+					if maxGapIterations > 5 {
+						maxGapIterations = 5
+					}
+				}
+
+				// Only attempt gap-filling if we haven't exceeded max iterations
+				if iterationCount < maxGapIterations {
+					// Version gate for CJK gap detection phrases (for Temporal replay determinism)
+					cjkGapPhrasesVersion := workflow.GetVersion(ctx, "cjk_gap_phrases_v1", workflow.DefaultVersion, 1)
+					if cjkGapPhrasesVersion >= 1 {
+						baseContext["enable_cjk_gap_phrases"] = true
+					}
+
+					// Strategy-aware gap detection (pass baseContext instead of strategy string)
+					gapAnalysis := analyzeGaps(synthesis.FinalResult, refineResult.ResearchAreas, baseContext)
+
+					if len(gapAnalysis.UndercoveredAreas) > 0 {
+						logger.Info("Detected coverage gaps; triggering targeted re-search",
+							"gaps", gapAnalysis.UndercoveredAreas,
+							"iteration", iterationCount,
 						)
 
-						// Combine for synthesis (filtered) and for citations (unfiltered)
-						// Synthesis uses filtered agentResults to keep reasoning on-entity.
-						// Citations use the original (unfiltered) results to maximize evidence.
-						combinedAgentResults := append(allGapResults, agentResults...)
-						combinedForCitations := append(allGapResults, originalAgentResults...)
+						// Build targeted search queries for gaps
+						gapQueries := buildGapQueries(gapAnalysis.UndercoveredAreas, input.Query)
 
-						var resultsForCitations []interface{}
-						for _, ar := range combinedForCitations {
-							var toolExecs []interface{}
-							if len(ar.ToolExecutions) > 0 {
-								for _, te := range ar.ToolExecutions {
-									toolExecs = append(toolExecs, map[string]interface{}{
-										"tool":    te.Tool,
-										"success": te.Success,
-										"output":  te.Output,
-										"error":   te.Error,
-									})
+						// Execute targeted searches in parallel using Temporal-safe channels
+						var allGapResults []activities.AgentExecutionResult
+						var gapTotalTokens int
+
+						// Define payload type once (shared between send and receive)
+						type gapResultPayload struct {
+							Results []activities.AgentExecutionResult
+							Tokens  int
+						}
+
+						// Use Temporal-safe channel to collect gap results
+						gapResultsChan := workflow.NewChannel(ctx)
+						numGapQueries := len(gapQueries)
+
+						// Concurrency cap: limit in-flight gap searches to 3
+						sem := workflow.NewSemaphore(ctx, 3)
+
+						for _, gapQuery := range gapQueries {
+							gapQuery := gapQuery // Capture for goroutine
+
+							workflow.Go(ctx, func(gctx workflow.Context) {
+
+								// Acquire a permit; on failure, send empty payload to keep counts balanced
+								if err := sem.Acquire(gctx, 1); err != nil {
+									var empty gapResultPayload
+									gapResultsChan.Send(gctx, empty)
+									return
 								}
-							}
-							resultsForCitations = append(resultsForCitations, map[string]interface{}{
-								"agent_id":        ar.AgentID,
-								"tool_executions": toolExecs,
-								"response":        ar.Response,
+								defer sem.Release(1)
+
+								gapContext := make(map[string]interface{})
+								for k, v := range baseContext {
+									gapContext[k] = v
+								}
+								gapContext["research_mode"] = "gap_fill"
+								gapContext["target_area"] = gapQuery.TargetArea
+								gapContext["gap_iteration"] = iterationCount + 1
+
+								// Use react_max_iterations from context if provided, default to 2 for gap-filling efficiency
+								gapReactMaxIterations := 2
+								if v, ok := baseContext["react_max_iterations"]; ok {
+									switch t := v.(type) {
+									case int:
+										gapReactMaxIterations = t
+									case float64:
+										gapReactMaxIterations = int(t)
+									}
+									// Clamp to reasonable range
+									if gapReactMaxIterations < 1 {
+										gapReactMaxIterations = 1
+									}
+									if gapReactMaxIterations > 10 {
+										gapReactMaxIterations = 10
+									}
+								}
+
+								reactConfig := patterns.ReactConfig{
+									MaxIterations:     gapReactMaxIterations, // Respect react_max_iterations from strategy
+									MinIterations:     2,
+									ObservationWindow: 3,  // Keep last 3 observations in context
+									MaxObservations:   20, // Prevent unbounded growth
+									MaxThoughts:       10,
+									MaxActions:        10,
+								}
+								reactOpts := patterns.Options{
+									BudgetAgentMax: agentMaxTokens,
+									SessionID:      input.SessionID,
+									ModelTier:      modelTier,
+									Context:        gapContext,
+								}
+
+								gapResult, err := patterns.ReactLoop(
+									gctx,
+									gapQuery.Query,
+									gapContext,
+									input.SessionID,
+									[]string{}, // No history for gap queries
+									reactConfig,
+									reactOpts,
+								)
+
+								// Send result to channel
+								payload := gapResultPayload{}
+								if err == nil && len(gapResult.AgentResults) > 0 {
+									payload.Results = gapResult.AgentResults
+									payload.Tokens = gapResult.TotalTokens
+								}
+								gapResultsChan.Send(gctx, payload)
 							})
 						}
 
-						now := workflow.Now(ctx)
-						allCitations, _ := metadata.CollectCitations(resultsForCitations, now, 0) // Use 0 for default max (15)
-
-						if len(allCitations) > 0 {
-
-							// Re-synthesize with augmented evidence
-							var enhancedSynthesis activities.SynthesisResult
-
-							// Build enhanced context with new citations
-							enhancedContext := make(map[string]interface{})
-							for k, v := range baseContext {
-								enhancedContext[k] = v
-							}
-							enhancedContext["research_areas"] = refineResult.ResearchAreas
-							enhancedContext["gap_iteration"] = iterationCount + 1
-							// Inherit synthesis tier from initial synthesis (respects user override)
-							if synthTier, ok := baseContext["model_tier"].(string); ok {
-								enhancedContext["model_tier"] = synthTier
-							}
-							// Note: synthesis_model_tier override is already in baseContext, will be used
-
-							// Format citations for synthesis
-							if len(allCitations) > 0 {
-								var b strings.Builder
-								for idx, c := range allCitations {
-									title := c.Title
-									if title == "" {
-										title = c.Source
-									}
-									if c.PublishedDate != nil {
-										fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx+1, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
-									} else {
-										fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx+1, title, c.URL, c.Source)
-									}
-								}
-								enhancedContext["available_citations"] = strings.TrimRight(b.String(), "\n")
-								enhancedContext["citation_count"] = len(allCitations)
-
-								// Also store structured citations for SSE emission
-								out := make([]map[string]interface{}, 0, len(allCitations))
-								for _, c := range allCitations {
-									out = append(out, map[string]interface{}{
-										"url":               c.URL,
-										"title":             c.Title,
-										"source":            c.Source,
-										"credibility_score": c.CredibilityScore,
-										"quality_score":     c.QualityScore,
-									})
-								}
-								enhancedContext["citations"] = out
-							}
-
-							err = workflow.ExecuteActivity(ctx,
-								activities.SynthesizeResultsLLM,
-								activities.SynthesisInput{
-									Query:              input.Query,
-									AgentResults:       combinedAgentResults, // Combined results with global dedup
-									Context:            enhancedContext,
-									CollectedCitations: allCitations,
-									ParentWorkflowID:   input.ParentWorkflowID,
-								}).Get(ctx, &enhancedSynthesis)
-
-							if err == nil {
-								synthesis = enhancedSynthesis
-								collectedCitations = allCitations
-								totalTokens += enhancedSynthesis.TokensUsed
-								logger.Info("Gap-filling synthesis completed",
-									"iteration", iterationCount+1,
-									"total_citations", len(allCitations),
-								)
+						// Collect all gap results from channel (Temporal-safe)
+						for i := 0; i < numGapQueries; i++ {
+							var payload gapResultPayload
+							gapResultsChan.Receive(ctx, &payload)
+							if len(payload.Results) > 0 {
+								allGapResults = append(allGapResults, payload.Results...)
+								gapTotalTokens += payload.Tokens
 							}
 						}
+						totalTokens += gapTotalTokens
+
+						// If we got new evidence, re-collect citations and re-synthesize
+						if len(allGapResults) > 0 {
+							logger.Info("Gap-filling search completed",
+								"gap_results", len(allGapResults),
+								"iteration", iterationCount+1,
+							)
+
+							// Combine for synthesis (filtered) and for citations (unfiltered)
+							// Synthesis uses filtered agentResults to keep reasoning on-entity.
+							// Citations use the original (unfiltered) results to maximize evidence.
+							combinedAgentResults := append(allGapResults, agentResults...)
+							combinedForCitations := append(allGapResults, originalAgentResults...)
+
+							var resultsForCitations []interface{}
+							for _, ar := range combinedForCitations {
+								var toolExecs []interface{}
+								if len(ar.ToolExecutions) > 0 {
+									for _, te := range ar.ToolExecutions {
+										toolExecs = append(toolExecs, map[string]interface{}{
+											"tool":    te.Tool,
+											"success": te.Success,
+											"output":  te.Output,
+											"error":   te.Error,
+										})
+									}
+								}
+								resultsForCitations = append(resultsForCitations, map[string]interface{}{
+									"agent_id":        ar.AgentID,
+									"tool_executions": toolExecs,
+									"response":        ar.Response,
+								})
+							}
+
+							now := workflow.Now(ctx)
+							allCitations, _ := metadata.CollectCitations(resultsForCitations, now, 0) // Use 0 for default max (15)
+
+							// Apply entity-based filtering consistently
+							canonicalName, _ := baseContext["canonical_name"].(string)
+							if canonicalName != "" && len(allCitations) > 0 {
+								var domains []string
+								if d, ok := baseContext["official_domains"].([]string); ok {
+									domains = d
+								}
+								var aliases []string
+								if eq, ok := baseContext["exact_queries"].([]string); ok {
+									aliases = eq
+								}
+								beforeCount := len(allCitations)
+								allCitations = FilterCitationsByEntity(allCitations, canonicalName, aliases, domains)
+								logger.Info("Iterative gap-filling citation filter applied",
+									"before", beforeCount,
+									"after", len(allCitations),
+									"removed", beforeCount-len(allCitations),
+								)
+							}
+
+							if len(allCitations) > 0 {
+
+								// Re-synthesize with augmented evidence
+								var enhancedSynthesis activities.SynthesisResult
+
+								// Build enhanced context with new citations
+								enhancedContext := make(map[string]interface{})
+								for k, v := range baseContext {
+									enhancedContext[k] = v
+								}
+								enhancedContext["research_areas"] = refineResult.ResearchAreas
+								enhancedContext["gap_iteration"] = iterationCount + 1
+								// Inherit synthesis tier from initial synthesis (respects user override)
+								if synthTier, ok := baseContext["model_tier"].(string); ok {
+									enhancedContext["model_tier"] = synthTier
+								}
+								// Note: synthesis_model_tier override is already in baseContext, will be used
+
+								// Format citations for synthesis
+								if len(allCitations) > 0 {
+									var b strings.Builder
+									for idx, c := range allCitations {
+										title := c.Title
+										if title == "" {
+											title = c.Source
+										}
+										if c.PublishedDate != nil {
+											fmt.Fprintf(&b, "[%d] %s (%s) - %s, %s\n", idx+1, title, c.URL, c.Source, c.PublishedDate.Format("2006-01-02"))
+										} else {
+											fmt.Fprintf(&b, "[%d] %s (%s) - %s\n", idx+1, title, c.URL, c.Source)
+										}
+									}
+									enhancedContext["available_citations"] = strings.TrimRight(b.String(), "\n")
+									enhancedContext["citation_count"] = len(allCitations)
+
+									// Also store structured citations for SSE emission
+									out := make([]map[string]interface{}, 0, len(allCitations))
+									for _, c := range allCitations {
+										out = append(out, map[string]interface{}{
+											"url":               c.URL,
+											"title":             c.Title,
+											"source":            c.Source,
+											"credibility_score": c.CredibilityScore,
+											"quality_score":     c.QualityScore,
+										})
+									}
+									enhancedContext["citations"] = out
+								}
+
+								err = workflow.ExecuteActivity(ctx,
+									activities.SynthesizeResultsLLM,
+									activities.SynthesisInput{
+										Query:              input.Query,
+										AgentResults:       combinedAgentResults, // Combined results with global dedup
+										Context:            enhancedContext,
+										CollectedCitations: allCitations,
+										ParentWorkflowID:   input.ParentWorkflowID,
+									}).Get(ctx, &enhancedSynthesis)
+
+								if err == nil {
+									synthesis = enhancedSynthesis
+									collectedCitations = allCitations
+									totalTokens += enhancedSynthesis.TokensUsed
+									logger.Info("Gap-filling synthesis completed",
+										"iteration", iterationCount+1,
+										"total_citations", len(allCitations),
+									)
+								}
+							}
+						}
+					} else {
+						// Make it explicit that analysis ran but found nothing
+						logger.Info("Gap analysis completed with no gaps detected",
+							"iteration", iterationCount,
+						)
 					}
 				}
-			} else {
-				// Make it explicit that analysis ran but found nothing
-				logger.Info("Gap analysis completed with no gaps detected",
-					"iteration", iterationCount,
-				)
 			}
-		} // End strategy != "quick"
+		}
 	}
 
 	// Step 4: Apply reflection pattern for quality improvement
@@ -1663,7 +2775,71 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
-	// Step 5: Update session and persist results
+	// Step 5.5: Optional fact extraction
+	var extractedFacts *activities.FactExtractionResult
+	factExtractionEnabled := false
+	if v, ok := baseContext["enable_fact_extraction"].(bool); ok {
+		factExtractionEnabled = v
+	}
+	if factExtractionEnabled && finalResult != "" {
+		logger.Info("Running fact extraction on synthesis result")
+
+		// Convert citations to simplified format
+		var simpleCitations []activities.FactExtractionCitation
+		for _, c := range collectedCitations {
+			simpleCitations = append(simpleCitations, activities.FactExtractionCitation{
+				URL:    c.URL,
+				Title:  c.Title,
+				Source: c.Source,
+			})
+		}
+
+		// Extract research areas
+		var areas []string
+		if len(refineResult.ResearchAreas) > 0 {
+			areas = refineResult.ResearchAreas
+		}
+
+		err = workflow.ExecuteActivity(ctx, "ExtractFacts", activities.FactExtractionInput{
+			Query:            input.Query,
+			SynthesisResult:  finalResult,
+			Citations:        simpleCitations,
+			ResearchAreas:    areas,
+			ParentWorkflowID: input.ParentWorkflowID,
+		}).Get(ctx, &extractedFacts)
+
+		if err != nil {
+			logger.Warn("Fact extraction failed", "error", err)
+		} else {
+			totalTokens += extractedFacts.TokensUsed
+			if extractedFacts.TokensUsed > 0 || extractedFacts.InputTokens > 0 || extractedFacts.OutputTokens > 0 {
+				inTok := extractedFacts.InputTokens
+				outTok := extractedFacts.OutputTokens
+				if inTok == 0 && outTok == 0 && extractedFacts.TokensUsed > 0 {
+					inTok = int(float64(extractedFacts.TokensUsed) * 0.6)
+					outTok = extractedFacts.TokensUsed - inTok
+				}
+				recCtx := opts.WithTokenRecordOptions(ctx)
+				_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       input.UserID,
+					SessionID:    input.SessionID,
+					TaskID:       workflowID,
+					AgentID:      "fact_extraction",
+					Model:        extractedFacts.ModelUsed,
+					Provider:     extractedFacts.Provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata:     map[string]interface{}{"phase": "fact_extraction"},
+				}).Get(recCtx, nil)
+			}
+			logger.Info("Fact extraction complete",
+				"fact_count", extractedFacts.FactCount,
+				"high_confidence", extractedFacts.HighConfidenceFacts,
+			)
+		}
+	}
+
+	// Step 6: Update session and persist results
 	// Session update moved to after usage report generation to ensure accurate cost/token tracking
 
 	logger.Info("ResearchWorkflow completed successfully",
@@ -1717,6 +2893,31 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
+	}
+
+	// Add extracted facts to metadata if available
+	if extractedFacts != nil && len(extractedFacts.Facts) > 0 {
+		// Convert facts to serializable format
+		factsOut := make([]map[string]interface{}, 0, len(extractedFacts.Facts))
+		for _, f := range extractedFacts.Facts {
+			factsOut = append(factsOut, map[string]interface{}{
+				"id":              f.ID,
+				"statement":       f.Statement,
+				"category":        f.Category,
+				"confidence":      f.Confidence,
+				"source_citation": f.SourceCitation,
+				"entity_mentions": f.EntityMentions,
+				"temporal_marker": f.TemporalMarker,
+				"is_quantitative": f.IsQuantitative,
+			})
+		}
+		meta["extracted_facts"] = factsOut
+		meta["fact_summary"] = map[string]interface{}{
+			"total_facts":         extractedFacts.FactCount,
+			"high_confidence":     extractedFacts.HighConfidenceFacts,
+			"categorized_facts":   extractedFacts.CategorizedFacts,
+			"contradiction_count": extractedFacts.ContradictionCount,
+		}
 	}
 
 	// Aggregate agent metadata (model, provider, tokens)
@@ -1853,6 +3054,45 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		TokensUsed: totalTokens,
 		Metadata:   meta,
 	}, nil
+}
+
+func buildTaskContractContext(subtask activities.Subtask) map[string]interface{} {
+	contract := make(map[string]interface{})
+
+	if subtask.OutputFormat != nil {
+		contract["output_format"] = map[string]interface{}{
+			"type":            subtask.OutputFormat.Type,
+			"required_fields": subtask.OutputFormat.RequiredFields,
+			"optional_fields": subtask.OutputFormat.OptionalFields,
+		}
+	}
+
+	if subtask.SourceGuidance != nil {
+		contract["source_guidance"] = map[string]interface{}{
+			"required": subtask.SourceGuidance.Required,
+			"optional": subtask.SourceGuidance.Optional,
+			"avoid":    subtask.SourceGuidance.Avoid,
+		}
+	}
+
+	if subtask.SearchBudget != nil {
+		contract["search_budget"] = map[string]interface{}{
+			"max_queries": subtask.SearchBudget.MaxQueries,
+			"max_fetches": subtask.SearchBudget.MaxFetches,
+		}
+	}
+
+	if subtask.Boundaries != nil {
+		contract["boundaries"] = map[string]interface{}{
+			"in_scope":     subtask.Boundaries.InScope,
+			"out_of_scope": subtask.Boundaries.OutOfScope,
+		}
+	}
+
+	if len(contract) == 0 {
+		return nil
+	}
+	return contract
 }
 
 // GapAnalysis holds information about undercovered research areas
@@ -2147,6 +3387,74 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 		"agent_id", agentID,
 		"state", state,
 	)
+}
+
+// simpleLogger is a minimal logger interface for validateTaskContracts
+type simpleLogger interface {
+	Info(msg string, keyvals ...interface{})
+	Warn(msg string, keyvals ...interface{})
+}
+
+// validateTaskContracts validates decomposed subtasks against their declared contracts
+// Returns an error if any contract violations are found
+func validateTaskContracts(subtasks []activities.Subtask, logger simpleLogger) error {
+	if len(subtasks) == 0 {
+		logger.Warn("Task contract validation: no subtasks to validate")
+		return nil // Not an error - allow fallback to simple execution
+	}
+
+	validSourceTypes := map[string]bool{
+		"official": true, "aggregator": true, "news": true, "academic": true,
+		"github": true, "financial": true, "documentation": true,
+		"local_cn": true, "local_jp": true, "local_kr": true,
+	}
+
+	for i, task := range subtasks {
+		// Validate required fields
+		if task.ID == "" {
+			return fmt.Errorf("subtask %d: missing required field 'id'", i)
+		}
+		if task.Description == "" {
+			return fmt.Errorf("subtask %s: missing required field 'description'", task.ID)
+		}
+
+		// Validate source types if specified
+		if task.SourceGuidance != nil {
+			for _, sourceType := range task.SourceGuidance.Required {
+				if !validSourceTypes[sourceType] {
+					logger.Warn("Invalid source type in task contract",
+						"task_id", task.ID,
+						"source_type", sourceType,
+						"valid_types", []string{"official", "aggregator", "news", "academic", "github", "financial", "documentation", "local_cn", "local_jp", "local_kr"},
+					)
+				}
+			}
+		}
+
+		// Validate output format type is reasonable if specified
+		if task.OutputFormat != nil && len(task.OutputFormat.Type) > 100 {
+			logger.Warn("Suspiciously long output format type in task contract",
+				"task_id", task.ID,
+				"type_length", len(task.OutputFormat.Type),
+			)
+		}
+
+		// Validate dependencies reference existing task IDs
+		taskIDs := make(map[string]bool)
+		for _, t := range subtasks {
+			taskIDs[t.ID] = true
+		}
+		for _, dep := range task.Dependencies {
+			if !taskIDs[dep] {
+				return fmt.Errorf("subtask %s: dependency '%s' does not exist", task.ID, dep)
+			}
+		}
+	}
+
+	logger.Info("Task contract validation passed",
+		"subtasks_validated", len(subtasks),
+	)
+	return nil
 }
 
 // Note: Post-synthesis language validation was removed.

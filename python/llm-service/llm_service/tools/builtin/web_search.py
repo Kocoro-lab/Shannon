@@ -755,6 +755,27 @@ class WebSearchTool(Tool):
                 description="Content category filter (Exa only): company, research paper, news, pdf, github, tweet, personal site, linkedin, financial report",
                 required=False,
             ),
+            ToolParameter(
+                name="source_type",
+                type=ToolParameterType.STRING,
+                description=(
+                    "Deep Research 2.0 source type for intelligent routing. "
+                    "Values: 'official' (company sites, .gov, .edu), 'aggregator' (crunchbase, wikipedia), "
+                    "'news' (recent articles), 'academic' (arxiv, papers), 'github', 'financial', "
+                    "'local_cn' (Chinese sources), 'local_jp' (Japanese sources). "
+                    "When set, overrides category with appropriate Exa settings."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="site_filter",
+                type=ToolParameterType.STRING,
+                description=(
+                    "Restrict search to specific sites. Comma-separated list of domains "
+                    "(e.g., 'crunchbase.com,linkedin.com'). Used with source_type for targeted searches."
+                ),
+                required=False,
+            ),
         ]
 
     async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
@@ -793,6 +814,81 @@ class WebSearchTool(Tool):
                 )
                 search_type = "auto"
         category_raw = kwargs.get("category")
+        source_type = kwargs.get("source_type")
+        site_filter = kwargs.get("site_filter")
+
+        # Source type to Exa category and site mapping (Deep Research 2.0)
+        source_type_config = {
+            "official": {
+                "category": None,  # No category filter - rely on site: queries
+                "sites": [],  # Sites come from official_domains in context
+                "query_suffix": "official site",
+            },
+            "aggregator": {
+                "category": "company",
+                "sites": ["crunchbase.com", "pitchbook.com", "wikipedia.org", "linkedin.com", "bloomberg.com", "owler.com"],
+            },
+            "news": {
+                "category": "news",
+                "sites": ["techcrunch.com", "reuters.com", "bloomberg.com", "wsj.com", "ft.com", "venturebeat.com"],
+            },
+            "academic": {
+                "category": "research paper",
+                "sites": ["arxiv.org", "scholar.google.com", "pubmed.ncbi.nlm.nih.gov", "semanticscholar.org"],
+            },
+            "github": {
+                "category": "github",
+                "sites": ["github.com", "gitlab.com"],
+            },
+            "financial": {
+                "category": "financial report",
+                "sites": ["sec.gov", "nasdaq.com", "yahoo.com"],
+            },
+            "local_cn": {
+                "category": None,
+                "sites": ["36kr.com", "iyiou.com", "tianyancha.com", "qichacha.com", "it-juzi.com"],
+            },
+            "local_jp": {
+                "category": None,
+                "sites": ["nikkei.com", "prtimes.jp", "newswitch.jp", "toyokeizai.net"],
+            },
+        }
+
+        # Apply source_type configuration if provided
+        if source_type and source_type in source_type_config:
+            config = source_type_config[source_type]
+            logger.info(f"Applying source_type '{source_type}' configuration")
+
+            # Override category if source_type specifies one
+            if config.get("category") and not category_raw:
+                category_raw = config["category"]
+
+            # Build site filter from source_type sites
+            if config.get("sites") and not site_filter:
+                site_filter = ",".join(config["sites"])
+
+            # Add query suffix for official source type
+            if config.get("query_suffix") and source_type == "official":
+                # Check if query doesn't already have site: prefix
+                if not re.search(r"site:", query, re.IGNORECASE):
+                    query = f"{query} {config['query_suffix']}"
+
+        # Apply explicit site_filter to query
+        if site_filter:
+            sites = [s.strip() for s in site_filter.split(",") if s.strip()]
+            if sites and not re.search(r"site:", query, re.IGNORECASE):
+                # For multiple sites, use OR syntax: site:a.com OR site:b.com
+                if len(sites) == 1:
+                    query = f"site:{sites[0]} {query}"
+                elif len(sites) <= 3:
+                    # Exa works better with fewer site filters
+                    site_query = " OR ".join([f"site:{s}" for s in sites[:3]])
+                    query = f"({site_query}) {query}"
+                else:
+                    # For many sites, just use the first 3 to avoid query pollution
+                    logger.warning(f"Too many site filters ({len(sites)}), using first 3")
+                    site_query = " OR ".join([f"site:{s}" for s in sites[:3]])
+                    query = f"({site_query}) {query}"
 
         # Normalize/validate category; default to personal site for domain-scoped queries
         category_aliases = {

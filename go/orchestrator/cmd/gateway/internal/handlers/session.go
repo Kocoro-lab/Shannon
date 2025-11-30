@@ -852,7 +852,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
              WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
              AND user_id = s.user_id
              ORDER BY created_at ASC LIMIT 1) as first_task_mode,
-            (SELECT metadata FROM task_executions
+            (SELECT metadata::text FROM task_executions
              WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
              AND user_id = s.user_id
              ORDER BY created_at ASC LIMIT 1) as first_task_metadata
@@ -967,7 +967,7 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 		if sess.FirstTaskMetadata.Valid && sess.FirstTaskMetadata.String != "" {
 			var metadata map[string]interface{}
 			if err := json.Unmarshal([]byte(sess.FirstTaskMetadata.String), &metadata); err == nil {
-				// Check task_context.force_research (where frontend stores the flag)
+				// Check task_context.force_research (explicit research mode flag)
 				if taskContext, ok := metadata["task_context"].(map[string]interface{}); ok {
 					if fr, ok := taskContext["force_research"].(bool); ok && fr {
 						isResearch = true

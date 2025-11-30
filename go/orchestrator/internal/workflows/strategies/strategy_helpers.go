@@ -40,6 +40,9 @@ func determineModelTier(context map[string]interface{}, defaultTier string) stri
 	}
 
 	// Strategy-aware overrides for research workflows (applied before pure complexity routing)
+	// NOTE: These tiers apply to AGENT EXECUTION only.
+	// Final synthesis always uses "large" tier (hardcoded in synthesis.go:361).
+	// Utility activities (coverage_eval, fact_extraction, etc.) use "small" tier.
 	if strategyRaw, ok := context["research_strategy"].(string); ok && strings.TrimSpace(strategyRaw) != "" {
 		strategy := strings.ToLower(strings.TrimSpace(strategyRaw))
 
@@ -51,16 +54,14 @@ func determineModelTier(context map[string]interface{}, defaultTier string) stri
 			// Default research path.
 			return "medium"
 		case "deep":
-			// Minimum medium; upgrade to large when complexity is high.
-			if complexity, ok := context["complexity"].(float64); ok {
-				if complexity >= mediumThreshold {
-					return "large"
-				}
-			}
+			// Use medium for agent execution; final synthesis will use large.
+			// Research shows agentic workflows with smaller models + iteration
+			// match or outperform single large-model calls at lower cost.
 			return "medium"
 		case "academic":
-			// Always use highest tier for academic research.
-			return "large"
+			// Academic uses medium for agent execution; final synthesis uses large.
+			// Cost optimization: only synthesis benefits from large tier.
+			return "medium"
 		}
 	}
 

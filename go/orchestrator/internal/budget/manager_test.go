@@ -91,7 +91,7 @@ func TestGetUsageReport_AggregatesRows(t *testing.T) {
 	rows := sqlmock.NewRows([]string{"user_id", "task_id", "model", "provider", "input_total", "output_total", "total_tokens", "total_cost", "request_count"}).
 		AddRow("u1", "t1", "gpt-5-nano-2025-08-07", "openai", 30, 60, 90, 0.1, 2)
 
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT user_id, task_id, model, provider")).
+	mock.ExpectQuery(`SELECT\s+tu\.user_id,.*FROM\s+token_usage`).
 		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
 		WillReturnRows(rows)
 
