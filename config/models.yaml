@@ -20,10 +20,10 @@ model_tiers:
     providers:
       - provider: openai
         model: gpt-5-nano-2025-08-07
-        priority: 1
+        priority: 2
       - provider: anthropic
         model: claude-haiku-4-5-20251001
-        priority: 2
+        priority: 1
       - provider: xai
         model: grok-3-mini
         priority: 3
@@ -52,10 +52,10 @@ model_tiers:
     providers:
       - provider: openai
         model: gpt-5-mini-2025-08-07
-        priority: 1
+        priority: 2
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
-        priority: 2
+        priority: 1
       - provider: xai
         model: grok-4-fast-non-reasoning
         priority: 3
