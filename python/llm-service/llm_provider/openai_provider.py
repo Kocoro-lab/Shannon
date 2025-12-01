@@ -522,13 +522,55 @@ class OpenAIProvider(LLMProvider):
         # Add stream options for usage
         api_request["stream_options"] = {"include_usage": True}
 
+        # Helper to extract text from streaming delta (handles GPT-5 formats)
+        def _extract_delta_content(delta) -> str:
+            """Extract text content from streaming delta, handling GPT-5 formats."""
+            # 1. Standard delta.content (string)
+            content = getattr(delta, "content", None)
+            if isinstance(content, str) and content:
+                return content
+
+            # 2. delta.content as list (GPT-5 may return structured content)
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    text = None
+                    if hasattr(part, "text"):
+                        text = getattr(part, "text", None)
+                    elif isinstance(part, dict):
+                        text = part.get("text") or part.get("output_text")
+                    if text:
+                        parts.append(str(text))
+                if parts:
+                    return "".join(parts)
+
+            # 3. GPT-5 reasoning/output fields
+            for field in ["reasoning_content", "output", "thinking"]:
+                value = getattr(delta, field, None)
+                if isinstance(value, str) and value:
+                    return value
+                elif isinstance(value, list):
+                    parts = []
+                    for part in value:
+                        if isinstance(part, dict) and "text" in part:
+                            parts.append(str(part["text"]))
+                        elif isinstance(part, str):
+                            parts.append(part)
+                    if parts:
+                        return "".join(parts)
+
+            return ""
+
         try:
             stream = await self.client.chat.completions.create(**api_request)
 
             async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-                
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    text = _extract_delta_content(delta)
+                    if text:
+                        yield text
+
                 # Check for usage in the chunk (usually the last one)
                 if chunk.usage:
                     yield {
