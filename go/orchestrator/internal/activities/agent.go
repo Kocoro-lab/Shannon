@@ -1789,7 +1789,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	}
 
 	toolStartTime := time.Now()
-	client := &http.Client{Timeout: 2 * time.Minute, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
+	client := &http.Client{Timeout: 5 * time.Minute, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payloadBytes)))
 	if err != nil {
 		logger.Error("Failed to create HTTP request", "error", err)

@@ -119,24 +119,30 @@ export function TaskMetadata({ taskId, apiKey }: Props) {
         </div>
       )}
 
-      {/* Agent Breakdown */}
-      {status.metadata?.agent_usages && status.metadata.agent_usages.length > 0 && (
+      {/* Model Breakdown (canonical usage view) */}
+      {status.metadata?.model_breakdown && status.metadata.model_breakdown.length > 0 && (
         <div className="border-b border-[#352b19] pb-3">
-          <h3 className="text-[#c79325] uppercase tracking-[0.2em] mb-2 font-bold">Agents</h3>
+          <h3 className="text-[#c79325] uppercase tracking-[0.2em] mb-2 font-bold">Models</h3>
           <div className="space-y-2">
-            {status.metadata.agent_usages.map((agent, idx) => (
+            {status.metadata.model_breakdown.map((entry, idx) => (
               <div key={idx} className="text-[#a4a4a4]">
-                <div className="font-mono text-[10px] text-[#8aa9cf]">{agent.agent_id}</div>
+                <div className="font-mono text-[10px] text-[#8aa9cf]">
+                  {entry.model}
+                  {entry.provider && ` · ${entry.provider}`}
+                </div>
                 <div className="flex justify-between text-[11px] mt-0.5">
-                  {agent.tokens !== undefined && (
-                    <span>{agent.tokens.toLocaleString()} tokens</span>
+                  {entry.tokens !== undefined && (
+                    <span>{entry.tokens.toLocaleString()} tokens</span>
                   )}
-                  {agent.cost_usd !== undefined && (
-                    <span className="text-[#c79325]">${agent.cost_usd.toFixed(6)}</span>
+                  {entry.cost_usd !== undefined && (
+                    <span className="text-[#c79325]">${entry.cost_usd.toFixed(6)}</span>
                   )}
                 </div>
-                {agent.model && (
-                  <div className="text-[10px] text-[#666] mt-0.5">{agent.model}</div>
+                {entry.executions !== undefined && (
+                  <div className="text-[10px] text-[#666] mt-0.5">
+                    Executions: {entry.executions.toLocaleString()}
+                    {entry.percentage !== undefined && ` · ${(entry.percentage).toFixed(0)}%`}
+                  </div>
                 )}
               </div>
             ))}

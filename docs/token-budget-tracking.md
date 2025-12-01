@@ -574,71 +574,13 @@ Total: $0.030744
 
 **File**: `go/orchestrator/internal/metadata/aggregate.go`
 
-**Function**: `AggregateAgentMetadata`
+**Function**: `AggregateAgentMetadata` (legacy helper)
 
-```go
-func AggregateAgentMetadata(results []activities.AgentExecutionResult) map[string]interface{} {
-    totalTokens := 0
-    totalInputTokens := 0
-    totalOutputTokens := 0
-    totalCost := 0.0
-    primaryModel := ""
-    primaryProvider := ""
+This helper builds a lightweight summary (model_used, provider, input_tokens, output_tokens, total_tokens) from in-memory agent execution results and may add a best-effort `agent_usages` array for debugging.
 
-    for _, result := range results {
-        totalTokens += result.TokensUsed
-        totalInputTokens += result.InputTokens
-        totalOutputTokens += result.OutputTokens
+> ⚠️ `agent_usages` is deprecated for external consumers. For complete usage and cost data (including synthesis, decomposition, utilities, and failed attempts), rely on `model_breakdown`, which is built from the `token_usage` table.
 
-        // Cost calculation
-        if result.InputTokens > 0 && result.OutputTokens > 0 {
-            cost := pricing.CostForSplit(result.ModelUsed,
-                                         result.InputTokens,
-                                         result.OutputTokens)
-            totalCost += cost
-        }
-
-        // Track primary model (first non-empty)
-        if primaryModel == "" && result.ModelUsed != "" {
-            primaryModel = result.ModelUsed
-            primaryProvider = result.Provider
-        }
-    }
-
-    return map[string]interface{}{
-        "total_tokens":      totalTokens,
-        "input_tokens":      totalInputTokens,
-        "output_tokens":     totalOutputTokens,
-        "cost_usd":          totalCost,
-        "model_used":        primaryModel,
-        "provider":          primaryProvider,
-    }
-}
-```
-
----
-
-### Workflow Usage
-
-**All workflows** call aggregation before returning:
-
-```go
-// SimpleTaskWorkflow
-metadata := map[string]interface{}{
-    "model_used":    result.ModelUsed,
-    "provider":      result.Provider,
-    "input_tokens":  result.InputTokens,
-    "output_tokens": result.OutputTokens,
-    "total_tokens":  result.TokensUsed,
-    "cost_usd":      pricing.CostForSplit(result.ModelUsed, ...),
-}
-
-// SupervisorWorkflow
-metadata := metadata.AggregateAgentMetadata(allResults)
-
-// ResearchWorkflow
-metadata := metadata.AggregateAgentMetadata(agentResults)
-```
+Workflows still call `AggregateAgentMetadata` to populate task-level metadata, but billing, reporting, and the public API should treat `model_breakdown` as the source of truth.
 
 ---
 

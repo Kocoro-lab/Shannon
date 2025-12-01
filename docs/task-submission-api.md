@@ -317,9 +317,53 @@ After submitting a task, poll `GET /api/v1/tasks/{id}`. Typical response shape w
     "input_tokens": 200,
     "output_tokens": 100,
     "estimated_cost": 0.006
+  },
+  "metadata": {
+    "model_breakdown": [
+      {
+        "model": "gpt-5-mini-2025-08-07",
+        "provider": "openai",
+        "executions": 5,
+        "tokens": 300,
+        "cost_usd": 0.006,
+        "percentage": 100
+      }
+    ]
   }
 }
 ```
+
+### Model Breakdown (Multi-Model Tasks)
+
+For complex tasks using multiple models (e.g., deep research with agent execution + synthesis), `metadata.model_breakdown` provides detailed per-model usage:
+
+```json
+{
+  "model_used": "claude-haiku-4-5-20251001",
+  "metadata": {
+    "model_breakdown": [
+      {
+        "model": "claude-haiku-4-5-20251001",
+        "provider": "anthropic",
+        "executions": 52,
+        "tokens": 254324,
+        "cost_usd": 0.060671,
+        "percentage": 54
+      },
+      {
+        "model": "gpt-5.1",
+        "provider": "openai",
+        "executions": 1,
+        "tokens": 11628,
+        "cost_usd": 0.052037,
+        "percentage": 46
+      }
+    ]
+  }
+}
+```
+
+**Note**: `model_used` shows the most frequently used model, while `model_breakdown` provides complete visibility into all models used during task execution. This is particularly useful for understanding cost distribution in research workflows where synthesis uses a different (larger) tier than agent execution. Legacy fields such as `agent_usages` may still appear in metadata for backward compatibility, but they are not complete; clients should prefer `model_breakdown` for any usage or cost analysis.
 
 ## ⚠️ Common Mistakes to Avoid
 

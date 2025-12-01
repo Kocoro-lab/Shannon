@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/state"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
 // StreamingWorkflow executes tasks with streaming output and typed state management
@@ -365,6 +366,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 
 	// Synthesize results (LLM-first)
 	var synthesis activities.SynthesisResult
+	didSynthesisLLM := false
 
 	// Already have AgentExecutionResult from streaming
 	agentResults := make([]activities.AgentExecutionResult, len(results))
@@ -403,6 +405,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 				logger.Error("Result synthesis failed", "error", err)
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
+			didSynthesisLLM = true
 		}
 	} else {
 		var err error
@@ -417,6 +420,34 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			logger.Error("Result synthesis failed", "error", err)
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
+		didSynthesisLLM = true
+	}
+
+	// Record synthesis token usage when LLM synthesis ran
+	if didSynthesisLLM && synthesis.TokensUsed > 0 {
+		inTok := synthesis.InputTokens
+		outTok := synthesis.CompletionTokens
+		if inTok == 0 && outTok > 0 {
+			est := synthesis.TokensUsed - outTok
+			if est > 0 {
+				inTok = est
+			}
+		}
+		recCtx := opts.WithTokenRecordOptions(ctx)
+		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       input.UserID,
+			SessionID:    input.SessionID,
+			TaskID:       workflowID,
+			AgentID:      "streaming_synthesis",
+			Model:        synthesis.ModelUsed,
+			Provider:     synthesis.Provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata: map[string]interface{}{
+				"phase":    "synthesis",
+				"workflow": "streaming",
+			},
+		}).Get(recCtx, nil)
 	}
 
 	logger.Info("ParallelStreamingWorkflow completed",

@@ -253,18 +253,36 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			Context:        decompContext,
 			AvailableTools: nil, // Let llm-service derive tools from registry + role preset
 		}).Get(ctx, &decomp); err != nil {
-			logger.Error("Task decomposition failed", "error", err)
-			// Emit error event
+			logger.Warn("Task decomposition failed, falling back to SimpleTaskWorkflow", "error", err)
+			// Emit warning event
 			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
-				EventType:  activities.StreamEventErrorOccurred,
-				Message:    "Couldn't create a plan: " + err.Error(),
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "planner",
+				Message:    "Decomposition failed, using simple execution",
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
-			// Best-effort title generation even on planning failures
-			scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
-			res := AddTaskContextToMetadata(TaskResult{Success: false, ErrorMessage: err.Error()}, input.Context)
-			return res, err
+
+			// Create fallback decomposition for SimpleTaskWorkflow
+			decomp = activities.DecompositionResult{
+				Mode:                 "simple",
+				ComplexityScore:      0.1, // Low complexity to trigger SimpleTaskWorkflow
+				ExecutionStrategy:    "sequential",
+				CognitiveStrategy:    "",
+				Subtasks: []activities.Subtask{
+					{
+						ID:           "1",
+						Description:  input.Query,
+						TaskType:     "generic",
+						Dependencies: []string{},
+					},
+				},
+				TotalEstimatedTokens: 5000,
+				TokensUsed:           0, // No LLM call for fallback decomposition
+				InputTokens:          0,
+				OutputTokens:         0,
+			}
+			logger.Info("Created fallback decomposition for simple execution", "query", input.Query)
 		}
 	}
 

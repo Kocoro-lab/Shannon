@@ -7,7 +7,9 @@ import (
 )
 
 // AggregateAgentMetadata extracts model, provider, and token information from agent results.
-// Returns metadata map with model_used, provider, input_tokens, output_tokens, total_tokens, and cost estimate.
+// It is a legacy helper used to build per-task metadata.
+// NOTE: agent_usages emitted here is best-effort and deprecated for external consumption.
+// For complete, authoritative usage and cost breakdowns, use model_breakdown from the token_usage table.
 func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synthesisTokens int) map[string]interface{} {
 	meta := make(map[string]interface{})
 
@@ -116,8 +118,9 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 
     // Do not set cost_usd here; server or workflow computes accurately from pricing
 
-	// Include per-agent usage details if we have multiple agents
-	if len(agentUsages) > 1 {
+	// Include per-agent usage details when present.
+	// NOTE: agent_usages is deprecated; consumers should prefer model_breakdown.
+	if len(agentUsages) > 0 {
 		meta["agent_usages"] = agentUsages
 	}
 

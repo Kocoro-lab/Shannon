@@ -1125,6 +1125,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	didSynthesisLLM := false
+
 	if input.BypassSingleResult && len(childResults) == 1 && childResults[0].Success {
 		// Only bypass if the single result is not raw JSON and role doesn't require formatting
 		shouldBypass := true
@@ -1158,6 +1160,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}).Get(ctx, &synth); err != nil {
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
+			didSynthesisLLM = true
 		}
 	} else if hasSynthesisSubtask && synthesisTaskIdx < len(childResults) && childResults[synthesisTaskIdx].Success && len(collectedCitations) == 0 {
 		// Use the synthesis subtask's result as the final result ONLY if:
@@ -1193,6 +1196,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			}).Get(ctx, &synth); err != nil {
 				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
+			didSynthesisLLM = true
 		}
 	} else {
 		// Perform synthesis: either no synthesis subtask, or we have citations that need formatting
@@ -1212,6 +1216,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}).Get(ctx, &synth); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
+		didSynthesisLLM = true
 	}
 
 	// Compute total tokens across child results + synthesis
@@ -1220,6 +1225,33 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		totalChildTokens += cr.TokensUsed
 	}
 	totalTokens := totalChildTokens + synth.TokensUsed
+
+	// Record synthesis token usage (only when LLM synthesis actually ran)
+	if didSynthesisLLM && synth.TokensUsed > 0 {
+		inTok := synth.InputTokens
+		outTok := synth.CompletionTokens
+		if inTok == 0 && outTok > 0 {
+			est := synth.TokensUsed - outTok
+			if est > 0 {
+				inTok = est
+			}
+		}
+		recCtx := opts.WithTokenRecordOptions(ctx)
+		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       input.UserID,
+			SessionID:    input.SessionID,
+			TaskID:       workflowID,
+			AgentID:      "supervisor_synthesis",
+			Model:        synth.ModelUsed,
+			Provider:     synth.Provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata: map[string]interface{}{
+				"phase":    "synthesis",
+				"workflow": "supervisor",
+			},
+		}).Get(recCtx, nil)
+	}
 
 	// Update session with token usage (include per-agent usage for accurate cost)
 	if input.SessionID != "" {

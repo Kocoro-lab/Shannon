@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -808,6 +809,14 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Add model_breakdown from token_usage table for transparency
+	if statusResp.Metadata == nil {
+		statusResp.Metadata = make(map[string]interface{})
+	}
+	if breakdown := h.buildModelBreakdown(ctx, taskID); breakdown != nil {
+		statusResp.Metadata["model_breakdown"] = breakdown
+	}
+
 	// Set timestamps to current time since they're not in the proto
 	statusResp.CreatedAt = time.Now()
 	statusResp.UpdatedAt = time.Now()
@@ -1094,6 +1103,76 @@ func (h *TaskHandler) CancelTask(w http.ResponseWriter, r *http.Request) {
 		"success": cancelResp.Success,
 		"message": cancelResp.Message,
 	})
+}
+
+// buildModelBreakdown queries token_usage table to build detailed model breakdown
+func (h *TaskHandler) buildModelBreakdown(ctx context.Context, workflowID string) []map[string]interface{} {
+	// Query token_usage table grouped by model
+	query := `
+		SELECT
+			provider,
+			model,
+			COUNT(*) as executions,
+			SUM(total_tokens) as total_tokens,
+			SUM(cost_usd) as total_cost
+		FROM token_usage
+		WHERE task_id = (
+			SELECT id FROM task_executions WHERE workflow_id = $1
+		)
+		GROUP BY provider, model
+		ORDER BY total_cost DESC
+	`
+
+	rows, err := h.db.QueryxContext(ctx, query, workflowID)
+	if err != nil {
+		h.logger.Debug("Failed to query model breakdown", zap.Error(err), zap.String("workflow_id", workflowID))
+		return nil
+	}
+	defer rows.Close()
+
+	var breakdown []map[string]interface{}
+	var totalCost float64
+	var totalTokens int64
+
+	// First pass: collect data and calculate totals
+	type modelData struct {
+		Provider   string
+		Model      string
+		Executions int
+		Tokens     int64
+		Cost       float64
+	}
+	var models []modelData
+
+	for rows.Next() {
+		var m modelData
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Executions, &m.Tokens, &m.Cost); err != nil {
+			h.logger.Debug("Failed to scan model breakdown row", zap.Error(err))
+			continue
+		}
+		models = append(models, m)
+		totalCost += m.Cost
+		totalTokens += m.Tokens
+	}
+
+	// Second pass: build breakdown with percentages
+	for _, m := range models {
+		percentage := 0
+		if totalCost > 0 {
+			percentage = int((m.Cost / totalCost) * 100)
+		}
+
+		breakdown = append(breakdown, map[string]interface{}{
+			"model":      m.Model,
+			"provider":   m.Provider,
+			"executions": m.Executions,
+			"tokens":     m.Tokens,
+			"cost_usd":   m.Cost,
+			"percentage": percentage,
+		})
+	}
+
+	return breakdown
 }
 
 // sendError sends an error response

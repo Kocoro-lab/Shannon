@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
@@ -389,6 +390,35 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				}, err
 			}
 			totalTokens += synthesis.TokensUsed
+			if synthesis.TokensUsed > 0 {
+				inTok := synthesis.InputTokens
+				outTok := synthesis.CompletionTokens
+				if inTok == 0 && outTok > 0 {
+					est := synthesis.TokensUsed - outTok
+					if est > 0 {
+						inTok = est
+					}
+				}
+				recCtx := opts.WithTokenRecordOptions(ctx)
+				wid := input.ParentWorkflowID
+				if wid == "" {
+					wid = workflow.GetInfo(ctx).WorkflowExecution.ID
+				}
+				_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       input.UserID,
+					SessionID:    input.SessionID,
+					TaskID:       wid,
+					AgentID:      "dag_synthesis",
+					Model:        synthesis.ModelUsed,
+					Provider:     synthesis.Provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata: map[string]interface{}{
+						"phase":    "synthesis",
+						"workflow": "dag",
+					},
+				}).Get(recCtx, nil)
+			}
 		}
 	} else if hasSynthesisSubtask && synthesisTaskIdx >= 0 && synthesisTaskIdx < len(agentResults) && agentResults[synthesisTaskIdx].Success {
 		// If citations exist, re-run synthesis to inject inline citation numbers.
@@ -444,6 +474,35 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 					}, err
 				}
 				totalTokens += synthesis.TokensUsed
+				if synthesis.TokensUsed > 0 {
+					inTok := synthesis.InputTokens
+					outTok := synthesis.CompletionTokens
+					if inTok == 0 && outTok > 0 {
+						est := synthesis.TokensUsed - outTok
+						if est > 0 {
+							inTok = est
+						}
+					}
+					recCtx := opts.WithTokenRecordOptions(ctx)
+					wid := input.ParentWorkflowID
+					if wid == "" {
+						wid = workflow.GetInfo(ctx).WorkflowExecution.ID
+					}
+					_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+						UserID:       input.UserID,
+						SessionID:    input.SessionID,
+						TaskID:       wid,
+						AgentID:      "dag_synthesis",
+						Model:        synthesis.ModelUsed,
+						Provider:     synthesis.Provider,
+						InputTokens:  inTok,
+						OutputTokens: outTok,
+						Metadata: map[string]interface{}{
+							"phase":    "synthesis",
+							"workflow": "dag",
+						},
+					}).Get(recCtx, nil)
+				}
 			}
 		} else {
 			// Citations present: re-run synthesis to inject inline citations and sources
@@ -469,6 +528,35 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				}, err
 			}
 			totalTokens += synthesis.TokensUsed
+			if synthesis.TokensUsed > 0 {
+				inTok := synthesis.InputTokens
+				outTok := synthesis.CompletionTokens
+				if inTok == 0 && outTok > 0 {
+					est := synthesis.TokensUsed - outTok
+					if est > 0 {
+						inTok = est
+					}
+				}
+				recCtx := opts.WithTokenRecordOptions(ctx)
+				wid := input.ParentWorkflowID
+				if wid == "" {
+					wid = workflow.GetInfo(ctx).WorkflowExecution.ID
+				}
+				_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+					UserID:       input.UserID,
+					SessionID:    input.SessionID,
+					TaskID:       wid,
+					AgentID:      "dag_synthesis",
+					Model:        synthesis.ModelUsed,
+					Provider:     synthesis.Provider,
+					InputTokens:  inTok,
+					OutputTokens: outTok,
+					Metadata: map[string]interface{}{
+						"phase":    "synthesis",
+						"workflow": "dag",
+					},
+				}).Get(recCtx, nil)
+			}
 		}
 	} else {
 		// No bypass or synthesis subtask, perform standard synthesis
@@ -503,6 +591,35 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 
 		totalTokens += synthesis.TokensUsed
+		if synthesis.TokensUsed > 0 {
+			inTok := synthesis.InputTokens
+			outTok := synthesis.CompletionTokens
+			if inTok == 0 && outTok > 0 {
+				est := synthesis.TokensUsed - outTok
+				if est > 0 {
+					inTok = est
+				}
+			}
+			recCtx := opts.WithTokenRecordOptions(ctx)
+			wid := input.ParentWorkflowID
+			if wid == "" {
+				wid = workflow.GetInfo(ctx).WorkflowExecution.ID
+			}
+			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:       input.UserID,
+				SessionID:    input.SessionID,
+				TaskID:       wid,
+				AgentID:      "dag_synthesis",
+				Model:        synthesis.ModelUsed,
+				Provider:     synthesis.Provider,
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+				Metadata: map[string]interface{}{
+					"phase":    "synthesis",
+					"workflow": "dag",
+				},
+			}).Get(recCtx, nil)
+		}
 	}
 
 	// Step 5: Optional reflection for quality improvement

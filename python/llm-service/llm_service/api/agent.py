@@ -2036,7 +2036,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             try:
                 data = _json.loads(raw)
             except Exception as parse_err:
-                logger.debug(f"JSON parse error: {parse_err}")
+                logger.warning(f"JSON parse error: {parse_err}, response_length={len(raw)}, starts_with_brace={raw.strip().startswith('{') if raw else False}")
                 # Try to find first {...} in response
                 import re
 
@@ -2048,6 +2048,8 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                         pass
 
             if not data:
+                # Log only metadata to avoid PII exposure
+                logger.error(f"Decomposition failed: LLM did not return valid JSON. response_length={len(raw)}, response_type={'empty' if not raw else 'text' if not raw.strip().startswith('{') else 'malformed_json'}")
                 raise ValueError("LLM did not return valid JSON")
 
             # Extract fields with defaults
