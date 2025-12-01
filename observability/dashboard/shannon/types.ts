@@ -39,11 +39,20 @@ export interface TaskStatusResponse {
       published_date?: string;
       credibility_score?: number;
     }>;
+    // Deprecated: prefer model_breakdown for usage/cost analysis.
     agent_usages?: Array<{
       agent_id: string;
       tokens?: number;
       cost_usd?: number;
       model?: string;
+    }>;
+    model_breakdown?: Array<{
+      model: string;
+      provider?: string;
+      executions?: number;
+      tokens: number;
+      cost_usd?: number;
+      percentage?: number;
     }>;
     [key: string]: unknown;
   };
