@@ -98,16 +98,33 @@ type SourceTypesConfig struct {
 }
 
 var (
-	sourceTypesConfig     *SourceTypesConfig
-	sourceTypesConfigOnce sync.Once
-	sourceTypesConfigErr  error
+	sourceTypesConfig    *SourceTypesConfig
+	sourceTypesConfigMu  sync.RWMutex
+	sourceTypesConfigErr error
+	sourceTypesLoaded    bool
 )
 
 // LoadSourceTypes loads the source_types.yaml configuration file
 func LoadSourceTypes() (*SourceTypesConfig, error) {
-	sourceTypesConfigOnce.Do(func() {
-		sourceTypesConfig, sourceTypesConfigErr = loadSourceTypesFromFile()
-	})
+	sourceTypesConfigMu.RLock()
+	if sourceTypesLoaded {
+		cfg, err := sourceTypesConfig, sourceTypesConfigErr
+		sourceTypesConfigMu.RUnlock()
+		return cfg, err
+	}
+	sourceTypesConfigMu.RUnlock()
+
+	// Upgrade to write lock for initialization
+	sourceTypesConfigMu.Lock()
+	defer sourceTypesConfigMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if sourceTypesLoaded {
+		return sourceTypesConfig, sourceTypesConfigErr
+	}
+
+	sourceTypesConfig, sourceTypesConfigErr = loadSourceTypesFromFile()
+	sourceTypesLoaded = true
 	return sourceTypesConfig, sourceTypesConfigErr
 }
 
@@ -384,8 +401,15 @@ func (c *SourceTypesConfig) GetRegionalSourcesForLanguage(lang string) []string 
 // ReloadSourceTypes forces a reload of the source types configuration
 // This can be used for hot-reload scenarios
 func ReloadSourceTypes() (*SourceTypesConfig, error) {
-	sourceTypesConfigOnce = sync.Once{}
-	return LoadSourceTypes()
+	sourceTypesConfigMu.Lock()
+	defer sourceTypesConfigMu.Unlock()
+
+	// Force reload by resetting loaded flag and reloading
+	cfg, err := loadSourceTypesFromFile()
+	sourceTypesConfig = cfg
+	sourceTypesConfigErr = err
+	sourceTypesLoaded = true
+	return cfg, err
 }
 
 // GetConfigPath returns the resolved config file path for debugging
