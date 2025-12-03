@@ -39,26 +39,72 @@ Shannon uses a **two-tier persistence model** optimized for performance:
 ### Enhanced Event Types
 
 **LLM Response Events:**
-- `LLM_OUTPUT`: Emitted during agent execution with streaming text deltas and usage metadata
-  - Streaming text: `message` contains text chunks as they arrive
-  - Usage metadata: JSON structure in `message` field when available:
+- `LLM_PARTIAL`: Emitted during agent execution with streaming text deltas (token‑by‑token or in small chunks).
+  - Streaming text: `message` contains the text delta.
+  - SSE mapping: sent as `event: thread.message.delta` with data:
     ```json
     {
-      "usage": {
-        "total_tokens": 174,
-        "input_tokens": 104,
-        "output_tokens": 70
-      },
-      "model": "gpt-5-nano-2025-08-07",
+      "delta": "partial text...",
+      "workflow_id": "task-...",
+      "agent_id": "simple-agent",
+      "seq": 9,
+      "stream_id": "1700000000000-0"
+    }
+    ```
+- `LLM_OUTPUT`: Emitted when an LLM call finishes with the final response and usage metadata.
+  - Final text: `message` contains the final response text (truncated for safety).
+  - Usage metadata: JSON structure in the `payload` field when available:
+    ```json
+    {
+      "tokens_used": 174,
+      "input_tokens": 104,
+      "output_tokens": 70,
+      "cost_usd": 0.0012,
+      "model_used": "gpt-5-nano-2025-08-07",
       "provider": "openai"
+    }
+    ```
+  - SSE mapping: sent as `event: thread.message.completed` with data:
+    ```json
+    {
+      "response": "5 + 5 equals 10.",
+      "workflow_id": "task-...",
+      "agent_id": "simple-agent",
+      "seq": 10,
+      "stream_id": "1700000000001-0",
+      "metadata": {
+        "tokens_used": 174,
+        "input_tokens": 104,
+        "output_tokens": 70,
+        "cost_usd": 0.0012,
+        "model_used": "gpt-5-nano-2025-08-07",
+        "provider": "openai"
+      }
     }
     ```
 
 **Tool Execution Events:**
 - `TOOL_INVOKED`: Emitted when agent-core executes a tool (web_search, calculator, file_read, etc.)
-  - `message` contains JSON: `{"tool": "web_search", "parameters": {...}}`
+  - `message` is a human‑readable description (for example, `"Calling web_search with query: 'latest news'"`)
+  - `payload` contains structured data:
+    ```json
+    {
+      "tool": "web_search",
+      "params": {
+        "query": "latest news"
+      }
+    }
+    ```
 - `TOOL_OBSERVATION`: Emitted when tool execution completes with results
-  - `message` contains tool output (truncated to 2000 UTF-8 characters if needed)
+  - `message` contains truncated tool output or a short error description (UTF‑8 safe, up to ~2000 chars)
+  - `payload` includes metadata such as:
+    ```json
+    {
+      "tool": "web_search",
+      "success": true,
+      "duration_ms": 1234
+    }
+    ```
 
 **Note**: Python-only tools (vendor adapters, custom integrations) use internal function calling and do not emit `TOOL_INVOKED`/`TOOL_OBSERVATION` events by design. Results are embedded in LLM response text.
 
@@ -112,7 +158,8 @@ curl -N "http://localhost:8081/stream/sse?workflow_id=$WF"
 Notes:
 - Server emits `id` as the Redis `stream_id` when available (preferred) or falls back to numeric `seq`. You can reconnect using the `Last-Event-ID` header or `last_event_id` query param with either form.
 - Heartbeats are sent as SSE comments every ~10s to keep intermediaries alive.
-- `LLM_OUTPUT` events contain both text chunks (string) and usage metadata (JSON) in the `message` field
+- `LLM_PARTIAL` events are mapped to `thread.message.delta` SSE events with a `delta` field for streaming text.
+- `LLM_OUTPUT` events contain the final response text in `message` and usage metadata in `payload`; the SSE handler maps these to `thread.message.completed` events with `response` (text) and optional `metadata`.
 
 ## WebSocket: HTTP `/stream/ws`
 

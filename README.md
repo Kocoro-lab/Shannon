@@ -19,9 +19,9 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 
 <div align="center">
 
-![Shannon Dashboard](docs/images/dashboard-demo.gif)
+![Shannon Desktop App](docs/images/desktop-demo.gif)
 
-*Real-time observability dashboard showing agent traffic control, metrics, and event streams*
+*Native desktop app (macOS/iOS) showing real-time agent execution, event streams, and session management*
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
@@ -42,7 +42,7 @@ Shannon is battle-tested infrastructure for AI agents that solves the problems y
 - **Multi-Provider** — OpenAI, Anthropic, Google, Groq, DeepSeek, Ollama; centralized pricing in `config/models.yaml`
 - **Plug-and-Play Tools** — Add REST APIs via MCP/OpenAPI or write Python tools; no proto changes ([→ Guide](docs/adding-custom-tools.md))
 - **Session Memory** — Redis + Qdrant vector store with MMR diversity; learns from failures across sessions ([→ Memory](docs/memory-system-architecture.md))
-- **Observable** — Real-time dashboard, Prometheus metrics, OpenTelemetry tracing built-in
+- **Observable** — Native desktop app (macOS/iOS), Prometheus metrics, OpenTelemetry tracing built-in
 - **Multi-Tenant** — Tenant-scoped auth, sessions, memory, workflows with isolation guarantees
 
 ## 🎯 Shannon vs. Agent Libraries
@@ -148,17 +148,23 @@ docker compose -f docker-compose-grafana-prometheus.yml up -d
 
 Shannon provides multiple ways to interact with your AI agents:
 
-#### Option 1: Use the Dashboard UI (Demo purpose only)
+#### Option 1: Use the Desktop App (macOS/iOS)
 
 ```bash
-# Open the Shannon Dashboard in your browser
-open http://localhost:2111
+# Build and run the native desktop app
+cd desktop
+npm install
+npm run tauri:dev    # Development mode with hot reload
 
-# The dashboard provides:
-# - Visual task submission interface
-# - Real-time event streaming
-# - System metrics and monitoring
-# - Task history and results
+# Or build for distribution
+npm run tauri:build  # macOS DMG
+npm run tauri ios build  # iOS (requires Xcode)
+
+# The desktop app provides:
+# - Native macOS and iOS experience
+# - Real-time SSE event streaming
+# - Session and task management
+# - Dark mode support
 ```
 
 #### Option 2: Use the REST API
@@ -619,9 +625,9 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 - **Agent Core (Rust)**: WASI sandbox execution, policy enforcement, agent-to-agent communication
 - **LLM Service (Python)**: Provider abstraction (15+ LLMs), MCP tools, prompt optimization
 - **Gateway (Go)**: REST API, authentication, rate limiting, request validation
-- **Dashboard (React/Next.js)**: Real-time monitoring, metrics visualization, event streaming
+- **Desktop App (Tauri/Next.js)**: Native macOS/iOS app for real-time monitoring and event streaming
 - **Data Layer**: PostgreSQL (workflow state), Redis (session cache), Qdrant (vector memory)
-- **Observability**: Built-in dashboard, Prometheus metrics, OpenTelemetry tracing
+- **Observability**: Native desktop app, Prometheus metrics, OpenTelemetry tracing
 
 ## 🚦 Getting Started for Production
 

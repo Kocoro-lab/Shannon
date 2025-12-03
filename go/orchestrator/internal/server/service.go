@@ -491,7 +491,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	streaming.Get().Publish(workflowID, streaming.Event{
 		WorkflowID: workflowID,
 		Type:       string(activities.StreamEventDataProcessing),
-		AgentID:    "",
+		AgentID:    "orchestrator",
 		Message:    msg,
 		Timestamp:  time.Now(),
 	})

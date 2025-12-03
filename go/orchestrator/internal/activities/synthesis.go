@@ -275,7 +275,7 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    "Final answer ready",
+			Message:    MsgFinalAnswer(),
 			Timestamp:  time.Now(),
 		})
 	}
@@ -830,7 +830,7 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+				Message:    MsgTokensUsed(res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
 			// Emit completion
@@ -838,7 +838,7 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Final answer ready",
+				Message:    MsgFinalAnswer(),
 				Timestamp:  time.Now(),
 			})
 		}
@@ -949,14 +949,14 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+				Message:    MsgTokensUsed(res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Final answer ready",
+				Message:    MsgFinalAnswer(),
 				Timestamp:  time.Now(),
 			})
 		}
@@ -989,14 +989,14 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+				Message:    MsgTokensUsed(res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Final answer ready",
+				Message:    MsgFinalAnswer(),
 				Timestamp:  time.Now(),
 			})
 		}
@@ -1036,14 +1036,14 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    fmt.Sprintf("Synthesis summary: tokens=%d", res.TokensUsed),
+				Message:    MsgSynthesisSummary(res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Final answer ready",
+				Message:    MsgFinalAnswer(),
 				Timestamp:  time.Now(),
 			})
 		}
@@ -1085,14 +1085,14 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    fmt.Sprintf("Synthesis summary: tokens=%d", res.TokensUsed),
+				Message:    MsgSynthesisSummary(res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Final answer ready",
+				Message:    MsgFinalAnswer(),
 				Timestamp:  time.Now(),
 			})
 		}
@@ -1127,14 +1127,14 @@ Section requirements:
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    fmt.Sprintf("Synthesis summary: tokens=%d", res.TokensUsed),
+				Message:    MsgSynthesisSummary(res.TokensUsed),
 				Timestamp:  time.Now(),
 			})
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       string(StreamEventDataProcessing),
 				AgentID:    "synthesis",
-				Message:    "Final answer ready",
+				Message:    MsgFinalAnswer(),
 				Timestamp:  time.Now(),
 			})
 		}
@@ -1437,7 +1437,7 @@ Section requirements:
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    "Final answer ready",
+			Message:    MsgFinalAnswer(),
 			Timestamp:  time.Now(),
 		})
 	}
@@ -1591,14 +1591,14 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    fmt.Sprintf("~%d tokens", res.TokensUsed),
+			Message:    MsgTokensUsed(res.TokensUsed),
 			Timestamp:  time.Now(),
 		})
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventDataProcessing),
 			AgentID:    "synthesis",
-			Message:    "Final answer ready",
+			Message:    MsgFinalAnswer(),
 			Timestamp:  time.Now(),
 		})
 	}

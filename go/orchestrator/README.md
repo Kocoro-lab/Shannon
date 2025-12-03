@@ -254,8 +254,8 @@ Automatic degradation under load:
 
 #### Synthesis Events
 - `LLM_OUTPUT` (AgentID: `synthesis`): Final synthesized content (truncated to 10k chars). Emitted on LLM success and all fallback/simple paths.
-- `DATA_PROCESSING` summary: Lightweight message `"Synthesis summary: model=<m> tokens=<n>"` on LLM path, or `"Synthesis summary: tokens=<n>"` on fallback/simple paths.
-- Ordering: `LLM_OUTPUT` → summary → `DATA_PROCESSING` "Final answer ready" → `WORKFLOW_COMPLETED`.
+- `DATA_PROCESSING` summary: Lightweight token usage message (for example, `"Used 1.5k tokens"`), based on model/tokens reported by synthesis.
+- Ordering: `LLM_OUTPUT` → summary (`DATA_PROCESSING` "Used … tokens") → `DATA_PROCESSING` "Answer ready" → `WORKFLOW_COMPLETED`.
 - Bypass behavior: when synthesis is bypassed (single suitable result), no extra synthesis events are emitted; the agent’s own `LLM_OUTPUT` serves as the final result.
 
 ## 🧪 Testing

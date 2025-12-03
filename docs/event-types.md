@@ -40,14 +40,14 @@ Events that mark major workflow lifecycle transitions.
 #### `WORKFLOW_STARTED`
 **Description:** Task processing started by the orchestrator
 **Agent ID:** `orchestrator`
-**Example Message:** `"Task processing started"`
+**Example Message:** `"Starting task"`
 **Typical Sequence:** First event in workflow
 
 ```json
 {
   "type": "WORKFLOW_STARTED",
   "agent_id": "orchestrator",
-  "message": "Task processing started",
+  "message": "Starting task",
   "seq": 1
 }
 ```
@@ -70,7 +70,7 @@ Events that mark major workflow lifecycle transitions.
 #### `AGENT_STARTED`
 **Description:** Agent began processing a task
 **Agent ID:** Agent identifier
-**Example Message:** `"Processing query"`, `"Starting simple task workflow"`
+**Example Message:** `"Processing query"`
 
 ```json
 {
@@ -84,13 +84,13 @@ Events that mark major workflow lifecycle transitions.
 #### `AGENT_COMPLETED`
 **Description:** Agent finished processing
 **Agent ID:** Agent identifier
-**Example Message:** `"Task done"`
+**Example Message:** `"Task complete"`
 
 ```json
 {
   "type": "AGENT_COMPLETED",
   "agent_id": "simple-agent",
-  "message": "Task done",
+  "message": "Task complete",
   "seq": 11
 }
 ```
@@ -200,12 +200,12 @@ Events for multi-agent workflows and team collaboration.
 #### `DELEGATION`
 **Description:** Task delegated to another agent or workflow
 **Agent ID:** Delegating agent (optional)
-**Example Message:** `"Handing off to simple task"`, delegation reason
+**Example Message:** `"Processing as simple task"`, `"Coordinating multiple agents"`
 
 ```json
 {
   "type": "DELEGATION",
-  "message": "Handing off to simple task",
+  "message": "Processing as simple task",
   "seq": 4
 }
 ```
@@ -279,7 +279,7 @@ Events for multi-agent workflows and team collaboration.
 {
   "type": "ROLE_ASSIGNED",
   "agent_id": "agent-123",
-  "message": "Assigned role: data_analyst",
+  "message": "Assigned data_analyst role with 3 tools",
   "seq": 5
 }
 ```
@@ -293,14 +293,14 @@ Events that provide status updates and progress information.
 #### `PROGRESS`
 **Description:** Step completion or progress update
 **Agent ID:** Agent reporting progress
-**Example Message:** `"Created a plan with 1 steps"`, `"Completed step 2 of 5"`
+**Example Message:** `"Created a plan with 1 step"`, `"Completed step 2 of 5"`
 **Use Case:** Progress bars, status indicators
 
 ```json
 {
   "type": "PROGRESS",
   "agent_id": "planner",
-  "message": "Created a plan with 1 steps",
+  "message": "Created a plan with 1 step",
   "seq": 3
 }
 ```
@@ -308,7 +308,7 @@ Events that provide status updates and progress information.
 #### `DATA_PROCESSING`
 **Description:** Processing, analyzing, or preparing data
 **Agent ID:** Processing agent (optional)
-**Example Message:** `"Preparing context"`, `"Analyzing results"`, `"Final answer ready"`
+**Example Message:** `"Preparing context"`, `"Analyzing results"`, `"Answer ready"`
 **Note:** Used for various processing stages
 
 ```json
@@ -657,7 +657,7 @@ Note: Returns 404 if the session has been soft-deleted.
 - **Streaming API**: `/docs/streaming-api.md` - SSE, WebSocket, gRPC protocols
 - **Session API**: OpenAPI spec at `/openapi.json` - REST endpoints
 - **Event Types Source**: `go/orchestrator/internal/activities/stream_events.go`
-- **Frontend Types**: `observability/dashboard/shannon/types.ts`
+- **Frontend Types**: `desktop/lib/types.ts`
 
 ---
 

@@ -41,21 +41,16 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
 		AgentID:    "simple-agent",
-		Message:    "Starting simple task workflow",
+		Message:    activities.MsgWorkflowStarted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
 	// Emit thinking event
-	truncatedQuery := input.Query
-	queryRunes := []rune(truncatedQuery)
-	if len(queryRunes) > 80 {
-		truncatedQuery = string(queryRunes[:77]) + "..."
-	}
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentThinking,
 		AgentID:    "simple-agent",
-		Message:    "Thinking: " + truncatedQuery,
+		Message:    activities.MsgThinking(input.Query),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -73,7 +68,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentStarted,
 		AgentID:    "simple-agent",
-		Message:    "Processing query",
+		Message:    activities.MsgProcessing(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -287,7 +282,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			WorkflowID: workflowID,
 			EventType:  activities.StreamEventErrorOccurred,
 			AgentID:    "simple-agent",
-			Message:    "Task execution failed: " + err.Error(),
+			Message:    activities.MsgTaskFailed(err.Error()),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		return TaskResult{
@@ -562,7 +557,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentCompleted,
 		AgentID:    "simple-agent",
-		Message:    "Task done",
+		Message:    activities.MsgTaskDone(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -571,7 +566,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
 		AgentID:    "simple-agent",
-		Message:    "All done",
+		Message:    activities.MsgWorkflowCompleted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 

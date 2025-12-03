@@ -89,9 +89,9 @@ There are many ways to contribute to Shannon:
    cd go/gateway
    go run ./cmd/server
 
-   # Terminal 5: Dashboard (UI on port 2111)
-   cd observability/dashboard
-   npm install && npm run dev
+   # Terminal 5: Desktop App (native macOS/iOS)
+   cd desktop
+   npm install && npm run tauri:dev  # macOS dev mode
    ```
 
 ## 🔨 Development Workflow

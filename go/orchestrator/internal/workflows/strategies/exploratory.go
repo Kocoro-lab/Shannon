@@ -324,7 +324,7 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
 		AgentID:    "exploratory",
-		Message:    "All done",
+		Message:    activities.MsgWorkflowCompleted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 

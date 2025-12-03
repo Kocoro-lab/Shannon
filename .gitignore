@@ -20,8 +20,8 @@ eggs/
 # Python virtual environment lib folders
 lib/
 lib64/
-# But explicitly allow dashboard lib
-!observability/dashboard/lib/
+# But explicitly allow desktop lib (Shannon UI)
+!desktop/lib/
 parts/
 sdist/
 var/
@@ -341,8 +341,7 @@ docs/archive-historical/
 tests/verify_rust_pricing
 scripts/benchmark_HLE.py
 
-# Desktop application (Tauri-based GUI)
+# Desktop application build artifacts (source tracked, builds ignored via desktop/.gitignore)
 desktop/
-
 # Chrome extension (browser integration)
 chrome-extension/

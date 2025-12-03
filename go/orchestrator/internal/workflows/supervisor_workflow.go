@@ -66,7 +66,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
 		AgentID:    "supervisor",
-		Message:    "SupervisorWorkflow started",
+		Message:    activities.MsgSupervisorStarted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil); err != nil {
 		logger.Warn("Failed to emit workflow started event", "error", err)
@@ -410,7 +410,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			WorkflowID: workflowID,
 			EventType:  activities.StreamEventWorkflowCompleted,
 			AgentID:    "supervisor",
-			Message:    "All done",
+			Message:    activities.MsgWorkflowCompleted(),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 
@@ -1321,7 +1321,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
 		AgentID:    "supervisor",
-		Message:    "All done",
+		Message:    activities.MsgWorkflowCompleted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 

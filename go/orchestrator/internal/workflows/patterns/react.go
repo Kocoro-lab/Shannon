@@ -12,6 +12,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
 
@@ -83,13 +84,39 @@ func ReactLoop(
 
 	// Main Reason-Act-Observe loop
 	var agentResults []activities.AgentExecutionResult
+
+	// Get workflow ID for SSE events
+	wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	if baseContext != nil {
+		if p, ok := baseContext["parent_workflow_id"].(string); ok && p != "" {
+			wfID = p
+		}
+	}
+
 	for iteration < config.MaxIterations {
 		logger.Info("ReAct iteration",
 			"iteration", iteration+1,
 			"observations_count", len(observations),
 		)
 
+		// Emit iteration progress
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       "PROGRESS",
+			AgentID:    "react",
+			Message:    activities.MsgReactIteration(iteration+1, config.MaxIterations),
+			Timestamp:  time.Now(),
+		})
+
 		// Phase 1: REASON - Think about what to do next
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       "AGENT_STARTED",
+			AgentID:    fmt.Sprintf("reasoner-%d", iteration),
+			Message:    activities.MsgReactReasoning(),
+			Timestamp:  time.Now(),
+		})
+
 		reasonContext := make(map[string]interface{})
 		for k, v := range baseContext {
 			reasonContext[k] = v
@@ -159,6 +186,15 @@ func ReactLoop(
 			logger.Error("Reasoning failed", "error", err)
 			break
 		}
+
+		// Emit reasoning complete
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       "AGENT_COMPLETED",
+			AgentID:    fmt.Sprintf("reasoner-%d", iteration),
+			Message:    activities.MsgReactReasoningDone(),
+			Timestamp:  time.Now(),
+		})
 
 		thoughts = append(thoughts, reasonResult.Response)
 		// Trim thoughts if exceeding limit
@@ -360,6 +396,15 @@ func ReactLoop(
 			)
 		}
 
+		// Emit acting started
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       "AGENT_STARTED",
+			AgentID:    fmt.Sprintf("actor-%d", iteration),
+			Message:    activities.MsgReactActing(),
+			Timestamp:  time.Now(),
+		})
+
 		var actionResult activities.AgentExecutionResult
 
 		// Execute action with optional budget
@@ -415,6 +460,15 @@ func ReactLoop(
 			observations = append(observations, fmt.Sprintf("Error: %v", err))
 			// Continue to next iteration to try recovery
 		} else {
+			// Emit acting complete
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       "AGENT_COMPLETED",
+				AgentID:    fmt.Sprintf("actor-%d", iteration),
+				Message:    activities.MsgReactActingDone(),
+				Timestamp:  time.Now(),
+			})
+
 			// Track whether any tool actually executed successfully
 			if hasSuccessfulToolExecution(actionResult.ToolExecutions) {
 				toolExecuted = true
@@ -506,6 +560,15 @@ func ReactLoop(
 			break
 		}
 	}
+
+	// Emit loop completed
+	streaming.Get().Publish(wfID, streaming.Event{
+		WorkflowID: wfID,
+		Type:       "PROGRESS",
+		AgentID:    "react",
+		Message:    activities.MsgReactLoopDone(),
+		Timestamp:  time.Now(),
+	})
 
 	// Final synthesis of all observations and actions
 	logger.Info("Synthesizing final result from ReAct loops")

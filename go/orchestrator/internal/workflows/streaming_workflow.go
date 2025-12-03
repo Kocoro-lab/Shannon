@@ -491,7 +491,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
 		AgentID:    "streaming",
-		Message:    "All done",
+		Message:    activities.MsgWorkflowCompleted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 

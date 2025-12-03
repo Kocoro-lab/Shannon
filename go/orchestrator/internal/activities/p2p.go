@@ -180,7 +180,7 @@ func (a *Activities) WorkspaceAppend(ctx context.Context, in WorkspaceAppendInpu
 	rc.Expire(ctx, seqKey, 48*time.Hour)
 	rc.Expire(ctx, listKey, 48*time.Hour)
 	// stream event
-	streaming.Get().Publish(in.WorkflowID, streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventWorkspaceUpdated), AgentID: "", Message: in.Topic, Timestamp: ts})
+	streaming.Get().Publish(in.WorkflowID, streaming.Event{WorkflowID: in.WorkflowID, Type: string(StreamEventWorkspaceUpdated), AgentID: "workspace", Message: in.Topic, Timestamp: ts})
 	return WorkspaceAppendResult{Seq: uint64(seq)}, nil
 }
 

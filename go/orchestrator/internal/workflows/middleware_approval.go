@@ -72,7 +72,7 @@ func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string
 		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		EventType:  activities.StreamEventApprovalRequested,
 		AgentID:    "orchestrator",
-		Message:    "Approval requested: " + reason + ", id=" + approval.ApprovalID,
+		Message:    activities.MsgApprovalRequested(reason, approval.ApprovalID),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
@@ -113,7 +113,7 @@ func RequestAndWaitApproval(ctx workflow.Context, input TaskInput, reason string
 		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		EventType:  activities.StreamEventApprovalDecision,
 		AgentID:    "orchestrator",
-		Message:    "Approval " + decision + ": id=" + approval.ApprovalID + ", feedback=" + result.Feedback,
+		Message:    activities.MsgApprovalProcessed(decision),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 	return &result, nil

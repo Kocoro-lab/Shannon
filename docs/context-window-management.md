@@ -50,9 +50,9 @@ The compression preserves:
 
 #### Real-time Events
 Users receive real-time visibility into context management:
-- `"Preparing context (50 msgs, ~6.2k tokens)"` - Initial context prep
-- `"Memory recalled (5 items)"` - Memory system integration
-- `"Context trimmed to stay within budget"` - Compression activated
+- `"Preparing context"` - Initial context prep
+- `"Found 5 past notes"` - Memory system integration
+- `"Shortened context to fit budget"` - Compression activated
 - `"Previous context summary added"` - Summary injected explicitly
 - `"Budget used: 14.8k/50k"` - Token usage tracking
 
@@ -191,8 +191,8 @@ for i in {1..100}; do
 done
 
 # Events you'll see:
-# - "Preparing context (75 msgs, ~12.5k tokens)"
-# - "Context trimmed to stay within budget"
+# - "Preparing context"
+# - "Shortened context to fit budget"
 # - "Previous context summary added"
 # - "Budget used: 45.2k/200k"
 ```
@@ -275,13 +275,8 @@ Watch for these events to understand system behavior:
 
 #### Metrics Monitoring
 ```bash
-# Check compression effectiveness
+# Check compression effectiveness via metrics
 curl http://localhost:2112/metrics | grep shannon_compression
-
-# Import Grafana dashboard
-curl -X POST http://localhost:3030/api/dashboards/db \
-  -H "Content-Type: application/json" \
-  -d @observability/dashboard/context-window.json
 ```
 
 ## Technical Details

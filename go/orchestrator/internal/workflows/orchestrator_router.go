@@ -40,7 +40,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		EventType:  activities.StreamEventWorkflowStarted,
 		AgentID:    "orchestrator",
-		Message:    "Task processing started",
+		Message:    activities.MsgWorkflowStarted(),
 		Timestamp:  workflow.Now(ctx),
 		Payload: map[string]interface{}{
 			"task_context": input.Context, // Include context for frontend
@@ -143,7 +143,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    fmt.Sprintf("Handing off to template (%s)", templateEntry.Template.Name),
+			AgentID:    "orchestrator",
+			Message:    activities.MsgHandoffTemplate(templateEntry.Template.Name),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 
@@ -213,7 +214,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 				EventType:  activities.StreamEventRoleAssigned,
 				AgentID:    role,
-				Message:    fmt.Sprintf("Role '%s' assigned with %d tools available", role, len(roleTools)),
+				Message:    activities.MsgRoleAssigned(role, len(roleTools)),
 				Timestamp:  workflow.Now(ctx),
 				Payload: map[string]interface{}{
 					"role":       role,
@@ -248,6 +249,15 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 	// If no role, proceed with normal LLM decomposition
 	if !rolePresent {
+		// Emit "Understanding your request" before decomposition
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventProgress,
+			AgentID:    "planner",
+			Message:    activities.MsgUnderstandingRequest(),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+
 		if err := workflow.ExecuteActivity(actx, constants.DecomposeTaskActivity, activities.DecompositionInput{
 			Query:          input.Query,
 			Context:        decompContext,
@@ -259,7 +269,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "planner",
-				Message:    "Decomposition failed, using simple execution",
+				Message:    activities.MsgDecompositionFailed(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 
@@ -334,7 +344,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			EventType:  activities.StreamEventProgress,
 			AgentID:    "planner",
-			Message:    fmt.Sprintf("Created a plan with %d steps", len(steps)),
+			Message:    activities.MsgPlanCreated(len(steps)),
 			Timestamp:  workflow.Now(ctx),
 			Payload:    map[string]interface{}{"plan": steps, "deps": deps},
 		}).Get(ctx, nil)
@@ -489,7 +499,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Handing off to simple task",
+			AgentID:    "orchestrator",
+			Message:    activities.MsgHandoffSimple(),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 
@@ -522,7 +533,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Handing off to supervisor",
+			AgentID:    "orchestrator",
+			Message:    activities.MsgHandoffSupervisor(),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
@@ -548,7 +560,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: parentWorkflowID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Handing off to team plan",
+			AgentID:    "orchestrator",
+			Message:    activities.MsgHandoffTeamPlan(),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		strategiesInput := convertToStrategiesInput(input)
@@ -612,7 +625,7 @@ func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query strin
 		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 		EventType:  activities.StreamEventStreamEnd,
 		AgentID:    "orchestrator",
-		Message:    "Stream end",
+		Message:    activities.MsgStreamEnd(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(emitCtx, nil)
 }
@@ -696,7 +709,8 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    "Routing to SimpleTaskWorkflow (learning)",
+			AgentID:    "orchestrator",
+			Message:    activities.MsgWorkflowRouting("simple", mode),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
@@ -738,7 +752,8 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 			EventType:  activities.StreamEventDelegation,
-			Message:    fmt.Sprintf("Routing to %s (%s)", wfName, mode),
+			AgentID:    "orchestrator",
+			Message:    activities.MsgWorkflowRouting(wfName, mode),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{

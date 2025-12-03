@@ -1340,24 +1340,23 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						output = tr.Output.AsInterface()
 					}
 
-					// Emit TOOL_OBSERVATION event with output/error for UI visibility
+					// Emit TOOL_OBSERVATION event with human-readable message
 					if wfID != "" && toolName != "" {
-						msg := ""
+						var msg string
 						if tr.Status == commonpb.StatusCode_STATUS_CODE_OK {
-							// Format output for message
+							// Format output for human-readable message
+							outputStr := ""
 							if output != nil {
 								if str, ok := output.(string); ok {
-									msg = str
+									outputStr = str
 								} else if bytes, err := json.Marshal(output); err == nil {
-									msg = string(bytes)
+									outputStr = string(bytes)
 								}
 							}
+							msg = MsgToolCompleted(toolName, outputStr)
 						} else {
-							msg = tr.ErrorMessage
+							msg = MsgToolFailed(toolName)
 						}
-
-						// Truncate message if too long (UTF-8 safe, match Python's 2000 char limit)
-						msg = truncateQuery(msg, 2000)
 
 						streaming.Get().Publish(wfID, streaming.Event{
 							WorkflowID: wfID,
@@ -1907,11 +1906,13 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		"output_tokens", outputTokens,
 	)
 
-	// Publish TOOL_OBSERVATION event
+	// Publish TOOL_OBSERVATION event with human-readable message
 	if wfID != "" {
-		msg := "Tool execution completed"
-		if !agentResponse.Success {
-			msg = "Tool execution failed"
+		var msg string
+		if agentResponse.Success {
+			msg = MsgToolCompleted(toolName, agentResponse.Response)
+		} else {
+			msg = MsgToolFailed(toolName)
 		}
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
@@ -1928,9 +1929,6 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	}
 
 	// Publish LLM_OUTPUT SSE event with complete metadata
-	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-		wfID = info.WorkflowExecution.ID
-	}
 	if wfID != "" && agentResponse.Response != "" {
 		// Calculate cost using pricing service
 		var costUsd float64
