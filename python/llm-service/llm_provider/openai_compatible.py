@@ -210,7 +210,7 @@ class OpenAICompatibleProvider(LLMProvider):
         }
 
         if request.max_tokens:
-            api_request["max_tokens"] = request.max_tokens
+            api_request["max_tokens"] = min(request.max_tokens, model_config.max_tokens)
 
         if request.stop:
             api_request["stop"] = request.stop
