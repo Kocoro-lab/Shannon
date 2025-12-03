@@ -342,6 +342,6 @@ tests/verify_rust_pricing
 scripts/benchmark_HLE.py
 
 # Desktop application build artifacts (source tracked, builds ignored via desktop/.gitignore)
-desktop/
+# Note: desktop/ folder is now tracked, with build artifacts ignored via desktop/.gitignore
 # Chrome extension (browser integration)
 chrome-extension/

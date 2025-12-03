@@ -1,0 +1,73 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (keep .env.local.example as template)
+.env*
+!.env.local.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Tauri build artifacts
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/Cargo.lock
+
+# macOS build artifacts
+*.dmg
+*.app
+*.pkg
+
+# iOS build artifacts
+*.ipa
+*.xcarchive
+*.dSYM
+
+# Windows build artifacts
+*.exe
+*.msi
+
+# Linux build artifacts
+*.deb
+*.rpm
+*.AppImage
+
+# Tauri updater artifacts
+*.tar.gz
+*.zip
+
+# Build logs
+*.log
