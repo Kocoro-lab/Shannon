@@ -762,6 +762,23 @@ class LLMManager:
                 )
             return provider_name, provider
 
+        # If specific model is explicitly set (e.g., via specific_model parameter),
+        # find and use the provider that has this model, bypassing tier preferences
+        if request.model:
+            self.logger.debug(f"Specific model requested: {request.model}, searching for provider")
+            for pname, pprovider in self.registry.providers.items():
+                if self._is_breaker_open(pname):
+                    continue
+                if request.model in pprovider.models:
+                    self.logger.info(f"Using provider '{pname}' for specific model '{request.model}'")
+                    return pname, pprovider
+            # If no provider has this model, log warning and fall through to tier-based selection
+            self.logger.warning(
+                f"Specific model '{request.model}' not found in any available provider, "
+                f"falling back to tier-based selection (tier={request.model_tier.value})"
+            )
+            request.model = None  # Clear it so tier selection can proceed
+
         # Check tier preferences
         tier_prefs = self.tier_preferences.get(request.model_tier.value, [])
 
@@ -830,6 +847,18 @@ class LLMManager:
         # Apply rate limiting per provider
         if provider_name in self.rate_limiters:
             await self.rate_limiters[provider_name].acquire()
+
+        # Validate and cap max_tokens to model's limit
+        if request.model and request.model in provider.models:
+            model_config = provider.models[request.model]
+            if hasattr(request, 'max_tokens') and request.max_tokens:
+                model_max = model_config.max_tokens
+                if request.max_tokens > model_max:
+                    self.logger.warning(
+                        f"Request max_tokens ({request.max_tokens}) exceeds model limit ({model_max}) "
+                        f"for {request.model}. Capping to {model_max}."
+                    )
+                    request.max_tokens = model_max
 
         # Call provider
         try:
