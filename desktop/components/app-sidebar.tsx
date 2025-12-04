@@ -34,6 +34,8 @@ function SidebarInner() {
   
   // Subscribe to run status for auto-refresh on task completion
   const runStatus = useSelector((state: RootState) => state.run.status);
+  // Subscribe to session title from streaming events (title now generated at start of task)
+  const streamingTitle = useSelector((state: RootState) => state.run.sessionTitle);
 
   // Close sidebar on mobile after navigation
   const handleNavClick = useCallback(() => {
@@ -85,6 +87,23 @@ function SidebarInner() {
     }
     prevStatusRef.current = runStatus;
   }, [runStatus, fetchRecent]);
+
+  // Update sidebar immediately when streaming title arrives (title now generated at task start)
+  // Re-run when recentSessions changes to handle case where title arrives before session is loaded
+  useEffect(() => {
+    if (!streamingTitle || !currentSessionId || currentSessionId === "new") return;
+    
+    // Check if current session exists and needs title update
+    const session = recentSessions.find(s => s.session_id === currentSessionId);
+    if (session && !session.title) {
+      // Update the title in local state for immediate UI feedback
+      setRecentSessions(prev => prev.map(s => 
+        s.session_id === currentSessionId
+          ? { ...s, title: streamingTitle }
+          : s
+      ));
+    }
+  }, [streamingTitle, currentSessionId, recentSessions]);
 
   const routes = [
     {

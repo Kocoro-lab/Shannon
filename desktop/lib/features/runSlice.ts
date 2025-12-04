@@ -236,8 +236,10 @@ const runSlice = createSlice({
             }
 
             // Skip intermediate sub-agent outputs (timeline only, not conversation)
+            // Exception: title_generator completed events need to pass through to set sessionTitle
             if ((event.type === "thread.message.delta" || event.type === "thread.message.completed" || event.type === "LLM_OUTPUT") 
-                && isIntermediateSubAgent(event.agent_id)) {
+                && isIntermediateSubAgent(event.agent_id)
+                && !(event.type === "thread.message.completed" && event.agent_id === "title_generator")) {
                 console.log("[Redux] Skipping intermediate sub-agent message (timeline only):", event.agent_id);
                 return;
             }

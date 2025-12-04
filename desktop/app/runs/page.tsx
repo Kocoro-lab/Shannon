@@ -11,19 +11,43 @@ import { listSessions, Session } from "@/lib/shannon/api";
 export default function RunsPage() {
     const [sessions, setSessions] = useState<Session[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
+    const [totalCount, setTotalCount] = useState<number | null>(null);
 
-    const fetchSessions = async () => {
-        setIsLoading(true);
+    const PAGE_SIZE = 50;
+
+    const fetchSessions = async (append: boolean = false) => {
+        // For initial load/refresh, show full-page loader
+        if (!append) {
+            setIsLoading(true);
+        } else {
+            setIsLoadingMore(true);
+        }
         setError(null);
         try {
-            const data = await listSessions(50, 0);
-            setSessions(data.sessions);
+            const offset = append ? sessions.length : 0;
+            const data = await listSessions(PAGE_SIZE, offset);
+            setTotalCount(data.total_count);
+
+            if (append) {
+                setSessions(prev => {
+                    const existingIds = new Set(prev.map(s => s.session_id));
+                    const newSessions = (data.sessions || []).filter(s => !existingIds.has(s.session_id));
+                    return [...prev, ...newSessions];
+                });
+            } else {
+                setSessions(data.sessions);
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to load sessions");
         } finally {
-            setIsLoading(false);
+            if (!append) {
+                setIsLoading(false);
+            } else {
+                setIsLoadingMore(false);
+            }
         }
     };
 
@@ -34,12 +58,12 @@ export default function RunsPage() {
     // Filter sessions based on search
     const filteredSessions = sessions.filter(session => {
         const query = searchQuery.toLowerCase();
-        return (session.title?.toLowerCase().includes(query) ||
-            session.session_id.toLowerCase().includes(query));
+        const title = (session.title || "").toLowerCase();
+        return title.includes(query) || session.session_id.toLowerCase().includes(query);
     });
 
     return (
-        <div className="p-4 sm:p-8 space-y-6 sm:space-y-8">
+        <div className="h-full overflow-y-auto p-4 sm:p-8 space-y-6 sm:space-y-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
                     <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">History</h1>
@@ -51,8 +75,8 @@ export default function RunsPage() {
                     <Button
                         variant="outline"
                         size="sm"
-                        onClick={fetchSessions}
-                        disabled={isLoading}
+                        onClick={() => fetchSessions(false)}
+                        disabled={isLoading || isLoadingMore}
                     >
                         <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
                         <span className="hidden sm:inline ml-2">Refresh</span>
@@ -258,6 +282,26 @@ export default function RunsPage() {
                             </tbody>
                         </table>
                     </div>
+                    {totalCount !== null && (
+                        <div className="flex items-center justify-between px-4 py-2 border-t text-xs text-muted-foreground">
+                            <span>
+                                Showing {sessions.length} of {totalCount} sessions
+                            </span>
+                            {sessions.length < totalCount && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => fetchSessions(true)}
+                                    disabled={isLoadingMore}
+                                >
+                                    {isLoadingMore && (
+                                        <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                                    )}
+                                    Load more
+                                </Button>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
         </div>
