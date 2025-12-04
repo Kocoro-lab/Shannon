@@ -84,10 +84,33 @@ export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent =
     const isInputDisabled = disabled;
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
-        // Check composition state via ref (more reliable than state for IME)
-        if (e.key === "Enter" && !e.shiftKey && !isComposingRef.current) {
+        const nativeEvent = e.nativeEvent as { isComposing?: boolean; keyCode?: number } | undefined;
+        const isComposing =
+            (e as unknown as { isComposing?: boolean }).isComposing ||
+            isComposingRef.current ||
+            nativeEvent?.isComposing ||
+            nativeEvent?.keyCode === 229;
+
+        // When using IME (Chinese, Japanese, etc.), do not send on Enter while composing/choosing characters
+        if (isComposing) {
+            return;
+        }
+
+        if (e.key === "Enter") {
+            const target = e.currentTarget as HTMLElement | null;
+            const isTextarea = target instanceof HTMLTextAreaElement;
+
+            // For textarea, keep Shift+Enter as newline
+            if (e.shiftKey && isTextarea) {
+                return;
+            }
+
+            // For plain Enter (and Enter in single-line input), prevent default form submit
             e.preventDefault();
-            handleSubmit(e);
+
+            if (!e.shiftKey) {
+                handleSubmit(e);
+            }
         }
     };
 
@@ -218,16 +241,18 @@ export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent =
                     </Select>
                 </div>
             )}
-            <div className="flex gap-2">
-                <Input
+            <div className="flex gap-2 items-end">
+                <Textarea
                     placeholder={isInputDisabled ? "Waiting for task to complete..." : "Ask a question..."}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     disabled={isInputDisabled || isSubmitting}
                     autoFocus
+                    rows={2}
                     onCompositionStart={handleCompositionStart}
                     onCompositionEnd={handleCompositionEnd}
                     onKeyDown={handleKeyDown}
+                    className="min-h-[44px]"
                 />
                 <Button
                     type="submit"
