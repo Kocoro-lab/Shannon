@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.2.2
+**Version:** 0.3.0
 
 ## Installation
 
@@ -165,23 +165,119 @@ asyncio.run(main())
 - ✅ Type-safe enums (EventType, TaskStatusEnum)
 - ✅ Error mapping for common HTTP codes
 
-## Usage and Cost
+## Usage and Cost Tracking
 
-Token usage and cost aggregates are available from task listings. Use `list_tasks()` and read `total_token_usage` for each task.
+### Task-Level Usage
+
+Token usage and cost information is now available directly from `get_status()` in the `usage` field:
 
 ```python
 from shannon import ShannonClient
 
 client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+
+# Submit and get status
+handle = client.submit_task("Analyze quarterly revenue trends")
+status = client.wait(handle.task_id)
+
+# Access usage metadata (new in v0.3.0)
+print(f"Model used: {status.model_used}")
+print(f"Provider: {status.provider}")
+if status.usage:
+    print(f"Total tokens: {status.usage.get('total_tokens')}")
+    print(f"Prompt tokens: {status.usage.get('prompt_tokens')}")
+    print(f"Completion tokens: {status.usage.get('completion_tokens')}")
+    print(f"Cost: ${status.usage.get('cost_usd', 0):.6f}")
+
+# Access task metadata (citations, etc.)
+if status.metadata:
+    print(f"Metadata: {status.metadata}")
+```
+
+### Aggregate Usage from Task Lists
+
+```python
 tasks, total = client.list_tasks(limit=10)
 
 for t in tasks:
     tu = t.total_token_usage
     if tu:
-        print(f"{t.task_id}: total={tu.total_tokens}, prompt={tu.prompt_tokens}, completion={tu.completion_tokens}, cost=${tu.cost_usd:.6f}")
+        print(f"{t.task_id}: total={tu.total_tokens}, cost=${tu.cost_usd:.6f}")
 ```
 
-Note: `get_status()` returns status/result; it does not include usage totals.
+### Session-Level Cost Tracking
+
+Sessions now track comprehensive budget and cost metrics:
+
+```python
+# Get session with budget tracking
+session = client.get_session("my-session-id")
+print(f"Total cost: ${session.total_cost_usd:.4f}")
+print(f"Total tokens: {session.total_tokens_used}")
+print(f"Token budget: {session.token_budget}")
+print(f"Task count: {session.task_count}")
+
+# List sessions with metrics
+sessions, count = client.list_sessions(limit=10)
+for s in sessions:
+    print(f"\nSession: {s.title or s.session_id}")
+    print(f"  Tasks: {s.successful_tasks} succeeded, {s.failed_tasks} failed")
+    print(f"  Success rate: {s.success_rate:.1%}")
+    print(f"  Total cost: ${s.total_cost_usd:.4f}")
+    print(f"  Avg cost/task: ${s.average_cost_per_task:.4f}")
+    if s.token_budget:
+        print(f"  Budget: {s.budget_utilization:.1%} used ({s.budget_remaining} remaining)")
+        if s.is_near_budget_limit:
+            print(f"  ⚠️  Near budget limit!")
+```
+
+## Session Management (New in v0.3.0)
+
+### Session Titles
+
+Sessions now support user-editable titles:
+
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+
+# Create tasks in a session
+handle = client.submit_task("Analyze Q4 revenue", session_id="quarterly-review")
+
+# Update session title for better organization
+client.update_session_title("quarterly-review", "Q4 2024 Financial Analysis")
+
+# Get session with title
+session = client.get_session("quarterly-review")
+print(f"Session: {session.title}")
+```
+
+### Session Activity Tracking
+
+Monitor session health and activity:
+
+```python
+sessions, _ = client.list_sessions(limit=20)
+
+for s in sessions:
+    if s.is_active:
+        print(f"✓ Active: {s.title or s.session_id}")
+        if s.last_activity_at:
+            print(f"  Last used: {s.last_activity_at}")
+        print(f"  Latest task: {s.latest_task_query}")
+        print(f"  Status: {s.latest_task_status}")
+```
+
+### Research Session Detection
+
+The SDK automatically detects research sessions based on task patterns:
+
+```python
+session = client.get_session("my-session")
+if session.is_research_session:
+    print(f"Research session using '{session.research_strategy}' strategy")
+```
 
 ## Examples
 
@@ -246,9 +342,49 @@ clients/python/
 └── pyproject.toml       # Package metadata
 ```
 
+## Changelog
+
+### Version 0.3.0 (2025-01-04)
+
+**Breaking Changes:**
+- None (all changes are backward-compatible additions)
+
+**New Features:**
+- **TaskStatus model expanded** with backend fields:
+  - `workflow_id` - Workflow identifier for streaming/debugging
+  - `created_at` / `updated_at` - Task lifecycle timestamps
+  - `query` - Original task query
+  - `session_id` - Associated session
+  - `mode` - Execution mode (simple/standard/complex/supervisor)
+  - `context` - Task context (research settings, etc.)
+  - `model_used` - Model used for execution
+  - `provider` - Provider used (openai, anthropic, etc.)
+  - `usage` - Detailed token/cost breakdown (replaces deprecated `metrics`)
+  - `metadata` - Task metadata including citations
+
+- **Session models enhanced** with comprehensive tracking:
+  - `title` - User-editable session titles
+  - `token_budget` / `budget_remaining` / `budget_utilization` - Budget tracking
+  - `last_activity_at` / `is_active` - Activity monitoring
+  - `successful_tasks` / `failed_tasks` / `success_rate` - Success metrics
+  - `total_cost_usd` / `average_cost_per_task` - Cost analytics
+  - `is_near_budget_limit` - Budget warning flag
+  - `latest_task_query` / `latest_task_status` - Latest task preview
+  - `is_research_session` / `research_strategy` - Research detection
+  - `expires_at` - Session expiration timestamp
+
+**Deprecations:**
+- `TaskStatus.metrics` - Use `TaskStatus.usage` instead (still supported for backward compatibility)
+
+### Version 0.2.2 (Previous)
+- Session endpoints
+- CLI improvements
+- Streaming enhancements
+
 ## License
 
 MIT
+
 ## Security
 
 - Do not hardcode credentials in code. Prefer environment variables (`SHANNON_API_KEY`) or a secrets manager.

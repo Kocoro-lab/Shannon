@@ -386,12 +386,38 @@ class AsyncShannonClient:
                 else:
                     result = data["response"]
 
+            # Parse timestamps
+            created_at = None
+            if data.get("created_at"):
+                try:
+                    created_at = _parse_timestamp(data["created_at"])
+                except Exception:
+                    pass
+
+            updated_at = None
+            if data.get("updated_at"):
+                try:
+                    updated_at = _parse_timestamp(data["updated_at"])
+                except Exception:
+                    pass
+
             return TaskStatus(
                 task_id=data["task_id"],
                 status=status,
+                workflow_id=data.get("workflow_id"),
                 progress=data.get("progress", 0.0),
                 result=result,
                 error_message=data.get("error", ""),
+                created_at=created_at,
+                updated_at=updated_at,
+                query=data.get("query"),
+                session_id=data.get("session_id"),
+                mode=data.get("mode"),
+                context=data.get("context"),
+                model_used=data.get("model_used"),
+                provider=data.get("provider"),
+                usage=data.get("usage"),
+                metadata=data.get("metadata"),
             )
 
         except httpx.HTTPError as e:
@@ -742,14 +768,56 @@ class AsyncShannonClient:
             sessions = []
 
             for session_data in data.get("sessions", []):
+                # Parse timestamps
+                created_at = _parse_timestamp(session_data["created_at"])
+                updated_at = None
+                if session_data.get("updated_at"):
+                    try:
+                        updated_at = _parse_timestamp(session_data["updated_at"])
+                    except Exception:
+                        updated_at = created_at
+                else:
+                    updated_at = created_at
+
+                expires_at = None
+                if session_data.get("expires_at"):
+                    try:
+                        expires_at = _parse_timestamp(session_data["expires_at"])
+                    except Exception:
+                        pass
+
+                last_activity_at = None
+                if session_data.get("last_activity_at"):
+                    try:
+                        last_activity_at = _parse_timestamp(session_data["last_activity_at"])
+                    except Exception:
+                        pass
+
                 sessions.append(SessionSummary(
                     session_id=session_data["session_id"],
                     user_id=session_data["user_id"],
-                    created_at=_parse_timestamp(session_data["created_at"]),
-                    updated_at=_parse_timestamp(session_data["created_at"]),  # Use created_at if updated not present
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    title=session_data.get("title"),
                     message_count=session_data.get("task_count", 0),
                     total_tokens_used=session_data.get("tokens_used", 0),
-                    is_active=True,  # Assume active if returned
+                    token_budget=session_data.get("token_budget"),
+                    expires_at=expires_at,
+                    context=session_data.get("context"),
+                    last_activity_at=last_activity_at,
+                    is_active=session_data.get("is_active", True),
+                    successful_tasks=session_data.get("successful_tasks", 0),
+                    failed_tasks=session_data.get("failed_tasks", 0),
+                    success_rate=session_data.get("success_rate", 0.0),
+                    total_cost_usd=session_data.get("total_cost_usd", 0.0),
+                    average_cost_per_task=session_data.get("average_cost_per_task", 0.0),
+                    budget_utilization=session_data.get("budget_utilization", 0.0),
+                    budget_remaining=session_data.get("budget_remaining"),
+                    is_near_budget_limit=session_data.get("is_near_budget_limit", False),
+                    latest_task_query=session_data.get("latest_task_query"),
+                    latest_task_status=session_data.get("latest_task_status"),
+                    is_research_session=session_data.get("is_research_session", False),
+                    first_task_mode=session_data.get("first_task_mode"),
                 ))
 
             return sessions, data.get("total_count", len(sessions))
@@ -790,13 +858,36 @@ class AsyncShannonClient:
 
             data = response.json()
 
+            # Parse timestamps
+            created_at = _parse_timestamp(data["created_at"])
+            updated_at = created_at
+            if data.get("updated_at"):
+                try:
+                    updated_at = _parse_timestamp(data["updated_at"])
+                except Exception:
+                    pass
+
+            expires_at = None
+            if data.get("expires_at"):
+                try:
+                    expires_at = _parse_timestamp(data["expires_at"])
+                except Exception:
+                    pass
+
             return Session(
                 session_id=data["session_id"],
                 user_id=data["user_id"],
-                created_at=_parse_timestamp(data["created_at"]),
-                updated_at=_parse_timestamp(data.get("updated_at", data["created_at"])),
+                created_at=created_at,
+                updated_at=updated_at,
+                title=data.get("title"),
+                context=data.get("context"),
                 total_tokens_used=data.get("tokens_used", 0),
                 total_cost_usd=data.get("cost_usd", 0.0),
+                token_budget=data.get("token_budget"),
+                task_count=data.get("task_count", 0),
+                expires_at=expires_at,
+                is_research_session=data.get("is_research_session", False),
+                research_strategy=data.get("research_strategy"),
             )
 
         except httpx.HTTPError as e:

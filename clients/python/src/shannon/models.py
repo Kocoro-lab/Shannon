@@ -39,6 +39,9 @@ class EventType(str, Enum):
     ERROR_RECOVERY = "ERROR_RECOVERY"
     DEPENDENCY_SATISFIED = "DEPENDENCY_SATISFIED"
     STATUS_UPDATE = "STATUS_UPDATE"
+    # OpenAI-style streaming events (used by some providers)
+    THREAD_MESSAGE_DELTA = "thread.message.delta"
+    THREAD_MESSAGE_COMPLETED = "thread.message.completed"
 
 
 class TaskStatusEnum(str, Enum):
@@ -157,9 +160,21 @@ class TaskStatus:
 
     task_id: str
     status: TaskStatusEnum
+    workflow_id: Optional[str] = None
     progress: float = 0.0
     result: Optional[str] = None
     error_message: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    query: Optional[str] = None
+    session_id: Optional[str] = None
+    mode: Optional[str] = None
+    context: Optional[Dict[str, Any]] = None
+    model_used: Optional[str] = None
+    provider: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    # Deprecated: use 'usage' instead
     metrics: Optional[ExecutionMetrics] = None
     agent_statuses: List[AgentTaskStatus] = field(default_factory=list)
 
@@ -194,12 +209,19 @@ class Session:
     user_id: str
     created_at: datetime
     updated_at: datetime
+    title: Optional[str] = None
     history: List[ConversationMessage] = field(default_factory=list)
     persistent_context: Dict[str, Any] = field(default_factory=dict)
+    context: Optional[Dict[str, Any]] = None
     files_created: List[str] = field(default_factory=list)
     tools_used: List[str] = field(default_factory=list)
     total_tokens_used: int = 0
     total_cost_usd: float = 0.0
+    token_budget: Optional[int] = None
+    task_count: int = 0
+    expires_at: Optional[datetime] = None
+    is_research_session: bool = False
+    research_strategy: Optional[str] = None
     max_history: int = 50
     ttl_seconds: int = 3600
 
@@ -212,9 +234,26 @@ class SessionSummary:
     user_id: str
     created_at: datetime
     updated_at: datetime
-    message_count: int
-    total_tokens_used: int
-    is_active: bool
+    title: Optional[str] = None
+    message_count: int = 0
+    total_tokens_used: int = 0
+    token_budget: Optional[int] = None
+    expires_at: Optional[datetime] = None
+    context: Optional[Dict[str, Any]] = None
+    last_activity_at: Optional[datetime] = None
+    is_active: bool = False
+    successful_tasks: int = 0
+    failed_tasks: int = 0
+    success_rate: float = 0.0
+    total_cost_usd: float = 0.0
+    average_cost_per_task: float = 0.0
+    budget_utilization: float = 0.0
+    budget_remaining: Optional[int] = None
+    is_near_budget_limit: bool = False
+    latest_task_query: Optional[str] = None
+    latest_task_status: Optional[str] = None
+    is_research_session: bool = False
+    first_task_mode: Optional[str] = None
 
 
 @dataclass
