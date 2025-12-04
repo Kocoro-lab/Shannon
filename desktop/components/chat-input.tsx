@@ -241,16 +241,18 @@ export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent =
                     </Select>
                 </div>
             )}
-            <div className="flex gap-2">
-                <Input
+            <div className="flex gap-2 items-end">
+                <Textarea
                     placeholder={isInputDisabled ? "Waiting for task to complete..." : "Ask a question..."}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     disabled={isInputDisabled || isSubmitting}
                     autoFocus
+                    rows={2}
                     onCompositionStart={handleCompositionStart}
                     onCompositionEnd={handleCompositionEnd}
                     onKeyDown={handleKeyDown}
+                    className="min-h-[44px]"
                 />
                 <Button
                     type="submit"
