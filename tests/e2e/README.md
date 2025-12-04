@@ -38,6 +38,12 @@ Tests are numbered by category for clear organization:
   - Graph of Thoughts
   - Reflexion patterns
 
+- **`08_citation_integrity_test.sh`** - Citation hallucination prevention
+  - Validates all [n] markers correspond to real sources
+  - Detects hallucinated citation numbers
+  - Verifies citation-to-source mapping
+  - Tests multiple query types (web search + simple queries)
+
 ### Workflow Tests (10-19)
 - **`10_supervisor_workflow_test.sh`** - Complex multi-agent orchestration
   - Subtask decomposition
