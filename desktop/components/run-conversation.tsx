@@ -317,8 +317,8 @@ function getMarkdownComponents() {
             <blockquote className="border-l-4 pl-4 italic text-muted-foreground my-2" {...props}>{children}</blockquote>
         ),
         a: ({ children, href, ...props }: any) => (
-            <a 
-                className="underline hover:text-primary cursor-pointer break-all overflow-wrap-anywhere" 
+            <a
+                className="underline hover:text-primary cursor-pointer break-all overflow-wrap-anywhere"
                 href={href}
                 onClick={(e) => {
                     if (href && (href.startsWith('http://') || href.startsWith('https://'))) {

@@ -100,7 +100,7 @@ export default function RunsPage() {
             {error && (
                 <div className="rounded-lg border border-red-200 bg-red-50 p-4">
                     <p className="text-sm text-red-800">{error}</p>
-                    <Button variant="outline" size="sm" className="mt-2" onClick={fetchSessions}>
+                    <Button variant="outline" size="sm" className="mt-2" onClick={() => fetchSessions()}>
                         Retry
                     </Button>
                 </div>
