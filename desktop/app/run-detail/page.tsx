@@ -937,7 +937,8 @@ function RunDetailContent() {
     // Helper to determine event status
     const getEventStatus = (eventType: string): "completed" | "running" | "failed" | "pending" => {
         if (eventType === "ERROR_OCCURRED" || eventType === "error" || 
-            eventType === "TASK_FAILED" || eventType === "TASK_CANCELLED") return "failed";
+            eventType === "TASK_FAILED" || eventType === "TASK_CANCELLED" ||
+            eventType === "WORKFLOW_FAILED") return "failed";
         if (eventType.includes("STARTED") || eventType === "AGENT_THINKING" ||
             eventType === "WAITING" || eventType === "APPROVAL_REQUESTED") return "running";
         if (eventType.includes("COMPLETED") || eventType === "thread.message.completed" ||
@@ -951,9 +952,18 @@ function RunDetailContent() {
         // Priority 1: JSON payload
         if (event.payload) {
             // Backend returns payload as JSON string, streaming returns as object
-            const payloadStr = typeof event.payload === 'string'
-                ? event.payload
-                : JSON.stringify(event.payload, null, 2);
+            let payloadStr: string;
+            if (typeof event.payload === "string") {
+                const raw = event.payload;
+                try {
+                    const parsed = JSON.parse(raw);
+                    payloadStr = JSON.stringify(parsed, null, 2);
+                } catch {
+                    payloadStr = raw;
+                }
+            } else {
+                payloadStr = JSON.stringify(event.payload, null, 2);
+            }
 
             return {
                 details: payloadStr,

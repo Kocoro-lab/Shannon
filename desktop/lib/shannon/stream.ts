@@ -87,6 +87,7 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
                 "thread.message.completed",
                 "WORKFLOW_STARTED",
                 "WORKFLOW_COMPLETED",
+                "WORKFLOW_FAILED",
                 "AGENT_THINKING",
                 "AGENT_STARTED",
                 "AGENT_COMPLETED",

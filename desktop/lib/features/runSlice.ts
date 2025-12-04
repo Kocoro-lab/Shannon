@@ -137,7 +137,9 @@ const runSlice = createSlice({
             // Priority: STREAM_END/done > WORKFLOW_COMPLETED (main workflow only)
             if (event.type === "done" || event.type === "STREAM_END") {
                 // STREAM_END or done is the authoritative "stream finished" marker
-                state.status = "completed";
+                if (state.status !== "failed") {
+                    state.status = "completed";
+                }
                 console.log("[Redux] Stream ended (event type:", event.type, ")");
 
                 // Remove generating placeholder and status messages when stream ends
@@ -180,6 +182,16 @@ const runSlice = createSlice({
                     // Log sub-workflow completion but don't mark as complete
                     console.log("[Redux] Sub-workflow completed (not main workflow):", event.workflow_id, 
                         "message:", workflowEvent.message);
+                }
+            } else if (event.type === "WORKFLOW_FAILED") {
+                state.status = "failed";
+                // Remove generating placeholders and status messages on failure
+                state.messages = state.messages.filter((m: any) => !m.isGenerating && m.role !== "status");
+                const failedMessage = (event as any).message;
+                if (failedMessage) {
+                    console.log("[Redux] Workflow failed:", failedMessage);
+                } else {
+                    console.log("[Redux] Workflow failed (no message)");
                 }
             } else if (event.type === "error") {
                 state.status = "failed";

@@ -7,6 +7,7 @@ export type EventType =
     | "error"
     | "done"
     | "STREAM_END"
+    | "WORKFLOW_FAILED"
     | "ROLE_ASSIGNED"
     | "DELEGATION"
     | "BUDGET_THRESHOLD"
@@ -95,6 +96,12 @@ export interface WorkflowStartedEvent extends BaseEvent {
 export interface WorkflowCompletedEvent extends BaseEvent {
     type: "WORKFLOW_COMPLETED";
     message?: string;
+}
+
+export interface WorkflowFailedEvent extends BaseEvent {
+    type: "WORKFLOW_FAILED";
+    message?: string;
+    error_code?: string;
 }
 
 export interface AgentStartedEvent extends BaseEvent {
@@ -209,6 +216,7 @@ export interface StreamEndEvent extends BaseEvent {
 export type ShannonEvent =
     | WorkflowStartedEvent
     | WorkflowCompletedEvent
+    | WorkflowFailedEvent
     | AgentStartedEvent
     | AgentCompletedEvent
     | AgentThinkingEvent
