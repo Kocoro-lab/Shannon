@@ -49,6 +49,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Warn("Failed to emit workflow started event", "error", err)
 	}
 
+	// Start async title generation immediately (non-blocking)
+	// Title is generated from query, doesn't need task result, so start early for better UX
+	startAsyncTitleGeneration(ctx, input.SessionID, input.Query)
+
 	// Conservative activity options for fast planning
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 60 * time.Second,
@@ -170,12 +174,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				ometrics.TemplateFallbackSuccess.WithLabelValues("unsuccessful").Inc()
 				templateFound = false
 			} else {
-				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				scheduleStreamEnd(ctx)
 				result = AddTaskContextToMetadata(result, input.Context)
 				return result, nil
 			}
 		} else {
-			scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+			scheduleStreamEnd(ctx)
 			result = AddTaskContextToMetadata(result, input.Context)
 			return result, nil
 		}
@@ -359,7 +363,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
 			if !res.CanProceed {
 				// Best-effort title generation even when budget preflight blocks execution
-				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				scheduleStreamEnd(ctx)
 				out := TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}
 				out = AddTaskContextToMetadata(out, input.Context)
 				return out, nil
@@ -405,7 +409,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		if need, reason := CheckApprovalPolicyWith(pol, input, decomp); need {
 			if ar, err := RequestAndWaitApproval(ctx, input, reason); err != nil {
 				// Best-effort title generation even on approval flow errors
-				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				scheduleStreamEnd(ctx)
 				out := TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval request failed: %v", err)}
 				out = AddTaskContextToMetadata(out, input.Context)
 				return out, err
@@ -415,7 +419,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 					msg = ar.Feedback
 				}
 				// Best-effort title generation even when approval is denied
-				scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+				scheduleStreamEnd(ctx)
 				out := TaskResult{Success: false, ErrorMessage: fmt.Sprintf("approval denied: %s", msg)}
 				out = AddTaskContextToMetadata(out, input.Context)
 				return out, nil
@@ -516,7 +520,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		execErr := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result)
 
 		// Generate title regardless of success/failure (best-effort)
-		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
 			result = AddTaskContextToMetadata(result, input.Context)
@@ -543,7 +547,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		execErr := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, input).Get(childCtx, &result)
 
 		// Generate title regardless of success/failure (best-effort)
-		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
 			result = AddTaskContextToMetadata(result, input.Context)
@@ -572,7 +576,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		execErr := workflow.ExecuteChildWorkflow(childCtx, strategies.DAGWorkflow, strategiesInput).Get(childCtx, &strategiesResult)
 
 		// Generate title regardless of success/failure (best-effort)
-		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
 			out := AddTaskContextToMetadata(TaskResult{Success: false, ErrorMessage: execErr.Error()}, input.Context)
@@ -585,12 +589,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 }
 
-// scheduleSessionTitleGeneration schedules the session title generation activity.
-// This is called after the first task completes, regardless of success or failure.
+// startAsyncTitleGeneration fires off title generation at workflow start (non-blocking).
+// This runs in parallel with the main workflow so users see titles immediately.
 // The activity is best-effort with a short timeout and no retries.
-func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query string) {
-	// Version gate for deterministic replay
-	titleVersion := workflow.GetVersion(ctx, "session_title_v1", workflow.DefaultVersion, 1)
+func startAsyncTitleGeneration(ctx workflow.Context, sessionID, query string) {
+	// Version gate for deterministic replay - new version for async behavior
+	titleVersion := workflow.GetVersion(ctx, "session_title_async_v1", workflow.DefaultVersion, 1)
 	if titleVersion < 1 {
 		return
 	}
@@ -599,24 +603,33 @@ func scheduleSessionTitleGeneration(ctx workflow.Context, sessionID, query strin
 		return
 	}
 
-	// Use a short timeout and no retries for best-effort execution
-	// 15s timeout provides buffer for LLM call (~1-2s with fix) + Redis save (~0.5s)
-	titleOpts := workflow.ActivityOptions{
-		StartToCloseTimeout: 15 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 1, // Best-effort, don't retry on failure
-		},
+	// Fire-and-forget: run title generation in background goroutine
+	workflow.Go(ctx, func(gCtx workflow.Context) {
+		titleOpts := workflow.ActivityOptions{
+			StartToCloseTimeout: 15 * time.Second,
+			RetryPolicy: &temporal.RetryPolicy{
+				MaximumAttempts: 1, // Best-effort, don't retry on failure
+			},
+		}
+		titleCtx := workflow.WithActivityOptions(gCtx, titleOpts)
+
+		// Execute title generation - errors are ignored (best-effort)
+		_ = workflow.ExecuteActivity(titleCtx, "GenerateSessionTitle", activities.GenerateSessionTitleInput{
+			SessionID: sessionID,
+			Query:     query,
+		}).Get(titleCtx, nil)
+	})
+}
+
+// scheduleStreamEnd emits the STREAM_END event to signal end of workflow processing.
+// This should be called at the end of each workflow path.
+func scheduleStreamEnd(ctx workflow.Context) {
+	// Version gate for deterministic replay
+	streamEndVersion := workflow.GetVersion(ctx, "stream_end_v1", workflow.DefaultVersion, 1)
+	if streamEndVersion < 1 {
+		return
 	}
-	titleCtx := workflow.WithActivityOptions(ctx, titleOpts)
 
-	// Execute and wait (non-detached) to ensure it runs even if workflow fails
-	// Ignore errors since this is best-effort
-	_ = workflow.ExecuteActivity(titleCtx, "GenerateSessionTitle", activities.GenerateSessionTitleInput{
-		SessionID: sessionID,
-		Query:     query,
-	}).Get(titleCtx, nil)
-
-	// Emit STREAM_END to explicitly signal the end of post-completion processing
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
@@ -719,7 +732,7 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		execErr := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result)
 
 		// Generate title regardless of success/failure (best-effort)
-		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
 			result = AddTaskContextToMetadata(result, input.Context)
@@ -762,7 +775,7 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		execErr := workflow.ExecuteChildWorkflow(childCtx, wfFunc, strategiesInput).Get(childCtx, &strategiesResult)
 
 		// Generate title regardless of success/failure (best-effort)
-		scheduleSessionTitleGeneration(ctx, input.SessionID, input.Query)
+		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
 			res := AddTaskContextToMetadata(TaskResult{}, input.Context)
