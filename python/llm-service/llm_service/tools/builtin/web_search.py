@@ -1207,7 +1207,12 @@ class WebSearchTool(Tool):
 
             return ToolResult(
                 success=True,
-                output=results,
+                output={
+                    "provider": self.provider.__class__.__name__,
+                    "query": query,
+                    "results": results,
+                    "result_count": len(results),
+                },
                 metadata={
                     "query": query,
                     "provider": self.provider.__class__.__name__,
