@@ -1,9 +1,10 @@
 """
 Web Fetch Tool - Extract full page content for deep analysis
 
-Hybrid approach:
-- Default: Exa content API when configured (handles JS-heavy sites)
-- Fallback: Pure Python (free, fast, works for most pages)
+Multi-provider architecture:
+- Exa: Semantic search + content extraction (handles JS-heavy sites)
+- Firecrawl: Smart crawling + structured extraction + actions
+- Pure Python: Free, fast, works for most pages
 
 Security features:
 - SSRF protection (blocks private IPs, cloud metadata endpoints)
@@ -14,11 +15,13 @@ Security features:
 import aiohttp
 import asyncio
 import os
+import re
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from urllib.parse import urlparse, urljoin, parse_qsl, urlencode
 from bs4 import BeautifulSoup
 import html2text
+from enum import Enum
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
@@ -26,23 +29,357 @@ from ..openapi_parser import _is_private_ip
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_SUBPAGES = 5
+MAX_SUBPAGES = 10  # Increased for Firecrawl crawl support
 CRAWL_DELAY_SECONDS = float(os.getenv("WEB_FETCH_CRAWL_DELAY", "0.5"))
 MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  # 150KB total
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
+
+
+class FetchProvider(Enum):
+    """Available fetch providers"""
+    EXA = "exa"
+    FIRECRAWL = "firecrawl"
+    PYTHON = "python"
+    AUTO = "auto"
+
+
+class WebFetchProvider:
+    """Base class for web fetch providers"""
+
+    # Standardized timeout for all providers (in seconds)
+    DEFAULT_TIMEOUT = 30
+
+    @staticmethod
+    def validate_api_key(api_key: str) -> bool:
+        """Validate API key format and presence"""
+        if not api_key or not isinstance(api_key, str):
+            return False
+        if len(api_key.strip()) < 10:
+            return False
+        if api_key.lower() in ["test", "demo", "example", "your_api_key_here", "xxx"]:
+            return False
+        return True
+
+    @staticmethod
+    def sanitize_error_message(error: str) -> str:
+        """Sanitize error messages to prevent information disclosure"""
+        sanitized = re.sub(r"https?://[^\s]+", "[URL_REDACTED]", str(error))
+        sanitized = re.sub(r"\b[A-Za-z0-9]{32,}\b", "[KEY_REDACTED]", sanitized)
+        sanitized = re.sub(
+            r"api[_\-]?key[\s=:]+[\w\-]+",
+            "api_key=[REDACTED]",
+            sanitized,
+            flags=re.IGNORECASE,
+        )
+        if len(sanitized) > 200:
+            sanitized = sanitized[:200] + "..."
+        return sanitized
+
+    async def fetch(
+        self,
+        url: str,
+        max_length: int = 10000,
+        subpages: int = 0,
+        subpage_target: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Fetch content from a URL.
+
+        Args:
+            url: The URL to fetch
+            max_length: Maximum content length in characters
+            subpages: Number of subpages to crawl (0 = main page only)
+            subpage_target: Keywords to prioritize certain subpages
+
+        Returns:
+            Dict with: url, title, content, method, pages_fetched, etc.
+        """
+        raise NotImplementedError
+
+
+class FirecrawlFetchProvider(WebFetchProvider):
+    """
+    Firecrawl fetch provider - Smart crawling with JS rendering and structured extraction.
+
+    Features:
+    - Scrape: Single page extraction with JS rendering
+    - Crawl: Multi-page crawling with automatic link discovery
+    - Markdown output with clean formatting
+    - Supports actions (click, scroll, wait) for complex pages
+    """
+
+    def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing Firecrawl API key")
+        self.api_key = api_key
+        self.scrape_url = "https://api.firecrawl.dev/v1/scrape"
+        self.crawl_url = "https://api.firecrawl.dev/v1/crawl"
+
+    async def fetch(
+        self,
+        url: str,
+        max_length: int = 10000,
+        subpages: int = 0,
+        subpage_target: Optional[str] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Fetch using Firecrawl API.
+
+        Uses scrape for single pages, crawl for multi-page.
+        """
+        if subpages > 0:
+            return await self._crawl(url, max_length, subpages)
+        else:
+            return await self._scrape(url, max_length)
+
+    async def _scrape(self, url: str, max_length: int) -> Dict[str, Any]:
+        """Scrape a single page using Firecrawl scrape API"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "url": url,
+            "formats": ["markdown"],
+            "onlyMainContent": True,
+        }
+
+        session = None
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            session = aiohttp.ClientSession(timeout=timeout)
+
+            async with session.post(
+                self.scrape_url, json=payload, headers=headers
+            ) as response:
+                if response.status == 401:
+                    raise Exception("Firecrawl authentication failed (401)")
+                elif response.status == 429:
+                    raise Exception("Firecrawl rate limit exceeded (429)")
+                elif response.status != 200:
+                    error_text = await response.text()
+                    sanitized = self.sanitize_error_message(error_text)
+                    logger.error(f"Firecrawl scrape error: {response.status}")
+                    raise Exception(f"Firecrawl error: {response.status}")
+
+                data = await response.json()
+
+                if not data.get("success"):
+                    raise Exception("Firecrawl scrape returned unsuccessful result")
+
+                result_data = data.get("data", {})
+                content = result_data.get("markdown", "")
+
+                # Truncate if needed
+                if len(content) > max_length:
+                    content = content[:max_length]
+
+                return {
+                    "url": result_data.get("url", url),
+                    "title": result_data.get("metadata", {}).get("title", ""),
+                    "content": content,
+                    "author": result_data.get("metadata", {}).get("author"),
+                    "published_date": result_data.get("metadata", {}).get("publishedDate"),
+                    "word_count": len(content.split()),
+                    "char_count": len(content),
+                    "truncated": len(content) >= max_length,
+                    "method": "firecrawl",
+                    "pages_fetched": 1,
+                }
+
+        finally:
+            if session and not session.closed:
+                await session.close()
+
+    async def _crawl(self, url: str, max_length: int, limit: int) -> Dict[str, Any]:
+        """
+        Crawl multiple pages using Firecrawl crawl API.
+
+        This is an async operation - we start the crawl, then poll for results.
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        # Start crawl job
+        payload = {
+            "url": url,
+            "limit": min(limit + 1, MAX_SUBPAGES + 1),  # +1 for main page
+            "scrapeOptions": {
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+            },
+        }
+
+        session = None
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            session = aiohttp.ClientSession(timeout=timeout)
+
+            # Start crawl
+            async with session.post(
+                self.crawl_url, json=payload, headers=headers
+            ) as response:
+                if response.status == 401:
+                    raise Exception("Firecrawl authentication failed (401)")
+                elif response.status == 429:
+                    raise Exception("Firecrawl rate limit exceeded (429)")
+                elif response.status != 200:
+                    raise Exception(f"Firecrawl crawl start error: {response.status}")
+
+                data = await response.json()
+                if not data.get("success"):
+                    raise Exception("Firecrawl crawl start failed")
+
+                crawl_id = data.get("id")
+                if not crawl_id:
+                    raise Exception("Firecrawl did not return crawl ID")
+
+            # Poll for crawl completion
+            status_url = f"{self.crawl_url}/{crawl_id}"
+            max_polls = 60  # Max 60 polls (with 2s delay = 2 minutes max)
+            poll_delay = 2.0
+
+            for _ in range(max_polls):
+                await asyncio.sleep(poll_delay)
+
+                async with session.get(status_url, headers=headers) as status_response:
+                    if status_response.status != 200:
+                        continue
+
+                    status_data = await status_response.json()
+                    status = status_data.get("status", "")
+
+                    if status == "completed":
+                        # Crawl finished, process results
+                        results = status_data.get("data", [])
+                        return self._merge_crawl_results(results, url, max_length)
+
+                    elif status == "failed":
+                        raise Exception("Firecrawl crawl job failed")
+
+                    # Still in progress, continue polling
+
+            raise Exception("Firecrawl crawl timeout - job did not complete in time")
+
+        finally:
+            if session and not session.closed:
+                await session.close()
+
+    def _merge_crawl_results(
+        self, results: List[Dict], original_url: str, max_length: int
+    ) -> Dict[str, Any]:
+        """Merge multiple crawl results into a single structured output"""
+        if not results:
+            return {
+                "url": original_url,
+                "title": "",
+                "content": "",
+                "method": "firecrawl",
+                "pages_fetched": 0,
+            }
+
+        if len(results) == 1:
+            # Single page result
+            result = results[0]
+            content = result.get("markdown", "")
+            if len(content) > max_length:
+                content = content[:max_length]
+
+            return {
+                "url": result.get("url", original_url),
+                "title": result.get("metadata", {}).get("title", ""),
+                "content": content,
+                "author": result.get("metadata", {}).get("author"),
+                "published_date": result.get("metadata", {}).get("publishedDate"),
+                "word_count": len(content.split()),
+                "char_count": len(content),
+                "truncated": len(content) >= max_length,
+                "method": "firecrawl",
+                "pages_fetched": 1,
+            }
+
+        # Multiple pages - merge with markdown separators
+        merged_content = []
+        total_words = 0
+        total_chars = 0
+
+        for i, result in enumerate(results):
+            page_url = result.get("url", "")
+            page_title = result.get("metadata", {}).get("title", "")
+            page_content = result.get("markdown", "")
+
+            if i == 0:
+                merged_content.append(f"# Main Page: {page_url}\n")
+                if page_title:
+                    merged_content.append(f"**{page_title}**\n")
+            else:
+                merged_content.append(f"\n---\n\n## Subpage {i}: {page_url}\n")
+                if page_title:
+                    merged_content.append(f"**{page_title}**\n")
+
+            merged_content.append(f"\n{page_content}\n")
+            total_words += len(page_content.split())
+            total_chars += len(page_content)
+
+        final_content = "".join(merged_content)
+
+        # Truncate if needed
+        if len(final_content) > max_length:
+            final_content = final_content[:max_length]
+
+        return {
+            "url": results[0].get("url", original_url),
+            "title": results[0].get("metadata", {}).get("title", ""),
+            "content": final_content,
+            "author": results[0].get("metadata", {}).get("author"),
+            "published_date": results[0].get("metadata", {}).get("publishedDate"),
+            "word_count": total_words,
+            "char_count": total_chars,
+            "truncated": len(final_content) >= max_length,
+            "method": "firecrawl",
+            "pages_fetched": len(results),
+        }
+
+
 
 
 class WebFetchTool(Tool):
     """
     Fetch full content from a web page for detailed analysis.
 
-    Two modes:
-    1. Exa API (default when configured): Premium content extraction with JS rendering
-    2. Pure Python (fallback): Fast, free, works for most pages
+    Multi-provider architecture:
+    1. Exa API: Semantic search + content extraction (handles JS-heavy sites)
+    2. Firecrawl: Smart crawling + structured extraction + actions
+    3. Pure Python: Free, fast, works for most pages
+
+    Provider selection:
+    - Set WEB_FETCH_PROVIDER env var for default (auto|exa|firecrawl|python)
+    - Or specify 'provider' parameter per request for runtime override
     """
 
     def __init__(self):
+        # API keys
         self.exa_api_key = os.getenv("EXA_API_KEY")
+        self.firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY")
+
+        # Default provider from env (auto = select based on available keys)
+        self.default_provider = os.getenv("WEB_FETCH_PROVIDER", "auto").lower()
+
+        # Initialize Firecrawl provider if configured
+        self.firecrawl_provider: Optional[FirecrawlFetchProvider] = None
+        if self.firecrawl_api_key and WebFetchProvider.validate_api_key(self.firecrawl_api_key):
+            try:
+                self.firecrawl_provider = FirecrawlFetchProvider(self.firecrawl_api_key)
+                logger.info("Firecrawl fetch provider initialized")
+            except ValueError as e:
+                logger.warning(f"Failed to initialize Firecrawl provider: {e}")
+
+        # Other settings
         self.user_agent = os.getenv(
             "WEB_FETCH_USER_AGENT", "Shannon-Research/1.0 (+https://shannon.kocoro.dev)"
         )
@@ -55,26 +392,35 @@ class WebFetchTool(Tool):
         super().__init__()
 
     def _get_metadata(self) -> ToolMetadata:
+        # Determine active provider for description
+        active_providers = []
+        if self.exa_api_key:
+            active_providers.append("Exa")
+        if self.firecrawl_provider:
+            active_providers.append("Firecrawl")
+        active_providers.append("Python")  # Always available
+        provider_str = ", ".join(active_providers)
+
         return ToolMetadata(
             name="web_fetch",
-            version="1.0.0",
+            version="2.0.0",  # Bumped for multi-provider support
             description=(
                 "Fetch full content from a web page for detailed analysis. "
                 "Extracts clean markdown text from any URL. "
                 "Use this after web_search to deep-dive into specific pages. "
                 "Supports fetching subpages from the same domain (set subpages>0). "
-                "Default: Exa API when available (handles JS-heavy sites, premium extraction). "
-                "Fallback: pure Python (fast, free) when Exa is unavailable or disabled."
+                f"Available providers: {provider_str}. "
+                "Use 'provider' parameter to select: exa (semantic), firecrawl (smart crawl), python (free)."
             ),
             category="retrieval",
             author="Shannon",
             requires_auth=False,
-            rate_limit=30,  # 30 requests per minute
+            rate_limit=30,
             timeout_seconds=30,
             memory_limit_mb=256,
             sandboxed=False,
             dangerous=False,
-            cost_per_use=0.001,  # Default: Exa ($0.001/page). Free fallback: pure Python
+            cost_per_use=0.001,
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
@@ -86,11 +432,18 @@ class WebFetchTool(Tool):
                 required=True,
             ),
             ToolParameter(
-                name="use_exa",
-                type=ToolParameterType.BOOLEAN,
-                description="Whether to use Exa API (default: true, recommended for best results). Handles JS-heavy sites. Set to false only for debugging or when Exa is unavailable.",
+                name="provider",
+                type=ToolParameterType.STRING,
+                description=(
+                    "Fetch provider to use. Options: "
+                    "'auto' (select best available, default), "
+                    "'exa' (semantic search, JS rendering), "
+                    "'firecrawl' (smart crawl, multi-page), "
+                    "'python' (free, fast, basic). "
+                    "Use 'firecrawl' for multi-page crawling or complex sites."
+                ),
                 required=False,
-                default=True,
+                default="auto",
             ),
             ToolParameter(
                 name="max_length",
@@ -131,10 +484,10 @@ class WebFetchTool(Tool):
     async def _execute_impl(
         self, session_context: Optional[Dict] = None, **kwargs
     ) -> ToolResult:
-        """Execute web content fetch."""
+        """Execute web content fetch using selected provider."""
 
         url = kwargs.get("url")
-        use_exa = kwargs.get("use_exa", True)
+        provider_name = kwargs.get("provider", "auto").lower()
         max_length = kwargs.get("max_length", 10000)
         subpages = kwargs.get("subpages", 0)
         subpage_target = kwargs.get("subpage_target")
@@ -159,7 +512,7 @@ class WebFetchTool(Tool):
                 )
 
             # SSRF protection: Block private/internal IPs
-            if _is_private_ip(parsed.netloc.split(":")[0]):  # Remove port if present
+            if _is_private_ip(parsed.netloc.split(":")[0]):
                 return ToolResult(
                     success=False,
                     output=None,
@@ -170,7 +523,6 @@ class WebFetchTool(Tool):
             if session_context:
                 failed_domains = session_context.get("failed_domains", [])
                 for failed_url in failed_domains:
-                    # Check if URL matches or domain matches
                     if url == failed_url or parsed.netloc in failed_url:
                         logger.info(f"Skipping previously failed domain: {url}")
                         return ToolResult(
@@ -193,19 +545,78 @@ class WebFetchTool(Tool):
                 except Exception:
                     pass
 
-            # Choose method: Exa API or Pure Python
-            if use_exa and self.exa_api_key:
-                logger.info(f"Fetching with Exa API: {url} (subpages={subpages})")
-                return await self._fetch_with_exa(url, max_length, subpages, subpage_target)
-            else:
-                logger.info(f"Fetching with pure Python: {url} (subpages={subpages})")
-                return await self._fetch_pure_python(url, max_length, subpages)
+            # Resolve provider: auto-select or use specified
+            selected_provider = self._resolve_provider(provider_name, subpages)
+            logger.info(f"Fetching with {selected_provider}: {url} (subpages={subpages})")
+
+            # Execute with selected provider
+            if selected_provider == "firecrawl":
+                if not self.firecrawl_provider:
+                    logger.warning("Firecrawl requested but not configured, falling back")
+                    selected_provider = "exa" if self.exa_api_key else "python"
+                else:
+                    try:
+                        result_data = await self.firecrawl_provider.fetch(
+                            url, max_length, subpages, subpage_target
+                        )
+                        return ToolResult(
+                            success=True,
+                            output=result_data,
+                            metadata={"fetch_method": "firecrawl"},
+                        )
+                    except Exception as e:
+                        logger.error(f"Firecrawl fetch failed: {e}, falling back")
+                        selected_provider = "exa" if self.exa_api_key else "python"
+
+            if selected_provider == "exa":
+                if self.exa_api_key:
+                    return await self._fetch_with_exa(url, max_length, subpages, subpage_target)
+                else:
+                    logger.warning("Exa requested but not configured, falling back to Python")
+                    selected_provider = "python"
+
+            # Fallback to pure Python
+            return await self._fetch_pure_python(url, max_length, subpages)
 
         except Exception as e:
             logger.error(f"Failed to fetch {url}: {str(e)}")
             return ToolResult(
                 success=False, output=None, error=f"Failed to fetch page: {str(e)}"
             )
+
+    def _resolve_provider(self, provider_name: str, subpages: int) -> str:
+        """
+        Resolve which provider to use based on request and availability.
+
+        Auto-selection logic:
+        - For multi-page (subpages > 0): prefer Firecrawl > Exa > Python
+        - For single page: prefer Exa > Firecrawl > Python
+        """
+        # Handle explicit provider request
+        if provider_name in ["exa", "firecrawl", "python"]:
+            return provider_name
+
+        # Auto-select based on task and availability
+        if provider_name == "auto" or provider_name == self.default_provider:
+            if subpages > 0:
+                # Multi-page: prefer Firecrawl for its crawl capabilities
+                if self.firecrawl_provider:
+                    return "firecrawl"
+                elif self.exa_api_key:
+                    return "exa"
+                else:
+                    return "python"
+            else:
+                # Single page: prefer Exa for semantic extraction
+                if self.exa_api_key:
+                    return "exa"
+                elif self.firecrawl_provider:
+                    return "firecrawl"
+                else:
+                    return "python"
+
+        # Default fallback
+        return self.default_provider if self.default_provider != "auto" else "python"
 
     def _normalize_url(self, url: str) -> str:
         """
