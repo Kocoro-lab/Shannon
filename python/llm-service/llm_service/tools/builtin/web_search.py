@@ -438,20 +438,26 @@ class SerperSearchProvider(WebSearchProvider):
 
 
 class SerpAPISearchProvider(WebSearchProvider):
-    """SerpAPI provider - Multi-engine search API with Google support"""
+    """SerpAPI provider - Multi-engine search API supporting Google, Bing, Yahoo, Baidu, etc."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, engine: str = "google"):
         if not self.validate_api_key(api_key):
             raise ValueError("Invalid or missing API key")
         self.api_key = api_key
         self.base_url = "https://serpapi.com/search"
+        # Supported engines: google, bing, yahoo, baidu, yandex, duckduckgo, etc.
+        # See: https://serpapi.com/search-engine-apis
+        self.engine = engine.lower() if engine else "google"
 
-    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    async def search(self, query: str, max_results: int = 5, **kwargs) -> List[Dict[str, Any]]:
+        # Validate max_results
+        max_results = self.validate_max_results(max_results)
+        
         # SerpAPI uses GET requests with query parameters
         params = {
             "q": query,
             "api_key": self.api_key,
-            "engine": "google",  # Required: specify search engine
+            "engine": self.engine,  # Configurable search engine
             "num": max_results,
         }
 
@@ -502,17 +508,28 @@ class SerpAPISearchProvider(WebSearchProvider):
                 # Include knowledge graph if available
                 if data.get("knowledge_graph"):
                     kg = data["knowledge_graph"]
+                    # Safely extract URL from source field with type checking
+                    kg_url = ""
+                    kg_source = kg.get("source")
+                    if isinstance(kg_source, dict):
+                        kg_url = kg_source.get("link", "")
+                    elif isinstance(kg_source, str):
+                        kg_url = kg_source
+                    
                     results.insert(
                         0,
                         {
                             "title": kg.get("title", ""),
                             "snippet": kg.get("description", ""),
                             "content": kg.get("description", ""),
-                            "url": kg.get("source", {}).get("link", ""),
+                            "url": kg_url,
                             "source": "serpapi_knowledge_graph",
                             "type": kg.get("type", ""),
                         },
                     )
+
+                # Ensure we don't exceed max_results after adding knowledge graph
+                results = results[:max_results]
 
                 return results
 
