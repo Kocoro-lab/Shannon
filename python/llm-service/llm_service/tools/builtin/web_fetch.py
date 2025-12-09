@@ -221,6 +221,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             session = aiohttp.ClientSession(timeout=timeout)
 
             # Start crawl
+            logger.info(f"Firecrawl: Starting crawl job for {url} with limit={limit}")
             async with session.post(
                 self.crawl_url, json=payload, headers=headers
             ) as response:
@@ -229,46 +230,62 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 elif response.status == 429:
                     raise Exception("Firecrawl rate limit exceeded (429)")
                 elif response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Firecrawl crawl start error {response.status}: {error_text[:200]}")
                     raise Exception(f"Firecrawl crawl start error: {response.status}")
 
                 data = await response.json()
                 if not data.get("success"):
+                    logger.error(f"Firecrawl crawl start failed: {data}")
                     raise Exception("Firecrawl crawl start failed")
 
                 crawl_id = data.get("id")
                 if not crawl_id:
+                    logger.error(f"Firecrawl did not return crawl ID: {data}")
                     raise Exception("Firecrawl did not return crawl ID")
+
+                logger.info(f"Firecrawl: Crawl job started, ID={crawl_id}")
 
             # Poll for crawl completion
             status_url = f"{self.crawl_url}/{crawl_id}"
             max_polls = 60  # Max 60 polls (with 2s delay = 2 minutes max)
             poll_delay = 2.0
 
-            for _ in range(max_polls):
+            for poll_count in range(max_polls):
                 await asyncio.sleep(poll_delay)
 
                 async with session.get(status_url, headers=headers) as status_response:
                     if status_response.status != 200:
+                        logger.warning(f"Firecrawl: Poll {poll_count+1} status check failed: {status_response.status}")
                         continue
 
                     status_data = await status_response.json()
                     status = status_data.get("status", "")
+                    total = status_data.get("total", 0)
+                    completed = status_data.get("completed", 0)
+
+                    logger.info(f"Firecrawl: Poll {poll_count+1}/{max_polls} - status={status}, completed={completed}/{total}")
 
                     if status == "completed":
                         # Crawl finished, process results
                         results = status_data.get("data", [])
+                        logger.info(f"Firecrawl: Crawl completed, got {len(results)} pages")
                         return self._merge_crawl_results(results, url, max_length)
 
                     elif status == "failed":
-                        raise Exception("Firecrawl crawl job failed")
+                        error = status_data.get("error", "Unknown error")
+                        logger.error(f"Firecrawl: Crawl job failed - {error}")
+                        raise Exception(f"Firecrawl crawl job failed: {error}")
 
-                    # Still in progress, continue polling
+                    # Still in progress (scraping, partial, etc.), continue polling
 
+            logger.error(f"Firecrawl: Crawl timeout after {max_polls} polls")
             raise Exception("Firecrawl crawl timeout - job did not complete in time")
 
         finally:
             if session and not session.closed:
                 await session.close()
+
 
     def _merge_crawl_results(
         self, results: List[Dict], original_url: str, max_length: int
