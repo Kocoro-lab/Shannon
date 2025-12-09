@@ -24,6 +24,7 @@ class SearchProvider(Enum):
     FIRECRAWL = "firecrawl"
     GOOGLE = "google"
     SERPER = "serper"
+    SERPAPI = "serpapi"
     BING = "bing"
 
 
@@ -436,6 +437,86 @@ class SerperSearchProvider(WebSearchProvider):
                 return results
 
 
+class SerpAPISearchProvider(WebSearchProvider):
+    """SerpAPI provider - Multi-engine search API with Google support"""
+
+    def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
+        self.api_key = api_key
+        self.base_url = "https://serpapi.com/search"
+
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        # SerpAPI uses GET requests with query parameters
+        params = {
+            "q": query,
+            "api_key": self.api_key,
+            "engine": "google",  # Required: specify search engine
+            "num": max_results,
+        }
+
+        async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.get(
+                self.base_url, params=params, timeout=timeout
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(
+                        f"SerpAPI error: status={response.status}, details logged"
+                    )
+                    logger.debug(f"SerpAPI raw error: {sanitized_error}")
+                    if response.status == 401:
+                        raise Exception(
+                            "Search service authentication failed. Please check your API credentials."
+                        )
+                    elif response.status == 429:
+                        raise Exception(
+                            "Search rate limit exceeded. Please try again later."
+                        )
+                    else:
+                        raise Exception(
+                            f"Search service temporarily unavailable (Error {response.status})"
+                        )
+
+                data = await response.json()
+                results = []
+
+                # Process organic search results (note: organic_results not organic!)
+                for result in data.get("organic_results", []):
+                    results.append(
+                        {
+                            "title": result.get("title", ""),
+                            "snippet": result.get("snippet", ""),
+                            "content": result.get(
+                                "snippet", ""
+                            ),  # SerpAPI doesn't provide full content
+                            "url": result.get("link", ""),
+                            "source": "serpapi",
+                            "position": result.get("position", 0),
+                            "date": result.get("date"),
+                        }
+                    )
+
+                # Include knowledge graph if available
+                if data.get("knowledge_graph"):
+                    kg = data["knowledge_graph"]
+                    results.insert(
+                        0,
+                        {
+                            "title": kg.get("title", ""),
+                            "snippet": kg.get("description", ""),
+                            "content": kg.get("description", ""),
+                            "url": kg.get("source", {}).get("link", ""),
+                            "source": "serpapi_knowledge_graph",
+                            "type": kg.get("type", ""),
+                        },
+                    )
+
+                return results
+
+
 class BingSearchProvider(WebSearchProvider):
     """Bing Search API v7 provider (Azure Cognitive Services)"""
 
@@ -624,6 +705,10 @@ class WebSearchTool(Tool):
                 "class": SerperSearchProvider,
                 "api_key_env": "SERPER_API_KEY",
             },
+            SearchProvider.SERPAPI.value: {
+                "class": SerpAPISearchProvider,
+                "api_key_env": "SERPAPI_API_KEY",
+            },
             SearchProvider.BING.value: {
                 "class": BingSearchProvider,
                 "api_key_env": "BING_API_KEY",
@@ -665,6 +750,7 @@ class WebSearchTool(Tool):
         priority_order = [
             SearchProvider.GOOGLE.value,
             SearchProvider.SERPER.value,
+            SearchProvider.SERPAPI.value,
             SearchProvider.BING.value,
             SearchProvider.EXA.value,
             SearchProvider.FIRECRAWL.value,
@@ -691,10 +777,11 @@ class WebSearchTool(Tool):
             "No web search provider configured. Please set one of:\n"
             "- GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
             "- SERPER_API_KEY for Serper search\n"
+            "- SERPAPI_API_KEY for SerpAPI search\n"
             "- BING_API_KEY for Bing search\n"
             "- EXA_API_KEY for Exa search\n"
             "- FIRECRAWL_API_KEY for Firecrawl search\n"
-            "And optionally set WEB_SEARCH_PROVIDER=google|serper|bing|exa|firecrawl"
+            "And optionally set WEB_SEARCH_PROVIDER=google|serper|serpapi|bing|exa|firecrawl"
         )
         return None
 
