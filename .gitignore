@@ -345,3 +345,6 @@ scripts/benchmark_HLE.py
 # Note: desktop/ folder is now tracked, with build artifacts ignored via desktop/.gitignore
 # Chrome extension (browser integration)
 chrome-extension/
+
+# antigravity
+.agent/
