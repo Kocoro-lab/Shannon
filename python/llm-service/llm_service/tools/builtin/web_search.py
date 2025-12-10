@@ -449,7 +449,7 @@ class SerpAPISearchProvider(WebSearchProvider):
         # See: https://serpapi.com/search-engine-apis
         self.engine = engine.lower() if engine else "google"
 
-    async def search(self, query: str, max_results: int = 5, **kwargs) -> List[Dict[str, Any]]:
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         # Validate max_results
         max_results = self.validate_max_results(max_results)
         
