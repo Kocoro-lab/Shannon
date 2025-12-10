@@ -1019,22 +1019,19 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 	}
 
-	// Detect ptengine-style roles that use forced tool execution (ExecuteAgentWithForcedTools).
-	// These roles have pre-computed tool parameters and don't need /tools/select.
-	// GA4-style roles (ga4_analytics, etc.) still need /tools/select to work correctly.
+	// If ANY role is specified, skip /tools/select and use LLM-native function calling.
+	// Roles are designed for specialized agents with domain-specific system prompts and tools.
+	// The role's specialized prompt understands its tools better than /tools/select's generic LLM.
+	// This pattern scales automatically to any new role without code changes.
 	disableToolSelectRole := false
 	if input.Context != nil {
 		if roleVal, ok := input.Context["role"]; ok {
-			if roleStr, ok := roleVal.(string); ok {
-				role := strings.ToLower(strings.TrimSpace(roleStr))
-				switch role {
-				case "data_analytics": // ptengine-style analytics with forced tool execution
-					disableToolSelectRole = true
-					logger.Info("Ptengine-style role detected - skipping /tools/select (uses forced tools)",
-						zap.String("role", role),
-						zap.String("agent_id", input.AgentID),
-					)
-				}
+			if roleStr, ok := roleVal.(string); ok && strings.TrimSpace(roleStr) != "" {
+				disableToolSelectRole = true
+				logger.Info("Role detected - skipping /tools/select (uses native function calling)",
+					zap.String("role", roleStr),
+					zap.String("agent_id", input.AgentID),
+				)
 			}
 		}
 	}
