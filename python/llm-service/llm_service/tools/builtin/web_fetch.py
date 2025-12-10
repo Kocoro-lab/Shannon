@@ -47,7 +47,10 @@ class WebFetchProvider:
     """Base class for web fetch providers"""
 
     # Standardized timeout for all providers (in seconds)
-    DEFAULT_TIMEOUT = 30
+    # Increased from 30s to 60s for slow websites (e.g., Japanese domains)
+    DEFAULT_TIMEOUT = 60
+    # Timeout for aiohttp client (should be > Firecrawl timeout to allow retry)
+    AIOHTTP_TIMEOUT = 90
 
     @staticmethod
     def validate_api_key(api_key: str) -> bool:
@@ -122,17 +125,79 @@ class FirecrawlFetchProvider(WebFetchProvider):
         max_length: int = 10000,
         subpages: int = 0,
         subpage_target: Optional[str] = None,
+        required_paths: Optional[List[str]] = None,
+        query_type: Optional[str] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Fetch using Firecrawl API.
+        Fetch using Firecrawl API with intelligent strategy selection.
 
-        Uses scrape for single pages, crawl for multi-page.
+        Strategy:
+        - Single page (subpages=0): Use scrape
+        - Company research with required_paths: Map+scrape (prioritize paths), fallback to crawl
+        - Other multi-page: Crawl first, fallback to map+scrape
+        
+        If all Firecrawl methods fail, raises exception to let caller fallback to exa/python.
         """
-        if subpages > 0:
-            return await self._crawl(url, max_length, subpages)
-        else:
+        # Single page mode
+        if subpages == 0:
             return await self._scrape(url, max_length)
+
+        # Company research with required_paths: map+scrape first
+        if query_type == "company" and required_paths:
+            # Level 1: Map+scrape (most accurate for company research)
+            try:
+                logger.info(f"Company research: using map+scrape for {url}")
+                result = await self._map_and_scrape(url, max_length, subpages, required_paths)
+                if result.get("pages_fetched", 0) > 0:
+                    return result
+                logger.warning(f"Map+scrape returned 0 pages for {url}")
+            except Exception as e:
+                error_msg = str(e)
+                if "408" in error_msg or "timeout" in error_msg.lower():
+                    logger.warning(f"Map+scrape timeout for {url}: {e}")
+                elif "429" in error_msg or "rate limit" in error_msg.lower():
+                    logger.warning(f"Map+scrape rate limited for {url}: {e}")
+                else:
+                    logger.warning(f"Map+scrape failed for {url}: {e}")
+            
+            # Level 2: Crawl (broader coverage)
+            try:
+                logger.info(f"Fallback to crawl for {url}")
+                result = await self._crawl(url, max_length, subpages)
+                if result.get("pages_fetched", 0) > 0:
+                    return result
+                logger.warning(f"Crawl returned 0 pages for {url}")
+            except Exception as e:
+                logger.warning(f"Crawl failed for {url}: {e}")
+            
+            # All Firecrawl methods failed - raise to let caller fallback to exa/python
+            logger.error(f"All Firecrawl methods failed for {url}, raising to trigger fallback")
+            raise Exception(f"Firecrawl: all methods failed for {url}")
+
+        # Other cases: crawl first, fallback to map+scrape
+        # Level 1: Crawl
+        try:
+            result = await self._crawl(url, max_length, subpages)
+            if result.get("pages_fetched", 0) > 0:
+                return result
+            logger.warning(f"Crawl returned 0 pages for {url}, fallback to map+scrape")
+        except Exception as e:
+            logger.warning(f"Crawl failed: {e}, fallback to map+scrape")
+        
+        # Level 2: Map+scrape
+        try:
+            result = await self._map_and_scrape(url, max_length, subpages, None)
+            if result.get("pages_fetched", 0) > 0:
+                return result
+            logger.warning(f"Map+scrape also returned 0 pages for {url}")
+        except Exception as e:
+            logger.warning(f"Map+scrape also failed: {e}")
+        
+        # All Firecrawl methods failed - raise to let caller fallback to exa/python
+        logger.error(f"All Firecrawl methods failed for {url}, raising to trigger fallback")
+        raise Exception(f"Firecrawl: all methods failed for {url}")
+
 
     async def _scrape(self, url: str, max_length: int) -> Dict[str, Any]:
         """Scrape a single page using Firecrawl scrape API"""
@@ -145,11 +210,12 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "url": url,
             "formats": ["markdown"],
             "onlyMainContent": True,
+            "timeout": self.DEFAULT_TIMEOUT * 1000,  # Firecrawl uses milliseconds
         }
 
         session = None
         try:
-            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
             session = aiohttp.ClientSession(timeout=timeout)
 
             async with session.post(
@@ -362,6 +428,172 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "pages_fetched": len(results),
         }
 
+    async def _map(self, url: str, limit: int = 100) -> List[str]:
+        """
+        Use Firecrawl Map API to quickly get all URLs on a website.
+
+        Returns:
+            List[str]: URL list from the website
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "url": url,
+            "limit": limit,
+        }
+
+        session = None
+        try:
+            timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
+            session = aiohttp.ClientSession(timeout=timeout)
+
+            async with session.post(
+                "https://api.firecrawl.dev/v1/map",
+                json=payload,
+                headers=headers
+            ) as response:
+                if response.status == 401:
+                    raise Exception("Firecrawl authentication failed (401)")
+                elif response.status == 429:
+                    raise Exception("Firecrawl rate limit exceeded (429)")
+                elif response.status != 200:
+                    raise Exception(f"Firecrawl map error: {response.status}")
+
+                data = await response.json()
+                if not data.get("success"):
+                    raise Exception("Firecrawl map failed")
+
+                urls = data.get("links", [])
+                logger.info(f"Firecrawl map returned {len(urls)} URLs for {url}")
+                return urls
+        finally:
+            if session and not session.closed:
+                await session.close()
+
+    async def _batch_scrape(
+        self, urls: List[str], max_length: int
+    ) -> Dict[str, Any]:
+        """Batch scrape multiple URLs and merge results with retry for 408/429."""
+        if not urls:
+            return {
+                "url": "",
+                "title": "",
+                "content": "",
+                "method": "firecrawl",
+                "pages_fetched": 0,
+            }
+
+        max_retries = 2
+        retry_delay = 5  # seconds
+
+        # Scrape each URL with retry logic
+        results = []
+        for url in urls:
+            success = False
+            for retry in range(max_retries + 1):
+                try:
+                    result = await self._scrape(url, max_length // len(urls))
+                    if result and result.get("content"):
+                        results.append({
+                            "url": result.get("url", url),
+                            "markdown": result.get("content", ""),
+                            "metadata": {
+                                "title": result.get("title", ""),
+                                "author": result.get("author"),
+                                "publishedDate": result.get("published_date"),
+                            },
+                        })
+                        success = True
+                        break
+                except Exception as e:
+                    error_msg = str(e)
+                    
+                    # Handle 408 timeout - retry after delay
+                    if "408" in error_msg:
+                        if retry < max_retries:
+                            logger.warning(f"408 timeout for {url}, retry {retry+1}/{max_retries}")
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        else:
+                            logger.error(f"408 timeout for {url} after {max_retries} retries")
+                    
+                    # Handle 429 rate limit - wait longer and retry
+                    elif "429" in error_msg:
+                        wait_time = retry_delay * (retry + 2)  # 10s, 15s, 20s
+                        if retry < max_retries:
+                            logger.warning(f"429 rate limit for {url}, waiting {wait_time}s, retry {retry+1}/{max_retries}")
+                            await asyncio.sleep(wait_time)
+                            continue
+                        else:
+                            logger.error(f"429 rate limit for {url} after {max_retries} retries")
+                    
+                    else:
+                        logger.warning(f"Failed to scrape {url}: {e}")
+                    
+                    break  # Don't retry for other errors
+
+        return self._merge_crawl_results(results, urls[0] if urls else "", max_length)
+
+    async def _map_and_scrape(
+        self,
+        url: str,
+        max_length: int,
+        limit: int,
+        required_paths: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Map + smart filter + batch scrape strategy.
+
+        Args:
+            url: Base URL to map
+            max_length: Max content length
+            limit: Number of pages to scrape
+            required_paths: Optional paths to prioritize (e.g. ["/about", "/ir"])
+        """
+        # 1. Map to get all URLs
+        all_urls = await self._map(url, limit=200)
+
+        if not all_urls:
+            raise Exception("Firecrawl map returned no URLs")
+
+        # 2. Smart filter
+        if not required_paths:
+            # No required paths: take first N
+            selected = all_urls[:limit]
+        else:
+            # Match URLs against required paths
+            matched = []
+            for candidate in all_urls:
+                candidate_lower = candidate.lower()
+                for path in required_paths:
+                    if path.lower() in candidate_lower:
+                        if candidate not in matched:
+                            matched.append(candidate)
+                        break
+
+            # If matched > limit: take first limit
+            if len(matched) >= limit:
+                selected = matched[:limit]
+                logger.info(f"Matched {len(matched)} URLs, selecting first {limit}")
+            # If matched < limit: supplement with other URLs
+            elif matched:
+                remaining = limit - len(matched)
+                unmatched = [u for u in all_urls if u not in matched]
+                selected = matched + unmatched[:remaining]
+                logger.info(f"Matched {len(matched)} URLs, supplementing {remaining} more")
+            else:
+                # No matches, use first N
+                selected = all_urls[:limit]
+                logger.info(f"No path matches, using first {limit} URLs")
+
+        logger.info(f"Map+scrape: selected {len(selected)} URLs from {len(all_urls)} total")
+
+        # 3. Batch scrape selected URLs
+        return await self._batch_scrape(selected, max_length)
+
 
 
 
@@ -392,9 +624,10 @@ class WebFetchTool(Tool):
         if self.firecrawl_api_key and WebFetchProvider.validate_api_key(self.firecrawl_api_key):
             try:
                 self.firecrawl_provider = FirecrawlFetchProvider(self.firecrawl_api_key)
-                logger.info("Firecrawl fetch provider initialized")
+                logger.info("Initializing firecrawl fetch provider")
             except ValueError as e:
                 logger.warning(f"Failed to initialize Firecrawl provider: {e}")
+
 
         # Other settings
         self.user_agent = os.getenv(
@@ -449,20 +682,6 @@ class WebFetchTool(Tool):
                 required=True,
             ),
             ToolParameter(
-                name="provider",
-                type=ToolParameterType.STRING,
-                description=(
-                    "Fetch provider to use. Options: "
-                    "'auto' (select best available, default), "
-                    "'exa' (semantic search, JS rendering), "
-                    "'firecrawl' (smart crawl, multi-page), "
-                    "'python' (free, fast, basic). "
-                    "Use 'firecrawl' for multi-page crawling or complex sites."
-                ),
-                required=False,
-                default="auto",
-            ),
-            ToolParameter(
                 name="max_length",
                 type=ToolParameterType.INTEGER,
                 description="Maximum content length in characters (for LLM context efficiency)",
@@ -496,6 +715,26 @@ class WebFetchTool(Tool):
                 ),
                 required=False,
             ),
+            ToolParameter(
+                name="required_paths",
+                type=ToolParameterType.ARRAY,
+                description=(
+                    "Optional list of URL paths for company research. "
+                    "Examples: ['/about', '/ir', '/team']. "
+                    "When provided with query_type='company', uses map+scrape strategy. "
+                    "For other providers, converted to subpage_target keywords."
+                ),
+                required=False,
+            ),
+            ToolParameter(
+                name="query_type",
+                type=ToolParameterType.STRING,
+                description=(
+                    "Type of research query (e.g., 'company', 'academic'). "
+                    "When set to 'company' with required_paths, optimizes for org pages."
+                ),
+                required=False,
+            ),
         ]
 
     async def _execute_impl(
@@ -504,10 +743,13 @@ class WebFetchTool(Tool):
         """Execute web content fetch using selected provider."""
 
         url = kwargs.get("url")
-        provider_name = kwargs.get("provider", "auto").lower()
+        # Provider is now controlled by WEB_FETCH_PROVIDER env var only
+        provider_name = self.default_provider
         max_length = kwargs.get("max_length", 10000)
         subpages = kwargs.get("subpages", 0)
         subpage_target = kwargs.get("subpage_target")
+        required_paths = kwargs.get("required_paths")
+        query_type = kwargs.get("query_type")
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")
@@ -566,6 +808,13 @@ class WebFetchTool(Tool):
             selected_provider = self._resolve_provider(provider_name, subpages)
             logger.info(f"Fetching with {selected_provider}: {url} (subpages={subpages})")
 
+            # Convert required_paths to subpage_target for non-firecrawl providers
+            effective_subpage_target = subpage_target
+            if required_paths and selected_provider != "firecrawl":
+                # Exa supports subpage_target for keyword filtering
+                effective_subpage_target = " ".join([p.strip("/") for p in required_paths])
+                logger.info(f"Converted required_paths to subpage_target: {effective_subpage_target}")
+
             # Execute with selected provider
             if selected_provider == "firecrawl":
                 if not self.firecrawl_provider:
@@ -574,7 +823,9 @@ class WebFetchTool(Tool):
                 else:
                     try:
                         result_data = await self.firecrawl_provider.fetch(
-                            url, max_length, subpages, subpage_target
+                            url, max_length, subpages, subpage_target,
+                            required_paths=required_paths,
+                            query_type=query_type
                         )
                         return ToolResult(
                             success=True,
@@ -587,7 +838,7 @@ class WebFetchTool(Tool):
 
             if selected_provider == "exa":
                 if self.exa_api_key:
-                    return await self._fetch_with_exa(url, max_length, subpages, subpage_target)
+                    return await self._fetch_with_exa(url, max_length, subpages, effective_subpage_target)
                 else:
                     logger.warning("Exa requested but not configured, falling back to Python")
                     selected_provider = "python"

@@ -756,7 +756,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 									"tool":           "web_fetch",
 									"url":            url,
 									"subpages":       5,
-									"subpage_target": "about team leadership company founders management products services", // Target pages with org info
+									"subpage_target": "about team leadership company founders management products services",
+									"query_type":     "company",
+									"required_paths": []string{
+										"/about", "/about-us", "/company",
+										"/ir", "/investor-relations", "/investors",
+										"/team", "/leadership", "/management",
+										"/products", "/services",
+									},
 								},
 								ParentWorkflowID: input.ParentWorkflowID,
 							}).Get(gctx, &prefetchResult)
