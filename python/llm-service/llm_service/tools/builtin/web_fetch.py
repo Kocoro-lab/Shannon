@@ -119,6 +119,49 @@ class FirecrawlFetchProvider(WebFetchProvider):
         self.scrape_url = "https://api.firecrawl.dev/v1/scrape"
         self.crawl_url = "https://api.firecrawl.dev/v1/crawl"
 
+    def _infer_paths_from_target(self, subpage_target: str) -> List[str]:
+        """
+        Infer URL paths from subpage_target keywords.
+        
+        This enables intelligent page selection even when LLM doesn't provide
+        explicit required_paths. Maps common keywords to likely URL paths.
+        
+        Args:
+            subpage_target: Keywords like "API documentation", "team information"
+        
+        Returns:
+            List of inferred URL paths like ["/api", "/docs"]
+        
+        Example:
+            _infer_paths_from_target("API documentation")
+            -> ["/api", "/api-reference", "/reference", "/docs", "/documentation", "/guide"]
+        """
+        if not subpage_target:
+            return []
+        
+        target_lower = subpage_target.lower()
+        inferred = []
+        
+        # Keyword to path mapping
+        keyword_map = {
+            "api": ["/api", "/api-reference", "/reference"],
+            "doc": ["/docs", "/documentation", "/guide"],
+            "tutorial": ["/tutorial", "/tutorials", "/learn", "/getting-started"],
+            "about": ["/about", "/about-us", "/company"],
+            "team": ["/team", "/people", "/leadership", "/management"],
+            "product": ["/products", "/product", "/features"],
+            "pricing": ["/pricing", "/plans", "/price"],
+            "blog": ["/blog", "/news", "/articles", "/posts"],
+            "contact": ["/contact", "/contact-us"],
+            "career": ["/careers", "/jobs", "/join"],
+        }
+        
+        for keyword, paths in keyword_map.items():
+            if keyword in target_lower:
+                inferred.extend(paths)
+        
+        return inferred
+
     async def fetch(
         self,
         url: str,
@@ -130,71 +173,66 @@ class FirecrawlFetchProvider(WebFetchProvider):
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Fetch using Firecrawl API with intelligent strategy selection.
+        Fetch using Firecrawl API with unified intelligent strategy.
 
         Strategy:
         - Single page (subpages=0): Use scrape
-        - Company research with required_paths: Map+scrape (prioritize paths), fallback to crawl
-        - Other multi-page: Crawl first, fallback to map+scrape
+        - Multi-page (subpages>0): Use map+scrape with intelligent selection
+            * With required_paths: Use explicit paths (most accurate, Deep Research)
+            * With subpage_target: Auto-infer paths from keywords (accurate)
+            * Neither: Use depth/length/keywords scoring (basic intelligence, still better than random)
+        - Fallback: If map+scrape fails, use crawl
         
-        If all Firecrawl methods fail, raises exception to let caller fallback to exa/python.
+        All methods raise exception on failure to trigger provider fallback (Exa/Python).
         """
         # Single page mode
         if subpages == 0:
             return await self._scrape(url, max_length)
 
-        # Company research with required_paths: map+scrape first
-        if query_type == "company" and required_paths:
-            # Level 1: Map+scrape (most accurate for company research)
-            try:
-                logger.info(f"Company research: using map+scrape for {url}")
-                result = await self._map_and_scrape(url, max_length, subpages, required_paths)
-                if result.get("pages_fetched", 0) > 0:
-                    return result
-                logger.warning(f"Map+scrape returned 0 pages for {url}")
-            except Exception as e:
-                error_msg = str(e)
-                if "408" in error_msg or "timeout" in error_msg.lower():
-                    logger.warning(f"Map+scrape timeout for {url}: {e}")
-                elif "429" in error_msg or "rate limit" in error_msg.lower():
-                    logger.warning(f"Map+scrape rate limited for {url}: {e}")
-                else:
-                    logger.warning(f"Map+scrape failed for {url}: {e}")
-            
-            # Level 2: Crawl (broader coverage)
-            try:
-                logger.info(f"Fallback to crawl for {url}")
-                result = await self._crawl(url, max_length, subpages)
-                if result.get("pages_fetched", 0) > 0:
-                    return result
-                logger.warning(f"Crawl returned 0 pages for {url}")
-            except Exception as e:
-                logger.warning(f"Crawl failed for {url}: {e}")
-            
-            # All Firecrawl methods failed - raise to let caller fallback to exa/python
-            logger.error(f"All Firecrawl methods failed for {url}, raising to trigger fallback")
-            raise Exception(f"Firecrawl: all methods failed for {url}")
-
-        # Other cases: crawl first, fallback to map+scrape
-        # Level 1: Crawl
+        # === UNIFIED MAP+SCRAPE STRATEGY FOR ALL MULTI-PAGE ===
+        
+        # Step 1: Prepare effective_paths
+        effective_paths = required_paths  # Explicit paths from Deep Research
+        
+        # Step 2: Auto-infer from subpage_target if no explicit paths
+        if not effective_paths and subpage_target:
+            inferred = self._infer_paths_from_target(subpage_target)
+            if inferred:
+                effective_paths = inferred
+                logger.info(f"Auto-inferred paths from '{subpage_target}': {inferred}")
+        
+        # Step 3: Log strategy
+        if effective_paths:
+            logger.info(f"Using map+scrape with {len(effective_paths)} path hints for {url}")
+        else:
+            logger.info(f"Using map+scrape with depth/keywords scoring for {url}")
+        
+        # Level 1: Map+scrape (UNIVERSAL INTELLIGENT SELECTION)
         try:
+            result = await self._map_and_scrape(url, max_length, subpages, effective_paths)
+            if result.get("pages_fetched", 0) > 0:
+                return result
+            logger.warning(f"Map+scrape returned 0 pages for {url}")
+        except Exception as e:
+            error_msg = str(e)
+            if "408" in error_msg or "timeout" in error_msg.lower():
+                logger.warning(f"Map+scrape timeout for {url}: {e}")
+            elif "429" in error_msg or "rate limit" in error_msg.lower():
+                logger.warning(f"Map+scrape rate limited for {url}: {e}")
+            else:
+                logger.warning(f"Map+scrape failed for {url}: {e}")
+        
+        # Level 2: Crawl (UNIVERSAL FALLBACK)
+        try:
+            logger.info(f"Fallback to crawl for {url}")
             result = await self._crawl(url, max_length, subpages)
             if result.get("pages_fetched", 0) > 0:
                 return result
-            logger.warning(f"Crawl returned 0 pages for {url}, fallback to map+scrape")
+            logger.warning(f"Crawl returned 0 pages for {url}")
         except Exception as e:
-            logger.warning(f"Crawl failed: {e}, fallback to map+scrape")
+            logger.warning(f"Crawl also failed for {url}: {e}")
         
-        # Level 2: Map+scrape
-        try:
-            result = await self._map_and_scrape(url, max_length, subpages, None)
-            if result.get("pages_fetched", 0) > 0:
-                return result
-            logger.warning(f"Map+scrape also returned 0 pages for {url}")
-        except Exception as e:
-            logger.warning(f"Map+scrape also failed: {e}")
-        
-        # All Firecrawl methods failed - raise to let caller fallback to exa/python
+        # All Firecrawl methods failed - raise to trigger provider fallback
         logger.error(f"All Firecrawl methods failed for {url}, raising to trigger fallback")
         raise Exception(f"Firecrawl: all methods failed for {url}")
 

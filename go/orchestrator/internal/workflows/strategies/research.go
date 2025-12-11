@@ -755,7 +755,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								ToolParameters: map[string]interface{}{
 									"tool":           "web_fetch",
 									"url":            url,
-									"subpages":       5,
+									"subpages":       12,
 									"subpage_target": "about team leadership company founders management products services",
 									"query_type":     "company",
 									"required_paths": []string{
