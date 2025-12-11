@@ -72,6 +72,77 @@ ga4:
 
 ---
 
+## Alternative: OAuth Access Token Authentication
+
+For applications where users authenticate with their own Google accounts (e.g., multi-tenant SaaS), Shannon supports OAuth access tokens as an alternative to service account authentication.
+
+### How It Works
+
+```
+┌──────────────┐    refresh_token    ┌─────────────────┐
+│   Frontend   │ ─────────────────→  │  Google OAuth   │
+│              │ ←───────────────── │                 │
+└──────────────┘    access_token     └─────────────────┘
+       │
+       │  access_token + property_id (per request)
+       ▼
+┌──────────────┐
+│   Shannon    │ ──→ GA4 API (using user's access token)
+└──────────────┘
+```
+
+### Frontend Responsibilities
+
+1. **Implement Google OAuth flow** to obtain refresh token (one-time user consent)
+2. **Store refresh token securely** on your backend
+3. **Exchange refresh token for access token** before each Shannon request
+4. **Pass access token** in the task context (access tokens expire in ~1 hour)
+
+### API Usage
+
+Pass OAuth credentials in the task context instead of relying on server-side service account:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+  "session_id": "user-ga4-query",
+  "query": "Show me my website traffic for the last 7 days",
+  "context": {
+    "role": "ga4_analytics",
+    "ga4_access_token": "ya29.a0ARrdaM...",
+    "ga4_property_id": "123456789"
+  }
+}'
+```
+
+### Key Differences from Service Account Mode
+
+| Aspect | Service Account | OAuth Access Token |
+|--------|-----------------|-------------------|
+| **Setup** | One-time server config | Per-user OAuth flow |
+| **Credentials** | JSON key file on server | Access token per request |
+| **Use Case** | Single GA4 property | Multi-tenant / user-owned data |
+| **Token Lifetime** | Long-lived | ~1 hour (frontend refreshes) |
+| **Config Required** | `config/overlays/shannon.vendor.yaml` | None (credentials in request) |
+
+### Security Considerations
+
+- **Never send refresh tokens** to Shannon - only short-lived access tokens
+- Access tokens expire in ~1 hour, limiting exposure if intercepted
+- Shannon does not store OAuth tokens - they're used per-request only
+- Use HTTPS in production to protect tokens in transit
+
+### Required OAuth Scopes
+
+When implementing the OAuth flow, request these scopes:
+
+```
+https://www.googleapis.com/auth/analytics.readonly
+```
+
+---
+
 ## Basic GA4 Query Examples
 
 ### 1. Daily Traffic Overview (Last 30 Days)

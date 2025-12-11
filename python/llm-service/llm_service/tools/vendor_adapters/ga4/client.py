@@ -30,6 +30,7 @@ from tenacity import (
     before_sleep_log,
 )
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials as OAuthCredentials
 import os
 import yaml
 
@@ -52,22 +53,52 @@ class GA4Client:
 
     This client provides a simple interface to GA4's reporting APIs.
     The LLM handles query understanding and parameter structuring.
+
+    Supports two authentication modes:
+    1. Service Account: Pass credentials_path to JSON key file (server-to-server)
+    2. OAuth Access Token: Pass access_token from user OAuth flow (per-request)
     """
 
-    def __init__(self, property_id: str, credentials_path: str):
+    def __init__(
+        self,
+        property_id: str,
+        credentials_path: str = None,
+        access_token: str = None,
+    ):
         """Initialize GA4 client.
 
         Args:
             property_id: GA4 property ID (e.g., "123456789")
-            credentials_path: Path to service account JSON key file
+            credentials_path: Path to service account JSON key file (optional if access_token provided)
+            access_token: OAuth access token from user auth flow (optional if credentials_path provided)
+
+        Raises:
+            ValueError: If neither credentials_path nor access_token is provided
         """
-        credentials = service_account.Credentials.from_service_account_file(
-            credentials_path,
-            scopes=["https://www.googleapis.com/auth/analytics.readonly"],
-        )
+        self._logger = logging.getLogger(__name__)
+
+        if access_token:
+            # OAuth mode: use short-lived access token from frontend
+            credentials = OAuthCredentials(
+                token=access_token,
+                scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+            )
+            self._logger.info("[GA4 Client] Using OAuth access token authentication")
+        elif credentials_path:
+            # Service account mode: use JSON key file
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path,
+                scopes=["https://www.googleapis.com/auth/analytics.readonly"],
+            )
+            self._logger.info("[GA4 Client] Using service account authentication")
+        else:
+            raise ValueError(
+                "GA4Client requires either 'credentials_path' (service account) "
+                "or 'access_token' (OAuth) for authentication"
+            )
+
         self.client = BetaAnalyticsDataClient(credentials=credentials)
         self.property_id = f"properties/{property_id}"
-        self._logger = logging.getLogger(__name__)
         self._vendor_adapter = None  # Lazy-loaded vendor adapter
         self._adapter_loaded = False  # Track if we tried to load it
 

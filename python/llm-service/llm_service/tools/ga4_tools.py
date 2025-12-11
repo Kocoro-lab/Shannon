@@ -30,10 +30,37 @@ def _resolve_config_path() -> str:
 _GA4_CLIENT: Optional[GA4Client] = None
 _GA4_CACHE: Optional[GA4MetadataCache] = None
 _GA4_LOCK = threading.Lock()
+_logger = logging.getLogger(__name__)
 
 
-def _get_ga4_client() -> GA4Client:
+def _get_ga4_client(session_context: Optional[Dict] = None) -> GA4Client:
+    """Get GA4 client, supporting both service account and OAuth modes.
+
+    Args:
+        session_context: Optional context containing OAuth credentials:
+            - ga4_access_token: OAuth access token from user auth flow
+            - ga4_property_id: GA4 property ID (required with access_token)
+
+    Returns:
+        GA4Client instance (per-request for OAuth, cached for service account)
+    """
     global _GA4_CLIENT, _GA4_CACHE
+
+    # Check for OAuth mode (per-request client)
+    if session_context:
+        access_token = session_context.get("ga4_access_token")
+        property_id = session_context.get("ga4_property_id")
+
+        if access_token:
+            if not property_id:
+                raise ValueError(
+                    "ga4_property_id is required when using ga4_access_token"
+                )
+            _logger.info(f"[GA4 Tools] Creating OAuth client for property {property_id}")
+            # Create per-request client (not cached - token may expire)
+            return GA4Client(property_id=str(property_id), access_token=access_token)
+
+    # Service account mode (cached global client)
     if _GA4_CLIENT is not None:
         return _GA4_CLIENT
 
@@ -189,7 +216,7 @@ class GA4RunReportTool(Tool):
 
     async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
         try:
-            client = _get_ga4_client()
+            client = _get_ga4_client(session_context)
             start_date = kwargs.get("start_date") or "7daysAgo"
             end_date = kwargs.get("end_date") or "today"
             metrics = kwargs.get("metrics") or []
@@ -295,7 +322,7 @@ class GA4RunRealtimeReportTool(Tool):
 
     async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
         try:
-            client = _get_ga4_client()
+            client = _get_ga4_client(session_context)
             metrics = kwargs.get("metrics") or []
             dimensions = kwargs.get("dimensions")
             dimension_filter = kwargs.get("dimension_filter")
