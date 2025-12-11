@@ -10,7 +10,7 @@ This module provides TWO separate adapter registries for different tool types:
 
 2. get_ga4_adapter() - For GA4 (Google Analytics 4) tools
    - Purpose: Transform dimension filters for GA4 queries
-   - Example: Angfa Store filtering rules, domain restrictions
+   - Example: Vendor-specific filtering rules, domain restrictions
    - Security: Convention-based dynamic import (safe because GA4 adapters only transform filters)
    - Usage: GA4RunReportTool and GA4 client use these adapters
 
@@ -148,10 +148,10 @@ def get_ga4_adapter(name: str, config: dict):
     transform dimension filters, not arbitrary API requests.
     
     Vendor adapter modules should be named vendor_adapters/{name}.py and export
-    a class named {Name}GA4Adapter (e.g., angfa.py exports AngfaGA4Adapter).
+    a class named {Name}GA4Adapter (e.g., acme.py exports AcmeGA4Adapter).
 
     Args:
-        name: Vendor identifier (e.g., "angfa", "myvendor")
+        name: Vendor identifier (e.g., "acme", "myvendor")
         config: Vendor configuration dict from shannon.yaml, containing:
                 - domain: Target domain for filtering
                 - exclude_paths_contains: List of path patterns to exclude
@@ -167,7 +167,7 @@ def get_ga4_adapter(name: str, config: dict):
             "exclude_paths_contains": ["/ad/"],
             "exclude_session_source_medium_exact": ["google / cpc", "facebook / cpc"]
         }
-        adapter = get_ga4_adapter("angfa", config)
+        adapter = get_ga4_adapter("acme", config)
         if adapter:
             effective_filter = adapter.transform_dimension_filter(base_filter)
 
@@ -196,11 +196,11 @@ def get_ga4_adapter(name: str, config: dict):
         with _import_lock:
             # Dynamically import vendor adapter module
             # Convention: vendor_adapters/{vendor_name}.py exports {VendorName}GA4Adapter
-            # Example: angfa.py exports AngfaGA4Adapter
+            # Example: acme.py exports AcmeGA4Adapter
             import importlib
             module_name = f"llm_service.tools.vendor_adapters.{vendor_name}"
 
-            # Convert vendor_name to class name (e.g., "angfa" -> "Angfa")
+            # Convert vendor_name to class name (e.g., "acme" -> "Acme")
             class_name = f"{vendor_name.capitalize()}GA4Adapter"
 
             # Try to import the module

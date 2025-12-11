@@ -1354,6 +1354,9 @@ async def _execute_and_format_tools(
                     "auto_fetch_official_subpages",
                     # Lightweight research flag for tool-level gating
                     "research_mode",
+                    # GA4 OAuth credentials (per-request auth from frontend)
+                    "ga4_access_token",
+                    "ga4_property_id",
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
             else:
