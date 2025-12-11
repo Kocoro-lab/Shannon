@@ -251,11 +251,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "timeout": self.DEFAULT_TIMEOUT * 1000,  # Firecrawl uses milliseconds
         }
 
-        session = None
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
-            session = aiohttp.ClientSession(timeout=timeout)
-
+        timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 self.scrape_url, json=payload, headers=headers
             ) as response:
@@ -294,10 +291,6 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     "pages_fetched": 1,
                 }
 
-        finally:
-            if session and not session.closed:
-                await session.close()
-
     async def _crawl(self, url: str, max_length: int, limit: int) -> Dict[str, Any]:
         """
         Crawl multiple pages using Firecrawl crawl API.
@@ -319,11 +312,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
             },
         }
 
-        session = None
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
-            session = aiohttp.ClientSession(timeout=timeout)
-
+        timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             # Start crawl
             logger.info(f"Firecrawl: Starting crawl job for {url} with limit={limit}")
             async with session.post(
@@ -391,10 +381,6 @@ class FirecrawlFetchProvider(WebFetchProvider):
 
             logger.error(f"Firecrawl: Crawl timeout after {max_polls} polls")
             raise Exception("Firecrawl crawl timeout - job did not complete in time")
-
-        finally:
-            if session and not session.closed:
-                await session.close()
 
 
     def _sanitize_url(self, url: str) -> str:
@@ -585,11 +571,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "limit": limit,
         }
 
-        session = None
-        try:
-            timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
-            session = aiohttp.ClientSession(timeout=timeout)
-
+        timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
                 "https://api.firecrawl.dev/v1/map",
                 json=payload,
@@ -609,9 +592,6 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 urls = data.get("links", [])
                 logger.info(f"Firecrawl map returned {len(urls)} URLs for {url}")
                 return urls
-        finally:
-            if session and not session.closed:
-                await session.close()
 
     async def _batch_scrape(
         self, urls: List[str], max_length: int
@@ -1447,177 +1427,168 @@ class WebFetchTool(Tool):
         - Redirect loop protection
         - Resource leak prevention with proper session cleanup
         """
-        session = None
-        try:
-            # Configure session with security limits
-            timeout = aiohttp.ClientTimeout(total=self.timeout)
-            connector = aiohttp.TCPConnector(limit=10)
+        # Configure session with security limits
+        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        connector = aiohttp.TCPConnector(limit=10)
 
-            session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=connector,
-            )
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
+            try:
+                # Crawl mode: fetch main page + subpages
+                if subpages > 0:
+                    return await self._crawl_with_subpages(session, url, max_length, subpages)
 
-            # Crawl mode: fetch main page + subpages
-            if subpages > 0:
-                return await self._crawl_with_subpages(session, url, max_length, subpages)
+                # Single page mode (original behavior)
+                headers = {"User-Agent": self.user_agent}
 
-            # Single page mode (original behavior)
-            headers = {"User-Agent": self.user_agent}
+                async with session.get(
+                    url,
+                    headers=headers,
+                    allow_redirects=True,
+                    max_redirects=self.max_redirects,
+                ) as response:
+                    if response.status != 200:
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"HTTP {response.status}: Failed to fetch page",
+                        )
 
-            async with session.get(
-                url,
-                headers=headers,
-                allow_redirects=True,
-                max_redirects=self.max_redirects,
-            ) as response:
-                if response.status != 200:
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error=f"HTTP {response.status}: Failed to fetch page",
-                    )
+                    # Check content length before reading (if provided)
+                    content_length = response.headers.get("Content-Length")
+                    if content_length and int(content_length) > self.max_response_bytes:
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"Response too large: {content_length} bytes (max: {self.max_response_bytes})",
+                        )
 
-                # Check content length before reading (if provided)
-                content_length = response.headers.get("Content-Length")
-                if content_length and int(content_length) > self.max_response_bytes:
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error=f"Response too large: {content_length} bytes (max: {self.max_response_bytes})",
-                    )
+                    # Read with size limit
+                    html_content = await response.text(
+                        errors="ignore"
+                    )  # Ignore encoding errors
 
-                # Read with size limit
-                html_content = await response.text(
-                    errors="ignore"
-                )  # Ignore encoding errors
+                    # Check actual size after reading
+                    if len(html_content) > self.max_response_bytes:
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"Response too large: {len(html_content)} bytes (max: {self.max_response_bytes})",
+                        )
 
-                # Check actual size after reading
-                if len(html_content) > self.max_response_bytes:
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error=f"Response too large: {len(html_content)} bytes (max: {self.max_response_bytes})",
-                    )
+                    # Parse HTML (outside the response context manager to avoid blocking)
+                    soup = BeautifulSoup(html_content, "lxml")
 
-                # Parse HTML (outside the response context manager to avoid blocking)
-                soup = BeautifulSoup(html_content, "lxml")
+                # Extract metadata
+                title = soup.find("title")
+                title = title.get_text().strip() if title else ""
 
-            # Extract metadata
-            title = soup.find("title")
-            title = title.get_text().strip() if title else ""
+                # Author
+                meta_author = soup.find("meta", attrs={"name": "author"})
+                if not meta_author:
+                    meta_author = soup.find("meta", property="article:author")
+                author = meta_author.get("content") if meta_author else None
 
-            # Author
-            meta_author = soup.find("meta", attrs={"name": "author"})
-            if not meta_author:
-                meta_author = soup.find("meta", property="article:author")
-            author = meta_author.get("content") if meta_author else None
+                # Published date
+                meta_date = soup.find(
+                    "meta", attrs={"property": "article:published_time"}
+                )
+                if not meta_date:
+                    meta_date = soup.find("meta", attrs={"name": "date"})
+                if not meta_date:
+                    meta_date = soup.find("meta", attrs={"name": "publish-date"})
+                published_date = meta_date.get("content") if meta_date else None
 
-            # Published date
-            meta_date = soup.find(
-                "meta", attrs={"property": "article:published_time"}
-            )
-            if not meta_date:
-                meta_date = soup.find("meta", attrs={"name": "date"})
-            if not meta_date:
-                meta_date = soup.find("meta", attrs={"name": "publish-date"})
-            published_date = meta_date.get("content") if meta_date else None
+                # Remove unwanted elements
+                for element in soup(
+                    [
+                        "script",
+                        "style",
+                        "nav",
+                        "header",
+                        "footer",
+                        "aside",
+                        "iframe",
+                        "noscript",
+                    ]
+                ):
+                    element.decompose()
 
-            # Remove unwanted elements
-            for element in soup(
-                [
-                    "script",
-                    "style",
-                    "nav",
-                    "header",
-                    "footer",
-                    "aside",
-                    "iframe",
-                    "noscript",
-                ]
-            ):
-                element.decompose()
+                # Extract main content (prioritize article > main > body)
+                main_content = (
+                    soup.find("article")
+                    or soup.find("main")
+                    or soup.find("div", class_="content")
+                    or soup.find("div", class_="post")
+                    or soup.find("body")
+                    or soup
+                )
 
-            # Extract main content (prioritize article > main > body)
-            main_content = (
-                soup.find("article")
-                or soup.find("main")
-                or soup.find("div", class_="content")
-                or soup.find("div", class_="post")
-                or soup.find("body")
-                or soup
-            )
+                # Convert to markdown
+                h = html2text.HTML2Text()
+                h.ignore_links = False
+                h.ignore_images = False
+                h.ignore_emphasis = False
+                h.body_width = 0  # No line wrapping
+                h.unicode_snob = True  # Better character handling
+                h.skip_internal_links = True
 
-            # Convert to markdown
-            h = html2text.HTML2Text()
-            h.ignore_links = False
-            h.ignore_images = False
-            h.ignore_emphasis = False
-            h.body_width = 0  # No line wrapping
-            h.unicode_snob = True  # Better character handling
-            h.skip_internal_links = True
+                markdown = h.handle(str(main_content))
 
-            markdown = h.handle(str(main_content))
+                # Clean up excessive whitespace
+                lines = [line.rstrip() for line in markdown.split("\n")]
+                markdown = "\n".join(lines)
 
-            # Clean up excessive whitespace
-            lines = [line.rstrip() for line in markdown.split("\n")]
-            markdown = "\n".join(lines)
+                # Remove excessive blank lines
+                while "\n\n\n" in markdown:
+                    markdown = markdown.replace("\n\n\n", "\n\n")
 
-            # Remove excessive blank lines
-            while "\n\n\n" in markdown:
-                markdown = markdown.replace("\n\n\n", "\n\n")
+                # Truncate if needed
+                truncated = False
+                if len(markdown) > max_length:
+                    markdown = markdown[:max_length]
+                    truncated = True
 
-            # Truncate if needed
-            truncated = False
-            if len(markdown) > max_length:
-                markdown = markdown[:max_length]
-                truncated = True
+                return ToolResult(
+                    success=True,
+                    output={
+                        "url": str(response.url),  # Final URL after redirects
+                        "title": title,
+                        "content": markdown,
+                        "author": author,
+                        "published_date": published_date,
+                        "word_count": len(markdown.split()),
+                        "char_count": len(markdown),
+                        "truncated": truncated,
+                        "method": "pure_python",
+                        "pages_fetched": 1,
+                    },
+                    metadata={
+                        "fetch_method": "pure_python",
+                        "status_code": response.status,
+                        "content_type": response.headers.get("Content-Type", ""),
+                    },
+                )
 
-            return ToolResult(
-                success=True,
-                output={
-                    "url": str(response.url),  # Final URL after redirects
-                    "title": title,
-                    "content": markdown,
-                    "author": author,
-                    "published_date": published_date,
-                    "word_count": len(markdown.split()),
-                    "char_count": len(markdown),
-                    "truncated": truncated,
-                    "method": "pure_python",
-                    "pages_fetched": 1,
-                },
-                metadata={
-                    "fetch_method": "pure_python",
-                    "status_code": response.status,
-                    "content_type": response.headers.get("Content-Type", ""),
-                },
-            )
+            except aiohttp.TooManyRedirects:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Too many redirects (max: {self.max_redirects})",
+                )
 
-        except aiohttp.TooManyRedirects:
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"Too many redirects (max: {self.max_redirects})",
-            )
-
-        except aiohttp.ClientError as e:
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"Network error: {str(e)}",
-            )
-        except Exception as e:
-            logger.error(f"Unexpected error fetching {url}: {str(e)}")
-            return ToolResult(
-                success=False,
-                output=None,
-                error=f"Parsing error: {str(e)}",
-            )
-        finally:
-            # Ensure session is closed to prevent resource leaks
-            if session and not session.closed:
-                await session.close()
+            except aiohttp.ClientError as e:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Network error: {str(e)}",
+                )
+            except Exception as e:
+                logger.error(f"Unexpected error fetching {url}: {str(e)}")
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Parsing error: {str(e)}",
+                )
 
     async def _fetch_with_exa(
         self, url: str, max_length: int, subpages: int = 0, subpage_target: str = None
@@ -1630,189 +1601,181 @@ class WebFetchTool(Tool):
 
         Improved error handling with detailed logging for auth/rate limit failures.
         """
-        session = None
-        try:
-            # Exa requires searching first to get IDs, then fetching content
-            # For direct URL fetch, we use a workaround: search for exact URL
-            timeout = aiohttp.ClientTimeout(total=30)
-            session = aiohttp.ClientSession(timeout=timeout)
+        # Exa requires searching first to get IDs, then fetching content
+        # For direct URL fetch, we use a workaround: search for exact URL
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            try:
+                headers = {
+                    "x-api-key": self.exa_api_key,
+                    "Content-Type": "application/json",
+                }
 
-            headers = {
-                "x-api-key": self.exa_api_key,
-                "Content-Type": "application/json",
-            }
+                # Step 1: Search for the exact URL
+                search_payload = {
+                    "query": url,
+                    "numResults": 1,
+                    "includeDomains": [urlparse(url).netloc],
+                }
 
-            # Step 1: Search for the exact URL
-            search_payload = {
-                "query": url,
-                "numResults": 1,
-                "includeDomains": [urlparse(url).netloc],
-            }
-
-            # Add subpages parameters if requested
-            if subpages > 0:
-                search_payload["subpages"] = subpages
-                search_payload["livecrawl"] = "preferred"  # Force fresh crawling for subpages
-                if subpage_target:
-                    search_payload["subpageTarget"] = subpage_target
-                logger.info(f"Exa subpages enabled: count={subpages}, target={subpage_target}")
-            else:
-                search_payload["livecrawl"] = "fallback"  # Use cached when possible for single pages
-
-            async with session.post(
-                "https://api.exa.ai/search",
-                json=search_payload,
-                headers=headers,
-            ) as search_response:
-                # Detailed error logging for auth/rate limit failures
-                if search_response.status == 401:
-                    logger.error("Exa API authentication failed (401 Unauthorized)")
-                    logger.info("Falling back to pure Python mode")
-                    return await self._fetch_pure_python(url, max_length)
-                elif search_response.status == 429:
-                    logger.warning("Exa API rate limit exceeded (429 Too Many Requests)")
-                    logger.info("Falling back to pure Python mode")
-                    return await self._fetch_pure_python(url, max_length)
-                elif search_response.status != 200:
-                    logger.warning(
-                        f"Exa search failed with status {search_response.status}"
-                    )
-                    logger.info("Falling back to pure Python mode")
-                    return await self._fetch_pure_python(url, max_length)
-
-                search_data = await search_response.json()
-                results = search_data.get("results", [])
-
-                if not results:
-                    logger.info("Exa found no results, falling back to pure Python")
-                    return await self._fetch_pure_python(url, max_length)
-
-                # Collect all result IDs (main page + subpages if applicable)
-                result_ids = [r.get("id") for r in results if r.get("id")]
-                logger.info(f"Exa search returned {len(result_ids)} result(s)")
-
-            # Step 2: Get full content using ID(s)
-            content_payload = {
-                "ids": result_ids,
-                "text": {
-                    "maxCharacters": max_length,
-                    "includeHtmlTags": False,
-                },
-            }
-
-            async with session.post(
-                "https://api.exa.ai/contents",
-                json=content_payload,
-                headers=headers,
-            ) as content_response:
-                if content_response.status == 401:
-                    logger.error("Exa API authentication failed (401 Unauthorized)")
-                    logger.info("Falling back to pure Python mode")
-                    return await self._fetch_pure_python(url, max_length)
-                elif content_response.status == 429:
-                    logger.warning("Exa API rate limit exceeded (429 Too Many Requests)")
-                    logger.info("Falling back to pure Python mode")
-                    return await self._fetch_pure_python(url, max_length)
-                elif content_response.status != 200:
-                    logger.warning(
-                        f"Exa contents failed with status {content_response.status}"
-                    )
-                    logger.info("Falling back to pure Python mode")
-                    return await self._fetch_pure_python(url, max_length)
-
-                content_data = await content_response.json()
-                results = content_data.get("results", [])
-
-                if not results:
-                    logger.warning("Exa API returned no content")
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error="Exa API returned no content",
-                    )
-
-                # Handle single page vs multiple pages (subpages)
-                if len(results) == 1:
-                    # Single page - return as before
-                    result = results[0]
-                    content = result.get("text", "")
-
-                    return ToolResult(
-                        success=True,
-                        output={
-                            "url": result.get("url", url),
-                            "title": result.get("title", ""),
-                            "content": content,
-                            "author": result.get("author"),
-                            "published_date": result.get("publishedDate"),
-                            "word_count": len(content.split()),
-                            "char_count": len(content),
-                            "truncated": len(content) >= max_length,
-                            "method": "exa",
-                            "pages_fetched": 1,
-                        },
-                        metadata={
-                            "fetch_method": "exa",
-                            "exa_id": result_ids[0],
-                            "exa_score": result.get("score"),
-                        },
-                    )
+                # Add subpages parameters if requested
+                if subpages > 0:
+                    search_payload["subpages"] = subpages
+                    search_payload["livecrawl"] = "preferred"  # Force fresh crawling for subpages
+                    if subpage_target:
+                        search_payload["subpageTarget"] = subpage_target
+                    logger.info(f"Exa subpages enabled: count={subpages}, target={subpage_target}")
                 else:
-                    # Multiple pages - merge with markdown separators
-                    merged_content = []
-                    total_words = 0
-                    total_chars = 0
+                    search_payload["livecrawl"] = "fallback"  # Use cached when possible for single pages
 
-                    for i, result in enumerate(results):
-                        page_url = result.get("url", "")
-                        page_title = result.get("title", "")
-                        page_content = result.get("text", "")
+                async with session.post(
+                    "https://api.exa.ai/search",
+                    json=search_payload,
+                    headers=headers,
+                ) as search_response:
+                    # Detailed error logging for auth/rate limit failures
+                    if search_response.status == 401:
+                        logger.error("Exa API authentication failed (401 Unauthorized)")
+                        logger.info("Falling back to pure Python mode")
+                        return await self._fetch_pure_python(url, max_length)
+                    elif search_response.status == 429:
+                        logger.warning("Exa API rate limit exceeded (429 Too Many Requests)")
+                        logger.info("Falling back to pure Python mode")
+                        return await self._fetch_pure_python(url, max_length)
+                    elif search_response.status != 200:
+                        logger.warning(
+                            f"Exa search failed with status {search_response.status}"
+                        )
+                        logger.info("Falling back to pure Python mode")
+                        return await self._fetch_pure_python(url, max_length)
 
-                        if i == 0:
-                            # Main page
-                            merged_content.append(f"# Main Page: {page_url}\n")
-                            if page_title:
-                                merged_content.append(f"**{page_title}**\n")
-                        else:
-                            # Subpage
-                            merged_content.append(f"\n---\n\n## Subpage {i}: {page_url}\n")
-                            if page_title:
-                                merged_content.append(f"**{page_title}**\n")
+                    search_data = await search_response.json()
+                    results = search_data.get("results", [])
 
-                        merged_content.append(f"\n{page_content}\n")
-                        total_words += len(page_content.split())
-                        total_chars += len(page_content)
+                    if not results:
+                        logger.info("Exa found no results, falling back to pure Python")
+                        return await self._fetch_pure_python(url, max_length)
 
-                    final_content = "".join(merged_content)
+                    # Collect all result IDs (main page + subpages if applicable)
+                    result_ids = [r.get("id") for r in results if r.get("id")]
+                    logger.info(f"Exa search returned {len(result_ids)} result(s)")
 
-                    return ToolResult(
-                        success=True,
-                        output={
-                            "url": results[0].get("url", url),
-                            "title": results[0].get("title", ""),
-                            "content": final_content,
-                            "author": results[0].get("author"),
-                            "published_date": results[0].get("publishedDate"),
-                            "word_count": total_words,
-                            "char_count": total_chars,
-                            "truncated": False,
-                            "method": "exa",
-                            "pages_fetched": len(results),
-                        },
-                        metadata={
-                            "fetch_method": "exa",
-                            "exa_ids": result_ids,
-                            "num_pages": len(results),
-                        },
-                    )
+                # Step 2: Get full content using ID(s)
+                content_payload = {
+                    "ids": result_ids,
+                    "text": {
+                        "maxCharacters": max_length,
+                        "includeHtmlTags": False,
+                    },
+                }
 
-        except aiohttp.ClientError as e:
-            logger.error(f"Exa network error: {str(e)}, falling back to pure Python")
-            return await self._fetch_pure_python(url, max_length)
-        except Exception as e:
-            logger.error(f"Exa unexpected error: {str(e)}, falling back to pure Python")
-            return await self._fetch_pure_python(url, max_length)
-        finally:
-            # Ensure session is closed to prevent resource leaks
-            if session and not session.closed:
-                await session.close()
+                async with session.post(
+                    "https://api.exa.ai/contents",
+                    json=content_payload,
+                    headers=headers,
+                ) as content_response:
+                    if content_response.status == 401:
+                        logger.error("Exa API authentication failed (401 Unauthorized)")
+                        logger.info("Falling back to pure Python mode")
+                        return await self._fetch_pure_python(url, max_length)
+                    elif content_response.status == 429:
+                        logger.warning("Exa API rate limit exceeded (429 Too Many Requests)")
+                        logger.info("Falling back to pure Python mode")
+                        return await self._fetch_pure_python(url, max_length)
+                    elif content_response.status != 200:
+                        logger.warning(
+                            f"Exa contents failed with status {content_response.status}"
+                        )
+                        logger.info("Falling back to pure Python mode")
+                        return await self._fetch_pure_python(url, max_length)
+
+                    content_data = await content_response.json()
+                    results = content_data.get("results", [])
+
+                    if not results:
+                        logger.warning("Exa API returned no content")
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error="Exa API returned no content",
+                        )
+
+                    # Handle single page vs multiple pages (subpages)
+                    if len(results) == 1:
+                        # Single page - return as before
+                        result = results[0]
+                        content = result.get("text", "")
+
+                        return ToolResult(
+                            success=True,
+                            output={
+                                "url": result.get("url", url),
+                                "title": result.get("title", ""),
+                                "content": content,
+                                "author": result.get("author"),
+                                "published_date": result.get("publishedDate"),
+                                "word_count": len(content.split()),
+                                "char_count": len(content),
+                                "truncated": len(content) >= max_length,
+                                "method": "exa",
+                                "pages_fetched": 1,
+                            },
+                            metadata={
+                                "fetch_method": "exa",
+                                "exa_id": result_ids[0],
+                                "exa_score": result.get("score"),
+                            },
+                        )
+                    else:
+                        # Multiple pages - merge with markdown separators
+                        merged_content = []
+                        total_words = 0
+                        total_chars = 0
+
+                        for i, result in enumerate(results):
+                            page_url = result.get("url", "")
+                            page_title = result.get("title", "")
+                            page_content = result.get("text", "")
+
+                            if i == 0:
+                                # Main page
+                                merged_content.append(f"# Main Page: {page_url}\n")
+                                if page_title:
+                                    merged_content.append(f"**{page_title}**\n")
+                            else:
+                                # Subpage
+                                merged_content.append(f"\n---\n\n## Subpage {i}: {page_url}\n")
+                                if page_title:
+                                    merged_content.append(f"**{page_title}**\n")
+
+                            merged_content.append(page_content)
+                            total_words += len(page_content.split())
+                            total_chars += len(page_content)
+
+                        final_content = "\n".join(merged_content)
+
+                        return ToolResult(
+                            success=True,
+                            output={
+                                "url": url,
+                                "title": results[0].get("title", ""),
+                                "content": final_content,
+                                "word_count": total_words,
+                                "char_count": total_chars,
+                                "truncated": False,
+                                "method": "exa",
+                                "pages_fetched": len(results),
+                            },
+                            metadata={
+                                "fetch_method": "exa",
+                                "exa_ids": result_ids,
+                                "num_pages": len(results),
+                            },
+                        )
+
+            except aiohttp.ClientError as e:
+                logger.error(f"Exa network error: {str(e)}, falling back to pure Python")
+                return await self._fetch_pure_python(url, max_length)
+            except Exception as e:
+                logger.error(f"Exa unexpected error: {str(e)}, falling back to pure Python")
+                return await self._fetch_pure_python(url, max_length)

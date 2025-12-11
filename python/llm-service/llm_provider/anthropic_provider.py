@@ -116,8 +116,17 @@ class AnthropicProvider(LLMProvider):
         model_context = getattr(model_config, "context_window", 200000)
         model_max_output = getattr(model_config, "max_tokens", 8192)
         requested_max = int(request.max_tokens) if request.max_tokens else model_max_output
-        headroom = max(0, model_context - prompt_tokens_est - safety_margin)
-        adjusted_max = max(1, min(requested_max, model_max_output, headroom))
+        headroom = model_context - prompt_tokens_est - safety_margin
+        
+        # Check if there's sufficient context window headroom
+        if headroom <= 0:
+            raise ValueError(
+                f"Insufficient context window: prompt uses ~{prompt_tokens_est} tokens, "
+                f"max context is {model_context}, leaving no room for output. "
+                f"Please reduce prompt length."
+            )
+        
+        adjusted_max = min(requested_max, model_max_output, headroom)
         
         api_request = {
             "model": model,
@@ -222,8 +231,17 @@ class AnthropicProvider(LLMProvider):
         model_context = getattr(model_config, "context_window", 200000)
         model_max_output = getattr(model_config, "max_tokens", 8192)
         requested_max = int(request.max_tokens) if request.max_tokens else model_max_output
-        headroom = max(0, model_context - prompt_tokens_est - safety_margin)
-        adjusted_max = max(1, min(requested_max, model_max_output, headroom))
+        headroom = model_context - prompt_tokens_est - safety_margin
+        
+        # Check if there's sufficient context window headroom
+        if headroom <= 0:
+            raise ValueError(
+                f"Insufficient context window: prompt uses ~{prompt_tokens_est} tokens, "
+                f"max context is {model_context}, leaving no room for output. "
+                f"Please reduce prompt length."
+            )
+        
+        adjusted_max = min(requested_max, model_max_output, headroom)
         
         api_request = {
             "model": model,
