@@ -24,6 +24,13 @@ import (
 // sanitizeAgentOutput removes duplicate references from agent outputs
 // to avoid sending the same URLs/citations twice (once in agent output, once in Available Citations)
 func sanitizeAgentOutput(text string) string {
+	// First, filter out XML tool tags that may have leaked into agent responses
+	toolTagPattern := regexp.MustCompile(`<(search_query|web_fetch|web_search|tool)[^>]*>.*?</(search_query|web_fetch|web_search|tool)>`)
+	text = toolTagPattern.ReplaceAllString(text, "")
+	// Also filter single/self-closing tags
+	singleTagPattern := regexp.MustCompile(`<(search_query|web_fetch|web_search|tool)[^>]*/?>`)
+	text = singleTagPattern.ReplaceAllString(text, "")
+
 	lines := strings.Split(text, "\n")
 	var result []string
 	inSourcesSection := false
@@ -74,8 +81,63 @@ func sanitizeAgentOutput(text string) string {
 
 // --- Result preprocessing (Phase 1 dedup + basic filtering) ---
 var (
-	nonWordPattern   = regexp.MustCompile(`[\p{P}\p{S}]+`)
-	noInfoPatterns   = []string{"i couldn't find", "no information available", "unable to find", "no results found", "couldn't locate", "not able to find", "没有找到", "無法找到", "見つかりませんでした"}
+	nonWordPattern = regexp.MustCompile(`[\p{P}\p{S}]+`)
+	// Precise patterns to avoid false positives (complete phrases only)
+	noInfoPatterns = []string{
+		// English: Access failures (complete phrases)
+		"unfortunately, i cannot access",
+		"unfortunately, i am unable to access",
+		"unfortunately, the domain",
+		"cannot connect to host",
+		"failed to fetch",
+		"unable to access the website",
+		"unable to retrieve",
+		"could not access",
+		"network connection error",
+		"dns resolution failed",
+		"name or service not known",
+		"website is offline",
+		"site is unavailable",
+		"suggested alternatives",
+		"would you like me to try",
+		"shall i attempt",
+
+		// English: No info found
+		"i couldn't find",
+		"no information available",
+		"unable to find",
+		"no results found",
+		"couldn't locate",
+		"not able to find",
+
+		// Chinese: Access failures (complete phrases)
+		"不幸的是，我无法访问",
+		"不幸的是，该域名",
+		"无法访问该网站",
+		"无法连接到",
+		"dns解析失败",
+		"域名解析失败",
+		"网络连接错误",
+		"网站可能离线",
+		"网站不可用",
+		"建议的替代方案",
+		"您希望我尝试",
+		"是否需要我",
+
+		// Chinese: No info found
+		"没有找到相关",
+		"未找到",
+		"无法找到",
+
+		// Japanese: Access failures
+		"残念ながら、アクセスできません",
+		"接続できません",
+		"サイトが利用できません",
+
+		// Japanese: No info found
+		"見つかりませんでした",
+		"情報が見つかりません",
+	}
 	similarityThresh = 0.85
 )
 
@@ -178,7 +240,8 @@ func filterLowQuality(results []AgentExecutionResult) []AgentExecutionResult {
 		if !r.Success || resp == "" {
 			continue
 		}
-		if len([]rune(resp)) < 200 && containsNoInfoPatterns(resp) {
+		// Filter any response containing error patterns (removed 200-char limit)
+		if containsNoInfoPatterns(resp) {
 			continue
 		}
 		filtered = append(filtered, r)
@@ -597,14 +660,14 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		// Define output structure based on synthesis style
 		outputStructure := ""
 		if synthesisStyle == "comprehensive" {
-		// For deep research: comprehensive multi-section report (no Sources section; system appends it)
-		targetWords := 1200
-		if len(areas) > 0 {
-			// Calculate target based on research areas (250-400 words per area)
-			targetWords = len(areas) * 400
-		}
-		// Use explicit top-level headings and forbid copying instruction text into the answer
-		outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
+			// For deep research: comprehensive multi-section report (no Sources section; system appends it)
+			targetWords := 1200
+			if len(areas) > 0 {
+				// Calculate target based on research areas (250-400 words per area)
+				targetWords = len(areas) * 400
+			}
+			// Use explicit top-level headings and forbid copying instruction text into the answer
+			outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
 
 Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
 
@@ -617,9 +680,9 @@ Section requirements:
 - Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 - Limitations and Uncertainties: 100–150 words IF evidence is incomplete, contradictory, or outdated; OMIT this section entirely if findings are well-supported and comprehensive
 `, targetWords, targetWords+600)
-	} else {
-		// Default: concise synthesis (no Sources section; system appends it)
-		outputStructure = `## Output Format (do NOT include this section in the final answer):
+		} else {
+			// Default: concise synthesis (no Sources section; system appends it)
+			outputStructure = `## Output Format (do NOT include this section in the final answer):
 
 Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
 
@@ -632,41 +695,41 @@ Section requirements:
 - Detailed Findings: include inline citations; state facts authoritatively
 - Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
 `
-	}
+		}
 
-	if isResearch {
-		// Determine whether citations are available in context
-		hasCitations := false
-		if input.Context != nil {
-			if v, ok := input.Context["available_citations"].(string); ok && strings.TrimSpace(v) != "" {
-				hasCitations = true
-			} else if v, ok := input.Context["citation_count"]; ok {
-				switch t := v.(type) {
-				case int:
-					hasCitations = t > 0
-				case int32:
-					hasCitations = int(t) > 0
-				case int64:
-					hasCitations = int(t) > 0
-				case float64:
-					hasCitations = int(t) > 0
+		if isResearch {
+			// Determine whether citations are available in context
+			hasCitations := false
+			if input.Context != nil {
+				if v, ok := input.Context["available_citations"].(string); ok && strings.TrimSpace(v) != "" {
+					hasCitations = true
+				} else if v, ok := input.Context["citation_count"]; ok {
+					switch t := v.(type) {
+					case int:
+						hasCitations = t > 0
+					case int32:
+						hasCitations = int(t) > 0
+					case int64:
+						hasCitations = int(t) > 0
+					case float64:
+						hasCitations = int(t) > 0
+					}
 				}
 			}
-		}
 
-		// Build dynamic checklist and citation guidance
-		coverageExtra := ""
-		if hasCitations {
-			coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\\n" +
-				"    ✓ ALL claims supported by Available Citations (no fabrication)\\n" +
-				"    ✓ Conflicting sources explicitly noted: \\\"[1] says X, [2] says Y\\\"\\n"
-		} else {
-			coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \\\"unverified\\\"\\n"
-		}
+			// Build dynamic checklist and citation guidance
+			coverageExtra := ""
+			if hasCitations {
+				coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\\n" +
+					"    ✓ ALL claims supported by Available Citations (no fabrication)\\n" +
+					"    ✓ Conflicting sources explicitly noted: \\\"[1] says X, [2] says Y\\\"\\n"
+			} else {
+				coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \\\"unverified\\\"\\n"
+			}
 
-		citationGuidance := ""
-		if hasCitations {
-			citationGuidance = fmt.Sprintf(`## Citation Integration:
+			citationGuidance := ""
+			if hasCitations {
+				citationGuidance = fmt.Sprintf(`## Citation Integration:
     - Use inline citations [1], [2] for ALL factual claims that have supporting sources
     - Aim for AT LEAST %d inline citations IF sufficient relevant sources exist
     - Use ONLY the provided Available Citations and their existing indices [n]
@@ -676,14 +739,14 @@ Section requirements:
     - Each unique URL gets ONE citation number only
     - Do NOT include a "## Sources" section; the system will append Sources automatically
 `, minCitations)
-		} else {
-			citationGuidance = `## Citation Guidance:
+			} else {
+				citationGuidance = `## Citation Guidance:
     - Do NOT fabricate citations.
     - If a claim lacks supporting sources, mark it as "unverified".
 `
-		}
+			}
 
-		fmt.Fprintf(&b, `# Synthesis Requirements:
+			fmt.Fprintf(&b, `# Synthesis Requirements:
 
     IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or Coverage Checklist text in the final answer. The final answer must contain ONLY the report sections and their content. Begin your answer directly with "## Executive Summary".
 

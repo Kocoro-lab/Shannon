@@ -358,6 +358,10 @@ class Tool(ABC):
                 "description": param.description,
             }
 
+            # Add items for ARRAY type (required by OpenAI schema validation)
+            if param.type == ToolParameterType.ARRAY:
+                prop["items"] = {"type": "string"}  # Default to string, can be extended
+
             if param.enum:
                 prop["enum"] = param.enum
             if param.min_value is not None:
