@@ -118,7 +118,12 @@ class GA4Client:
 
             return self._vendor_adapter
 
+        except (ImportError, ModuleNotFoundError) as e:
+            # Expected: adapter module not installed
+            self._logger.info(f"[GA4 Client] Vendor adapter module not available: {e}")
+            return None
         except Exception as e:
+            # Unexpected: configuration or runtime error
             self._logger.error(f"[GA4 Client] Error loading vendor adapter: {e}", exc_info=True)
             return None
 

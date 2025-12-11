@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 import os
 import yaml
 import logging
+import threading
 from google.api_core.exceptions import ResourceExhausted, PermissionDenied, TooManyRequests
 
 from .base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
@@ -28,6 +29,7 @@ def _resolve_config_path() -> str:
 
 _GA4_CLIENT: Optional[GA4Client] = None
 _GA4_CACHE: Optional[GA4MetadataCache] = None
+_GA4_LOCK = threading.Lock()
 
 
 def _get_ga4_client() -> GA4Client:
@@ -35,26 +37,31 @@ def _get_ga4_client() -> GA4Client:
     if _GA4_CLIENT is not None:
         return _GA4_CLIENT
 
-    cfg_path = _resolve_config_path()
-    if not os.path.exists(cfg_path):
-        raise ValueError(
-            f"GA4 config not found. Set SHANNON_CONFIG_PATH (tried {cfg_path})."
-        )
+    with _GA4_LOCK:
+        # Double-check after acquiring lock
+        if _GA4_CLIENT is not None:
+            return _GA4_CLIENT
 
-    with open(cfg_path, "r") as f:
-        cfg = yaml.safe_load(f) or {}
+        cfg_path = _resolve_config_path()
+        if not os.path.exists(cfg_path):
+            raise ValueError(
+                f"GA4 config not found. Set SHANNON_CONFIG_PATH (tried {cfg_path})."
+            )
 
-    ga4_cfg = cfg.get("ga4") or {}
-    property_id = ga4_cfg.get("property_id")
-    credentials_path = ga4_cfg.get("credentials_path")
-    if not property_id or not credentials_path:
-        raise ValueError(
-            "Missing GA4 configuration. Provide ga4.property_id and ga4.credentials_path in config."
-        )
+        with open(cfg_path, "r") as f:
+            cfg = yaml.safe_load(f) or {}
 
-    _GA4_CLIENT = GA4Client(property_id=str(property_id), credentials_path=str(credentials_path))
-    _GA4_CACHE = GA4MetadataCache(_GA4_CLIENT)
-    return _GA4_CLIENT
+        ga4_cfg = cfg.get("ga4") or {}
+        property_id = ga4_cfg.get("property_id")
+        credentials_path = ga4_cfg.get("credentials_path")
+        if not property_id or not credentials_path:
+            raise ValueError(
+                "Missing GA4 configuration. Provide ga4.property_id and ga4.credentials_path in config."
+            )
+
+        _GA4_CLIENT = GA4Client(property_id=str(property_id), credentials_path=str(credentials_path))
+        _GA4_CACHE = GA4MetadataCache(_GA4_CLIENT)
+        return _GA4_CLIENT
 
 
 def _get_ga4_cache() -> GA4MetadataCache:
