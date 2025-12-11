@@ -93,6 +93,8 @@ class AnthropicProvider(LLMProvider):
             tools.append(tool)
         return tools
 
+
+
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         """Generate a completion using Anthropic API"""
 
@@ -108,11 +110,28 @@ class AnthropicProvider(LLMProvider):
             request.messages
         )
 
-        # Prepare API request
+        # Compute safe max_tokens based on context window headroom (OpenAI-style)
+        prompt_tokens_est = self.count_tokens(request.messages, model)
+        safety_margin = 256
+        model_context = getattr(model_config, "context_window", 200000)
+        model_max_output = getattr(model_config, "max_tokens", 8192)
+        requested_max = int(request.max_tokens) if request.max_tokens else model_max_output
+        headroom = model_context - prompt_tokens_est - safety_margin
+        
+        # Check if there's sufficient context window headroom
+        if headroom <= 0:
+            raise ValueError(
+                f"Insufficient context window: prompt uses ~{prompt_tokens_est} tokens, "
+                f"max context is {model_context}, leaving no room for output. "
+                f"Please reduce prompt length."
+            )
+        
+        adjusted_max = min(requested_max, model_max_output, headroom)
+        
         api_request = {
             "model": model,
             "messages": claude_messages,
-            "max_tokens": request.max_tokens or 4096,
+            "max_tokens": adjusted_max,
             "temperature": request.temperature,
         }
 
@@ -206,11 +225,28 @@ class AnthropicProvider(LLMProvider):
             request.messages
         )
 
-        # Prepare API request
+        # Compute safe max_tokens based on context window headroom (OpenAI-style)
+        prompt_tokens_est = self.count_tokens(request.messages, model)
+        safety_margin = 256
+        model_context = getattr(model_config, "context_window", 200000)
+        model_max_output = getattr(model_config, "max_tokens", 8192)
+        requested_max = int(request.max_tokens) if request.max_tokens else model_max_output
+        headroom = model_context - prompt_tokens_est - safety_margin
+        
+        # Check if there's sufficient context window headroom
+        if headroom <= 0:
+            raise ValueError(
+                f"Insufficient context window: prompt uses ~{prompt_tokens_est} tokens, "
+                f"max context is {model_context}, leaving no room for output. "
+                f"Please reduce prompt length."
+            )
+        
+        adjusted_max = min(requested_max, model_max_output, headroom)
+        
         api_request = {
             "model": model,
             "messages": claude_messages,
-            "max_tokens": request.max_tokens or 4096,
+            "max_tokens": adjusted_max,
             "temperature": request.temperature,
         }
 
