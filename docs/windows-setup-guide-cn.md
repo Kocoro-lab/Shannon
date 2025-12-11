@@ -14,17 +14,17 @@
 3.  **Docker Desktop**: [下载链接](https://www.docker.com/products/docker-desktop/)
     *   安装后在设置中确保勾选 "Use the WSL 2 based engine"。
 4.  **Go (Golang)**: [下载链接](https://go.dev/dl/) (建议 1.21+)
-4.  **Python**: [下载链接](https://www.python.org/downloads/) (建议 3.10+)
+5.  **Python**: [下载链接](https://www.python.org/downloads/) (建议 3.10+)
     *   **重要**: 安装时勾选 "Add Python to PATH"。
-    *   **避坑**: 在 Windows 设置中搜索“应用执行别名 (App execution aliases)”，**关闭** `python.exe` 和 `python3.exe` 的开关，防止系统调用到微软商店的空壳程序。
-5.  **Node.js**: [下载链接](https://nodejs.org/) (建议 LTS 版本，用于桌面端)
-6.  **Rust**: [下载链接](https://rustup.rs/) (桌面端 Tauri 依赖)
+    *   **避坑**: 在 Windows 设置中搜索"应用执行别名 (App execution aliases)"，**关闭** `python.exe` 和 `python3.exe` 的开关，防止系统调用到微软商店的空壳程序。
+6.  **Node.js**: [下载链接](https://nodejs.org/) (建议 LTS 版本，用于桌面端)
+7.  **Rust**: [下载链接](https://rustup.rs/) (桌面端 Tauri 依赖)
     *   **前置要求**: Windows 上编译 Rust 需要 C++ 链接器。
     *   **安装步骤**:
         1.  下载并安装 **[Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)** (或 Visual Studio Community)。
         2.  在安装程序中，务必勾选 **"使用 C++ 的桌面开发" (Desktop development with C++)** 工作负载。
         3.  安装完成后，再运行 `rustup-init.exe` 安装 Rust。
-7.  **Protoc (Protocol Buffers Compiler)**: [下载链接](https://github.com/protocolbuffers/protobuf/releases)
+8.  **Protoc (Protocol Buffers Compiler)**: [下载链接](https://github.com/protocolbuffers/protobuf/releases)
     *   **注意**: 下载 `protoc-xx.x-win64.zip` (不要下成 osx 或 linux 版)。
     *   **配置**: 解压到固定目录（如 `D:\Tools\protoc`），将 `bin` 目录添加到系统环境变量 `Path` 中。
     *   **关键**: 确保解压目录中包含 `include` 文件夹，否则生成代码时会报 `google/protobuf/timestamp.proto not found` 错误。

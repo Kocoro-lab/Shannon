@@ -113,6 +113,15 @@ docker compose version
 ```
 </details>
 
+<details>
+<summary><b>Windows Setup Guide</b> (click to expand)</summary>
+
+For Windows users, additional configuration is required. See the dedicated guides:
+- [Windows Setup Guide (English)](docs/windows-setup-guide-en.md)
+- [Windows 本地环境适配指南 (中文)](docs/windows-setup-guide-cn.md)
+
+</details>
+
 ### 30-Second Setup
 
 ```bash
