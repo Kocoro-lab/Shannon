@@ -38,6 +38,12 @@ Tests are numbered by category for clear organization:
   - Graph of Thoughts
   - Reflexion patterns
 
+- **`09_citation_deduplication_test.sh`** - Citation deduplication and extraction
+  - Verifies citations are deduplicated by normalized URL
+  - Ensures subpage URLs are not extracted as separate citations
+  - Tests plain-text URL scanning is skipped when structured citations exist
+  - Validates web_fetch content format doesn't expose URLs
+
 ### Workflow Tests (10-19)
 - **`10_supervisor_workflow_test.sh`** - Complex multi-agent orchestration
   - Subtask decomposition

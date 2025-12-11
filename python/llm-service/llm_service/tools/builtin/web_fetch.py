@@ -29,7 +29,7 @@ from ..openapi_parser import _is_private_ip
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_SUBPAGES = 10  # Increased for Firecrawl crawl support
+MAX_SUBPAGES = 15  # Balanced limit for comprehensive research
 CRAWL_DELAY_SECONDS = float(os.getenv("WEB_FETCH_CRAWL_DELAY", "0.5"))
 MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  # 150KB total
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
@@ -336,6 +336,12 @@ class FirecrawlFetchProvider(WebFetchProvider):
                         # Crawl finished, process results
                         results = status_data.get("data", [])
                         logger.info(f"Firecrawl: Crawl completed, got {len(results)} pages")
+                        
+                        # Debug: Log URLs from Firecrawl response
+                        for i, page_data in enumerate(results[:5]):  # Log first 5 URLs
+                            page_url = page_data.get("url", "")
+                            logger.info(f"Firecrawl page {i+1} URL: {page_url}")
+                        
                         return self._merge_crawl_results(results, url, max_length)
 
                     elif status == "failed":
@@ -353,10 +359,28 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 await session.close()
 
 
+    def _sanitize_url(self, url: str) -> str:
+        """Sanitize URL by removing common error patterns"""
+        if not url:
+            return ""
+        
+        # Remove known error patterns
+        url = url.replace('</parameter', '')
+        url = url.replace('%3C/parameter', '')
+        url = url.replace('%3E', '')
+        url = url.replace('<', '')
+        url = url.replace('>', '')
+        
+        # Remove trailing/leading whitespace
+        url = url.strip()
+        
+        return url
+    
     def _merge_crawl_results(
         self, results: List[Dict], original_url: str, max_length: int
     ) -> Dict[str, Any]:
-        """Merge multiple crawl results into a single structured output"""
+        """Merge multiple crawl results with improved filtering and deduplication"""
+        
         if not results:
             return {
                 "url": original_url,
@@ -365,14 +389,72 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "method": "firecrawl",
                 "pages_fetched": 0,
             }
-
-        if len(results) == 1:
-            # Single page result
-            result = results[0]
+        
+        # Step 1: Filter failed pages (statusCode != 200)
+        valid_pages = []
+        failed_count = 0
+        for page_data in results:
+            metadata = page_data.get("metadata", {})
+            status_code = metadata.get("statusCode", 200)
+            
+            if status_code != 200:
+                logger.warning(
+                    f"Skipping failed page: {page_data.get('url')} "
+                    f"(status={status_code})"
+                )
+                failed_count += 1
+                continue
+            
+            valid_pages.append(page_data)
+        
+        # Step 2: Deduplicate by URL
+        seen_urls = set()
+        unique_pages = []
+        duplicate_count = 0
+        
+        for page_data in valid_pages:
+            page_url = page_data.get("url", "")
+            
+            # Sanitize URL to remove error patterns
+            page_url = self._sanitize_url(page_url)
+            
+            # Skip empty URLs after sanitization
+            if not page_url:
+                logger.warning("Skipping page with empty URL after sanitization")
+                duplicate_count += 1
+                continue
+            
+            if page_url in seen_urls:
+                logger.info(f"Skipping duplicate URL: {page_url}")
+                duplicate_count += 1
+                continue
+            
+            seen_urls.add(page_url)
+            # Update page_data with sanitized URL
+            page_data["url"] = page_url
+            unique_pages.append(page_data)
+        
+        if not unique_pages:
+            return {
+                "url": original_url,
+                "title": "",
+                "content": "",
+                "method": "firecrawl",
+                "pages_fetched": 0,
+                "metadata": {
+                    "total_crawled": len(results),
+                    "failed_pages": failed_count,
+                    "duplicate_pages": duplicate_count,
+                }
+            }
+        
+        # Step 3: Single page optimization
+        if len(unique_pages) == 1:
+            result = unique_pages[0]
             content = result.get("markdown", "")
             if len(content) > max_length:
                 content = content[:max_length]
-
+            
             return {
                 "url": result.get("url", original_url),
                 "title": result.get("metadata", {}).get("title", ""),
@@ -385,47 +467,67 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "method": "firecrawl",
                 "pages_fetched": 1,
             }
-
-        # Multiple pages - merge with markdown separators
+        
+        # Step 4: Multiple pages - smart truncation
+        # Allocate space evenly across pages
+        per_page_limit = max_length // len(unique_pages)
+        
         merged_content = []
-        total_words = 0
         total_chars = 0
-
-        for i, result in enumerate(results):
-            page_url = result.get("url", "")
-            page_title = result.get("metadata", {}).get("title", "")
-            page_content = result.get("markdown", "")
-
+        pages_included = 0
+        
+        for i, page_data in enumerate(unique_pages):
+            page_url = page_data.get("url", "")
+            page_title = page_data.get("metadata", {}).get("title", "")
+            page_content = page_data.get("markdown", "")
+            
+            # Truncate individual page
+            if len(page_content) > per_page_limit:
+                page_content = page_content[:per_page_limit] + "\n\n[Content truncated...]"
+            
+            # Check total length limit
+            if total_chars + len(page_content) > max_length:
+                logger.info(
+                    f"Reached max_length limit at page {i+1}/{len(unique_pages)}, "
+                    f"stopping merge"
+                )
+                break
+            
+            # Add page with index (don't expose URLs in content to avoid citation extraction)
             if i == 0:
-                merged_content.append(f"# Main Page: {page_url}\n")
+                page_header = f"# Main Page\n"
                 if page_title:
-                    merged_content.append(f"**{page_title}**\n")
+                    page_header += f"**{page_title}**\n\n"
             else:
-                merged_content.append(f"\n---\n\n## Subpage {i}: {page_url}\n")
+                page_header = f"\n---\n\n## Subpage {i+1}\n"
                 if page_title:
-                    merged_content.append(f"**{page_title}**\n")
-
-            merged_content.append(f"\n{page_content}\n")
-            total_words += len(page_content.split())
+                    page_header += f"**{page_title}**\n\n"
+            
+            merged_content.append(page_header + page_content)
             total_chars += len(page_content)
-
+            pages_included += 1
+        
+        # Step 5: Combine all pages
         final_content = "".join(merged_content)
-
-        # Truncate if needed
-        if len(final_content) > max_length:
-            final_content = final_content[:max_length]
-
+        
         return {
-            "url": results[0].get("url", original_url),
-            "title": results[0].get("metadata", {}).get("title", ""),
+            "url": original_url,
+            "title": unique_pages[0].get("metadata", {}).get("title", ""),
             "content": final_content,
-            "author": results[0].get("metadata", {}).get("author"),
-            "published_date": results[0].get("metadata", {}).get("publishedDate"),
-            "word_count": total_words,
-            "char_count": total_chars,
-            "truncated": len(final_content) >= max_length,
+            "word_count": len(final_content.split()),
+            "char_count": len(final_content),
+            "truncated": pages_included < len(unique_pages),
             "method": "firecrawl",
-            "pages_fetched": len(results),
+            "pages_fetched": pages_included,
+            "metadata": {
+                "total_crawled": len(results),
+                "valid_pages": len(valid_pages),
+                "unique_pages": len(unique_pages),
+                "pages_included": pages_included,
+                "failed_pages": failed_count,
+                "duplicate_pages": duplicate_count,
+                "urls": [p.get("url") for p in unique_pages[:pages_included]],
+            }
         }
 
     async def _map(self, url: str, limit: int = 100) -> List[str]:
@@ -537,6 +639,79 @@ class FirecrawlFetchProvider(WebFetchProvider):
 
         return self._merge_crawl_results(results, urls[0] if urls else "", max_length)
 
+    def _calculate_relevance_score(
+        self,
+        url: str,
+        required_paths: Optional[List[str]] = None,
+        total_pages: int = 0
+    ) -> float:
+        """
+        Calculate relevance score for a URL (0.0-1.0).
+        
+        Args:
+            url: URL to score
+            required_paths: Optional list of required paths (e.g., ['/about', '/team'])
+            total_pages: Total number of pages on the website (for context)
+        
+        Returns:
+            Relevance score between 0.0 and 1.0
+        """
+        score = 0.0
+        url_lower = url.lower()
+        
+        # Factor 1: Required paths matching (weight: 0.5)
+        if required_paths:
+            for path in required_paths:
+                path_lower = path.lower()
+                if url_lower.endswith(path_lower) or f"{path_lower}/" in url_lower:
+                    score += 0.5  # Exact match
+                    break
+                elif path_lower.strip('/') in url_lower:
+                    score += 0.3  # Partial match
+                    break
+        
+        # Factor 2: URL depth (weight: 0.2)
+        # Shallower URLs are generally more important
+        depth = url.count('/') - 2  # -2 for https://
+        if depth <= 1:
+            score += 0.2  # Top-level page
+        elif depth == 2:
+            score += 0.1  # Second-level page
+        
+        # Factor 3: URL length (weight: 0.1)
+        # Shorter URLs tend to be more important
+        if len(url) < 50:
+            score += 0.1
+        elif len(url) < 80:
+            score += 0.05
+        
+        # Factor 4: Important keywords (weight: 0.2)
+        important_keywords = [
+            'about', 'team', 'company', 'leadership', 'management',
+            'product', 'service', 'pricing', 'features',
+            'investor', 'ir', 'investors', 'investor-relations',
+            'contact', 'careers', 'jobs',
+            'docs', 'documentation', 'guide', 'tutorial', 'api',
+            'blog', 'news', 'press',
+        ]
+        
+        for keyword in important_keywords:
+            if keyword in url_lower:
+                score += 0.05
+                break  # Only count once
+        
+        # Factor 5: Website size adjustment (dynamic weight)
+        if total_pages > 0:
+            if total_pages > 100:
+                # Large website: boost top-level pages
+                if depth <= 1:
+                    score *= 1.2
+            elif total_pages < 20:
+                # Small website: all pages are relatively important
+                score = max(score, 0.3)
+        
+        return min(score, 1.0)
+
     async def _map_and_scrape(
         self,
         url: str,
@@ -545,54 +720,66 @@ class FirecrawlFetchProvider(WebFetchProvider):
         required_paths: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Map + smart filter + batch scrape strategy.
-
+        Map website URLs, score by relevance, and scrape top pages.
+        
+        Uses Firecrawl's map API to get all URLs, then:
+        1. Filters by required_paths (if provided)
+        2. Scores all URLs by relevance
+        3. Selects top N pages
+        4. Batch scrapes selected pages
+        
         Args:
             url: Base URL to map
             max_length: Max content length
             limit: Number of pages to scrape
             required_paths: Optional paths to prioritize (e.g. ["/about", "/ir"])
         """
-        # 1. Map to get all URLs
+        # Step 1: Map to get all URLs
         all_urls = await self._map(url, limit=200)
 
         if not all_urls:
             raise Exception("Firecrawl map returned no URLs")
 
-        # 2. Smart filter
-        if not required_paths:
-            # No required paths: take first N
-            selected = all_urls[:limit]
-        else:
-            # Match URLs against required paths
-            matched = []
-            for candidate in all_urls:
-                candidate_lower = candidate.lower()
-                for path in required_paths:
-                    if path.lower() in candidate_lower:
-                        if candidate not in matched:
-                            matched.append(candidate)
-                        break
+        logger.info(f"Map found {len(all_urls)} URLs for {url}")
 
-            # If matched > limit: take first limit
-            if len(matched) >= limit:
-                selected = matched[:limit]
-                logger.info(f"Matched {len(matched)} URLs, selecting first {limit}")
-            # If matched < limit: supplement with other URLs
-            elif matched:
-                remaining = limit - len(matched)
-                unmatched = [u for u in all_urls if u not in matched]
-                selected = matched + unmatched[:remaining]
-                logger.info(f"Matched {len(matched)} URLs, supplementing {remaining} more")
-            else:
-                # No matches, use first N
-                selected = all_urls[:limit]
-                logger.info(f"No path matches, using first {limit} URLs")
+        # Step 2: Score all URLs by relevance
+        urls_with_scores = []
+        for page_url in all_urls:
+            score = self._calculate_relevance_score(
+                page_url,
+                required_paths=required_paths,
+                total_pages=len(all_urls)
+            )
+            urls_with_scores.append((page_url, score))
 
-        logger.info(f"Map+scrape: selected {len(selected)} URLs from {len(all_urls)} total")
+        # Step 3: Sort by score (descending)
+        urls_with_scores.sort(key=lambda x: x[1], reverse=True)
 
-        # 3. Batch scrape selected URLs
-        return await self._batch_scrape(selected, max_length)
+        # Step 4: Select top N URLs
+        # Filter out very low scores (< 0.2)
+        MIN_SCORE_THRESHOLD = 0.2
+        selected_urls = [
+            url_item for url_item, score in urls_with_scores[:limit]
+            if score >= MIN_SCORE_THRESHOLD
+        ]
+
+        if not selected_urls:
+            # Fallback: if all scores are too low, take top N anyway
+            logger.warning(
+                f"All URLs scored below {MIN_SCORE_THRESHOLD}, "
+                f"taking top {limit} anyway"
+            )
+            selected_urls = [url_item for url_item, _ in urls_with_scores[:limit]]
+
+        # Log selection summary
+        avg_score = sum(s for _, s in urls_with_scores[:len(selected_urls)]) / len(selected_urls)
+        logger.info(
+            f"Selected {len(selected_urls)}/{len(all_urls)} URLs "
+            f"(avg_score={avg_score:.2f}, limit={limit})"
+        )
+
+        # Step 5: Batch scrape selected URLs
+        return await self._batch_scrape(selected_urls, max_length)
 
 
 
@@ -694,11 +881,27 @@ class WebFetchTool(Tool):
                 name="subpages",
                 type=ToolParameterType.INTEGER,
                 description=(
-                    f"Number of same-domain subpages to include (0-{MAX_SUBPAGES}). "
-                    "0 = only main page (default). "
-                    "Use subpages>0 for: documentation sites, API references, multi-part guides. "
-                    "Use subpages=0 for: blog posts, news articles, PDFs, single-page content. "
-                    "WARNING: Higher values consume more tokens/cost."
+                    f"Number of same-domain subpages to fetch (0-{MAX_SUBPAGES}). Default: 0 (main page only).\n"
+                    "\n"
+                    "SELECTION GUIDE BY CONTENT TYPE:\n"
+                    "• Single page: 0 (news article, blog post)\n"
+                    "• Blog/news summary: 2-3 (multiple articles)\n"
+                    "• Product info: 3-5 (product pages, features)\n"
+                    "• Forum/community: 2-3 (discussions, threads)\n"
+                    "• E-commerce: 3-5 (product comparisons, reviews)\n"
+                    "• Tutorial/guide: 5-8 (multi-part tutorials)\n"
+                    "• Company research: 5-8 (homepage, about, team, products)\n"
+                    "• Academic/research: 5-8 (papers, research reports)\n"
+                    "• Technical docs: 8-12 (documentation, guides)\n"
+                    "• API reference: 10-15 (comprehensive API docs)\n"
+                    "\n"
+                    "BY RESEARCH DEPTH:\n"
+                    "• Quick overview: 2-3\n"
+                    "• Standard research: 3-5\n"
+                    "• Deep/comprehensive: 8-12\n"
+                    "\n"
+                    "Examples: blog=3, company=6, docs=10, API=12\n"
+                    "Note: Higher values = more tokens/cost."
                 ),
                 required=False,
                 default=0,
