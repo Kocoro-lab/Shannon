@@ -15,10 +15,15 @@ service OrchestratorService {
   rpc GetSessionContext(GetSessionContextRequest) returns (GetSessionContextResponse);
   // Template catalog
   rpc ListTemplates(ListTemplatesRequest) returns (ListTemplatesResponse);
-  
+
   // Human intervention endpoints
   rpc ApproveTask(ApproveTaskRequest) returns (ApproveTaskResponse);
   rpc GetPendingApprovals(GetPendingApprovalsRequest) returns (GetPendingApprovalsResponse);
+
+  // Workflow control (pause/resume/cancel)
+  rpc PauseTask(PauseTaskRequest) returns (PauseTaskResponse);
+  rpc ResumeTask(ResumeTaskRequest) returns (ResumeTaskResponse);
+  rpc GetControlState(GetControlStateRequest) returns (GetControlStateResponse);
 }
 
 message TaskDecomposition {
@@ -81,7 +86,16 @@ message SubmitTaskResponse {
   string message = 5;
 }
 
-enum TaskStatus { TASK_STATUS_UNSPECIFIED = 0; TASK_STATUS_QUEUED = 1; TASK_STATUS_RUNNING = 2; TASK_STATUS_COMPLETED = 3; TASK_STATUS_FAILED = 4; TASK_STATUS_CANCELLED = 5; TASK_STATUS_TIMEOUT = 6; }
+enum TaskStatus {
+  TASK_STATUS_UNSPECIFIED = 0;
+  TASK_STATUS_QUEUED = 1;
+  TASK_STATUS_RUNNING = 2;
+  TASK_STATUS_COMPLETED = 3;
+  TASK_STATUS_FAILED = 4;
+  TASK_STATUS_CANCELLED = 5;
+  TASK_STATUS_TIMEOUT = 6;
+  TASK_STATUS_PAUSED = 7;
+}
 
 message GetTaskStatusRequest { string task_id = 1; bool include_details = 2; }
 
@@ -176,4 +190,39 @@ message PendingApproval {
   string reason = 5;
   google.protobuf.Timestamp requested_at = 6;
   google.protobuf.Struct metadata = 7;
+}
+
+// Workflow control messages
+message PauseTaskRequest {
+  string task_id = 1;
+  string reason = 2;
+}
+
+message PauseTaskResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ResumeTaskRequest {
+  string task_id = 1;
+  string reason = 2;
+}
+
+message ResumeTaskResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetControlStateRequest {
+  string task_id = 1;
+}
+
+message GetControlStateResponse {
+  bool is_paused = 1;
+  bool is_cancelled = 2;
+  string paused_at = 3;       // RFC3339 timestamp, empty if never paused
+  string pause_reason = 4;
+  string paused_by = 5;
+  string cancel_reason = 6;
+  string cancelled_by = 7;
 }

@@ -85,6 +85,30 @@ func (m *MockOrchestratorClient) GetPendingApprovals(ctx context.Context, req *o
 	return args.Get(0).(*orchpb.GetPendingApprovalsResponse), args.Error(1)
 }
 
+func (m *MockOrchestratorClient) PauseTask(ctx context.Context, req *orchpb.PauseTaskRequest, opts ...grpc.CallOption) (*orchpb.PauseTaskResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.PauseTaskResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) ResumeTask(ctx context.Context, req *orchpb.ResumeTaskRequest, opts ...grpc.CallOption) (*orchpb.ResumeTaskResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.ResumeTaskResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) GetControlState(ctx context.Context, req *orchpb.GetControlStateRequest, opts ...grpc.CallOption) (*orchpb.GetControlStateResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.GetControlStateResponse), args.Error(1)
+}
+
 // TestCancelTask_OwnershipEnforcement tests that cancel endpoint properly checks ownership
 func TestCancelTask_OwnershipEnforcement(t *testing.T) {
 	tests := []struct {

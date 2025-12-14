@@ -57,6 +57,7 @@ def _parse_timestamp(ts_str: str) -> datetime:
 
 
 from shannon.models import (
+    ControlState,
     Event,
     EventType,
     PendingApproval,
@@ -669,6 +670,136 @@ class AsyncShannonClient:
         except httpx.HTTPError as e:
             raise errors.ConnectionError(
                 f"Failed to cancel task: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def pause_task(
+        self, task_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Pause a running task at safe checkpoints.
+
+        Args:
+            task_id: Task ID to pause
+            reason: Optional pause reason
+            timeout: Request timeout in seconds
+
+        Returns:
+            True if pause request was accepted
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks/{task_id}/pause",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            # Gateway returns 202 Accepted for async operations
+            if response.status_code not in (200, 202):
+                self._handle_http_error(response)
+
+            data = response.json()
+            return data.get("success", False)
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to pause task: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def resume_task(
+        self, task_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Resume a previously paused task.
+
+        Args:
+            task_id: Task ID to resume
+            reason: Optional resume reason
+            timeout: Request timeout in seconds
+
+        Returns:
+            True if resume request was accepted
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks/{task_id}/resume",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in (200, 202):
+                self._handle_http_error(response)
+
+            data = response.json()
+            return data.get("success", False)
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to resume task: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_control_state(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> ControlState:
+        """
+        Get current pause/cancel control state for a task.
+
+        Args:
+            task_id: Task/workflow ID
+            timeout: Request timeout in seconds
+
+        Returns:
+            ControlState with pause/cancel flags and metadata
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tasks/{task_id}/control-state",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+
+            paused_at = None
+            ts = data.get("paused_at")
+            if ts:
+                try:
+                    paused_at = _parse_timestamp(ts)
+                except Exception:
+                    paused_at = None
+
+            return ControlState(
+                is_paused=bool(data.get("is_paused", False)),
+                is_cancelled=bool(data.get("is_cancelled", False)),
+                paused_at=paused_at,
+                pause_reason=data.get("pause_reason"),
+                paused_by=data.get("paused_by"),
+                cancel_reason=data.get("cancel_reason"),
+                cancelled_by=data.get("cancelled_by"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get control state: {str(e)}",
+                details={"http_error": str(e)},
             )
 
     async def approve(
@@ -1616,6 +1747,24 @@ class ShannonClient:
     ) -> bool:
         """Cancel task (blocking)."""
         return self._run(self._async_client.cancel(task_id, reason, timeout))
+
+    def pause_task(
+        self, task_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """Pause task at safe checkpoints (blocking)."""
+        return self._run(self._async_client.pause_task(task_id, reason, timeout))
+
+    def resume_task(
+        self, task_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """Resume a previously paused task (blocking)."""
+        return self._run(self._async_client.resume_task(task_id, reason, timeout))
+
+    def get_control_state(
+        self, task_id: str, timeout: Optional[float] = None
+    ) -> ControlState:
+        """Get pause/cancel control state for a task (blocking)."""
+        return self._run(self._async_client.get_control_state(task_id, timeout))
 
     def approve(
         self,

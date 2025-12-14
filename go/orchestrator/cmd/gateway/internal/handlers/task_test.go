@@ -55,6 +55,15 @@ func (f *fakeOrchClient) ApproveTask(ctx context.Context, in *orchpb.ApproveTask
 func (f *fakeOrchClient) GetPendingApprovals(ctx context.Context, in *orchpb.GetPendingApprovalsRequest, opts ...grpc.CallOption) (*orchpb.GetPendingApprovalsResponse, error) {
 	return nil, nil
 }
+func (f *fakeOrchClient) PauseTask(ctx context.Context, in *orchpb.PauseTaskRequest, opts ...grpc.CallOption) (*orchpb.PauseTaskResponse, error) {
+	return &orchpb.PauseTaskResponse{Success: true}, nil
+}
+func (f *fakeOrchClient) ResumeTask(ctx context.Context, in *orchpb.ResumeTaskRequest, opts ...grpc.CallOption) (*orchpb.ResumeTaskResponse, error) {
+	return &orchpb.ResumeTaskResponse{Success: true}, nil
+}
+func (f *fakeOrchClient) GetControlState(ctx context.Context, in *orchpb.GetControlStateRequest, opts ...grpc.CallOption) (*orchpb.GetControlStateResponse, error) {
+	return &orchpb.GetControlStateResponse{IsPaused: false, IsCancelled: false}, nil
+}
 
 func newHandlerWithFake(t *testing.T, fc *fakeOrchClient) *TaskHandler {
 	t.Helper()

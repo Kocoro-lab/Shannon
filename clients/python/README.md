@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.3.0
+**Version:** 0.4.0
 
 ## Installation
 
@@ -41,6 +41,10 @@ print(f"Progress: {status.progress:.1%}")
 
 # Cancel if needed
 # client.cancel(handle.task_id, reason="User requested")
+
+# Pause / resume controls
+# client.pause_task(handle.task_id, reason="User requested pause")
+# client.resume_task(handle.task_id, reason="User resumed")
 
 client.close()
 ```
@@ -94,6 +98,9 @@ Global flags:
 |          | `--model-tier` `--model-override` `--provider-override` `--mode` | Model selection and routing | |
 | `status` | `task_id` | Get task status | `GET /api/v1/tasks/{id}` |
 | `cancel` | `task_id` `--reason` | Cancel a running or queued task | `POST /api/v1/tasks/{id}/cancel` |
+| `pause` | `task_id` `--reason` | Pause a running task at safe checkpoints | `POST /api/v1/tasks/{id}/pause` |
+| `resume` | `task_id` `--reason` | Resume a previously paused task | `POST /api/v1/tasks/{id}/resume` |
+| `control-state` | `task_id` | Get pause/cancel control state | `GET /api/v1/tasks/{id}/control-state` |
 | `stream` | `workflow_id` `--types=a,b,c` `--traceparent` | Stream events via SSE (optionally filter types) | `GET /api/v1/stream/sse?workflow_id=...` |
 | `approve` | `approval_id` `workflow_id` `--approve/--reject` `--feedback` | Submit approval decision | `POST /api/v1/approvals/decision` |
 | `session-list` | `--limit` `--offset` | List sessions | `GET /api/v1/sessions` |
@@ -107,6 +114,9 @@ One‑line examples:
 - `submit` (with model selection): `python -m shannon.cli --base-url http://localhost:8080 submit "Summarize" --model-tier small --mode simple`
 - `status`: `python -m shannon.cli --base-url http://localhost:8080 status task-123`
 - `cancel`: `python -m shannon.cli --base-url http://localhost:8080 cancel task-123 --reason "No longer needed"`
+- `pause`: `python -m shannon.cli --base-url http://localhost:8080 pause task-123 --reason "Hold for review"`
+- `resume`: `python -m shannon.cli --base-url http://localhost:8080 resume task-123 --reason "Ready to continue"`
+- `control-state`: `python -m shannon.cli --base-url http://localhost:8080 control-state task-123`
 - `stream`: `python -m shannon.cli --base-url http://localhost:8080 stream workflow-123 --types WORKFLOW_STARTED,LLM_OUTPUT,WORKFLOW_COMPLETED`
 - `approve`: `python -m shannon.cli --base-url http://localhost:8080 approve approval-uuid workflow-uuid --approve --feedback "Looks good"`
 - `session-list`: `python -m shannon.cli --base-url http://localhost:8080 session-list --limit 10 --offset 0`

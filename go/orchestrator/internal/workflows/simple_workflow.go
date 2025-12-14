@@ -37,6 +37,16 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
+
+	// Initialize control signal handler for pause/resume/cancel
+	controlHandler := &ControlSignalHandler{
+		WorkflowID: workflowID,
+		AgentID:    "simple-agent",
+		Logger:     logger,
+		EmitCtx:    emitCtx,
+	}
+	controlHandler.Setup(ctx)
+
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
@@ -71,6 +81,11 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		Message:    activities.MsgProcessing(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
+
+	// Check pause/cancel before memory retrieval
+	if err := controlHandler.CheckPausePoint(ctx, "pre_memory"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
 
 	// Memory retrieval with gate precedence (hierarchical > simple session)
 	hierarchicalVersion := workflow.GetVersion(ctx, "memory_retrieval_v1", workflow.DefaultVersion, 1)
@@ -260,6 +275,11 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// Check pause/cancel before main execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Execute the consolidated simple task activity
 	// This single activity handles everything: agent execution, session update, etc.
 	var result activities.ExecuteSimpleTaskResult
@@ -417,6 +437,11 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// Check pause/cancel before synthesis
+	if err := controlHandler.CheckPausePoint(ctx, "pre_synthesis"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Perform synthesis if needed
 	if needsSynthesis && result.Success {
 		logger.Info("Response appears to be web_search results or JSON, performing synthesis")
@@ -546,6 +571,11 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			OutputTokens: outTok,
 			Metadata:     map[string]interface{}{"workflow": "simple"},
 		}).Get(ctx, nil)
+	}
+
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	logger.Info("SimpleTaskWorkflow completed successfully",

@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 )
 
@@ -26,6 +27,12 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		"version", "v2",
 	)
 
+	// Determine workflow ID for event streaming
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 3 * time.Minute,
@@ -34,6 +41,21 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	// Skip SSE emissions when running as child workflow (parent already emits)
+	controlHandler := &control.SignalHandler{
+		WorkflowID:  workflowID,
+		AgentID:     "react",
+		Logger:      logger,
+		EmitCtx:     emitCtx,
+		SkipSSEEmit: input.ParentWorkflowID != "",
+	}
+	controlHandler.Setup(ctx)
 
 	// Load configuration
 	var config activities.WorkflowConfig
@@ -204,6 +226,11 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		Context:        baseContext,
 	}
 
+	// Check pause/cancel before React loop execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Execute React loop
 	logger.Info("Executing React loop pattern",
 		"max_iterations", reactConfig.MaxIterations,
@@ -226,6 +253,11 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			Success:      false,
 			ErrorMessage: fmt.Sprintf("React loop failed: %v", err),
 		}, err
+	}
+
+	// Check pause/cancel before reflection
+	if err := controlHandler.CheckPausePoint(ctx, "pre_reflection"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Optional: Apply reflection for quality improvement on complex results
@@ -463,15 +495,12 @@ func ReactWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		meta["cost_usd"] = pricing.CostForTokens(approxModel, totalTokens)
 	}
 
-	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
+
+	// Emit WORKFLOW_COMPLETED before returning
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,

@@ -17,6 +17,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
@@ -25,7 +26,7 @@ import (
 // FilterCitationsByEntity filters citations based on entity relevance when canonical name is detected.
 //
 // Scoring System (OR logic, not AND):
-//   - Official domain match: +0.6 points (e.g., ptmind.com, jp.ptmind.com)
+//   - Official domain match: +0.6 points (e.g., example.com, jp.example.com)
 //   - Alias in URL: +0.4 points (broader domain matching)
 //   - Title/snippet/source contains alias: +0.4 points
 //   - Threshold: 0.3 (passes with any single match)
@@ -146,7 +147,7 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 
 		// Also check if URL contains any alias (broader domain matching)
 		// For URLs, we use substring matching since domains often contain the brand
-		// e.g., "ptmind.com" contains "ptmind"
+		// e.g., "acme.com" contains "acme"
 		if !isOfficial {
 			for alias := range aliasSet {
 				// Remove quotes from aliases for URL matching
@@ -171,7 +172,7 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 			cleanAlias := strings.Trim(alias, "\"")
 			// Use word boundary matching to prevent "mind" matching "Minders.io"
 			// For short aliases (<5 chars), require exact word match
-			// For longer aliases, allow partial matches (e.g., "ptmind" in "ptmind.com")
+			// For longer aliases, allow partial matches (e.g., "acme" in "acme.com")
 			if cleanAlias != "" {
 				if len(cleanAlias) < 5 {
 					// Short alias: require word boundary
@@ -396,6 +397,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 
+	// Initialize control signal handler for pause/resume/cancel
+	// Skip SSE emissions when running as child workflow (parent already emits)
+	controlHandler := &control.SignalHandler{
+		WorkflowID:  workflowID,
+		AgentID:     "research",
+		Logger:      logger,
+		EmitCtx:     emitCtx,
+		SkipSSEEmit: input.ParentWorkflowID != "",
+	}
+	controlHandler.Setup(ctx)
+
 	// Prepare base context: start from SessionCtx, then overlay request Context
 	// Per-request context must take precedence over persisted session defaults
 	baseContext := make(map[string]interface{})
@@ -506,6 +518,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	// Step 0: Refine/expand vague research queries
 	// Emit refinement start event
 	emitTaskUpdate(ctx, input, activities.StreamEventAgentThinking, "research-refiner", "Refining research query")
+
+	// Check pause/cancel before research execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Check pause/cancel before query refinement
+	if err := controlHandler.CheckPausePoint(ctx, "pre_query_refinement"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
 
 	var totalTokens int
 	var refineResult activities.RefineResearchQueryResult
@@ -629,6 +651,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		emitTaskUpdate(ctx, input, activities.StreamEventProgress, "research-refiner", "Query refinement skipped, proceeding with original query")
 	}
 
+	// Check pause/cancel after query refinement - signal may have arrived during the activity
+	if err := controlHandler.CheckPausePoint(ctx, "post_query_refinement"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Check pause/cancel before decomposition
+	if err := controlHandler.CheckPausePoint(ctx, "pre_decomposition"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Step 1: Decompose the (now refined) research query
 	var decomp activities.DecompositionResult
 	err = workflow.ExecuteActivity(ctx,
@@ -676,6 +708,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			OutputTokens: outTok,
 			Metadata:     map[string]interface{}{"phase": "decompose"},
 		}).Get(recCtx, nil)
+	}
+
+	// Check pause/cancel after decomposition - signal may have arrived during the activity
+	if err := controlHandler.CheckPausePoint(ctx, "post_decomposition"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Check for budget configuration
@@ -826,6 +863,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				}
 			}
 		}
+	}
+
+	// Check pause/cancel before agent execution phase
+	if err := controlHandler.CheckPausePoint(ctx, "pre_agent_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Step 2: Execute based on complexity
@@ -1690,6 +1732,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
+	// Check pause/cancel after agent execution - signal may have arrived during agent activities
+	if err := controlHandler.CheckPausePoint(ctx, "post_agent_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Check pause/cancel before synthesis
+	if err := controlHandler.CheckPausePoint(ctx, "pre_synthesis"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Step 3: Synthesize results
 	logger.Info("Synthesizing research results",
 		"agent_count", len(agentResults),
@@ -1981,6 +2033,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		currentCoveredAreas := []string{}
 
 		for iteration := 1; iteration <= maxIterations; iteration++ {
+			// Check pause/cancel at start of each iteration
+			if err := controlHandler.CheckPausePoint(ctx, fmt.Sprintf("pre_iteration_%d", iteration)); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
+
 			logger.Info("Deep Research 2.0: Iteration start",
 				"iteration", iteration,
 				"max_iterations", maxIterations,
@@ -2045,6 +2102,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				} else {
 					logger.Warn("Deep Research 2.0: Intermediate synthesis failed", "error", err)
 				}
+			}
+
+			// Check pause/cancel before coverage evaluation
+			if err := controlHandler.CheckPausePoint(ctx, fmt.Sprintf("pre_coverage_eval_%d", iteration)); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 			}
 
 			// Step 3.5.2: Evaluate coverage and identify gaps
@@ -2115,6 +2177,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				break
 			}
 
+			// Check pause/cancel before subquery generation
+			if err := controlHandler.CheckPausePoint(ctx, fmt.Sprintf("pre_subquery_gen_%d", iteration)); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
+
 			// Step 3.5.3: Generate subqueries to fill gaps
 			allGaps := append(coverageResult.CriticalGaps, coverageResult.OptionalGaps...)
 			var subqueryResult activities.SubqueryGeneratorResult
@@ -2172,6 +2239,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				"iteration", iteration,
 				"count", len(subqueryResult.Subqueries),
 			)
+
+			// Check pause/cancel before gap-filling execution
+			if err := controlHandler.CheckPausePoint(ctx, fmt.Sprintf("pre_gap_filling_%d", iteration)); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
 
 			// Step 3.5.4: Execute gap-filling agents in parallel
 			type gapAgentResult struct {
@@ -2720,6 +2792,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
+	// Check pause/cancel after synthesis/iteration - signal may have arrived during synthesis
+	if err := controlHandler.CheckPausePoint(ctx, "post_synthesis"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Check pause/cancel before reflection
+	if err := controlHandler.CheckPausePoint(ctx, "pre_reflection"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Step 4: Apply reflection pattern for quality improvement
 	reflectionConfig := patterns.ReflectionConfig{
 		Enabled:             true,
@@ -2752,6 +2834,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 
 	totalTokens += reflectionTokens
+
+	// Check pause/cancel after reflection - signal may have arrived during reflection
+	if err := controlHandler.CheckPausePoint(ctx, "post_reflection"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Check pause/cancel before verification
+	if err := controlHandler.CheckPausePoint(ctx, "pre_verification"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
 
 	// Optional: verify claims if enabled and we have citations
 	var verification activities.VerificationResult
@@ -3044,6 +3136,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 	if synthesis.EffectiveMaxCompletion > 0 {
 		meta["effective_max_completion"] = synthesis.EffectiveMaxCompletion
+	}
+
+	// Check pause/cancel after verification - signal may have arrived during verification
+	if err := controlHandler.CheckPausePoint(ctx, "post_verification"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Emit WORKFLOW_COMPLETED before returning

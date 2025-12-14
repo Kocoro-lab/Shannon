@@ -36,6 +36,25 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		"session_id", input.Task.SessionID,
 	)
 
+	// Determine workflow ID for event streaming
+	workflowID := input.Task.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	controlHandler := &ControlSignalHandler{
+		WorkflowID: workflowID,
+		AgentID:    "template",
+		Logger:     logger,
+		EmitCtx:    emitCtx,
+	}
+	controlHandler.Setup(ctx)
+
 	entry, ok := TemplateRegistry().Get(input.TemplateKey)
 	if !ok {
 		logger.Error("Template key not found in registry", "template_key", input.TemplateKey)
@@ -83,6 +102,11 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		AgentResults: make([]activities.AgentExecutionResult, 0, len(plan.Nodes)),
 	}
 
+	// Check pause/cancel before execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	for _, nodeID := range plan.Order {
 		node, ok := plan.Nodes[nodeID]
 		if !ok {
@@ -125,15 +149,12 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		}
 	}
 
-	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := runtime.Task.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
+
+	// Emit WORKFLOW_COMPLETED before returning
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,

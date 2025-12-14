@@ -719,10 +719,11 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 	for i, t := range turnRows {
 		evs := eventsByWF[t.WorkflowID]
 		// Final output fallback: result -> first LLM_OUTPUT message -> ""
+		// Exclude title_generator agent as its output is the session title, not task result
 		final := strings.TrimSpace(t.Result.String)
 		if final == "" {
 			for _, e := range evs {
-				if e.Type == "LLM_OUTPUT" && strings.TrimSpace(e.Message) != "" {
+				if e.Type == "LLM_OUTPUT" && strings.TrimSpace(e.Message) != "" && e.AgentID != "title_generator" {
 					final = e.Message
 					break
 				}

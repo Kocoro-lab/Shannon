@@ -45,8 +45,8 @@ type ResearchStrategiesConfig struct {
 		GapFillingMaxGaps        int    `yaml:"gap_filling_max_gaps"`
 		GapFillingMaxIterations  int    `yaml:"gap_filling_max_iterations"`
 		GapFillingCheckCitations bool   `yaml:"gap_filling_check_citations"`
-		AgentModelTier           string `yaml:"agent_model_tier"`           // small/medium/large for agent execution
-		IterativeMaxIterations   int    `yaml:"iterative_max_iterations"`   // coverage evaluation iterations (1-5)
+		AgentModelTier           string `yaml:"agent_model_tier"`         // small/medium/large for agent execution
+		IterativeMaxIterations   int    `yaml:"iterative_max_iterations"` // coverage evaluation iterations (1-5)
 	} `yaml:"strategies"`
 }
 
@@ -134,6 +134,160 @@ func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
 	if _, ok := ctxMap["iterative_max_iterations"]; !ok && preset.IterativeMaxIterations >= 1 && preset.IterativeMaxIterations <= 5 {
 		ctxMap["iterative_max_iterations"] = preset.IterativeMaxIterations
 	}
+}
+
+// applyTaskContextAndLabels normalizes and validates task context and mode, then
+// applies them to the gRPC request. Returns false if a validation error response
+// has already been sent to the client.
+func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchpb.SubmitTaskRequest, w http.ResponseWriter) bool {
+	// Ensure context map exists so we can inject optional fields safely
+	ctxMap := map[string]interface{}{}
+	if len(req.Context) > 0 {
+		for k, v := range req.Context {
+			ctxMap[k] = v
+		}
+	}
+
+	// Normalize alias: context.template_name -> context.template (if not already set)
+	if _, ok := ctxMap["template"]; !ok {
+		if v, ok2 := ctxMap["template_name"].(string); ok2 {
+			if tv := strings.TrimSpace(v); tv != "" {
+				ctxMap["template"] = tv
+			}
+		}
+	}
+
+	// Validate and inject model_tier from top-level (top-level wins)
+	if mt := strings.TrimSpace(strings.ToLower(req.ModelTier)); mt != "" {
+		switch mt {
+		case "small", "medium", "large":
+			ctxMap["model_tier"] = mt
+			h.logger.Debug("Applied top-level model_tier override", zap.String("model_tier", mt))
+		default:
+			h.sendError(w, "Invalid model_tier (allowed: small, medium, large)", http.StatusBadRequest)
+			return false
+		}
+	}
+
+	// Inject top-level model_override when provided
+	if mo := strings.TrimSpace(req.ModelOverride); mo != "" {
+		ctxMap["model_override"] = mo
+		h.logger.Debug("Applied top-level model_override", zap.String("model_override", mo))
+	}
+
+	// Inject top-level provider_override when provided
+	if po := strings.TrimSpace(strings.ToLower(req.ProviderOverride)); po != "" {
+		// Validate provider exists
+		validProviders := []string{"openai", "anthropic", "google", "groq", "xai", "deepseek", "qwen", "zai", "ollama", "mistral", "cohere"}
+		isValid := false
+		for _, valid := range validProviders {
+			if po == valid {
+				isValid = true
+				break
+			}
+		}
+		if !isValid {
+			h.sendError(w, fmt.Sprintf("Invalid provider_override: %s (allowed: %s)", po, strings.Join(validProviders, ", ")), http.StatusBadRequest)
+			return false
+		}
+		ctxMap["provider_override"] = po
+		h.logger.Debug("Applied top-level provider_override", zap.String("provider_override", po))
+	}
+
+	// Map research strategy controls into context
+	if rs := strings.TrimSpace(strings.ToLower(req.ResearchStrategy)); rs != "" {
+		switch rs {
+		case "quick", "standard", "deep", "academic":
+			ctxMap["research_strategy"] = rs
+		default:
+			h.sendError(w, "Invalid research_strategy (allowed: quick, standard, deep, academic)", http.StatusBadRequest)
+			return false
+		}
+	}
+	if req.MaxIterations != nil {
+		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
+			h.sendError(w, "max_iterations out of range (1..50)", http.StatusBadRequest)
+			return false
+		}
+		ctxMap["max_iterations"] = *req.MaxIterations
+	}
+	if req.MaxConcurrentAgents != nil {
+		if *req.MaxConcurrentAgents <= 0 || *req.MaxConcurrentAgents > 20 {
+			h.sendError(w, "max_concurrent_agents out of range (1..20)", http.StatusBadRequest)
+			return false
+		}
+		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
+	}
+	if req.EnableVerification != nil {
+		ctxMap["enable_verification"] = *req.EnableVerification
+	}
+
+	// Apply research strategy presets (seed defaults only when absent)
+	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+		applyStrategyPreset(ctxMap, rs)
+	}
+
+	// Conflict validation: disable_ai=true cannot be combined with model controls
+	var disableAI bool
+	if v, exists := ctxMap["disable_ai"]; exists {
+		switch t := v.(type) {
+		case bool:
+			disableAI = t
+		case string:
+			s := strings.TrimSpace(strings.ToLower(t))
+			disableAI = s == "true" || s == "1" || s == "yes" || s == "y"
+		case float64:
+			disableAI = t != 0
+		case int:
+			disableAI = t != 0
+		}
+	}
+	if disableAI {
+		// top-level conflicts
+		if req.ModelTier != "" || req.ModelOverride != "" || req.ProviderOverride != "" {
+			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
+			return false
+		}
+		// context conflicts
+		if vt, ok := ctxMap["model_tier"].(string); ok && strings.TrimSpace(vt) != "" {
+			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
+			return false
+		}
+		if vo, ok := ctxMap["model_override"].(string); ok && strings.TrimSpace(vo) != "" {
+			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
+			return false
+		}
+		if vp, ok := ctxMap["provider_override"].(string); ok && strings.TrimSpace(vp) != "" {
+			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
+			return false
+		}
+	}
+
+	// Add context if present
+	if len(ctxMap) > 0 {
+		st, err := structpb.NewStruct(ctxMap)
+		if err != nil {
+			h.logger.Warn("Failed to convert context to struct", zap.Error(err))
+		} else {
+			grpcReq.Context = st
+		}
+	}
+
+	// Propagate optional mode via labels for routing (e.g., supervisor)
+	if m := strings.TrimSpace(strings.ToLower(req.Mode)); m != "" {
+		switch m {
+		case "simple", "standard", "complex", "supervisor":
+			if grpcReq.Metadata.Labels == nil {
+				grpcReq.Metadata.Labels = map[string]string{}
+			}
+			grpcReq.Metadata.Labels["mode"] = m
+		default:
+			h.sendError(w, "Invalid mode (allowed: simple, standard, complex, supervisor)", http.StatusBadRequest)
+			return false
+		}
+	}
+
+	return true
 }
 
 // NewTaskHandler creates a new task handler
@@ -260,148 +414,9 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 		Query: req.Query,
 	}
 
-	// Ensure context map exists so we can inject optional fields safely
-	ctxMap := map[string]interface{}{}
-	if len(req.Context) > 0 {
-		for k, v := range req.Context {
-			ctxMap[k] = v
-		}
-	}
-	// Normalize alias: context.template_name -> context.template (if not already set)
-	if _, ok := ctxMap["template"]; !ok {
-		if v, ok2 := ctxMap["template_name"].(string); ok2 {
-			if tv := strings.TrimSpace(v); tv != "" {
-				ctxMap["template"] = tv
-			}
-		}
-	}
-	// Validate and inject model_tier from top-level (top-level wins)
-	if mt := strings.TrimSpace(strings.ToLower(req.ModelTier)); mt != "" {
-		switch mt {
-		case "small", "medium", "large":
-			// Top-level overrides any value in context
-			ctxMap["model_tier"] = mt
-			h.logger.Debug("Applied top-level model_tier override", zap.String("model_tier", mt))
-		default:
-			h.sendError(w, "Invalid model_tier (allowed: small, medium, large)", http.StatusBadRequest)
-			return
-		}
-	}
-	// Inject top-level model_override when provided
-	if mo := strings.TrimSpace(req.ModelOverride); mo != "" {
-		ctxMap["model_override"] = mo
-		h.logger.Debug("Applied top-level model_override", zap.String("model_override", mo))
-	}
-	// Inject top-level provider_override when provided
-	if po := strings.TrimSpace(strings.ToLower(req.ProviderOverride)); po != "" {
-		// Validate provider exists
-		validProviders := []string{"openai", "anthropic", "google", "groq", "xai", "deepseek", "qwen", "zai", "ollama", "mistral", "cohere"}
-		isValid := false
-		for _, valid := range validProviders {
-			if po == valid {
-				isValid = true
-				break
-			}
-		}
-		if !isValid {
-			h.sendError(w, fmt.Sprintf("Invalid provider_override: %s (allowed: %s)", po, strings.Join(validProviders, ", ")), http.StatusBadRequest)
-			return
-		}
-		ctxMap["provider_override"] = po
-		h.logger.Debug("Applied top-level provider_override", zap.String("provider_override", po))
-	}
-
-	// Map research strategy controls into context (streaming endpoint parity)
-	if rs := strings.TrimSpace(strings.ToLower(req.ResearchStrategy)); rs != "" {
-		switch rs {
-		case "quick", "standard", "deep", "academic":
-			ctxMap["research_strategy"] = rs
-		default:
-			h.sendError(w, "Invalid research_strategy (allowed: quick, standard, deep, academic)", http.StatusBadRequest)
-			return
-		}
-	}
-	if req.MaxIterations != nil {
-		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
-			h.sendError(w, "max_iterations out of range (1..50)", http.StatusBadRequest)
-			return
-		}
-		ctxMap["max_iterations"] = *req.MaxIterations
-	}
-	if req.MaxConcurrentAgents != nil {
-		if *req.MaxConcurrentAgents <= 0 || *req.MaxConcurrentAgents > 20 {
-			h.sendError(w, "max_concurrent_agents out of range (1..20)", http.StatusBadRequest)
-			return
-		}
-		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
-	}
-	if req.EnableVerification != nil {
-		ctxMap["enable_verification"] = *req.EnableVerification
-	}
-
-	// Apply research strategy presets (seed defaults only when absent)
-	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
-		applyStrategyPreset(ctxMap, rs)
-	}
-
-	// Conflict validation: disable_ai=true cannot be combined with model controls
-	var disableAI bool
-	if v, exists := ctxMap["disable_ai"]; exists {
-		switch t := v.(type) {
-		case bool:
-			disableAI = t
-		case string:
-			s := strings.TrimSpace(strings.ToLower(t))
-			disableAI = s == "true" || s == "1" || s == "yes" || s == "y"
-		case float64:
-			disableAI = t != 0
-		case int:
-			disableAI = t != 0
-		}
-	}
-	if disableAI {
-		// top-level conflicts
-		if req.ModelTier != "" || req.ModelOverride != "" || req.ProviderOverride != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-		// context conflicts
-		if vt, ok := ctxMap["model_tier"].(string); ok && strings.TrimSpace(vt) != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-		if vo, ok := ctxMap["model_override"].(string); ok && strings.TrimSpace(vo) != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-		if vp, ok := ctxMap["provider_override"].(string); ok && strings.TrimSpace(vp) != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-	}
-	// Add context if present
-	if len(ctxMap) > 0 {
-		st, err := structpb.NewStruct(ctxMap)
-		if err != nil {
-			h.logger.Warn("Failed to convert context to struct", zap.Error(err))
-		} else {
-			grpcReq.Context = st
-		}
-	}
-
-	// Propagate optional mode via labels for routing (e.g., supervisor)
-	if m := strings.TrimSpace(strings.ToLower(req.Mode)); m != "" {
-		// Validate allowed modes to avoid silent drift
-		switch m {
-		case "simple", "standard", "complex", "supervisor":
-			if grpcReq.Metadata.Labels == nil {
-				grpcReq.Metadata.Labels = map[string]string{}
-			}
-			grpcReq.Metadata.Labels["mode"] = m
-		default:
-			h.sendError(w, "Invalid mode (allowed: simple, standard, complex, supervisor)", http.StatusBadRequest)
-			return
-		}
+	// Apply context, model controls, and mode labels
+	if !h.applyTaskContextAndLabels(&req, grpcReq, w) {
+		return
 	}
 
 	// Propagate auth/tracing headers to gRPC metadata
@@ -491,144 +506,9 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 		Query: req.Query,
 	}
 
-	// Ensure context map exists so we can inject optional fields safely
-	ctxMap := map[string]interface{}{}
-	if len(req.Context) > 0 {
-		for k, v := range req.Context {
-			ctxMap[k] = v
-		}
-	}
-	// Normalize alias: context.template_name -> context.template (if not already set)
-	if _, ok := ctxMap["template"]; !ok {
-		if v, ok2 := ctxMap["template_name"].(string); ok2 {
-			if tv := strings.TrimSpace(v); tv != "" {
-				ctxMap["template"] = tv
-			}
-		}
-	}
-	// Validate and inject model_tier from top-level (top-level wins)
-	if mt := strings.TrimSpace(strings.ToLower(req.ModelTier)); mt != "" {
-		switch mt {
-		case "small", "medium", "large":
-			ctxMap["model_tier"] = mt
-			h.logger.Debug("Applied top-level model_tier override", zap.String("model_tier", mt))
-		default:
-			h.sendError(w, "Invalid model_tier (allowed: small, medium, large)", http.StatusBadRequest)
-			return
-		}
-	}
-	// Inject top-level model_override when provided
-	if mo := strings.TrimSpace(req.ModelOverride); mo != "" {
-		ctxMap["model_override"] = mo
-		h.logger.Debug("Applied top-level model_override", zap.String("model_override", mo))
-	}
-	// Inject top-level provider_override when provided
-	if po := strings.TrimSpace(strings.ToLower(req.ProviderOverride)); po != "" {
-		// Validate provider exists
-		validProviders := []string{"openai", "anthropic", "google", "groq", "xai", "deepseek", "qwen", "zai", "ollama", "mistral", "cohere"}
-		isValid := false
-		for _, valid := range validProviders {
-			if po == valid {
-				isValid = true
-				break
-			}
-		}
-		if !isValid {
-			h.sendError(w, fmt.Sprintf("Invalid provider_override: %s (allowed: %s)", po, strings.Join(validProviders, ", ")), http.StatusBadRequest)
-			return
-		}
-		ctxMap["provider_override"] = po
-		h.logger.Debug("Applied top-level provider_override", zap.String("provider_override", po))
-	}
-
-	// Map research strategy controls into context (streaming endpoint parity)
-	if rs := strings.TrimSpace(strings.ToLower(req.ResearchStrategy)); rs != "" {
-		switch rs {
-		case "quick", "standard", "deep", "academic":
-			ctxMap["research_strategy"] = rs
-		default:
-			h.sendError(w, "Invalid research_strategy (allowed: quick, standard, deep, academic)", http.StatusBadRequest)
-			return
-		}
-	}
-	if req.MaxIterations != nil {
-		if *req.MaxIterations <= 0 || *req.MaxIterations > 50 {
-			h.sendError(w, "max_iterations out of range (1..50)", http.StatusBadRequest)
-			return
-		}
-		ctxMap["max_iterations"] = *req.MaxIterations
-	}
-	if req.MaxConcurrentAgents != nil {
-		if *req.MaxConcurrentAgents <= 0 || *req.MaxConcurrentAgents > 20 {
-			h.sendError(w, "max_concurrent_agents out of range (1..20)", http.StatusBadRequest)
-			return
-		}
-		ctxMap["max_concurrent_agents"] = *req.MaxConcurrentAgents
-	}
-	if req.EnableVerification != nil {
-		ctxMap["enable_verification"] = *req.EnableVerification
-	}
-
-	// Apply research strategy presets (seed defaults only when absent)
-	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
-		applyStrategyPreset(ctxMap, rs)
-	}
-
-	// Conflict validation: disable_ai=true cannot be combined with model controls
-	var disableAI bool
-	if v, exists := ctxMap["disable_ai"]; exists {
-		switch t := v.(type) {
-		case bool:
-			disableAI = t
-		case string:
-			s := strings.TrimSpace(strings.ToLower(t))
-			disableAI = s == "true" || s == "1" || s == "yes" || s == "y"
-		case float64:
-			disableAI = t != 0
-		case int:
-			disableAI = t != 0
-		}
-	}
-	if disableAI {
-		if req.ModelTier != "" || req.ModelOverride != "" || req.ProviderOverride != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-		if vt, ok := ctxMap["model_tier"].(string); ok && strings.TrimSpace(vt) != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-		if vo, ok := ctxMap["model_override"].(string); ok && strings.TrimSpace(vo) != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-		if vp, ok := ctxMap["provider_override"].(string); ok && strings.TrimSpace(vp) != "" {
-			h.sendError(w, "disable_ai=true conflicts with model_tier/model_override", http.StatusBadRequest)
-			return
-		}
-	}
-	// Add context if present
-	if len(ctxMap) > 0 {
-		st, err := structpb.NewStruct(ctxMap)
-		if err != nil {
-			h.logger.Warn("Failed to convert context to struct", zap.Error(err))
-		} else {
-			grpcReq.Context = st
-		}
-	}
-
-	// Propagate optional mode via labels for routing (e.g., supervisor)
-	if m := strings.TrimSpace(strings.ToLower(req.Mode)); m != "" {
-		switch m {
-		case "simple", "standard", "complex", "supervisor":
-			if grpcReq.Metadata.Labels == nil {
-				grpcReq.Metadata.Labels = map[string]string{}
-			}
-			grpcReq.Metadata.Labels["mode"] = m
-		default:
-			h.sendError(w, "Invalid mode (allowed: simple, standard, complex, supervisor)", http.StatusBadRequest)
-			return
-		}
+	// Apply context, model controls, and mode labels
+	if !h.applyTaskContextAndLabels(&req, grpcReq, w) {
+		return
 	}
 
 	// Propagate auth/tracing headers to gRPC metadata
@@ -1102,6 +982,198 @@ func (h *TaskHandler) CancelTask(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": cancelResp.Success,
 		"message": cancelResp.Message,
+	})
+}
+
+// PauseTask handles POST /api/v1/tasks/{id}/pause
+func (h *TaskHandler) PauseTask(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract task ID from path
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		h.sendError(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse optional request body for reason
+	var req struct {
+		Reason string `json:"reason,omitempty"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	// Propagate auth/tracing headers to gRPC metadata
+	ctx = withGRPCMetadata(ctx, r)
+
+	// Call PauseTask gRPC (service layer enforces ownership)
+	pauseReq := &orchpb.PauseTaskRequest{
+		TaskId: taskID,
+		Reason: req.Reason,
+	}
+	pauseResp, err := h.orchClient.PauseTask(ctx, pauseReq)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.Unauthenticated:
+				h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+			case codes.PermissionDenied:
+				h.sendError(w, "Forbidden", http.StatusForbidden)
+			case codes.NotFound:
+				h.sendError(w, "Task not found", http.StatusNotFound)
+			default:
+				h.sendError(w, st.Message(), http.StatusBadGateway)
+			}
+			return
+		}
+		h.sendError(w, "Failed to pause task", http.StatusInternalServerError)
+		return
+	}
+
+	// Log for audit trail
+	h.logger.Info("Task pause requested",
+		zap.String("task_id", taskID),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.String("reason", req.Reason),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": pauseResp.Success,
+		"message": pauseResp.Message,
+		"task_id": taskID,
+	})
+}
+
+// ResumeTask handles POST /api/v1/tasks/{id}/resume
+func (h *TaskHandler) ResumeTask(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract task ID from path
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		h.sendError(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Parse optional request body for reason
+	var req struct {
+		Reason string `json:"reason,omitempty"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+
+	// Propagate auth/tracing headers to gRPC metadata
+	ctx = withGRPCMetadata(ctx, r)
+
+	// Call ResumeTask gRPC (service layer enforces ownership)
+	resumeReq := &orchpb.ResumeTaskRequest{
+		TaskId: taskID,
+		Reason: req.Reason,
+	}
+	resumeResp, err := h.orchClient.ResumeTask(ctx, resumeReq)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.Unauthenticated:
+				h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+			case codes.PermissionDenied:
+				h.sendError(w, "Forbidden", http.StatusForbidden)
+			case codes.NotFound:
+				h.sendError(w, "Task not found", http.StatusNotFound)
+			default:
+				h.sendError(w, st.Message(), http.StatusBadGateway)
+			}
+			return
+		}
+		h.sendError(w, "Failed to resume task", http.StatusInternalServerError)
+		return
+	}
+
+	// Log for audit trail
+	h.logger.Info("Task resume requested",
+		zap.String("task_id", taskID),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.String("reason", req.Reason),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": resumeResp.Success,
+		"message": resumeResp.Message,
+		"task_id": taskID,
+	})
+}
+
+// GetControlState handles GET /api/v1/tasks/{id}/control-state
+func (h *TaskHandler) GetControlState(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context (auth required)
+	_, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Extract task ID from path
+	taskID := r.PathValue("id")
+	if taskID == "" {
+		h.sendError(w, "Task ID is required", http.StatusBadRequest)
+		return
+	}
+
+	// Propagate auth/tracing headers to gRPC metadata
+	ctx = withGRPCMetadata(ctx, r)
+
+	// Call GetControlState gRPC (service layer enforces ownership)
+	stateReq := &orchpb.GetControlStateRequest{TaskId: taskID}
+	stateResp, err := h.orchClient.GetControlState(ctx, stateReq)
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.Unauthenticated:
+				h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+			case codes.PermissionDenied:
+				h.sendError(w, "Forbidden", http.StatusForbidden)
+			case codes.NotFound:
+				h.sendError(w, "Task not found", http.StatusNotFound)
+			default:
+				h.sendError(w, st.Message(), http.StatusBadGateway)
+			}
+			return
+		}
+		h.sendError(w, "Failed to get control state", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"is_paused":     stateResp.IsPaused,
+		"is_cancelled":  stateResp.IsCancelled,
+		"paused_at":     stateResp.PausedAt,
+		"pause_reason":  stateResp.PauseReason,
+		"paused_by":     stateResp.PausedBy,
+		"cancel_reason": stateResp.CancelReason,
+		"cancelled_by":  stateResp.CancelledBy,
 	})
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
@@ -28,6 +29,12 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		"version", "v2",
 	)
 
+	// Determine workflow ID for event streaming
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
@@ -36,6 +43,21 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	// Skip SSE emissions when running as child workflow (parent already emits)
+	controlHandler := &control.SignalHandler{
+		WorkflowID:  workflowID,
+		AgentID:     "dag",
+		Logger:      logger,
+		EmitCtx:     emitCtx,
+		SkipSSEEmit: input.ParentWorkflowID != "",
+	}
+	controlHandler.Setup(ctx)
 
 	// Load workflow configuration
 	var config activities.WorkflowConfig
@@ -67,6 +89,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	// Propagate parent workflow ID to downstream activities (pattern helpers)
 	if input.ParentWorkflowID != "" {
 		baseContext["parent_workflow_id"] = input.ParentWorkflowID
+	}
+
+	// Check pause/cancel before decomposition
+	if err := controlHandler.CheckPausePoint(ctx, "pre_decomposition"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Step 1: Decompose the task (use preplanned plan if provided)
@@ -213,6 +240,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}, nil
 	}
 
+	// Check pause/cancel before complex execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Step 3: Complex multi-agent execution
 	logger.Info("Executing complex task with patterns",
 		"complexity", decomp.ComplexityScore,
@@ -256,6 +288,11 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		agentResults, totalTokens = executeParallelPattern(
 			ctx, decomp, input, baseContext, agentMaxTokens, modelTier, config,
 		)
+	}
+
+	// Check pause/cancel before synthesis
+	if err := controlHandler.CheckPausePoint(ctx, "pre_synthesis"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Step 4: Synthesize results
@@ -873,15 +910,12 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
-	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
+
+	// Emit WORKFLOW_COMPLETED before returning
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,

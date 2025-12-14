@@ -18,8 +18,8 @@ import { useRunStream } from "@/lib/shannon/stream";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event } from "@/lib/shannon/api";
-import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus } from "@/lib/features/runSlice";
+import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState } from "@/lib/shannon/api";
+import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -36,6 +36,8 @@ function RunDetailContent() {
     const [streamRestartKey, setStreamRestartKey] = useState(0);
     const [activeTab, setActiveTab] = useState("conversation");
     const [showTimeline, setShowTimeline] = useState(false); // Hidden by default - status events now appear inline in conversation
+    const [isPauseLoading, setIsPauseLoading] = useState(false);
+    const [isResumeLoading, setIsResumeLoading] = useState(false);
     const dispatch = useDispatch();
     const router = useRouter();
 
@@ -64,6 +66,10 @@ function RunDetailContent() {
     const sessionTitle = useSelector((state: RootState) => state.run.sessionTitle);
     const selectedAgent = useSelector((state: RootState) => state.run.selectedAgent);
     const researchStrategy = useSelector((state: RootState) => state.run.researchStrategy);
+    const isPaused = useSelector((state: RootState) => state.run.isPaused);
+    const pauseCheckpoint = useSelector((state: RootState) => state.run.pauseCheckpoint);
+    const isCancelling = useSelector((state: RootState) => state.run.isCancelling);
+    const isCancelled = useSelector((state: RootState) => state.run.isCancelled);
     const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
 
     const handleRetryStream = () => {
@@ -507,8 +513,11 @@ function RunDetailContent() {
                     // Get full task details (includes citations, metadata, and result as fallback)
                     const fullTaskDetails = taskDetailsMap.get(workflowId);
                     
-                    // Priority: turn.final_output > fullTaskDetails.result > empty
-                    const assistantContent = turn.final_output || fullTaskDetails?.result || "";
+                    // Check if task was cancelled - don't display partial/irrelevant content
+                    const isCancelledTask = fullTaskDetails?.status === "TASK_STATUS_CANCELLED";
+                    
+                    // Priority: skip for cancelled > turn.final_output > fullTaskDetails.result > empty
+                    const assistantContent = isCancelledTask ? "" : (turn.final_output || fullTaskDetails?.result || "");
                     
                     if (assistantContent) {
                         const metadata = fullTaskDetails?.metadata || turn.metadata;
@@ -693,6 +702,12 @@ function RunDetailContent() {
 
         // Set this as the main workflow ID in Redux
         dispatch(setMainWorkflowId(activeWorkflowId));
+        
+        // Reset control state for new task (important for follow-up tasks in same session)
+        dispatch(setStatus("running"));
+        dispatch(setCancelling(false));
+        dispatch(setCancelled(false));
+        dispatch(setPaused({ paused: false }));
 
         // Add user query to messages immediately
         // Use task_id format (not workflow_id) to match fetchSessionHistory's ID format and prevent duplicates
@@ -766,7 +781,12 @@ function RunDetailContent() {
                 } else if (task.status === "TASK_STATUS_FAILED" || task.status === "TASK_STATUS_CANCELLED") {
                     // Task failed or was cancelled
                     dispatch(setStatus("failed"));
-                    dispatch(setStreamError(task.error_message || `Task ${task.status.replace("TASK_STATUS_", "").toLowerCase()}`));
+                    if (task.status === "TASK_STATUS_CANCELLED") {
+                        // Properly update cancelled state - SSE may have missed the event
+                        dispatch(setCancelled(true));
+                    } else {
+                        dispatch(setStreamError(task.error_message || "Task failed"));
+                    }
                     return;
                 }
             }
@@ -913,7 +933,12 @@ function RunDetailContent() {
                 } else if (taskStatus.status === "TASK_STATUS_FAILED" || taskStatus.status === "TASK_STATUS_CANCELLED") {
                     console.log("[RunDetail] Task failed/cancelled (detected via polling)");
                     dispatch(setStatus("failed"));
-                    dispatch(setStreamError(taskStatus.error_message || "Task failed"));
+                    if (taskStatus.status === "TASK_STATUS_CANCELLED") {
+                        // Properly update cancelled state - SSE may have missed the event
+                        dispatch(setCancelled(true));
+                    } else {
+                        dispatch(setStreamError(taskStatus.error_message || "Task failed"));
+                    }
                 }
             } catch (err) {
                 console.warn("[RunDetail] Fallback poll failed:", err);
@@ -924,6 +949,139 @@ function RunDetailContent() {
         
         return () => clearInterval(pollInterval);
     }, [runStatus, currentTaskId, runEvents.length, dispatch]);
+
+    // Fetch control-state on page load when task is running
+    useEffect(() => {
+        if (currentTaskId && runStatus === "running") {
+            getTaskControlState(currentTaskId)
+                .then(state => {
+                    dispatch(setPaused({
+                        paused: state.is_paused,
+                        reason: state.pause_reason || undefined,
+                    }));
+                    if (state.is_cancelled) {
+                        dispatch(setCancelled(true));
+                    }
+                })
+                .catch(err => {
+                    console.warn("[RunDetail] Failed to fetch control-state:", err);
+                });
+        }
+    }, [currentTaskId, runStatus, dispatch]);
+
+    // Periodic control-state refresh during pause (every 20s) in case SSE was missed
+    useEffect(() => {
+        if (!isPaused || !currentTaskId) return;
+
+        const REFRESH_INTERVAL_MS = 20000; // 20 seconds
+
+        const refreshControlState = async () => {
+            try {
+                const state = await getTaskControlState(currentTaskId);
+                if (!state.is_paused) {
+                    // SSE missed, sync state
+                    dispatch(setPaused({ paused: false }));
+                }
+                if (state.is_cancelled) {
+                    dispatch(setCancelled(true));
+                }
+            } catch (err) {
+                console.warn("[RunDetail] Failed to refresh control-state:", err);
+            }
+        };
+
+        const interval = setInterval(refreshControlState, REFRESH_INTERVAL_MS);
+        return () => clearInterval(interval);
+    }, [isPaused, currentTaskId, dispatch]);
+
+    // Periodic control-state refresh during cancelling (every 2s) - SSE often misses workflow.cancelled
+    useEffect(() => {
+        if (!isCancelling || !currentTaskId) return;
+
+        const CANCEL_POLL_INTERVAL_MS = 2000; // 2 seconds - poll aggressively during cancel
+
+        const checkCancelledState = async () => {
+            try {
+                // First try control-state API
+                const state = await getTaskControlState(currentTaskId);
+                if (state.is_cancelled) {
+                    console.log("[RunDetail] Cancellation confirmed via control-state polling");
+                    dispatch(setCancelled(true));
+                    return;
+                }
+                
+                // Fallback: check task status directly
+                const taskStatus = await getTask(currentTaskId);
+                if (taskStatus.status === "TASK_STATUS_CANCELLED") {
+                    console.log("[RunDetail] Cancellation confirmed via task status polling");
+                    dispatch(setCancelled(true));
+                }
+            } catch (err) {
+                console.warn("[RunDetail] Failed to check cancelled state:", err);
+            }
+        };
+
+        // Check immediately, then poll
+        checkCancelledState();
+        const interval = setInterval(checkCancelledState, CANCEL_POLL_INTERVAL_MS);
+        return () => clearInterval(interval);
+    }, [isCancelling, currentTaskId, dispatch]);
+
+    // Reset button loading states when pause/resume SSE events update Redux state
+    useEffect(() => {
+        // When paused: reset pause loading (pause completed)
+        // When not paused: reset resume loading (resume completed)
+        // Always reset both to handle page load scenarios
+        if (isPaused) {
+            setIsPauseLoading(false);
+            // Also reset resume loading in case page loaded mid-transition
+            setIsResumeLoading(false);
+        } else {
+            setIsResumeLoading(false);
+            // Also reset pause loading in case page loaded mid-transition
+            setIsPauseLoading(false);
+        }
+    }, [isPaused]);
+
+    // Pause/Resume/Cancel handlers
+    const handlePause = async () => {
+        if (!currentTaskId) return;
+        setIsPauseLoading(true);
+        try {
+            await pauseTask(currentTaskId);
+            // Button stays disabled until WORKFLOW_PAUSED SSE arrives
+        } catch (err) {
+            console.error("[RunDetail] Failed to pause task:", err);
+            setIsPauseLoading(false);
+            dispatch(setStreamError(err instanceof Error ? err.message : "Failed to pause task"));
+        }
+    };
+
+    const handleResume = async () => {
+        if (!currentTaskId) return;
+        setIsResumeLoading(true);
+        try {
+            await resumeTask(currentTaskId);
+            // Button stays disabled until WORKFLOW_RESUMED SSE arrives
+        } catch (err) {
+            console.error("[RunDetail] Failed to resume task:", err);
+            setIsResumeLoading(false);
+            dispatch(setStreamError(err instanceof Error ? err.message : "Failed to resume task"));
+        }
+    };
+
+    const handleCancel = async () => {
+        if (!currentTaskId) return;
+        dispatch(setCancelling(true));
+        try {
+            await cancelTask(currentTaskId);
+            // UI updates via SSE (workflow.cancelling, workflow.cancelled)
+        } catch (err) {
+            console.error("[RunDetail] Failed to cancel task:", err);
+            dispatch(setCancelling(false));
+            dispatch(setStreamError(err instanceof Error ? err.message : "Failed to cancel task"));
+        }
+    };
 
     // Helper to categorize event type
     const categorizeEvent = (eventType: string): "agent" | "llm" | "tool" | "system" => {
@@ -1050,6 +1208,7 @@ function RunDetailContent() {
             "MESSAGE_SENT": "Message Sent",
             "MESSAGE_RECEIVED": "Message Received",
             "WORKSPACE_UPDATED": "Workspace Updated",
+            "STATUS_UPDATE": "Status Update",
             "thread.message.completed": "LLM Response",
             "done": "Task Done",
             "STREAM_END": "Stream Ended",
@@ -1271,14 +1430,30 @@ function RunDetailContent() {
                         </Button>
                     )}
                     {!isNewSession && (
-                        <div className="min-w-0 flex-1">
+                        <div className="min-w-0 flex-1 flex items-center gap-2">
                             <h1 className="text-base sm:text-lg font-semibold truncate" title={sessionTitle || `Session ${sessionId?.slice(0, 8)}...`}>
                                 {sessionTitle || `Session ${sessionId?.slice(0, 8)}...`}
                             </h1>
+                            {isPaused && (
+                                <Badge variant="outline" className="bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800 text-xs shrink-0">
+                                    Paused
+                                </Badge>
+                            )}
+                            {isCancelling && (
+                                <Badge variant="outline" className="bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 text-xs shrink-0">
+                                    <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                                    Cancelling...
+                                </Badge>
+                            )}
+                            {isCancelled && !isCancelling && (
+                                <Badge variant="outline" className="bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800 text-xs shrink-0">
+                                    Cancelled
+                                </Badge>
+                            )}
                         </div>
                     )}
                 </div>
-                <div className="flex items-center shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                     <Select
                         value={selectedAgent}
                         onValueChange={(val) => dispatch(setSelectedAgent(val as AgentSelection))}
@@ -1301,6 +1476,7 @@ function RunDetailContent() {
                             </SelectItem>
                         </SelectContent>
                     </Select>
+
 {/* Share and Export buttons hidden - features not yet implemented */}
                 </div>
             </header>
@@ -1368,6 +1544,14 @@ function RunDetailContent() {
                                             selectedAgent={selectedAgent}
                                             initialResearchStrategy={researchStrategy}
                                             onTaskCreated={handleTaskCreated}
+                                            isTaskRunning={runStatus === "running"}
+                                            isPaused={isPaused}
+                                            isPauseLoading={isPauseLoading}
+                                            isResumeLoading={isResumeLoading}
+                                            isCancelling={isCancelling}
+                                            onPause={handlePause}
+                                            onResume={handleResume}
+                                            onCancel={handleCancel}
                                         />
                                     </div>
                                 </>
@@ -1381,6 +1565,14 @@ function RunDetailContent() {
                                     initialResearchStrategy={researchStrategy}
                                     onTaskCreated={handleTaskCreated}
                                     variant="centered"
+                                    isTaskRunning={runStatus === "running"}
+                                    isPaused={isPaused}
+                                    isPauseLoading={isPauseLoading}
+                                    isResumeLoading={isResumeLoading}
+                                    isCancelling={isCancelling}
+                                    onPause={handlePause}
+                                    onResume={handleResume}
+                                    onCancel={handleCancel}
                                 />
                             )}
                         </TabsContent>

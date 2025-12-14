@@ -49,6 +49,13 @@ const (
 	// Human approval
 	StreamEventApprovalRequested StreamEventType = "APPROVAL_REQUESTED"
 	StreamEventApprovalDecision  StreamEventType = "APPROVAL_DECISION"
+
+	// Workflow control (pause/resume/cancel)
+	StreamEventWorkflowPausing    StreamEventType = "WORKFLOW_PAUSING"    // Pause signal received
+	StreamEventWorkflowPaused     StreamEventType = "WORKFLOW_PAUSED"     // Actually blocked at checkpoint
+	StreamEventWorkflowResumed    StreamEventType = "WORKFLOW_RESUMED"    // Unblocked after pause
+	StreamEventWorkflowCancelling StreamEventType = "WORKFLOW_CANCELLING" // Cancel signal received
+	StreamEventWorkflowCancelled  StreamEventType = "WORKFLOW_CANCELLED"  // Cancelled at checkpoint
 )
 
 // EmitTaskUpdateInput carries minimal event data for streaming_v1

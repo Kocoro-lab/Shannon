@@ -217,6 +217,49 @@ func main() {
 		),
 	)
 
+	// Pause workflow
+	mux.Handle("POST /api/v1/tasks/{id}/pause",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(taskHandler.PauseTask),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	// Resume workflow
+	mux.Handle("POST /api/v1/tasks/{id}/resume",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(taskHandler.ResumeTask),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	// Get control state
+	mux.Handle("GET /api/v1/tasks/{id}/control-state",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(taskHandler.GetControlState),
+					),
+				),
+			),
+		),
+	)
+
 	// Approval endpoints (require auth)
 	mux.Handle("POST /api/v1/approvals/decision",
 		tracingMiddleware(

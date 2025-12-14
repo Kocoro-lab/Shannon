@@ -39,6 +39,16 @@ class EventType(str, Enum):
     ERROR_RECOVERY = "ERROR_RECOVERY"
     DEPENDENCY_SATISFIED = "DEPENDENCY_SATISFIED"
     STATUS_UPDATE = "STATUS_UPDATE"
+    BUDGET_THRESHOLD = "BUDGET_THRESHOLD"
+    # Control flow events (pause/resume/cancel) - SSE uses lowercase dot notation
+    WORKFLOW_PAUSING = "workflow.pausing"
+    WORKFLOW_PAUSED = "workflow.paused"
+    WORKFLOW_RESUMED = "workflow.resumed"
+    WORKFLOW_CANCELLING = "workflow.cancelling"
+    WORKFLOW_CANCELLED = "workflow.cancelled"
+    # Workflow lifecycle events
+    WORKFLOW_FAILED = "WORKFLOW_FAILED"
+    STREAM_END = "done"  # SSE transforms STREAM_END to "done"
     # OpenAI-style streaming events (used by some providers)
     THREAD_MESSAGE_DELTA = "thread.message.delta"
     THREAD_MESSAGE_COMPLETED = "thread.message.completed"
@@ -49,6 +59,7 @@ class TaskStatusEnum(str, Enum):
 
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    PAUSED = "PAUSED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -177,6 +188,19 @@ class TaskStatus:
     # Deprecated: use 'usage' instead
     metrics: Optional[ExecutionMetrics] = None
     agent_statuses: List[AgentTaskStatus] = field(default_factory=list)
+
+
+@dataclass
+class ControlState:
+    """Pause/cancel control state for a workflow."""
+
+    is_paused: bool
+    is_cancelled: bool
+    paused_at: Optional[datetime] = None
+    pause_reason: Optional[str] = None
+    paused_by: Optional[str] = None
+    cancel_reason: Optional[str] = None
+    cancelled_by: Optional[str] = None
 
 
 @dataclass

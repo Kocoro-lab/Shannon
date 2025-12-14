@@ -129,6 +129,55 @@ func (h *StreamingHandler) handleSSE(w http.ResponseWriter, r *http.Request) {
 			return "error", ev.Marshal()
 		case "STREAM_END":
 			return "done", []byte("[DONE]")
+		case "WORKFLOW_PAUSING":
+			return "workflow.pausing", marshal(map[string]interface{}{
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"message":     ev.Message,
+			})
+		case "WORKFLOW_PAUSED":
+			checkpoint := ""
+			if ev.Payload != nil {
+				if cp, ok := ev.Payload["checkpoint"].(string); ok {
+					checkpoint = cp
+				}
+			}
+			return "workflow.paused", marshal(map[string]interface{}{
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"checkpoint":  checkpoint,
+				"message":     ev.Message,
+			})
+		case "WORKFLOW_RESUMED":
+			return "workflow.resumed", marshal(map[string]interface{}{
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"message":     ev.Message,
+			})
+		case "WORKFLOW_CANCELLING":
+			return "workflow.cancelling", marshal(map[string]interface{}{
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"message":     ev.Message,
+			})
+		case "WORKFLOW_CANCELLED":
+			checkpoint := ""
+			wasPaused := false
+			if ev.Payload != nil {
+				if cp, ok := ev.Payload["checkpoint"].(string); ok {
+					checkpoint = cp
+				}
+				if wp, ok := ev.Payload["was_paused"].(bool); ok {
+					wasPaused = wp
+				}
+			}
+			return "workflow.cancelled", marshal(map[string]interface{}{
+				"workflow_id": ev.WorkflowID,
+				"agent_id":    ev.AgentID,
+				"message":     ev.Message,
+				"checkpoint":  checkpoint,
+				"was_paused":  wasPaused,
+			})
 		default:
 			return ev.Type, ev.Marshal()
 		}

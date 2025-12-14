@@ -76,6 +76,24 @@ Tests are numbered by category for clear organization:
   - Token budget tracking
   - Session compression
 
+### Advanced Feature Tests (40-49)
+- **`40_context_compression_test.sh`** - Context compression functionality
+
+- **`41_context_compression_regression.sh`** - Context compression regression tests
+
+- **`42_template_workflow_test.sh`** - Template-based workflow execution
+
+- **`43_rate_control_delay_test.sh`** - Rate limiting and delay controls
+
+- **`44_model_tiers_e2e_test.sh`** - Model tier selection and override tests
+
+- **`45_control_signals_test.sh`** - Workflow control signals (pause/resume/cancel)
+  - Pause/resume with DB status verification
+  - Cancel with CANCELLED status confirmation
+  - Cancel while paused
+  - HTTP API control endpoints
+  - Simple task fast completion handling
+
 ## Running Tests
 
 ### Run All Tests
@@ -164,6 +182,28 @@ grpcurl -plaintext -d '{
 # Check task_executions table
 docker compose -f deploy/compose/docker-compose.yml exec postgres \
   psql -U shannon -d shannon -c "SELECT * FROM task_executions ORDER BY created_at DESC LIMIT 5;"
+```
+
+### Control Signals (Pause/Resume/Cancel)
+```bash
+# Pause a running task via Temporal
+docker compose -f deploy/compose/docker-compose.yml exec temporal \
+  temporal workflow signal --workflow-id "task-xxx" --name pause_v1 \
+  --input '{"reason": "manual pause", "requested_by": "user"}' --address temporal:7233
+
+# Resume a paused task
+docker compose -f deploy/compose/docker-compose.yml exec temporal \
+  temporal workflow signal --workflow-id "task-xxx" --name resume_v1 \
+  --input '{"reason": "resuming", "requested_by": "user"}' --address temporal:7233
+
+# Cancel a task
+docker compose -f deploy/compose/docker-compose.yml exec temporal \
+  temporal workflow signal --workflow-id "task-xxx" --name cancel_v1 \
+  --input '{"reason": "manual cancel", "requested_by": "user"}' --address temporal:7233
+
+# Query control state
+docker compose -f deploy/compose/docker-compose.yml exec temporal \
+  temporal workflow query --workflow-id "task-xxx" --type control_state_v1 --address temporal:7233
 ```
 
 ## Troubleshooting
