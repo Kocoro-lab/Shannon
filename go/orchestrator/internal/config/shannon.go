@@ -53,6 +53,9 @@ type ShannonConfig struct {
 
 	// Session management configuration
 	Session SessionConfig `json:"session" yaml:"session"`
+
+	// Feature flags for optional/private features
+	Features FeatureFlagsConfig `json:"features" yaml:"features"`
 }
 
 // AuthConfig contains authentication configuration
@@ -288,6 +291,12 @@ type SessionConfig struct {
 	// Sliding-window shaping parameters
 	PrimersCount int `json:"primers_count" yaml:"primers_count"`
 	RecentsCount int `json:"recents_count" yaml:"recents_count"`
+}
+
+// FeatureFlagsConfig contains feature flags for optional/private features
+type FeatureFlagsConfig struct {
+	// AdsResearch enables the ads research workflow (enterprise version only)
+	AdsResearch bool `json:"ads_research" yaml:"ads_research"`
 }
 
 // WorkflowConfig controls workflow behavior

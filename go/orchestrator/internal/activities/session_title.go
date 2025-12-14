@@ -196,7 +196,17 @@ func (a *Activities) GenerateSessionTitle(ctx context.Context, input GenerateSes
 // generateTitleWithLLM uses LLM to generate a concise title
 func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (string, error) {
 	// Prepare request to LLM service
-	prompt := fmt.Sprintf("Generate a chat session title from this user query. Rules: 3–5 words, Title Case, no quotes, no punctuation, no emojis, no sensitive identifiers. Output ONLY the title.\n\n%s", query)
+	// Use language-aware prompt that respects the query's original language
+	prompt := fmt.Sprintf(`Generate a chat session title from this user query.
+
+Rules:
+- Use the SAME LANGUAGE as the user's query (e.g., if query is in Japanese, title must be in Japanese)
+- For English: 3-5 words, Title Case
+- For Chinese/Japanese/Korean: 5-15 characters (CJK languages use fewer words but more meaning per character)
+- No quotes, no trailing punctuation, no emojis, no sensitive identifiers
+- Output ONLY the title, nothing else
+
+Query: %s`, query)
 
 	llmServiceURL := getEnvOrDefaultTitle("LLM_SERVICE_URL", "http://llm-service:8000")
 	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
@@ -207,7 +217,7 @@ func (a *Activities) generateTitleWithLLM(ctx context.Context, query string) (st
 		"temperature": 0.3,  // Low temperature for consistency
 		"agent_id":    "title_generator",
 		"context": map[string]interface{}{
-			"system_prompt": "You are a title generator. Produce concise, descriptive titles for chat sessions. Rules: 3–5 words, Title Case, no quotes, no trailing punctuation, no emojis, no sensitive identifiers. Output ONLY the title.",
+			"system_prompt": "You are a multilingual title generator. Generate concise, descriptive titles for chat sessions in the SAME LANGUAGE as the user's input. For CJK languages (Chinese, Japanese, Korean), use 5-15 characters. For English and other Western languages, use 3-5 words in Title Case. No quotes, no trailing punctuation, no emojis. Output ONLY the title.",
 		},
 	}
 

@@ -651,7 +651,7 @@ func main() {
 			EnableStreamingWorkflows: true,
 			EnableApprovalWorkflows:  true,
 		}
-		// Wire typed budget defaults if available
+		// Wire typed budget defaults and feature flags from shannon config
 		if shannonCfgMgr != nil {
 			if shCfg := shannonCfgMgr.GetConfig(); shCfg != nil {
 				if shCfg.Session.TokenBudgetPerTask > 0 {
@@ -661,6 +661,8 @@ func main() {
 				if shCfg.Session.TokenBudgetPerTask > 0 {
 					registryConfig.DefaultSessionBudget = shCfg.Session.TokenBudgetPerTask * 4
 				}
+				// Enable enterprise features from config
+				registryConfig.EnableAdsResearch = shCfg.Features.AdsResearch
 			}
 		}
 		orchestratorRegistry := registry.NewOrchestratorRegistry(

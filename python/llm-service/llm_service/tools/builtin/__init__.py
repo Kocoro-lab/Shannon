@@ -8,6 +8,15 @@ from .calculator import CalculatorTool
 from .file_ops import FileReadTool, FileWriteTool
 from .python_wasi_executor import PythonWasiExecutorTool
 
+# Private features (enterprise version only) - gracefully degrade if not present
+try:
+    from .ads_research import AdsSerpExtractTool, AdsTransparencySearchTool, AdsCompetitorDiscoverTool
+    from .lp_analyze import LPVisualAnalyzeTool
+    from .ads_creative_analyze import AdsCreativeAnalyzeTool
+    _HAS_ADS_TOOLS = True
+except ImportError:
+    _HAS_ADS_TOOLS = False
+
 __all__ = [
     "WebSearchTool",
     "WebFetchTool",
@@ -16,3 +25,13 @@ __all__ = [
     "FileWriteTool",
     "PythonWasiExecutorTool",
 ]
+
+# Add ads tools to exports if available
+if _HAS_ADS_TOOLS:
+    __all__.extend([
+        "AdsSerpExtractTool",
+        "AdsTransparencySearchTool",
+        "AdsCompetitorDiscoverTool",
+        "LPVisualAnalyzeTool",
+        "AdsCreativeAnalyzeTool",
+    ])

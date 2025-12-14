@@ -369,3 +369,9 @@ cognitive_workflows:
     max_iterations: 8
     confidence_threshold: 0.75
     contradiction_threshold: 0.3
+
+# Feature flags for optional/private features
+# These allow Shannon to be extended without breaking open source
+features:
+  # Ads research workflow (enterprise version only, disabled in open source)
+  ads_research: false

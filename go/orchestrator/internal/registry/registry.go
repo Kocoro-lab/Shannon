@@ -65,6 +65,12 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 	w.RegisterWorkflow(strategies.ResearchWorkflow)
 	r.logger.Info("Registered strategy workflows")
 
+	// Enterprise features
+	if r.config.EnableAdsResearch {
+		w.RegisterWorkflow(strategies.AdsResearchWorkflow)
+		r.logger.Info("Registered ads research workflow")
+	}
+
 	r.logger.Info("All workflows registered successfully")
 	return nil
 }
@@ -183,6 +189,28 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(activities.RecordPatternMetrics, activity.RegisterOptions{
 		Name: "RecordPatternMetrics",
 	})
+
+	// Enterprise features - Ads research pipeline activities
+	if r.config.EnableAdsResearch {
+		w.RegisterActivityWithOptions(activities.AdsResearchActivity, activity.RegisterOptions{
+			Name: "AdsResearchActivity",
+		})
+		// Keyword extraction activity (uses small LLM)
+		w.RegisterActivityWithOptions(activities.ExtractSearchKeywords, activity.RegisterOptions{
+			Name: "ExtractSearchKeywords",
+		})
+		// New parallel activities for ads research
+		w.RegisterActivityWithOptions(activities.AdsCompetitorDiscoverActivity, activity.RegisterOptions{
+			Name: "AdsCompetitorDiscoverActivity",
+		})
+		w.RegisterActivityWithOptions(activities.AdsTransparencyActivity, activity.RegisterOptions{
+			Name: "AdsTransparencyActivity",
+		})
+		w.RegisterActivityWithOptions(activities.AdsLPAnalysisActivity, activity.RegisterOptions{
+			Name: "AdsLPAnalysisActivity",
+		})
+		r.logger.Info("Registered ads research activities")
+	}
 
 	// Agent selection activities (performance-based)
 	w.RegisterActivity(activities.FetchAgentPerformances)

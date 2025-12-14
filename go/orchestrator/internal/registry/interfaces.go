@@ -28,6 +28,8 @@ type RegistryConfig struct {
 	EnableStreamingWorkflows bool
 	// EnableApprovalWorkflows controls whether human approval workflows are registered
 	EnableApprovalWorkflows bool
+	// EnableAdsResearch controls whether ads research workflows are registered (enterprise version only)
+	EnableAdsResearch bool
 
 	// Optional typed-config defaults for budgets (tokens)
 	DefaultTaskBudget    int
