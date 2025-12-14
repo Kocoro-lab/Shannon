@@ -362,6 +362,12 @@ func waitForDependencies(
 
 	// Check dependencies with polling
 	for {
+		// Check for cancellation first
+		if ctx.Err() != nil {
+			logger.Debug("Context cancelled during dependency wait")
+			return false
+		}
+
 		allComplete := true
 		for _, depID := range dependencies {
 			if !completedTasks[depID] {
@@ -383,7 +389,10 @@ func waitForDependencies(
 			return false
 		}
 
-		// Wait before next check
-		workflow.Sleep(ctx, 3*time.Second)
+		// Wait before next check - check error in case of cancellation
+		if err := workflow.Sleep(ctx, 3*time.Second); err != nil {
+			logger.Debug("Sleep interrupted", "error", err)
+			return false
+		}
 	}
 }

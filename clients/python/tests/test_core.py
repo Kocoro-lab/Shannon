@@ -37,6 +37,10 @@ def test_sync_client_init():
         "list_tasks",
         "get_task_events",
         "get_task_timeline",
+        "cancel",
+        "pause_task",
+        "resume_task",
+        "get_control_state",
         "list_sessions",
         "get_session",
         "get_session_history",
@@ -68,4 +72,3 @@ def test_event_model_basic():
     )
     assert e.id == "1"
     assert e.payload is None
-

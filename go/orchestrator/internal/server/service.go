@@ -828,8 +828,17 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 		statusOut = pb.TaskStatus_TASK_STATUS_COMPLETED
 		statusStr = "COMPLETED"
 	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		// Default to RUNNING, but check control state for PAUSED
 		statusOut = pb.TaskStatus_TASK_STATUS_RUNNING
 		statusStr = "RUNNING"
+		// Best-effort query control state to detect paused workflows
+		if ctrlResp, qErr := s.temporalClient.QueryWorkflow(ctx, req.TaskId, "", workflows.QueryControlState); qErr == nil {
+			var ctrlState workflows.WorkflowControlState
+			if ctrlResp.Get(&ctrlState) == nil && ctrlState.IsPaused {
+				statusOut = pb.TaskStatus_TASK_STATUS_PAUSED
+				statusStr = "PAUSED"
+			}
+		}
 	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
 		statusOut = pb.TaskStatus_TASK_STATUS_TIMEOUT
 		statusStr = "TIMEOUT"
@@ -1460,7 +1469,19 @@ func (s *OrchestratorService) CancelTask(ctx context.Context, req *pb.CancelTask
 		}
 	}
 
-	// Perform cancellation
+	// Send graceful cancel signal first (allows checkpoint cleanup and SSE emission)
+	cancelReq := workflows.CancelRequest{
+		Reason:      req.Reason,
+		RequestedBy: uc.UserID.String(),
+	}
+	// Fire-and-forget signal - don't fail cancel if signal fails
+	_ = s.temporalClient.SignalWorkflow(ctx, req.TaskId, "", workflows.SignalCancel, cancelReq)
+
+	// Brief delay to allow signal processing before Temporal cancellation
+	// This ensures the workflow's signal handler can update state and emit SSE events
+	time.Sleep(100 * time.Millisecond)
+
+	// Then request Temporal cancellation (fallback for stuck activities)
 	if err := s.temporalClient.CancelWorkflow(ctx, req.TaskId, ""); err != nil {
 		s.logger.Error("Failed to cancel workflow", zap.Error(err))
 		return &pb.CancelTaskResponse{
@@ -1472,6 +1493,237 @@ func (s *OrchestratorService) CancelTask(ctx context.Context, req *pb.CancelTask
 	return &pb.CancelTaskResponse{
 		Success: true,
 		Message: "Task cancelled successfully",
+	}, nil
+}
+
+// PauseTask pauses a running workflow (with ownership check)
+func (s *OrchestratorService) PauseTask(ctx context.Context, req *pb.PauseTaskRequest) (*pb.PauseTaskResponse, error) {
+	s.logger.Info("Received PauseTask request",
+		zap.String("task_id", req.TaskId),
+		zap.String("reason", req.Reason),
+	)
+
+	// Enforce authentication
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	// Verify ownership/tenancy via workflow memo (existing pattern from CancelTask)
+	desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
+	if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+	if desc.WorkflowExecutionInfo.Memo != nil {
+		dc := converter.GetDefaultDataConverter()
+		// Check tenant first (primary isolation key)
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+			var memoTenant string
+			_ = dc.FromPayload(f, &memoTenant)
+			if memoTenant != "" && uc.TenantID.String() != memoTenant {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+		// Check user ownership
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+			var memoUser string
+			_ = dc.FromPayload(f, &memoUser)
+			if memoUser != "" && uc.UserID.String() != memoUser {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+	}
+
+	// Validate workflow state - cannot pause completed/failed/cancelled workflows
+	switch desc.WorkflowExecutionInfo.Status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause completed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause failed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause cancelled task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause timed out task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		// Check if already paused
+		if ctrlResp, qErr := s.temporalClient.QueryWorkflow(ctx, req.TaskId, "", workflows.QueryControlState); qErr == nil {
+			var ctrlState workflows.WorkflowControlState
+			if ctrlResp.Get(&ctrlState) == nil && ctrlState.IsPaused {
+				return nil, status.Error(codes.FailedPrecondition, "task is already paused")
+			}
+		}
+	}
+
+	// Send pause signal to Temporal
+	pauseReq := workflows.PauseRequest{
+		Reason:      req.Reason,
+		RequestedBy: uc.UserID.String(),
+	}
+	if err := s.temporalClient.SignalWorkflow(ctx, req.TaskId, "", workflows.SignalPause, pauseReq); err != nil {
+		s.logger.Error("Failed to send pause signal", zap.Error(err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to pause: %v", err))
+	}
+
+	// Update task status in DB
+	if s.dbClient != nil {
+		_ = s.dbClient.UpdateTaskStatus(ctx, req.TaskId, "PAUSED")
+	}
+
+	s.logger.Info("Task paused",
+		zap.String("task_id", req.TaskId),
+		zap.String("user_id", uc.UserID.String()),
+	)
+
+	return &pb.PauseTaskResponse{
+		Success: true,
+		Message: "Pause signal sent",
+	}, nil
+}
+
+// ResumeTask resumes a paused workflow (with ownership check)
+func (s *OrchestratorService) ResumeTask(ctx context.Context, req *pb.ResumeTaskRequest) (*pb.ResumeTaskResponse, error) {
+	s.logger.Info("Received ResumeTask request",
+		zap.String("task_id", req.TaskId),
+		zap.String("reason", req.Reason),
+	)
+
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	// Verify ownership/tenancy via workflow memo
+	desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
+	if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+	if desc.WorkflowExecutionInfo.Memo != nil {
+		dc := converter.GetDefaultDataConverter()
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+			var memoTenant string
+			_ = dc.FromPayload(f, &memoTenant)
+			if memoTenant != "" && uc.TenantID.String() != memoTenant {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+			var memoUser string
+			_ = dc.FromPayload(f, &memoUser)
+			if memoUser != "" && uc.UserID.String() != memoUser {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+	}
+
+	// Validate workflow state - cannot resume completed/failed/cancelled workflows
+	switch desc.WorkflowExecutionInfo.Status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume completed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume failed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume cancelled task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume timed out task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		// Check if task is actually paused
+		isPaused := false
+		if ctrlResp, qErr := s.temporalClient.QueryWorkflow(ctx, req.TaskId, "", workflows.QueryControlState); qErr == nil {
+			var ctrlState workflows.WorkflowControlState
+			if ctrlResp.Get(&ctrlState) == nil {
+				isPaused = ctrlState.IsPaused
+			}
+		}
+		if !isPaused {
+			return nil, status.Error(codes.FailedPrecondition, "task is not paused")
+		}
+	}
+
+	resumeReq := workflows.ResumeRequest{
+		Reason:      req.Reason,
+		RequestedBy: uc.UserID.String(),
+	}
+	if err := s.temporalClient.SignalWorkflow(ctx, req.TaskId, "", workflows.SignalResume, resumeReq); err != nil {
+		s.logger.Error("Failed to send resume signal", zap.Error(err))
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resume: %v", err))
+	}
+
+	// Update task status back to RUNNING
+	if s.dbClient != nil {
+		_ = s.dbClient.UpdateTaskStatus(ctx, req.TaskId, "RUNNING")
+	}
+
+	s.logger.Info("Task resumed",
+		zap.String("task_id", req.TaskId),
+		zap.String("user_id", uc.UserID.String()),
+	)
+
+	return &pb.ResumeTaskResponse{
+		Success: true,
+		Message: "Resume signal sent",
+	}, nil
+}
+
+// GetControlState queries workflow control state (with ownership check)
+func (s *OrchestratorService) GetControlState(ctx context.Context, req *pb.GetControlStateRequest) (*pb.GetControlStateResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	// Verify ownership/tenancy via workflow memo
+	desc, dErr := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
+	if dErr != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+		return nil, status.Error(codes.NotFound, "task not found")
+	}
+	if desc.WorkflowExecutionInfo.Memo != nil {
+		dc := converter.GetDefaultDataConverter()
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && f != nil {
+			var memoTenant string
+			_ = dc.FromPayload(f, &memoTenant)
+			if memoTenant != "" && uc.TenantID.String() != memoTenant {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+		if f, ok := desc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && f != nil {
+			var memoUser string
+			_ = dc.FromPayload(f, &memoUser)
+			if memoUser != "" && uc.UserID.String() != memoUser {
+				return nil, status.Error(codes.NotFound, "task not found")
+			}
+		}
+	}
+
+	// Query Temporal workflow for control state
+	resp, err := s.temporalClient.QueryWorkflow(ctx, req.TaskId, "", workflows.QueryControlState)
+	if err != nil {
+		// Workflow may have completed - return default state
+		return &pb.GetControlStateResponse{
+			IsPaused:    false,
+			IsCancelled: false,
+			PausedAt:    "", // Empty string for never-paused
+		}, nil
+	}
+
+	var state workflows.WorkflowControlState
+	if err := resp.Get(&state); err != nil {
+		return nil, status.Error(codes.Internal, "failed to decode state")
+	}
+
+	// Handle zero time gracefully - return empty string instead of epoch
+	pausedAtStr := ""
+	if !state.PausedAt.IsZero() {
+		pausedAtStr = state.PausedAt.Format(time.RFC3339)
+	}
+
+	return &pb.GetControlStateResponse{
+		IsPaused:     state.IsPaused,
+		IsCancelled:  state.IsCancelled,
+		PausedAt:     pausedAtStr,
+		PauseReason:  state.PauseReason,
+		PausedBy:     state.PausedBy,
+		CancelReason: state.CancelReason,
+		CancelledBy:  state.CancelledBy,
 	}, nil
 }
 
@@ -1872,6 +2124,8 @@ func mapDBStatusToProto(status string) pb.TaskStatus {
 		return pb.TaskStatus_TASK_STATUS_CANCELLED
 	case "TIMEOUT", "TIMED_OUT":
 		return pb.TaskStatus_TASK_STATUS_TIMEOUT
+	case "PAUSED":
+		return pb.TaskStatus_TASK_STATUS_PAUSED
 	default:
 		return pb.TaskStatus_TASK_STATUS_UNSPECIFIED
 	}
@@ -1906,6 +2160,8 @@ func mapProtoStatusToDB(st pb.TaskStatus) string {
 		return "CANCELLED"
 	case pb.TaskStatus_TASK_STATUS_TIMEOUT:
 		return "TIMEOUT"
+	case pb.TaskStatus_TASK_STATUS_PAUSED:
+		return "PAUSED"
 	default:
 		return ""
 	}

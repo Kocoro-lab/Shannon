@@ -14,6 +14,12 @@ interface RunState {
     selectedAgent: "normal" | "deep_research";
     researchStrategy: "quick" | "standard" | "deep" | "academic";
     mainWorkflowId: string | null; // Track the main workflow to distinguish from sub-workflows
+    // Pause/Resume/Cancel control state
+    isPaused: boolean;
+    pauseCheckpoint: string | null;
+    pauseReason: string | null;
+    isCancelling: boolean;
+    isCancelled: boolean;
 }
 
 const initialState: RunState = {
@@ -26,6 +32,12 @@ const initialState: RunState = {
     selectedAgent: "normal",
     researchStrategy: "quick",
     mainWorkflowId: null,
+    // Pause/Resume/Cancel control state
+    isPaused: false,
+    pauseCheckpoint: null,
+    pauseReason: null,
+    isCancelling: false,
+    isCancelled: false,
 };
 
 // Helper to create inline status messages from events
@@ -41,8 +53,11 @@ const STATUS_EVENT_TYPES = new Set([
     "TOOL_INVOKED",       // "Looking this up: '...'"
     "TOOL_OBSERVATION",   // "Fetch: Wantedly Blog...", "Search: Found 5 results..."
     "AGENT_THINKING",     // Short status only (filtered below for long LLM content)
-    "APPROVAL_REQUESTED",
-    "APPROVAL_DECISION",
+    "APPROVAL_REQUESTED", // Waiting for human approval
+    "APPROVAL_DECISION",  // Approval granted/denied
+    "WAITING",            // Waiting for dependency or resource
+    "DEPENDENCY_SATISFIED", // Dependency is now available
+    "STATUS_UPDATE",      // General status update
 ]);
 
 // Check if an AGENT_THINKING message is short status vs long LLM content
@@ -69,7 +84,27 @@ const runSlice = createSlice({
     reducers: {
         addEvent: (state, action: PayloadAction<ShannonEvent>) => {
             const event = action.payload;
-            state.events.push(event);
+            
+            // Deduplicate control events in the events array (for timeline display)
+            // But still process state changes for all control events
+            const controlEventTypes = ["workflow.pausing", "workflow.paused", "workflow.resumed", "workflow.cancelling", "workflow.cancelled"];
+            const isControlEvent = controlEventTypes.includes(event.type);
+            let skipEventPush = false;
+            
+            if (isControlEvent) {
+                const isDuplicate = state.events.some((e: ShannonEvent) => 
+                    e.type === event.type && 
+                    e.workflow_id === event.workflow_id
+                );
+                if (isDuplicate) {
+                    console.log("[Redux] Duplicate control event (will still process state):", event.type);
+                    skipEventPush = true; // Don't add to timeline, but continue processing
+                }
+            }
+            
+            if (!skipEventPush) {
+                state.events.push(event);
+            }
 
             console.log("[Redux] Received event:", event.type, event);
 
@@ -193,6 +228,70 @@ const runSlice = createSlice({
                 } else {
                     console.log("[Redux] Workflow failed (no message)");
                 }
+            } else if (event.type === "workflow.pausing") {
+                // Pause request received, workflow will pause at next checkpoint
+                // Skip if already paused (control-state already set the correct status)
+                if (state.isPaused) {
+                    console.log("[Redux] Skipping workflow.pausing - already paused");
+                    return;
+                }
+                console.log("[Redux] Workflow pausing:", (event as any).message);
+                addStatusMessage((event as any).message || "Pausing at next checkpoint...", "workflow.pausing");
+            } else if (event.type === "workflow.paused") {
+                // Workflow is now paused
+                // Skip status update if already paused (control-state already set it)
+                const wasAlreadyPaused = state.isPaused;
+                state.isPaused = true;
+                state.pauseCheckpoint = (event as any).checkpoint || null;
+                state.pauseReason = (event as any).message || null;
+                console.log("[Redux] Workflow paused at checkpoint:", state.pauseCheckpoint);
+                // Only update status if we weren't already paused
+                if (!wasAlreadyPaused) {
+                    addStatusMessage("Workflow paused", "workflow.paused");
+                }
+            } else if (event.type === "workflow.resumed") {
+                // Workflow resumed, clear pause state
+                state.isPaused = false;
+                state.pauseCheckpoint = null;
+                state.pauseReason = null;
+                console.log("[Redux] Workflow resumed:", (event as any).message);
+                // Clear status message or update to show resumed
+                clearStatusMessage();
+            } else if (event.type === "workflow.cancelling") {
+                // Cancel request received, workflow will cancel
+                // Skip if already cancelling (control-state already set it)
+                if (state.isCancelling) {
+                    console.log("[Redux] Skipping workflow.cancelling - already cancelling");
+                    return;
+                }
+                state.isCancelling = true;
+                console.log("[Redux] Workflow cancelling:", (event as any).message);
+                addStatusMessage((event as any).message || "Cancelling...", "workflow.cancelling");
+            } else if (event.type === "workflow.cancelled") {
+                // Workflow is now cancelled
+                state.status = "failed"; // Treat cancelled as a terminal state
+                state.isCancelling = false;
+                state.isCancelled = true;
+                state.isPaused = false;
+                state.pauseCheckpoint = null;
+                
+                // Find the generating placeholder to get taskId
+                const generatingMsg = state.messages.find((m: any) => m.isGenerating);
+                const taskId = generatingMsg?.taskId || event.workflow_id;
+                
+                // Remove generating placeholders and old status messages
+                state.messages = state.messages.filter((m: any) => !m.isGenerating && m.role !== "status");
+                
+                // Add a proper system message (same style as history loading)
+                state.messages.push({
+                    id: `system-cancelled-${Date.now()}`,
+                    role: "system" as const,
+                    content: "This task was cancelled before it could complete.",
+                    timestamp: new Date().toLocaleTimeString(),
+                    taskId: taskId,
+                    isCancelled: true,
+                });
+                console.log("[Redux] Workflow cancelled:", (event as any).message);
             } else if (event.type === "error") {
                 state.status = "failed";
                 // Remove generating placeholders and status messages on error
@@ -575,6 +674,12 @@ const runSlice = createSlice({
             state.streamError = null;
             state.sessionTitle = null;
             state.mainWorkflowId = null;
+            // Reset pause/resume/cancel state
+            state.isPaused = false;
+            state.pauseCheckpoint = null;
+            state.pauseReason = null;
+            state.isCancelling = false;
+            state.isCancelled = false;
             // Keep selectedAgent persistent across sessions - it's a user preference/mode
         },
         addMessage: (state, action: PayloadAction<any>) => {
@@ -630,8 +735,77 @@ const runSlice = createSlice({
             state.status = action.payload;
             console.log("[Redux] Status manually set to:", action.payload);
         },
+        setPaused: (state, action: PayloadAction<{ paused: boolean; checkpoint?: string; reason?: string }>) => {
+            state.isPaused = action.payload.paused;
+            state.pauseCheckpoint = action.payload.checkpoint || null;
+            state.pauseReason = action.payload.reason || null;
+            
+            // Update status message to match pause state
+            if (action.payload.paused) {
+                // Remove old status and add paused status
+                state.messages = state.messages.filter((m: any) => m.role !== "status");
+                state.messages.push({
+                    id: `status-paused-${Date.now()}`,
+                    role: "status" as const,
+                    content: "Workflow paused",
+                    eventType: "workflow.paused",
+                    timestamp: new Date().toLocaleTimeString(),
+                });
+            } else {
+                // Resumed - clear status message
+                state.messages = state.messages.filter((m: any) => m.role !== "status");
+            }
+            console.log("[Redux] Pause state set:", action.payload);
+        },
+        setCancelling: (state, action: PayloadAction<boolean>) => {
+            state.isCancelling = action.payload;
+            
+            // Update status message to match cancelling state
+            if (action.payload) {
+                // Remove old status and add cancelling status
+                state.messages = state.messages.filter((m: any) => m.role !== "status");
+                state.messages.push({
+                    id: `status-cancelling-${Date.now()}`,
+                    role: "status" as const,
+                    content: "Cancelling workflow...",
+                    eventType: "workflow.cancelling",
+                    timestamp: new Date().toLocaleTimeString(),
+                });
+            } else {
+                // Cancelled complete - clear status message
+                state.messages = state.messages.filter((m: any) => m.role !== "status");
+            }
+            console.log("[Redux] Cancelling state set to:", action.payload);
+        },
+        setCancelled: (state, action: PayloadAction<boolean>) => {
+            state.isCancelled = action.payload;
+            state.isCancelling = false;
+            
+            if (action.payload) {
+                // Task is cancelled - update status and replace generating placeholder with cancelled message
+                state.status = "failed";
+                
+                // Find and remove the generating placeholder, capturing its taskId for the replacement message
+                const generatingMsg = state.messages.find((m: any) => m.isGenerating);
+                const taskId = generatingMsg?.taskId;
+                
+                // Remove generating placeholders and status messages
+                state.messages = state.messages.filter((m: any) => !m.isGenerating && m.role !== "status");
+                
+                // Add a proper system message (same style as history loading) instead of status pill
+                state.messages.push({
+                    id: `system-cancelled-${Date.now()}`,
+                    role: "system" as const,
+                    content: "This task was cancelled before it could complete.",
+                    timestamp: new Date().toLocaleTimeString(),
+                    taskId: taskId,
+                    isCancelled: true,
+                });
+            }
+            console.log("[Redux] Cancelled state set to:", action.payload);
+        },
     },
 });
 
-export const { addEvent, resetRun, addMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus } = runSlice.actions;
+export const { addEvent, resetRun, addMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled } = runSlice.actions;
 export default runSlice.reducer;

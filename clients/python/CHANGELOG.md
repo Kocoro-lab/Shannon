@@ -5,6 +5,89 @@ All notable changes to the Shannon Python SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2025-01-14
+
+### Fixed
+- Empty response body handling in pause/resume operations (now defaults to True on 202 status)
+- Timestamp parsing error logging with specific exceptions instead of silent failures
+
+## [0.4.1] - 2025-01-14
+
+### Fixed
+- Minor bug fixes and improvements to control signal stability
+
+## [0.4.0] - 2025-01-14
+
+### Added
+
+#### Task Control Features
+- **`pause_task(task_id, reason=None)`** - Pause running tasks at safe checkpoints with optional reason
+- **`resume_task(task_id, reason=None)`** - Resume previously paused tasks with optional reason
+- **`get_control_state(task_id)`** - Get detailed pause/cancel control state including timestamps and metadata
+- **`ControlState` model** - Control state data class with comprehensive pause/cancel tracking:
+  - `is_paused` - Current pause status
+  - `is_cancelled` - Current cancellation status
+  - `paused_at` - Timestamp when task was paused
+  - `pause_reason` - Reason provided for pause
+  - `paused_by` - User/system that paused the task
+  - `cancel_reason` - Reason provided for cancellation
+  - `cancelled_by` - User/system that cancelled the task
+
+#### CLI Control Commands
+- **`pause <task_id> [--reason TEXT]`** - Pause task from CLI with optional reason
+  - Example: `shannon pause task-123 --reason "Hold for review"`
+- **`resume <task_id> [--reason TEXT]`** - Resume task from CLI with optional reason
+  - Example: `shannon resume task-123 --reason "Ready to continue"`
+- **`control-state <task_id>`** - View task control state with formatted output
+  - Example: `shannon control-state task-123`
+
+#### API Integration
+- Pause endpoint: `POST /api/v1/tasks/{id}/pause`
+- Resume endpoint: `POST /api/v1/tasks/{id}/resume`
+- Control state endpoint: `GET /api/v1/tasks/{id}/control-state`
+- HTTP 200/202 responses indicate successful pause/resume requests
+- Pause takes effect at next workflow checkpoint (pre_synthesis, post_iteration, etc.)
+
+### Changed
+- README.md updated with control signal examples and CLI commands
+- Version bumped from 0.3.0 to 0.4.0
+- `ControlState` exported in public API via `__init__.py`
+
+### Migration Guide
+
+**Using control signals:**
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+
+# Pause a running task
+client.pause_task("task-123", reason="User requested pause")
+
+# Check control state
+state = client.get_control_state("task-123")
+if state.is_paused:
+    print(f"Paused at: {state.paused_at}")
+    print(f"Reason: {state.pause_reason}")
+
+# Resume the task
+client.resume_task("task-123", reason="User resumed")
+```
+
+**CLI usage:**
+```bash
+# Pause task
+python -m shannon.cli --base-url http://localhost:8080 pause task-123 --reason "Hold for review"
+
+# Check state
+python -m shannon.cli --base-url http://localhost:8080 control-state task-123
+
+# Resume task
+python -m shannon.cli --base-url http://localhost:8080 resume task-123
+```
+
+---
+
 ## [0.3.0] - 2025-01-04
 
 ### Added

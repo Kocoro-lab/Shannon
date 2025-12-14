@@ -612,3 +612,14 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 
 	return &task, nil
 }
+
+// UpdateTaskStatus updates the status of a task execution
+func (c *Client) UpdateTaskStatus(ctx context.Context, workflowID string, status string) error {
+	_, err := c.db.ExecContext(ctx,
+		`UPDATE task_executions SET status = $1 WHERE workflow_id = $2`,
+		status, workflowID)
+	if err != nil {
+		return fmt.Errorf("failed to update task status: %w", err)
+	}
+	return nil
+}

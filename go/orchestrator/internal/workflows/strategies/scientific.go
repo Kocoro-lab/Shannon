@@ -1,17 +1,18 @@
 package strategies
 
 import (
-    "fmt"
-    "strings"
-    "time"
+	"fmt"
+	"strings"
+	"time"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-    "go.temporal.io/sdk/temporal"
-    "go.temporal.io/sdk/workflow"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ScientificWorkflow implements hypothesis-driven investigation using patterns
@@ -24,6 +25,12 @@ func ScientificWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		"user_id", input.UserID,
 	)
 
+	// Determine workflow ID for event streaming
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Input validation
 	if err := validateInput(input); err != nil {
 		return TaskResult{
@@ -34,6 +41,21 @@ func ScientificWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Load configuration
 	config := getWorkflowConfig(ctx)
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	// Skip SSE emissions when running as child workflow (parent already emits)
+	controlHandler := &control.SignalHandler{
+		WorkflowID:  workflowID,
+		AgentID:     "scientific",
+		Logger:      logger,
+		EmitCtx:     emitCtx,
+		SkipSSEEmit: input.ParentWorkflowID != "",
+	}
+	controlHandler.Setup(ctx)
 
 	// Prepare pattern options
 	opts := patterns.Options{
@@ -73,6 +95,11 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	}
 	if input.ParentWorkflowID != "" {
 		cotCtx["parent_workflow_id"] = input.ParentWorkflowID
+	}
+
+	// Check pause/cancel before execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Memory retrieval with gate precedence (hierarchical > simple session)
@@ -150,6 +177,11 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		"confidence", cotResult.Confidence,
 	)
 
+	// Check pause/cancel before debate phase
+	if err := controlHandler.CheckPausePoint(ctx, "pre_debate"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Phase 2: Test competing hypotheses using Debate pattern
 	logger.Info("Phase 2: Testing hypotheses with multi-agent Debate")
 
@@ -215,6 +247,11 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	}
 
 	totalTokens += debateResult.TotalTokens
+
+	// Check pause/cancel before tree-of-thoughts phase
+	if err := controlHandler.CheckPausePoint(ctx, "pre_tree_of_thoughts"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
 
 	// Phase 3: Synthesize findings with Tree-of-Thoughts for exploration
 	logger.Info("Phase 3: Exploring implications with Tree-of-Thoughts")
@@ -323,6 +360,11 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 
 	totalTokens += totResult.TotalTokens
 
+	// Check pause/cancel before reflection phase
+	if err := controlHandler.CheckPausePoint(ctx, "pre_reflection"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Phase 4: Final quality check with Reflection
 	logger.Info("Phase 4: Applying reflection for final synthesis")
 
@@ -402,14 +444,6 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	)
 
 	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
-	}
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
@@ -461,6 +495,11 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
         }
         meta["cost_usd"] = pricing.CostForTokens(modelForCost, totalTokens)
     }
+
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
 
 	return TaskResult{
 		Result:     scientificReport,

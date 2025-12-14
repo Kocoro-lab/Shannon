@@ -1,16 +1,17 @@
 package strategies
 
 import (
-    "fmt"
-    "time"
+	"fmt"
+	"time"
 
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
-    "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-    "go.temporal.io/sdk/temporal"
-    "go.temporal.io/sdk/workflow"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
+	"go.temporal.io/sdk/temporal"
+	"go.temporal.io/sdk/workflow"
 )
 
 // ExploratoryWorkflow implements iterative discovery with hypothesis testing using patterns
@@ -22,6 +23,12 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		"user_id", input.UserID,
 	)
 
+	// Determine workflow ID for event streaming
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
 	// Input validation
 	if err := validateInput(input); err != nil {
 		return TaskResult{
@@ -32,6 +39,21 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 
 	// Load configuration
 	config := getWorkflowConfig(ctx)
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	// Skip SSE emissions when running as child workflow (parent already emits)
+	controlHandler := &control.SignalHandler{
+		WorkflowID:  workflowID,
+		AgentID:     "exploratory",
+		Logger:      logger,
+		EmitCtx:     emitCtx,
+		SkipSSEEmit: input.ParentWorkflowID != "",
+	}
+	controlHandler.Setup(ctx)
 
 	// Prepare pattern options
 	opts := patterns.Options{
@@ -161,6 +183,11 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 		}
 	}
 
+	// Check pause/cancel before Tree-of-Thoughts execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	totResult, err := patterns.TreeOfThoughts(
 		ctx,
 		input.Query,
@@ -185,6 +212,11 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 	finalConfidence := totResult.Confidence
 
 	if totResult.Confidence < config.ExploratoryConfidenceThreshold {
+		// Check pause/cancel before debate phase
+		if err := controlHandler.CheckPausePoint(ctx, "pre_debate"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
+
 		logger.Info("Confidence below threshold, applying Debate pattern",
 			"current_confidence", totResult.Confidence,
 			"threshold", config.ExploratoryConfidenceThreshold,
@@ -248,6 +280,11 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 
 	// Phase 3: Apply Reflection pattern for final quality check
 	if finalConfidence < 0.9 {
+		// Check pause/cancel before reflection phase
+		if err := controlHandler.CheckPausePoint(ctx, "pre_reflection"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
+
 		logger.Info("Applying reflection for final quality improvement")
 
 		reflectionConfig := patterns.ReflectionConfig{
@@ -312,14 +349,6 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 	)
 
 	// Emit WORKFLOW_COMPLETED before returning
-	workflowID := input.ParentWorkflowID
-	if workflowID == "" {
-		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
-	}
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
@@ -365,6 +394,11 @@ func ExploratoryWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, err
 			metaModel = m
 		}
 		meta["cost_usd"] = pricing.CostForTokens(metaModel, totalTokens)
+	}
+
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	return TaskResult{

@@ -62,6 +62,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		StartToCloseTimeout: 30 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
+
+	// Initialize control signal handler for pause/resume/cancel
+	controlHandler := &ControlSignalHandler{
+		WorkflowID: workflowID,
+		AgentID:    "supervisor",
+		Logger:     logger,
+		EmitCtx:    emitCtx,
+	}
+	controlHandler.Setup(ctx)
+
 	if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
@@ -241,18 +251,27 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						logger.Warn("Failed to emit team recruited event", "error", err)
 					}
 					// Start child simple task with graceful cancellation
-					childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+					childOpts := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 						ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 					})
 					var res TaskResult
-					if err := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, TaskInput{
+					simpleTaskFuture := workflow.ExecuteChildWorkflow(childOpts, SimpleTaskWorkflow, TaskInput{
 						Query: req.Description, UserID: input.UserID, SessionID: input.SessionID,
 						Context: map[string]interface{}{"role": role}, Mode: input.Mode, History: input.History, SessionCtx: input.SessionCtx,
 						ParentWorkflowID: workflowID, // Preserve parent workflow ID for event streaming
-					}).Get(childCtx, &res); err != nil {
+					})
+					var dynamicChildExec workflow.Execution
+					if err := simpleTaskFuture.GetChildWorkflowExecution().Get(childOpts, &dynamicChildExec); err != nil {
+						logger.Error("Dynamic child workflow failed to get execution", "error", err)
+						return
+					}
+					controlHandler.RegisterChildWorkflow(dynamicChildExec.ID)
+					if err := simpleTaskFuture.Get(childOpts, &res); err != nil {
+						controlHandler.UnregisterChildWorkflow(dynamicChildExec.ID)
 						logger.Error("Dynamic child workflow failed", "error", err)
 						return
 					}
+					controlHandler.UnregisterChildWorkflow(dynamicChildExec.ID)
 					childResults = append(childResults, activities.AgentExecutionResult{AgentID: "dynamic", Response: res.Result, TokensUsed: res.TokensUsed, Success: res.Success})
 				})
 				sel.AddReceive(retireCh, func(c workflow.ReceiveChannel, more bool) {
@@ -286,6 +305,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				sel.Select(ctx)
 			}
 		})
+	}
+
+	// Check pause/cancel before decomposition
+	if err := controlHandler.CheckPausePoint(ctx, "pre_decomposition"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Prepare decomposition input with advisor suggestions
@@ -397,7 +421,17 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		// Convert to strategies.TaskInput
 		strategiesInput := convertToStrategiesInput(input)
 		var strategiesResult strategies.TaskResult
-		if err := workflow.ExecuteChildWorkflow(ctx, strategies.DAGWorkflow, strategiesInput).Get(ctx, &strategiesResult); err != nil {
+
+		// Start child workflow and register for signal propagation
+		dagFuture := workflow.ExecuteChildWorkflow(ctx, strategies.DAGWorkflow, strategiesInput)
+		var dagChildExec workflow.Execution
+		if err := dagFuture.GetChildWorkflowExecution().Get(ctx, &dagChildExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(dagChildExec.ID)
+		err := dagFuture.Get(ctx, &strategiesResult)
+		controlHandler.UnregisterChildWorkflow(dagChildExec.ID)
+		if err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
 
@@ -485,6 +519,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 
 	for i, st := range decomp.Subtasks {
+		// Check pause/cancel before each subtask
+		if err := controlHandler.CheckPausePoint(ctx, fmt.Sprintf("pre_subtask_%d", i)); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
+
 		// Emit progress event for this subtask
 		progressMessage := fmt.Sprintf("Starting subtask %d of %d: %s", i+1, len(decomp.Subtasks), st.Description)
 		runes := []rune(st.Description)
@@ -984,6 +1023,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// Check pause/cancel before synthesis
+	if err := controlHandler.CheckPausePoint(ctx, "pre_synthesis"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	// Emit data processing event for synthesis
 	if len(childResults) > 1 {
 		synthMessage := fmt.Sprintf("Synthesizing results from %d agents", len(childResults))
@@ -1310,6 +1354,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"strategy", decomp.ExecutionStrategy,
 			"subtasks", len(decomp.Subtasks),
 			"duration_ms", workflowDuration)
+	}
+
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Emit workflow completed event for dashboards

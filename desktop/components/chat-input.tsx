@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Send, Loader2, Sparkles } from "lucide-react";
+import { Send, Loader2, Sparkles, Pause, Play, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { submitTask } from "@/lib/shannon/api";
 import { cn } from "@/lib/utils";
@@ -22,9 +22,34 @@ interface ChatInputProps {
     onTaskCreated?: (taskId: string, query: string, workflowId?: string) => void;
     /** Use centered textarea layout for empty sessions */
     variant?: "default" | "centered";
+    /** Task control props */
+    isTaskRunning?: boolean;
+    isPaused?: boolean;
+    isPauseLoading?: boolean;
+    isResumeLoading?: boolean;
+    isCancelling?: boolean;
+    onPause?: () => void;
+    onResume?: () => void;
+    onCancel?: () => void;
 }
 
-export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent = "normal", initialResearchStrategy = "quick", onTaskCreated, variant = "default" }: ChatInputProps) {
+export function ChatInput({ 
+    sessionId, 
+    disabled, 
+    isTaskComplete, 
+    selectedAgent = "normal", 
+    initialResearchStrategy = "quick", 
+    onTaskCreated, 
+    variant = "default",
+    isTaskRunning = false,
+    isPaused = false,
+    isPauseLoading = false,
+    isResumeLoading = false,
+    isCancelling = false,
+    onPause,
+    onResume,
+    onCancel,
+}: ChatInputProps) {
     const [query, setQuery] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -254,17 +279,70 @@ export function ChatInput({ sessionId, disabled, isTaskComplete, selectedAgent =
                     onKeyDown={handleKeyDown}
                     className="min-h-[44px]"
                 />
-                <Button
-                    type="submit"
-                    size="icon"
-                    disabled={!query.trim() || isInputDisabled || isSubmitting}
-                >
-                    {isSubmitting ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                        <Send className="h-4 w-4" />
-                    )}
-                </Button>
+                {/* Show Pause/Stop buttons when task is running, otherwise show Send button */}
+                {isTaskRunning ? (
+                    <div className="flex gap-1.5">
+                        {/* Pause/Resume toggle */}
+                        {isPaused ? (
+                            <Button
+                                type="button"
+                                size="icon"
+                                variant="outline"
+                                onClick={onResume}
+                                disabled={isResumeLoading}
+                                title="Resume workflow"
+                            >
+                                {isResumeLoading ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                    <Play className="h-4 w-4" />
+                                )}
+                            </Button>
+                        ) : (
+                            <Button
+                                type="button"
+                                size="icon"
+                                variant="outline"
+                                onClick={onPause}
+                                disabled={isPauseLoading}
+                                title="Pause at next checkpoint"
+                            >
+                                {isPauseLoading ? (
+                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                ) : (
+                                    <Pause className="h-4 w-4" />
+                                )}
+                            </Button>
+                        )}
+                        {/* Stop button - always visible when running */}
+                        <Button
+                            type="button"
+                            size="icon"
+                            variant="destructive"
+                            onClick={onCancel}
+                            disabled={isCancelling || isPauseLoading || isResumeLoading}
+                            title="Stop"
+                        >
+                            {isCancelling ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                                <Square className="h-4 w-4" />
+                            )}
+                        </Button>
+                    </div>
+                ) : (
+                    <Button
+                        type="submit"
+                        size="icon"
+                        disabled={!query.trim() || isInputDisabled || isSubmitting}
+                    >
+                        {isSubmitting ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                        ) : (
+                            <Send className="h-4 w-4" />
+                        )}
+                    </Button>
+                )}
             </div>
             {error && (
                 <p className="text-xs text-red-500">{error}</p>

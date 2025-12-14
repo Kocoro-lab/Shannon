@@ -110,6 +110,16 @@ def main():
     cancel_parser.add_argument("task_id", help="Task ID")
     cancel_parser.add_argument("--reason", help="Cancellation reason")
 
+    # Pause command
+    pause_parser = subparsers.add_parser("pause", help="Pause a task at checkpoints")
+    pause_parser.add_argument("task_id", help="Task ID")
+    pause_parser.add_argument("--reason", help="Pause reason")
+
+    # Resume command
+    resume_parser = subparsers.add_parser("resume", help="Resume a paused task")
+    resume_parser.add_argument("task_id", help="Task ID")
+    resume_parser.add_argument("--reason", help="Resume reason")
+
     # Stream command
     stream_parser = subparsers.add_parser("stream", help="Stream task events")
     stream_parser.add_argument("workflow_id", help="Workflow ID")
@@ -119,6 +129,12 @@ def main():
     )
     # SSE is the only transport
     stream_parser.add_argument("--traceparent", help="W3C traceparent header for distributed tracing")
+
+    # Control state command
+    control_state_parser = subparsers.add_parser(
+        "control-state", help="Get pause/cancel control state for a task"
+    )
+    control_state_parser.add_argument("task_id", help="Task ID")
 
     # Approve command
     approve_parser = subparsers.add_parser("approve", help="Approve pending request")
@@ -218,6 +234,38 @@ def main():
             else:
                 print(f"✗ Failed to cancel task {args.task_id}")
                 sys.exit(1)
+
+        elif args.command == "pause":
+            success = client.pause_task(args.task_id, reason=args.reason)
+            if success:
+                print(f"✓ Pause request sent for task {args.task_id} (will take effect at next checkpoint)")
+            else:
+                print(f"✗ Failed to send pause request for task {args.task_id}")
+                sys.exit(1)
+
+        elif args.command == "resume":
+            success = client.resume_task(args.task_id, reason=args.reason)
+            if success:
+                print(f"✓ Resume request sent for task {args.task_id}")
+            else:
+                print(f"✗ Failed to send resume request for task {args.task_id}")
+                sys.exit(1)
+
+        elif args.command == "control-state":
+            state = client.get_control_state(args.task_id)
+            print(f"Task: {args.task_id}")
+            print(f"Paused: {state.is_paused}")
+            print(f"Cancelled: {state.is_cancelled}")
+            if state.paused_at:
+                print(f"Paused at: {state.paused_at.isoformat()}")
+            if state.pause_reason:
+                print(f"Pause reason: {state.pause_reason}")
+            if state.paused_by:
+                print(f"Paused by: {state.paused_by}")
+            if state.cancel_reason:
+                print(f"Cancel reason: {state.cancel_reason}")
+            if state.cancelled_by:
+                print(f"Cancelled by: {state.cancelled_by}")
 
         elif args.command == "stream":
             # Parse event types filter

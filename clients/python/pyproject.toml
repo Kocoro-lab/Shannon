@@ -1,12 +1,12 @@
 [project]
 name = "shannon-sdk"
-version = "0.3.0"
+version = "0.4.2"
 description = "Python SDK for Shannon multi-agent AI platform"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "Shannon Team", email = "dev@ptmind.com"}
+    {name = "Shannon Team"}
 ]
 keywords = ["ai", "agents", "llm", "orchestration", "multi-agent", "workflow"]
 classifiers = [

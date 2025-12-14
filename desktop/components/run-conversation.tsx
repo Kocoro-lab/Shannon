@@ -11,7 +11,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
-import { ExternalLink, Copy, Check, Sparkles, Microscope, AlertCircle, XCircle, Brain, Users, Zap, CheckCircle, Loader2, Search, Play } from "lucide-react";
+import { ExternalLink, Copy, Check, Sparkles, Microscope, AlertCircle, XCircle, Brain, Users, Zap, CheckCircle, Loader2, Search, Play, Pause, CircleSlash, Clock, Link, MessageSquare, FolderSync, Info, ShieldAlert, RefreshCw } from "lucide-react";
 import React, { type ReactNode, useState } from "react";
 
 export interface Citation {
@@ -61,6 +61,7 @@ function StatusIcon({ eventType }: { eventType?: string }) {
         case "DELEGATION":
             return <Users className="h-3.5 w-3.5 text-purple-500" />;
         case "PROGRESS":
+        case "STATUS_UPDATE":
             return <Zap className="h-3.5 w-3.5 text-amber-500" />;
         case "DATA_PROCESSING":
             return <Loader2 className="h-3.5 w-3.5 text-green-500 animate-spin" />;
@@ -72,6 +73,29 @@ function StatusIcon({ eventType }: { eventType?: string }) {
             return <AlertCircle className="h-3.5 w-3.5 text-orange-500" />;
         case "APPROVAL_DECISION":
             return <CheckCircle className="h-3.5 w-3.5 text-green-500" />;
+        case "WAITING":
+            return <Clock className="h-3.5 w-3.5 text-amber-500 animate-pulse" />;
+        case "DEPENDENCY_SATISFIED":
+            return <Link className="h-3.5 w-3.5 text-green-500" />;
+        case "ERROR_OCCURRED":
+            return <ShieldAlert className="h-3.5 w-3.5 text-red-500" />;
+        case "ERROR_RECOVERY":
+            return <RefreshCw className="h-3.5 w-3.5 text-amber-500 animate-spin" />;
+        case "MESSAGE_SENT":
+        case "MESSAGE_RECEIVED":
+            return <MessageSquare className="h-3.5 w-3.5 text-blue-500" />;
+        case "WORKSPACE_UPDATED":
+            return <FolderSync className="h-3.5 w-3.5 text-purple-500" />;
+        case "workflow.pausing":
+            return <Pause className="h-3.5 w-3.5 text-amber-500 animate-pulse" />;
+        case "workflow.paused":
+            return <Pause className="h-3.5 w-3.5 text-amber-500" />;
+        case "workflow.resumed":
+            return <Play className="h-3.5 w-3.5 text-green-500" />;
+        case "workflow.cancelling":
+            return <CircleSlash className="h-3.5 w-3.5 text-red-500 animate-pulse" />;
+        case "workflow.cancelled":
+            return <XCircle className="h-3.5 w-3.5 text-red-500" />;
         case "WORKFLOW_STARTED":
         default:
             return <Loader2 className="h-3.5 w-3.5 text-muted-foreground animate-spin" />;

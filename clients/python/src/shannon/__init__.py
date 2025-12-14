@@ -1,9 +1,10 @@
 """Shannon SDK - Python client for Shannon multi-agent AI platform."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.2"
 
 from shannon.client import AsyncShannonClient, ShannonClient
 from shannon.models import (
+    ControlState,
     Event,
     EventType,
     PendingApproval,
@@ -41,6 +42,7 @@ __all__ = [
     "AsyncShannonClient",
     "ShannonClient",
     # Models
+    "ControlState",
     "Event",
     "EventType",
     "PendingApproval",

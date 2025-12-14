@@ -25,6 +25,25 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		"session_id", input.SessionID,
 	)
 
+	// Determine workflow ID for event streaming
+	workflowID := input.ParentWorkflowID
+	if workflowID == "" {
+		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
+	}
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	controlHandler := &ControlSignalHandler{
+		WorkflowID: workflowID,
+		AgentID:    "streaming",
+		Logger:     logger,
+		EmitCtx:    emitCtx,
+	}
+	controlHandler.Setup(ctx)
+
 	// Initialize typed state channel
 	stateChannel := state.NewStateChannel("streaming-workflow")
 
@@ -83,6 +102,11 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 	agentState.ExecutionState.Status = "running"
 	if err := stateChannel.Set(agentState); err != nil {
 		logger.Error("Failed to update state", "error", err)
+	}
+
+	// Check pause/cancel before execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Execute with streaming
@@ -209,6 +233,11 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		meta["cost_usd"] = pricing.CostForTokens(model, streamRes.TokensUsed)
 	}
 
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
 	return TaskResult{
 		Result:     streamRes.Response,
 		Success:    true,
@@ -231,6 +260,19 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	if workflowID == "" {
 		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	}
+
+	// Initialize control signal handler for pause/resume/cancel
+	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 5 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+	controlHandler := &ControlSignalHandler{
+		WorkflowID: workflowID,
+		AgentID:    "parallel-streaming",
+		Logger:     logger,
+		EmitCtx:    emitCtx,
+	}
+	controlHandler.Setup(ctx)
 
 	// Configure activity options
 	activityOptions := workflow.ActivityOptions{
@@ -266,6 +308,11 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			AgentID:   "agent-3",
 			Mode:      input.Mode,
 		},
+	}
+
+	// Check pause/cancel before execution
+	if err := controlHandler.CheckPausePoint(ctx, "pre_execution"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Execute streams in parallel
@@ -482,19 +529,6 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 	}
 
-	// Emit WORKFLOW_COMPLETED before returning (workflowID already set at line 219)
-	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-	})
-	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflowID,
-		EventType:  activities.StreamEventWorkflowCompleted,
-		AgentID:    "streaming",
-		Message:    activities.MsgWorkflowCompleted(),
-		Timestamp:  workflow.Now(ctx),
-	}).Get(ctx, nil)
-
 	// Build metadata and include aggregate model/provider + token breakdown across streams
 	meta := map[string]interface{}{
 		"num_streams": len(results),
@@ -523,6 +557,20 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 		meta["cost_usd"] = pricing.CostForTokens(model, totalTokens)
 	}
+
+	// Check pause/cancel before completion
+	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Emit WORKFLOW_COMPLETED before returning
+	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+		WorkflowID: workflowID,
+		EventType:  activities.StreamEventWorkflowCompleted,
+		AgentID:    "parallel-streaming",
+		Message:    activities.MsgWorkflowCompleted(),
+		Timestamp:  workflow.Now(ctx),
+	}).Get(ctx, nil)
 
 	return TaskResult{
 		Result:     synthesis.FinalResult,

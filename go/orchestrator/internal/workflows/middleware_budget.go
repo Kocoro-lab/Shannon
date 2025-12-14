@@ -41,7 +41,9 @@ func BudgetPreflight(ctx workflow.Context, input TaskInput, estimatedTokens int)
 			"delay_ms", res.BackpressureDelay,
 			"pressure_level", res.BudgetPressure,
 		)
-		_ = workflow.Sleep(ctx, time.Duration(res.BackpressureDelay)*time.Millisecond)
+		if err := workflow.Sleep(ctx, time.Duration(res.BackpressureDelay)*time.Millisecond); err != nil {
+			return nil, err // Return error on cancellation
+		}
 	}
 
 	rateControlVersion := workflow.GetVersion(ctx, "provider_rate_control_v1", workflow.DefaultVersion, 1)
@@ -72,7 +74,9 @@ func BudgetPreflight(ctx workflow.Context, input TaskInput, estimatedTokens int)
 				)
 				// Record metric for rate limit delay
 				ometrics.RateLimitDelay.WithLabelValues(provider, tier).Observe(delay.Seconds())
-				_ = workflow.Sleep(ctx, delay)
+				if err := workflow.Sleep(ctx, delay); err != nil {
+					return nil, err // Return error on cancellation
+				}
 			}
 		}
 	}

@@ -226,3 +226,86 @@ export async function getSessionEvents(sessionId: string, limit: number = 10, of
 
     return response.json();
 }
+
+// Task Control Types
+
+export interface TaskControlResponse {
+    success: boolean;
+    message: string;
+    task_id: string;
+}
+
+export interface ControlStateResponse {
+    is_paused: boolean;
+    is_cancelled: boolean;
+    paused_at: string;
+    pause_reason: string;
+    paused_by: string;
+    cancel_reason: string;
+    cancelled_by: string;
+}
+
+// Task Control API Functions
+
+export async function pauseTask(taskId: string, reason?: string): Promise<TaskControlResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/pause`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(reason ? { reason } : {}),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to pause task: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function resumeTask(taskId: string, reason?: string): Promise<TaskControlResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/resume`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(reason ? { reason } : {}),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to resume task: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function cancelTask(taskId: string, reason?: string): Promise<{ success: boolean }> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/cancel`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify(reason ? { reason } : {}),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to cancel task: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function getTaskControlState(taskId: string): Promise<ControlStateResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/control-state`, {
+        // Use the same auth mechanism as other API calls (cookies / Authorization headers).
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to get task control state: ${response.statusText}`);
+    }
+
+    return response.json();
+}

@@ -25,6 +25,8 @@ import (
 // to an appropriate child workflow. It does not execute agents directly.
 func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	logger := workflow.GetLogger(ctx)
+	workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+
 	logger.Info("Starting OrchestratorWorkflow",
 		"query", input.Query,
 		"user_id", input.UserID,
@@ -36,8 +38,18 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
+
+	// Initialize control signal handler for pause/resume/cancel
+	controlHandler := &ControlSignalHandler{
+		WorkflowID: workflowID,
+		AgentID:    "orchestrator",
+		Logger:     logger,
+		EmitCtx:    emitCtx,
+	}
+	controlHandler.Setup(ctx)
+
 	if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-		WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
 		AgentID:    "orchestrator",
 		Message:    activities.MsgWorkflowStarted(),
@@ -125,11 +137,16 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			if rec.Source != "" {
 				input.Context["learning_source"] = rec.Source
 			}
-			if result, handled, err := routeStrategyWorkflow(ctx, input, rec.Strategy, "learning", emitCtx); handled {
+			if result, handled, err := routeStrategyWorkflow(ctx, input, rec.Strategy, "learning", emitCtx, controlHandler); handled {
 				return result, err
 			}
 			logger.Warn("Learning router returned unknown strategy", "strategy", rec.Strategy)
 		}
+	}
+
+	// Check pause/cancel before routing to child workflow
+	if err := controlHandler.CheckPausePoint(ctx, "pre_routing"); err != nil {
+		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// 1) Decompose the task (planning + complexity)
@@ -156,7 +173,14 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
 		var result TaskResult
-		if err := workflow.ExecuteChildWorkflow(childCtx, TemplateWorkflow, templateInput).Get(childCtx, &result); err != nil {
+		templateFuture := workflow.ExecuteChildWorkflow(childCtx, TemplateWorkflow, templateInput)
+		var templateExec workflow.Execution
+		if err := templateFuture.GetChildWorkflowExecution().Get(childCtx, &templateExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(templateExec.ID)
+		if err := templateFuture.Get(childCtx, &result); err != nil {
+			controlHandler.UnregisterChildWorkflow(templateExec.ID)
 			if cfg.TemplateFallbackEnabled {
 				logger.Warn("Template workflow failed; falling back to AI decomposition", "error", err)
 				ometrics.TemplateFallbackTriggered.WithLabelValues("error").Inc()
@@ -168,6 +192,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				return result, err
 			}
 		} else if !result.Success {
+			controlHandler.UnregisterChildWorkflow(templateExec.ID)
 			if cfg.TemplateFallbackEnabled {
 				logger.Warn("Template workflow returned unsuccessful result; falling back to AI decomposition")
 				ometrics.TemplateFallbackTriggered.WithLabelValues("unsuccessful").Inc()
@@ -179,6 +204,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				return result, nil
 			}
 		} else {
+			controlHandler.UnregisterChildWorkflow(templateExec.ID)
 			scheduleStreamEnd(ctx)
 			result = AddTaskContextToMetadata(result, input.Context)
 			return result, nil
@@ -248,6 +274,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				InputTokens:          0,
 				OutputTokens:         0,
 			}
+
+			// Check pause/cancel after role assignment - signal may have arrived during setup
+			if err := controlHandler.CheckPausePoint(ctx, "post_role_assignment"); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+			}
 		}
 	}
 
@@ -297,6 +328,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				OutputTokens:         0,
 			}
 			logger.Info("Created fallback decomposition for simple execution", "query", input.Query)
+		}
+
+		// Check pause/cancel after decomposition - signal may have arrived during the activity
+		if err := controlHandler.CheckPausePoint(ctx, "post_decomposition"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
 	}
 
@@ -453,7 +489,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 	// Cognitive program takes precedence if specified
 	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
-		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx); handled {
+		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx, controlHandler); handled {
 			return result, err
 		}
 		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
@@ -463,7 +499,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if v, ok := input.Context["force_research"]; ok {
 		if b, ok := v.(bool); ok && b {
 			logger.Info("Forcing ResearchWorkflow via context flag (test mode)")
-			if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx); handled {
+			if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx, controlHandler); handled {
 				return result, err
 			}
 		}
@@ -496,6 +532,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 	switch {
 	case isSimple && !forceP2P:
+		// Check pause/cancel before starting child workflow
+		if err := controlHandler.CheckPausePoint(ctx, "pre_simple_workflow"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
 		// Keep simple path lightweight as a child for isolation (unless P2P is forced)
 		var result TaskResult
 		ometrics.WorkflowsStarted.WithLabelValues("SimpleTaskWorkflow", "simple").Inc()
@@ -517,12 +557,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		execErr := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result)
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input)
+		var childExec workflow.Execution
+		if err := childFuture.GetChildWorkflowExecution().Get(childCtx, &childExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(childExec.ID)
+		execErr := childFuture.Get(childCtx, &result)
+		controlHandler.UnregisterChildWorkflow(childExec.ID)
 
 		// Generate title regardless of success/failure (best-effort)
 		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
+			// Emit workflow.cancelled if this was a cancellation (child skipped emission due to SkipSSEEmit)
+			controlHandler.EmitCancelledIfNeeded(ctx, execErr.Error())
 			result = AddTaskContextToMetadata(result, input.Context)
 			return result, execErr
 		}
@@ -531,6 +580,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		return result, nil
 
 	case len(decomp.Subtasks) > 5 || hasDeps:
+		// Check pause/cancel before starting child workflow
+		if err := controlHandler.CheckPausePoint(ctx, "pre_supervisor_workflow"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
 		var result TaskResult
 		ometrics.WorkflowsStarted.WithLabelValues("SupervisorWorkflow", "complex").Inc()
 		// Emit delegation event
@@ -544,12 +597,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		execErr := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, input).Get(childCtx, &result)
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, SupervisorWorkflow, input)
+		var childExec workflow.Execution
+		if err := childFuture.GetChildWorkflowExecution().Get(childCtx, &childExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(childExec.ID)
+		execErr := childFuture.Get(childCtx, &result)
+		controlHandler.UnregisterChildWorkflow(childExec.ID)
 
 		// Generate title regardless of success/failure (best-effort)
 		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
+			// Emit workflow.cancelled if this was a cancellation (child skipped emission due to SkipSSEEmit)
+			controlHandler.EmitCancelledIfNeeded(ctx, execErr.Error())
 			result = AddTaskContextToMetadata(result, input.Context)
 			return result, execErr
 		}
@@ -558,6 +620,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		return result, nil
 
 	default:
+		// Check pause/cancel before starting child workflow
+		if err := controlHandler.CheckPausePoint(ctx, "pre_dag_workflow"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
 		// Standard DAG strategy (fan-out/fan-in)
 		ometrics.WorkflowsStarted.WithLabelValues("DAGWorkflow", "standard").Inc()
 		// Emit delegation event
@@ -573,12 +639,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		execErr := workflow.ExecuteChildWorkflow(childCtx, strategies.DAGWorkflow, strategiesInput).Get(childCtx, &strategiesResult)
+		dagFuture := workflow.ExecuteChildWorkflow(childCtx, strategies.DAGWorkflow, strategiesInput)
+		var dagExec workflow.Execution
+		if err := dagFuture.GetChildWorkflowExecution().Get(childCtx, &dagExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(dagExec.ID)
+		execErr := dagFuture.Get(childCtx, &strategiesResult)
+		controlHandler.UnregisterChildWorkflow(dagExec.ID)
 
 		// Generate title regardless of success/failure (best-effort)
 		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
+			// Emit workflow.cancelled if this was a cancellation (child skipped emission due to SkipSSEEmit)
+			controlHandler.EmitCancelledIfNeeded(ctx, execErr.Error())
 			out := AddTaskContextToMetadata(TaskResult{Success: false, ErrorMessage: execErr.Error()}, input.Context)
 			return out, execErr
 		}
@@ -709,7 +784,7 @@ func extractTemplateRequest(input TaskInput) (string, string) {
 	return name, version
 }
 
-func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy string, mode string, emitCtx workflow.Context) (TaskResult, bool, error) {
+func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy string, mode string, emitCtx workflow.Context, controlHandler *ControlSignalHandler) (TaskResult, bool, error) {
 	strategyLower := strings.ToLower(strings.TrimSpace(strategy))
 	if strategyLower == "" {
 		return TaskResult{}, false, nil
@@ -717,6 +792,12 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 
 	switch strategyLower {
 	case "simple":
+		// Check pause/cancel before starting child workflow
+		if controlHandler != nil {
+			if err := controlHandler.CheckPausePoint(ctx, "pre_simple_strategy"); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, true, err
+			}
+		}
 		var result TaskResult
 		ometrics.WorkflowsStarted.WithLabelValues("SimpleTaskWorkflow", mode).Inc()
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
@@ -729,12 +810,29 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		execErr := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input).Get(childCtx, &result)
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input)
+		var childExecID string
+		if controlHandler != nil {
+			var childExec workflow.Execution
+			if err := childFuture.GetChildWorkflowExecution().Get(childCtx, &childExec); err != nil {
+				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, true, err
+			}
+			childExecID = childExec.ID
+			controlHandler.RegisterChildWorkflow(childExecID)
+		}
+		execErr := childFuture.Get(childCtx, &result)
+		if controlHandler != nil && childExecID != "" {
+			controlHandler.UnregisterChildWorkflow(childExecID)
+		}
 
 		// Generate title regardless of success/failure (best-effort)
 		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
+			// Emit workflow.cancelled if this was a cancellation (child skipped emission due to SkipSSEEmit)
+			if controlHandler != nil {
+				controlHandler.EmitCancelledIfNeeded(ctx, execErr.Error())
+			}
 			result = AddTaskContextToMetadata(result, input.Context)
 			return result, true, execErr
 		}
@@ -742,6 +840,12 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		result = AddTaskContextToMetadata(result, input.Context)
 		return result, true, nil
 	case "react", "exploratory", "research", "scientific":
+		// Check pause/cancel before starting child workflow
+		if controlHandler != nil {
+			if err := controlHandler.CheckPausePoint(ctx, "pre_"+strategyLower+"_workflow"); err != nil {
+				return TaskResult{Success: false, ErrorMessage: err.Error()}, true, err
+			}
+		}
 		var wfName string
 		var wfFunc interface{}
 		switch strategyLower {
@@ -772,12 +876,29 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
 		})
-		execErr := workflow.ExecuteChildWorkflow(childCtx, wfFunc, strategiesInput).Get(childCtx, &strategiesResult)
+		strategyFuture := workflow.ExecuteChildWorkflow(childCtx, wfFunc, strategiesInput)
+		var strategyExecID string
+		if controlHandler != nil {
+			var strategyExec workflow.Execution
+			if err := strategyFuture.GetChildWorkflowExecution().Get(childCtx, &strategyExec); err != nil {
+				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, true, err
+			}
+			strategyExecID = strategyExec.ID
+			controlHandler.RegisterChildWorkflow(strategyExecID)
+		}
+		execErr := strategyFuture.Get(childCtx, &strategiesResult)
+		if controlHandler != nil && strategyExecID != "" {
+			controlHandler.UnregisterChildWorkflow(strategyExecID)
+		}
 
 		// Generate title regardless of success/failure (best-effort)
 		scheduleStreamEnd(ctx)
 
 		if execErr != nil {
+			// Emit workflow.cancelled if this was a cancellation (child skipped emission due to SkipSSEEmit)
+			if controlHandler != nil {
+				controlHandler.EmitCancelledIfNeeded(ctx, execErr.Error())
+			}
 			res := AddTaskContextToMetadata(TaskResult{}, input.Context)
 			return res, true, execErr
 		}

@@ -336,3 +336,47 @@ func extractSummary(text string, maxLen int) string {
 	// Fallback: truncate the whole text
 	return truncateQuery(text, maxLen)
 }
+
+// -----------------------------------------------------------------------------
+// Workflow Control Messages (pause/resume/cancel)
+// -----------------------------------------------------------------------------
+
+// MsgWorkflowPausing formats a message when pause signal is received.
+func MsgWorkflowPausing(reason string) string {
+	if reason == "" {
+		return "Pausing workflow..."
+	}
+	return fmt.Sprintf("Pausing workflow: %s", reason)
+}
+
+// MsgWorkflowPaused formats a message when workflow is blocked at checkpoint.
+func MsgWorkflowPaused(checkpoint string) string {
+	if checkpoint == "" {
+		return "Workflow paused"
+	}
+	return fmt.Sprintf("Workflow paused at checkpoint: %s", checkpoint)
+}
+
+// MsgWorkflowResumed formats a message when workflow resumes.
+func MsgWorkflowResumed(reason string) string {
+	if reason == "" {
+		return "Workflow resumed"
+	}
+	return fmt.Sprintf("Workflow resumed: %s", reason)
+}
+
+// MsgWorkflowCancelling formats a message when cancel signal is received.
+func MsgWorkflowCancelling(reason string) string {
+	if reason == "" {
+		return "Cancelling workflow..."
+	}
+	return fmt.Sprintf("Cancelling workflow: %s", reason)
+}
+
+// MsgWorkflowCancelled formats a message when workflow is cancelled at checkpoint.
+func MsgWorkflowCancelled(reason string) string {
+	if reason == "" {
+		return "Workflow cancelled"
+	}
+	return fmt.Sprintf("Workflow cancelled: %s", reason)
+}

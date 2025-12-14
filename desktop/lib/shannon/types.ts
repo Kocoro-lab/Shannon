@@ -8,7 +8,15 @@ export type EventType =
     | "done"
     | "STREAM_END"
     | "WORKFLOW_FAILED"
+    | "workflow.pausing"
+    | "workflow.paused"
+    | "workflow.resumed"
+    | "workflow.cancelling"
+    | "workflow.cancelled"
     | "ROLE_ASSIGNED"
+    | "TEAM_RECRUITED"
+    | "TEAM_RETIRED"
+    | "TEAM_STATUS"
     | "DELEGATION"
     | "BUDGET_THRESHOLD"
     | "TOOL_INVOKED"
@@ -21,7 +29,17 @@ export type EventType =
     | "LLM_PROMPT"
     | "LLM_OUTPUT"
     | "DATA_PROCESSING"
-    | "PROGRESS";
+    | "PROGRESS"
+    | "WAITING"
+    | "APPROVAL_REQUESTED"
+    | "APPROVAL_DECISION"
+    | "DEPENDENCY_SATISFIED"
+    | "ERROR_OCCURRED"
+    | "ERROR_RECOVERY"
+    | "MESSAGE_SENT"
+    | "MESSAGE_RECEIVED"
+    | "WORKSPACE_UPDATED"
+    | "STATUS_UPDATE";
 
 export interface BaseEvent {
     type: EventType;
@@ -135,17 +153,17 @@ export interface RoleAssignedEvent extends BaseEvent {
 }
 
 export interface TeamRecruitedEvent extends BaseEvent {
-    type: "ROLE_ASSIGNED";
+    type: "TEAM_RECRUITED";
     message?: string;
 }
 
 export interface TeamRetiredEvent extends BaseEvent {
-    type: "ROLE_ASSIGNED";
+    type: "TEAM_RETIRED";
     message?: string;
 }
 
 export interface TeamStatusEvent extends BaseEvent {
-    type: "ROLE_ASSIGNED";
+    type: "TEAM_STATUS";
     message?: string;
 }
 
@@ -160,17 +178,17 @@ export interface DataProcessingEvent extends BaseEvent {
 }
 
 export interface WaitingEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "WAITING";
     message?: string;
 }
 
 export interface ErrorRecoveryEvent extends BaseEvent {
-    type: "error";
+    type: "ERROR_RECOVERY";
     message: string;
 }
 
 export interface ErrorOccurredEvent extends BaseEvent {
-    type: "error";
+    type: "ERROR_OCCURRED";
     message: string;
 }
 
@@ -180,32 +198,37 @@ export interface BudgetThresholdEvent extends BaseEvent {
 }
 
 export interface DependencySatisfiedEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "DEPENDENCY_SATISFIED";
     message?: string;
 }
 
 export interface ApprovalRequestedEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "APPROVAL_REQUESTED";
     message?: string;
 }
 
 export interface ApprovalDecisionEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "APPROVAL_DECISION";
     message?: string;
 }
 
 export interface MessageSentEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "MESSAGE_SENT";
     message?: string;
 }
 
 export interface MessageReceivedEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "MESSAGE_RECEIVED";
     message?: string;
 }
 
 export interface WorkspaceUpdatedEvent extends BaseEvent {
-    type: "PROGRESS";
+    type: "WORKSPACE_UPDATED";
+    message?: string;
+}
+
+export interface StatusUpdateEvent extends BaseEvent {
+    type: "STATUS_UPDATE";
     message?: string;
 }
 
@@ -213,10 +236,41 @@ export interface StreamEndEvent extends BaseEvent {
     type: "done" | "STREAM_END";
 }
 
+export interface WorkflowPausingEvent extends BaseEvent {
+    type: "workflow.pausing";
+    message?: string;
+}
+
+export interface WorkflowPausedEvent extends BaseEvent {
+    type: "workflow.paused";
+    checkpoint?: string;
+    message?: string;
+}
+
+export interface WorkflowResumedEvent extends BaseEvent {
+    type: "workflow.resumed";
+    message?: string;
+}
+
+export interface WorkflowCancellingEvent extends BaseEvent {
+    type: "workflow.cancelling";
+    message?: string;
+}
+
+export interface WorkflowCancelledEvent extends BaseEvent {
+    type: "workflow.cancelled";
+    message?: string;
+}
+
 export type ShannonEvent =
     | WorkflowStartedEvent
     | WorkflowCompletedEvent
     | WorkflowFailedEvent
+    | WorkflowPausingEvent
+    | WorkflowPausedEvent
+    | WorkflowResumedEvent
+    | WorkflowCancellingEvent
+    | WorkflowCancelledEvent
     | AgentStartedEvent
     | AgentCompletedEvent
     | AgentThinkingEvent
@@ -244,5 +298,6 @@ export type ShannonEvent =
     | MessageSentEvent
     | MessageReceivedEvent
     | WorkspaceUpdatedEvent
+    | StatusUpdateEvent
     | StreamEndEvent
     | LlmOutputEvent;
