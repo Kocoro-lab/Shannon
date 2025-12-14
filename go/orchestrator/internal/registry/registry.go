@@ -65,11 +65,8 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 	w.RegisterWorkflow(strategies.ResearchWorkflow)
 	r.logger.Info("Registered strategy workflows")
 
-	// Enterprise features
-	if r.config.EnableAdsResearch {
-		w.RegisterWorkflow(strategies.AdsResearchWorkflow)
-		r.logger.Info("Registered ads research workflow")
-	}
+	// Enterprise features - conditionally compiled
+	r.registerEnterpriseWorkflows(w)
 
 	r.logger.Info("All workflows registered successfully")
 	return nil
@@ -190,27 +187,8 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 		Name: "RecordPatternMetrics",
 	})
 
-	// Enterprise features - Ads research pipeline activities
-	if r.config.EnableAdsResearch {
-		w.RegisterActivityWithOptions(activities.AdsResearchActivity, activity.RegisterOptions{
-			Name: "AdsResearchActivity",
-		})
-		// Keyword extraction activity (uses small LLM)
-		w.RegisterActivityWithOptions(activities.ExtractSearchKeywords, activity.RegisterOptions{
-			Name: "ExtractSearchKeywords",
-		})
-		// New parallel activities for ads research
-		w.RegisterActivityWithOptions(activities.AdsCompetitorDiscoverActivity, activity.RegisterOptions{
-			Name: "AdsCompetitorDiscoverActivity",
-		})
-		w.RegisterActivityWithOptions(activities.AdsTransparencyActivity, activity.RegisterOptions{
-			Name: "AdsTransparencyActivity",
-		})
-		w.RegisterActivityWithOptions(activities.AdsLPAnalysisActivity, activity.RegisterOptions{
-			Name: "AdsLPAnalysisActivity",
-		})
-		r.logger.Info("Registered ads research activities")
-	}
+	// Enterprise features - conditionally compiled
+	r.registerEnterpriseActivities(w)
 
 	// Agent selection activities (performance-based)
 	w.RegisterActivity(activities.FetchAgentPerformances)
@@ -258,4 +236,16 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 
 	r.logger.Info("All activities registered successfully")
 	return nil
+}
+
+// registerEnterpriseWorkflows registers enterprise-only workflows (stub in open source)
+func (r *OrchestratorRegistry) registerEnterpriseWorkflows(w worker.Worker) {
+	// Open source: no enterprise workflows
+	// Enterprise version: override this file with actual registrations
+}
+
+// registerEnterpriseActivities registers enterprise-only activities (stub in open source)
+func (r *OrchestratorRegistry) registerEnterpriseActivities(w worker.Worker) {
+	// Open source: no enterprise activities
+	// Enterprise version: override this file with actual registrations
 }
