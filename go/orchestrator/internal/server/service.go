@@ -1534,6 +1534,26 @@ func (s *OrchestratorService) PauseTask(ctx context.Context, req *pb.PauseTaskRe
 		}
 	}
 
+	// Validate workflow state - cannot pause completed/failed/cancelled workflows
+	switch desc.WorkflowExecutionInfo.Status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause completed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause failed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause cancelled task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return nil, status.Error(codes.FailedPrecondition, "cannot pause timed out task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		// Check if already paused
+		if ctrlResp, qErr := s.temporalClient.QueryWorkflow(ctx, req.TaskId, "", workflows.QueryControlState); qErr == nil {
+			var ctrlState workflows.WorkflowControlState
+			if ctrlResp.Get(&ctrlState) == nil && ctrlState.IsPaused {
+				return nil, status.Error(codes.FailedPrecondition, "task is already paused")
+			}
+		}
+	}
+
 	// Send pause signal to Temporal
 	pauseReq := workflows.PauseRequest{
 		Reason:      req.Reason,
@@ -1592,6 +1612,30 @@ func (s *OrchestratorService) ResumeTask(ctx context.Context, req *pb.ResumeTask
 			if memoUser != "" && uc.UserID.String() != memoUser {
 				return nil, status.Error(codes.NotFound, "task not found")
 			}
+		}
+	}
+
+	// Validate workflow state - cannot resume completed/failed/cancelled workflows
+	switch desc.WorkflowExecutionInfo.Status {
+	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume completed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume failed task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume cancelled task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+		return nil, status.Error(codes.FailedPrecondition, "cannot resume timed out task")
+	case enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		// Check if task is actually paused
+		isPaused := false
+		if ctrlResp, qErr := s.temporalClient.QueryWorkflow(ctx, req.TaskId, "", workflows.QueryControlState); qErr == nil {
+			var ctrlState workflows.WorkflowControlState
+			if ctrlResp.Get(&ctrlState) == nil {
+				isPaused = ctrlState.IsPaused
+			}
+		}
+		if !isPaused {
+			return nil, status.Error(codes.FailedPrecondition, "task is not paused")
 		}
 	}
 

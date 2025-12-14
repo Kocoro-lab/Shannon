@@ -238,17 +238,17 @@ def main():
         elif args.command == "pause":
             success = client.pause_task(args.task_id, reason=args.reason)
             if success:
-                print(f"✓ Task {args.task_id} paused (will take effect at next checkpoint)")
+                print(f"✓ Pause request sent for task {args.task_id} (will take effect at next checkpoint)")
             else:
-                print(f"✗ Failed to pause task {args.task_id}")
+                print(f"✗ Failed to send pause request for task {args.task_id}")
                 sys.exit(1)
 
         elif args.command == "resume":
             success = client.resume_task(args.task_id, reason=args.reason)
             if success:
-                print(f"✓ Task {args.task_id} resumed")
+                print(f"✓ Resume request sent for task {args.task_id}")
             else:
-                print(f"✗ Failed to resume task {args.task_id}")
+                print(f"✗ Failed to send resume request for task {args.task_id}")
                 sys.exit(1)
 
         elif args.command == "control-state":

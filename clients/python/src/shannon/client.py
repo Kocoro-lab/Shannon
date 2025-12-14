@@ -392,15 +392,15 @@ class AsyncShannonClient:
             if data.get("created_at"):
                 try:
                     created_at = _parse_timestamp(data["created_at"])
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse created_at timestamp: {e}")
 
             updated_at = None
             if data.get("updated_at"):
                 try:
                     updated_at = _parse_timestamp(data["updated_at"])
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse updated_at timestamp: {e}")
 
             return TaskStatus(
                 task_id=data["task_id"],
@@ -704,8 +704,13 @@ class AsyncShannonClient:
             if response.status_code not in (200, 202):
                 self._handle_http_error(response)
 
-            data = response.json()
-            return data.get("success", False)
+            # Handle empty response body (202 Accepted may have no body)
+            try:
+                data = response.json()
+                return data.get("success", False)
+            except (json.JSONDecodeError, ValueError):
+                # Empty or malformed response - default to True for successful status codes
+                return True
 
         except httpx.HTTPError as e:
             raise errors.ConnectionError(
@@ -743,8 +748,13 @@ class AsyncShannonClient:
             if response.status_code not in (200, 202):
                 self._handle_http_error(response)
 
-            data = response.json()
-            return data.get("success", False)
+            # Handle empty response body (202 Accepted may have no body)
+            try:
+                data = response.json()
+                return data.get("success", False)
+            except (json.JSONDecodeError, ValueError):
+                # Empty or malformed response - default to True for successful status codes
+                return True
 
         except httpx.HTTPError as e:
             raise errors.ConnectionError(
@@ -783,7 +793,11 @@ class AsyncShannonClient:
             if ts:
                 try:
                     paused_at = _parse_timestamp(ts)
-                except Exception:
+                except (ValueError, TypeError) as e:
+                    logger.warning(
+                        f"Failed to parse paused_at timestamp '{ts}': {e}",
+                        extra={"task_id": task_id, "timestamp": ts},
+                    )
                     paused_at = None
 
             return ControlState(
@@ -905,7 +919,8 @@ class AsyncShannonClient:
                 if session_data.get("updated_at"):
                     try:
                         updated_at = _parse_timestamp(session_data["updated_at"])
-                    except Exception:
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse session updated_at timestamp: {e}")
                         updated_at = created_at
                 else:
                     updated_at = created_at
@@ -914,15 +929,15 @@ class AsyncShannonClient:
                 if session_data.get("expires_at"):
                     try:
                         expires_at = _parse_timestamp(session_data["expires_at"])
-                    except Exception:
-                        pass
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse session expires_at timestamp: {e}")
 
                 last_activity_at = None
                 if session_data.get("last_activity_at"):
                     try:
                         last_activity_at = _parse_timestamp(session_data["last_activity_at"])
-                    except Exception:
-                        pass
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse session last_activity_at timestamp: {e}")
 
                 sessions.append(SessionSummary(
                     session_id=session_data["session_id"],
@@ -995,15 +1010,15 @@ class AsyncShannonClient:
             if data.get("updated_at"):
                 try:
                     updated_at = _parse_timestamp(data["updated_at"])
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse session updated_at timestamp: {e}")
 
             expires_at = None
             if data.get("expires_at"):
                 try:
                     expires_at = _parse_timestamp(data["expires_at"])
-                except Exception:
-                    pass
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse session expires_at timestamp: {e}")
 
             return Session(
                 session_id=data["session_id"],
@@ -1514,8 +1529,8 @@ class AsyncShannonClient:
         if "timestamp" in data:
             try:
                 ts = _parse_timestamp(str(data["timestamp"]))
-            except Exception:
-                pass
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Failed to parse event timestamp: {e}")
 
         return Event(
             type=data.get("type", ""),

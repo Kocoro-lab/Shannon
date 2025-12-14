@@ -5,6 +5,17 @@ All notable changes to the Shannon Python SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2025-01-14
+
+### Fixed
+- Empty response body handling in pause/resume operations (now defaults to True on 202 status)
+- Timestamp parsing error logging with specific exceptions instead of silent failures
+
+## [0.4.1] - 2025-01-14
+
+### Fixed
+- Minor bug fixes and improvements to control signal stability
+
 ## [0.4.0] - 2025-01-14
 
 ### Added
