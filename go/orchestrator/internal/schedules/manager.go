@@ -73,7 +73,10 @@ func (m *Manager) CreateSchedule(ctx context.Context, req *CreateScheduleInput) 
 		return nil, fmt.Errorf("%w: %d/%d schedules", ErrScheduleLimitReached, count, m.config.MaxPerUser)
 	}
 
-	// 4. Enforce budget limit
+	// 4. Validate and enforce budget limit
+	if req.MaxBudgetPerRunUSD < 0 {
+		return nil, fmt.Errorf("budget cannot be negative: $%.2f", req.MaxBudgetPerRunUSD)
+	}
 	if req.MaxBudgetPerRunUSD > m.config.MaxBudgetPerRunUSD {
 		return nil, fmt.Errorf("%w: $%.2f > $%.2f", ErrBudgetExceeded,
 			req.MaxBudgetPerRunUSD, m.config.MaxBudgetPerRunUSD)

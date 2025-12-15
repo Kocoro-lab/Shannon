@@ -44,21 +44,33 @@ func (a *ScheduleActivities) RecordScheduleExecutionStart(ctx context.Context, i
 		zap.String("task_id", input.TaskID),
 	)
 
+	// Start transaction for atomic multi-table insert
+	tx, err := a.DB.BeginTx(ctx, nil)
+	if err != nil {
+		a.Logger.Error("Failed to begin transaction", zap.Error(err))
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback() // Rollback if not committed
+
 	// 1. Create link record in scheduled_task_executions
-	_, err := a.DB.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO scheduled_task_executions (schedule_id, task_id, triggered_at)
 		VALUES ($1, $2, NOW())
 		ON CONFLICT (schedule_id, task_id) DO NOTHING
 	`, input.ScheduleID, input.TaskID)
 	if err != nil {
 		a.Logger.Error("Failed to create scheduled_task_executions link", zap.Error(err))
-		return err
+		return fmt.Errorf("failed to create scheduled_task_executions link: %w", err)
 	}
 
 	// 2. Create task_executions record using shared persistence code
 	dbClient := GetGlobalDBClient()
 	if dbClient == nil {
 		a.Logger.Warn("Global DB client not available, skipping task_executions persistence")
+		// Commit the link record even if task_executions fails
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("failed to commit transaction: %w", err)
+		}
 		return nil
 	}
 
@@ -89,8 +101,14 @@ func (a *ScheduleActivities) RecordScheduleExecutionStart(ctx context.Context, i
 		a.Logger.Error("Failed to create task_executions record for scheduled run",
 			zap.String("task_id", input.TaskID),
 			zap.Error(err))
-		// Don't fail the activity - the link record is created, schedule can proceed
-		return nil
+		// Rollback transaction on task_executions failure
+		return fmt.Errorf("failed to create task_executions record: %w", err)
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		a.Logger.Error("Failed to commit transaction", zap.Error(err))
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	a.Logger.Info("Scheduled execution started and task_executions record created",
@@ -200,9 +218,9 @@ func (a *ScheduleActivities) RecordScheduleExecutionComplete(ctx context.Context
 		}
 	}
 
-	// 2. Update schedule statistics
+	// 2. Update schedule statistics with atomic SQL (prevents race conditions)
 	if input.Status == "COMPLETED" {
-		_, _ = a.DB.ExecContext(ctx, `
+		_, err := a.DB.ExecContext(ctx, `
 			UPDATE scheduled_tasks
 			SET total_runs = total_runs + 1,
 				successful_runs = successful_runs + 1,
@@ -210,8 +228,13 @@ func (a *ScheduleActivities) RecordScheduleExecutionComplete(ctx context.Context
 				updated_at = NOW()
 			WHERE id = $1
 		`, input.ScheduleID)
+		if err != nil {
+			a.Logger.Error("Failed to update schedule statistics",
+				zap.String("schedule_id", input.ScheduleID.String()),
+				zap.Error(err))
+		}
 	} else if input.Status == "FAILED" {
-		_, _ = a.DB.ExecContext(ctx, `
+		_, err := a.DB.ExecContext(ctx, `
 			UPDATE scheduled_tasks
 			SET total_runs = total_runs + 1,
 				failed_runs = failed_runs + 1,
@@ -219,6 +242,11 @@ func (a *ScheduleActivities) RecordScheduleExecutionComplete(ctx context.Context
 				updated_at = NOW()
 			WHERE id = $1
 		`, input.ScheduleID)
+		if err != nil {
+			a.Logger.Error("Failed to update schedule statistics",
+				zap.String("schedule_id", input.ScheduleID.String()),
+				zap.Error(err))
+		}
 	}
 
 	// 3. Update next_run_at

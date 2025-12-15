@@ -33,8 +33,26 @@ func NewAuthMiddleware(authService APIKeyValidator, logger *zap.Logger) *AuthMid
 // Middleware returns the HTTP middleware function
 func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if auth should be skipped (development only)
-		if os.Getenv("GATEWAY_SKIP_AUTH") == "1" {
+		// Check if auth should be skipped (DEVELOPMENT ONLY - NEVER USE IN PRODUCTION)
+		env := os.Getenv("ENVIRONMENT")
+		skipAuth := os.Getenv("GATEWAY_SKIP_AUTH")
+
+		if skipAuth == "1" {
+			// Only allow auth skip in development environment
+			if env != "development" && env != "dev" && env != "test" {
+				m.logger.Error("SECURITY WARNING: GATEWAY_SKIP_AUTH enabled in non-development environment",
+					zap.String("environment", env),
+					zap.String("path", r.URL.Path),
+				)
+				m.sendUnauthorized(w, "Authentication required")
+				return
+			}
+
+			m.logger.Warn("Authentication bypassed (DEVELOPMENT MODE ONLY)",
+				zap.String("environment", env),
+				zap.String("path", r.URL.Path),
+			)
+
 			// In dev mode, respect x-user-id and x-tenant-id headers if provided
 			// This allows testing ownership/tenancy isolation without real auth
 			userID := uuid.MustParse("00000000-0000-0000-0000-000000000002") // default
@@ -61,11 +79,6 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 				TokenType: "api_key",
 			}
 			ctx := context.WithValue(r.Context(), "user", userCtx)
-			m.logger.Debug("Auth skipped (GATEWAY_SKIP_AUTH=1)",
-				zap.String("path", r.URL.Path),
-				zap.String("user_id", userID.String()),
-				zap.String("tenant_id", tenantID.String()),
-			)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}

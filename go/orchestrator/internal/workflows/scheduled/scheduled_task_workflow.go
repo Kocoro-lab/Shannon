@@ -16,9 +16,19 @@ import (
 func ScheduledTaskWorkflow(ctx workflow.Context, input schedules.ScheduledTaskInput) error {
 	logger := workflow.GetLogger(ctx)
 
-	scheduleID, _ := uuid.Parse(input.ScheduleID)
-	userID, _ := uuid.Parse(input.UserID)
-	tenantID, _ := uuid.Parse(input.TenantID)
+	// Validate and parse UUIDs
+	scheduleID, err := uuid.Parse(input.ScheduleID)
+	if err != nil {
+		return fmt.Errorf("invalid schedule_id: %w", err)
+	}
+	userID, err := uuid.Parse(input.UserID)
+	if err != nil {
+		return fmt.Errorf("invalid user_id: %w", err)
+	}
+	tenantID, err := uuid.Parse(input.TenantID)
+	if err != nil {
+		return fmt.Errorf("invalid tenant_id: %w", err)
+	}
 
 	logger.Info("Scheduled task execution started",
 		"schedule_id", input.ScheduleID,
