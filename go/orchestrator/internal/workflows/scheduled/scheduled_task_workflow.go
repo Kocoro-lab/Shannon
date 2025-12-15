@@ -45,7 +45,7 @@ func ScheduledTaskWorkflow(ctx workflow.Context, input schedules.ScheduledTaskIn
 	childWorkflowID := fmt.Sprintf("%s-exec", parentWorkflowID)
 
 	// 1. Record execution start with task_executions persistence
-	err := workflow.ExecuteActivity(activityCtx, "RecordScheduleExecutionStart",
+	err = workflow.ExecuteActivity(activityCtx, "RecordScheduleExecutionStart",
 		activities.RecordScheduleExecutionInput{
 			ScheduleID: scheduleID,
 			TaskID:     childWorkflowID, // Use child workflow ID for task_executions
