@@ -351,8 +351,16 @@ func (m *Manager) UpdateSchedule(ctx context.Context, req *UpdateScheduleInput) 
 		if err := handle.Update(ctx, client.ScheduleUpdateOptions{
 			DoUpdate: func(input client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
 				// Update spec (cron/timezone)
-				input.Description.Schedule.Spec.CronExpressions = []string{cronExpr}
-				input.Description.Schedule.Spec.TimeZoneName = tz
+				spec := input.Description.Schedule.Spec
+				if spec == nil {
+					spec = &client.ScheduleSpec{}
+				}
+				// Temporal Describe returns compiled calendar specs; clear them to avoid merging old times
+				spec.Calendars = nil
+				spec.Intervals = nil
+				spec.CronExpressions = []string{cronExpr}
+				spec.TimeZoneName = tz
+				input.Description.Schedule.Spec = spec
 
 				// Update action args (query/context/budget/timeout)
 				if action, ok := input.Description.Schedule.Action.(*client.ScheduleWorkflowAction); ok {
