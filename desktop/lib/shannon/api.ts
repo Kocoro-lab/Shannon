@@ -3,6 +3,22 @@
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
+// Auth headers helper - reads from environment or uses test UUID for development
+// Default user ID matches migrations/postgres/003_authentication.sql seed data
+// Note: Tenant is derived from user record by backend, not sent as header
+function getAuthHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    
+    // User ID - default is the seeded admin user from migrations
+    // Backend CORS allows: X-User-Id (case sensitive)
+    const userId = process.env.NEXT_PUBLIC_USER_ID || "00000000-0000-0000-0000-000000000002";
+    if (userId) {
+        headers["X-User-Id"] = userId;
+    }
+    
+    return headers;
+}
+
 export interface TaskSubmitRequest {
     query: string;
     session_id?: string;
@@ -308,4 +324,225 @@ export async function getTaskControlState(taskId: string): Promise<ControlStateR
     }
 
     return response.json();
+}
+
+// Schedule Types
+
+export type ScheduleStatus = 'ACTIVE' | 'PAUSED' | 'DELETED';
+export type ScheduleRunStatus = 'COMPLETED' | 'FAILED' | 'RUNNING' | 'UNKNOWN';
+
+export interface ScheduleInfo {
+    schedule_id: string;
+    name: string;
+    description?: string;
+    cron_expression: string;
+    timezone: string;
+    task_query: string;
+    task_context?: Record<string, any>;
+    status: ScheduleStatus;
+    next_run_at?: string;
+    last_run_at?: string;
+    total_runs: number;
+    successful_runs: number;
+    failed_runs: number;
+    max_budget_per_run_usd?: number;
+    timeout_seconds?: number;
+    created_at: string;
+}
+
+export interface ScheduleRun {
+    workflow_id: string;
+    query: string;
+    status: ScheduleRunStatus;
+    result?: string;
+    error_message?: string;
+    model_used?: string;
+    provider?: string;
+    total_tokens: number;
+    total_cost_usd: number;
+    duration_ms?: number;
+    triggered_at: string;
+    started_at?: string;
+    completed_at?: string;
+}
+
+export interface ScheduleListResponse {
+    schedules: ScheduleInfo[];
+    total_count: number;
+}
+
+export interface ScheduleRunsResponse {
+    runs: ScheduleRun[];
+    total_count: number;
+    page: number;
+    page_size: number;
+}
+
+export interface CreateScheduleRequest {
+    name: string;
+    description?: string;
+    cron_expression: string;
+    timezone?: string;
+    task_query: string;
+    task_context?: Record<string, string>;  // Backend expects map[string]string
+    max_budget_per_run_usd?: number;
+    timeout_seconds?: number;
+}
+
+export interface UpdateScheduleRequest {
+    name?: string;
+    description?: string;
+    cron_expression?: string;
+    timezone?: string;
+    task_query?: string;
+    task_context?: Record<string, string>;  // Backend expects map[string]string
+    clear_task_context?: boolean;
+    max_budget_per_run_usd?: number;
+    timeout_seconds?: number;
+}
+
+// Schedule API Functions
+
+export async function listSchedules(
+    pageSize: number = 50,
+    page: number = 1,
+    status?: ScheduleStatus
+): Promise<ScheduleListResponse> {
+    const params = new URLSearchParams({
+        page: String(page),
+        page_size: String(pageSize),
+    });
+    if (status) {
+        params.set('status', status);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules?${params}`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to list schedules: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+export async function getSchedule(scheduleId: string): Promise<ScheduleInfo> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to get schedule: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+export async function getScheduleRuns(
+    scheduleId: string,
+    page: number = 1,
+    pageSize: number = 20
+): Promise<ScheduleRunsResponse> {
+    const params = new URLSearchParams({
+        page: String(page),
+        page_size: String(pageSize),
+    });
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}/runs?${params}`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to get schedule runs: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+export async function createSchedule(request: CreateScheduleRequest): Promise<ScheduleInfo> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to create schedule: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function updateSchedule(
+    scheduleId: string,
+    request: UpdateScheduleRequest
+): Promise<ScheduleInfo> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}`, {
+        method: "PUT",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to update schedule: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function pauseSchedule(scheduleId: string, reason?: string): Promise<ScheduleInfo> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}/pause`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify(reason ? { reason } : {}),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to pause schedule: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function resumeSchedule(scheduleId: string, reason?: string): Promise<ScheduleInfo> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}/resume`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify(reason ? { reason } : {}),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to resume schedule: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function deleteSchedule(scheduleId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to delete schedule: ${response.statusText} - ${errorText}`);
+    }
 }

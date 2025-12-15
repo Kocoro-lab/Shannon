@@ -91,3 +91,25 @@ func lastSpaceBeforeRune(s string, pos int) int {
 	}
 	return -1
 }
+
+// GetContextBool extracts a boolean value from a context map, handling both bool and string "true"/"false".
+// This is needed because proto map<string, string> converts booleans to strings.
+func GetContextBool(ctx map[string]interface{}, key string) bool {
+	if ctx == nil {
+		return false
+	}
+	v, ok := ctx[key]
+	if !ok {
+		return false
+	}
+	// Handle bool type
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	// Handle string type ("true", "false", "1", "0")
+	if s, ok := v.(string); ok {
+		s = strings.ToLower(strings.TrimSpace(s))
+		return s == "true" || s == "1"
+	}
+	return false
+}

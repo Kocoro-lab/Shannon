@@ -10,6 +10,7 @@ import (
 
 	// Register workflows from the orchestrator module
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/scheduled"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
@@ -35,6 +36,7 @@ func main() {
 	replayer.RegisterWorkflow(strategies.ResearchWorkflow)
 	replayer.RegisterWorkflow(strategies.ExploratoryWorkflow)
 	replayer.RegisterWorkflow(strategies.ScientificWorkflow)
+	replayer.RegisterWorkflow(scheduled.ScheduledTaskWorkflow)
 	// Approval and budget are now middleware; no separate workflows to register
 
 	// Replay from file; this will error on any non-determinism between history and code.

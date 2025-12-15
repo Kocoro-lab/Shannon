@@ -84,6 +84,12 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 		metadata = JSONB{}
 	}
 
+	// Default trigger_type to 'api' if not specified
+	triggerType := task.TriggerType
+	if triggerType == "" {
+		triggerType = "api"
+	}
+
 	teQuery := `
         INSERT INTO task_executions (
             id, workflow_id, user_id, session_id,
@@ -93,7 +99,8 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             model_used, provider,
             total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
             duration_ms, agents_used, tools_invoked, cache_hits,
-            complexity_score, metadata, created_at
+            complexity_score, metadata, created_at,
+            trigger_type, schedule_id
         ) VALUES (
             $1, $2, $3, $4,
             $5, $6, $7,
@@ -102,7 +109,8 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             $12, $13,
             $14, $15, $16, $17,
             $18, $19, $20, $21,
-            $22, $23, $24
+            $22, $23, $24,
+            $25, $26
         )
         ON CONFLICT (workflow_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -132,6 +140,7 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 		task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
 		task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
 		task.ComplexityScore, metadata, task.CreatedAt,
+		triggerType, task.ScheduleID,
 	).Scan(&task.ID)
 	if err != nil {
 		return fmt.Errorf("failed to save task execution: %w", err)
@@ -159,7 +168,8 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 model_used, provider,
                 total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
                 duration_ms, agents_used, tools_invoked, cache_hits,
-                complexity_score, metadata, created_at
+                complexity_score, metadata, created_at,
+                trigger_type, schedule_id
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7,
@@ -168,7 +178,8 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 $12, $13,
                 $14, $15, $16, $17,
                 $18, $19, $20, $21,
-                $22, $23, $24
+                $22, $23, $24,
+                $25, $26
             )
             ON CONFLICT (workflow_id) DO UPDATE SET
                 status = EXCLUDED.status,
@@ -216,6 +227,12 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				metadata = JSONB{}
 			}
 
+			// Default trigger_type to 'api' if not specified
+			triggerType := task.TriggerType
+			if triggerType == "" {
+				triggerType = "api"
+			}
+
 			_, err := stmt.ExecContext(ctx,
 				task.ID, task.WorkflowID, userID, sessionID,
 				task.Query, task.Mode, task.Status,
@@ -225,6 +242,7 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
 				task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
 				task.ComplexityScore, metadata, task.CreatedAt,
+				triggerType, task.ScheduleID,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert task %s: %w", task.WorkflowID, err)
@@ -587,7 +605,7 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 	query := `
         SELECT id, workflow_id, user_id, session_id, query, mode, status,
             started_at, completed_at, result, error_message,
-            created_at
+            created_at, trigger_type, schedule_id
         FROM task_executions
         WHERE workflow_id = $1`
 
@@ -600,7 +618,7 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 		&task.ID, &task.WorkflowID, &task.UserID, &task.SessionID,
 		&task.Query, &task.Mode, &task.Status,
 		&task.StartedAt, &task.CompletedAt, &task.Result, &task.ErrorMessage,
-		&task.CreatedAt,
+		&task.CreatedAt, &task.TriggerType, &task.ScheduleID,
 	)
 
 	if err == sql.ErrNoRows {

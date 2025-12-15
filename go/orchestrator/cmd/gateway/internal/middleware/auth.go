@@ -35,10 +35,25 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check if auth should be skipped (development only)
 		if os.Getenv("GATEWAY_SKIP_AUTH") == "1" {
-			// Create a mock user context for development
+			// In dev mode, respect x-user-id and x-tenant-id headers if provided
+			// This allows testing ownership/tenancy isolation without real auth
+			userID := uuid.MustParse("00000000-0000-0000-0000-000000000002") // default
+			tenantID := uuid.MustParse("00000000-0000-0000-0000-000000000001") // default
+
+			if headerUserID := r.Header.Get("x-user-id"); headerUserID != "" {
+				if parsed, err := uuid.Parse(headerUserID); err == nil {
+					userID = parsed
+				}
+			}
+			if headerTenantID := r.Header.Get("x-tenant-id"); headerTenantID != "" {
+				if parsed, err := uuid.Parse(headerTenantID); err == nil {
+					tenantID = parsed
+				}
+			}
+
 			userCtx := &authpkg.UserContext{
-				UserID:    uuid.MustParse("00000000-0000-0000-0000-000000000002"),
-				TenantID:  uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+				UserID:    userID,
+				TenantID:  tenantID,
 				Username:  "admin",
 				Email:     "admin@shannon.local",
 				Role:      "admin",
@@ -48,6 +63,8 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 			ctx := context.WithValue(r.Context(), "user", userCtx)
 			m.logger.Debug("Auth skipped (GATEWAY_SKIP_AUTH=1)",
 				zap.String("path", r.URL.Path),
+				zap.String("user_id", userID.String()),
+				zap.String("tenant_id", tenantID.String()),
 			)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return

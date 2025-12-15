@@ -1,6 +1,6 @@
 """Shannon SDK - Python client for Shannon multi-agent AI platform."""
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 from shannon.client import AsyncShannonClient, ShannonClient
 from shannon.models import (
@@ -8,6 +8,10 @@ from shannon.models import (
     Event,
     EventType,
     PendingApproval,
+    Schedule,
+    ScheduleRun,
+    ScheduleStatus,
+    ScheduleSummary,
     Session,
     SessionEventTurn,
     SessionHistoryItem,
@@ -46,6 +50,10 @@ __all__ = [
     "Event",
     "EventType",
     "PendingApproval",
+    "Schedule",
+    "ScheduleRun",
+    "ScheduleStatus",
+    "ScheduleSummary",
     "Session",
     "SessionEventTurn",
     "SessionHistoryItem",

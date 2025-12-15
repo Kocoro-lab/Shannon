@@ -7,6 +7,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/scheduled"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 
 	"go.temporal.io/sdk/activity"
@@ -46,6 +47,9 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 	w.RegisterWorkflow(workflows.SimpleTaskWorkflow)
 	w.RegisterWorkflow(workflows.SupervisorWorkflow)
 	w.RegisterWorkflow(workflows.TemplateWorkflow)
+
+	// Scheduled task workflow
+	w.RegisterWorkflow(scheduled.ScheduledTaskWorkflow)
 
 	// Cognitive workflows that need pattern migration
 	w.RegisterWorkflow(workflows.ExploratoryWorkflow)
@@ -146,6 +150,16 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 		Name: constants.UpdateSessionResultActivity,
 	})
 	w.RegisterActivityWithOptions(acts.GenerateSessionTitle, activity.RegisterOptions{Name: "GenerateSessionTitle"})
+
+	// Schedule activities
+	scheduleActivities := activities.NewScheduleActivities(r.db, r.logger)
+	w.RegisterActivityWithOptions(scheduleActivities.RecordScheduleExecutionStart, activity.RegisterOptions{
+		Name: "RecordScheduleExecutionStart",
+	})
+	w.RegisterActivityWithOptions(scheduleActivities.RecordScheduleExecutionComplete, activity.RegisterOptions{
+		Name: "RecordScheduleExecutionComplete",
+	})
+	r.logger.Info("Registered schedule activities")
 
 	// Human intervention activities
 	if r.config.EnableApprovalWorkflows {

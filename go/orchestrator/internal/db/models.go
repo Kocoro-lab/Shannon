@@ -71,6 +71,10 @@ type TaskExecution struct {
 	// Metadata
 	Metadata  JSONB     `db:"metadata"`
 	CreatedAt time.Time `db:"created_at"`
+
+	// Trigger information (unified execution model)
+	TriggerType string     `db:"trigger_type"` // 'api', 'schedule'
+	ScheduleID  *uuid.UUID `db:"schedule_id"`  // FK to scheduled_tasks (NULL for API-triggered)
 }
 
 // AgentExecution represents an individual agent execution

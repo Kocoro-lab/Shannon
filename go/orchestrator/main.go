@@ -23,6 +23,7 @@ import (
 	_ "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics" // Import for side effects
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/registry"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/schedules"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/server"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
@@ -627,6 +628,35 @@ func main() {
 		streamingSvc.SetTemporalClient(tClient)
 		streamingHandler.SetTemporalClient(tClient)
 
+		// Create and wire schedule manager
+		scheduleConfig := &schedules.Config{
+			MaxPerUser:          getEnvOrDefaultInt("SCHEDULE_MAX_PER_USER", 50),
+			MinCronIntervalMins: getEnvOrDefaultInt("SCHEDULE_MIN_INTERVAL_MINS", 60),
+			MaxBudgetPerRunUSD:  getEnvOrDefaultFloat("SCHEDULE_MAX_BUDGET_USD", 10.0),
+		}
+		scheduleManager := schedules.NewManager(tClient, dbClient.GetDB(), scheduleConfig, logger)
+		orchestratorService.SetScheduleManager(scheduleManager)
+		logger.Info("Schedule manager initialized and wired to orchestrator service",
+			zap.Int("max_per_user", scheduleConfig.MaxPerUser),
+			zap.Int("min_interval_mins", scheduleConfig.MinCronIntervalMins),
+			zap.Float64("max_budget_usd", scheduleConfig.MaxBudgetPerRunUSD),
+		)
+
+		// Run orphan detection on startup to clean up stale schedule records
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			orphanedIDs, err := scheduleManager.DetectAndCleanOrphanedSchedules(ctx)
+			if err != nil {
+				logger.Warn("Failed to detect orphaned schedules on startup", zap.Error(err))
+			} else if len(orphanedIDs) > 0 {
+				logger.Info("Cleaned up orphaned schedules on startup",
+					zap.Int("count", len(orphanedIDs)),
+					zap.Any("ids", orphanedIDs),
+				)
+			}
+		}()
+
 		// After Temporal client is ready, start Approvals HTTP API if configured
 		approvalsToken := getEnvOrDefault("APPROVALS_AUTH_TOKEN", "")
 		// Register approvals endpoint on the shared admin mux (same port as health)
@@ -785,4 +815,13 @@ func splitSearchPaths(value string) []string {
 		}
 	}
 	return paths
+}
+
+func getEnvOrDefaultFloat(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatValue
+		}
+	}
+	return defaultValue
 }

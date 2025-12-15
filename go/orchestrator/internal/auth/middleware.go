@@ -104,10 +104,27 @@ func (m *Middleware) UnaryServerInterceptor() grpc.UnaryServerInterceptor {
 
 		// Skip auth if configured (for development)
 		if m.skipAuth {
-			// Use default dev user context
+			// In dev mode, respect x-user-id and x-tenant-id from metadata if provided
+			// This allows testing ownership/tenancy isolation without real auth
+			userID := uuid.MustParse("00000000-0000-0000-0000-000000000002")
+			tenantID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+			if md, ok := metadata.FromIncomingContext(ctx); ok {
+				if vals := md.Get("x-user-id"); len(vals) > 0 {
+					if parsed, err := uuid.Parse(vals[0]); err == nil {
+						userID = parsed
+					}
+				}
+				if vals := md.Get("x-tenant-id"); len(vals) > 0 {
+					if parsed, err := uuid.Parse(vals[0]); err == nil {
+						tenantID = parsed
+					}
+				}
+			}
+
 			ctx = context.WithValue(ctx, UserContextKey, &UserContext{
-				UserID:   uuid.MustParse("00000000-0000-0000-0000-000000000002"),
-				TenantID: uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+				UserID:   userID,
+				TenantID: tenantID,
 				Username: "dev",
 				Email:    "dev@shannon.local",
 				Role:     RoleOwner,

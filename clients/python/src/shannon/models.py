@@ -327,3 +327,73 @@ class SessionEventTurn:
     timestamp: datetime
     events: List[Event]
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class ScheduleStatus(str, Enum):
+    """Schedule status values."""
+
+    ACTIVE = "ACTIVE"
+    PAUSED = "PAUSED"
+    DELETED = "DELETED"
+
+
+@dataclass
+class Schedule:
+    """Scheduled task configuration."""
+
+    schedule_id: str
+    name: str
+    cron_expression: str
+    task_query: str
+    user_id: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    description: Optional[str] = None
+    timezone: Optional[str] = None
+    task_context: Optional[Dict[str, str]] = None
+    max_budget_per_run_usd: Optional[float] = None
+    timeout_seconds: Optional[int] = None
+    next_run_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    total_runs: int = 0
+    successful_runs: int = 0
+    failed_runs: int = 0
+    paused_at: Optional[datetime] = None
+    pause_reason: Optional[str] = None
+
+
+@dataclass
+class ScheduleSummary:
+    """Summary of a schedule (for list operations)."""
+
+    schedule_id: str
+    name: str
+    status: str
+    cron_expression: str
+    task_query: str
+    created_at: datetime
+    next_run_at: Optional[datetime] = None
+    last_run_at: Optional[datetime] = None
+    total_runs: int = 0
+    successful_runs: int = 0
+    failed_runs: int = 0
+
+
+@dataclass
+class ScheduleRun:
+    """A single execution of a scheduled task."""
+
+    workflow_id: str
+    query: str
+    status: str
+    triggered_at: datetime
+    result: Optional[str] = None
+    error_message: Optional[str] = None
+    model_used: Optional[str] = None
+    provider: Optional[str] = None
+    total_tokens: int = 0
+    total_cost_usd: float = 0.0
+    duration_ms: Optional[int] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None

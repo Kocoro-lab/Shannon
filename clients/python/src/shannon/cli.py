@@ -161,6 +161,57 @@ def main():
     sess_title.add_argument("session_id", help="Session ID")
     sess_title.add_argument("title", help="New title")
 
+    # Schedule commands
+    sched_create = subparsers.add_parser("schedule-create", help="Create a scheduled task")
+    sched_create.add_argument("name", help="Schedule name")
+    sched_create.add_argument("cron", help="Cron expression (e.g., '0 9 * * 1-5' for weekdays at 9am)")
+    sched_create.add_argument("query", help="Task query to execute")
+    sched_create.add_argument("--description", help="Schedule description")
+    sched_create.add_argument("--timezone", default="UTC", help="Timezone (default: UTC)")
+    sched_create.add_argument("--force-research", action="store_true", help="Enable deep research mode")
+    sched_create.add_argument(
+        "--research-strategy",
+        choices=["quick", "standard", "deep", "academic"],
+        help="Research strategy preset",
+    )
+    sched_create.add_argument("--budget", type=float, help="Max budget per run (USD)")
+    sched_create.add_argument("--timeout", type=int, help="Timeout per run (seconds)")
+
+    sched_list = subparsers.add_parser("schedule-list", help="List schedules")
+    sched_list.add_argument("--page", type=int, default=1, help="Page number")
+    sched_list.add_argument("--page-size", type=int, default=20, help="Items per page")
+    sched_list.add_argument("--status", choices=["ACTIVE", "PAUSED"], help="Filter by status")
+
+    sched_get = subparsers.add_parser("schedule-get", help="Get schedule details")
+    sched_get.add_argument("schedule_id", help="Schedule ID")
+
+    sched_update = subparsers.add_parser("schedule-update", help="Update a schedule")
+    sched_update.add_argument("schedule_id", help="Schedule ID")
+    sched_update.add_argument("--name", help="New name")
+    sched_update.add_argument("--description", help="New description")
+    sched_update.add_argument("--cron", help="New cron expression")
+    sched_update.add_argument("--timezone", help="New timezone")
+    sched_update.add_argument("--query", help="New task query")
+    sched_update.add_argument("--budget", type=float, help="New max budget per run (USD)")
+    sched_update.add_argument("--timeout", type=int, help="New timeout per run (seconds)")
+    sched_update.add_argument("--clear-context", action="store_true", help="Clear task context")
+
+    sched_pause = subparsers.add_parser("schedule-pause", help="Pause a schedule")
+    sched_pause.add_argument("schedule_id", help="Schedule ID")
+    sched_pause.add_argument("--reason", help="Pause reason")
+
+    sched_resume = subparsers.add_parser("schedule-resume", help="Resume a paused schedule")
+    sched_resume.add_argument("schedule_id", help="Schedule ID")
+    sched_resume.add_argument("--reason", help="Resume reason")
+
+    sched_delete = subparsers.add_parser("schedule-delete", help="Delete a schedule")
+    sched_delete.add_argument("schedule_id", help="Schedule ID")
+
+    sched_runs = subparsers.add_parser("schedule-runs", help="Get schedule execution history")
+    sched_runs.add_argument("schedule_id", help="Schedule ID")
+    sched_runs.add_argument("--page", type=int, default=1, help="Page number")
+    sched_runs.add_argument("--page-size", type=int, default=10, help="Items per page")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -338,6 +389,91 @@ def main():
         elif args.command == "session-title":
             ok = client.update_session_title(args.session_id, args.title)
             print("✓ Updated" if ok else "✗ Update failed")
+
+        elif args.command == "schedule-create":
+            # Build task context
+            task_ctx = {}
+            if args.force_research:
+                task_ctx["force_research"] = "true"
+            if args.research_strategy:
+                task_ctx["research_strategy"] = args.research_strategy
+
+            result = client.create_schedule(
+                name=args.name,
+                cron_expression=args.cron,
+                task_query=args.query,
+                description=args.description,
+                timezone=args.timezone,
+                task_context=task_ctx if task_ctx else None,
+                max_budget_per_run_usd=args.budget,
+                timeout_seconds=args.timeout,
+            )
+            print(f"✓ Schedule created:")
+            print(f"  ID: {result.get('schedule_id')}")
+            print(f"  Next run: {result.get('next_run_at')}")
+
+        elif args.command == "schedule-list":
+            schedules, total = client.list_schedules(
+                page=args.page, page_size=args.page_size, status=args.status
+            )
+            print(f"Total: {total}")
+            for s in schedules:
+                status_icon = "▶" if s.status == "ACTIVE" else "⏸"
+                print(f"{status_icon} {s.schedule_id}\t{s.name}\t{s.cron_expression}\t{s.status}")
+
+        elif args.command == "schedule-get":
+            sched = client.get_schedule(args.schedule_id)
+            print(f"Schedule: {sched.name}")
+            print(f"  ID: {sched.schedule_id}")
+            print(f"  Status: {sched.status}")
+            print(f"  Cron: {sched.cron_expression}")
+            print(f"  Timezone: {sched.timezone or 'UTC'}")
+            print(f"  Query: {sched.task_query}")
+            if sched.task_context:
+                print(f"  Context: {sched.task_context}")
+            if sched.next_run_at:
+                print(f"  Next run: {sched.next_run_at}")
+            if sched.last_run_at:
+                print(f"  Last run: {sched.last_run_at}")
+            print(f"  Runs: {sched.total_runs} total, {sched.successful_runs} succeeded, {sched.failed_runs} failed")
+
+        elif args.command == "schedule-update":
+            result = client.update_schedule(
+                args.schedule_id,
+                name=args.name,
+                description=args.description,
+                cron_expression=args.cron,
+                timezone=args.timezone,
+                task_query=args.query,
+                max_budget_per_run_usd=args.budget,
+                timeout_seconds=args.timeout,
+                clear_task_context=args.clear_context,
+            )
+            print("✓ Schedule updated")
+            if result.get("next_run_at"):
+                print(f"  Next run: {result.get('next_run_at')}")
+
+        elif args.command == "schedule-pause":
+            ok = client.pause_schedule(args.schedule_id, reason=args.reason)
+            print("✓ Schedule paused" if ok else "✗ Pause failed")
+
+        elif args.command == "schedule-resume":
+            ok = client.resume_schedule(args.schedule_id, reason=args.reason)
+            print("✓ Schedule resumed" if ok else "✗ Resume failed")
+
+        elif args.command == "schedule-delete":
+            ok = client.delete_schedule(args.schedule_id)
+            print("✓ Schedule deleted" if ok else "✗ Delete failed")
+
+        elif args.command == "schedule-runs":
+            runs, total = client.get_schedule_runs(
+                args.schedule_id, page=args.page, page_size=args.page_size
+            )
+            print(f"Total runs: {total}")
+            for run in runs:
+                status_icon = "✓" if run.status == "COMPLETED" else "✗" if run.status == "FAILED" else "⏳"
+                cost = f"${run.total_cost_usd:.4f}" if run.total_cost_usd else "-"
+                print(f"{status_icon} {run.triggered_at}\t{run.status}\t{run.total_tokens} tokens\t{cost}")
 
     except errors.ShannonError as e:
         print(f"✗ {e}")
