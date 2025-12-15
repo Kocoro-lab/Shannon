@@ -5,6 +5,96 @@ All notable changes to the Shannon Python SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-12-15
+
+### Added
+
+#### Schedule Management
+- **`create_schedule()`** - Create scheduled tasks with cron expressions
+- **`get_schedule()`** - Get schedule details
+- **`list_schedules()`** - List all schedules with pagination and status filter
+- **`update_schedule()`** - Update schedule configuration
+- **`pause_schedule()`** - Pause a schedule
+- **`resume_schedule()`** - Resume a paused schedule
+- **`delete_schedule()`** - Delete a schedule
+- **`get_schedule_runs()`** - Get execution history for a schedule
+
+#### Models
+- **`Schedule`** - Full schedule details including cron, context, budget, run history
+- **`ScheduleSummary`** - Summary for list operations
+- **`ScheduleRun`** - Individual execution record with status, tokens, cost
+- **`ScheduleStatus`** - Enum (ACTIVE, PAUSED, DELETED)
+
+#### CLI Commands
+- **`schedule-create <name> <cron> <query>`** - Create a scheduled task
+  - Example: `shannon schedule-create "Daily Report" "0 9 * * *" "Summarize daily metrics" --force-research`
+- **`schedule-list`** - List all schedules
+- **`schedule-get <id>`** - Get schedule details
+- **`schedule-update <id>`** - Update schedule configuration
+- **`schedule-pause <id>`** - Pause a schedule
+- **`schedule-resume <id>`** - Resume a paused schedule
+- **`schedule-delete <id>`** - Delete a schedule
+- **`schedule-runs <id>`** - View execution history
+
+### Changed
+- Version bumped from 0.4.2 to 0.5.0
+
+### Migration Guide
+
+**Creating a scheduled task:**
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080")
+
+# Create a daily research task at 9am UTC
+result = client.create_schedule(
+    name="Daily AI News",
+    cron_expression="0 9 * * *",
+    task_query="Summarize the latest AI research news",
+    task_context={"force_research": "true", "research_strategy": "quick"},
+    timezone="UTC",
+    max_budget_per_run_usd=0.50,
+)
+print(f"Schedule created: {result['schedule_id']}")
+
+# List all schedules
+schedules, total = client.list_schedules()
+for s in schedules:
+    print(f"{s.name}: {s.cron_expression} ({s.status})")
+
+# View execution history
+runs, _ = client.get_schedule_runs(result['schedule_id'])
+for run in runs:
+    print(f"{run.triggered_at}: {run.status} - ${run.total_cost_usd:.4f}")
+
+# Pause/resume schedule
+client.pause_schedule(result['schedule_id'], reason="Maintenance")
+client.resume_schedule(result['schedule_id'])
+```
+
+**CLI usage:**
+```bash
+# Create a scheduled task
+shannon schedule-create "Daily Report" "0 9 * * 1-5" "Generate daily metrics summary" \
+    --force-research --research-strategy quick --budget 0.25
+
+# List schedules
+shannon schedule-list
+
+# View schedule details
+shannon schedule-get <schedule-id>
+
+# Pause/resume
+shannon schedule-pause <schedule-id> --reason "Holiday"
+shannon schedule-resume <schedule-id>
+
+# View run history
+shannon schedule-runs <schedule-id>
+```
+
+---
+
 ## [0.4.2] - 2025-01-14
 
 ### Fixed

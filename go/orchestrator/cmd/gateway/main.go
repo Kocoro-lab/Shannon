@@ -109,6 +109,7 @@ func main() {
 	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, logger)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
 	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
+	scheduleHandler := handlers.NewScheduleHandler(orchClient, pgDB, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
 
@@ -339,6 +340,107 @@ func main() {
 				validationMiddleware(
 					rateLimiter(
 						http.HandlerFunc(sessionHandler.DeleteSession),
+					),
+				),
+			),
+		),
+	)
+
+	// Schedule endpoints (require auth)
+	mux.Handle("POST /api/v1/schedules",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(scheduleHandler.CreateSchedule),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/schedules",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(scheduleHandler.ListSchedules),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/schedules/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(scheduleHandler.GetSchedule),
+				),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/schedules/{id}/runs",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(scheduleHandler.GetScheduleRuns),
+				),
+			),
+		),
+	)
+
+	mux.Handle("PUT /api/v1/schedules/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(scheduleHandler.UpdateSchedule),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("POST /api/v1/schedules/{id}/pause",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(scheduleHandler.PauseSchedule),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("POST /api/v1/schedules/{id}/resume",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(scheduleHandler.ResumeSchedule),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("DELETE /api/v1/schedules/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(scheduleHandler.DeleteSchedule),
 					),
 				),
 			),

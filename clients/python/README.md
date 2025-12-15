@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.4.0
+**Version:** 0.5.0
 
 ## Installation
 
@@ -107,6 +107,14 @@ Global flags:
 | `session-get` | `session_id` `--no-history` | Get session details (optionally fetch history) | `GET /api/v1/sessions/{id}` (+ `GET /api/v1/sessions/{id}/history`) |
 | `session-title` | `session_id` `title` | Update session title | `PATCH /api/v1/sessions/{id}` |
 | `session-delete` | `session_id` | Delete a session | `DELETE /api/v1/sessions/{id}` |
+| `schedule-create` | `name` `cron` `query` `--force-research` `--research-strategy` `--budget` `--timeout` | Create scheduled task | `POST /api/v1/schedules` |
+| `schedule-list` | `--page` `--page-size` `--status` | List schedules | `GET /api/v1/schedules` |
+| `schedule-get` | `schedule_id` | Get schedule details | `GET /api/v1/schedules/{id}` |
+| `schedule-update` | `schedule_id` `--name` `--cron` `--query` `--clear-context` | Update schedule | `PUT /api/v1/schedules/{id}` |
+| `schedule-pause` | `schedule_id` `--reason` | Pause a schedule | `POST /api/v1/schedules/{id}/pause` |
+| `schedule-resume` | `schedule_id` `--reason` | Resume a paused schedule | `POST /api/v1/schedules/{id}/resume` |
+| `schedule-delete` | `schedule_id` | Delete a schedule | `DELETE /api/v1/schedules/{id}` |
+| `schedule-runs` | `schedule_id` `--page` `--page-size` | View schedule execution history | `GET /api/v1/schedules/{id}/runs` |
 
 One‑line examples:
 
@@ -123,6 +131,12 @@ One‑line examples:
 - `session-get`: `python -m shannon.cli --base-url http://localhost:8080 session-get my-session`
 - `session-title`: `python -m shannon.cli --base-url http://localhost:8080 session-title my-session "My Session Title"`
 - `session-delete`: `python -m shannon.cli --base-url http://localhost:8080 session-delete my-session`
+- `schedule-create`: `python -m shannon.cli --base-url http://localhost:8080 schedule-create "Daily Report" "0 9 * * 1-5" "Summarize daily metrics" --force-research`
+- `schedule-list`: `python -m shannon.cli --base-url http://localhost:8080 schedule-list --status ACTIVE`
+- `schedule-get`: `python -m shannon.cli --base-url http://localhost:8080 schedule-get schedule-123`
+- `schedule-pause`: `python -m shannon.cli --base-url http://localhost:8080 schedule-pause schedule-123 --reason "Maintenance"`
+- `schedule-resume`: `python -m shannon.cli --base-url http://localhost:8080 schedule-resume schedule-123`
+- `schedule-runs`: `python -m shannon.cli --base-url http://localhost:8080 schedule-runs schedule-123`
 
 ## Async Usage
 
@@ -166,13 +180,15 @@ asyncio.run(main())
 
 - ✅ HTTP-only client using httpx
 - ✅ Task submission, status, wait, cancel
+- ✅ Task control: pause, resume, control-state
+- ✅ Schedule management: create, list, update, pause, resume, delete, view runs
 - ✅ Event streaming via HTTP SSE (resume + filtering)
 - ✅ Optional WebSocket streaming helper (`client.stream_ws`) — requires `pip install websockets`
 - ✅ Approval decision endpoint
 - ✅ Session endpoints: list/get/history/events/update title/delete
-- ✅ CLI tool (submit, status, stream, approve, sessions)
+- ✅ CLI tool (submit, status, stream, approve, sessions, schedules)
 - ✅ Async-first design with sync wrapper
-- ✅ Type-safe enums (EventType, TaskStatusEnum)
+- ✅ Type-safe enums (EventType, TaskStatusEnum, ScheduleStatus)
 - ✅ Error mapping for common HTTP codes
 
 ## Usage and Cost Tracking
@@ -289,6 +305,91 @@ if session.is_research_session:
     print(f"Research session using '{session.research_strategy}' strategy")
 ```
 
+## Schedule Management (New in v0.5.0)
+
+Create and manage scheduled tasks that run automatically on a cron schedule.
+
+### Creating Scheduled Tasks
+
+```python
+from shannon import ShannonClient
+
+client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+
+# Create a daily research task at 9am UTC on weekdays
+result = client.create_schedule(
+    name="Daily AI News Summary",
+    cron_expression="0 9 * * 1-5",  # Mon-Fri at 9am
+    task_query="Summarize the latest developments in AI research",
+    description="Daily automated research digest",
+    timezone="UTC",
+    task_context={
+        "force_research": "true",
+        "research_strategy": "quick",
+    },
+    max_budget_per_run_usd=0.50,
+    timeout_seconds=300,
+)
+print(f"Schedule created: {result['schedule_id']}")
+print(f"Next run: {result['next_run_at']}")
+```
+
+### Listing and Managing Schedules
+
+```python
+# List all active schedules
+schedules, total = client.list_schedules(status="ACTIVE")
+print(f"Found {total} active schedules")
+
+for s in schedules:
+    print(f"  {s.name}: {s.cron_expression} (next: {s.next_run_at})")
+
+# Get schedule details
+schedule = client.get_schedule("schedule-id")
+print(f"Schedule: {schedule.name}")
+print(f"Status: {schedule.status}")
+print(f"Runs: {schedule.total_runs} total, {schedule.successful_runs} succeeded, {schedule.failed_runs} failed")
+
+# Update schedule
+client.update_schedule(
+    "schedule-id",
+    cron_expression="0 10 * * 1-5",  # Change to 10am
+    max_budget_per_run_usd=1.00,
+)
+
+# Pause/resume
+client.pause_schedule("schedule-id", reason="Holiday break")
+client.resume_schedule("schedule-id", reason="Back from holiday")
+
+# Delete
+client.delete_schedule("schedule-id")
+```
+
+### Viewing Execution History
+
+```python
+# Get execution history for a schedule
+runs, total = client.get_schedule_runs("schedule-id", page=1, page_size=10)
+
+print(f"Last {len(runs)} runs (of {total} total):")
+for run in runs:
+    status_icon = "✓" if run.status == "COMPLETED" else "✗"
+    print(f"  {status_icon} {run.triggered_at}: {run.status}")
+    print(f"      Tokens: {run.total_tokens}, Cost: ${run.total_cost_usd:.4f}")
+    if run.error_message:
+        print(f"      Error: {run.error_message}")
+```
+
+### Cron Expression Examples
+
+| Expression | Description |
+|------------|-------------|
+| `0 9 * * *` | Every day at 9:00 AM |
+| `0 9 * * 1-5` | Weekdays at 9:00 AM |
+| `0 */6 * * *` | Every 6 hours |
+| `0 9 1 * *` | First day of each month at 9:00 AM |
+| `30 8 * * 1` | Every Monday at 8:30 AM |
+
 ## Examples
 
 The SDK includes comprehensive examples demonstrating key features:
@@ -353,6 +454,24 @@ clients/python/
 ```
 
 ## Changelog
+
+### Version 0.5.0 (2025-12-15)
+
+**New Features:**
+- **Schedule Management** - Full CRUD for scheduled tasks with cron expressions
+  - `create_schedule()`, `get_schedule()`, `list_schedules()`, `update_schedule()`
+  - `pause_schedule()`, `resume_schedule()`, `delete_schedule()`
+  - `get_schedule_runs()` - View execution history
+- **Schedule Models** - `Schedule`, `ScheduleSummary`, `ScheduleRun`, `ScheduleStatus`
+- **CLI Commands** - `schedule-create`, `schedule-list`, `schedule-get`, `schedule-update`, `schedule-pause`, `schedule-resume`, `schedule-delete`, `schedule-runs`
+
+### Version 0.4.0 (2025-01-14)
+
+**New Features:**
+- **Task Control** - Pause, resume, and get control state for running tasks
+  - `pause_task()`, `resume_task()`, `get_control_state()`
+- **ControlState Model** - Comprehensive pause/cancel tracking
+- **CLI Commands** - `pause`, `resume`, `control-state`
 
 ### Version 0.3.0 (2025-01-04)
 

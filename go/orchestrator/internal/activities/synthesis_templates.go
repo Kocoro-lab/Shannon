@@ -8,6 +8,7 @@ import (
 	"sync"
 	"text/template"
 
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"go.uber.org/zap"
 )
 
@@ -191,8 +192,8 @@ func SelectSynthesisTemplate(context map[string]interface{}) (templateName strin
 		return "research_comprehensive", false
 	}
 
-	// 3. Force research flag
-	if fr, ok := context["force_research"].(bool); ok && fr {
+	// 3. Force research flag (handles both bool and string "true" from proto)
+	if util.GetContextBool(context, "force_research") {
 		return "research_comprehensive", false
 	}
 

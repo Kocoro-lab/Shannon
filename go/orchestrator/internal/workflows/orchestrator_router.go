@@ -495,28 +495,19 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
 	}
 
-	// Force ResearchWorkflow via context flag (user-facing via CLI)
-	if v, ok := input.Context["force_research"]; ok {
-		if b, ok := v.(bool); ok && b {
-			logger.Info("Forcing ResearchWorkflow via context flag (test mode)")
-			if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx, controlHandler); handled {
-				return result, err
-			}
+	// Force ResearchWorkflow via context flag (user-facing via CLI and scheduled tasks)
+	// Uses GetContextBool to handle both bool and string "true" (proto map<string,string> converts to string)
+	if GetContextBool(input.Context, "force_research") {
+		logger.Info("Forcing ResearchWorkflow via context flag")
+		if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx, controlHandler); handled {
+			return result, err
 		}
 	}
 
 	// Check if P2P is forced via context
-	forceP2P := false
-	if v, ok := input.Context["force_p2p"]; ok {
-		if b, ok := v.(bool); ok && b {
-			forceP2P = true
-			logger.Info("P2P coordination forced via context flag")
-		}
-		// Also check string values for flexibility
-		if s, ok := v.(string); ok && (s == "true" || s == "1") {
-			forceP2P = true
-			logger.Info("P2P coordination forced via context flag")
-		}
+	forceP2P := GetContextBool(input.Context, "force_p2p")
+	if forceP2P {
+		logger.Info("P2P coordination forced via context flag")
 	}
 
 	// Supervisor heuristic: very large plans, explicit dependencies, or forced P2P

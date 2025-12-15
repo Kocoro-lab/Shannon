@@ -153,7 +153,8 @@ function RunDetailContent() {
                 }
 
                 if (taskContext) {
-                    const isDeepResearch = taskContext.force_research === true;
+                    // Handle both boolean true and string "true" (proto map<string,string> converts to string)
+                    const isDeepResearch = taskContext.force_research === true || taskContext.force_research === "true";
                     const strategy = taskContext.research_strategy || "quick";
 
                     console.log("[RunDetail] Task context - Agent type:", isDeepResearch ? "deep_research" : "normal", "Strategy:", strategy);

@@ -65,6 +65,29 @@ func (f *fakeOrchClient) GetControlState(ctx context.Context, in *orchpb.GetCont
 	return &orchpb.GetControlStateResponse{IsPaused: false, IsCancelled: false}, nil
 }
 
+// Schedule methods (stubs for interface completeness)
+func (f *fakeOrchClient) CreateSchedule(ctx context.Context, in *orchpb.CreateScheduleRequest, opts ...grpc.CallOption) (*orchpb.CreateScheduleResponse, error) {
+	return nil, nil
+}
+func (f *fakeOrchClient) GetSchedule(ctx context.Context, in *orchpb.GetScheduleRequest, opts ...grpc.CallOption) (*orchpb.GetScheduleResponse, error) {
+	return nil, nil
+}
+func (f *fakeOrchClient) ListSchedules(ctx context.Context, in *orchpb.ListSchedulesRequest, opts ...grpc.CallOption) (*orchpb.ListSchedulesResponse, error) {
+	return nil, nil
+}
+func (f *fakeOrchClient) UpdateSchedule(ctx context.Context, in *orchpb.UpdateScheduleRequest, opts ...grpc.CallOption) (*orchpb.UpdateScheduleResponse, error) {
+	return nil, nil
+}
+func (f *fakeOrchClient) DeleteSchedule(ctx context.Context, in *orchpb.DeleteScheduleRequest, opts ...grpc.CallOption) (*orchpb.DeleteScheduleResponse, error) {
+	return nil, nil
+}
+func (f *fakeOrchClient) PauseSchedule(ctx context.Context, in *orchpb.PauseScheduleRequest, opts ...grpc.CallOption) (*orchpb.PauseScheduleResponse, error) {
+	return nil, nil
+}
+func (f *fakeOrchClient) ResumeSchedule(ctx context.Context, in *orchpb.ResumeScheduleRequest, opts ...grpc.CallOption) (*orchpb.ResumeScheduleResponse, error) {
+	return nil, nil
+}
+
 func newHandlerWithFake(t *testing.T, fc *fakeOrchClient) *TaskHandler {
 	t.Helper()
 	logger := zap.NewNop()

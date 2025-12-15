@@ -24,6 +24,15 @@ service OrchestratorService {
   rpc PauseTask(PauseTaskRequest) returns (PauseTaskResponse);
   rpc ResumeTask(ResumeTaskRequest) returns (ResumeTaskResponse);
   rpc GetControlState(GetControlStateRequest) returns (GetControlStateResponse);
+
+  // Schedule management
+  rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse);
+  rpc GetSchedule(GetScheduleRequest) returns (GetScheduleResponse);
+  rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse);
+  rpc UpdateSchedule(UpdateScheduleRequest) returns (UpdateScheduleResponse);
+  rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse);
+  rpc PauseSchedule(PauseScheduleRequest) returns (PauseScheduleResponse);
+  rpc ResumeSchedule(ResumeScheduleRequest) returns (ResumeScheduleResponse);
 }
 
 message TaskDecomposition {
@@ -225,4 +234,119 @@ message GetControlStateResponse {
   string paused_by = 5;
   string cancel_reason = 6;
   string cancelled_by = 7;
+}
+
+// Schedule management messages
+message CreateScheduleRequest {
+  string name = 1;
+  string description = 2;
+  string cron_expression = 3;
+  string timezone = 4; // Default: UTC
+
+  // Task template
+  string task_query = 5;
+  map<string, string> task_context = 6;
+
+  // Resource limits
+  double max_budget_per_run_usd = 7;
+  int32 timeout_seconds = 8;
+}
+
+message CreateScheduleResponse {
+  string schedule_id = 1;
+  string message = 2;
+  string next_run_at = 3; // RFC3339
+}
+
+message GetScheduleRequest {
+  string schedule_id = 1;
+}
+
+message ScheduleInfo {
+  string schedule_id = 1;
+  string name = 2;
+  string description = 3;
+  string cron_expression = 4;
+  string timezone = 5;
+  string task_query = 6;
+  map<string, string> task_context = 7;
+  double max_budget_per_run_usd = 8;
+  int32 timeout_seconds = 9;
+  string status = 10; // ACTIVE, PAUSED, DELETED
+  string created_at = 11;
+  string updated_at = 12;
+  string last_run_at = 13;
+  string next_run_at = 14;
+  int32 total_runs = 15;
+  int32 successful_runs = 16;
+  int32 failed_runs = 17;
+}
+
+message GetScheduleResponse {
+  ScheduleInfo schedule = 1;
+}
+
+message ListSchedulesRequest {
+  int32 page_size = 1; // Default: 50, max: 100
+  int32 page = 2; // Default: 1
+  string status = 3; // Filter: ACTIVE, PAUSED, ALL
+}
+
+message ListSchedulesResponse {
+  repeated ScheduleInfo schedules = 1;
+  int32 total_count = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
+message UpdateScheduleRequest {
+  string schedule_id = 1;
+
+  // Optional fields (only update if set)
+  optional string name = 2;
+  optional string description = 3;
+  optional string cron_expression = 4;
+  optional string timezone = 5;
+  optional string task_query = 6;
+  map<string, string> task_context = 7;
+  optional double max_budget_per_run_usd = 8;
+  optional int32 timeout_seconds = 9;
+  // Set to true to explicitly clear task_context (empty map is indistinguishable from not set)
+  bool clear_task_context = 10;
+}
+
+message UpdateScheduleResponse {
+  bool success = 1;
+  string message = 2;
+  string next_run_at = 3;
+}
+
+message DeleteScheduleRequest {
+  string schedule_id = 1;
+}
+
+message DeleteScheduleResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message PauseScheduleRequest {
+  string schedule_id = 1;
+  string reason = 2;
+}
+
+message PauseScheduleResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ResumeScheduleRequest {
+  string schedule_id = 1;
+  string reason = 2;
+}
+
+message ResumeScheduleResponse {
+  bool success = 1;
+  string message = 2;
+  string next_run_at = 3;
 }

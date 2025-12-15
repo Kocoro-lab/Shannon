@@ -13,8 +13,14 @@ import (
 	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 )
+
+// getContextBool extracts a boolean from context, handling both bool and string "true"
+func getContextBool(ctx map[string]interface{}, key string) bool {
+	return util.GetContextBool(ctx, key)
+}
 
 // ReactConfig controls the Reason-Act-Observe loop behavior
 type ReactConfig struct {
@@ -75,7 +81,7 @@ func ReactLoop(
 
 	isResearch := false
 	if baseContext != nil {
-		if fr, ok := baseContext["force_research"].(bool); ok && fr {
+		if getContextBool(baseContext, "force_research") {
 			isResearch = true
 		} else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
 			isResearch = true
@@ -293,7 +299,7 @@ func ReactLoop(
 		// Bias toward web_search + web_fetch when running in research mode to ensure citations
 		// The LLM can use web_search to find sources, then web_fetch to read full content
 		if baseContext != nil {
-			if fr, ok := baseContext["force_research"].(bool); ok && fr {
+			if getContextBool(baseContext, "force_research") {
 				suggestedTools = []string{"web_search", "web_fetch"}
 			} else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
 				suggestedTools = []string{"web_search", "web_fetch"}

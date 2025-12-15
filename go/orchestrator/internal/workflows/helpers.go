@@ -5,9 +5,16 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/workflow"
 )
+
+// GetContextBool is a convenience wrapper around util.GetContextBool for workflows.
+// It extracts a boolean value from context, handling both bool and string "true"/"false".
+func GetContextBool(ctx map[string]interface{}, key string) bool {
+	return util.GetContextBool(ctx, key)
+}
 
 // convertHistoryForAgent formats session history into a simple string slice for agents
 func convertHistoryForAgent(messages []Message) []string {

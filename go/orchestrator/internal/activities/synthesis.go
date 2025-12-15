@@ -17,6 +17,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
 )
@@ -572,7 +573,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		isResearch = true
 	}
 	if input.Context != nil {
-		if fr, ok := input.Context["force_research"].(bool); ok && fr {
+		if util.GetContextBool(input.Context, "force_research") {
 			isResearch = true
 		}
 		if _, ok := input.Context["enable_citations"]; ok {

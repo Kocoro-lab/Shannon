@@ -21,6 +21,13 @@ func withGRPCMetadata(ctx context.Context, r *http.Request) context.Context {
 	if traceParent := r.Header.Get("traceparent"); traceParent != "" {
 		md.Set("traceparent", traceParent)
 	}
+	// Pass user/tenant IDs for ownership checks (dev mode support)
+	if userID := r.Header.Get("x-user-id"); userID != "" {
+		md.Set("x-user-id", userID)
+	}
+	if tenantID := r.Header.Get("x-tenant-id"); tenantID != "" {
+		md.Set("x-tenant-id", tenantID)
+	}
 	if len(md) > 0 {
 		return metadata.NewOutgoingContext(ctx, md)
 	}

@@ -23,6 +23,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
@@ -1010,7 +1011,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	// Detect research-style contexts where we prefer LLM-native tool selection
 	isResearch := false
 	if input.Context != nil {
-		if fr, ok := input.Context["force_research"].(bool); ok && fr {
+		// Use util.GetContextBool to handle both bool and string "true" (proto map<string,string> converts to string)
+		if util.GetContextBool(input.Context, "force_research") {
 			isResearch = true
 		} else if rs, ok := input.Context["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
 			isResearch = true

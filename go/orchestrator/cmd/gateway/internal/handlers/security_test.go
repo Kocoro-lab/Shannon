@@ -109,6 +109,63 @@ func (m *MockOrchestratorClient) GetControlState(ctx context.Context, req *orchp
 	return args.Get(0).(*orchpb.GetControlStateResponse), args.Error(1)
 }
 
+// Schedule methods (stubs for interface completeness)
+func (m *MockOrchestratorClient) CreateSchedule(ctx context.Context, req *orchpb.CreateScheduleRequest, opts ...grpc.CallOption) (*orchpb.CreateScheduleResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.CreateScheduleResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) GetSchedule(ctx context.Context, req *orchpb.GetScheduleRequest, opts ...grpc.CallOption) (*orchpb.GetScheduleResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.GetScheduleResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) ListSchedules(ctx context.Context, req *orchpb.ListSchedulesRequest, opts ...grpc.CallOption) (*orchpb.ListSchedulesResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.ListSchedulesResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) UpdateSchedule(ctx context.Context, req *orchpb.UpdateScheduleRequest, opts ...grpc.CallOption) (*orchpb.UpdateScheduleResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.UpdateScheduleResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) DeleteSchedule(ctx context.Context, req *orchpb.DeleteScheduleRequest, opts ...grpc.CallOption) (*orchpb.DeleteScheduleResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.DeleteScheduleResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) PauseSchedule(ctx context.Context, req *orchpb.PauseScheduleRequest, opts ...grpc.CallOption) (*orchpb.PauseScheduleResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.PauseScheduleResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) ResumeSchedule(ctx context.Context, req *orchpb.ResumeScheduleRequest, opts ...grpc.CallOption) (*orchpb.ResumeScheduleResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.ResumeScheduleResponse), args.Error(1)
+}
+
 // TestCancelTask_OwnershipEnforcement tests that cancel endpoint properly checks ownership
 func TestCancelTask_OwnershipEnforcement(t *testing.T) {
 	tests := []struct {
