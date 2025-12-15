@@ -33,12 +33,45 @@ func NewAuthMiddleware(authService APIKeyValidator, logger *zap.Logger) *AuthMid
 // Middleware returns the HTTP middleware function
 func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check if auth should be skipped (development only)
-		if os.Getenv("GATEWAY_SKIP_AUTH") == "1" {
-			// Create a mock user context for development
+		// Check if auth should be skipped (DEVELOPMENT ONLY - NEVER USE IN PRODUCTION)
+		env := os.Getenv("ENVIRONMENT")
+		skipAuth := os.Getenv("GATEWAY_SKIP_AUTH")
+
+		if skipAuth == "1" {
+			// Only allow auth skip in development environment
+			if env != "development" && env != "dev" && env != "test" {
+				m.logger.Error("SECURITY WARNING: GATEWAY_SKIP_AUTH enabled in non-development environment",
+					zap.String("environment", env),
+					zap.String("path", r.URL.Path),
+				)
+				m.sendUnauthorized(w, "Authentication required")
+				return
+			}
+
+			m.logger.Warn("Authentication bypassed (DEVELOPMENT MODE ONLY)",
+				zap.String("environment", env),
+				zap.String("path", r.URL.Path),
+			)
+
+			// In dev mode, respect x-user-id and x-tenant-id headers if provided
+			// This allows testing ownership/tenancy isolation without real auth
+			userID := uuid.MustParse("00000000-0000-0000-0000-000000000002") // default
+			tenantID := uuid.MustParse("00000000-0000-0000-0000-000000000001") // default
+
+			if headerUserID := r.Header.Get("x-user-id"); headerUserID != "" {
+				if parsed, err := uuid.Parse(headerUserID); err == nil {
+					userID = parsed
+				}
+			}
+			if headerTenantID := r.Header.Get("x-tenant-id"); headerTenantID != "" {
+				if parsed, err := uuid.Parse(headerTenantID); err == nil {
+					tenantID = parsed
+				}
+			}
+
 			userCtx := &authpkg.UserContext{
-				UserID:    uuid.MustParse("00000000-0000-0000-0000-000000000002"),
-				TenantID:  uuid.MustParse("00000000-0000-0000-0000-000000000001"),
+				UserID:    userID,
+				TenantID:  tenantID,
 				Username:  "admin",
 				Email:     "admin@shannon.local",
 				Role:      "admin",
@@ -46,9 +79,6 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 				TokenType: "api_key",
 			}
 			ctx := context.WithValue(r.Context(), "user", userCtx)
-			m.logger.Debug("Auth skipped (GATEWAY_SKIP_AUTH=1)",
-				zap.String("path", r.URL.Path),
-			)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}

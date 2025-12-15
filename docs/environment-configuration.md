@@ -108,6 +108,21 @@ RATE_LIMIT_REQUESTS=100
 RATE_LIMIT_WINDOW=60
 ```
 
+### Scheduled Tasks Configuration
+
+```bash
+# Maximum number of schedules per user (default: 50)
+SCHEDULE_MAX_PER_USER=50
+
+# Minimum interval between schedule runs in minutes (default: 60)
+SCHEDULE_MIN_INTERVAL_MINS=60
+
+# Maximum budget per scheduled execution in USD (default: 10.0)
+SCHEDULE_MAX_BUDGET_USD=10.0
+```
+
+See [Scheduled Tasks](scheduled-tasks.md) for complete scheduling documentation.
+
 ## Common Issues and Solutions
 
 ### Issue: "No web search provider configured"

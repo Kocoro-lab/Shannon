@@ -61,6 +61,9 @@ from shannon.models import (
     Event,
     EventType,
     PendingApproval,
+    Schedule,
+    ScheduleRun,
+    ScheduleSummary,
     Session,
     SessionEventTurn,
     SessionHistoryItem,
@@ -1243,6 +1246,467 @@ class AsyncShannonClient:
                 f"Failed to delete session: {str(e)}", details={"http_error": str(e)}
             )
 
+    # ===== Schedule Management =====
+
+    async def create_schedule(
+        self,
+        name: str,
+        cron_expression: str,
+        task_query: str,
+        *,
+        description: Optional[str] = None,
+        timezone: Optional[str] = None,
+        task_context: Optional[Dict[str, str]] = None,
+        max_budget_per_run_usd: Optional[float] = None,
+        timeout_seconds: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create a new scheduled task.
+
+        Args:
+            name: Schedule name
+            cron_expression: Cron expression (e.g., "0 9 * * 1-5" for weekdays at 9am)
+            task_query: The query to execute on each run
+            description: Optional description
+            timezone: Timezone for cron (default: UTC)
+            task_context: Context dict for task execution (e.g., force_research, research_strategy)
+            max_budget_per_run_usd: Maximum budget per execution
+            timeout_seconds: Timeout per execution
+            timeout: Request timeout
+
+        Returns:
+            Dict with schedule_id, message, next_run_at
+
+        Raises:
+            ValidationError: Invalid parameters
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {
+            "name": name,
+            "cron_expression": cron_expression,
+            "task_query": task_query,
+        }
+        if description:
+            payload["description"] = description
+        if timezone:
+            payload["timezone"] = timezone
+        if task_context:
+            payload["task_context"] = task_context
+        if max_budget_per_run_usd is not None:
+            payload["max_budget_per_run_usd"] = max_budget_per_run_usd
+        if timeout_seconds is not None:
+            payload["timeout_seconds"] = timeout_seconds
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/schedules",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in (200, 201):
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to create schedule: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_schedule(
+        self, schedule_id: str, timeout: Optional[float] = None
+    ) -> Schedule:
+        """
+        Get schedule details.
+
+        Args:
+            schedule_id: Schedule ID
+            timeout: Request timeout
+
+        Returns:
+            Schedule object
+
+        Raises:
+            ShannonError: Schedule not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/schedules/{schedule_id}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+
+            return Schedule(
+                schedule_id=data.get("schedule_id") or data.get("id", ""),
+                name=data.get("name", ""),
+                cron_expression=data.get("cron_expression", ""),
+                task_query=data.get("task_query", ""),
+                user_id=data.get("user_id", ""),
+                status=data.get("status", ""),
+                created_at=_parse_timestamp(data["created_at"]),
+                updated_at=_parse_timestamp(data.get("updated_at") or data["created_at"]),
+                description=data.get("description"),
+                timezone=data.get("timezone"),
+                task_context=data.get("task_context"),
+                max_budget_per_run_usd=data.get("max_budget_per_run_usd"),
+                timeout_seconds=data.get("timeout_seconds"),
+                next_run_at=_parse_timestamp(data["next_run_at"]) if data.get("next_run_at") else None,
+                last_run_at=_parse_timestamp(data["last_run_at"]) if data.get("last_run_at") else None,
+                total_runs=data.get("total_runs", 0),
+                successful_runs=data.get("successful_runs", 0),
+                failed_runs=data.get("failed_runs", 0),
+                paused_at=_parse_timestamp(data["paused_at"]) if data.get("paused_at") else None,
+                pause_reason=data.get("pause_reason"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get schedule: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def list_schedules(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        status: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[ScheduleSummary], int]:
+        """
+        List schedules with pagination.
+
+        Args:
+            page: Page number (1-indexed)
+            page_size: Number of schedules per page (1-100)
+            status: Filter by status (ACTIVE, PAUSED)
+            timeout: Request timeout
+
+        Returns:
+            Tuple of (schedules list, total_count)
+
+        Raises:
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        params: Dict[str, Any] = {"page": page, "page_size": page_size}
+        if status:
+            params["status"] = status
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/schedules",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            schedules = []
+
+            for sched_data in data.get("schedules", []):
+                schedules.append(ScheduleSummary(
+                    schedule_id=sched_data.get("schedule_id") or sched_data.get("id", ""),
+                    name=sched_data.get("name", ""),
+                    status=sched_data.get("status", ""),
+                    cron_expression=sched_data.get("cron_expression", ""),
+                    task_query=sched_data.get("task_query", ""),
+                    created_at=_parse_timestamp(sched_data["created_at"]),
+                    next_run_at=_parse_timestamp(sched_data["next_run_at"]) if sched_data.get("next_run_at") else None,
+                    last_run_at=_parse_timestamp(sched_data["last_run_at"]) if sched_data.get("last_run_at") else None,
+                    total_runs=sched_data.get("total_runs", 0),
+                    successful_runs=sched_data.get("successful_runs", 0),
+                    failed_runs=sched_data.get("failed_runs", 0),
+                ))
+
+            return schedules, data.get("total_count", len(schedules))
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list schedules: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def update_schedule(
+        self,
+        schedule_id: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+        timezone: Optional[str] = None,
+        task_query: Optional[str] = None,
+        task_context: Optional[Dict[str, str]] = None,
+        max_budget_per_run_usd: Optional[float] = None,
+        timeout_seconds: Optional[int] = None,
+        clear_task_context: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Update a schedule.
+
+        Args:
+            schedule_id: Schedule ID
+            name: New name
+            description: New description
+            cron_expression: New cron expression
+            timezone: New timezone
+            task_query: New task query
+            task_context: New task context (or set clear_task_context=True to clear)
+            max_budget_per_run_usd: New budget limit
+            timeout_seconds: New timeout
+            clear_task_context: Set True to clear task_context
+            timeout: Request timeout
+
+        Returns:
+            Updated schedule data
+
+        Raises:
+            ShannonError: Schedule not found
+            ValidationError: Invalid parameters
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {}
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if cron_expression is not None:
+            payload["cron_expression"] = cron_expression
+        if timezone is not None:
+            payload["timezone"] = timezone
+        if task_query is not None:
+            payload["task_query"] = task_query
+        if task_context is not None:
+            payload["task_context"] = task_context
+        if max_budget_per_run_usd is not None:
+            payload["max_budget_per_run_usd"] = max_budget_per_run_usd
+        if timeout_seconds is not None:
+            payload["timeout_seconds"] = timeout_seconds
+        if clear_task_context:
+            payload["clear_task_context"] = True
+
+        try:
+            response = await client.put(
+                f"{self.base_url}/api/v1/schedules/{schedule_id}",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to update schedule: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def pause_schedule(
+        self, schedule_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Pause a schedule.
+
+        Args:
+            schedule_id: Schedule ID
+            reason: Optional pause reason
+            timeout: Request timeout
+
+        Returns:
+            True if paused successfully
+
+        Raises:
+            ShannonError: Schedule not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/schedules/{schedule_id}/pause",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in (200, 202):
+                self._handle_http_error(response)
+
+            return True
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to pause schedule: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def resume_schedule(
+        self, schedule_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Resume a paused schedule.
+
+        Args:
+            schedule_id: Schedule ID
+            reason: Optional resume reason
+            timeout: Request timeout
+
+        Returns:
+            True if resumed successfully
+
+        Raises:
+            ShannonError: Schedule not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {}
+        if reason:
+            payload["reason"] = reason
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/schedules/{schedule_id}/resume",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in (200, 202):
+                self._handle_http_error(response)
+
+            return True
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to resume schedule: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def delete_schedule(
+        self, schedule_id: str, timeout: Optional[float] = None
+    ) -> bool:
+        """
+        Delete a schedule.
+
+        Args:
+            schedule_id: Schedule ID
+            timeout: Request timeout
+
+        Returns:
+            True if deleted successfully
+
+        Raises:
+            ShannonError: Schedule not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.delete(
+                f"{self.base_url}/api/v1/schedules/{schedule_id}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in (200, 204):
+                self._handle_http_error(response)
+
+            return True
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to delete schedule: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_schedule_runs(
+        self,
+        schedule_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[ScheduleRun], int]:
+        """
+        Get execution history for a schedule.
+
+        Args:
+            schedule_id: Schedule ID
+            page: Page number (1-indexed)
+            page_size: Number of runs per page (1-100)
+            timeout: Request timeout
+
+        Returns:
+            Tuple of (runs list, total_count)
+
+        Raises:
+            ShannonError: Schedule not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        params = {"page": page, "page_size": page_size}
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/schedules/{schedule_id}/runs",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            runs = []
+
+            for run_data in data.get("runs", []):
+                runs.append(ScheduleRun(
+                    workflow_id=run_data.get("workflow_id", ""),
+                    query=run_data.get("query", ""),
+                    status=run_data.get("status", ""),
+                    triggered_at=_parse_timestamp(run_data["triggered_at"]),
+                    result=run_data.get("result"),
+                    error_message=run_data.get("error_message"),
+                    model_used=run_data.get("model_used"),
+                    provider=run_data.get("provider"),
+                    total_tokens=run_data.get("total_tokens", 0),
+                    total_cost_usd=run_data.get("total_cost_usd", 0.0),
+                    duration_ms=run_data.get("duration_ms"),
+                    started_at=_parse_timestamp(run_data["started_at"]) if run_data.get("started_at") else None,
+                    completed_at=_parse_timestamp(run_data["completed_at"]) if run_data.get("completed_at") else None,
+                ))
+
+            return runs, data.get("total_count", len(runs))
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get schedule runs: {str(e)}", details={"http_error": str(e)}
+            )
+
     # ===== Health & Discovery =====
 
     async def health(self, timeout: Optional[float] = None) -> Dict[str, Any]:
@@ -1848,6 +2312,121 @@ class ShannonClient:
     ) -> bool:
         """Delete session (blocking)."""
         return self._run(self._async_client.delete_session(session_id, timeout))
+
+    # Schedule operations
+    def create_schedule(
+        self,
+        name: str,
+        cron_expression: str,
+        task_query: str,
+        *,
+        description: Optional[str] = None,
+        timezone: Optional[str] = None,
+        task_context: Optional[Dict[str, str]] = None,
+        max_budget_per_run_usd: Optional[float] = None,
+        timeout_seconds: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Create a scheduled task (blocking)."""
+        return self._run(
+            self._async_client.create_schedule(
+                name,
+                cron_expression,
+                task_query,
+                description=description,
+                timezone=timezone,
+                task_context=task_context,
+                max_budget_per_run_usd=max_budget_per_run_usd,
+                timeout_seconds=timeout_seconds,
+                timeout=timeout,
+            )
+        )
+
+    def get_schedule(
+        self, schedule_id: str, timeout: Optional[float] = None
+    ) -> Schedule:
+        """Get schedule details (blocking)."""
+        return self._run(self._async_client.get_schedule(schedule_id, timeout))
+
+    def list_schedules(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 50,
+        status: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[ScheduleSummary], int]:
+        """List schedules (blocking)."""
+        return self._run(
+            self._async_client.list_schedules(
+                page=page, page_size=page_size, status=status, timeout=timeout
+            )
+        )
+
+    def update_schedule(
+        self,
+        schedule_id: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        cron_expression: Optional[str] = None,
+        timezone: Optional[str] = None,
+        task_query: Optional[str] = None,
+        task_context: Optional[Dict[str, str]] = None,
+        max_budget_per_run_usd: Optional[float] = None,
+        timeout_seconds: Optional[int] = None,
+        clear_task_context: bool = False,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Update a schedule (blocking)."""
+        return self._run(
+            self._async_client.update_schedule(
+                schedule_id,
+                name=name,
+                description=description,
+                cron_expression=cron_expression,
+                timezone=timezone,
+                task_query=task_query,
+                task_context=task_context,
+                max_budget_per_run_usd=max_budget_per_run_usd,
+                timeout_seconds=timeout_seconds,
+                clear_task_context=clear_task_context,
+                timeout=timeout,
+            )
+        )
+
+    def pause_schedule(
+        self, schedule_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """Pause a schedule (blocking)."""
+        return self._run(self._async_client.pause_schedule(schedule_id, reason, timeout))
+
+    def resume_schedule(
+        self, schedule_id: str, reason: Optional[str] = None, timeout: Optional[float] = None
+    ) -> bool:
+        """Resume a paused schedule (blocking)."""
+        return self._run(self._async_client.resume_schedule(schedule_id, reason, timeout))
+
+    def delete_schedule(
+        self, schedule_id: str, timeout: Optional[float] = None
+    ) -> bool:
+        """Delete a schedule (blocking)."""
+        return self._run(self._async_client.delete_schedule(schedule_id, timeout))
+
+    def get_schedule_runs(
+        self,
+        schedule_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        timeout: Optional[float] = None,
+    ) -> tuple[List[ScheduleRun], int]:
+        """Get schedule execution history (blocking)."""
+        return self._run(
+            self._async_client.get_schedule_runs(
+                schedule_id, page=page, page_size=page_size, timeout=timeout
+            )
+        )
 
     # Health & Discovery
     def health(self, timeout: Optional[float] = None) -> Dict[str, Any]:

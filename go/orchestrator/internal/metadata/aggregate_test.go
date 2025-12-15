@@ -36,9 +36,10 @@ func TestAggregateAgentMetadata_SingleAgent_WithSplitTokens(t *testing.T) {
 	assert.Equal(t, 200, meta["output_tokens"], "should have output tokens")
 	assert.Equal(t, 300, meta["total_tokens"], "should sum input+output tokens")
 
-	// Single agent shouldn't have agent_usages array (only multiple agents)
-	_, hasAgentUsages := meta["agent_usages"]
-	assert.False(t, hasAgentUsages, "single agent should not have agent_usages array")
+	// Single agent now includes agent_usages for consistency (deprecated in favor of model_breakdown)
+	agentUsages, hasAgentUsages := meta["agent_usages"].([]map[string]interface{})
+	assert.True(t, hasAgentUsages, "should have agent_usages array")
+	assert.Equal(t, 1, len(agentUsages), "should have single agent usage entry")
 }
 
 func TestAggregateAgentMetadata_SingleAgent_WithTotalTokens(t *testing.T) {
@@ -250,8 +251,9 @@ func TestAggregateAgentMetadata_FailedAgents(t *testing.T) {
 	// Failed agent tokens should still be counted in totals
 	assert.Equal(t, 1300, meta["total_tokens"], "should include failed agent tokens in total")
 
-	// But agent_usages should only include successful agents
-	// Single successful agent, no agent_usages array
-	_, hasAgentUsages := meta["agent_usages"]
-	assert.False(t, hasAgentUsages, "single successful agent should not have agent_usages array")
+	// agent_usages includes only successful agents (now includes even single agent for consistency)
+	agentUsages, hasAgentUsages := meta["agent_usages"].([]map[string]interface{})
+	assert.True(t, hasAgentUsages, "should have agent_usages array")
+	assert.Equal(t, 1, len(agentUsages), "should have single successful agent entry")
+	assert.Equal(t, "agent-success", agentUsages[0]["agent_id"], "should be the successful agent")
 }

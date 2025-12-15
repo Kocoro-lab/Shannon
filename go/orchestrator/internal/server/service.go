@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/schedules"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
@@ -47,6 +49,7 @@ type OrchestratorService struct {
 	logger          *zap.Logger
 	degradeMgr      *degradation.Manager
 	workflowConfig  *activities.WorkflowConfig
+	scheduleManager *schedules.Manager
 
 	// Optional typed configuration snapshot for defaults
 	shCfg *cfg.ShannonConfig
@@ -80,6 +83,11 @@ func (s *OrchestratorService) SetShannonConfig(c *cfg.ShannonConfig) {
 // SetTemporalClient sets or replaces the Temporal client after service construction.
 func (s *OrchestratorService) SetTemporalClient(c client.Client) {
 	s.temporalClient = c
+}
+
+// SetScheduleManager sets the schedule manager after service construction.
+func (s *OrchestratorService) SetScheduleManager(m *schedules.Manager) {
+	s.scheduleManager = m
 }
 
 // SetWorkflowDefaultsProvider sets a provider for BypassSingleResult default
@@ -2430,4 +2438,420 @@ func (s *OrchestratorService) GetPendingApprovals(ctx context.Context, req *pb.G
 	return &pb.GetPendingApprovalsResponse{
 		Approvals: []*pb.PendingApproval{},
 	}, nil
+}
+
+// CreateSchedule creates a new scheduled task (with ownership)
+func (s *OrchestratorService) CreateSchedule(ctx context.Context, req *pb.CreateScheduleRequest) (*pb.CreateScheduleResponse, error) {
+	// 1. Auth enforcement
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	// 2. Check if schedule manager is available
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	// 3. Validate input
+	if req.Name == "" {
+		return nil, status.Error(codes.InvalidArgument, "schedule name required")
+	}
+	if req.CronExpression == "" {
+		return nil, status.Error(codes.InvalidArgument, "cron expression required")
+	}
+	if req.TaskQuery == "" {
+		return nil, status.Error(codes.InvalidArgument, "task query required")
+	}
+
+	// 4. Set defaults
+	timezone := req.Timezone
+	if timezone == "" {
+		timezone = "UTC"
+	}
+	timeoutSecs := req.TimeoutSeconds
+	if timeoutSecs == 0 {
+		timeoutSecs = 3600 // 1 hour default
+	}
+
+	// 5. Convert proto map to Go map
+	taskContext := make(map[string]interface{})
+	for k, v := range req.TaskContext {
+		taskContext[k] = v
+	}
+
+	// 6. Create via schedule manager
+	input := &schedules.CreateScheduleInput{
+		UserID:             uc.UserID,
+		TenantID:           uc.TenantID,
+		Name:               req.Name,
+		Description:        req.Description,
+		CronExpression:     req.CronExpression,
+		Timezone:           timezone,
+		TaskQuery:          req.TaskQuery,
+		TaskContext:        taskContext,
+		MaxBudgetPerRunUSD: req.MaxBudgetPerRunUsd,
+		TimeoutSeconds:     int(timeoutSecs),
+	}
+
+	schedule, err := s.scheduleManager.CreateSchedule(ctx, input)
+	if err != nil {
+		s.logger.Error("Failed to create schedule", zap.Error(err))
+		// Map typed errors to proper gRPC codes
+		if errors.Is(err, schedules.ErrInvalidCronExpression) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrIntervalTooShort) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrScheduleLimitReached) {
+			return nil, status.Error(codes.ResourceExhausted, err.Error())
+		}
+		if errors.Is(err, schedules.ErrBudgetExceeded) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrInvalidTimezone) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to create schedule: %v", err))
+	}
+
+	nextRunStr := ""
+	if schedule.NextRunAt != nil {
+		nextRunStr = schedule.NextRunAt.Format(time.RFC3339)
+	}
+
+	return &pb.CreateScheduleResponse{
+		ScheduleId: schedule.ID.String(),
+		Message:    "Schedule created successfully",
+		NextRunAt:  nextRunStr,
+	}, nil
+}
+
+// GetSchedule retrieves a schedule (with ownership check)
+func (s *OrchestratorService) GetSchedule(ctx context.Context, req *pb.GetScheduleRequest) (*pb.GetScheduleResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	scheduleID, err := uuid.Parse(req.ScheduleId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid schedule ID")
+	}
+
+	schedule, err := s.scheduleManager.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+
+	// Ownership check
+	if schedule.UserID != uc.UserID || schedule.TenantID != uc.TenantID {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+
+	return &pb.GetScheduleResponse{
+		Schedule: convertScheduleToProto(schedule),
+	}, nil
+}
+
+// ListSchedules retrieves schedules for a user
+func (s *OrchestratorService) ListSchedules(ctx context.Context, req *pb.ListSchedulesRequest) (*pb.ListSchedulesResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	// Set defaults
+	pageSize := int(req.PageSize)
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+	page := int(req.Page)
+	if page <= 0 {
+		page = 1
+	}
+
+	statusFilter := req.Status
+	if statusFilter != "ACTIVE" && statusFilter != "PAUSED" && statusFilter != "ALL" {
+		statusFilter = "ALL"
+	}
+
+	schedulesList, totalCount, err := s.scheduleManager.ListSchedules(ctx, uc.UserID, uc.TenantID, page, pageSize, statusFilter)
+	if err != nil {
+		s.logger.Error("Failed to list schedules", zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to list schedules")
+	}
+
+	scheduleInfos := make([]*pb.ScheduleInfo, 0, len(schedulesList))
+	for _, schedule := range schedulesList {
+		scheduleInfos = append(scheduleInfos, convertScheduleToProto(schedule))
+	}
+
+	return &pb.ListSchedulesResponse{
+		Schedules:  scheduleInfos,
+		TotalCount: int32(totalCount),
+		Page:       int32(page),
+		PageSize:   int32(pageSize),
+	}, nil
+}
+
+// UpdateSchedule updates a schedule
+func (s *OrchestratorService) UpdateSchedule(ctx context.Context, req *pb.UpdateScheduleRequest) (*pb.UpdateScheduleResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	scheduleID, err := uuid.Parse(req.ScheduleId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid schedule ID")
+	}
+
+	// Ownership check
+	schedule, err := s.scheduleManager.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+	if schedule.UserID != uc.UserID || schedule.TenantID != uc.TenantID {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+
+	// Build update input
+	updateInput := &schedules.UpdateScheduleInput{
+		ScheduleID: scheduleID,
+	}
+
+	// Handle TaskContext: set if provided with values, or clear if explicitly requested
+	if req.ClearTaskContext {
+		// Explicit clear: set to empty map (not nil) to overwrite existing
+		updateInput.TaskContext = make(map[string]interface{})
+	} else if len(req.TaskContext) > 0 {
+		// New values provided: convert and set
+		taskContext := make(map[string]interface{})
+		for k, v := range req.TaskContext {
+			taskContext[k] = v
+		}
+		updateInput.TaskContext = taskContext
+	}
+	// If neither condition: TaskContext stays nil, preserving existing value
+
+	// Only set fields that are provided
+	if req.Name != nil {
+		updateInput.Name = req.Name
+	}
+	if req.Description != nil {
+		updateInput.Description = req.Description
+	}
+	if req.CronExpression != nil {
+		updateInput.CronExpression = req.CronExpression
+	}
+	if req.Timezone != nil {
+		updateInput.Timezone = req.Timezone
+	}
+	if req.TaskQuery != nil {
+		updateInput.TaskQuery = req.TaskQuery
+	}
+	if req.MaxBudgetPerRunUsd != nil {
+		updateInput.MaxBudgetPerRunUSD = req.MaxBudgetPerRunUsd
+	}
+	if req.TimeoutSeconds != nil {
+		timeoutInt := int(*req.TimeoutSeconds)
+		updateInput.TimeoutSeconds = &timeoutInt
+	}
+
+	nextRun, err := s.scheduleManager.UpdateSchedule(ctx, updateInput)
+	if err != nil {
+		s.logger.Error("Failed to update schedule", zap.Error(err))
+		// Map typed errors to proper gRPC codes
+		if errors.Is(err, schedules.ErrInvalidCronExpression) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrIntervalTooShort) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrBudgetExceeded) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrInvalidTimezone) {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+		if errors.Is(err, schedules.ErrScheduleNotFound) {
+			return nil, status.Error(codes.NotFound, err.Error())
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to update schedule: %v", err))
+	}
+
+	nextRunStr := ""
+	if nextRun != nil {
+		nextRunStr = nextRun.Format(time.RFC3339)
+	}
+
+	return &pb.UpdateScheduleResponse{
+		Success:   true,
+		Message:   "Schedule updated successfully",
+		NextRunAt: nextRunStr,
+	}, nil
+}
+
+// DeleteSchedule deletes a schedule
+func (s *OrchestratorService) DeleteSchedule(ctx context.Context, req *pb.DeleteScheduleRequest) (*pb.DeleteScheduleResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	scheduleID, err := uuid.Parse(req.ScheduleId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid schedule ID")
+	}
+
+	// Ownership check
+	schedule, err := s.scheduleManager.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+	if schedule.UserID != uc.UserID || schedule.TenantID != uc.TenantID {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+
+	if err := s.scheduleManager.DeleteSchedule(ctx, scheduleID); err != nil {
+		s.logger.Error("Failed to delete schedule", zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to delete schedule")
+	}
+
+	return &pb.DeleteScheduleResponse{
+		Success: true,
+		Message: "Schedule deleted successfully",
+	}, nil
+}
+
+// PauseSchedule pauses a schedule
+func (s *OrchestratorService) PauseSchedule(ctx context.Context, req *pb.PauseScheduleRequest) (*pb.PauseScheduleResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	scheduleID, err := uuid.Parse(req.ScheduleId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid schedule ID")
+	}
+
+	// Ownership check
+	schedule, err := s.scheduleManager.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+	if schedule.UserID != uc.UserID || schedule.TenantID != uc.TenantID {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+
+	if err := s.scheduleManager.PauseSchedule(ctx, scheduleID, req.Reason); err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to pause schedule: %v", err))
+	}
+
+	return &pb.PauseScheduleResponse{
+		Success: true,
+		Message: "Schedule paused",
+	}, nil
+}
+
+// ResumeSchedule resumes a paused schedule
+func (s *OrchestratorService) ResumeSchedule(ctx context.Context, req *pb.ResumeScheduleRequest) (*pb.ResumeScheduleResponse, error) {
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	if s.scheduleManager == nil {
+		return nil, status.Error(codes.Unavailable, "scheduling feature not enabled")
+	}
+
+	scheduleID, err := uuid.Parse(req.ScheduleId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "invalid schedule ID")
+	}
+
+	// Ownership check
+	schedule, err := s.scheduleManager.GetSchedule(ctx, scheduleID)
+	if err != nil {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+	if schedule.UserID != uc.UserID || schedule.TenantID != uc.TenantID {
+		return nil, status.Error(codes.NotFound, "schedule not found")
+	}
+
+	nextRun, err := s.scheduleManager.ResumeSchedule(ctx, scheduleID, req.Reason)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("failed to resume schedule: %v", err))
+	}
+
+	nextRunStr := ""
+	if nextRun != nil {
+		nextRunStr = nextRun.Format(time.RFC3339)
+	}
+
+	return &pb.ResumeScheduleResponse{
+		Success:   true,
+		Message:   "Schedule resumed",
+		NextRunAt: nextRunStr,
+	}, nil
+}
+
+// Helper to convert Schedule to proto
+func convertScheduleToProto(s *schedules.Schedule) *pb.ScheduleInfo {
+	taskContext := make(map[string]string)
+	for k, v := range s.TaskContext {
+		taskContext[k] = fmt.Sprintf("%v", v)
+	}
+
+	lastRunAt := ""
+	if s.LastRunAt != nil {
+		lastRunAt = s.LastRunAt.Format(time.RFC3339)
+	}
+	nextRunAt := ""
+	if s.NextRunAt != nil {
+		nextRunAt = s.NextRunAt.Format(time.RFC3339)
+	}
+
+	return &pb.ScheduleInfo{
+		ScheduleId:          s.ID.String(),
+		Name:                s.Name,
+		Description:         s.Description,
+		CronExpression:      s.CronExpression,
+		Timezone:            s.Timezone,
+		TaskQuery:           s.TaskQuery,
+		TaskContext:         taskContext,
+		MaxBudgetPerRunUsd:  s.MaxBudgetPerRunUSD,
+		TimeoutSeconds:      int32(s.TimeoutSeconds),
+		Status:              s.Status,
+		CreatedAt:           s.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:           s.UpdatedAt.Format(time.RFC3339),
+		LastRunAt:           lastRunAt,
+		NextRunAt:           nextRunAt,
+		TotalRuns:           int32(s.TotalRuns),
+		SuccessfulRuns:      int32(s.SuccessfulRuns),
+		FailedRuns:          int32(s.FailedRuns),
+	}
 }

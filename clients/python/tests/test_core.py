@@ -49,6 +49,15 @@ def test_sync_client_init():
         "delete_session",
         "stream",
         "approve",
+        # Schedule methods (v0.5.0)
+        "create_schedule",
+        "get_schedule",
+        "list_schedules",
+        "update_schedule",
+        "pause_schedule",
+        "resume_schedule",
+        "delete_schedule",
+        "get_schedule_runs",
     ]:
         assert hasattr(c, name), f"Missing method: {name}"
     c.close()

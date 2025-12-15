@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Plus, History, Sparkles, Microscope, Bot } from "lucide-react";
+import { Plus, History, Sparkles, Microscope, Bot, CalendarClock } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useEffect, useState, Suspense, useCallback, useRef } from "react";
 import { useSelector } from "react-redux";
@@ -117,6 +117,12 @@ function SidebarInner() {
       icon: Bot,
       href: "/agents",
       active: pathname.startsWith("/agents"),
+    },
+    {
+      label: "Schedules",
+      icon: CalendarClock,
+      href: "/schedules",
+      active: pathname.startsWith("/schedules"),
     },
   ];
 

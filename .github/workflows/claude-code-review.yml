@@ -15,10 +15,15 @@ on:
 jobs:
   claude-review:
     # Automatic reviews: Only run on PRs from the same repository (not forks)
-    # Manual reviews: Allow fork PRs when triggered by /claude-review command
+    # Manual reviews: Allow fork PRs when triggered by /claude-review command from authorized users
     if: |
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/claude-review'))
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/claude-review') &&
+       (github.event.comment.author_association == 'OWNER' ||
+        github.event.comment.author_association == 'MEMBER' ||
+        github.event.comment.author_association == 'COLLABORATOR'))
 
     runs-on: ubuntu-latest
     permissions:
