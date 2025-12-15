@@ -9,12 +9,16 @@ on:
     #   - "src/**/*.tsx"
     #   - "src/**/*.js"
     #   - "src/**/*.jsx"
+  issue_comment:
+    types: [created]
 
 jobs:
   claude-review:
-    # Only run on PRs from the same repository (not forks)
-    # Fork PRs don't have access to secrets or OIDC tokens for security
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Automatic reviews: Only run on PRs from the same repository (not forks)
+    # Manual reviews: Allow fork PRs when triggered by /claude-review command
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request && contains(github.event.comment.body, '/claude-review'))
 
     runs-on: ubuntu-latest
     permissions:
@@ -24,18 +28,33 @@ jobs:
       id-token: write
     
     steps:
+      - name: Get PR details
+        id: pr
+        run: |
+          if [ "${{ github.event_name }}" = "issue_comment" ]; then
+            PR_NUMBER=${{ github.event.issue.number }}
+            PR_DATA=$(gh pr view $PR_NUMBER --json headRefName,headRepository --repo ${{ github.repository }})
+            echo "ref=$(echo $PR_DATA | jq -r '.headRefName')" >> $GITHUB_OUTPUT
+            echo "repo=$(echo $PR_DATA | jq -r '.headRepository.nameWithOwner')" >> $GITHUB_OUTPUT
+          else
+            echo "ref=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+            echo "repo=${{ github.event.pull_request.head.repo.full_name }}" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          ref: ${{ github.event.pull_request.head.ref }}
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ steps.pr.outputs.ref }}
+          repository: ${{ steps.pr.outputs.repo }}
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             Please review this pull request and provide feedback on:
             - Code quality and best practices
