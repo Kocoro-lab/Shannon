@@ -197,25 +197,43 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 		return nil, fmt.Errorf("user account is inactive")
 	}
 
-	// Rotate refresh token: revoke old and issue a new pair
+	// Generate new token pair first (no side effects)
 	newPair, newHash, err := s.jwtManager.GenerateTokenPair(&user)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate access token: %w", err)
 	}
 
-	_, _ = s.db.ExecContext(ctx, `
+	// Use transaction to ensure atomicity: store new token BEFORE revoking old one
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Store new refresh token first
+	if err := s.storeRefreshTokenTx(ctx, tx, &user, newHash); err != nil {
+		return nil, fmt.Errorf("failed to store new refresh token: %w", err)
+	}
+
+	// Only revoke old token after new one is stored
+	if _, err := tx.ExecContext(ctx, `
 		UPDATE auth.refresh_tokens
 		SET revoked = true, revoked_at = NOW()
 		WHERE token_hash = $1
-	`, oldHash)
-
-	// Store new refresh token
-	if storeErr := s.storeRefreshToken(ctx, &user, newHash); storeErr != nil {
-		return nil, fmt.Errorf("failed to store new refresh token: %w", storeErr)
+	`, oldHash); err != nil {
+		s.logger.Warn("Failed to revoke old refresh token", zap.Error(err), zap.String("user_id", user.ID.String()))
+		return nil, fmt.Errorf("failed to revoke old token: %w", err)
 	}
 
-	// Update last login best-effort
-	_, _ = s.db.ExecContext(ctx, "UPDATE auth.users SET last_login = NOW() WHERE id = $1", user.ID)
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Update last login best-effort (outside transaction)
+	if _, err := s.db.ExecContext(ctx, "UPDATE auth.users SET last_login = NOW() WHERE id = $1", user.ID); err != nil {
+		s.logger.Warn("Failed to update last_login", zap.Error(err), zap.String("user_id", user.ID.String()))
+	}
 
 	s.logAuditEvent(ctx, AuditEventTokenRefresh, user.ID, user.TenantID, nil)
 
@@ -407,6 +425,18 @@ func (s *Service) storeRefreshToken(ctx context.Context, user *User, tokenHash s
 
 	expiresAt := time.Now().Add(7 * 24 * time.Hour)
 	_, err := s.db.ExecContext(ctx, query, user.ID, user.TenantID, tokenHash, expiresAt)
+	return err
+}
+
+// storeRefreshTokenTx stores a refresh token within a transaction
+func (s *Service) storeRefreshTokenTx(ctx context.Context, tx *sqlx.Tx, user *User, tokenHash string) error {
+	query := `
+		INSERT INTO auth.refresh_tokens (user_id, tenant_id, token_hash, expires_at)
+		VALUES ($1, $2, $3, $4)
+	`
+
+	expiresAt := time.Now().Add(7 * 24 * time.Hour)
+	_, err := tx.ExecContext(ctx, query, user.ID, user.TenantID, tokenHash, expiresAt)
 	return err
 }
 
