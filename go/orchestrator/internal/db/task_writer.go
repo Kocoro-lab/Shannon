@@ -74,6 +74,12 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 	} else {
 		userID = nil
 	}
+	var tenantID interface{}
+	if task.TenantID != nil {
+		tenantID = task.TenantID
+	} else {
+		tenantID = nil
+	}
 	sessionID := task.SessionID // VARCHAR in task_executions
 
 	// Ensure metadata JSONB is not nil
@@ -92,7 +98,7 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 
 	teQuery := `
         INSERT INTO task_executions (
-            id, workflow_id, user_id, session_id,
+            id, workflow_id, user_id, session_id, tenant_id,
             query, mode, status,
             started_at, completed_at,
             result, error_message,
@@ -102,15 +108,15 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             complexity_score, metadata, created_at,
             trigger_type, schedule_id
         ) VALUES (
-            $1, $2, $3, $4,
-            $5, $6, $7,
-            $8, $9,
-            $10, $11,
-            $12, $13,
-            $14, $15, $16, $17,
-            $18, $19, $20, $21,
-            $22, $23, $24,
-            $25, $26
+            $1, $2, $3, $4, $5,
+            $6, $7, $8,
+            $9, $10,
+            $11, $12,
+            $13, $14,
+            $15, $16, $17, $18,
+            $19, $20, $21, $22,
+            $23, $24, $25,
+            $26, $27
         )
         ON CONFLICT (workflow_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -128,11 +134,12 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             tools_invoked = EXCLUDED.tools_invoked,
             cache_hits = EXCLUDED.cache_hits,
             complexity_score = EXCLUDED.complexity_score,
-            metadata = EXCLUDED.metadata
+            metadata = EXCLUDED.metadata,
+            tenant_id = COALESCE(EXCLUDED.tenant_id, task_executions.tenant_id)
         RETURNING id`
 
 	err := c.db.QueryRowContext(ctx, teQuery,
-		task.ID, task.WorkflowID, userID, sessionID,
+		task.ID, task.WorkflowID, userID, sessionID, tenantID,
 		task.Query, task.Mode, task.Status,
 		task.StartedAt, task.CompletedAt,
 		task.Result, task.ErrorMessage,
@@ -161,7 +168,7 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 	return c.WithTransactionCB(ctx, func(tx *circuitbreaker.TxWrapper) error {
 		stmt, err := tx.PrepareContext(ctx, `
             INSERT INTO task_executions (
-                id, workflow_id, user_id, session_id,
+                id, workflow_id, user_id, session_id, tenant_id,
                 query, mode, status,
                 started_at, completed_at,
                 result, error_message,
@@ -171,15 +178,15 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 complexity_score, metadata, created_at,
                 trigger_type, schedule_id
             ) VALUES (
-                $1, $2, $3, $4,
-                $5, $6, $7,
-                $8, $9,
-                $10, $11,
-                $12, $13,
-                $14, $15, $16, $17,
-                $18, $19, $20, $21,
-                $22, $23, $24,
-                $25, $26
+                $1, $2, $3, $4, $5,
+                $6, $7, $8,
+                $9, $10,
+                $11, $12,
+                $13, $14,
+                $15, $16, $17, $18,
+                $19, $20, $21, $22,
+                $23, $24, $25,
+                $26, $27
             )
             ON CONFLICT (workflow_id) DO UPDATE SET
                 status = EXCLUDED.status,
@@ -197,7 +204,8 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 tools_invoked = EXCLUDED.tools_invoked,
                 cache_hits = EXCLUDED.cache_hits,
                 complexity_score = EXCLUDED.complexity_score,
-                metadata = EXCLUDED.metadata
+                metadata = EXCLUDED.metadata,
+                tenant_id = COALESCE(EXCLUDED.tenant_id, task_executions.tenant_id)
         `)
 		if err != nil {
 			return err
@@ -220,6 +228,12 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				userID = nil
 			}
 			sessionID := task.SessionID
+			var tenantID interface{}
+			if task.TenantID != nil {
+				tenantID = task.TenantID
+			} else {
+				tenantID = nil
+			}
 			var metadata JSONB
 			if task.Metadata != nil {
 				metadata = task.Metadata
@@ -234,7 +248,7 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 			}
 
 			_, err := stmt.ExecContext(ctx,
-				task.ID, task.WorkflowID, userID, sessionID,
+				task.ID, task.WorkflowID, userID, sessionID, tenantID,
 				task.Query, task.Mode, task.Status,
 				task.StartedAt, task.CompletedAt,
 				task.Result, task.ErrorMessage,
@@ -433,59 +447,41 @@ func (c *Client) BatchSaveToolExecutions(ctx context.Context, tools []*ToolExecu
 
 // CreateSession creates a new session in the database (tenant-aware)
 func (c *Client) CreateSession(ctx context.Context, sessionID string, userID string, tenantID string) error {
+	// Parse tenant ID once for reuse
+	var tid *uuid.UUID
+	if tenantID != "" {
+		if parsed, err := uuid.Parse(tenantID); err == nil {
+			tid = &parsed
+		}
+	}
+
 	// Parse user ID - if not a valid UUID, we'll need to look it up or create a user
 	var uid *uuid.UUID
 	if userID != "" {
 		parsed, err := uuid.Parse(userID)
 		if err == nil {
-			// Valid UUID - but still need to ensure user exists
 			uid = &parsed
-
-			// Check if user exists, create if not
-			var exists bool
-			err := c.db.QueryRowContext(ctx,
-				"SELECT EXISTS(SELECT 1 FROM users WHERE id = $1)",
-				parsed,
-			).Scan(&exists)
-
-			if err != nil || !exists {
-				// User doesn't exist, create it with the UUID as both id and external_id
-				_, err = c.db.ExecContext(ctx,
-					"INSERT INTO users (id, external_id, created_at, updated_at) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
-					parsed, parsed.String(), time.Now(), time.Now(),
-				)
-				if err != nil {
-					c.logger.Warn("Failed to create user",
-						zap.String("user_id", userID),
-						zap.Error(err))
-					// Continue without user_id
-					uid = nil
-				}
+			_, execErr := c.db.ExecContext(ctx,
+				"INSERT INTO users (id, external_id, tenant_id, auth_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO UPDATE SET tenant_id = COALESCE(users.tenant_id, EXCLUDED.tenant_id), auth_user_id = COALESCE(users.auth_user_id, EXCLUDED.auth_user_id), updated_at = GREATEST(users.updated_at, EXCLUDED.updated_at)",
+				parsed, parsed.String(), tid, parsed, time.Now(), time.Now(),
+			)
+			if execErr != nil {
+				c.logger.Warn("Failed to upsert user by id",
+					zap.String("user_id", userID),
+					zap.Error(execErr))
+				uid = nil
 			}
 		} else {
 			// User ID is not a UUID, try to find or create user by external_id
-			var userUUID uuid.UUID
-			err := c.db.QueryRowContext(ctx,
-				"SELECT id FROM users WHERE external_id = $1",
-				userID,
-			).Scan(&userUUID)
-
-			if err != nil {
-				// User doesn't exist, create it
-				userUUID = uuid.New()
-				_, err = c.db.ExecContext(ctx,
-					"INSERT INTO users (id, external_id, created_at, updated_at) VALUES ($1, $2, $3, $4)",
-					userUUID, userID, time.Now(), time.Now(),
-				)
-				if err != nil {
-					c.logger.Warn("Failed to create user",
-						zap.String("external_id", userID),
-						zap.Error(err))
-					// Continue without user_id
-					uid = nil
-				} else {
-					uid = &userUUID
-				}
+			userUUID := uuid.New()
+			if err := c.db.QueryRowContext(ctx,
+				"INSERT INTO users (id, external_id, tenant_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (external_id) DO UPDATE SET tenant_id = COALESCE(users.tenant_id, EXCLUDED.tenant_id), updated_at = GREATEST(users.updated_at, EXCLUDED.updated_at) RETURNING id",
+				userUUID, userID, tid, time.Now(), time.Now(),
+			).Scan(&userUUID); err != nil {
+				c.logger.Warn("Failed to upsert user by external_id",
+					zap.String("external_id", userID),
+					zap.Error(err))
+				uid = nil
 			} else {
 				uid = &userUUID
 			}
@@ -507,14 +503,6 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 		// Generate an internal UUID and store external_id in context for lookup
 		sessionUUID = uuid.New()
 		contextMap["external_id"] = sessionID
-	}
-
-	// Parse tenant ID
-	var tid *uuid.UUID
-	if tenantID != "" {
-		if parsed, err := uuid.Parse(tenantID); err == nil {
-			tid = &parsed
-		}
 	}
 
 	now := time.Now()
@@ -603,7 +591,7 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 	var task TaskExecution
 
 	query := `
-        SELECT id, workflow_id, user_id, session_id, query, mode, status,
+        SELECT id, workflow_id, user_id, session_id, tenant_id, query, mode, status,
             started_at, completed_at, result, error_message,
             created_at, trigger_type, schedule_id
         FROM task_executions
@@ -615,7 +603,7 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 	}
 
 	err = row.Scan(
-		&task.ID, &task.WorkflowID, &task.UserID, &task.SessionID,
+		&task.ID, &task.WorkflowID, &task.UserID, &task.SessionID, &task.TenantID,
 		&task.Query, &task.Mode, &task.Status,
 		&task.StartedAt, &task.CompletedAt, &task.Result, &task.ErrorMessage,
 		&task.CreatedAt, &task.TriggerType, &task.ScheduleID,

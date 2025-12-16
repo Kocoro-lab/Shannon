@@ -90,7 +90,11 @@ func TestAuth_HeaderAndBearerAccepted(t *testing.T) {
 
 func TestAuth_SkipAuthEnv(t *testing.T) {
 	os.Setenv("GATEWAY_SKIP_AUTH", "1")
-	t.Cleanup(func() { os.Unsetenv("GATEWAY_SKIP_AUTH") })
+	os.Setenv("ENVIRONMENT", "test")
+	t.Cleanup(func() {
+		os.Unsetenv("GATEWAY_SKIP_AUTH")
+		os.Unsetenv("ENVIRONMENT")
+	})
 	logger := zaptest.NewLogger(t)
 	mw := NewAuthMiddleware(&mockAuthService{users: map[string]*authpkg.UserContext{}}, logger)
 	rec := httptest.NewRecorder()

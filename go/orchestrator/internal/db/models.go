@@ -41,6 +41,7 @@ type TaskExecution struct {
 	WorkflowID  string     `db:"workflow_id"`
 	UserID      *uuid.UUID `db:"user_id"`
 	SessionID   string     `db:"session_id"`
+	TenantID    *uuid.UUID `db:"tenant_id"`
 	Query       string     `db:"query"`
 	Mode        string     `db:"mode"`
 	Status      string     `db:"status"`

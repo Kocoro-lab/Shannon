@@ -168,6 +168,60 @@ func (s *Service) Login(ctx context.Context, req *LoginRequest) (*TokenPair, err
 	return tokens, nil
 }
 
+// Refresh issues a new access token from a valid refresh token
+func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair, error) {
+	if refreshToken == "" {
+		return nil, fmt.Errorf("refresh token required")
+	}
+
+	oldHash := hashToken(refreshToken)
+
+	var user User
+	err := s.db.GetContext(ctx, &user, `
+		SELECT u.*
+		FROM auth.refresh_tokens rt
+		JOIN auth.users u ON u.id = rt.user_id
+		WHERE rt.token_hash = $1
+		  AND rt.revoked = false
+		  AND rt.expires_at > NOW()
+		LIMIT 1
+	`, oldHash)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("invalid refresh token")
+		}
+		return nil, fmt.Errorf("failed to validate refresh token: %w", err)
+	}
+
+	if !user.IsActive {
+		return nil, fmt.Errorf("user account is inactive")
+	}
+
+	// Rotate refresh token: revoke old and issue a new pair
+	newPair, newHash, err := s.jwtManager.GenerateTokenPair(&user)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate access token: %w", err)
+	}
+
+	_, _ = s.db.ExecContext(ctx, `
+		UPDATE auth.refresh_tokens
+		SET revoked = true, revoked_at = NOW()
+		WHERE token_hash = $1
+	`, oldHash)
+
+	// Store new refresh token
+	if storeErr := s.storeRefreshToken(ctx, &user, newHash); storeErr != nil {
+		return nil, fmt.Errorf("failed to store new refresh token: %w", storeErr)
+	}
+
+	// Update last login best-effort
+	_, _ = s.db.ExecContext(ctx, "UPDATE auth.users SET last_login = NOW() WHERE id = $1", user.ID)
+
+	s.logAuditEvent(ctx, AuditEventTokenRefresh, user.ID, user.TenantID, nil)
+
+	return newPair, nil
+}
+
 // ValidateAPIKey validates an API key and returns user context
 func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) (*UserContext, error) {
 	// Extract key prefix (first 8 chars)

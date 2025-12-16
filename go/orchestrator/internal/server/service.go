@@ -723,6 +723,12 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 				uidPtr = &u
 			}
 		}
+		var tenantPtr *uuid.UUID
+		if tenantID != "" {
+			if t, err := uuid.Parse(tenantID); err == nil {
+				tenantPtr = &t
+			}
+		}
 		started := time.Now()
 
 		// Generate task ID to ensure it exists for foreign key references
@@ -732,6 +738,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			WorkflowID: workflowExecution.GetID(),
 			UserID:     uidPtr,
 			SessionID:  dbSessionID,
+			TenantID:   tenantPtr,
 			Query:      req.Query,
 			Mode:       modeStr,
 			Status:     "RUNNING",
@@ -894,6 +901,7 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 	// Extract session ID and other data for persistence and unified response
 	var sessionID string
 	var userID *uuid.UUID
+	var tenantUUID *uuid.UUID
 	var query string
 	var mode string
 
@@ -907,6 +915,16 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			if err := dataConverter.FromPayload(userField, &userIDStr); err == nil && userIDStr != "" {
 				if uid, err := uuid.Parse(userIDStr); err == nil {
 					userID = &uid
+				}
+			}
+		}
+
+		// Extract tenant_id from memo
+		if tenantField, ok := desc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
+			var tenantIDStr string
+			if err := dataConverter.FromPayload(tenantField, &tenantIDStr); err == nil && tenantIDStr != "" {
+				if tid, err := uuid.Parse(tenantIDStr); err == nil {
+					tenantUUID = &tid
 				}
 			}
 		}
@@ -955,6 +973,7 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			WorkflowID:   workflowID,
 			UserID:       userID,
 			SessionID:    sessionID,
+			TenantID:     tenantUUID,
 			Query:        query,
 			Mode:         mode,
 			Status:       statusStr,
@@ -1741,10 +1760,23 @@ func (s *OrchestratorService) ListTasks(ctx context.Context, req *pb.ListTasksRe
 		return &pb.ListTasksResponse{Tasks: []*pb.TaskSummary{}, TotalCount: 0}, nil
 	}
 
+	// Enforce tenant scoping when available
+	var tenantFilter *uuid.UUID
+	if uc, err := auth.GetUserContext(ctx); err == nil && uc != nil {
+		t := uc.TenantID
+		tenantFilter = &t
+	}
+
 	// Build filters
 	where := []string{"1=1"}
 	args := []interface{}{}
 	ai := 1
+
+	if tenantFilter != nil {
+		where = append(where, fmt.Sprintf("tenant_id = $%d", ai))
+		args = append(args, *tenantFilter)
+		ai++
+	}
 
 	// Filter by user_id if provided
 	if req.UserId != "" {
@@ -1867,6 +1899,12 @@ func (s *OrchestratorService) GetSessionContext(ctx context.Context, req *pb.Get
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
+	var tenantFilter *uuid.UUID
+	if uc, err := auth.GetUserContext(ctx); err == nil && uc != nil {
+		t := uc.TenantID
+		tenantFilter = &t
+	}
+
 	// Get session from manager
 	sess, err := s.sessionManager.GetSession(ctx, req.SessionId)
 	if err != nil {
@@ -1911,12 +1949,24 @@ func (s *OrchestratorService) GetSessionContext(ctx context.Context, req *pb.Get
 			if extID.Valid && extID.String != "" {
 				sessionIDs = append(sessionIDs, extID.String)
 			}
+			// Best-effort tenant hint from persisted session
+			if tenantFilter == nil {
+				var sidTenant sql.NullString
+				if err := s.dbClient.Wrapper().QueryRowContext(ctx,
+					`SELECT tenant_id::text FROM sessions WHERE id::text = $1 OR context->>'external_id' = $1 LIMIT 1`,
+					req.SessionId,
+				).Scan(&sidTenant); err == nil && sidTenant.Valid {
+					if tid, err := uuid.Parse(sidTenant.String); err == nil {
+						tenantFilter = &tid
+					}
+				}
+			}
 		} else {
 			// Fallback to the provided session ID if not resolvable in DB
 			sessionIDs = append(sessionIDs, req.SessionId)
 		}
 
-		tasks, err := s.loadRecentSessionTasksByIDs(ctx, sessionIDs, 5)
+		tasks, err := s.loadRecentSessionTasksByIDs(ctx, sessionIDs, 5, tenantFilter)
 		if err != nil {
 			s.logger.Warn("Failed to load recent session tasks",
 				zap.String("session_id", req.SessionId),
@@ -1929,21 +1979,28 @@ func (s *OrchestratorService) GetSessionContext(ctx context.Context, req *pb.Get
 	return response, nil
 }
 
-func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessionID string, limit int) ([]*pb.TaskSummary, error) {
+func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessionID string, limit int, tenantID *uuid.UUID) ([]*pb.TaskSummary, error) {
 	if sessionID == "" || limit <= 0 || s.dbClient == nil {
 		return nil, nil
 	}
 
-	query := `
+	where := []string{"session_id = $1"}
+	args := []interface{}{sessionID, limit}
+	if tenantID != nil {
+		where = append(where, "tenant_id = $3")
+		args = append(args, *tenantID)
+	}
+
+	query := fmt.Sprintf(`
         SELECT workflow_id, query, status, mode,
                started_at, completed_at, created_at,
                total_tokens, total_cost_usd
         FROM task_executions
-        WHERE session_id = $1
+        WHERE %s
         ORDER BY COALESCE(started_at, created_at) DESC
-        LIMIT $2`
+        LIMIT $2`, strings.Join(where, " AND "))
 
-	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, sessionID, limit)
+	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2018,7 +2075,7 @@ func (s *OrchestratorService) loadRecentSessionTasks(ctx context.Context, sessio
 
 // loadRecentSessionTasksByIDs loads recent tasks for one or two possible session IDs
 // to support dual-format session identifiers (UUID and external string ID).
-func (s *OrchestratorService) loadRecentSessionTasksByIDs(ctx context.Context, sessionIDs []string, limit int) ([]*pb.TaskSummary, error) {
+func (s *OrchestratorService) loadRecentSessionTasksByIDs(ctx context.Context, sessionIDs []string, limit int, tenantID *uuid.UUID) ([]*pb.TaskSummary, error) {
 	// Normalize inputs
 	ids := make([]string, 0, 2)
 	for _, id := range sessionIDs {
@@ -2033,20 +2090,27 @@ func (s *OrchestratorService) loadRecentSessionTasksByIDs(ctx context.Context, s
 		return nil, nil
 	}
 	if len(ids) == 1 {
-		return s.loadRecentSessionTasks(ctx, ids[0], limit)
+		return s.loadRecentSessionTasks(ctx, ids[0], limit, tenantID)
+	}
+
+	where := []string{"(session_id = $1 OR session_id = $2)"}
+	args := []interface{}{ids[0], ids[1], limit}
+	if tenantID != nil {
+		where = append(where, "tenant_id = $4")
+		args = append(args, *tenantID)
 	}
 
 	// Build query for two IDs
-	query := `
+	query := fmt.Sprintf(`
         SELECT workflow_id, query, status, mode,
                started_at, completed_at, created_at,
                total_tokens, total_cost_usd
         FROM task_executions
-        WHERE (session_id = $1 OR session_id = $2)
+        WHERE %s
         ORDER BY COALESCE(started_at, created_at) DESC
-        LIMIT $3`
+        LIMIT $3`, strings.Join(where, " AND "))
 
-	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, ids[0], ids[1], limit)
+	rows, err := s.dbClient.Wrapper().QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2836,22 +2900,22 @@ func convertScheduleToProto(s *schedules.Schedule) *pb.ScheduleInfo {
 	}
 
 	return &pb.ScheduleInfo{
-		ScheduleId:          s.ID.String(),
-		Name:                s.Name,
-		Description:         s.Description,
-		CronExpression:      s.CronExpression,
-		Timezone:            s.Timezone,
-		TaskQuery:           s.TaskQuery,
-		TaskContext:         taskContext,
-		MaxBudgetPerRunUsd:  s.MaxBudgetPerRunUSD,
-		TimeoutSeconds:      int32(s.TimeoutSeconds),
-		Status:              s.Status,
-		CreatedAt:           s.CreatedAt.Format(time.RFC3339),
-		UpdatedAt:           s.UpdatedAt.Format(time.RFC3339),
-		LastRunAt:           lastRunAt,
-		NextRunAt:           nextRunAt,
-		TotalRuns:           int32(s.TotalRuns),
-		SuccessfulRuns:      int32(s.SuccessfulRuns),
-		FailedRuns:          int32(s.FailedRuns),
+		ScheduleId:         s.ID.String(),
+		Name:               s.Name,
+		Description:        s.Description,
+		CronExpression:     s.CronExpression,
+		Timezone:           s.Timezone,
+		TaskQuery:          s.TaskQuery,
+		TaskContext:        taskContext,
+		MaxBudgetPerRunUsd: s.MaxBudgetPerRunUSD,
+		TimeoutSeconds:     int32(s.TimeoutSeconds),
+		Status:             s.Status,
+		CreatedAt:          s.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:          s.UpdatedAt.Format(time.RFC3339),
+		LastRunAt:          lastRunAt,
+		NextRunAt:          nextRunAt,
+		TotalRuns:          int32(s.TotalRuns),
+		SuccessfulRuns:     int32(s.SuccessfulRuns),
+		FailedRuns:         int32(s.FailedRuns),
 	}
 }

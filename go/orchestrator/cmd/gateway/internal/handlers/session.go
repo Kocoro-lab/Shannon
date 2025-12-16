@@ -162,8 +162,11 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	err := h.db.GetContext(ctx, &session, `
             SELECT id, user_id, context, token_budget, tokens_used, created_at, updated_at, expires_at
             FROM sessions
-            WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
-        `, sessionID)
+            WHERE (id::text = $1 OR context->>'external_id' = $1)
+              AND user_id = $2
+              AND tenant_id = $3
+              AND deleted_at IS NULL
+        `, sessionID, userCtx.UserID.String(), userCtx.TenantID.String())
 
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
@@ -175,11 +178,7 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify user has access to this session
-	if session.UserID != userCtx.UserID.String() {
-		h.sendError(w, "Forbidden", http.StatusForbidden)
-		return
-	}
+	// Note: Access control enforced in query (user_id and tenant_id WHERE clauses)
 
 	// Parse context JSON first to get external_id if present
 	var contextData map[string]interface{}
@@ -193,14 +192,14 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		// Session has external_id, check both session.ID and external_id
 		err = h.db.GetContext(ctx, &taskCount, `
 			SELECT COUNT(*) FROM task_executions
-			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
-		`, session.ID, extID, userCtx.UserID.String())
+			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
+		`, session.ID, extID, userCtx.UserID.String(), userCtx.TenantID)
 	} else {
 		// No external_id, just check by UUID
 		err = h.db.GetContext(ctx, &taskCount, `
 			SELECT COUNT(*) FROM task_executions
-			WHERE session_id = $1 AND user_id = $2
-		`, session.ID, userCtx.UserID.String())
+			WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
+		`, session.ID, userCtx.UserID.String(), userCtx.TenantID)
 	}
 	if err != nil {
 		h.logger.Warn("Failed to get task count", zap.Error(err))
@@ -237,13 +236,13 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		if extID, ok := contextData["external_id"].(string); ok && extID != "" {
 			err = h.db.GetContext(ctx, &aggregatedTokens, `
 				SELECT COALESCE(SUM(total_tokens), 0)::int FROM task_executions
-				WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
-			`, session.ID, extID, userCtx.UserID.String())
+				WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
+			`, session.ID, extID, userCtx.UserID.String(), userCtx.TenantID)
 		} else {
 			err = h.db.GetContext(ctx, &aggregatedTokens, `
 				SELECT COALESCE(SUM(total_tokens), 0)::int FROM task_executions
-				WHERE session_id = $1 AND user_id = $2
-			`, session.ID, userCtx.UserID.String())
+				WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
+			`, session.ID, userCtx.UserID.String(), userCtx.TenantID)
 		}
 		if err == nil && aggregatedTokens > 0 {
 			tokensUsed = aggregatedTokens
@@ -257,15 +256,15 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 	if extID, ok := contextData["external_id"].(string); ok && extID != "" {
 		err = h.db.GetContext(ctx, &firstTaskMetadata, `
 			SELECT metadata FROM task_executions
-			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
 			ORDER BY created_at ASC LIMIT 1
-		`, session.ID, extID, userCtx.UserID.String())
+		`, session.ID, extID, userCtx.UserID.String(), userCtx.TenantID)
 	} else {
 		err = h.db.GetContext(ctx, &firstTaskMetadata, `
 			SELECT metadata FROM task_executions
-			WHERE session_id = $1 AND user_id = $2
+			WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
 			ORDER BY created_at ASC LIMIT 1
-		`, session.ID, userCtx.UserID.String())
+		`, session.ID, userCtx.UserID.String(), userCtx.TenantID)
 	}
 	if err == nil && firstTaskMetadata.Valid && firstTaskMetadata.String != "" {
 		var metadata map[string]interface{}
@@ -342,8 +341,11 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 	err := h.db.GetContext(ctx, &sessionData, `
         SELECT id, user_id, context->>'external_id' as external_id
         FROM sessions
-        WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
-    `, sessionID)
+        WHERE (id::text = $1 OR context->>'external_id' = $1)
+          AND user_id = $2
+          AND tenant_id = $3
+          AND deleted_at IS NULL
+    `, sessionID, userCtx.UserID.String(), userCtx.TenantID)
 
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
@@ -355,13 +357,7 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Verify user has access
-	if sessionData.UserID != userCtx.UserID.String() {
-		h.sendError(w, "Forbidden", http.StatusForbidden)
-		return
-	}
-
-	// Query all tasks for this session (check both UUID and external_id with user_id filter)
+	// Query all tasks for this session (check both UUID and external_id with user_id and tenant_id filter)
 	var rows *sqlx.Rows
 	if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
 		// Session has external_id, check both session.ID and external_id
@@ -383,9 +379,9 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 				completed_at,
 				metadata
 			FROM task_executions
-			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
 			ORDER BY started_at ASC
-		`, sessionData.ID, *sessionData.ExternalID, sessionData.UserID)
+		`, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, userCtx.TenantID)
 	} else {
 		// No external_id, just check by UUID
 		rows, err = h.db.QueryxContext(ctx, `
@@ -406,9 +402,9 @@ func (h *SessionHandler) GetSessionHistory(w http.ResponseWriter, r *http.Reques
 				completed_at,
 				metadata
 			FROM task_executions
-			WHERE session_id = $1 AND user_id = $2
+			WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
 			ORDER BY started_at ASC
-		`, sessionData.ID, sessionData.UserID)
+		`, sessionData.ID, sessionData.UserID, userCtx.TenantID)
 	}
 
 	if err != nil {
@@ -527,8 +523,11 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 	err := h.db.GetContext(ctx, &sessionData, `
         SELECT id, user_id, context->>'external_id' as external_id
         FROM sessions
-        WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
-    `, sessionID)
+        WHERE (id::text = $1 OR context->>'external_id' = $1)
+          AND user_id = $2
+          AND tenant_id = $3
+          AND deleted_at IS NULL
+    `, sessionID, userCtx.UserID.String(), userCtx.TenantID)
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
 		return
@@ -536,10 +535,6 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		h.logger.Error("Failed to query session", zap.Error(err))
 		h.sendError(w, "Failed to retrieve session", http.StatusInternalServerError)
-		return
-	}
-	if sessionData.UserID != userCtx.UserID.String() {
-		h.sendError(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -589,13 +584,13 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
 	if sessionData.ExternalID != nil && *sessionData.ExternalID != "" {
 		err = h.db.GetContext(ctx, &total, `
             SELECT COUNT(*) FROM task_executions
-            WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
-        `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID)
+            WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
+        `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, userCtx.TenantID)
 	} else {
 		err = h.db.GetContext(ctx, &total, `
             SELECT COUNT(*) FROM task_executions
-            WHERE session_id = $1 AND user_id = $2
-        `, sessionData.ID, sessionData.UserID)
+            WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
+        `, sessionData.ID, sessionData.UserID, userCtx.TenantID)
 	}
 	if err != nil {
 		h.logger.Error("Failed to count session turns", zap.Error(err))
@@ -622,20 +617,20 @@ func (h *SessionHandler) GetSessionEvents(w http.ResponseWriter, r *http.Request
                    COALESCE(total_tokens,0) as total_tokens,
                    COALESCE(duration_ms,0) as duration_ms
             FROM task_executions
-            WHERE (session_id = $1 OR session_id = $2) AND user_id = $3
+            WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
             ORDER BY started_at ASC
-            LIMIT $4 OFFSET $5
-        `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, limit, offset)
+            LIMIT $5 OFFSET $6
+        `, sessionData.ID, *sessionData.ExternalID, sessionData.UserID, userCtx.TenantID, limit, offset)
 	} else {
 		err = h.db.SelectContext(ctx, &turnRows, `
             SELECT id, workflow_id, query, result, started_at, completed_at,
                    COALESCE(total_tokens,0) as total_tokens,
                    COALESCE(duration_ms,0) as duration_ms
             FROM task_executions
-            WHERE session_id = $1 AND user_id = $2
+            WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
             ORDER BY started_at ASC
-            LIMIT $3 OFFSET $4
-        `, sessionData.ID, sessionData.UserID, limit, offset)
+            LIMIT $4 OFFSET $5
+        `, sessionData.ID, sessionData.UserID, userCtx.TenantID, limit, offset)
 	}
 	if err != nil {
 		h.logger.Error("Failed to query session turns", zap.Error(err))
@@ -842,29 +837,34 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
             (SELECT query FROM task_executions
              WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
              AND user_id = s.user_id
+             AND tenant_id = s.tenant_id
              ORDER BY created_at DESC LIMIT 1) as latest_task_query,
             (SELECT status FROM task_executions
              WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
              AND user_id = s.user_id
+             AND tenant_id = s.tenant_id
              ORDER BY created_at DESC LIMIT 1) as latest_task_status,
 
             -- First task metadata for research detection
             (SELECT mode FROM task_executions
              WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
              AND user_id = s.user_id
+             AND tenant_id = s.tenant_id
              ORDER BY created_at ASC LIMIT 1) as first_task_mode,
             (SELECT metadata::text FROM task_executions
              WHERE (session_id = s.id::text OR session_id = s.context->>'external_id')
              AND user_id = s.user_id
+             AND tenant_id = s.tenant_id
              ORDER BY created_at ASC LIMIT 1) as first_task_metadata
         FROM sessions s
         LEFT JOIN task_executions t ON (t.session_id = s.id::text OR t.session_id = s.context->>'external_id')
             AND t.user_id = s.user_id
-        WHERE s.user_id = $1 AND s.deleted_at IS NULL
+            AND t.tenant_id = s.tenant_id
+        WHERE s.user_id = $1 AND s.tenant_id = $2 AND s.deleted_at IS NULL
         GROUP BY s.id, s.user_id, s.context, s.token_budget, s.created_at, s.updated_at, s.expires_at
         ORDER BY s.created_at DESC
-        LIMIT $2 OFFSET $3
-    `, userCtx.UserID.String(), limit, offset)
+        LIMIT $3 OFFSET $4
+    `, userCtx.UserID.String(), userCtx.TenantID, limit, offset)
 
 	if err != nil {
 		h.logger.Error("Failed to query sessions", zap.Error(err))
@@ -998,8 +998,8 @@ func (h *SessionHandler) ListSessions(w http.ResponseWriter, r *http.Request) {
 	// Get total count for pagination
 	var totalCount int
 	err = h.db.GetContext(ctx, &totalCount, `
-        SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND deleted_at IS NULL
-    `, userCtx.UserID.String())
+        SELECT COUNT(*) FROM sessions WHERE user_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+    `, userCtx.UserID.String(), userCtx.TenantID)
 	if err != nil {
 		h.logger.Warn("Failed to get total session count", zap.Error(err))
 		// Don't fail the request, just return 0 total
@@ -1136,8 +1136,12 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 		Context []byte `db:"context"`
 	}
 	err := h.db.GetContext(ctx, &session, `
-		SELECT id, user_id, context FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
-	`, sessionID)
+		SELECT id, user_id, context FROM sessions
+		WHERE (id::text = $1 OR context->>'external_id' = $1)
+		  AND user_id = $2
+		  AND tenant_id = $3
+		  AND deleted_at IS NULL
+	`, sessionID, userCtx.UserID.String(), userCtx.TenantID)
 	if err == sql.ErrNoRows {
 		h.sendError(w, "Session not found", http.StatusNotFound)
 		return
@@ -1145,12 +1149,6 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		h.logger.Error("Failed to query session", zap.Error(err))
 		h.sendError(w, "Failed to update session", http.StatusInternalServerError)
-		return
-	}
-
-	// Verify ownership
-	if session.UserID != userCtx.UserID.String() {
-		h.sendError(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -1180,8 +1178,11 @@ func (h *SessionHandler) UpdateSessionTitle(w http.ResponseWriter, r *http.Reque
 	_, err = h.db.ExecContext(ctx, `
 		UPDATE sessions
 		SET context = $1, updated_at = NOW()
-		WHERE (id::text = $2 OR context->>'external_id' = $2) AND deleted_at IS NULL
-	`, updatedContext, sessionID)
+		WHERE (id::text = $2 OR context->>'external_id' = $2)
+		  AND user_id = $3
+		  AND tenant_id = $4
+		  AND deleted_at IS NULL
+	`, updatedContext, sessionID, userCtx.UserID.String(), userCtx.TenantID)
 	if err != nil {
 		h.logger.Error("Failed to update session title", zap.Error(err))
 		h.sendError(w, "Failed to update session", http.StatusInternalServerError)
@@ -1287,8 +1288,11 @@ func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.db.GetContext(ctx, &sessMeta, `
         SELECT id, user_id, context->>'external_id' as external_id
-        FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1)
-    `, sessionID); err != nil {
+        FROM sessions
+        WHERE (id::text = $1 OR context->>'external_id' = $1)
+          AND user_id = $2
+          AND tenant_id = $3
+    `, sessionID, userCtx.UserID.String(), userCtx.TenantID); err != nil {
 		if err == sql.ErrNoRows {
 			h.sendError(w, "Session not found", http.StatusNotFound)
 			return
@@ -1297,17 +1301,16 @@ func (h *SessionHandler) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
 		return
 	}
-	if sessMeta.UserID != userCtx.UserID.String() {
-		h.sendError(w, "Forbidden", http.StatusForbidden)
-		return
-	}
 
 	// Soft delete (idempotent)
 	if _, err := h.db.ExecContext(ctx, `
         UPDATE sessions
         SET deleted_at = NOW(), deleted_by = $2, updated_at = NOW()
-        WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL
-    `, sessionID, userCtx.UserID.String()); err != nil {
+        WHERE (id::text = $1 OR context->>'external_id' = $1)
+          AND user_id = $3
+          AND tenant_id = $4
+          AND deleted_at IS NULL
+    `, sessionID, userCtx.UserID.String(), userCtx.UserID.String(), userCtx.TenantID); err != nil {
 		h.logger.Error("Failed to soft delete session", zap.Error(err), zap.String("session_id", sessionID))
 		h.sendError(w, "Failed to delete session", http.StatusInternalServerError)
 		return
