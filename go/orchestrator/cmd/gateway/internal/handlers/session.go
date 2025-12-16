@@ -249,32 +249,54 @@ func (h *SessionHandler) GetSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check if this is a research session by looking at first task's metadata.task_context.force_research
+	// Check if this is a research session
+	// Priority: session.context (set at session creation) > first task's metadata
 	isResearchSession := false
 	researchStrategy := ""
-	var firstTaskMetadata sql.NullString
-	if extID, ok := contextData["external_id"].(string); ok && extID != "" {
-		err = h.db.GetContext(ctx, &firstTaskMetadata, `
-			SELECT metadata FROM task_executions
-			WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
-			ORDER BY created_at ASC LIMIT 1
-		`, session.ID, extID, userCtx.UserID.String(), userCtx.TenantID)
-	} else {
-		err = h.db.GetContext(ctx, &firstTaskMetadata, `
-			SELECT metadata FROM task_executions
-			WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
-			ORDER BY created_at ASC LIMIT 1
-		`, session.ID, userCtx.UserID.String(), userCtx.TenantID)
+	foundResearchInContext := false
+	foundStrategyInContext := false
+
+	// Check session context first (more reliable)
+	if fr, ok := contextData["force_research"].(bool); ok && fr {
+		isResearchSession = true
+		foundResearchInContext = true
 	}
-	if err == nil && firstTaskMetadata.Valid && firstTaskMetadata.String != "" {
-		var metadata map[string]interface{}
-		if err := json.Unmarshal([]byte(firstTaskMetadata.String), &metadata); err == nil {
-			if taskContext, ok := metadata["task_context"].(map[string]interface{}); ok {
-				if fr, ok := taskContext["force_research"].(bool); ok && fr {
-					isResearchSession = true
-				}
-				if rs, ok := taskContext["research_strategy"].(string); ok {
-					researchStrategy = rs
+	if rs, ok := contextData["research_strategy"].(string); ok && rs != "" {
+		researchStrategy = rs
+		foundStrategyInContext = true
+	}
+
+	// Fall back to first task's metadata for any fields not found in session context
+	if !foundResearchInContext || !foundStrategyInContext {
+		var firstTaskMetadata sql.NullString
+		if extID, ok := contextData["external_id"].(string); ok && extID != "" {
+			err = h.db.GetContext(ctx, &firstTaskMetadata, `
+				SELECT metadata FROM task_executions
+				WHERE (session_id = $1 OR session_id = $2) AND user_id = $3 AND tenant_id = $4
+				ORDER BY created_at ASC LIMIT 1
+			`, session.ID, extID, userCtx.UserID.String(), userCtx.TenantID)
+		} else {
+			err = h.db.GetContext(ctx, &firstTaskMetadata, `
+				SELECT metadata FROM task_executions
+				WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3
+				ORDER BY created_at ASC LIMIT 1
+			`, session.ID, userCtx.UserID.String(), userCtx.TenantID)
+		}
+		if err == nil && firstTaskMetadata.Valid && firstTaskMetadata.String != "" {
+			var metadata map[string]interface{}
+			if err := json.Unmarshal([]byte(firstTaskMetadata.String), &metadata); err == nil {
+				if taskContext, ok := metadata["task_context"].(map[string]interface{}); ok {
+					// Only set values that weren't found in session context
+					if !foundResearchInContext {
+						if fr, ok := taskContext["force_research"].(bool); ok && fr {
+							isResearchSession = true
+						}
+					}
+					if !foundStrategyInContext {
+						if rs, ok := taskContext["research_strategy"].(string); ok {
+							researchStrategy = rs
+						}
+					}
 				}
 			}
 		}

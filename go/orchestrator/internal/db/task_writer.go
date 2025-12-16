@@ -446,7 +446,8 @@ func (c *Client) BatchSaveToolExecutions(ctx context.Context, tools []*ToolExecu
 }
 
 // CreateSession creates a new session in the database (tenant-aware)
-func (c *Client) CreateSession(ctx context.Context, sessionID string, userID string, tenantID string) error {
+// If sessionContext is nil, a minimal default context will be used
+func (c *Client) CreateSession(ctx context.Context, sessionID string, userID string, tenantID string, sessionContext map[string]interface{}) error {
 	// Parse tenant ID once for reuse
 	var tid *uuid.UUID
 	if tenantID != "" {
@@ -491,12 +492,25 @@ func (c *Client) CreateSession(ctx context.Context, sessionID string, userID str
 	query := `
         INSERT INTO sessions (id, user_id, tenant_id, context, token_budget, tokens_used, created_at, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (id) DO UPDATE SET
+            context = EXCLUDED.context,
+            updated_at = EXCLUDED.updated_at
     `
 
 	// Support non-UUID external session IDs by mapping them to an internal UUID
 	var sessionUUID uuid.UUID
-	var contextMap = map[string]interface{}{"created_from": "orchestrator"}
+
+	// Use provided context or create a minimal default
+	var contextMap map[string]interface{}
+	if sessionContext != nil && len(sessionContext) > 0 {
+		contextMap = make(map[string]interface{})
+		for k, v := range sessionContext {
+			contextMap[k] = v
+		}
+	} else {
+		contextMap = map[string]interface{}{"created_from": "orchestrator"}
+	}
+
 	if parsed, err := uuid.Parse(sessionID); err == nil {
 		sessionUUID = parsed
 	} else {

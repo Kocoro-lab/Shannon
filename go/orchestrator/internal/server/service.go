@@ -276,17 +276,41 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	// Create new session if needed
 	if sess == nil {
 		var createErr error
+
+		// Build initial session context with task context for first task
+		sessionContext := map[string]interface{}{
+			"created_from": "orchestrator",
+		}
+
+		// Preserve first task's context (including role) in session context
+		if req.Context != nil {
+			taskCtx := req.Context.AsMap()
+
+			// Store entire task context as first_task_context for reference
+			sessionContext["first_task_context"] = taskCtx
+
+			// Explicitly preserve role field for quick access
+			if role, ok := taskCtx["role"].(string); ok && role != "" {
+				sessionContext["role"] = role
+				sessionContext["first_task_mode"] = role // Use role as first_task_mode
+			}
+
+			// Preserve research mode flags
+			if forceResearch, ok := taskCtx["force_research"].(bool); ok {
+				sessionContext["force_research"] = forceResearch
+			}
+			if researchStrategy, ok := taskCtx["research_strategy"].(string); ok && researchStrategy != "" {
+				sessionContext["research_strategy"] = researchStrategy
+			}
+		}
+
 		// If a specific session ID was requested, use it; otherwise generate new
 		if sessionID != "" {
 			// Create session with the requested ID
-			sess, createErr = s.sessionManager.CreateSessionWithID(ctx, sessionID, userID, tenantID, map[string]interface{}{
-				"created_from": "orchestrator",
-			})
+			sess, createErr = s.sessionManager.CreateSessionWithID(ctx, sessionID, userID, tenantID, sessionContext)
 		} else {
 			// Generate new session ID
-			sess, createErr = s.sessionManager.CreateSession(ctx, userID, tenantID, map[string]interface{}{
-				"created_from": "orchestrator",
-			})
+			sess, createErr = s.sessionManager.CreateSession(ctx, userID, tenantID, sessionContext)
 			sessionID = sess.ID
 		}
 		runtimeSessionID = sess.ID
@@ -294,7 +318,9 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		if createErr != nil {
 			return nil, status.Error(codes.Internal, "failed to create session")
 		}
-		s.logger.Info("Created new session", zap.String("session_id", sessionID))
+		s.logger.Info("Created new session",
+			zap.String("session_id", sessionID),
+			zap.Any("context", sessionContext))
 	}
 	// Ensure session exists in PostgreSQL for FK integrity (idempotent)
 	if s.dbClient != nil && dbSessionID != "" {
@@ -303,10 +329,18 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		if dbUserID == "" && sess != nil && sess.UserID != "" {
 			dbUserID = sess.UserID
 		}
+
+		// Get session context from Redis session to persist to PostgreSQL
+		var dbSessionContext map[string]interface{}
+		if sess != nil && sess.Context != nil {
+			dbSessionContext = sess.Context
+		}
+
 		s.logger.Debug("Ensuring session exists in PostgreSQL",
 			zap.String("session_id", dbSessionID),
-			zap.String("user_id", dbUserID))
-		if err := s.dbClient.CreateSession(ctx, dbSessionID, dbUserID, tenantID); err != nil {
+			zap.String("user_id", dbUserID),
+			zap.Any("context", dbSessionContext))
+		if err := s.dbClient.CreateSession(ctx, dbSessionID, dbUserID, tenantID, dbSessionContext); err != nil {
 			s.logger.Warn("Failed to ensure session in database",
 				zap.String("session_id", dbSessionID),
 				zap.Error(err))
