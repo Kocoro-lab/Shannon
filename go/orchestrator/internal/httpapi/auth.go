@@ -27,6 +27,7 @@ func NewAuthHTTPHandler(svc *auth.Service, logger *zap.Logger) *AuthHTTPHandler 
 func (h *AuthHTTPHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/auth/register", h.handleRegister)
 	mux.HandleFunc("/api/auth/login", h.handleLogin)
+	mux.HandleFunc("/api/auth/refresh", h.handleRefresh)
 }
 
 func (h *AuthHTTPHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +87,34 @@ func (h *AuthHTTPHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		h.logger.Warn("Login failed", zap.Error(err))
 		http.Error(w, `{"error":"invalid email or password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, tokens)
+}
+
+func (h *AuthHTTPHandler) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if req.RefreshToken == "" {
+		http.Error(w, `{"error":"missing refresh_token"}`, http.StatusBadRequest)
+		return
+	}
+
+	tokens, err := h.svc.Refresh(r.Context(), req.RefreshToken)
+	if err != nil {
+		h.logger.Warn("Token refresh failed", zap.Error(err))
+		http.Error(w, `{"error":"invalid refresh token"}`, http.StatusUnauthorized)
 		return
 	}
 

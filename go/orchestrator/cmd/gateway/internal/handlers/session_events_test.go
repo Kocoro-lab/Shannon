@@ -35,18 +35,19 @@ func TestGetSessionEvents_GroupedTurns_Defaults(t *testing.T) {
 	sessionInput := "s123"
 	sessionUUID := "11111111-1111-1111-1111-111111111111"
 	userUUID := "00000000-0000-0000-0000-000000000002"
+	tenantUUID := "22222222-2222-2222-2222-222222222222"
 
 	// 1) Session ownership lookup
 	mock.ExpectQuery(regexp.QuoteMeta(
-		"SELECT id, user_id, context->>'external_id' as external_id FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1) AND deleted_at IS NULL",
-	)).WithArgs(sessionInput).
+		"SELECT id, user_id, context->>'external_id' as external_id FROM sessions WHERE (id::text = $1 OR context->>'external_id' = $1) AND user_id = $2 AND tenant_id = $3 AND deleted_at IS NULL",
+	)).WithArgs(sessionInput, userUUID, tenantUUID).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "user_id", "external_id"}).
 			AddRow(sessionUUID, userUUID, nil))
 
 	// 2) Count turns
 	mock.ExpectQuery(regexp.QuoteMeta(
-		"SELECT COUNT(*) FROM task_executions WHERE session_id = $1 AND user_id = $2",
-	)).WithArgs(sessionUUID, userUUID).
+		"SELECT COUNT(*) FROM task_executions WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3",
+	)).WithArgs(sessionUUID, userUUID, tenantUUID).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
 
 	// 3) Select turns (two rows)
@@ -58,8 +59,8 @@ func TestGetSessionEvents_GroupedTurns_Defaults(t *testing.T) {
 		AddRow("task-002", "wf-2", "Now multiply that by 3", sql.NullString{String: "", Valid: false}, now.Add(15*time.Second), sql.NullTime{Valid: true, Time: now.Add(23 * time.Second)}, 200, 8000)
 
 	mock.ExpectQuery(regexp.QuoteMeta(
-		"SELECT id, workflow_id, query, result, started_at, completed_at, COALESCE(total_tokens,0) as total_tokens, COALESCE(duration_ms,0) as duration_ms FROM task_executions WHERE session_id = $1 AND user_id = $2 ORDER BY started_at ASC LIMIT $3 OFFSET $4",
-	)).WithArgs(sessionUUID, userUUID, 10, 0).WillReturnRows(rows)
+		"SELECT id, workflow_id, query, result, started_at, completed_at, COALESCE(total_tokens,0) as total_tokens, COALESCE(duration_ms,0) as duration_ms FROM task_executions WHERE session_id = $1 AND user_id = $2 AND tenant_id = $3 ORDER BY started_at ASC LIMIT $4 OFFSET $5",
+	)).WithArgs(sessionUUID, userUUID, tenantUUID, 10, 0).WillReturnRows(rows)
 
 	// 4) Events for both workflows
 	evQuery := `
@@ -81,7 +82,8 @@ func TestGetSessionEvents_GroupedTurns_Defaults(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+sessionInput+"/events", nil)
 	// Inject user context
 	uid := uuid.MustParse(userUUID)
-	req = req.WithContext(context.WithValue(req.Context(), "user", &auth.UserContext{UserID: uid}))
+	tid := uuid.MustParse(tenantUUID)
+	req = req.WithContext(context.WithValue(req.Context(), "user", &auth.UserContext{UserID: uid, TenantID: tid}))
 
 	// Use ServeMux to bind path parameter
 	mux := http.NewServeMux()
