@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/url"
 	"os"
-    "regexp"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -19,8 +19,8 @@ import (
 type Citation struct {
 	URL              string     `json:"url"`
 	Title            string     `json:"title"`
-	Source           string     `json:"source"`            // domain name
-	SourceType       string     `json:"source_type"`       // web|news|academic|social
+	Source           string     `json:"source"`      // domain name
+	SourceType       string     `json:"source_type"` // web|news|academic|social
 	RetrievedAt      time.Time  `json:"retrieved_at"`
 	PublishedDate    *time.Time `json:"published_date,omitempty"`
 	RelevanceScore   float64    `json:"relevance_score"`   // from search tool
@@ -65,9 +65,9 @@ type CredibilityConfig struct {
 	} `yaml:"quality_gates"`
 
 	DiversityRules struct {
-		MaxPerDomain      int     `yaml:"max_per_domain"`
-		MinUniqueDomains  int     `yaml:"min_unique_domains"`
-		DiversityBonus    float64 `yaml:"diversity_bonus"`
+		MaxPerDomain     int     `yaml:"max_per_domain"`
+		MinUniqueDomains int     `yaml:"min_unique_domains"`
+		DiversityBonus   float64 `yaml:"diversity_bonus"`
 	} `yaml:"diversity_rules"`
 }
 
@@ -112,11 +112,11 @@ func LoadCredibilityConfig() *CredibilityConfig {
 
 // isCitationsDebugEnabled returns true when verbose citation debug logging is enabled
 func isCitationsDebugEnabled() bool {
-    v := os.Getenv("CITATIONS_DEBUG")
-    if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") {
-        return true
-    }
-    return false
+	v := os.Getenv("CITATIONS_DEBUG")
+	if v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "on") {
+		return true
+	}
+	return false
 }
 
 // ResetCredibilityConfigForTest resets the singleton for testing purposes
@@ -289,8 +289,8 @@ func ScoreQuality(relevance float64, publishedDate *time.Time, hasTitle, hasSnip
 // Loads rules from config/citation_credibility.yaml
 // Falls back to hardcoded defaults if config unavailable
 func ScoreCredibility(domain string) float64 {
-    config := LoadCredibilityConfig()
-    domain = strings.ToLower(domain)
+	config := LoadCredibilityConfig()
+	domain = strings.ToLower(domain)
 
 	// Check TLD patterns first (highest priority)
 	for _, tldPattern := range config.CredibilityRules.TLDPatterns {
@@ -299,28 +299,28 @@ func ScoreCredibility(domain string) float64 {
 		}
 	}
 
-    // Helper for safe domain matching (exact match or subdomain boundary)
-    domainMatches := func(host, pattern string) bool {
-        host = strings.ToLower(host)
-        pattern = strings.ToLower(pattern)
-        if host == pattern {
-            return true
-        }
-        // Allow subdomains (e.g., docs.github.com matches github.com)
-        if strings.HasSuffix(host, "."+pattern) {
-            return true
-        }
-        return false
-    }
+	// Helper for safe domain matching (exact match or subdomain boundary)
+	domainMatches := func(host, pattern string) bool {
+		host = strings.ToLower(host)
+		pattern = strings.ToLower(pattern)
+		if host == pattern {
+			return true
+		}
+		// Allow subdomains (e.g., docs.github.com matches github.com)
+		if strings.HasSuffix(host, "."+pattern) {
+			return true
+		}
+		return false
+	}
 
-    // Check domain groups
-    for _, group := range config.CredibilityRules.DomainGroups {
-        for _, knownDomain := range group.Domains {
-            if domainMatches(domain, knownDomain) {
-                return group.Score
-            }
-        }
-    }
+	// Check domain groups
+	for _, group := range config.CredibilityRules.DomainGroups {
+		for _, knownDomain := range group.Domains {
+			if domainMatches(domain, knownDomain) {
+				return group.Score
+			}
+		}
+	}
 
 	// Return default score
 	if config.CredibilityRules.DefaultScore > 0 {
@@ -420,11 +420,11 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 
 	title, _ := result["title"].(string)
 
-    // For web_fetch, use first 200 characters of content as snippet (UTF-8 safe)
-    snippet := ""
-    if content, ok := result["content"].(string); ok && len(content) > 0 {
-        snippet = truncateRunes(content, 200)
-    }
+	// For web_fetch, use first 200 characters of content as snippet (UTF-8 safe)
+	snippet := ""
+	if content, ok := result["content"].(string); ok && len(content) > 0 {
+		snippet = truncateRunes(content, 200)
+	}
 
 	// Normalize URL
 	normalizedURL, err := NormalizeURL(urlStr)
@@ -495,177 +495,190 @@ func extractCitationsFromResponse(response string, agentID string, now time.Time
 // This is a conservative fallback to ensure metadata contains citations even when
 // agents only mention sources narratively.
 func extractCitationsFromPlainTextResponse(response string, agentID string, now time.Time) []Citation {
-    var citations []Citation
-    if strings.TrimSpace(response) == "" {
-        return citations
-    }
+	var citations []Citation
+	if strings.TrimSpace(response) == "" {
+		return citations
+	}
 
-    // Regex for http(s) URLs, stop at whitespace or common trailing punctuation
-    urlRe := regexp.MustCompile(`https?://[^\s\]\)\>\"']+`)
-    matches := urlRe.FindAllStringIndex(response, -1)
-    if len(matches) == 0 {
-        return citations
-    }
+	// Regex for http(s) URLs, stop at whitespace or common trailing punctuation
+	urlRe := regexp.MustCompile(`https?://[^\s\]\)\>\"']+`)
+	matches := urlRe.FindAllStringIndex(response, -1)
+	if len(matches) == 0 {
+		return citations
+	}
 
-    // Deduplicate per-response by normalized URL
-    seen := make(map[string]bool)
+	// Deduplicate per-response by normalized URL
+	seen := make(map[string]bool)
 
-    // Helper to build a small context snippet around the URL (UTF-8 safe)
-    getSnippet := func(start, end int) string {
-        r := []rune(response)
-        // Map byte indices to rune indices conservatively
-        // Fallback: slice by bytes if mapping fails
-        // Simplicity: approximate by converting entire string to runes and searching substring
-        urlText := response[start:end]
-        ri := strings.Index(string(r), urlText)
-        if ri < 0 {
-            // Fallback: just return first 200 runes of the tail starting at start
-            if start < len(response) {
-                tail := []rune(response[start:])
-                if len(tail) > 200 { return string(tail[:200]) + "..." }
-                return string(tail)
-            }
-            return ""
-        }
-        lo := ri - 120
-        hi := ri + len([]rune(urlText)) + 120
-        if lo < 0 { lo = 0 }
-        if hi > len(r) { hi = len(r) }
-        // Ensure lo <= hi after clamping (can happen with multi-byte chars at boundaries)
-        if lo > hi { lo = 0; if hi < len(r) { hi = len(r) } }
-        if lo >= len(r) { return "" }
-        snippet := string(r[lo:hi])
-        if len([]rune(snippet)) > 220 {
-            snippet = string([]rune(snippet)[:220]) + "..."
-        }
-        return snippet
-    }
+	// Helper to build a small context snippet around the URL (UTF-8 safe)
+	getSnippet := func(start, end int) string {
+		r := []rune(response)
+		// Map byte indices to rune indices conservatively
+		// Fallback: slice by bytes if mapping fails
+		// Simplicity: approximate by converting entire string to runes and searching substring
+		urlText := response[start:end]
+		ri := strings.Index(string(r), urlText)
+		if ri < 0 {
+			// Fallback: just return first 200 runes of the tail starting at start
+			if start < len(response) {
+				tail := []rune(response[start:])
+				if len(tail) > 200 {
+					return string(tail[:200]) + "..."
+				}
+				return string(tail)
+			}
+			return ""
+		}
+		lo := ri - 120
+		hi := ri + len([]rune(urlText)) + 120
+		if lo < 0 {
+			lo = 0
+		}
+		if hi > len(r) {
+			hi = len(r)
+		}
+		// Ensure lo <= hi after clamping (can happen with multi-byte chars at boundaries)
+		if lo > hi {
+			lo = 0
+			if hi < len(r) {
+				hi = len(r)
+			}
+		}
+		if lo >= len(r) {
+			return ""
+		}
+		snippet := string(r[lo:hi])
+		if len([]rune(snippet)) > 220 {
+			snippet = string([]rune(snippet)[:220]) + "..."
+		}
+		return snippet
+	}
 
-    for _, m := range matches {
-        start, end := m[0], m[1]
-        raw := response[start:end]
-        // Trim trailing punctuation that often gets attached in prose
-        raw = strings.TrimRight(raw, ",.;:)]}")
-        // Normalize URL
-        normalized, err := NormalizeURL(raw)
-        if err != nil || normalized == "" {
-            continue
-        }
-        if seen[normalized] {
-            continue
-        }
-        seen[normalized] = true
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		raw := response[start:end]
+		// Trim trailing punctuation that often gets attached in prose
+		raw = strings.TrimRight(raw, ",.;:)]}")
+		// Normalize URL
+		normalized, err := NormalizeURL(raw)
+		if err != nil || normalized == "" {
+			continue
+		}
+		if seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
 
-        domain, err := ExtractDomain(normalized)
-        if err != nil || domain == "" {
-            continue
-        }
+		domain, err := ExtractDomain(normalized)
+		if err != nil || domain == "" {
+			continue
+		}
 
-        snippet := getSnippet(start, end)
+		snippet := getSnippet(start, end)
 
-        // Conservative relevance for narrative references
-        relevance := 0.4
-        quality := ScoreQuality(relevance, nil, false, snippet != "", now)
-        credibility := ScoreCredibility(domain)
+		// Conservative relevance for narrative references
+		relevance := 0.4
+		quality := ScoreQuality(relevance, nil, false, snippet != "", now)
+		credibility := ScoreCredibility(domain)
 
-        citations = append(citations, Citation{
-            URL:              normalized,
-            Title:            "", // Unknown in plain text; formatter will display URL/domain
-            Source:           domain,
-            SourceType:       "web",
-            RetrievedAt:      now,
-            PublishedDate:    nil,
-            RelevanceScore:   relevance,
-            QualityScore:     quality,
-            CredibilityScore: credibility,
-            AgentID:          agentID,
-            Snippet:          snippet,
-        })
-    }
+		citations = append(citations, Citation{
+			URL:              normalized,
+			Title:            "", // Unknown in plain text; formatter will display URL/domain
+			Source:           domain,
+			SourceType:       "web",
+			RetrievedAt:      now,
+			PublishedDate:    nil,
+			RelevanceScore:   relevance,
+			QualityScore:     quality,
+			CredibilityScore: credibility,
+			AgentID:          agentID,
+			Snippet:          snippet,
+		})
+	}
 
-    if isCitationsDebugEnabled() {
-        log.Printf("[citations] plain_text_extracted=%d", len(citations))
-    }
-    return citations
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] plain_text_extracted=%d", len(citations))
+	}
+	return citations
 }
 
 // extractCitationsFromToolOutput extracts citations from a tool execution output
 func extractCitationsFromToolOutput(toolName string, output interface{}, agentID string, now time.Time) []Citation {
-    var citations []Citation
+	var citations []Citation
 
-    if isCitationsDebugEnabled() {
-        log.Printf("[citations] tool=%s output_type=%T", toolName, output)
-    }
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] tool=%s output_type=%T", toolName, output)
+	}
 
-    switch toolName {
-    case "web_search":
-        // Case 1: Direct array (proto sometimes returns []interface{} directly)
-        if arr, ok := output.([]interface{}); ok {
-            for _, item := range arr {
-                if resultMap, ok := item.(map[string]interface{}); ok {
-                    if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
-                        citations = append(citations, *citation)
-                    }
-                }
-            }
-        // Case 2: Wrapped in map {"results": [...]}
-        } else if outputMap, ok := output.(map[string]interface{}); ok {
-            if results, ok := outputMap["results"].([]interface{}); ok {
-                for _, resultInterface := range results {
-                    if resultMap, ok := resultInterface.(map[string]interface{}); ok {
-                        if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
-                            citations = append(citations, *citation)
-                        }
-                    }
-                }
-            }
-        // Case 3: JSON string
-        } else if s, ok := output.(string); ok && s != "" {
-            // Fallback: output encoded as JSON string
-            var decoded interface{}
-            if err := json.Unmarshal([]byte(s), &decoded); err == nil {
-                if arr, ok := decoded.([]interface{}); ok {
-                    for _, item := range arr {
-                        if resultMap, ok := item.(map[string]interface{}); ok {
-                            if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
-                                citations = append(citations, *citation)
-                            }
-                        }
-                    }
-                } else if m, ok := decoded.(map[string]interface{}); ok {
-                    if results, ok := m["results"].([]interface{}); ok {
-                        for _, item := range results {
-                            if resultMap, ok := item.(map[string]interface{}); ok {
-                                if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
-                                    citations = append(citations, *citation)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+	switch toolName {
+	case "web_search":
+		// Case 1: Direct array (proto sometimes returns []interface{} directly)
+		if arr, ok := output.([]interface{}); ok {
+			for _, item := range arr {
+				if resultMap, ok := item.(map[string]interface{}); ok {
+					if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+						citations = append(citations, *citation)
+					}
+				}
+			}
+			// Case 2: Wrapped in map {"results": [...]}
+		} else if outputMap, ok := output.(map[string]interface{}); ok {
+			if results, ok := outputMap["results"].([]interface{}); ok {
+				for _, resultInterface := range results {
+					if resultMap, ok := resultInterface.(map[string]interface{}); ok {
+						if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+							citations = append(citations, *citation)
+						}
+					}
+				}
+			}
+			// Case 3: JSON string
+		} else if s, ok := output.(string); ok && s != "" {
+			// Fallback: output encoded as JSON string
+			var decoded interface{}
+			if err := json.Unmarshal([]byte(s), &decoded); err == nil {
+				if arr, ok := decoded.([]interface{}); ok {
+					for _, item := range arr {
+						if resultMap, ok := item.(map[string]interface{}); ok {
+							if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+								citations = append(citations, *citation)
+							}
+						}
+					}
+				} else if m, ok := decoded.(map[string]interface{}); ok {
+					if results, ok := m["results"].([]interface{}); ok {
+						for _, item := range results {
+							if resultMap, ok := item.(map[string]interface{}); ok {
+								if citation, err := extractCitationFromSearchResult(resultMap, agentID, now); err == nil {
+									citations = append(citations, *citation)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 
-    case "web_fetch":
-        // web_fetch returns direct result object {url, title, content, ...}
-        if outputMap, ok := output.(map[string]interface{}); ok {
-            if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
-                citations = append(citations, *citation)
-            }
-        } else if s, ok := output.(string); ok && s != "" {
-            var m map[string]interface{}
-            if err := json.Unmarshal([]byte(s), &m); err == nil {
-                if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
-                    citations = append(citations, *citation)
-                }
-            }
-        }
-    }
+	case "web_fetch", "web_subpage_fetch", "web_crawl":
+		// All web fetch tools return similar structure: {url, title, content, ...}
+		if outputMap, ok := output.(map[string]interface{}); ok {
+			if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
+				citations = append(citations, *citation)
+			}
+		} else if s, ok := output.(string); ok && s != "" {
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(s), &m); err == nil {
+				if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
+					citations = append(citations, *citation)
+				}
+			}
+		}
+	}
 
-    if isCitationsDebugEnabled() {
-        log.Printf("[citations] tool=%s extracted=%d", toolName, len(citations))
-    }
-    return citations
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] tool=%s extracted=%d", toolName, len(citations))
+	}
+	return citations
 }
 
 // CollectCitations extracts, deduplicates, scores, and ranks citations from agent execution results
@@ -690,7 +703,6 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 			agentID = "unknown"
 		}
 
-
 		// Extract tool_executions array if present; allow nil/missing
 		var toolExecutions []interface{}
 		if tev, ok := resultMap["tool_executions"]; ok && tev != nil {
@@ -709,8 +721,8 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 			success, _ := toolExecMap["success"].(bool)
 			output := toolExecMap["output"]
 
-			// Only process successful executions of web_search or web_fetch
-			if !success || (toolName != "web_search" && toolName != "web_fetch") {
+			// Only process successful executions of web_search or web_fetch tools
+			if !success || (toolName != "web_search" && toolName != "web_fetch" && toolName != "web_subpage_fetch" && toolName != "web_crawl") {
 				continue
 			}
 
@@ -732,15 +744,15 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 		}
 	}
 
-    if isCitationsDebugEnabled() {
-        log.Printf("[citations] raw_extracted=%d", len(allCitations))
-    }
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] raw_extracted=%d", len(allCitations))
+	}
 
-    // Sanitize citation titles/metadata (e.g., fix arXiv reCAPTCHA titles)
-    allCitations = sanitizeCitations(allCitations)
+	// Sanitize citation titles/metadata (e.g., fix arXiv reCAPTCHA titles)
+	allCitations = sanitizeCitations(allCitations)
 
-    // Step 2: Deduplicate by normalized URL
-    dedupedCitations := deduplicateCitations(allCitations)
+	// Step 2: Deduplicate by normalized URL
+	dedupedCitations := deduplicateCitations(allCitations)
 
 	// Step 3: Enforce diversity (max N per domain)
 	config := LoadCredibilityConfig()
@@ -753,148 +765,149 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 	// Step 4: Rank by combined score and limit to top N
 	rankedCitations := rankAndLimit(diverseCitations, maxCitations)
 
-    // Step 5: Calculate aggregate stats
-    stats := calculateCitationStats(rankedCitations)
+	// Step 5: Calculate aggregate stats
+	stats := calculateCitationStats(rankedCitations)
 
-    if isCitationsDebugEnabled() {
-        log.Printf("[citations] final_total=%d unique_domains=%d avg_quality=%.2f avg_cred=%.2f", len(rankedCitations), stats.UniqueDomains, stats.AvgQuality, stats.AvgCredibility)
-    }
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] final_total=%d unique_domains=%d avg_quality=%.2f avg_cred=%.2f", len(rankedCitations), stats.UniqueDomains, stats.AvgQuality, stats.AvgCredibility)
+	}
 
-    return rankedCitations, stats
+	return rankedCitations, stats
 }
 
 // deduplicateCitations removes duplicate citations by normalized URL (keeping first occurrence)
 func deduplicateCitations(citations []Citation) []Citation {
-    // Keep one entry per canonical key; merge to preserve best scores/metadata
-    index := make(map[string]int)
-    var deduped []Citation
+	// Keep one entry per canonical key; merge to preserve best scores/metadata
+	index := make(map[string]int)
+	var deduped []Citation
 
-    for _, citation := range citations {
-        key := citation.URL
-        // Prefer DOI-based key for cross-domain canonicalization
-        if parsed, err := url.Parse(citation.URL); err == nil {
-            if doi := extractDOIFromURL(parsed); doi != "" {
-                key = "doi:" + strings.ToLower(doi)
-            } else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
-                key = norm
-            }
-        } else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
-            key = norm
-        }
+	for _, citation := range citations {
+		key := citation.URL
+		// Prefer DOI-based key for cross-domain canonicalization
+		if parsed, err := url.Parse(citation.URL); err == nil {
+			if doi := extractDOIFromURL(parsed); doi != "" {
+				key = "doi:" + strings.ToLower(doi)
+			} else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
+				key = norm
+			}
+		} else if norm, err2 := NormalizeURL(citation.URL); err2 == nil && norm != "" {
+			key = norm
+		}
 
-        if idx, ok := index[key]; ok {
-            // Merge: keep higher quality/credibility; fill missing metadata when available
-            if citation.QualityScore > deduped[idx].QualityScore {
-                deduped[idx].QualityScore = citation.QualityScore
-            }
-            if citation.CredibilityScore > deduped[idx].CredibilityScore {
-                deduped[idx].CredibilityScore = citation.CredibilityScore
-            }
-            if deduped[idx].Title == "" && citation.Title != "" {
-                deduped[idx].Title = citation.Title
-            }
-            if deduped[idx].Snippet == "" && citation.Snippet != "" {
-                deduped[idx].Snippet = citation.Snippet
-            }
-            if deduped[idx].PublishedDate == nil && citation.PublishedDate != nil {
-                deduped[idx].PublishedDate = citation.PublishedDate
-            }
-            // Relevance: prefer higher
-            if citation.RelevanceScore > deduped[idx].RelevanceScore {
-                deduped[idx].RelevanceScore = citation.RelevanceScore
-            }
-        } else {
-            index[key] = len(deduped)
-            deduped = append(deduped, citation)
-        }
-    }
+		if idx, ok := index[key]; ok {
+			// Merge: keep higher quality/credibility; fill missing metadata when available
+			if citation.QualityScore > deduped[idx].QualityScore {
+				deduped[idx].QualityScore = citation.QualityScore
+			}
+			if citation.CredibilityScore > deduped[idx].CredibilityScore {
+				deduped[idx].CredibilityScore = citation.CredibilityScore
+			}
+			if deduped[idx].Title == "" && citation.Title != "" {
+				deduped[idx].Title = citation.Title
+			}
+			if deduped[idx].Snippet == "" && citation.Snippet != "" {
+				deduped[idx].Snippet = citation.Snippet
+			}
+			if deduped[idx].PublishedDate == nil && citation.PublishedDate != nil {
+				deduped[idx].PublishedDate = citation.PublishedDate
+			}
+			// Relevance: prefer higher
+			if citation.RelevanceScore > deduped[idx].RelevanceScore {
+				deduped[idx].RelevanceScore = citation.RelevanceScore
+			}
+		} else {
+			index[key] = len(deduped)
+			deduped = append(deduped, citation)
+		}
+	}
 
-    return deduped
+	return deduped
 }
 
 // sanitizeCitations performs light cleanup on citation metadata
 func sanitizeCitations(citations []Citation) []Citation {
-    for i := range citations {
-        citations[i].Title = sanitizeTitle(citations[i].Title, citations[i].URL, citations[i].Source)
-    }
-    return citations
+	for i := range citations {
+		citations[i].Title = sanitizeTitle(citations[i].Title, citations[i].URL, citations[i].Source)
+	}
+	return citations
 }
 
 func sanitizeTitle(title, rawURL, source string) string {
-    t := strings.TrimSpace(title)
-    lower := strings.ToLower(t)
-    if strings.EqualFold(source, "arxiv.org") {
-        if t == "" || strings.Contains(lower, "recaptcha") {
-            if id := extractArxivID(rawURL); id != "" {
-                return "arXiv:" + id
-            }
-            return "arXiv"
-        }
-    }
-    return t
+	t := strings.TrimSpace(title)
+	lower := strings.ToLower(t)
+	if strings.EqualFold(source, "arxiv.org") {
+		if t == "" || strings.Contains(lower, "recaptcha") {
+			if id := extractArxivID(rawURL); id != "" {
+				return "arXiv:" + id
+			}
+			return "arXiv"
+		}
+	}
+	return t
 }
 
 // extractArxivID returns the arXiv identifier from common arxiv.org URLs
 // Examples: https://arxiv.org/abs/2408.13687 -> 2408.13687
-//           https://arxiv.org/pdf/2408.13687.pdf -> 2408.13687
+//
+//	https://arxiv.org/pdf/2408.13687.pdf -> 2408.13687
 func extractArxivID(rawURL string) string {
-    u, err := url.Parse(rawURL)
-    if err != nil {
-        return ""
-    }
-    if !strings.Contains(strings.ToLower(u.Host), "arxiv.org") {
-        return ""
-    }
-    p := strings.Trim(u.Path, "/")
-    parts := strings.Split(p, "/")
-    if len(parts) == 0 {
-        return ""
-    }
-    last := parts[len(parts)-1]
-    // Strip .pdf if present
-    if strings.HasSuffix(last, ".pdf") {
-        last = strings.TrimSuffix(last, ".pdf")
-    }
-    // abs/<id> or pdf/<id>
-    if len(parts) >= 2 {
-        return last
-    }
-    return ""
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	if !strings.Contains(strings.ToLower(u.Host), "arxiv.org") {
+		return ""
+	}
+	p := strings.Trim(u.Path, "/")
+	parts := strings.Split(p, "/")
+	if len(parts) == 0 {
+		return ""
+	}
+	last := parts[len(parts)-1]
+	// Strip .pdf if present
+	if strings.HasSuffix(last, ".pdf") {
+		last = strings.TrimSuffix(last, ".pdf")
+	}
+	// abs/<id> or pdf/<id>
+	if len(parts) >= 2 {
+		return last
+	}
+	return ""
 }
 
 // extractDOIFromURL attempts to extract a DOI from the URL or query
 // Recognizes: host contains doi.org, query param "doi", or DOI pattern in path
 func extractDOIFromURL(u *url.URL) string {
-    // doi.org host
-    if strings.Contains(strings.ToLower(u.Host), "doi.org") {
-        doi := strings.Trim(u.Path, "/")
-        if doi != "" {
-            return doi
-        }
-    }
-    // doi param in query (e.g., crossmark)
-    if q := u.Query().Get("doi"); q != "" {
-        return q
-    }
-    // DOI pattern in path (case-insensitive)
-    // 10.XXXX/...
-    re := regexp.MustCompile(`(?i)10\.[0-9]{4,9}/[-._;()/:A-Z0-9]+`)
-    if m := re.FindString(u.Path); m != "" {
-        return m
-    }
-    return ""
+	// doi.org host
+	if strings.Contains(strings.ToLower(u.Host), "doi.org") {
+		doi := strings.Trim(u.Path, "/")
+		if doi != "" {
+			return doi
+		}
+	}
+	// doi param in query (e.g., crossmark)
+	if q := u.Query().Get("doi"); q != "" {
+		return q
+	}
+	// DOI pattern in path (case-insensitive)
+	// 10.XXXX/...
+	re := regexp.MustCompile(`(?i)10\.[0-9]{4,9}/[-._;()/:A-Z0-9]+`)
+	if m := re.FindString(u.Path); m != "" {
+		return m
+	}
+	return ""
 }
 
 // truncateRunes returns s truncated to at most max runes, appending "..." when truncated.
 func truncateRunes(s string, max int) string {
-    if max <= 0 || s == "" {
-        return ""
-    }
-    r := []rune(s)
-    if len(r) <= max {
-        return s
-    }
-    return string(r[:max]) + "..."
+	if max <= 0 || s == "" {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
 }
 
 // enforceDiversity limits citations per domain to maintain source diversity

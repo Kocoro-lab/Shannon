@@ -23,7 +23,6 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/circuitbreaker"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/embeddings"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	agentpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/agent"
@@ -31,6 +30,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/policy"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/vectordb"
 	"go.temporal.io/sdk/activity"
 	"go.uber.org/zap"
@@ -878,12 +878,12 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		)
 	}
 
-	// Universal guard: If web_fetch is suggested but web_search is not, add web_search
-	// web_fetch requires URLs that typically come from web_search results
+	// Universal guard: If any web_fetch tool is suggested but web_search is not, add web_search
+	// web_fetch tools require URLs that typically come from web_search results
 	hasWebFetch := false
 	hasWebSearch := false
 	for _, tool := range allowedByRole {
-		if tool == "web_fetch" {
+		if tool == "web_fetch" || tool == "web_subpage_fetch" || tool == "web_crawl" {
 			hasWebFetch = true
 		}
 		if tool == "web_search" {

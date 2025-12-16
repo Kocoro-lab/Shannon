@@ -23,7 +23,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "You are a research assistant. Gather facts, cite sources briefly, and "
             "summarize objectively."
         ),
-        "allowed_tools": ["web_search", "web_fetch"],
+        "allowed_tools": ["web_search", "web_fetch", "web_subpage_fetch", "web_crawl"],
         "caps": {"max_tokens": 16000, "temperature": 0.3},
     },
     "deep_research_agent": {
@@ -77,7 +77,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 - Match user's input language in final report
 
 **Citation integrity is paramount. Every claim needs evidence.**""",
-        "allowed_tools": ["web_search", "web_fetch"],
+        "allowed_tools": ["web_search", "web_fetch", "web_subpage_fetch", "web_crawl"],
         "caps": {"max_tokens": 30000, "temperature": 0.3},
     },
     "writer": {

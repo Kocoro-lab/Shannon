@@ -858,14 +858,15 @@ class WebFetchTool(Tool):
 
         return ToolMetadata(
             name="web_fetch",
-            version="2.0.0",  # Bumped for multi-provider support
+            version="3.0.0",  # Bumped for single-page focus
             description=(
-                "Fetch full content from a web page for detailed analysis. "
-                "Extracts clean markdown text from any URL. "
-                "Use this after web_search to deep-dive into specific pages. "
-                "Supports fetching subpages from the same domain (set subpages>0). "
-                f"Available providers: {provider_str}. "
-                "Use 'provider' parameter to select: exa (semantic), firecrawl (smart crawl), python (free)."
+                "Fetch full content from a single web page for detailed analysis. "
+                "Returns clean markdown text from the specified URL. "
+                "Use after web_search to read a specific page. "
+                "\n\n"
+                "For fetching MULTIPLE pages from a website, use:\n"
+                "• web_subpage_fetch: Targeted multi-page with path selection\n"
+                "• web_crawl: Exploratory crawl for unknown structure"
             ),
             category="retrieval",
             author="Shannon",
@@ -895,31 +896,14 @@ class WebFetchTool(Tool):
                 min_value=1000,
                 max_value=50000,
             ),
+            # DEPRECATED: Keep for backward compatibility with Go orchestrator
+            # These will be removed in a future version
             ToolParameter(
                 name="subpages",
                 type=ToolParameterType.INTEGER,
                 description=(
-                    f"Number of same-domain subpages to fetch (0-{MAX_SUBPAGES}). Default: 0 (main page only).\n"
-                    "\n"
-                    "SELECTION GUIDE BY CONTENT TYPE:\n"
-                    "• Single page: 0 (news article, blog post)\n"
-                    "• Blog/news summary: 2-3 (multiple articles)\n"
-                    "• Product info: 3-5 (product pages, features)\n"
-                    "• Forum/community: 2-3 (discussions, threads)\n"
-                    "• E-commerce: 3-5 (product comparisons, reviews)\n"
-                    "• Tutorial/guide: 5-8 (multi-part tutorials)\n"
-                    "• Company research: 5-8 (homepage, about, team, products)\n"
-                    "• Academic/research: 5-8 (papers, research reports)\n"
-                    "• Technical docs: 8-12 (documentation, guides)\n"
-                    "• API reference: 10-15 (comprehensive API docs)\n"
-                    "\n"
-                    "BY RESEARCH DEPTH:\n"
-                    "• Quick overview: 2-3\n"
-                    "• Standard research: 3-5\n"
-                    "• Deep/comprehensive: 8-12\n"
-                    "\n"
-                    "Examples: blog=3, company=6, docs=10, API=12\n"
-                    "Note: Higher values = more tokens/cost."
+                    "[DEPRECATED] Use web_subpage_fetch or web_crawl for multi-page. "
+                    "This parameter is ignored. Kept for backward compatibility."
                 ),
                 required=False,
                 default=0,
@@ -929,31 +913,19 @@ class WebFetchTool(Tool):
             ToolParameter(
                 name="subpage_target",
                 type=ToolParameterType.STRING,
-                description=(
-                    "Optional keywords to prioritize certain subpages (Exa only). "
-                    "Example: 'API' to focus on API documentation subpages. "
-                    "Ignored in pure-Python mode."
-                ),
+                description="[DEPRECATED] Use web_subpage_fetch target_keywords instead.",
                 required=False,
             ),
             ToolParameter(
                 name="required_paths",
                 type=ToolParameterType.ARRAY,
-                description=(
-                    "Optional list of URL paths for company research. "
-                    "Examples: ['/about', '/ir', '/team']. "
-                    "When provided with query_type='company', uses map+scrape strategy. "
-                    "For other providers, converted to subpage_target keywords."
-                ),
+                description="[DEPRECATED] Use web_subpage_fetch target_paths instead.",
                 required=False,
             ),
             ToolParameter(
                 name="query_type",
                 type=ToolParameterType.STRING,
-                description=(
-                    "Type of research query (e.g., 'company', 'academic'). "
-                    "When set to 'company' with required_paths, optimizes for org pages."
-                ),
+                description="[DEPRECATED] No longer used in simplified web_fetch.",
                 required=False,
             ),
         ]
@@ -967,10 +939,26 @@ class WebFetchTool(Tool):
         # Provider is now controlled by WEB_FETCH_PROVIDER env var only
         provider_name = self.default_provider
         max_length = kwargs.get("max_length", 10000)
-        subpages = kwargs.get("subpages", 0)
-        subpage_target = kwargs.get("subpage_target")
-        required_paths = kwargs.get("required_paths")
-        query_type = kwargs.get("query_type")
+
+        # DEPRECATED: These parameters are ignored in v3.0.0
+        # Log warning if caller uses deprecated params
+        deprecated_subpages = kwargs.get("subpages", 0)
+        deprecated_subpage_target = kwargs.get("subpage_target")
+        deprecated_required_paths = kwargs.get("required_paths")
+        deprecated_query_type = kwargs.get("query_type")
+
+        if deprecated_subpages > 0 or deprecated_subpage_target or deprecated_required_paths:
+            logger.warning(
+                "web_fetch deprecated params used: subpages=%d, subpage_target=%s, required_paths=%s. "
+                "Use web_subpage_fetch or web_crawl instead. Params will be ignored.",
+                deprecated_subpages, deprecated_subpage_target, deprecated_required_paths
+            )
+
+        # Force single-page mode (deprecated params are ignored)
+        subpages = 0
+        subpage_target = None
+        required_paths = None
+        query_type = None
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")

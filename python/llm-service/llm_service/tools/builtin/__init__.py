@@ -4,9 +4,12 @@ Built-in tools for Shannon platform
 
 from .web_search import WebSearchTool
 from .web_fetch import WebFetchTool
+from .web_subpage_fetch import WebSubpageFetchTool
+from .web_crawl import WebCrawlTool
 from .calculator import CalculatorTool
 from .file_ops import FileReadTool, FileWriteTool
 from .python_wasi_executor import PythonWasiExecutorTool
+
 
 # Private features (enterprise version only) - gracefully degrade if not present
 try:
@@ -20,11 +23,14 @@ except ImportError:
 __all__ = [
     "WebSearchTool",
     "WebFetchTool",
+    "WebSubpageFetchTool",
+    "WebCrawlTool",
     "CalculatorTool",
     "FileReadTool",
     "FileWriteTool",
     "PythonWasiExecutorTool",
 ]
+
 
 # Add ads tools to exports if available
 if _HAS_ADS_TOOLS:

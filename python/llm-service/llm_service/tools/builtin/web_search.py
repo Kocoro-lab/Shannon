@@ -1095,14 +1095,10 @@ class WebSearchTool(Tool):
                 # Base defaults (safer): disabled by default, small caps
                 auto_fetch_top_k_env = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_TOP_K", "0"))
                 fetch_max_length_env = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_MAX_LENGTH", "8000"))
-                fetch_subpages_env = int(os.getenv("WEB_SEARCH_EXA_AUTO_FETCH_SUBPAGES", "0"))
-                official_subpages_env = int(os.getenv("WEB_SEARCH_EXA_OFFICIAL_SUBPAGES", "5"))  # keep 5 per request
 
                 # Allow per-request overrides via session_context (passed through safe_keys)
                 auto_fetch_top_k = int(ctx.get("auto_fetch_k", auto_fetch_top_k_env))
                 fetch_max_length = int(ctx.get("auto_fetch_max_length", fetch_max_length_env))
-                fetch_subpages = int(ctx.get("auto_fetch_subpages", fetch_subpages_env))
-                official_subpages = int(ctx.get("auto_fetch_official_subpages", official_subpages_env))
 
                 # Gate: only fetch if research OR explicit top_k > 0
                 should_auto_fetch = False
@@ -1129,12 +1125,12 @@ class WebSearchTool(Tool):
                             continue
                         official_url = f"https://{domain}" if not domain.startswith("http") else domain
                         try:
+                            # Call web_fetch for single-page content
+                            # NOTE: For multi-page, caller should use web_subpage_fetch instead
                             fetch_res = await fetcher.execute(
                                 session_context=session_context,
                                 url=official_url,
-                                use_exa=True,
                                 max_length=fetch_max_length,
-                                subpages=official_subpages,
                             )
                             fetched_content = fetch_res.output if fetch_res.success else None
                             if isinstance(fetched_content, str):
@@ -1180,12 +1176,11 @@ class WebSearchTool(Tool):
                             )
                             continue
                         try:
+                            # Call web_fetch for single-page content
                             fetch_res = await fetcher.execute(
                                 session_context=session_context,
                                 url=url,
-                                use_exa=True,
                                 max_length=fetch_max_length,
-                                subpages=fetch_subpages,
                             )
                             fetched_content = fetch_res.output if fetch_res.success else None
                             if isinstance(fetched_content, str):
@@ -1216,8 +1211,6 @@ class WebSearchTool(Tool):
                     auto_fetch_meta = {
                         "auto_fetch_results": auto_fetch_results,
                         "auto_fetch_top_k": auto_fetch_top_k,
-                        "auto_fetch_subpages": fetch_subpages,
-                        "auto_fetch_official_subpages": official_subpages,
                         "auto_fetch_max_length": fetch_max_length,
                         "auto_fetch_total_chars": consumed_chars,
                     }
