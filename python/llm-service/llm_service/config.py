@@ -1,6 +1,6 @@
 from typing import Optional
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -78,6 +78,14 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+
+    @field_validator('debug', 'enable_cache', 'enable_llm_events', 'enable_llm_partials', mode='before')
+    @classmethod
+    def strip_bool_strings(cls, v):
+        """Strip whitespace from boolean string values before parsing"""
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
     @property
     def database_url(self) -> str:

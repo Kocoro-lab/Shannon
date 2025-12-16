@@ -223,7 +223,7 @@ async def create_collections():
     print(f"\nTotal collections: {len(collections_info.collections)}")
     for collection in collections_info.collections:
         info = client.get_collection(collection.name)
-        print(f"  - {collection.name}: {info.points_count} points, {info.vectors_count} vectors")
+        print(f"  - {collection.name}: {info.points_count} points")
 
 async def seed_sample_data():
     """Seed sample data for testing"""
