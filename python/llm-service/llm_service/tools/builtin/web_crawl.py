@@ -62,16 +62,19 @@ class WebCrawlTool(Tool):
             name="web_crawl",
             version="1.0.0",
             description=(
-                "Crawl a website to discover and extract content from multiple pages. "
-                "Automatically follows links and extracts content from discovered pages. "
+                "Crawl a website to discover structure and content from scratch. "
+                "Automatically follows links from the start URL to find pages."
                 "\n\n"
                 "USE WHEN:\n"
-                "• You don't know the website structure\n"
-                "• You want to explore and discover what content exists\n"
+                "• You don't know the website structure or what pages exist\n"
+                "• You need to 'see what's there' blindly\n"
                 "• The site has dynamic/nested structure\n"
                 "\n"
-                "NOTE: This is async and may take 30-60 seconds. "
-                "For targeted page extraction where you know paths, use web_subpage_fetch instead."
+                "NOT FOR:\n"
+                "• Targeted fetching where you know paths (use web_subpage_fetch - it is faster and more precise)\n"
+                "• Single page fetching (use web_fetch instead)\n"
+                "\n"
+                "NOTE: This is async and may take 30-60 seconds."
             ),
             category="retrieval",
             author="Shannon",
@@ -82,6 +85,13 @@ class WebCrawlTool(Tool):
             sandboxed=False,
             dangerous=False,
             cost_per_use=0.01,  # Higher cost for crawl
+            input_examples=[
+                {
+                    "query": "Crawl this unknown blog to discover its main topics",
+                    "url": "https://example-blog.com",
+                    "limit": 10
+                }
+            ]
         )
 
     def _get_parameters(self) -> List[ToolParameter]:

@@ -19,6 +19,7 @@ import asyncio
 import os
 import re
 import logging
+import socket
 from typing import Dict, Optional, List, Any
 from urllib.parse import urlparse
 
@@ -98,16 +99,16 @@ class WebSubpageFetchTool(Tool):
             name="web_subpage_fetch",
             version="1.0.0",
             description=(
-                "Fetch multiple pages from a website using intelligent selection. "
-                "Uses Map API to discover all URLs, then scores and selects the most relevant pages. "
+                "Fetch multiple pages from a known website using intelligent selection via Map API. "
+                "Discovers all URLs, then scores and selects the most relevant pages to fetch based on your targets."
                 "\n\n"
                 "USE WHEN:\n"
-                "• Company research: need /about, /team, /ir, /products pages\n"
-                "• Documentation: need /docs, /api, /guides pages\n"
-                "• Known domain with specific target pages\n"
+                "• You have a specific domain and need specific sections (e.g., 'check company team', 'find API docs')\n"
+                "• You want to efficiently grab the most important pages without crawling everything\n"
                 "\n"
-                "NOT FOR: Exploratory crawling where you don't know what exists. "
-                "Use web_crawl instead for that."
+                "NOT FOR:\n"
+                "• Blind exploration of unknown sites (use web_crawl instead)\n"
+                "• Single page fetching (use web_fetch instead)"
             ),
             category="retrieval",
             author="Shannon",
@@ -118,6 +119,27 @@ class WebSubpageFetchTool(Tool):
             sandboxed=False,
             dangerous=False,
             cost_per_use=0.005,  # Multiple pages
+            input_examples=[
+                {
+                    "query": "Research OpenAI's management team and board",
+                    "url": "https://openai.com",
+                    "limit": 5,
+                    "target_paths": ["/about", "/our-team", "/charter", "/board"],
+                    "target_keywords": "team leadership board"
+                },
+                {
+                    "query": "Find API documentation for Stripe",
+                    "url": "https://stripe.com",
+                    "limit": 8,
+                    "target_keywords": "API documentation developer reference"
+                },
+                {
+                    "query": "Get latest investor relations news for Tesla",
+                    "url": "https://ir.tesla.com",
+                    "limit": 3,
+                    "target_paths": ["/news", "/press", "/financials"]
+                }
+            ]
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
@@ -187,6 +209,18 @@ class WebSubpageFetchTool(Tool):
                 return ToolResult(success=False, output=None, error=f"Invalid URL: {url}")
             if parsed.scheme not in ["http", "https"]:
                 return ToolResult(success=False, output=None, error="Only HTTP/HTTPS allowed")
+            # DNS resolution guard to avoid wasted provider calls
+            host = parsed.hostname
+            if not host:
+                return ToolResult(success=False, output=None, error="Invalid host in URL")
+            try:
+                socket.getaddrinfo(host, 443)
+            except Exception as e:
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"DNS resolution failed for host {host}: {e}",
+                )
         except Exception as e:
             return ToolResult(success=False, output=None, error=f"Invalid URL: {e}")
 
@@ -195,6 +229,8 @@ class WebSubpageFetchTool(Tool):
         if target_keywords and not effective_paths:
             effective_paths = self._infer_paths_from_keywords(target_keywords)
             logger.info(f"Inferred paths from keywords '{target_keywords}': {effective_paths}")
+
+        last_error = ""
 
         # Execute with Firecrawl (primary) or fallback
         if self.firecrawl_available:
@@ -206,7 +242,8 @@ class WebSubpageFetchTool(Tool):
                     metadata={"provider": "firecrawl", "strategy": "map_and_scrape"}
                 )
             except Exception as e:
-                logger.error(f"Firecrawl map+scrape failed: {e}")
+                last_error = f"Firecrawl map+scrape failed: {e}"
+                logger.error(last_error)
                 # Fall through to Exa or error
 
         # Fallback: Exa with subpages (if available)
@@ -219,13 +256,17 @@ class WebSubpageFetchTool(Tool):
                     metadata={"provider": "exa", "strategy": "subpage_search"}
                 )
             except Exception as e:
-                logger.error(f"Exa fallback failed: {e}")
+                error_msg = f"Exa fallback failed: {e}"
+                last_error = f"{last_error}; {error_msg}" if last_error else error_msg
+                logger.error(error_msg)
 
-        return ToolResult(
-            success=False,
-            output=None,
-            error="No providers available. Configure FIRECRAWL_API_KEY or EXA_API_KEY."
-        )
+        if not last_error:
+            if not self.firecrawl_available and not self.exa_api_key:
+                last_error = "Firecrawl/Exa not configured"
+            else:
+                last_error = "No provider returned content"
+
+        return ToolResult(success=False, output=None, error=f"web_subpage_fetch failed: {last_error}")
 
     def _infer_paths_from_keywords(self, keywords: str) -> List[str]:
         """Infer URL paths from keyword string."""

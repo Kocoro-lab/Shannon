@@ -753,6 +753,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				if len(urls) > 5 {
 					urls = urls[:5]
 				}
+
+				var failedDomains []string
+
 				logger.Info("Running domain prefetch for company research",
 					"urls", urls,
 				)
@@ -814,8 +817,6 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				}
 
 				// Track failed domains to prevent re-fetching in subsequent iterations
-				var failedDomains []string
-
 				for range urls {
 					var payload prefetchPayload
 					prefetchChan.Receive(ctx, &payload)

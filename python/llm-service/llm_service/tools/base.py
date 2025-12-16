@@ -54,6 +54,7 @@ class ToolMetadata:
     session_aware: bool = False  # Whether tool uses session context
     dangerous: bool = False  # Requires extra confirmation
     cost_per_use: float = 0.0  # Cost in USD per invocation
+    input_examples: Optional[List[Dict[str, Any]]] = None  # Examples for tool usage (Anthropic-specific)
 
 
 @dataclass
