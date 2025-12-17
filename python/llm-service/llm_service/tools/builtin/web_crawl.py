@@ -20,6 +20,7 @@ from typing import Dict, Optional, List, Any
 from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
+from ..openapi_parser import _is_private_ip
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,14 @@ class WebCrawlTool(Tool):
                 return ToolResult(success=False, output=None, error=f"Invalid URL: {url}")
             if parsed.scheme not in ["http", "https"]:
                 return ToolResult(success=False, output=None, error="Only HTTP/HTTPS allowed")
+            # SSRF protection: Block private/internal IPs
+            host = parsed.hostname
+            if host and _is_private_ip(host):
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Access to private/internal IP addresses is not allowed: {host}",
+                )
         except Exception as e:
             return ToolResult(success=False, output=None, error=f"Invalid URL: {e}")
 

@@ -24,6 +24,7 @@ from typing import Dict, Optional, List, Any
 from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
+from ..openapi_parser import _is_private_ip
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,13 @@ class WebSubpageFetchTool(Tool):
             host = parsed.hostname
             if not host:
                 return ToolResult(success=False, output=None, error="Invalid host in URL")
+            # SSRF protection: Block private/internal IPs
+            if _is_private_ip(host):
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Access to private/internal IP addresses is not allowed: {host}",
+                )
             try:
                 socket.getaddrinfo(host, 443)
             except Exception as e:
