@@ -42,14 +42,14 @@ How should an LLM decide which tool to use?
 flowchart TD
     Start[User Request] --> A{Know specific URL?}
     A -- Yes --> B{Need just this page?}
-    B -- Yes --> C[Use <b>web_fetch</b><br/>Fast & Precise]
-    B -- No --> D{Need specific sections<br/>e.g. team, pricing?}
+    B -- Yes --> C["web_fetch: Fast & Precise"]
+    B -- No --> D{Need specific sections?}
     
-    D -- Yes --> E[Use <b>web_subpage_fetch</b><br/>Targeted & Smart (Async)]
-    D -- No --> F{Need broad exploration<br/>e.g. all blogs, unknown structure?}
+    D -- Yes --> E["web_subpage_fetch: Targeted & Smart (Async)"]
+    D -- No --> F{Need broad exploration?}
     
-    F -- Yes --> G[Use <b>web_crawl</b><br/>Comprehensive & Deep (Async)]
-    A -- No --> H[Use <b>web_search</b> first<br/>Then analyze results]
+    F -- Yes --> G["web_crawl: Comprehensive & Deep (Async)"]
+    A -- No --> H["web_search first, then analyze results"]
 ```
 
 ---
