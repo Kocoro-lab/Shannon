@@ -145,6 +145,10 @@ WEB_FETCH_BATCH_CONCURRENCY=8
 # Default: 30
 WEB_FETCH_SCRAPE_TIMEOUT=30
 
+# Timeout for Map API discovery (web_subpage_fetch)
+# Default: 15
+WEB_FETCH_MAP_TIMEOUT=15
+
 # Timeout for crawling (seconds)
 # Default: 120
 WEB_FETCH_CRAWL_TIMEOUT=120
