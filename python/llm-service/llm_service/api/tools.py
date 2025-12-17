@@ -15,6 +15,8 @@ from ..tools.openapi_tool import load_openapi_tools_from_config
 from ..tools.builtin import (
     WebSearchTool,
     WebFetchTool,
+    WebSubpageFetchTool,
+    WebCrawlTool,
     CalculatorTool,
     FileReadTool,
     FileWriteTool,
@@ -301,6 +303,8 @@ async def startup_event():
     tools_to_register = [
         WebSearchTool,
         WebFetchTool,
+        WebSubpageFetchTool,
+        WebCrawlTool,
         CalculatorTool,
         FileReadTool,
         FileWriteTool,

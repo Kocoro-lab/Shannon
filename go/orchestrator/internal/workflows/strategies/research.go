@@ -753,6 +753,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				if len(urls) > 5 {
 					urls = urls[:5]
 				}
+
+				var failedDomains []string
+
 				logger.Info("Running domain prefetch for company research",
 					"urls", urls,
 				)
@@ -782,20 +785,19 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						err := workflow.ExecuteActivity(gctx,
 							"ExecuteAgent",
 							activities.AgentExecutionInput{
-								Query:          fmt.Sprintf("Use web_fetch on %s and summarize the key facts from the official site.", url),
+								Query:          fmt.Sprintf("Use web_subpage_fetch on %s to extract key company information from subpages like about, team, products.", url),
 								AgentID:        fmt.Sprintf("domain-prefetch-%d", idx),
 								Context:        prefetchContext,
 								Mode:           "standard",
 								SessionID:      input.SessionID,
 								History:        convertHistoryForAgent(input.History),
-								SuggestedTools: []string{"web_fetch"},
+								SuggestedTools: []string{"web_subpage_fetch"},
 								ToolParameters: map[string]interface{}{
-									"tool":           "web_fetch",
-									"url":            url,
-									"subpages":       12,
-									"subpage_target": "about team leadership company founders management products services",
-									"query_type":     "company",
-									"required_paths": []string{
+									"tool":            "web_subpage_fetch",
+									"url":             url,
+									"limit":           12,
+									"target_keywords": "about team leadership company founders management products services",
+									"target_paths": []string{
 										"/about", "/about-us", "/company",
 										"/ir", "/investor-relations", "/investors",
 										"/team", "/leadership", "/management",
@@ -815,8 +817,6 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				}
 
 				// Track failed domains to prevent re-fetching in subsequent iterations
-				var failedDomains []string
-
 				for range urls {
 					var payload prefetchPayload
 					prefetchChan.Receive(ctx, &payload)
@@ -1249,10 +1249,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 				}
 
-				// Force inject web_search and web_fetch tools for research workflows to ensure citation collection
+				// Force inject web_search and web_fetch/web_subpage_fetch tools for research workflows
 				for i := range hybridTasks {
 					hasWebSearch := false
 					hasWebFetch := false
+					hasWebSubpageFetch := false
 					for _, tool := range hybridTasks[i].SuggestedTools {
 						if tool == "web_search" {
 							hasWebSearch = true
@@ -1260,12 +1261,18 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						if tool == "web_fetch" {
 							hasWebFetch = true
 						}
+						if tool == "web_subpage_fetch" {
+							hasWebSubpageFetch = true
+						}
 					}
 					if !hasWebSearch {
 						hybridTasks[i].SuggestedTools = append(hybridTasks[i].SuggestedTools, "web_search")
 					}
 					if !hasWebFetch {
 						hybridTasks[i].SuggestedTools = append(hybridTasks[i].SuggestedTools, "web_fetch")
+					}
+					if !hasWebSubpageFetch {
+						hybridTasks[i].SuggestedTools = append(hybridTasks[i].SuggestedTools, "web_subpage_fetch")
 					}
 				}
 
@@ -1374,10 +1381,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 				}
 
-				// Force inject web_search and web_fetch tools for research workflows to ensure citation collection
+				// Force inject web_search and web_fetch/web_subpage_fetch tools for research workflows
 				for i := range parallelTasks {
 					hasWebSearch := false
 					hasWebFetch := false
+					hasWebSubpageFetch := false
 					for _, tool := range parallelTasks[i].SuggestedTools {
 						if tool == "web_search" {
 							hasWebSearch = true
@@ -1385,12 +1393,18 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						if tool == "web_fetch" {
 							hasWebFetch = true
 						}
+						if tool == "web_subpage_fetch" {
+							hasWebSubpageFetch = true
+						}
 					}
 					if !hasWebSearch {
 						parallelTasks[i].SuggestedTools = append(parallelTasks[i].SuggestedTools, "web_search")
 					}
 					if !hasWebFetch {
 						parallelTasks[i].SuggestedTools = append(parallelTasks[i].SuggestedTools, "web_fetch")
+					}
+					if !hasWebSubpageFetch {
+						parallelTasks[i].SuggestedTools = append(parallelTasks[i].SuggestedTools, "web_subpage_fetch")
 					}
 				}
 

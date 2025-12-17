@@ -33,28 +33,25 @@ check_service() {
 
 test_web_fetch_fallback() {
     local url="$1"
-    local provider="$2"
-    local subpages="$3"
+    local subpages="$2"
     
-    echo -e "[..] Testing: $url with provider=$provider, subpages=$subpages"
+    echo -e "[..] Testing: $url with subpages=$subpages"
     
-    # Call web_fetch tool
+    # Call web_fetch tool (provider is now set via WEB_FETCH_PROVIDER env var)
     response=$(curl -s -X POST http://localhost:8000/tools/execute \
         -H "Content-Type: application/json" \
         -d "{
             \"tool_name\": \"web_fetch\",
             \"parameters\": {
-                \"url\": \"$url\",
-                \"provider\": \"$provider\",
-                \"subpages\": $subpages
+                \"url\": \"$url\"
             }
         }")
     
     # Extract result
     success=$(echo "$response" | jq -r '.success // false')
-    method=$(echo "$response" | jq -r '.result.method // "unknown"')
-    pages_fetched=$(echo "$response" | jq -r '.result.pages_fetched // 0')
-    has_content=$(echo "$response" | jq -r '(.result.content != "" and .result.content != null)')
+    method=$(echo "$response" | jq -r '.output.method // "unknown"')
+    pages_fetched=$(echo "$response" | jq -r '.output.pages_fetched // 0')
+    has_content=$(echo "$response" | jq -r '(.output.content != "" and .output.content != null)')
     
     echo "    Method: $method"
     echo "    Pages fetched: $pages_fetched"
@@ -94,7 +91,7 @@ check_firecrawl_initialization() {
     echo "[..] Checking Firecrawl provider initialization"
     
     if docker logs shannon-llm-service-1 2>&1 | \
-       grep -q "Firecrawl fetch provider initialized"; then
+       grep -q "Initializing firecrawl fetch provider"; then
         echo -e "${GREEN}[OK]${NC} Firecrawl provider initialized"
         return 0
     else
@@ -123,12 +120,12 @@ echo ""
 
 echo "=== Phase 4: Fallback Mechanism Tests ==="
 
-# Test 1: Firecrawl with subpages (should trigger fallback if crawl returns 0 pages)
-echo -e "\n${YELLOW}Test 1: Firecrawl multi-page fetch (fallback test)${NC}"
-if test_web_fetch_fallback "https://ptmind.com" "firecrawl" 3; then
-    echo -e "${GREEN}[PASS]${NC} Fallback mechanism works correctly"
+# Test 1: Single page fetch (simplified test since subpages are now deprecated)
+echo -e "\n${YELLOW}Test 1: Single page fetch test${NC}"
+if test_web_fetch_fallback "https://ptmind.com" 0; then
+    echo -e "${GREEN}[PASS]${NC} Single page fetch works correctly"
 else
-    echo -e "${RED}[FAIL]${NC} Fallback mechanism failed"
+    echo -e "${RED}[FAIL]${NC} Single page fetch failed"
 fi
 
 echo ""
