@@ -259,8 +259,22 @@ class AnthropicProvider(LLMProvider):
             "model": model,
             "messages": claude_messages,
             "max_tokens": adjusted_max,
-            "temperature": request.temperature,
         }
+
+        # Anthropic API requires temperature and top_p to be mutually exclusive.
+        # Note: `0.0` is a valid temperature; do not use truthiness checks here.
+        if request.temperature is not None and request.top_p is not None:
+            # Prefer temperature when both are present.
+            api_request["temperature"] = request.temperature
+            logger.warning(
+                "Anthropic API: both temperature and top_p were set; "
+                "using temperature and ignoring top_p"
+            )
+        elif request.temperature is not None:
+            api_request["temperature"] = request.temperature
+        elif request.top_p is not None:
+            api_request["top_p"] = request.top_p
+        # If neither is set, omit both and let the API defaults apply.
 
         if system_message:
             api_request["system"] = system_message

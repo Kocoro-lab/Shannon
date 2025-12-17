@@ -149,6 +149,9 @@ Output format:
         # Use LLM to extract claims
         from llm_service.providers.base import ModelTier
 
+        # max_tokens=8000: Claims extraction typically produces ~1500-2000 tokens
+        # (10 claims × ~100-150 tokens each + JSON/list formatting overhead).
+        # Previous value of 2000 caused truncation; 8000 provides 4x safety margin.
         result = await providers.generate_completion(
             messages=[{"role": "user", "content": prompt}],
             tier=ModelTier.SMALL,
