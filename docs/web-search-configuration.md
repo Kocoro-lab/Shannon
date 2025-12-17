@@ -27,7 +27,18 @@ export SERPER_API_KEY=your_api_key_here
 - Pricing: Starting at $50 for 50k queries ($1.00/1k)
 - Rate limit: 300 queries/second
 
-### 3. **Bing Search API** (Enterprise Choice)
+### 3. **SerpAPI** (Robust Google Search API)
+Reliable API for Google Search, Maps, News, and more. Handles proxies and captchas effectively.
+```bash
+export WEB_SEARCH_PROVIDER=serpapi
+export SERPAPI_API_KEY=your_api_key_here
+```
+- Get API key at: https://serpapi.com
+- Free tier: 100 searches/month
+- Pricing: Starting at $50 for 5k searches
+- Rate Limit: Flexible based on plan
+
+### 4. **Bing Search API** (Enterprise Choice)
 Microsoft's search API with Azure integration.
 ```bash
 export WEB_SEARCH_PROVIDER=bing
@@ -38,7 +49,9 @@ export BING_API_KEY=your_api_key_here
 - Pricing: $3 per 1000 queries for S1 tier
 - Note: Bing Search APIs retiring August 11, 2025 - consider migration plans
 
-### 4. **Exa** (AI-Optimized Semantic Search)
+- Note: Bing Search APIs retiring August 11, 2025 - consider migration plans
+
+### 5. **Exa** (AI-Optimized Semantic Search)
 Neural search with semantic understanding, optimized for AI applications.
 ```bash
 export WEB_SEARCH_PROVIDER=exa
@@ -49,7 +62,9 @@ export EXA_API_KEY=your_api_key_here
 - Free tier: 1000 queries/month
 - Pricing: $0.001 per search
 
-### 5. **Firecrawl** (Search + Content Extraction)
+- Pricing: $0.001 per search
+
+### 6. **Firecrawl** (Search + Content Extraction)
 Web search with integrated scraping and markdown extraction.
 ```bash
 export WEB_SEARCH_PROVIDER=firecrawl
@@ -75,6 +90,10 @@ GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
 # WEB_SEARCH_PROVIDER=serper
 # SERPER_API_KEY=your_serper_api_key_here
 
+# Or SerpAPI (robust scraping)
+# WEB_SEARCH_PROVIDER=serpapi
+# SERPAPI_API_KEY=your_serpapi_api_key_here
+
 # Or Bing (enterprise)
 # WEB_SEARCH_PROVIDER=bing
 # BING_API_KEY=your_bing_api_key_here
@@ -97,6 +116,8 @@ llm-service:
     - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID}
     - SERPER_API_KEY=${SERPER_API_KEY}
     - BING_API_KEY=${BING_API_KEY}
+    - BING_API_KEY=${BING_API_KEY}
+    - SERPAPI_API_KEY=${SERPAPI_API_KEY}
     - EXA_API_KEY=${EXA_API_KEY}
     - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
 ```
@@ -106,9 +127,10 @@ llm-service:
 If the configured provider is not available (missing API key or configuration), the system automatically tries other providers in this priority order:
 1. Google Custom Search
 2. Serper
-3. Bing
-4. Exa
-5. Firecrawl
+3. SerpAPI
+4. Bing
+5. Exa
+6. Firecrawl
 
 If no provider is configured, web search will be disabled but the system continues to function.
 
@@ -143,6 +165,7 @@ curl -X POST http://localhost:8000/tools/execute \
 |----------|----------|---------------------------|------------|---------------|
 | **Google** | General search, comprehensive results | $5 after free tier | 100/100s | Snippets + metadata |
 | **Serper** | High-volume, cost-effective | $0.30-$1.00 | 300/s | Snippets + knowledge graph |
+| **SerpAPI** | Scraping reliability & variety | $10 | Varies | Snippets + rich result data |
 | **Bing** | Enterprise, Azure integration | $3 | Varies by tier | Snippets |
 | **Exa** | AI agents, semantic search | $1 | Standard | Full text + highlights |
 | **Firecrawl** | Content extraction | Variable | Limited | Full markdown content |
