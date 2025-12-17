@@ -500,8 +500,8 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 		return citations
 	}
 
-	// Regex for http(s) URLs, stop at whitespace or common trailing punctuation
-	urlRe := regexp.MustCompile(`https?://[^\s\]\)\>\"']+`)
+	// Regex for http(s) URLs, stop at whitespace or common trailing punctuation / tag delimiters
+	urlRe := regexp.MustCompile(`https?://[^\s\]\)\>\<\"']+`)
 	matches := urlRe.FindAllStringIndex(response, -1)
 	if len(matches) == 0 {
 		return citations
@@ -509,6 +509,45 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 
 	// Deduplicate per-response by normalized URL
 	seen := make(map[string]bool)
+
+	// Some models wrap URLs with tags like <url>...</url> or include encoded variants.
+	// Strip common closing-tag suffix artifacts so citations remain valid URLs.
+	trimSuffixFold := func(s, suffixLower string) (string, bool) {
+		if strings.HasSuffix(strings.ToLower(s), suffixLower) {
+			return s[:len(s)-len(suffixLower)], true
+		}
+		return s, false
+	}
+	stripURLTagSuffix := func(s string) string {
+		for {
+			before := s
+			if v, ok := trimSuffixFold(s, "</url>"); ok {
+				s = v
+			}
+			if v, ok := trimSuffixFold(s, "</url"); ok {
+				s = v
+			}
+			if v, ok := trimSuffixFold(s, "%3c/url%3e"); ok {
+				s = v
+			}
+			if v, ok := trimSuffixFold(s, "%3c/url"); ok {
+				s = v
+			}
+			if v, ok := trimSuffixFold(s, "&lt;/url&gt;"); ok {
+				s = v
+			}
+			if v, ok := trimSuffixFold(s, "&lt;/url&gt"); ok {
+				s = v
+			}
+			if v, ok := trimSuffixFold(s, "&lt;/url"); ok {
+				s = v
+			}
+			if s == before {
+				break
+			}
+		}
+		return s
+	}
 
 	// Helper to build a small context snippet around the URL (UTF-8 safe)
 	getSnippet := func(start, end int) string {
@@ -559,6 +598,7 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 		raw := response[start:end]
 		// Trim trailing punctuation that often gets attached in prose
 		raw = strings.TrimRight(raw, ",.;:)]}")
+		raw = stripURLTagSuffix(raw)
 		// Normalize URL
 		normalized, err := NormalizeURL(raw)
 		if err != nil || normalized == "" {

@@ -627,6 +627,46 @@ func TestCollectCitations(t *testing.T) {
 		}
 	})
 
+	t.Run("plain text URL tag wrapper cleanup", func(t *testing.T) {
+		results := []interface{}{
+			map[string]interface{}{
+				"agent_id": "researcher-1",
+				"response": "Source: <url>https://waylandz.com/blog/tensor-logic-brain-like-architecture</url>",
+			},
+		}
+
+		citations, _ := CollectCitations(results, now, 15)
+		if len(citations) != 1 {
+			t.Fatalf("expected 1 citation, got %d", len(citations))
+		}
+		if citations[0].URL != "https://waylandz.com/blog/tensor-logic-brain-like-architecture" {
+			t.Errorf("expected cleaned URL, got %s", citations[0].URL)
+		}
+		if citations[0].Source != "waylandz.com" {
+			t.Errorf("expected source waylandz.com, got %s", citations[0].Source)
+		}
+	})
+
+	t.Run("plain text URL encoded tag suffix cleanup", func(t *testing.T) {
+		results := []interface{}{
+			map[string]interface{}{
+				"agent_id": "researcher-1",
+				"response": "Source: https://waylandz.com/blog/shannon-agentkit-alternative%3C/url",
+			},
+		}
+
+		citations, _ := CollectCitations(results, now, 15)
+		if len(citations) != 1 {
+			t.Fatalf("expected 1 citation, got %d", len(citations))
+		}
+		if citations[0].URL != "https://waylandz.com/blog/shannon-agentkit-alternative" {
+			t.Errorf("expected cleaned URL, got %s", citations[0].URL)
+		}
+		if citations[0].Source != "waylandz.com" {
+			t.Errorf("expected source waylandz.com, got %s", citations[0].Source)
+		}
+	})
+
 	t.Run("limit to max citations", func(t *testing.T) {
 		// Create 20 search results
 		searchResults := make([]interface{}, 20)
