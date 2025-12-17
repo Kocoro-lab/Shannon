@@ -62,18 +62,26 @@ class WebCrawlTool(Tool):
             name="web_crawl",
             version="1.0.0",
             description=(
-                "Crawl a website to discover structure and content from scratch. "
-                "Automatically follows links from the start URL to find pages."
+                "Widely crawl a website to map its structure and retrieve content "
+                "Use this for broad information gathering where the tool automatically navigates through links (async operation)."
                 "\n\n"
                 "USE WHEN:\n"
-                "• You don't know the website structure or what pages exist\n"
-                "• You need to 'see what's there' blindly\n"
-                "• The site has dynamic/nested structure\n"
+                "• You want to capture a wide range of content from a domain (e.g. 'audit this company', 'read all blog posts')\n"
+                "• Navigation paths are complex or unknown (e.g. nested documentation, paginated articles)\n"
+                "• You prioritize content coverage over speed\n"
                 "\n"
                 "NOT FOR:\n"
-                "• Targeted fetching where you know paths (use web_subpage_fetch - it is faster and more precise)\n"
-                "• Single page fetching (use web_fetch instead)\n"
+                "• Looking for specific content (use web_subpage_fetch)\n"
+                "• Single page retrieval (use web_fetch instead)\n"
                 "\n"
+                "Returns: {url, title, content, method, pages_fetched, word_count, char_count, metadata}. "
+                "Metadata includes total_crawled, unique_pages, and urls array. Content is merged markdown."
+                "\n\n"
+                "Example usage:\n"
+                "• Explore unknown startup: url='https://unknown-startup.com', limit=15\n"
+                "• Discover research lab structure: url='https://research-lab.edu', limit=20\n"
+                "• Crawl personal homepage: url='https://johndoe.com', limit=10"
+                "\n\n"
                 "NOTE: This is async and may take 30-60 seconds."
             ),
             category="retrieval",
@@ -85,13 +93,6 @@ class WebCrawlTool(Tool):
             sandboxed=False,
             dangerous=False,
             cost_per_use=0.01,  # Higher cost for crawl
-            input_examples=[
-                {
-                    "query": "Crawl this unknown blog to discover its main topics",
-                    "url": "https://example-blog.com",
-                    "limit": 10
-                }
-            ]
         )
 
     def _get_parameters(self) -> List[ToolParameter]:

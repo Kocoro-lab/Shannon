@@ -862,10 +862,12 @@ class WebFetchTool(Tool):
             description=(
                 "Fetch full content from a single web page for detailed analysis. "
                 "Returns clean markdown text from the specified URL. "
-                "Use after web_search to read a specific page. "
+                "Use after web_search to read a specific page."
+                "\n\n"
+                "Returns: {url, title, content, method, word_count, char_count}."
                 "\n\n"
                 "For fetching MULTIPLE pages from a website, use:\n"
-                "• web_subpage_fetch: Targeted multi-page with path selection\n"
+                "• web_subpage_fetch: Targeted multi-page with path selection (Map + Scrape)\n"
                 "• web_crawl: Exploratory crawl for unknown structure"
             ),
             category="retrieval",

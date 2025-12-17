@@ -49,9 +49,9 @@ test_web_fetch_fallback() {
     
     # Extract result
     success=$(echo "$response" | jq -r '.success // false')
-    method=$(echo "$response" | jq -r '.result.method // "unknown"')
-    pages_fetched=$(echo "$response" | jq -r '.result.pages_fetched // 0')
-    has_content=$(echo "$response" | jq -r '(.result.content != "" and .result.content != null)')
+    method=$(echo "$response" | jq -r '.output.method // "unknown"')
+    pages_fetched=$(echo "$response" | jq -r '.output.pages_fetched // 0')
+    has_content=$(echo "$response" | jq -r '(.output.content != "" and .output.content != null)')
     
     echo "    Method: $method"
     echo "    Pages fetched: $pages_fetched"
@@ -91,7 +91,7 @@ check_firecrawl_initialization() {
     echo "[..] Checking Firecrawl provider initialization"
     
     if docker logs shannon-llm-service-1 2>&1 | \
-       grep -q "Firecrawl fetch provider initialized"; then
+       grep -q "Initializing firecrawl fetch provider"; then
         echo -e "${GREEN}[OK]${NC} Firecrawl provider initialized"
         return 0
     else

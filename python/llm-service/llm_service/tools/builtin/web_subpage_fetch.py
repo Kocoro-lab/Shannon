@@ -32,14 +32,14 @@ MAX_LIMIT = 15  # Maximum pages to fetch
 MAP_URL_LIMIT = 200  # Max URLs from map API
 DEFAULT_LIMIT = 5
 DEFAULT_MAX_LENGTH = 10000
-BATCH_CONCURRENCY = int(os.getenv("WEB_FETCH_BATCH_CONCURRENCY", "5"))
+BATCH_CONCURRENCY = int(os.getenv("WEB_FETCH_BATCH_CONCURRENCY", "8"))
 SCRAPE_TIMEOUT = int(os.getenv("WEB_FETCH_SCRAPE_TIMEOUT", "30"))
 MAP_TIMEOUT = int(os.getenv("WEB_FETCH_MAP_TIMEOUT", "15"))
 
 # Retry configuration
 RETRY_CONFIG = {
     408: {"max_retries": 3, "delays": [2, 4, 8]},      # Timeout: exponential backoff
-    429: {"max_retries": 3, "delays": [5, 15, 30]},    # Rate limit: longer wait
+    429: {"max_retries": 2, "delays": [5, 10]},       # Rate limit: reduced retries
     500: {"max_retries": 2, "delays": [1, 2]},         # Server error: quick retry
     502: {"max_retries": 2, "delays": [2, 4]},         # Bad gateway
     503: {"max_retries": 2, "delays": [3, 6]},         # Service unavailable
@@ -99,7 +99,8 @@ class WebSubpageFetchTool(Tool):
             name="web_subpage_fetch",
             version="1.0.0",
             description=(
-                "Fetch multiple pages from a known website using intelligent selection via Map API. "
+                "Fetch multiple pages from a known website using intelligent selection via Map API (Firecrawl). "
+                "Implements Firecrawl Map (discover URLs) + Scrape (fetch content) strategy. "
                 "Discovers all URLs, then scores and selects the most relevant pages to fetch based on your targets."
                 "\n\n"
                 "USE WHEN:\n"
@@ -108,7 +109,17 @@ class WebSubpageFetchTool(Tool):
                 "\n"
                 "NOT FOR:\n"
                 "• Blind exploration of unknown sites (use web_crawl instead)\n"
-                "• Single page fetching (use web_fetch instead)"
+                "• Single page fetching (use web_fetch instead)\n"
+                "\n"
+                "Returns: {url, title, content, method, pages_fetched, word_count, char_count}. "
+                "Content is merged markdown when multiple pages are fetched."
+                "\n\n"
+                "Example usage:\n"
+                "• Research OpenAI: url='https://openai.com', limit=15, "
+                "target_paths=['/about', '/our-team', '/board', '/careers', '/research', '/blog', '/product', '/company', '/leadership', '/pricing']\n"
+                "• Find Stripe API docs: url='https://stripe.com', limit=10, target_keywords='API documentation developer reference'\n"
+                "• Tesla investor relations: url='https://ir.tesla.com', limit=8, "
+                "target_paths=['/news', '/press', '/financials', '/events', '/governance', '/stock']"
             ),
             category="retrieval",
             author="Shannon",
@@ -119,27 +130,6 @@ class WebSubpageFetchTool(Tool):
             sandboxed=False,
             dangerous=False,
             cost_per_use=0.005,  # Multiple pages
-            input_examples=[
-                {
-                    "query": "Research OpenAI's management team and board",
-                    "url": "https://openai.com",
-                    "limit": 5,
-                    "target_paths": ["/about", "/our-team", "/charter", "/board"],
-                    "target_keywords": "team leadership board"
-                },
-                {
-                    "query": "Find API documentation for Stripe",
-                    "url": "https://stripe.com",
-                    "limit": 8,
-                    "target_keywords": "API documentation developer reference"
-                },
-                {
-                    "query": "Get latest investor relations news for Tesla",
-                    "url": "https://ir.tesla.com",
-                    "limit": 3,
-                    "target_paths": ["/news", "/press", "/financials"]
-                }
-            ]
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
@@ -361,9 +351,10 @@ class WebSubpageFetchTool(Tool):
         # Step 3: Select top N
         selected_urls = [u for u, _ in scored_urls[:limit]]
 
-        # Always include the base URL if not already present
+        # Always include the base URL if not already present (with normalization to avoid duplicates)
         base_url = url.rstrip("/")
-        if base_url not in selected_urls:
+        normalized_selected = [u.rstrip("/") for u in selected_urls]
+        if base_url not in normalized_selected:
             selected_urls.insert(0, base_url)
             if len(selected_urls) > limit:
                 selected_urls = selected_urls[:limit]
