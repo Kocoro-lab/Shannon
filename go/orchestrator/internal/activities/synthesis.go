@@ -80,6 +80,33 @@ func sanitizeAgentOutput(text string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
+// normalizeLanguage maps language codes to the full language name used in prompts
+func normalizeLanguage(lang string) string {
+	l := strings.ToLower(strings.TrimSpace(lang))
+	switch l {
+	case "zh", "zh-cn", "zh-hans", "zh-hant", "cn", "chinese":
+		return "Chinese"
+	case "en", "en-us", "en-gb", "english":
+		return "English"
+	case "ja", "jp", "japanese":
+		return "Japanese"
+	case "ko", "kr", "korean":
+		return "Korean"
+	case "ru", "russian":
+		return "Russian"
+	case "ar", "arabic":
+		return "Arabic"
+	case "es", "spanish":
+		return "Spanish"
+	case "fr", "french":
+		return "French"
+	case "de", "german":
+		return "German"
+	default:
+		return ""
+	}
+}
+
 // --- Result preprocessing (Phase 1 dedup + basic filtering) ---
 var (
 	nonWordPattern = regexp.MustCompile(`[\p{P}\p{S}]+`)
@@ -499,7 +526,17 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	// Detect language from query for language matching
-	queryLanguage := detectLanguage(input.Query)
+	queryLanguage := ""
+	if input.Context != nil {
+		if v, ok := input.Context["target_language"].(string); ok {
+			if mapped := normalizeLanguage(v); mapped != "" {
+				queryLanguage = mapped
+			}
+		}
+	}
+	if queryLanguage == "" {
+		queryLanguage = detectLanguage(input.Query)
+	}
 
 	// Check if this is a language-retry with stronger emphasis
 	forceLanguageMatch := false

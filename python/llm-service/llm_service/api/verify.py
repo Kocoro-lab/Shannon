@@ -6,6 +6,7 @@ import math
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
+from pydantic.config import ConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -14,10 +15,13 @@ router = APIRouter()
 
 class Citation(BaseModel):
     """Citation structure matching Go orchestrator."""
-    url: str
-    title: str
-    source: str
+    model_config = ConfigDict(extra="ignore")
+
+    url: str = ""
+    title: str = ""
+    source: str = ""
     content: Optional[str] = None
+    snippet: Optional[str] = None
     credibility_score: float = 0.5
     quality_score: float = 0.5
 
@@ -66,12 +70,13 @@ async def verify_claims(
         VerificationResult with confidence scores and unsupported claims
     """
 
-    # Parse citations
-    try:
-        citation_objs = [Citation(**c) for c in citations]
-    except Exception as e:
-        logger.warning(f"[verification] Failed to parse citations: {e}")
-        citation_objs = []
+    # Parse citations (be tolerant of partial/mismatched fields)
+    citation_objs: List[Citation] = []
+    for idx, raw in enumerate(citations or []):
+        try:
+            citation_objs.append(Citation(**(raw or {})))
+        except Exception as e:
+            logger.warning(f"[verification] Failed to parse citation[{idx}]: {e}")
 
     # Step 1: Extract factual claims using LLM
     claims = await _extract_claims(answer, llm_client)
@@ -144,10 +149,13 @@ Output format:
         # Use LLM to extract claims
         from llm_service.providers.base import ModelTier
 
+        # max_tokens=8000: Claims extraction typically produces ~1500-2000 tokens
+        # (10 claims × ~100-150 tokens each + JSON/list formatting overhead).
+        # Previous value of 2000 caused truncation; 8000 provides 4x safety margin.
         result = await providers.generate_completion(
             messages=[{"role": "user", "content": prompt}],
             tier=ModelTier.SMALL,
-            max_tokens=2000,
+            max_tokens=8000,
             temperature=0.0  # Deterministic extraction
         )
 
@@ -188,7 +196,7 @@ async def _verify_single_claim(
 
     # Build citation context (limit content length)
     citation_context = "\n\n".join([
-        f"[{i+1}] {c.title}\n{(c.content or '')[:500]}"
+        f"[{i+1}] {(c.title or c.source or c.url)}\n{((c.content or c.snippet) or '')[:500]}"
         for i, c in enumerate(citations[:15])  # Limit to 15 citations
     ])
 
