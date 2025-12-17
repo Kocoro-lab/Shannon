@@ -73,7 +73,7 @@ func (a *Activities) RefineResearchQuery(ctx context.Context, in RefineResearchQ
 	url := fmt.Sprintf("%s/agent/query", base)
 
 	// Build prompt for query refinement with dynamic dimension generation
-    refinementPrompt := fmt.Sprintf(`You are a research query expansion expert.
+	    refinementPrompt := fmt.Sprintf(`You are a research query expansion expert.
 
 IMPORTANT: This is the PLANNING stage only. Plan first; do NOT start writing the final report or conducting searches. Return ONLY a structured plan.
 
@@ -83,6 +83,8 @@ Original query: %s
 
 ## Step 1: Classify the Query Type
 Determine which category best fits:
+- "source_summary": Summarize/explain a specific provided source (URL/document/pasted text). The primary goal is understanding that source, even for deep and comprehensive analysis. Preserve any user-provided URL(s) verbatim in refined_query. Only choose broader research types if explicitly requested.
+- "documentation": How to use an API/SDK/framework or interpret technical documentation/specs. Preserve any user-provided URL(s) verbatim in refined_query. Prioritize official docs/specs/examples and troubleshooting.
 - "company": Analysis of a specific organization (business, startup, corporation)
 - "industry": Analysis of a market sector or industry trends
 - "scientific": Scientific topic, technology, or research question
@@ -97,6 +99,20 @@ Based on the query type, create 4-7 research dimensions. Each dimension should h
 - Priority: "high", "medium", or "low"
 
 ### Dimension Templates by Query Type:
+
+**Source Summary (URL/document analysis):**
+- Source Overview (official, news) - what the source is, scope, key context
+- Key Takeaways (official) - the main points and conclusions
+- Technical Details (official, academic) - mechanisms, implementation details, definitions
+- Evidence & Claims (official, news, academic) - what is asserted and how it is supported
+- Implications & Open Questions (academic, news) - limitations, risks, future work
+
+**Documentation / How-To:**
+- Quickstart & Setup (official) - prerequisites, installation, first steps
+- Core Concepts & APIs (official) - key abstractions, endpoints, parameters
+- Examples & Recipes (official) - minimal and production-ready usage patterns
+- Configuration & Limits (official) - quotas, rate limits, security settings
+- Troubleshooting (official, news) - common errors and resolutions
 
 **Company Research:**
 - Entity Identity (official, aggregator) - founding, leadership, location
@@ -139,8 +155,8 @@ If the entity has non-English presence (e.g., Chinese company, Japanese market),
 - target_languages: relevant language codes (e.g., ["en", "zh"] for Chinese companies)
 - localized_names: entity names in those languages
 
-## Step 4: Domain Discovery (IMPORTANT for companies)
-For company research, identify ALL relevant domains including:
+## Step 4: Domain Discovery (ONLY for company/entity research)
+Only if query_type is "company" (or "comparative" where at least one entity is a company), identify ALL relevant domains including:
 - Corporate domains (company name variations: acme.com, acme.co, acme.io, acme.ai)
 - Product/brand domains (if company operates products under different names)
 - Regional domains with local TLDs:
@@ -158,7 +174,7 @@ Example: A company "Acme Corp" might operate a product called "AcmeCloud" with d
   "refined_query": "...",
   "research_areas": ["...", "..."],
   "rationale": "...",
-  "query_type": "company|industry|scientific|comparative|exploratory",
+  "query_type": "source_summary|documentation|company|industry|scientific|comparative|exploratory",
   "research_dimensions": [
     {
       "dimension": "Entity Identity",
@@ -177,7 +193,8 @@ Example: A company "Acme Corp" might operate a product called "AcmeCloud" with d
 }
 
 Constraints:
-- Do NOT include sources, URLs, or citations.
+- Do NOT include citations or source excerpts.
+- Do NOT invent or fabricate URLs. If the original query includes a URL, you MUST preserve it verbatim in refined_query (do not remove it).
 - Output JSON ONLY; no prose before/after.
 - PRESERVE exact entity strings (do not split/normalize).
 - Provide disambiguation terms to avoid entity mix-ups.`, in.Query)
