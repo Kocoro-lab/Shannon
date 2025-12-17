@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,12 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/log"
 	"go.uber.org/zap"
+)
+
+var (
+	urlRegex    = regexp.MustCompile(`https?://[^\s]+`)
+	wwwRegex    = regexp.MustCompile(`www\.[^\s]+`)
+	domainRegex = regexp.MustCompile(`(?i)\b(?:[a-z0-9][-a-z0-9]*\.)+[a-z]{2,}\b`)
 )
 
 // RefineResearchQueryInput is the input for refining vague research queries
@@ -411,10 +418,24 @@ Constraints:
 	return result, nil
 }
 
+// removeURLs strips URLs/domains to reduce false English detections when the query contains links.
+func removeURLs(text string) string {
+	cleaned := urlRegex.ReplaceAllString(text, "")
+	cleaned = wwwRegex.ReplaceAllString(cleaned, "")
+	cleaned = domainRegex.ReplaceAllString(cleaned, "")
+	return strings.TrimSpace(cleaned)
+}
+
 // detectLanguage performs simple heuristic language detection based on character ranges
 func detectLanguage(query string) string {
     if query == "" {
         return "English"
+    }
+
+    cleanedQuery := removeURLs(query)
+    // If URL/domain stripping leaves any text, prefer it even if it's short (e.g. "总结https://...").
+    if strings.TrimSpace(cleanedQuery) != "" {
+        query = cleanedQuery
     }
 
 	// Count characters by Unicode range
@@ -499,6 +520,11 @@ func detectLanguage(query string) string {
 func validateLanguageDetection(query string, detectedLang string, logger log.Logger) float64 {
 	if query == "" {
 		return 0.0
+	}
+
+	cleanedQuery := removeURLs(query)
+	if strings.TrimSpace(cleanedQuery) != "" {
+		query = cleanedQuery
 	}
 
 	// Count characters by category

@@ -3,6 +3,7 @@ Anthropic Claude Provider Implementation
 """
 
 import os
+import logging
 from typing import Dict, List, Any, AsyncIterator
 import anthropic
 from anthropic import AsyncAnthropic
@@ -14,6 +15,8 @@ from .base import (
     TokenUsage,
     TokenCounter,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(LLMProvider):
@@ -132,13 +135,22 @@ class AnthropicProvider(LLMProvider):
             "model": model,
             "messages": claude_messages,
             "max_tokens": adjusted_max,
-            "temperature": request.temperature,
         }
 
-        # Anthropic doesn't support both temperature and top_p
-        # Only add top_p if temperature is not specified
-        if not request.temperature:
+        # Anthropic API requires temperature and top_p to be mutually exclusive.
+        # Note: `0.0` is a valid temperature; do not use truthiness checks here.
+        if request.temperature is not None and request.top_p is not None:
+            # Prefer temperature when both are present.
+            api_request["temperature"] = request.temperature
+            logger.warning(
+                "Anthropic API: both temperature and top_p were set; "
+                "using temperature and ignoring top_p"
+            )
+        elif request.temperature is not None:
+            api_request["temperature"] = request.temperature
+        elif request.top_p is not None:
             api_request["top_p"] = request.top_p
+        # If neither is set, omit both and let the API defaults apply.
 
         if system_message:
             api_request["system"] = system_message
