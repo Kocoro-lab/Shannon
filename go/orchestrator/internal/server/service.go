@@ -273,12 +273,15 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		}
 	}
 
+	// Prepare session context for PostgreSQL persistence
+	var sessionContext map[string]interface{}
+
 	// Create new session if needed
 	if sess == nil {
 		var createErr error
 
 		// Build initial session context with task context for first task
-		sessionContext := map[string]interface{}{
+		sessionContext = map[string]interface{}{
 			"created_from": "orchestrator",
 		}
 
@@ -321,6 +324,11 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		s.logger.Info("Created new session",
 			zap.String("session_id", sessionID),
 			zap.Any("context", sessionContext))
+	} else {
+		// For existing sessions, use metadata from Redis session for PostgreSQL upsert
+		if sess.Metadata != nil {
+			sessionContext = sess.Metadata
+		}
 	}
 	// Ensure session exists in PostgreSQL for FK integrity (idempotent)
 	if s.dbClient != nil && dbSessionID != "" {
@@ -330,11 +338,8 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 			dbUserID = sess.UserID
 		}
 
-		// Get session context from Redis session to persist to PostgreSQL
-		var dbSessionContext map[string]interface{}
-		if sess != nil && sess.Context != nil {
-			dbSessionContext = sess.Context
-		}
+		// Use the sessionContext we built earlier (don't read from sess.Context which may be empty)
+		dbSessionContext := sessionContext
 
 		s.logger.Debug("Ensuring session exists in PostgreSQL",
 			zap.String("session_id", dbSessionID),
