@@ -168,27 +168,30 @@ import_dashboard() {
             return 1
         fi
     else
-        # Process local dashboard JSON
+        # Process local dashboard JSON - use /api/dashboards/db endpoint instead of /api/dashboards/import
         DASHBOARD_JSON=$(echo "$DASHBOARD_CONTENT" | jq --arg uid "$DS_UID" '
-            .dashboard = . |
-            .dashboard.id = null |
-            .dashboard.uid = null |
-            .overwrite = true |
-            .folderId = 0 |
-            .inputs = [] |
-            .dashboard.panels[]?.datasource.uid = $uid |
-            .dashboard.templating?.list[]?.datasource.uid = $uid |
-            .dashboard.annotations?.list[]?.datasource.uid = $uid
+            {
+                dashboard: (
+                    . |
+                    .id = null |
+                    (.panels[]? | select(.datasource != null) | .datasource) |=
+                        (if type == "string" then {"type": "prometheus", "uid": $uid} else . + {"uid": $uid, "type": "prometheus"} end) |
+                    (.templating.list[]? | select(.type == "datasource") | select(.query == "prometheus")) |=
+                        (.current = {"text": "Prometheus", "value": $uid} | .options = [{"text": "Prometheus", "value": $uid}])
+                ),
+                overwrite: true,
+                message: "Updated by import script"
+            }
         ')
 
-        # 导入dashboard
+        # 导入dashboard using db endpoint
         IMPORT_RESPONSE=$(curl -s -X POST \
             -u "$GRAFANA_USER:$GRAFANA_PASSWORD" \
             -H "Content-Type: application/json" \
             -d "$DASHBOARD_JSON" \
-            "$GRAFANA_URL/api/dashboards/import")
+            "$GRAFANA_URL/api/dashboards/db")
 
-        if echo "$IMPORT_RESPONSE" | grep -q "\"imported\":true\|\"id\":[0-9]"; then
+        if echo "$IMPORT_RESPONSE" | grep -q "\"status\":\"success\"\|\"id\":[0-9]"; then
             echo "✓ Dashboard imported successfully: $dashboard_name"
             return 0
         else
