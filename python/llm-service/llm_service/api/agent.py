@@ -1775,7 +1775,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "estimated_tokens": 500,\n'
             '      "suggested_tools": [],\n'
             '      "tool_parameters": {},\n'
+            '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
             '      "source_guidance": {"required": ["official"], "optional": ["news"]},\n'
+            '      "search_budget": {"max_queries": 10, "max_fetches": 20},\n'
             '      "boundaries": {"in_scope": ["topic"], "out_of_scope": []}\n'
             "    }\n"
             "  ],\n"
@@ -1800,7 +1802,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "estimated_tokens": 800,\n'
             '      "suggested_tools": ["web_search"],\n'
             '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
+            '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
             '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
+            '      "search_budget": {"max_queries": 10, "max_fetches": 20},\n'
             '      "boundaries": {"in_scope": ["stock price", "market analysis"], "out_of_scope": ["company history"]}\n'
             "    }\n"
             "  ],\n"
@@ -2207,11 +2211,58 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                         f"search_budget={search_budget}, boundaries={boundaries}"
                     )
 
+
             # Extract extended fields
             exec_strategy = data.get("execution_strategy", "sequential")
             agent_types = data.get("agent_types", [])
             concurrency_limit = data.get("concurrency_limit", 1)
             token_estimates = data.get("token_estimates", {})
+
+            # ================================================================
+            # Option 3: Post-parse backfill for missing Task Contract fields
+            # ================================================================
+            # Ensure research workflows have complete contract fields even if LLM omits them
+            is_research_workflow = (
+                query.context
+                and isinstance(query.context, dict)
+                and (
+                    query.context.get("force_research") is True
+                    or query.context.get("workflow_type") == "research"
+                    or query.context.get("role") == "deep_research_agent"
+                )
+            )
+
+            if is_research_workflow and subtasks:
+                logger.info(
+                    f"Post-parse backfill: Detected research workflow, checking {len(subtasks)} subtasks for missing contract fields"
+                )
+                backfilled_count = 0
+
+                for subtask in subtasks:
+                    # Backfill output_format if missing
+                    if not subtask.output_format:
+                        subtask.output_format = OutputFormatSpec(
+                            type="narrative", required_fields=[], optional_fields=[]
+                        )
+                        logger.info(
+                            f"Backfilled output_format for subtask {subtask.id} with default narrative"
+                        )
+                        backfilled_count += 1
+
+                    # Backfill search_budget if missing
+                    if not subtask.search_budget:
+                        subtask.search_budget = SearchBudgetSpec(
+                            max_queries=10, max_fetches=20
+                        )
+                        logger.info(
+                            f"Backfilled search_budget for subtask {subtask.id} with default limits"
+                        )
+                        backfilled_count += 1
+
+                if backfilled_count > 0:
+                    logger.info(
+                        f"Post-parse backfill completed: {backfilled_count} fields backfilled across {len(subtasks)} subtasks"
+                    )
 
             # Extract cognitive routing fields from data
             cognitive_strategy = data.get("cognitive_strategy", "decompose")
