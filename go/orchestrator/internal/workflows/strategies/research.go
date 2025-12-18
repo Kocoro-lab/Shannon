@@ -421,6 +421,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		baseContext["parent_workflow_id"] = input.ParentWorkflowID
 	}
 
+	// Set research workflow identifiers for Python-side backfill and role selection
+	// NOTE: Do not set baseContext["role"] here; stage-specific activities may override role
+	// (e.g., research_refiner) and we want Temporal UI to reflect the effective stage role.
+	baseContext["workflow_type"] = "research"
+	baseContext["force_research"] = true
+
 	// Memory retrieval with gate precedence (hierarchical > simple session)
 	hierarchicalVersion := workflow.GetVersion(ctx, "memory_retrieval_v1", workflow.DefaultVersion, 1)
 	sessionVersion := workflow.GetVersion(ctx, "session_memory_v1", workflow.DefaultVersion, 1)
@@ -532,10 +538,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	var totalTokens int
 	var refineResult activities.RefineResearchQueryResult
 	refinedQuery := input.Query // Default to original query
+	refineContext := make(map[string]interface{}, len(baseContext)+1)
+	for k, v := range baseContext {
+		refineContext[k] = v
+	}
+	refineContext["role"] = "research_refiner"
 	err := workflow.ExecuteActivity(ctx, constants.RefineResearchQueryActivity,
 		activities.RefineResearchQueryInput{
 			Query:   input.Query,
-			Context: baseContext,
+			Context: refineContext,
 		}).Get(ctx, &refineResult)
 
 	if err == nil && refineResult.RefinedQuery != "" {
@@ -663,11 +674,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 	// Step 1: Decompose the (now refined) research query
 	var decomp activities.DecompositionResult
+	decomposeContext := make(map[string]interface{}, len(baseContext)+1)
+	for k, v := range baseContext {
+		decomposeContext[k] = v
+	}
+	// Decomposition uses the research supervisor prompt; expose role accordingly for observability.
+	decomposeContext["role"] = "research_supervisor"
 	err = workflow.ExecuteActivity(ctx,
 		constants.DecomposeTaskActivity,
 		activities.DecompositionInput{
 			Query:          refinedQuery, // Use refined query here
-			Context:        baseContext,
+			Context:        decomposeContext,
 			AvailableTools: []string{},
 		}).Get(ctx, &decomp)
 
@@ -870,6 +887,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
+	// Execution context: enforce deep research role for all agent executions in ResearchWorkflow.
+	// Keep baseContext free of "role" so non-execution activities (e.g., refiner) can use their own role.
+	execBaseContext := make(map[string]interface{}, len(baseContext)+1)
+	for k, v := range baseContext {
+		execBaseContext[k] = v
+	}
+	execBaseContext["role"] = "deep_research_agent"
+
 	// Step 2: Execute based on complexity
 	if decomp.ComplexityScore < 0.5 || len(decomp.Subtasks) <= 1 {
 		// Simple research - use React pattern for step-by-step exploration
@@ -915,13 +940,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			UserID:         input.UserID,
 			EmitEvents:     true,
 			ModelTier:      modelTier,
-			Context:        baseContext,
+			Context:        execBaseContext,
 		}
 
 		reactResult, err := patterns.ReactLoop(
 			ctx,
 			refinedQuery,
-			baseContext,
+			execBaseContext,
 			input.SessionID,
 			convertHistoryForAgent(input.History),
 			reactConfig,
@@ -1004,7 +1029,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 					// Build context with dependency results
 					subtaskContext := make(map[string]interface{})
-					for k, v := range baseContext {
+					for k, v := range execBaseContext {
 						subtaskContext[k] = v
 					}
 					if contract := buildTaskContractContext(subtask); contract != nil {
@@ -1133,12 +1158,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// Allow tuning ReAct iterations via context with safe clamp (2..8)
 						// Default depends on strategy: quick -> 2, otherwise 3
 						reactMaxIterations := 3
-						if sv, ok := baseContext["research_strategy"].(string); ok {
+						if sv, ok := execBaseContext["research_strategy"].(string); ok {
 							if strings.ToLower(strings.TrimSpace(sv)) == "quick" {
 								reactMaxIterations = 2
 							}
 						}
-						if v, ok := baseContext["react_max_iterations"]; ok {
+						if v, ok := execBaseContext["react_max_iterations"]; ok {
 							switch t := v.(type) {
 							case int:
 								reactMaxIterations = t
@@ -1167,13 +1192,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							UserID:         input.UserID,
 							EmitEvents:     true,
 							ModelTier:      modelTier,
-							Context:        baseContext,
+							Context:        execBaseContext,
 						}
 
 						reactResult, err := patterns.ReactLoop(
 							gctx,
 							st.Description,
-							baseContext,
+							execBaseContext,
 							input.SessionID,
 							convertHistoryForAgent(input.History),
 							reactConfig,
@@ -1231,7 +1256,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "researcher"
+					role := "deep_research_agent"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -1364,7 +1389,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "researcher"
+					role := "deep_research_agent"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -1596,7 +1621,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					workflow.Go(ctx, func(gctx workflow.Context) {
 						// Build localized search context
 						localCtx := make(map[string]interface{})
-						for k, v := range baseContext {
+						for k, v := range execBaseContext {
 							localCtx[k] = v
 						}
 						localCtx["search_language"] = lang
@@ -2280,7 +2305,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 					// Build context with task contract
 					gapContext := make(map[string]interface{})
-					for k, v := range baseContext {
+					for k, v := range execBaseContext {
 						gapContext[k] = v
 					}
 					gapContext["research_mode"] = "gap_fill"
@@ -2598,7 +2623,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								defer sem.Release(1)
 
 								gapContext := make(map[string]interface{})
-								for k, v := range baseContext {
+								for k, v := range execBaseContext {
 									gapContext[k] = v
 								}
 								gapContext["research_mode"] = "gap_fill"
@@ -2607,7 +2632,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 								// Use react_max_iterations from context if provided, default to 2 for gap-filling efficiency
 								gapReactMaxIterations := 2
-								if v, ok := baseContext["react_max_iterations"]; ok {
+								if v, ok := execBaseContext["react_max_iterations"]; ok {
 									switch t := v.(type) {
 									case int:
 										gapReactMaxIterations = t
@@ -3465,6 +3490,7 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 			Metadata: map[string]interface{}{
 				"workflow": "research",
 				"strategy": "react",
+				"role":     result.Role,
 			},
 		},
 	)

@@ -260,6 +260,7 @@ func executeHybridTask(
 				EventType:  activities.StreamEventAgentStarted,
 				AgentID:    fmt.Sprintf("agent-%s", task.ID),
 				Timestamp:  workflow.Now(ctx),
+				Payload:    map[string]interface{}{"role": task.Role},
 			}).Get(ctx, nil)
 	}
 
@@ -331,6 +332,7 @@ func executeHybridTask(
 				EventType:  activities.StreamEventAgentCompleted,
 				AgentID:    fmt.Sprintf("agent-%s", task.ID),
 				Timestamp:  workflow.Now(ctx),
+				Payload:    map[string]interface{}{"role": task.Role},
 			}).Get(ctx, nil)
 	}
 

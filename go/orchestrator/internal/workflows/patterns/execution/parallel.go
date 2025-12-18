@@ -136,6 +136,7 @@ func ExecuteParallel(
 						EventType:  activities.StreamEventAgentStarted,
 						AgentID:    fmt.Sprintf("agent-%s", task.ID),
 						Timestamp:  workflow.Now(ctx),
+						Payload:    map[string]interface{}{"role": task.Role},
 					}).Get(ctx, nil)
 			}
 
@@ -374,6 +375,7 @@ func ExecuteParallel(
 									EventType:  activities.StreamEventAgentCompleted,
 									AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
 									Timestamp:  workflow.Now(ctx),
+									Payload:    map[string]interface{}{"role": tasks[fwi.Index].Role},
 								}).Get(ctx, nil)
 						}
 
@@ -476,6 +478,7 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 			Metadata: map[string]interface{}{
 				"workflow": "parallel",
 				"strategy": "parallel",
+				"role":     result.Role,
 			},
 		})
 

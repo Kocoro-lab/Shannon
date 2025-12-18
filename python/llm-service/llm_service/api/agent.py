@@ -249,24 +249,28 @@ async def agent_query(request: Request, query: AgentQuery):
             try:
                 from ..roles.presets import get_role_preset, render_system_prompt
 
+                requested_role = None
                 role_name = None
                 if isinstance(query.context, dict):
-                    role_name = query.context.get("role") or query.context.get(
+                    requested_role = query.context.get("role") or query.context.get(
                         "agent_type"
                     )
+                    role_name = requested_role
 
                 # Default to deep_research_agent for research workflows
                 if not role_name and isinstance(query.context, dict):
                     if query.context.get("force_research") or query.context.get("workflow_type") == "research":
                         role_name = "deep_research_agent"
 
-                preset = get_role_preset(str(role_name) if role_name else "generalist")
+                effective_role = str(role_name).strip() if role_name else "generalist"
+                preset = get_role_preset(effective_role)
 
                 # Check for system_prompt in context first, then fall back to preset
                 system_prompt = None
                 if isinstance(query.context, dict) and "system_prompt" in query.context:
                     system_prompt = str(query.context.get("system_prompt"))
 
+                system_prompt_source = "context.system_prompt" if system_prompt else f"role_preset:{effective_role}"
                 if not system_prompt:
                     system_prompt = str(
                         preset.get("system_prompt") or "You are a helpful AI assistant."
@@ -1035,9 +1039,9 @@ async def agent_query(request: Request, query: AgentQuery):
                                 "agent_id": query.agent_id,
                                 "mode": query.mode,
                                 "allowed_tools": effective_allowed_tools,
-                                "role": (query.context or {}).get("role")
-                                if isinstance(query.context, dict)
-                                else None,
+                                "role": effective_role,
+                                "requested_role": requested_role,
+                                "system_prompt_source": system_prompt_source,
                                 "provider": interpretation_result.get("provider") or "unknown",
                                 "finish_reason": interpretation_result.get("finish_reason", "stop"),
                                 "requested_max_tokens": max_tokens,
@@ -1074,9 +1078,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "agent_id": query.agent_id,
                     "mode": query.mode,
                     "allowed_tools": effective_allowed_tools,
-                    "role": (query.context or {}).get("role")
-                    if isinstance(query.context, dict)
-                    else None,
+                    "role": effective_role,
+                    "requested_role": requested_role,
+                    "system_prompt_source": system_prompt_source,
                     "provider": result_data.get("provider") or "unknown",
                     "finish_reason": result_data.get("finish_reason", "stop"),
                     "requested_max_tokens": max_tokens,
@@ -1091,6 +1095,15 @@ async def agent_query(request: Request, query: AgentQuery):
         else:
             # Use mock provider for testing
             logger.info("Using mock provider (no API keys configured)")
+            requested_role = None
+            effective_role = "generalist"
+            system_prompt_source = "mock_provider"
+            if isinstance(query.context, dict):
+                requested_role = query.context.get("role") or query.context.get("agent_type")
+                if requested_role:
+                    effective_role = str(requested_role).strip()
+                elif query.context.get("force_research") or query.context.get("workflow_type") == "research":
+                    effective_role = "deep_research_agent"
             result = await mock_provider.generate(
                 query.query,
                 context=query.context,
@@ -1109,9 +1122,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "agent_id": query.agent_id,
                     "mode": query.mode,
                     "allowed_tools": effective_allowed_tools,
-                    "role": (query.context or {}).get("role")
-                    if isinstance(query.context, dict)
-                    else None,
+                    "role": effective_role,
+                    "requested_role": requested_role,
+                    "system_prompt_source": system_prompt_source,
                     "finish_reason": "stop",
                 },
             )

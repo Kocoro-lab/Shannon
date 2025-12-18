@@ -36,9 +36,9 @@ type subscription struct {
 // Manager provides Redis Streams-based pub/sub for workflow events.
 //
 // Lifecycle:
-//   1. Subscribe() creates a channel and starts a background reader goroutine
-//   2. The reader forwards Redis stream events to the channel
-//   3. Unsubscribe() stops the reader and closes the channel
+//  1. Subscribe() creates a channel and starts a background reader goroutine
+//  2. The reader forwards Redis stream events to the channel
+//  3. Unsubscribe() stops the reader and closes the channel
 //
 // IMPORTANT: Callers must NOT close subscription channels themselves.
 // The reader owns the channel lifetime. Always call Unsubscribe() to clean up.
@@ -363,6 +363,27 @@ func (m *Manager) Unsubscribe(workflowID string, ch chan Event) {
 
 // Publish sends an event to Redis stream and all local subscribers (for backward compatibility)
 func (m *Manager) Publish(workflowID string, evt Event) {
+	// Ensure role is always present for observability (best-effort).
+	if evt.Payload == nil {
+		evt.Payload = map[string]interface{}{}
+	}
+	if v, ok := evt.Payload["role"].(string); !ok || strings.TrimSpace(v) == "" {
+		role := ""
+		if strings.TrimSpace(evt.AgentID) != "" {
+			role = strings.ReplaceAll(strings.TrimSpace(evt.AgentID), "-", "_")
+		}
+		if role == "" {
+			role = "generalist"
+		}
+		// Avoid mutating caller-provided payload maps.
+		merged := make(map[string]interface{}, len(evt.Payload)+1)
+		for k, val := range evt.Payload {
+			merged[k] = val
+		}
+		merged["role"] = role
+		evt.Payload = merged
+	}
+
 	if m.redis != nil {
 		ctx := context.Background()
 

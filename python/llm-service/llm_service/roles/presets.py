@@ -166,6 +166,12 @@ def get_role_preset(name: str) -> Dict[str, object]:
     Names are matched case-insensitively; unknown names map to "generalist".
     """
     key = (name or "").strip().lower() or "generalist"
+    # Alias mapping for backward compatibility
+    alias_map = {
+        "researcher": "research",  # Lightweight preset as safety net
+        "research_supervisor": "deep_research_agent",  # Decomposition role uses supervisor prompt
+    }
+    key = alias_map.get(key, key)
     return _PRESETS.get(key, _PRESETS["generalist"]).copy()
 
 
