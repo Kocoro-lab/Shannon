@@ -31,7 +31,11 @@ End with a single sentence that directly answers: "{{ .Query }}"
 - Bold key terms using **term**
 - Keep total response under 300 words
 {{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+- Reference sources naturally but do NOT add [n] citation markers
+{{- else }}
 - Include inline citations [n] where facts are sourced
+{{- end }}
 {{- end }}
 - Do NOT include a "## Sources" section; the system appends sources automatically
 - Do NOT mention agents, tools, or internal processes

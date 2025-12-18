@@ -25,6 +25,7 @@ type SynthesisTemplateData struct {
 	TargetWords         int
 	IsResearch          bool
 	SynthesisStyle      string
+	CitationAgentEnabled bool // When true, synthesis should NOT add [n] markers - Citation Agent handles it
 }
 
 // synthesisTemplateCache caches loaded templates for performance.

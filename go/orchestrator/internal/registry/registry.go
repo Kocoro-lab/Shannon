@@ -101,6 +101,8 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(acts.MergeSearchResults, activity.RegisterOptions{Name: "MergeSearchResults"})
 	// Claim verification activity (Phase 4)
 	w.RegisterActivityWithOptions(acts.VerifyClaimsActivity, activity.RegisterOptions{Name: "VerifyClaimsActivity"})
+	// Citation Agent activity
+	w.RegisterActivityWithOptions(acts.AddCitations, activity.RegisterOptions{Name: "AddCitations"})
 	// Configuration activity
 	w.RegisterActivity(activities.GetWorkflowConfig)
 	// Context compression + store

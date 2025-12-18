@@ -20,8 +20,9 @@ _PRESETS: Dict[str, Dict[str, object]] = {
     },
     "research": {
         "system_prompt": (
-            "You are a research assistant. Gather facts, cite sources briefly, and "
-            "summarize objectively."
+            "You are a research assistant. Gather facts from authoritative sources and "
+            "summarize objectively. Mention sources naturally (e.g., 'According to Reuters...') "
+            "but do NOT add [n] citation markers - these will be added automatically later."
         ),
         "allowed_tools": ["web_search", "web_fetch", "web_subpage_fetch", "web_crawl"],
         "caps": {"max_tokens": 16000, "temperature": 0.3},
@@ -46,11 +47,14 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 - ALL key entities (organizations, people, products, locations) MUST be verified
 - Diversify sources (maximum 3 per domain to avoid echo chambers)
 
-# Citation Discipline (CRITICAL):
-- Use inline citations [1], [2] for ALL factual claims
-- Number sources sequentially WITHOUT GAPS (1, 2, 3, 4... not 1, 3, 5...)
-- Each unique URL gets ONE citation number only
-- Include complete source list at end: [1] Title (URL)
+# Source Tracking (Important):
+- Track all URLs you reference in your research
+- When reporting facts, mention the source naturally WITHOUT adding [n] citation markers
+- Example: "According to the company's investor relations page, revenue was $50M"
+- Example: "TechCrunch reported that the startup raised Series B funding"
+- A Citation Agent will add proper inline citations [n] after synthesis
+- Do NOT add [1], [2], etc. markers yourself
+- Do NOT include a ## Sources section - this will be generated automatically
 
 # Hard Limits (Efficiency):
 - Simple queries: 2-3 tool calls recommended
@@ -58,25 +62,25 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 - Stop when COMPREHENSIVE COVERAGE achieved:
   * Core question answered with evidence
   * Context, subtopics, and nuances covered
-  * Critical aspects addressed with citations
+  * Critical aspects addressed
 - Better to answer confidently than pursue perfection
 
 # Output Format:
 - Markdown with proper heading hierarchy (##, ###)
 - Bullet points for readability
-- Inline citations throughout: "Recent studies show X [1], while Y argues Z [2]"
-- ## Sources section at end with numbered list
+- Natural source attribution: "According to [Source Name]..." or "As reported by [Source]..."
+- NO inline citation markers [n] - these will be added automatically
 
 # Integrity Rules:
 - NEVER fabricate information
 - NEVER hallucinate sources
-- When evidence is strong, state conclusions CONFIDENTLY with citations
+- When evidence is strong, state conclusions CONFIDENTLY
 - When evidence is weak or contradictory, note limitations explicitly
 - If NO information found after thorough search, state: "Not enough information available on [topic]"
 - Preserve source information VERBATIM (don't paraphrase unless synthesizing)
 - Match user's input language in final report
 
-**Citation integrity is paramount. Every claim needs evidence.**""",
+**Research integrity is paramount. Every claim needs evidence from verified sources.**""",
         "allowed_tools": ["web_search", "web_fetch", "web_subpage_fetch", "web_crawl"],
         "caps": {"max_tokens": 30000, "temperature": 0.3},
     },

@@ -642,6 +642,16 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
+	// Check if Citation Agent is enabled (citations will be added separately)
+	// Default: enabled - synthesis should NOT add inline citations, Citation Agent will handle it
+	// This check is at the top level so it applies to both template and fallback modes
+	citationAgentEnabled := true
+	if input.Context != nil {
+		if v, ok := input.Context["enable_citation_agent"].(bool); ok {
+			citationAgentEnabled = v
+		}
+	}
+
 	// Try template-based synthesis (Phase 3: Template System)
 	templateUsed := false
 	if input.Context != nil {
@@ -650,6 +660,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			zap.String("template", templateName),
 			zap.Bool("explicit", explicit),
 			zap.Bool("isResearch", isResearch),
+			zap.Bool("citationAgentEnabled", citationAgentEnabled),
 		)
 
 		// Check for verbatim template override first
@@ -672,6 +683,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				TargetWords:         targetWords,
 				IsResearch:          isResearch,
 				SynthesisStyle:      synthesisStyle,
+				CitationAgentEnabled: citationAgentEnabled,
 			}
 
 			rendered, err := RenderSynthesisTemplate(tmpl, data)
@@ -696,7 +708,13 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		logger.Debug("Using hardcoded synthesis prompt (no template)")
 
 		// Define output structure based on synthesis style
+		// (citationAgentEnabled already defined at top level)
 		outputStructure := ""
+		// Citation instructions depend on whether Citation Agent is enabled
+		citationInstr := "include inline citations"
+		if citationAgentEnabled {
+			citationInstr = "cite sources naturally (e.g., 'According to...')"
+		}
 		if synthesisStyle == "comprehensive" {
 			// For deep research: comprehensive multi-section report (no Sources section; system appends it)
 			targetWords := 1200
@@ -715,12 +733,12 @@ Use exactly these top-level headings in your response, and start your answer dir
 
 Section requirements:
 - Executive Summary: 250–400 words; capture key insights and conclusions
-- Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
+- Detailed Findings: %d–%d words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; %s; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 - Limitations and Uncertainties: 100–150 words IF evidence is incomplete, contradictory, or outdated; OMIT this section entirely if findings are well-supported and comprehensive
-`, targetWords, targetWords+600)
+`, targetWords, targetWords+600, citationInstr)
 		} else {
 			// Default: concise synthesis (no Sources section; system appends it)
-			outputStructure = `## Output Format (do NOT include this section in the final answer):
+			outputStructure = fmt.Sprintf(`## Output Format (do NOT include this section in the final answer):
 
 Use exactly these top-level headings in your response, and start your answer directly with "## Executive Summary" (do NOT include any instruction text):
 
@@ -730,9 +748,9 @@ Use exactly these top-level headings in your response, and start your answer dir
 
 Section requirements:
 - Executive Summary: 2–3 sentences; state findings confidently
-- Detailed Findings: include inline citations; state facts authoritatively
-- Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
-`
+- Detailed Findings: %s; state facts authoritatively
+- Limitations and Uncertainties: OMIT entirely if findings are comprehensive; include ONLY if evidence is genuinely insufficient or contradictory
+`, citationInstr)
 		}
 
 		if isResearch {
@@ -755,18 +773,31 @@ Section requirements:
 				}
 			}
 
-			// Build dynamic checklist and citation guidance
+			// Build dynamic checklist and citation guidance (citationAgentEnabled defined at top level)
 			coverageExtra := ""
-			if hasCitations {
+			if hasCitations && !citationAgentEnabled {
 				coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\\n" +
 					"    ✓ ALL claims supported by Available Citations (no fabrication)\\n" +
 					"    ✓ Conflicting sources explicitly noted: \\\"[1] says X, [2] says Y\\\"\\n"
+			} else if citationAgentEnabled {
+				coverageExtra = "    ✓ Focus on accurate content - citations will be added automatically\\n" +
+					"    ✓ Note conflicting information: \\\"Some sources indicate X, while others suggest Y\\\"\\n"
 			} else {
 				coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \\\"unverified\\\"\\n"
 			}
 
 			citationGuidance := ""
-			if hasCitations {
+			if citationAgentEnabled {
+				// Citation Agent mode: synthesis should NOT add citations
+				citationGuidance = `## Citation Handling:
+    - DO NOT add any inline citations [n] to your response
+    - A separate Citation Agent will add citations after you finish
+    - Focus ONLY on producing accurate, well-organized content
+    - When referencing facts from sources, write naturally without citation markers
+    - Note conflicting information: "Some sources indicate X, while others suggest Y"
+    - Do NOT include a "## Sources" section; the system handles this automatically
+`
+			} else if hasCitations {
 				citationGuidance = fmt.Sprintf(`## Citation Integration:
     - Use inline citations [1], [2] for ALL factual claims that have supporting sources
     - Aim for AT LEAST %d inline citations IF sufficient relevant sources exist
@@ -781,6 +812,40 @@ Section requirements:
 				citationGuidance = `## Citation Guidance:
     - Do NOT fabricate citations.
     - If a claim lacks supporting sources, mark it as "unverified".
+`
+			}
+
+			// Build conditional sections based on Citation Agent mode
+			quantitativeCitationLine := ""
+			if !citationAgentEnabled {
+				quantitativeCitationLine = "    - Include inline citations [n] for ALL data points in tables\n"
+			}
+
+			qualityStandards := ""
+			if citationAgentEnabled {
+				// Quality standards WITHOUT citation references (Citation Agent will handle)
+				qualityStandards = `## Quality Standards:
+	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by evidence
+	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm") unless evidence is genuinely missing
+	- Present well-evidenced facts as definitive conclusions, not tentative observations
+	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
+	- If conflicting information exists, note naturally: "Some sources indicate X, while others suggest Y"
+	- Flag gaps ONLY when evidence is genuinely insufficient: "No public data available on [specific aspect]"
+	- If ALL research areas have comprehensive findings: OMIT the "Limitations and Uncertainties" section entirely
+	- NEVER fabricate or hallucinate information
+`
+			} else {
+				// Quality standards WITH citation references
+				qualityStandards = `## Quality Standards:
+	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
+	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm") unless evidence is genuinely missing
+	- Present well-cited facts as definitive conclusions, not tentative observations
+	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
+	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
+	- Flag gaps ONLY when evidence is genuinely insufficient: "No public data available on [specific aspect]"
+	- If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
+	- NEVER fabricate or hallucinate sources
+	- Ensure each inline citation directly supports the specific claim; prefer primary sources over aggregators
 `
 			}
 
@@ -808,37 +873,38 @@ Section requirements:
     ## Quantitative Synthesis Requirements:
     - When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES when appropriate
     - Tables should compare: size, growth rates, market share, performance metrics, costs, timelines
-    - Include inline citations [n] for ALL data points in tables
-    - If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
+%s    - If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
     - Prioritize specific numbers over vague descriptors (e.g., "$5.2B revenue" not "significant revenue")
 
     %s
     %s
 
-	## Quality Standards:
-	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
-	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm", "at present we have not found") unless evidence is genuinely missing
-	- Present well-cited facts as definitive conclusions, not tentative observations
-	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
-	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
-	- Flag gaps ONLY when evidence is genuinely insufficient for a specific aspect: "No public data available on [specific aspect]"
-	- If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
-	- NEVER fabricate or hallucinate sources
-	- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
-
-    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
+%s
+    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, quantitativeCitationLine, outputStructure, areasInstruction, qualityStandards)
 		} else {
 			// Lightweight summarizer (non-research): no heavy structure or checklists
 			fmt.Fprintf(&b, "# Synthesis Requirements:\n\n")
 			fmt.Fprintf(&b, "%s\n", languageInstruction)
 			fmt.Fprintf(&b, "Produce a concise, directly helpful answer. Avoid unnecessary headings.\n")
-			fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n\n")
+			fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n")
+			// Add Citation Agent guidance for non-research mode too
+			if citationAgentEnabled {
+				fmt.Fprintf(&b, "\n## Citation Handling:\n")
+				fmt.Fprintf(&b, "- DO NOT add any inline citations [n] to your response\n")
+				fmt.Fprintf(&b, "- A separate Citation Agent will add citations after you finish\n")
+				fmt.Fprintf(&b, "- When referencing information, write naturally without citation markers\n\n")
+			}
 		}
 
 		// Include available citations if present (Phase 2.5 fix)
 		if input.Context != nil {
 			if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
-				fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
+				// Change wording based on Citation Agent mode
+				if citationAgentEnabled {
+					fmt.Fprintf(&b, "## Reference Sources (for your information - do NOT add [n] markers):\n%s\n", citationList)
+				} else {
+					fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
+				}
 			}
 		}
 	} // End of !templateUsed fallback block

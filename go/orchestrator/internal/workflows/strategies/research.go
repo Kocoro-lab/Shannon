@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
@@ -2834,6 +2835,69 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	// Check pause/cancel after synthesis/iteration - signal may have arrived during synthesis
 	if err := controlHandler.CheckPausePoint(ctx, "post_synthesis"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Step 3.9: Citation Agent - add citations to synthesis (enabled by default)
+	citationAgentEnabled := true // Default: enabled
+	if v, ok := baseContext["enable_citation_agent"].(bool); ok {
+		citationAgentEnabled = v
+	}
+	if citationAgentEnabled && len(collectedCitations) > 0 {
+		logger.Info("CitationAgent: starting citation addition", "citations_count", len(collectedCitations))
+
+		// Convert metadata.Citation to CitationForAgent (avoids import cycle)
+		citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
+				URL:              c.URL,
+				Title:            c.Title,
+				Source:           c.Source,
+				Snippet:          c.Snippet,
+				CredibilityScore: c.CredibilityScore,
+				QualityScore:     c.QualityScore,
+			})
+		}
+
+		var citationResult activities.CitationAgentResult
+		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 90 * time.Second,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval:    time.Second,
+				BackoffCoefficient: 2.0,
+				MaximumAttempts:    2,
+			},
+		})
+
+		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
+			Report:           synthesis.FinalResult,
+			Citations:        citationsForAgent,
+			ParentWorkflowID: input.ParentWorkflowID,
+			Context:          baseContext,
+		}).Get(citationCtx, &citationResult)
+
+		if cerr != nil {
+			logger.Warn("CitationAgent: failed, using original synthesis", "error", cerr)
+		} else if citationResult.ValidationPassed {
+			// Use cited report and rebuild Sources with correct Used inline/Additional labels
+			citationsList := ""
+			if v, ok := baseContext["available_citations"].(string); ok {
+				citationsList = v
+			}
+			if citationsList != "" {
+				synthesis.FinalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
+			} else {
+				synthesis.FinalResult = citationResult.CitedReport
+			}
+			totalTokens += citationResult.TokensUsed
+			logger.Info("CitationAgent: citations added and Sources rebuilt",
+				"citations_used", len(citationResult.CitationsUsed),
+				"warnings", len(citationResult.PlacementWarnings),
+			)
+		} else {
+			logger.Warn("CitationAgent: validation failed, using original synthesis",
+				"error", citationResult.ValidationError,
+			)
+		}
 	}
 
 	// Check pause/cancel before reflection

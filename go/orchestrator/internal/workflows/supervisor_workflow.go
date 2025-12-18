@@ -13,6 +13,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/util"
@@ -1261,6 +1262,81 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 		}
 		didSynthesisLLM = true
+	}
+
+	// Citation Agent: add citations to synthesis result (if we have citations)
+	if len(collectedCitations) > 0 && synth.FinalResult != "" {
+		// Step 1: Remove ## Sources section before passing to Citation Agent
+		// (FormatReportWithCitations in synthesis.go may have added it already)
+		reportForCitation := synth.FinalResult
+		var extractedSources string
+		if idx := strings.LastIndex(strings.ToLower(reportForCitation), "## sources"); idx != -1 {
+			extractedSources = strings.TrimSpace(reportForCitation[idx:])
+			reportForCitation = strings.TrimSpace(reportForCitation[:idx])
+			logger.Info("CitationAgent: stripped Sources section before processing",
+				"sources_length", len(extractedSources),
+				"report_length", len(reportForCitation),
+			)
+		}
+
+		// Convert metadata.Citation to CitationForAgent
+		citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
+				URL:              c.URL,
+				Title:            c.Title,
+				Source:           c.Source,
+				Snippet:          c.Snippet,
+				CredibilityScore: c.CredibilityScore,
+				QualityScore:     c.QualityScore,
+			})
+		}
+
+		var citationResult activities.CitationAgentResult
+		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 90 * time.Second,
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval:    time.Second,
+				BackoffCoefficient: 2.0,
+				MaximumAttempts:    2,
+			},
+		})
+
+		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
+			Report:           reportForCitation, // Clean report without Sources
+			Citations:        citationsForAgent,
+			ParentWorkflowID: workflowID,
+		}).Get(citationCtx, &citationResult)
+
+		if cerr != nil {
+			logger.Warn("CitationAgent failed, using original synthesis", "error", cerr)
+		} else if citationResult.ValidationPassed {
+			// Use cited report and rebuild Sources with correct Used inline/Additional labels
+			// The new report has [n] markers, so FormatReportWithCitations will correctly
+			// identify which citations were actually used inline
+			citationsList := ""
+			if v, ok := ctxForSynth["available_citations"].(string); ok {
+				citationsList = v
+			}
+			if citationsList != "" {
+				synth.FinalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
+			} else {
+				// Fallback: just append the extracted sources
+				synth.FinalResult = citationResult.CitedReport
+				if extractedSources != "" {
+					synth.FinalResult = strings.TrimSpace(synth.FinalResult) + "\n\n" + extractedSources
+				}
+			}
+			synth.TokensUsed += citationResult.TokensUsed
+			logger.Info("CitationAgent: citations added and Sources rebuilt",
+				"citations_used", len(citationResult.CitationsUsed),
+			)
+		} else {
+			logger.Warn("CitationAgent validation failed, keeping original synthesis",
+				"error", citationResult.ValidationError,
+			)
+			// Keep original synth.FinalResult (which already has Sources)
+		}
 	}
 
 	// Compute total tokens across child results + synthesis

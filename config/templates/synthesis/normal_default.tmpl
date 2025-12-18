@@ -31,7 +31,11 @@ Synthesize the agent results into a complete, well-organized answer that preserv
 - For multi-faceted queries: use structure (headings, lists, tables) when it genuinely improves clarity
 - Preserve specific data, metrics, examples, and nuanced points from agent outputs
 {{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+- Reference sources naturally (e.g., "According to...") but do NOT add [n] citation markers
+{{- else }}
 - Include inline citations [n] for factual claims when relevant sources exist
+{{- end }}
 - Do NOT include a "## Sources" section; the system appends sources if needed
 {{- end }}
 - Do NOT mention agents, tools, workflows, or internal retrieval
