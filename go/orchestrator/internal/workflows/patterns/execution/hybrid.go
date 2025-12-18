@@ -357,42 +357,24 @@ func waitForDependencies(
 ) bool {
 	logger := workflow.GetLogger(ctx)
 
-	// Calculate deadline
-	deadline := workflow.Now(ctx).Add(timeout)
-
-	// Check dependencies with polling
-	for {
-		// Check for cancellation first
-		if ctx.Err() != nil {
-			logger.Debug("Context cancelled during dependency wait")
-			return false
-		}
-
-		allComplete := true
+	ok, err := workflow.AwaitWithTimeout(ctx, timeout, func() bool {
 		for _, depID := range dependencies {
 			if !completedTasks[depID] {
-				allComplete = false
-				break
+				return false
 			}
 		}
-
-		if allComplete {
-			return true
-		}
-
-		// Check timeout
-		if workflow.Now(ctx).After(deadline) {
-			logger.Warn("Dependency wait timeout",
-				"dependencies", dependencies,
-				"timeout", timeout,
-			)
-			return false
-		}
-
-		// Wait before next check - check error in case of cancellation
-		if err := workflow.Sleep(ctx, 3*time.Second); err != nil {
-			logger.Debug("Sleep interrupted", "error", err)
-			return false
-		}
+		return true
+	})
+	if err != nil {
+		logger.Debug("Context cancelled during dependency wait", "error", err)
+		return false
 	}
+	if !ok {
+		logger.Warn("Dependency wait timeout",
+			"dependencies", dependencies,
+			"timeout", timeout,
+		)
+		return false
+	}
+	return true
 }

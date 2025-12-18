@@ -134,3 +134,55 @@ func TestParallelRespectsMaxConcurrency(t *testing.T) {
 		t.Fatalf("expected 3 results, got %d", count)
 	}
 }
+
+func TestHybridDependencyWaitDoesNotPollWithFixedSleep(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	// Make task-1 slightly slower so task-2 reaches dependency wait first.
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
+			_ = ctx
+			if in.AgentID == "agent-task-1" {
+				time.Sleep(200 * time.Millisecond)
+			}
+			return activities.AgentExecutionResult{AgentID: in.AgentID, Response: "ok", Success: true, TokensUsed: 1}, nil
+		},
+		activity.RegisterOptions{Name: "ExecuteAgent"},
+	)
+
+	var sawPollingTimer bool
+	env.SetOnTimerScheduledListener(func(timerID string, duration time.Duration) {
+		_ = timerID
+		if duration == 3*time.Second {
+			sawPollingTimer = true
+		}
+	})
+
+	wf := func(ctx workflow.Context) (int, error) {
+		tasks := []execution.HybridTask{
+			{ID: "task-1", Description: "a"},
+			{ID: "task-2", Description: "b", Dependencies: []string{"task-1"}},
+		}
+		cfg := execution.HybridConfig{
+			MaxConcurrency:        10,
+			EmitEvents:            false,
+			Context:               map[string]interface{}{},
+			DependencyWaitTimeout: 30 * time.Second,
+		}
+		res, err := execution.ExecuteHybrid(ctx, tasks, "s", []string{}, cfg, 0, "u", "small")
+		if err != nil {
+			return 0, err
+		}
+		return len(res.Results), nil
+	}
+
+	env.RegisterWorkflow(wf)
+	env.ExecuteWorkflow(wf)
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("Hybrid workflow failed: %v", env.GetWorkflowError())
+	}
+	if sawPollingTimer {
+		t.Fatalf("expected no 3s polling timers for dependency waits")
+	}
+}
