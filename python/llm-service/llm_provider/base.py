@@ -84,7 +84,7 @@ class CompletionRequest:
     model: Optional[str] = None
     temperature: float = 0.7
     max_tokens: Optional[int] = None
-    top_p: float = 1.0
+    top_p: Optional[float] = None  # None means API default; explicit 1.0 if needed
     frequency_penalty: float = 0.0
     presence_penalty: float = 0.0
     stop: Optional[List[str]] = None
