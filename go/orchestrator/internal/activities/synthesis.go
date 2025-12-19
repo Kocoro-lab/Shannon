@@ -38,6 +38,7 @@ func sanitizeAgentOutput(text string) string {
 
 	urlPattern := regexp.MustCompile(`^https?://`)
 	citationPattern := regexp.MustCompile(`^\[\d+\]\s+https?://`)
+	inlineURLPattern := regexp.MustCompile(`https?://\S+`)
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -48,12 +49,35 @@ func sanitizeAgentOutput(text string) string {
 			continue
 		}
 
-		// Skip everything inside Sources section
+		// Inside Sources section: keep descriptive context, drop raw URLs/citation-only lines.
 		if inSourcesSection {
 			// Check if we hit another major section (exit Sources)
 			if strings.HasPrefix(trimmed, "##") && !strings.HasPrefix(trimmed, "## Sources") {
 				inSourcesSection = false
 			} else {
+				// Skip empty lines
+				if trimmed == "" {
+					continue
+				}
+				// Skip bare URLs
+				if urlPattern.MatchString(trimmed) {
+					continue
+				}
+				// Skip citation lines like "[1] https://..."
+				if citationPattern.MatchString(trimmed) {
+					continue
+				}
+				// Skip bullet points with only URLs
+				if strings.HasPrefix(trimmed, "- http") || strings.HasPrefix(trimmed, "* http") || strings.HasPrefix(trimmed, "• http") {
+					continue
+				}
+
+				// Keep descriptive source notes but remove inline URLs to avoid duplication/noise
+				clean := inlineURLPattern.ReplaceAllString(line, "")
+				clean = strings.TrimSpace(clean)
+				if clean != "" && clean != "-" && clean != "*" && clean != "•" {
+					result = append(result, clean)
+				}
 				continue
 			}
 		}
@@ -453,7 +477,8 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	contextMap["model_tier"] = "large"
 
 	// Build synthesis query that includes agent results
-	const maxPerAgentChars = 4000 // Increased for data-heavy responses (analytics, structured data)
+	// Truncation is adjusted later once we know whether this is a research-style synthesis.
+	maxPerAgentChars := 4000 // Default for non-research
 
 	var b strings.Builder
 
@@ -621,6 +646,24 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				isResearch = true
 			}
 		}
+	}
+
+	// For research workflows, preserve more detail per agent output, but scale down when many agents exist
+	// to avoid oversized prompts that can degrade recall and increase truncation risk upstream.
+	if isResearch {
+		maxPerAgentChars = 8000
+		switch {
+		case len(input.AgentResults) > 25:
+			maxPerAgentChars = 4000
+		case len(input.AgentResults) > 15:
+			maxPerAgentChars = 6000
+		case len(input.AgentResults) > 10:
+			maxPerAgentChars = 7000
+		}
+		logger.Info("Adjusted per-agent truncation for research synthesis",
+			zap.Int("maxPerAgentChars", maxPerAgentChars),
+			zap.Int("agent_count", len(input.AgentResults)),
+		)
 	}
 
 	// Calculate target words for research synthesis
@@ -941,36 +984,49 @@ Section requirements:
 		}
 	}
 
-	// Include synthesis results first (these contain aggregated insights)
+	// Ordering matters: for deep research, avoid anchoring on "(Synthesis)" agent outputs.
+	// Use raw agent outputs as the primary evidence, and treat synthesis agents as coverage guides.
 	count := 0
-	for _, r := range synthesisResults {
-		// Sanitize agent output to remove duplicate sources/citations
-		sanitized := sanitizeAgentOutput(r.Response)
-		// Apply length cap after sanitization (synthesis results get more space)
-		maxSynthesisChars := maxPerAgentChars * 2 // Double the space for synthesis results
-		if len([]rune(sanitized)) > maxSynthesisChars {
-			sanitized = string([]rune(sanitized)[:maxSynthesisChars]) + "..."
-		}
-		fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
-		count++
-		if count >= maxAgents {
-			break
-		}
-	}
 
-	// Then include individual agent outputs
-	for _, r := range otherResults {
+	emitAgent := func(r AgentExecutionResult, isSynth bool, maxChars int) {
 		if count >= maxAgents {
-			break
+			return
 		}
 		// Sanitize agent output to remove duplicate sources/citations
 		sanitized := sanitizeAgentOutput(r.Response)
 		// Apply length cap after sanitization
-		if len([]rune(sanitized)) > maxPerAgentChars {
-			sanitized = string([]rune(sanitized)[:maxPerAgentChars]) + "..."
+		if len([]rune(sanitized)) > maxChars {
+			sanitized = string([]rune(sanitized)[:maxChars]) + "..."
 		}
-		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, sanitized)
+		if isSynth {
+			fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
+		} else {
+			fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, sanitized)
+		}
 		count++
+	}
+
+	includeSynthesisFirst := !isResearch
+	synthChars := maxPerAgentChars * 2
+	if isResearch {
+		// Keep synthesis outputs smaller in research mode to reduce "summary-of-summary" dominance.
+		synthChars = maxPerAgentChars
+	}
+
+	if includeSynthesisFirst {
+		for _, r := range synthesisResults {
+			emitAgent(r, true, synthChars)
+		}
+		for _, r := range otherResults {
+			emitAgent(r, false, maxPerAgentChars)
+		}
+	} else {
+		for _, r := range otherResults {
+			emitAgent(r, false, maxPerAgentChars)
+		}
+		for _, r := range synthesisResults {
+			emitAgent(r, true, synthChars)
+		}
 	}
 
 	if count == 0 {

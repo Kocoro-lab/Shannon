@@ -45,7 +45,7 @@ Use exactly these top-level headings:
 
 Section requirements:
 - Executive Summary: 2–3 sentences; state findings confidently
-- Detailed Findings: Organize by topic; include inline citations; state facts authoritatively
+- Detailed Findings: Organize by topic; state facts authoritatively; include a "#### Notable Details" list (5–10 atomic bullets) per major topic/area to preserve concrete specifics (numbers/dates/names/constraints)
 - Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
 
 {{- if .ResearchAreas }}
@@ -61,5 +61,8 @@ Address each of these areas in your Detailed Findings:
 - Do NOT mention agents, tools, workflows, or internal retrieval
 - If conflicting information exists, note explicitly
 - NEVER fabricate or hallucinate sources
+
+## Anti-Compression Rule:
+- If the agent results include any "(Synthesis)" outputs, treat them only as a coverage guide; extract concrete details from non-synthesis agent outputs for your Notable Details bullets.
 
 {{ template "citation_list" . }}
