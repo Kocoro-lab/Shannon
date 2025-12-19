@@ -26,7 +26,7 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 ## Coverage Checklist (DO NOT STOP until ALL are satisfied):
 {{- if .ResearchAreas }}
 ✓ Each of the {{ len .ResearchAreas }} research areas has a dedicated subsection (### heading)
-✓ Each subsection includes 1–3 short paragraphs plus a dedicated "#### Notable Details" list (8–15 atomic bullets) preserving long-tail specifics (numbers/dates/names/versions/constraints/edge cases)
+✓ Each subsection contains 2–4 well-structured paragraphs + tables when data is naturally tabular
 {{- end }}
 ✓ Executive Summary captures key insights (150–250 words)
 {{- if gt .CitationCount 0 }}
@@ -77,8 +77,9 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 
 ## Anti-Compression Rules (CRITICAL):
 - You may see some agent outputs labeled as "(Synthesis)" in the provided agent results. Treat those as a COVERAGE GUIDE only.
-- Do NOT write this report solely from any "(Synthesis)" agent output. Always extract concrete details from the non-synthesis agent outputs.
-- For every research area subsection, your "#### Notable Details" bullets MUST prioritize concrete facts found in non-synthesis agent outputs (numbers, dates, proper nouns, constraints).
+- Do NOT write this report solely from any "(Synthesis)" agent output. Always extract concrete details from non-synthesis agent outputs.
+- If agent outputs already contain tables, checklists, code blocks, or JSON: PRESERVE and MERGE them rather than rewriting into prose.
+- Prioritize concrete facts (numbers, dates, proper nouns, constraints) from primary agent outputs.
 - If a concrete detail appears only in a "(Synthesis)" agent output and you cannot corroborate it elsewhere, flag it as "unverified" rather than omitting it.
 
 ## Quantitative Synthesis Requirements:
@@ -101,9 +102,9 @@ Use exactly these top-level headings in your response, and start your answer dir
 Section requirements:
 - Executive Summary: 150–250 words; capture key insights and conclusions
 {{- if .CitationAgentEnabled }}
-- Detailed Findings: {{ .TargetWords }}–{{ add .TargetWords 600 }} words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; cite sources naturally; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly; include a "#### Notable Details" list in EACH research area subsection
+- Detailed Findings: aim for ~{{ .TargetWords }}–{{ add .TargetWords 600 }} words (do NOT pad); organize by research areas; each area 2–4 paragraphs + tables where appropriate; cite sources naturally; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 {{- else }}
-- Detailed Findings: {{ .TargetWords }}–{{ add .TargetWords 600 }} words total; organize by research areas as subsections; cover ALL areas with roughly equal depth; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly; include a "#### Notable Details" list in EACH research area subsection
+- Detailed Findings: aim for ~{{ .TargetWords }}–{{ add .TargetWords 600 }} words (do NOT pad); organize by research areas; each area 2–4 paragraphs + tables where appropriate; include inline citations; include quantitative data, timelines, key developments; discuss implications; address contradictions explicitly
 {{- end }}
 - Limitations and Uncertainties: 100–150 words IF evidence is incomplete, contradictory, or outdated; OMIT this section entirely if findings are well-supported and comprehensive
 
@@ -111,9 +112,9 @@ Section requirements:
 ## MANDATORY Research Area Coverage:
 You MUST create a subsection for EACH of the {{ len .ResearchAreas }} research areas below.
 {{- if .CitationAgentEnabled }}
-Each subsection must include 1–3 short paragraphs plus "#### Notable Details" (8–15 atomic bullets) with natural source references. Include ALL relevant findings from research agents.
+Each subsection: 2–4 paragraphs with natural source references + tables when data is naturally tabular. Include ALL relevant findings from research agents.
 {{- else }}
-Each subsection must include 1–3 short paragraphs plus "#### Notable Details" (8–15 atomic bullets) with inline citations. Include ALL relevant findings from research agents.
+Each subsection: 2–4 paragraphs with inline citations + tables when data is naturally tabular. Include ALL relevant findings from research agents.
 {{- end }}
 Structure your Detailed Findings section with these exact headings:
 {{- range .ResearchAreas }}
@@ -122,6 +123,13 @@ Structure your Detailed Findings section with these exact headings:
 
 Do NOT skip any research areas. Generate comprehensive content for ALL sections above.
 {{- end }}
+
+## Structural Guidelines:
+- DO NOT create repetitive template-style #### sub-headings like "Notable Details", "Key Points", "Additional Notes" in every section
+- #### headings are allowed when genuinely needed to label a table or specific block (e.g., "#### API Endpoints"), but avoid scattering #### headings throughout each section
+- Use Markdown TABLES when information is naturally tabular (ports, configs, limits, costs, event types, enums)
+- Bullet lists: maximum 5 items per context; if more items needed, convert to table or integrate into paragraphs
+- Each ### research area: 2–4 well-structured paragraphs + tables where appropriate
 
 ## Quality Standards:
 {{- if .CitationAgentEnabled }}

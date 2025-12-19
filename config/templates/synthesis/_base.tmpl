@@ -24,6 +24,7 @@ You are synthesizing results from multiple research agents into a coherent final
 {{- end }}
 - Output well-structured markdown
 - Preserve high-signal structured artifacts from agent outputs (Markdown tables, checklists, JSON/YAML, code blocks) when they carry information; do NOT flatten them into prose or drop rows/fields
+- When information is naturally tabular (ports, configs, limits, costs, event types): prefer tables over bullet lists
 - Do NOT include a "## Sources" section; the system appends sources automatically
 
 {{- end -}}
