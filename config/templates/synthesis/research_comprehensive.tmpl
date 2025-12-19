@@ -29,47 +29,12 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 ✓ Each subsection contains 2–4 well-structured paragraphs + tables when data is naturally tabular
 {{- end }}
 ✓ Executive Summary captures key insights (150–250 words)
-{{- if gt .CitationCount 0 }}
-{{- if .CitationAgentEnabled }}
-✓ Focus on accurate content - citations will be added automatically
-✓ Note conflicting information: "Some sources indicate X, while others suggest Y"
-{{- else }}
-✓ Each subsection includes ≥2 inline citations [n]
-✓ ALL claims supported by Available Citations (no fabrication)
-✓ Conflicting sources explicitly noted: "[1] says X, [2] says Y"
-{{- end }}
-{{- else }}
-✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as "unverified"
-{{- end }}
+{{ template "coverage_checklist_citations" . }}
 ✓ Response written in the SAME language as the query
 
 {{ template "language_instruction" . }}
 
-{{- if gt .CitationCount 0 }}
-{{- if .CitationAgentEnabled }}
-## Citation Handling:
-- DO NOT add any inline citations [n] to your response
-- A separate Citation Agent will add citations after you finish
-- Focus ONLY on producing accurate, well-organized content
-- When referencing facts from sources, write naturally without citation markers
-- Note conflicting information: "Some sources indicate X, while others suggest Y"
-- Do NOT include a "## Sources" section; the system handles this automatically
-{{- else }}
-## Citation Integration:
-- Use inline citations [1], [2] for ALL factual claims that have supporting sources
-- Aim for AT LEAST {{ .MinCitations }} inline citations IF sufficient relevant sources exist
-- Use ONLY the provided Available Citations and their existing indices [n]
-- DO NOT cite irrelevant sources just to meet a quota
-- If a research area lacks relevant citations, note explicitly: "Limited information available on [aspect]" rather than citing unrelated sources
-- DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
-- Each unique URL gets ONE citation number only
-- Do NOT include a "## Sources" section; the system will append Sources automatically
-{{- end }}
-{{- else }}
-## Citation Guidance:
-- Do NOT fabricate citations.
-- If a claim lacks supporting sources, mark it as "unverified".
-{{- end }}
+{{ template "citation_handling_research" . }}
 
 ## Preserve Source Integrity:
 - Keep findings VERBATIM when referencing specific data/quotes

@@ -48,3 +48,79 @@ The user's query is in {{ .QueryLanguage }}. You MUST respond in the SAME langua
 DO NOT translate or switch to English unless the query is in English.
 {{- end -}}
 {{- end -}}
+
+{{/*
+  Reusable partial: Citation handling for research templates (comprehensive, with_facts)
+  Eliminates duplicate conditional blocks across research templates.
+*/}}
+{{- define "citation_handling_research" -}}
+{{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+## Citation Handling:
+- DO NOT add any inline citations [n] to your response
+- A separate Citation Agent will add citations after you finish
+- Focus ONLY on producing accurate, well-organized content
+- When referencing facts from sources, write naturally without citation markers
+- Note conflicting information: "Some sources indicate X, while others suggest Y"
+- Do NOT include a "## Sources" section; the system handles this automatically
+{{- else }}
+## Citation Integration:
+- Use inline citations [1], [2] for ALL factual claims that have supporting sources
+- Aim for AT LEAST {{ .MinCitations }} inline citations IF sufficient relevant sources exist
+- Use ONLY the provided Available Citations and their existing indices [n]
+- DO NOT cite irrelevant sources just to meet a quota
+- If a research area lacks relevant citations, note explicitly: "Limited information available on [aspect]" rather than citing unrelated sources
+- DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
+- Each unique URL gets ONE citation number only
+- Do NOT include a "## Sources" section; the system will append Sources automatically
+{{- end }}
+{{- else }}
+## Citation Guidance:
+- Do NOT fabricate citations.
+- If a claim lacks supporting sources, mark it as "unverified".
+{{- end }}
+{{- end -}}
+
+{{/*
+  Reusable partial: Citation handling for concise template
+*/}}
+{{- define "citation_handling_concise" -}}
+{{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+## Citation Handling:
+- DO NOT add any inline citations [n] to your response
+- A separate Citation Agent will add citations after you finish
+- When referencing facts, write naturally without citation markers
+- Do NOT include a "## Sources" section; the system handles this automatically
+{{- else }}
+## Citation Integration:
+- Use inline citations [1], [2] for key factual claims
+- Use ONLY the provided Available Citations and their existing indices [n]
+- DO NOT fabricate citations; if a claim lacks a matching citation, note as "unverified"
+- Do NOT include a "## Sources" section; the system will append it automatically
+{{- end }}
+{{- else }}
+## Citation Guidance:
+- Do NOT fabricate citations.
+- If a claim lacks supporting sources, mark it as "unverified".
+{{- end }}
+{{- end -}}
+
+{{/*
+  Reusable partial: Coverage checklist citation requirements
+  Used in comprehensive and with_facts templates.
+*/}}
+{{- define "coverage_checklist_citations" -}}
+{{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+✓ Focus on accurate content - citations will be added automatically
+✓ Note conflicting information: "Some sources indicate X, while others suggest Y"
+{{- else }}
+✓ Each subsection includes ≥2 inline citations [n]
+✓ ALL claims supported by Available Citations (no fabrication)
+✓ Conflicting sources explicitly noted: "[1] says X, [2] says Y"
+{{- end }}
+{{- else }}
+✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as "unverified"
+{{- end }}
+{{- end -}}
