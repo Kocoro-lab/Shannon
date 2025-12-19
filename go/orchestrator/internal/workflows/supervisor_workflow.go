@@ -1294,7 +1294,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 		var citationResult activities.CitationAgentResult
 		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 90 * time.Second,
+			StartToCloseTimeout: 180 * time.Second,
 			RetryPolicy: &temporal.RetryPolicy{
 				InitialInterval:    time.Second,
 				BackoffCoefficient: 2.0,

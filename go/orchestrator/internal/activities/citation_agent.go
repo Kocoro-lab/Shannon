@@ -113,7 +113,7 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 	}
 
 	client := &http.Client{
-		Timeout:   90 * time.Second,
+		Timeout:   150 * time.Second,
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 

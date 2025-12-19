@@ -84,11 +84,77 @@ func containsAsWord(text, term string) bool {
 	return true
 }
 
+// isTopicQuery detects if a canonical name represents a broad topic vs specific entity
+// Topic indicators: descriptive phrases, long names, broad terms
+func isTopicQuery(canonicalName string) bool {
+	lower := strings.ToLower(canonicalName)
+
+	// Long descriptive names are likely topics (e.g., "AI Development Landscape (December 2025)")
+	if len(canonicalName) > 40 {
+		return true
+	}
+
+	// Common topic indicator keywords
+	topicKeywords := []string{
+		"landscape", "overview", "analysis", "trends", "developments",
+		"latest", "recent", "updates", "news", "industry", "market",
+		"research", "study", "report", "insights", "review",
+		"comparison", "best", "top", "guide", "introduction",
+	}
+
+	for _, keyword := range topicKeywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+
+	// Date patterns indicate topic research (e.g., "AI regulation 2025")
+	if strings.Contains(lower, "2024") || strings.Contains(lower, "2025") || strings.Contains(lower, "2026") {
+		return true
+	}
+
+	return false
+}
+
 func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string, aliases []string, officialDomains []string) []metadata.Citation {
 	if canonicalName == "" || len(citations) == 0 {
 		return citations
 	}
 
+	// Detect topic-based research vs entity-specific research
+	// Topic research indicators: no official domains + descriptive/broad canonical name
+	isTopicResearch := len(officialDomains) == 0 && isTopicQuery(canonicalName)
+
+	// For topic research, skip entity filtering and return high-quality citations
+	if isTopicResearch {
+		// Sort by quality × credibility and return top citations
+		type scored struct {
+			citation metadata.Citation
+			score    float64
+		}
+		var scoredCitations []scored
+		for _, c := range citations {
+			score := c.QualityScore * c.CredibilityScore
+			scoredCitations = append(scoredCitations, scored{citation: c, score: score})
+		}
+		sort.Slice(scoredCitations, func(i, j int) bool {
+			return scoredCitations[i].score > scoredCitations[j].score
+		})
+
+		// Return top 30 citations for topic research (higher than entity research)
+		maxKeep := 30
+		if len(scoredCitations) > maxKeep {
+			scoredCitations = scoredCitations[:maxKeep]
+		}
+
+		var result []metadata.Citation
+		for _, sc := range scoredCitations {
+			result = append(result, sc.citation)
+		}
+		return result
+	}
+
+	// Entity-specific research: use strict filtering
 	const (
 		threshold = 0.5 // Minimum relevance score to pass (raised to reduce noise)
 		minKeep   = 5   // Safety floor: keep at least this many for deep research
