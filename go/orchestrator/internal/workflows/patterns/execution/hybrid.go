@@ -128,6 +128,7 @@ func ExecuteHybrid(
 				"task_id", result.TaskID,
 				"error", result.Error,
 			)
+			completedTasks[result.TaskID] = true // Mark failed task as completed to unblock dependents
 			errorCount++
 		} else {
 			completedTasks[result.TaskID] = true
