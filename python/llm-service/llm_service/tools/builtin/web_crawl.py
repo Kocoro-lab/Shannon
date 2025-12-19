@@ -157,7 +157,16 @@ class WebCrawlTool(Tool):
             return ToolResult(
                 success=False,
                 output=None,
-                error="web_crawl requires Firecrawl API. Configure FIRECRAWL_API_KEY."
+                error="web_crawl requires Firecrawl API. Configure FIRECRAWL_API_KEY.",
+                metadata={
+                    "provider": "firecrawl",
+                    "strategy": "crawl",
+                    "partial_success": False,
+                    "urls_attempted": [url],
+                    "urls_succeeded": [],
+                    "urls_failed": [{"url": url, "reason": "firecrawl_not_configured"}],
+                    "failure_summary": {"failed_count": 1, "total_count": 1},
+                },
             )
 
         try:
@@ -165,14 +174,31 @@ class WebCrawlTool(Tool):
             return ToolResult(
                 success=True,
                 output=result,
-                metadata={"provider": "firecrawl", "strategy": "crawl"}
+                metadata={
+                    "provider": "firecrawl",
+                    "strategy": "crawl",
+                    "partial_success": False,
+                    "urls_attempted": [url],
+                    "urls_succeeded": [url],
+                    "urls_failed": [],
+                    "failure_summary": {"failed_count": 0, "total_count": 1},
+                },
             )
         except Exception as e:
             logger.error(f"Crawl failed: {e}")
             return ToolResult(
                 success=False,
                 output=None,
-                error=f"Crawl failed: {str(e)[:200]}"
+                error=f"Crawl failed: {str(e)[:200]}",
+                metadata={
+                    "provider": "firecrawl",
+                    "strategy": "crawl",
+                    "partial_success": False,
+                    "urls_attempted": [url],
+                    "urls_succeeded": [],
+                    "urls_failed": [{"url": url, "reason": str(e)[:200]}],
+                    "failure_summary": {"failed_count": 1, "total_count": 1},
+                },
             )
 
     async def _crawl(self, url: str, limit: int, max_length: int) -> Dict[str, Any]:

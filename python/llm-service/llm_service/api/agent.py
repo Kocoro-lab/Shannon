@@ -1508,9 +1508,60 @@ async def _execute_and_format_tools(
                         )
                     else:
                         formatted_output = str(result.output)
-                    formatted_results.append(f"{tool_name} result:\n{formatted_output}")
+                    formatted = f"{tool_name} result:\n{formatted_output}"
+
+                    # Include concise metadata only when it affects epistemic confidence.
+                    if isinstance(result.metadata, dict) and result.metadata:
+                        failed_count = None
+                        try:
+                            failure_summary = result.metadata.get("failure_summary") or {}
+                            failed_count = int(failure_summary.get("failed_count"))
+                        except Exception:
+                            failed_count = None
+
+                        include_meta = (
+                            (not result.success)
+                            or (result.metadata.get("partial_success") is True)
+                            or (failed_count is not None and failed_count > 0)
+                            or (
+                                isinstance(result.metadata.get("attempts"), list)
+                                and len(result.metadata.get("attempts") or []) > 1
+                            )
+                        )
+                        if include_meta:
+                            meta_keys = [
+                                "provider",
+                                "strategy",
+                                "fetch_method",
+                                "provider_used",
+                                "attempts",
+                                "partial_success",
+                                "failure_summary",
+                                "urls_attempted",
+                                "urls_succeeded",
+                                "urls_failed",
+                            ]
+                            compact_meta = {
+                                k: result.metadata.get(k)
+                                for k in meta_keys
+                                if k in result.metadata
+                            }
+                            formatted_meta = _json_fmt.dumps(
+                                _sanitize_payload(compact_meta, max_str=1000, max_items=20),
+                                indent=2,
+                                ensure_ascii=False,
+                            )
+                            formatted += f"\n\n{tool_name} metadata:\n{formatted_meta}"
+
+                    formatted_results.append(formatted)
             else:
                 formatted_results.append(f"Error executing {tool_name}: {result.error}")
+
+            sanitized_result_metadata = (
+                _sanitize_payload(result.metadata, max_str=2000, max_items=20)
+                if (result and isinstance(result.metadata, dict) and result.metadata)
+                else {}
+            )
 
             # Emit TOOL_OBSERVATION event (success or failure)
             if emitter and wf_id:
@@ -1528,6 +1579,7 @@ async def _execute_and_format_tools(
                         payload={
                             "tool": tool_name,
                             "success": bool(result and result.success),
+                            "metadata": sanitized_result_metadata,
                             "usage": {
                                 "duration_ms": duration_ms,
                                 "tokens": result.tokens_used if result and result.tokens_used else 0,
@@ -1546,6 +1598,7 @@ async def _execute_and_format_tools(
                         result.output if result else None, max_str=2000, max_items=20
                     ),
                     "error": result.error if result else None,
+                    "metadata": sanitized_result_metadata,
                     "duration_ms": duration_ms,
                     "tokens_used": result.tokens_used if result else None,
                 }
@@ -1578,6 +1631,7 @@ async def _execute_and_format_tools(
                     "success": False,
                     "output": None,
                     "error": str(e),
+                    "metadata": {},
                     "duration_ms": None,
                     "tokens_used": None,
                 }

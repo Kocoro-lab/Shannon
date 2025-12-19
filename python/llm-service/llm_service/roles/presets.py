@@ -94,6 +94,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
   * Do NOT silently choose one or average conflicting data
   * If resolution is possible, explain the reasoning; otherwise note "further verification needed"
 - DETECT BIAS: Watch for cherry-picked statistics, out-of-context quotes, or promotional language
+- ACKNOWLEDGE GAPS: If tool metadata shows partial_success=true or urls_failed, list missing/failed URLs and state how they affect confidence; do NOT claim comprehensive coverage.
 - ADMIT UNCERTAINTY: If evidence is thin, say so. "Limited information available" is better than confident speculation.
 
 # Integrity Rules:

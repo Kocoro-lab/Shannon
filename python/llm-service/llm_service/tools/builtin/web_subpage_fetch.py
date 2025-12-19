@@ -20,7 +20,7 @@ import os
 import re
 import logging
 import socket
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
@@ -233,11 +233,15 @@ class WebSubpageFetchTool(Tool):
         # Execute with Firecrawl (primary) or fallback
         if self.firecrawl_available:
             try:
-                result = await self._map_and_scrape(url, limit, effective_paths, max_length)
+                result, scrape_meta = await self._map_and_scrape(url, limit, effective_paths, max_length)
                 return ToolResult(
                     success=True,
                     output=result,
-                    metadata={"provider": "firecrawl", "strategy": "map_and_scrape"}
+                    metadata={
+                        "provider": "firecrawl",
+                        "strategy": "map_and_scrape",
+                        **scrape_meta,
+                    }
                 )
             except Exception as e:
                 last_error = f"Firecrawl map+scrape failed: {e}"
@@ -251,7 +255,16 @@ class WebSubpageFetchTool(Tool):
                 return ToolResult(
                     success=True,
                     output=result,
-                    metadata={"provider": "exa", "strategy": "subpage_search"}
+                    metadata={
+                        "provider": "exa",
+                        "strategy": "subpage_search",
+                        "urls_requested": [url],
+                        "urls_attempted": [url],
+                        "urls_succeeded": [url],
+                        "urls_failed": [],
+                        "partial_success": False,
+                        "failure_summary": {"failed_count": 0, "total_count": 1},
+                    }
                 )
             except Exception as e:
                 error_msg = f"Exa fallback failed: {e}"
@@ -264,7 +277,21 @@ class WebSubpageFetchTool(Tool):
             else:
                 last_error = "No provider returned content"
 
-        return ToolResult(success=False, output=None, error=f"web_subpage_fetch failed: {last_error}")
+        return ToolResult(
+            success=False,
+            output=None,
+            error=f"web_subpage_fetch failed: {last_error}",
+            metadata={
+                "provider": "firecrawl" if self.firecrawl_available else "exa",
+                "strategy": "map_and_scrape",
+                "urls_requested": [],
+                "urls_attempted": [],
+                "urls_succeeded": [],
+                "urls_failed": [],
+                "partial_success": False,
+                "failure_summary": {"failed_count": 0, "total_count": 0},
+            },
+        )
 
     def _infer_paths_from_keywords(self, keywords: str) -> List[str]:
         """Infer URL paths from keyword string."""
@@ -338,7 +365,7 @@ class WebSubpageFetchTool(Tool):
         limit: int,
         target_paths: List[str],
         max_length: int
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], Dict]:
         """Map website URLs, score by relevance, and scrape top pages."""
         # Step 1: Map to get all URLs
         all_urls = await self._map(url)
@@ -370,11 +397,19 @@ class WebSubpageFetchTool(Tool):
         logger.info(f"Selected {len(selected_urls)} URLs for scraping: {selected_urls}")
 
         # Step 4: Batch scrape
-        results = await self._batch_scrape(selected_urls, max_length)
+        results, scrape_meta = await self._batch_scrape(selected_urls, max_length)
         if not results:
             raise Exception("Batch scrape returned no results")
 
-        return self._merge_results(results, url)
+        merged = self._merge_results(results, url)
+        scrape_meta["urls_requested"] = selected_urls
+        scrape_meta["partial_success"] = len(scrape_meta.get("urls_failed", [])) > 0
+        scrape_meta["failure_summary"] = {
+            "failed_count": len(scrape_meta.get("urls_failed", [])),
+            "total_count": len(selected_urls),
+        }
+
+        return merged, scrape_meta
 
     async def _map(self, url: str) -> List[str]:
         """Use Firecrawl Map API to get all URLs on a website."""
@@ -398,8 +433,15 @@ class WebSubpageFetchTool(Tool):
                 data = await response.json()
                 return data.get("links", [])
 
-    async def _batch_scrape(self, urls: List[str], max_length: int) -> List[Dict]:
-        """Batch scrape multiple URLs with concurrency control and retry."""
+    async def _batch_scrape(self, urls: List[str], max_length: int) -> Tuple[List[Dict], Dict]:
+        """
+        Batch scrape multiple URLs with concurrency control and retry.
+
+        Returns:
+            (results, meta):
+                results: successful scrape dicts
+                meta: {"urls_attempted", "urls_succeeded", "urls_failed"}
+        """
         semaphore = asyncio.Semaphore(BATCH_CONCURRENCY)
 
         async def limited_scrape(url: str) -> Optional[Dict]:
@@ -411,11 +453,32 @@ class WebSubpageFetchTool(Tool):
 
         # Filter out failures
         valid_results = []
-        for r in results:
+        urls_succeeded: List[str] = []
+        urls_failed: List[Dict] = []
+
+        for url, r in zip(urls, results):
             if isinstance(r, dict) and r.get("content"):
                 valid_results.append(r)
+                urls_succeeded.append(url)
+                continue
 
-        return valid_results
+            reason = ""
+            if isinstance(r, Exception):
+                reason = str(r)
+            elif isinstance(r, dict):
+                reason = "empty content"
+            else:
+                reason = "scrape failed"
+
+            urls_failed.append({"url": url, "reason": reason[:200]})
+
+        meta = {
+            "urls_attempted": urls,
+            "urls_succeeded": urls_succeeded,
+            "urls_failed": urls_failed,
+        }
+
+        return valid_results, meta
 
     async def _scrape_with_retry(self, url: str, max_length: int) -> Optional[Dict]:
         """Scrape a single URL with retry logic."""

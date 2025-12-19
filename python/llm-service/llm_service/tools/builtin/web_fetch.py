@@ -1006,6 +1006,36 @@ class WebFetchTool(Tool):
                 success=False, output=None, error=f"Invalid URL format: {str(e)}"
             )
 
+        attempts = []
+
+        def _attach_metadata(result: ToolResult, provider_label: str) -> ToolResult:
+            meta = result.metadata or {}
+            meta.setdefault("fetch_method", provider_label)
+            meta["provider_used"] = provider_label
+            meta["attempts"] = attempts
+            meta.setdefault("urls_requested", [url])
+            meta.setdefault("urls_attempted", [url])
+            if result.success:
+                meta.setdefault("urls_succeeded", [url])
+                meta.setdefault("urls_failed", [])
+                meta["partial_success"] = len(meta.get("urls_failed", [])) > 0
+                meta["failure_summary"] = {
+                    "failed_count": len(meta.get("urls_failed", [])),
+                    "total_count": len(meta.get("urls_attempted", [url])),
+                }
+            else:
+                meta.setdefault("urls_succeeded", [])
+                meta.setdefault(
+                    "urls_failed", [{"url": url, "reason": result.error or "unknown"}]
+                )
+                meta["partial_success"] = False
+                meta["failure_summary"] = {
+                    "failed_count": len(meta.get("urls_failed", [])),
+                    "total_count": len(meta.get("urls_attempted", [url])),
+                }
+            result.metadata = meta
+            return result
+
         try:
             # Emit progress
             observer = kwargs.get("observer")
@@ -1030,6 +1060,13 @@ class WebFetchTool(Tool):
             if selected_provider == "firecrawl":
                 if not self.firecrawl_provider:
                     logger.warning("Firecrawl requested but not configured, falling back")
+                    attempts.append(
+                        {
+                            "provider": "firecrawl",
+                            "status": "skipped",
+                            "reason": "not_configured",
+                        }
+                    )
                     selected_provider = "exa" if self.exa_api_key else "python"
                 else:
                     try:
@@ -1038,29 +1075,68 @@ class WebFetchTool(Tool):
                             required_paths=required_paths,
                             query_type=query_type
                         )
-                        return ToolResult(
-                            success=True,
-                            output=result_data,
-                            metadata={"fetch_method": "firecrawl"},
+                        attempts.append(
+                            {"provider": "firecrawl", "status": "success"}
+                        )
+                        return _attach_metadata(
+                            ToolResult(
+                                success=True,
+                                output=result_data,
+                                metadata={"fetch_method": "firecrawl"},
+                            ),
+                            "firecrawl",
                         )
                     except Exception as e:
                         logger.error(f"Firecrawl fetch failed: {e}, falling back")
+                        attempts.append(
+                            {
+                                "provider": "firecrawl",
+                                "status": "failed",
+                                "error": str(e)[:200],
+                            }
+                        )
                         selected_provider = "exa" if self.exa_api_key else "python"
 
             if selected_provider == "exa":
                 if self.exa_api_key:
-                    return await self._fetch_with_exa(url, max_length, subpages, effective_subpage_target)
+                    result = await self._fetch_with_exa(
+                        url, max_length, subpages, effective_subpage_target
+                    )
+                    attempts.append(
+                        {"provider": "exa", "status": "success" if result.success else "failed"}
+                    )
+                    provider_label = (
+                        (result.metadata or {}).get("fetch_method") or "exa"
+                    )
+                    return _attach_metadata(result, provider_label)
                 else:
                     logger.warning("Exa requested but not configured, falling back to Python")
+                    attempts.append(
+                        {
+                            "provider": "exa",
+                            "status": "skipped",
+                            "reason": "not_configured",
+                        }
+                    )
                     selected_provider = "python"
 
             # Fallback to pure Python
-            return await self._fetch_pure_python(url, max_length, subpages)
+            result = await self._fetch_pure_python(url, max_length, subpages)
+            attempts.append(
+                {"provider": "python", "status": "success" if result.success else "failed"}
+            )
+            return _attach_metadata(result, "python")
 
         except Exception as e:
             logger.error(f"Failed to fetch {url}: {str(e)}")
-            return ToolResult(
-                success=False, output=None, error=f"Failed to fetch page: {str(e)}"
+            attempts.append(
+                {"provider": "unknown", "status": "failed", "error": str(e)[:200]}
+            )
+            return _attach_metadata(
+                ToolResult(
+                    success=False, output=None, error=f"Failed to fetch page: {str(e)}"
+                ),
+                "unknown",
             )
 
     def _resolve_provider(self, provider_name: str, subpages: int) -> str:
