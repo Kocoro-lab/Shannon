@@ -1303,9 +1303,10 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		})
 
 		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
-			Report:           reportForCitation, // Clean report without Sources
+			Report:           reportForCitation,
 			Citations:        citationsForAgent,
 			ParentWorkflowID: workflowID,
+			ModelTier:        "medium",
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {

@@ -1937,8 +1937,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 	baseContext["model_tier"] = synthTier
 
+	// Use longer timeout for synthesis (7 min)
+	synthCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 7 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 2,
+		},
+	})
+
 	var synthesis activities.SynthesisResult
-	err = workflow.ExecuteActivity(ctx,
+	err = workflow.ExecuteActivity(synthCtx,
 		activities.SynthesizeResultsLLM,
 		activities.SynthesisInput{
 			// Pass original query through; synthesis embeds its own
@@ -2858,9 +2866,23 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			})
 		}
 
+		// Step: Remove ## Sources section before passing to Citation Agent
+		// (FormatReportWithCitations in synthesis.go may have added it already)
+		// The LLM may modify the Sources section (URL formatting, etc.), causing validation failure
+		reportForCitation := synthesis.FinalResult
+		var extractedSources string
+		if idx := strings.LastIndex(strings.ToLower(reportForCitation), "## sources"); idx != -1 {
+			extractedSources = strings.TrimSpace(reportForCitation[idx:])
+			reportForCitation = strings.TrimSpace(reportForCitation[:idx])
+			logger.Info("CitationAgent: stripped Sources section before processing",
+				"sources_length", len(extractedSources),
+				"report_length", len(reportForCitation),
+			)
+		}
+
 		var citationResult activities.CitationAgentResult
 		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 90 * time.Second,
+			StartToCloseTimeout: 180 * time.Second,
 			RetryPolicy: &temporal.RetryPolicy{
 				InitialInterval:    time.Second,
 				BackoffCoefficient: 2.0,
@@ -2869,10 +2891,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		})
 
 		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
-			Report:           synthesis.FinalResult,
+			Report:           reportForCitation,
 			Citations:        citationsForAgent,
 			ParentWorkflowID: input.ParentWorkflowID,
 			Context:          baseContext,
+			ModelTier:        "large",
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
@@ -2886,7 +2909,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			if citationsList != "" {
 				synthesis.FinalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
 			} else {
+				// Fallback: just append the extracted sources
 				synthesis.FinalResult = citationResult.CitedReport
+				if extractedSources != "" {
+					synthesis.FinalResult = strings.TrimSpace(synthesis.FinalResult) + "\n\n" + extractedSources
+				}
 			}
 			totalTokens += citationResult.TokensUsed
 			logger.Info("CitationAgent: citations added and Sources rebuilt",

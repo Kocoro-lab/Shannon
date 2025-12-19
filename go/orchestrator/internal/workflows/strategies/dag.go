@@ -707,6 +707,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			Report:           reportForCitation, // Clean report without Sources
 			Citations:        citationsForAgent,
 			ParentWorkflowID: wid,
+			ModelTier:        "medium",
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
