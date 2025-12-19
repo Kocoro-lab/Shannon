@@ -285,12 +285,37 @@ async def agent_query(request: Request, query: AgentQuery):
                     # On any rendering issue, keep original system_prompt
                     logger.warning(f"System prompt rendering failed: {e}")
 
+                # Inject current date for time awareness
+                # Skip for citation_agent (it only inserts [n] markers, no reasoning needed)
+                skip_date_injection = query.agent_id == "citation_agent"
+                if isinstance(query.context, dict) and query.context.get("agent_id") == "citation_agent":
+                    skip_date_injection = True
+                
+                if not skip_date_injection:
+                    # Read from context (set by Go orchestrator) or fallback to local time
+                    current_date = None
+                    if isinstance(query.context, dict):
+                        # Try context["current_date"] first, then prompt_params
+                        current_date = query.context.get("current_date")
+                        if not current_date:
+                            prompt_params = query.context.get("prompt_params")
+                            if isinstance(prompt_params, dict):
+                                current_date = prompt_params.get("current_date")
+                    if not current_date:
+                        from datetime import datetime, timezone
+                        current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    
+                    # Prepend date to system prompt
+                    date_prefix = f"Current date: {current_date} (UTC).\n\n"
+                    system_prompt = date_prefix + system_prompt
+
                 # Add language instruction if target_language is specified in context
                 if isinstance(query.context, dict) and "target_language" in query.context:
                     target_lang = query.context.get("target_language")
                     if target_lang and target_lang != "English":
                         language_instruction = f"\n\nCRITICAL: Respond in {target_lang}. The user's query is in {target_lang}. You MUST respond in the SAME language. DO NOT translate to English."
                         system_prompt = language_instruction + "\n\n" + system_prompt
+
 
                 # Add research-mode instruction for deep content retrieval
                 if isinstance(query.context, dict):
@@ -2040,8 +2065,24 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     )
                     decompose_system_prompt = decompose_system_prompt + areas_hint
 
+        # Inject current date for time awareness in decomposition
+        current_date = None
+        if query.context and isinstance(query.context, dict):
+            current_date = query.context.get("current_date")
+            if not current_date:
+                prompt_params = query.context.get("prompt_params")
+                if isinstance(prompt_params, dict):
+                    current_date = prompt_params.get("current_date")
+        if not current_date:
+            from datetime import datetime, timezone
+            current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        date_prefix = f"Current date: {current_date} (UTC).\n\n"
+        decompose_system_prompt = date_prefix + decompose_system_prompt
+
         # Build messages with history rehydration for context awareness
         messages = [{"role": "system", "content": decompose_system_prompt}]
+
 
         # Rehydrate history from context if present (same as agent_query endpoint)
         history_rehydrated = False

@@ -120,6 +120,9 @@ Do NOT skip any research areas. Generate comprehensive content for ALL sections 
 ## Quality Standards:
 {{- if .CitationAgentEnabled }}
 - State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by evidence
+- For time-sensitive topics, include temporal context: "As of [date]..." or "Based on [year] data..."
+- When sources conflict due to different publication dates, note this explicitly and prefer the most recent
+- If the query asks for "latest" or "current" information, verify recency of sources used
 - DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm") unless evidence is genuinely missing
 - Present well-evidenced facts as definitive conclusions, not tentative observations
 - Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
@@ -129,6 +132,9 @@ Do NOT skip any research areas. Generate comprehensive content for ALL sections 
 - NEVER fabricate or hallucinate information
 {{- else }}
 - State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
+- For time-sensitive topics, include temporal context: "As of [date]..." or "Based on [year] data..."
+- When sources conflict due to different publication dates, note this explicitly and prefer the most recent
+- If the query asks for "latest" or "current" information, verify recency of sources used
 - DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm", "at present we have not found") unless evidence is genuinely missing
 - Present well-cited facts as definitive conclusions, not tentative observations
 - Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
