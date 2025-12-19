@@ -812,7 +812,7 @@ class WebSearchTool(Tool):
         return ToolMetadata(
             name="web_search",
             version="3.0.0",
-            description=f"Search the web for real-time information using {provider_name}",
+            description=f"Search the web using {provider_name}. Results are LEADS - verify key facts via web_fetch. Mark aggregator/marketing/speculative content.",
             category="search",
             author="Shannon",
             requires_auth=True,

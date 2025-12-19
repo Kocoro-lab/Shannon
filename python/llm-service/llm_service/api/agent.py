@@ -337,6 +337,10 @@ async def agent_query(request: Request, query: AgentQuery):
                             "\n- Search for '[company] site:linkedin.com' or '[company] site:crunchbase.com'"
                             "\n- For Asian companies, try Japanese/Chinese name variants"
                             "\n- If standard searches return only competitors/unrelated results, this indicates a search strategy problem - try direct URL fetches"
+                            "\n\nSOURCE EVALUATION: Search results are leads, not verified facts. "
+                            "Verify key claims via web_fetch. Mark speculative language (reportedly, allegedly, may). "
+                            "When sources conflict, present both viewpoints - do not silently choose one. "
+                            "Distinguish primary sources from aggregators and marketing content."
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
