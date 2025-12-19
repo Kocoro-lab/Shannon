@@ -24,11 +24,19 @@ IMPORTANT: Begin your answer directly with "## Executive Summary". Do NOT includ
 {{ template "language_instruction" . }}
 
 {{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+## Citation Handling:
+- DO NOT add any inline citations [n] to your response
+- A separate Citation Agent will add citations after you finish
+- When referencing facts, write naturally without citation markers
+- Do NOT include a "## Sources" section; the system handles this automatically
+{{- else }}
 ## Citation Integration:
 - Use inline citations [1], [2] for key factual claims
 - Use ONLY the provided Available Citations and their existing indices [n]
 - DO NOT fabricate citations; if a claim lacks a matching citation, note as "unverified"
 - Do NOT include a "## Sources" section; the system will append it automatically
+{{- end }}
 {{- else }}
 ## Citation Guidance:
 - Do NOT fabricate citations.
@@ -62,7 +70,11 @@ Address each of these areas in your Detailed Findings:
 - Maximum 5 bullet items per section; excess items should become tables or paragraphs
 
 ## Quality Standards:
+{{- if .CitationAgentEnabled }}
+- State findings confidently when well-supported by evidence
+{{- else }}
 - State findings confidently when well-supported by citations
+{{- end }}
 - Do NOT mention agents, tools, workflows, or internal retrieval
 - If conflicting information exists, note explicitly
 - NEVER fabricate or hallucinate sources
