@@ -455,7 +455,6 @@ redis-cli GET session:SESSION_ID | jq '.total_tokens_used'
 
 - **GitHub Issues**: Bug reports and feature requests
 - **GitHub Discussions**: General questions and ideas
-- **Discord**: Real-time chat (coming soon)
 - **Pull Requests**: Code contributions
 
 ## 🎓 Learning Resources

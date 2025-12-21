@@ -754,7 +754,6 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 
 ## 🌟 Community
 
-- **Discord**: [Join our Discord](https://discord.gg/NB7C2fMcQR)
 - **Twitter/X**: [@shannon_agents](https://twitter.com/shannon_agents)
 
 ### What's Coming (Roadmap)
@@ -822,7 +821,6 @@ We love contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for 
 
 - 🐛 **Found a bug?** [Open an issue](https://github.com/Kocoro-lab/Shannon/issues)
 - 💡 **Have an idea?** [Start a discussion](https://github.com/Kocoro-lab/Shannon/discussions)
-- 💬 **Need help?** [Join our Discord](https://discord.gg/NB7C2fMcQR)
 - ⭐ **Like the project?** Give us a star!
 
 ## 🔮 Coming Soon
@@ -845,7 +843,6 @@ MIT License - Use it anywhere, modify anything, zero restrictions. See [LICENSE]
 
 <p align="center">
   <b>Stop debugging AI failures. Start shipping reliable agents.</b><br><br>
-  <a href="https://discord.gg/NB7C2fMcQR">Discord</a> •
   <a href="https://github.com/Kocoro-lab/Shannon">GitHub</a>
 </p>
 
