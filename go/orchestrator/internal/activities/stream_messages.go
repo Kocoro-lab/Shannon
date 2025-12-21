@@ -191,6 +191,11 @@ func MsgSynthesisSummary(tokens int) string {
 	return fmt.Sprintf("Synthesized using %s tokens", compactTokens(tokens))
 }
 
+// MsgSynthesisFallback warns that synthesis degraded to simple mode.
+func MsgSynthesisFallback(reason string) string {
+	return fmt.Sprintf("Synthesis degraded to simple mode: %s", reason)
+}
+
 // -----------------------------------------------------------------------------
 // Memory Messages
 // -----------------------------------------------------------------------------

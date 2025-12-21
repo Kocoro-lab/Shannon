@@ -1148,6 +1148,16 @@ Section requirements:
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		logger.Warn("LLM synthesis: HTTP error, falling back", zap.Error(err))
+		// Emit fallback warning to SSE stream
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventErrorRecovery),
+				AgentID:    "synthesis",
+				Message:    MsgSynthesisFallback("LLM service unavailable"),
+				Timestamp:  time.Now(),
+			})
+		}
 		res, serr := simpleSynthesisNoEvents(ctx, input)
 		if serr != nil {
 			return res, serr
@@ -1188,6 +1198,16 @@ Section requirements:
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		logger.Warn("LLM synthesis: non-2xx, falling back", zap.Int("status", resp.StatusCode))
+		// Emit fallback warning to SSE stream
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventErrorRecovery),
+				AgentID:    "synthesis",
+				Message:    MsgSynthesisFallback("LLM returned error"),
+				Timestamp:  time.Now(),
+			})
+		}
 		res, serr := simpleSynthesisNoEvents(ctx, input)
 		if serr != nil {
 			return res, serr
@@ -1284,6 +1304,16 @@ Section requirements:
 			zap.Error(err),
 			zap.String("raw", truncateForLog(string(rawBody), 2000)),
 		)
+		// Emit fallback warning to SSE stream
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventErrorRecovery),
+				AgentID:    "synthesis",
+				Message:    MsgSynthesisFallback("response decode failed"),
+				Timestamp:  time.Now(),
+			})
+		}
 		res, serr := simpleSynthesisNoEvents(ctx, input)
 		if serr != nil {
 			return res, serr
@@ -1326,6 +1356,16 @@ Section requirements:
 		logger.Warn("LLM synthesis: empty response, falling back",
 			zap.String("raw", truncateForLog(string(rawBody), 2000)),
 		)
+		// Emit fallback warning to SSE stream
+		if wfID != "" {
+			streaming.Get().Publish(wfID, streaming.Event{
+				WorkflowID: wfID,
+				Type:       string(StreamEventErrorRecovery),
+				AgentID:    "synthesis",
+				Message:    MsgSynthesisFallback("LLM returned empty response"),
+				Timestamp:  time.Now(),
+			})
+		}
 		res, serr := simpleSynthesisNoEvents(ctx, input)
 		if serr != nil {
 			return res, serr

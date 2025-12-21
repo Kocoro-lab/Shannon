@@ -652,8 +652,12 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     
                     else:
                         logger.warning(f"Failed to scrape {url}: {e}")
-                    
+
                     break  # Don't retry for other errors
+
+            # Rate limit: add delay between URLs to avoid triggering 429s
+            if success and url != urls[-1]:  # Skip delay after last URL
+                await asyncio.sleep(0.3)
 
         return self._merge_crawl_results(results, urls[0] if urls else "", max_length)
 
