@@ -67,7 +67,7 @@ func TestRecordUsage_ExecInsertsTokenUsage(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta(
 		"INSERT INTO token_usage",
 	)).WithArgs(
-		sqlmock.AnyArg(), sqlmock.AnyArg(), usage.Provider, usage.Model,
+		sqlmock.AnyArg(), sqlmock.AnyArg(), usage.AgentID, usage.Provider, usage.Model,
 		sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 	).WillReturnResult(sqlmock.NewResult(1, 1))
 

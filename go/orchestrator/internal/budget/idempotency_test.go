@@ -63,6 +63,7 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 	mock.ExpectExec("INSERT INTO token_usage").WithArgs(
 		userID,                  // user_id (UUID)
 		taskID,                  // task_id (UUID)
+		"agent-001",             // agent_id
 		"openai",                // provider
 		"gpt-5-nano-2025-08-07", // model
 		100,                     // prompt_tokens (InputTokens)

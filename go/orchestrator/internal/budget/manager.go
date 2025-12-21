@@ -566,10 +566,10 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 	// Store using schema that matches migration: prompt_tokens, completion_tokens, created_at
 	_, err := bm.db.ExecContext(ctx, `
 		INSERT INTO token_usage (
-			user_id, task_id, provider, model,
+			user_id, task_id, agent_id, provider, model,
 			prompt_tokens, completion_tokens, total_tokens, cost_usd
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, userUUID, taskUUID, usage.Provider, usage.Model,
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, userUUID, taskUUID, usage.AgentID, usage.Provider, usage.Model,
 		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD)
 
 	if err != nil {
@@ -676,7 +676,7 @@ type BackpressureResult struct {
 
 // CheckBudgetWithBackpressure checks budget and applies backpressure if needed
 func (bm *BudgetManager) CheckBudgetWithBackpressure(
-    ctx context.Context, userID, sessionID, taskID string, estimatedTokens int,
+	ctx context.Context, userID, sessionID, taskID string, estimatedTokens int,
 ) (*BackpressureResult, error) {
 
 	// Regular budget check
@@ -689,29 +689,29 @@ func (bm *BudgetManager) CheckBudgetWithBackpressure(
 		BudgetCheckResult: baseResult,
 	}
 
-    // Calculate usage percentage INCLUDING the new tokens (ensure budget exists)
-    // Use session budget for backpressure calculation (daily budget removed)
-    // Copy required fields under lock to avoid data races on concurrent updates
-    var (
-        sbExists      bool
-        sbTokensUsed  int
-        sbBudgetLimit int
-    )
-    bm.mu.RLock()
-    if sb, ok := bm.sessionBudgets[sessionID]; ok && sb != nil {
-        sbExists = true
-        sbTokensUsed = sb.SessionTokensUsed
-        sbBudgetLimit = sb.SessionBudget
-    }
-    bm.mu.RUnlock()
+	// Calculate usage percentage INCLUDING the new tokens (ensure budget exists)
+	// Use session budget for backpressure calculation (daily budget removed)
+	// Copy required fields under lock to avoid data races on concurrent updates
+	var (
+		sbExists      bool
+		sbTokensUsed  int
+		sbBudgetLimit int
+	)
+	bm.mu.RLock()
+	if sb, ok := bm.sessionBudgets[sessionID]; ok && sb != nil {
+		sbExists = true
+		sbTokensUsed = sb.SessionTokensUsed
+		sbBudgetLimit = sb.SessionBudget
+	}
+	bm.mu.RUnlock()
 
-    var usagePercent float64
-    if sbExists && sbBudgetLimit > 0 {
-        projectedUsage := sbTokensUsed + estimatedTokens
-        usagePercent = float64(projectedUsage) / float64(sbBudgetLimit)
-    } else {
-        usagePercent = 0 // No budget defined, no backpressure
-    }
+	var usagePercent float64
+	if sbExists && sbBudgetLimit > 0 {
+		projectedUsage := sbTokensUsed + estimatedTokens
+		usagePercent = float64(projectedUsage) / float64(sbBudgetLimit)
+	} else {
+		usagePercent = 0 // No budget defined, no backpressure
+	}
 
 	// Apply backpressure if threshold exceeded
 	if usagePercent >= bm.backpressureThreshold {
