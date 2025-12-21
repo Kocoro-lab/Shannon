@@ -24,6 +24,7 @@ Synthesize the agent results into a complete, well-organized answer that preserv
 ## Core Principles:
 - **Match Query Complexity**: Simple questions (calculations, definitions, factual lookups) get simple, direct answers WITHOUT headings or structure; comprehensive queries with multiple aspects get organized synthesis
 - **Information Fidelity**: Include all key findings, data, and insights from agent outputs—consolidate overlapping content but keep unique details
+- **Structural Fidelity**: Preserve useful structured artifacts from agent outputs (tables, checklists, code blocks, JSON/YAML). Do NOT flatten them into prose when structure carries information
 - **Natural Responses**: Write conversationally; avoid over-engineering simple answers with unnecessary formatting
 
 ## Formatting Guidelines:
@@ -31,7 +32,11 @@ Synthesize the agent results into a complete, well-organized answer that preserv
 - For multi-faceted queries: use structure (headings, lists, tables) when it genuinely improves clarity
 - Preserve specific data, metrics, examples, and nuanced points from agent outputs
 {{- if gt .CitationCount 0 }}
+{{- if .CitationAgentEnabled }}
+- Reference sources naturally (e.g., "According to...") but do NOT add [n] citation markers
+{{- else }}
 - Include inline citations [n] for factual claims when relevant sources exist
+{{- end }}
 - Do NOT include a "## Sources" section; the system appends sources if needed
 {{- end }}
 - Do NOT mention agents, tools, workflows, or internal retrieval

@@ -20,10 +20,22 @@ func FormatReportWithCitations(synthesis string, citationsList string) string {
         return synthesis
     }
 
-    // 1) Collect used citation indices from inline markers like [1], [12]
+    // 1) FIRST: Remove existing Sources section to get clean body content
+    //    Strategy: find the LAST occurrence of "## Sources" and truncate from there to end
+    //    Using last index avoids cutting content if the model references "## Sources" earlier in the body.
+    bodyContent := s
+    lower := strings.ToLower(s)
+    needle := strings.ToLower("## Sources")
+    if idx := strings.LastIndex(lower, needle); idx != -1 {
+        bodyContent = strings.TrimSpace(s[:idx])
+    }
+
+    // 2) THEN: Collect used citation indices from body (NOT including Sources)
+    //    This fixes the bug where Sources section's [n] markers were incorrectly
+    //    counted as "used inline"
     used := map[int]bool{}
     re := regexp.MustCompile(`\[(\d{1,3})\]`)
-    for _, m := range re.FindAllStringSubmatch(s, -1) {
+    for _, m := range re.FindAllStringSubmatch(bodyContent, -1) {
         if len(m) == 2 {
             // parse int safely
             var n int
@@ -36,16 +48,8 @@ func FormatReportWithCitations(synthesis string, citationsList string) string {
         }
     }
 
-    // 2) Remove existing Sources section from synthesis
-    //    Strategy: find the LAST occurrence of "## Sources" and truncate from there to end
-    //    If not found, keep the synthesis as-is.
-    //    Using last index avoids cutting content if the model references "## Sources" earlier in the body.
-    cut := s
-    lower := strings.ToLower(s)
-    needle := strings.ToLower("## Sources")
-    if idx := strings.LastIndex(lower, needle); idx != -1 {
-        cut = strings.TrimSpace(s[:idx])
-    }
+    // bodyContent is already the cut version (without Sources)
+    cut := bodyContent
 
     // 3) Build rebuilt Sources section from citationsList
     lines := strings.Split(strings.TrimSpace(citationsList), "\n")

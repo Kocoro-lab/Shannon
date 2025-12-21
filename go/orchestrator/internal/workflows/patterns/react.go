@@ -98,6 +98,12 @@ func ReactLoop(
 			wfID = p
 		}
 	}
+	role := "generalist"
+	if baseContext != nil {
+		if v, ok := baseContext["role"].(string); ok && strings.TrimSpace(v) != "" {
+			role = strings.TrimSpace(v)
+		}
+	}
 
 	for iteration < config.MaxIterations {
 		logger.Info("ReAct iteration",
@@ -120,6 +126,7 @@ func ReactLoop(
 			Type:       "AGENT_STARTED",
 			AgentID:    fmt.Sprintf("reasoner-%d", iteration),
 			Message:    activities.MsgReactReasoning(),
+			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 
@@ -199,6 +206,7 @@ func ReactLoop(
 			Type:       "AGENT_COMPLETED",
 			AgentID:    fmt.Sprintf("reasoner-%d", iteration),
 			Message:    activities.MsgReactReasoningDone(),
+			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 
@@ -408,6 +416,7 @@ func ReactLoop(
 			Type:       "AGENT_STARTED",
 			AgentID:    fmt.Sprintf("actor-%d", iteration),
 			Message:    activities.MsgReactActing(),
+			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 
@@ -472,6 +481,7 @@ func ReactLoop(
 				Type:       "AGENT_COMPLETED",
 				AgentID:    fmt.Sprintf("actor-%d", iteration),
 				Message:    activities.MsgReactActingDone(),
+				Payload:    map[string]interface{}{"role": role},
 				Timestamp:  time.Now(),
 			})
 

@@ -232,13 +232,9 @@ class ProviderManager:
             manager_kwargs["temperature"] = self.settings.temperature
 
         # Anthropic models don't support both temperature and top_p.
-        # Only drop top_p when explicitly targeting Anthropic.
-        if (
-            "temperature" in manager_kwargs
-            and "top_p" in manager_kwargs
-            and isinstance(provider_override, str)
-            and provider_override.lower() == "anthropic"
-        ):
+        # Since we may not know the final provider at this point (auto-routing),
+        # always drop top_p when temperature is set to ensure compatibility.
+        if "temperature" in manager_kwargs and "top_p" in manager_kwargs:
             manager_kwargs.pop("top_p", None)
 
         if agent_id and "agent_id" not in manager_kwargs:
@@ -341,6 +337,12 @@ class ProviderManager:
 
         if "temperature" not in manager_kwargs or manager_kwargs["temperature"] is None:
             manager_kwargs["temperature"] = self.settings.temperature
+
+        # Anthropic models don't support both temperature and top_p.
+        # Since we may not know the final provider at this point (auto-routing),
+        # always drop top_p when temperature is set to ensure compatibility.
+        if "temperature" in manager_kwargs and "top_p" in manager_kwargs:
+            manager_kwargs.pop("top_p", None)
 
         tools = params.pop("tools", None)
         if tools:

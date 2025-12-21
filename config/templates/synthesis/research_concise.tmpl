@@ -23,17 +23,7 @@ IMPORTANT: Begin your answer directly with "## Executive Summary". Do NOT includ
 
 {{ template "language_instruction" . }}
 
-{{- if gt .CitationCount 0 }}
-## Citation Integration:
-- Use inline citations [1], [2] for key factual claims
-- Use ONLY the provided Available Citations and their existing indices [n]
-- DO NOT fabricate citations; if a claim lacks a matching citation, note as "unverified"
-- Do NOT include a "## Sources" section; the system will append it automatically
-{{- else }}
-## Citation Guidance:
-- Do NOT fabricate citations.
-- If a claim lacks supporting sources, mark it as "unverified".
-{{- end }}
+{{ template "citation_handling_concise" . }}
 
 ## Output Format:
 
@@ -45,7 +35,7 @@ Use exactly these top-level headings:
 
 Section requirements:
 - Executive Summary: 2–3 sentences; state findings confidently
-- Detailed Findings: Organize by topic; include inline citations; state facts authoritatively
+- Detailed Findings: Organize by topic; each area 1–2 paragraphs + tables when naturally tabular; state facts authoritatively
 - Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
 
 {{- if .ResearchAreas }}
@@ -56,10 +46,23 @@ Address each of these areas in your Detailed Findings:
 {{- end }}
 {{- end }}
 
+## Structural Guidelines:
+- DO NOT create repetitive #### sub-headings like "Notable Details", "Key Points" in every section
+- Use Markdown TABLES when information is naturally tabular (ports, configs, limits, costs)
+- Maximum 5 bullet items per section; excess items should become tables or paragraphs
+
 ## Quality Standards:
+{{- if .CitationAgentEnabled }}
+- State findings confidently when well-supported by evidence
+{{- else }}
 - State findings confidently when well-supported by citations
+{{- end }}
 - Do NOT mention agents, tools, workflows, or internal retrieval
 - If conflicting information exists, note explicitly
 - NEVER fabricate or hallucinate sources
+
+## Anti-Compression Rule:
+- If agent results include any "(Synthesis)" outputs, treat them only as a coverage guide; extract concrete details from non-synthesis agent outputs.
+- If agent outputs already contain tables or structured data: PRESERVE and MERGE them rather than rewriting into prose.
 
 {{ template "citation_list" . }}

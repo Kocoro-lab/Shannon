@@ -219,6 +219,13 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			decompContext[k] = v
 		}
 	}
+	// Inject current date for time awareness (use workflow.Now for Temporal determinism)
+	// Only inject if not already provided (allow user override)
+	if _, hasDate := decompContext["current_date"]; !hasDate {
+		workflowTime := workflow.Now(ctx)
+		decompContext["current_date"] = workflowTime.UTC().Format("2006-01-02")
+		decompContext["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
+	}
 	// Add history for context awareness in decomposition
 	if len(input.History) > 0 {
 		// Convert history to a single string for the decompose endpoint
@@ -310,10 +317,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 			// Create fallback decomposition for SimpleTaskWorkflow
 			decomp = activities.DecompositionResult{
-				Mode:                 "simple",
-				ComplexityScore:      0.1, // Low complexity to trigger SimpleTaskWorkflow
-				ExecutionStrategy:    "sequential",
-				CognitiveStrategy:    "",
+				Mode:              "simple",
+				ComplexityScore:   0.1, // Low complexity to trigger SimpleTaskWorkflow
+				ExecutionStrategy: "sequential",
+				CognitiveStrategy: "",
 				Subtasks: []activities.Subtask{
 					{
 						ID:           "1",
@@ -408,7 +415,14 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			if input.Context == nil {
 				input.Context = map[string]interface{}{}
 			}
+			// Propagate current_date to all child workflows (if not already set)
+			if _, hasDate := input.Context["current_date"]; !hasDate {
+				workflowTime := workflow.Now(ctx)
+				input.Context["current_date"] = workflowTime.UTC().Format("2006-01-02")
+				input.Context["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
+			}
 			input.Context["budget_remaining"] = res.RemainingTaskBudget
+
 			n := len(decomp.Subtasks)
 			if n == 0 {
 				n = 1

@@ -201,8 +201,8 @@ func NormalizeURL(rawURL string) (string, error) {
 		parsed.RawQuery = q.Encode()
 	}
 
-	// Remove trailing slash from path
-	if len(parsed.Path) > 1 && strings.HasSuffix(parsed.Path, "/") {
+	// Remove trailing slash from path (including root path "/" -> "")
+	if strings.HasSuffix(parsed.Path, "/") {
 		parsed.Path = strings.TrimSuffix(parsed.Path, "/")
 	}
 
@@ -549,6 +549,17 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 		return s
 	}
 
+	// trimNonASCIISuffix truncates the URL at the first non-ASCII character
+	// This handles cases where Chinese text (e.g., "（个人介绍）") is attached to URLs
+	trimNonASCIISuffix := func(s string) string {
+		for i := 0; i < len(s); i++ {
+			if s[i] > 127 {
+				return s[:i]
+			}
+		}
+		return s
+	}
+
 	// Helper to build a small context snippet around the URL (UTF-8 safe)
 	getSnippet := func(start, end int) string {
 		r := []rune(response)
@@ -599,6 +610,8 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 		// Trim trailing punctuation that often gets attached in prose
 		raw = strings.TrimRight(raw, ",.;:)]}")
 		raw = stripURLTagSuffix(raw)
+		// Truncate at first non-ASCII character (e.g., Chinese parentheses)
+		raw = trimNonASCIISuffix(raw)
 		// Normalize URL
 		normalized, err := NormalizeURL(raw)
 		if err != nil || normalized == "" {
@@ -608,6 +621,11 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 			continue
 		}
 		seen[normalized] = true
+
+		// Skip sitemap, robots.txt, static assets, etc.
+		if shouldSkipURL(normalized) {
+			continue
+		}
 
 		domain, err := ExtractDomain(normalized)
 		if err != nil || domain == "" {
@@ -699,8 +717,8 @@ func extractCitationsFromToolOutput(toolName string, output interface{}, agentID
 			}
 		}
 
-	case "web_fetch", "web_subpage_fetch", "web_crawl":
-		// All web fetch tools return similar structure: {url, title, content, ...}
+	case "web_fetch":
+		// Single page fetch
 		if outputMap, ok := output.(map[string]interface{}); ok {
 			if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
 				citations = append(citations, *citation)
@@ -710,6 +728,32 @@ func extractCitationsFromToolOutput(toolName string, output interface{}, agentID
 			if err := json.Unmarshal([]byte(s), &m); err == nil {
 				if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
 					citations = append(citations, *citation)
+				}
+			}
+		}
+
+	case "web_subpage_fetch", "web_crawl":
+		// Multi-page tools: try to extract citations from metadata.urls
+		if outputMap, ok := output.(map[string]interface{}); ok {
+			multiCitations := extractCitationsFromMultiPageResult(outputMap, agentID, now)
+			if len(multiCitations) > 0 {
+				citations = append(citations, multiCitations...)
+			} else {
+				// Fallback: treat as single page fetch
+				if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
+					citations = append(citations, *citation)
+				}
+			}
+		} else if s, ok := output.(string); ok && s != "" {
+			var m map[string]interface{}
+			if err := json.Unmarshal([]byte(s), &m); err == nil {
+				multiCitations := extractCitationsFromMultiPageResult(m, agentID, now)
+				if len(multiCitations) > 0 {
+					citations = append(citations, multiCitations...)
+				} else {
+					if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
+						citations = append(citations, *citation)
+					}
 				}
 			}
 		}
@@ -725,7 +769,7 @@ func extractCitationsFromToolOutput(toolName string, output interface{}, agentID
 // Returns top N citations with aggregate statistics
 func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([]Citation, CitationStats) {
 	if maxCitations <= 0 {
-		maxCitations = 15 // default
+		maxCitations = 200 // default
 	}
 
 	var allCitations []Citation
@@ -1021,4 +1065,241 @@ func calculateCitationStats(citations []Citation) CitationStats {
 		AvgCredibility:  totalCredibility / float64(len(citations)),
 		SourceDiversity: CalculateSourceDiversity(citations),
 	}
+}
+
+// pageInfo holds title and snippet extracted from merged multi-page content
+type pageInfo struct {
+	Title   string
+	Snippet string
+}
+
+// extractCitationsFromMultiPageResult extracts citations from web_subpage_fetch or web_crawl results
+// that contain multiple pages merged into a single content with metadata.urls listing all page URLs
+func extractCitationsFromMultiPageResult(output map[string]interface{}, agentID string, now time.Time) []Citation {
+	var citations []Citation
+
+	// 1. Get metadata.urls
+	metadata, ok := output["metadata"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	urlsRaw, ok := metadata["urls"].([]interface{})
+	if !ok || len(urlsRaw) == 0 {
+		return nil
+	}
+
+	// 2. Get merged content
+	content := ""
+	if c, ok := output["content"].(string); ok {
+		content = c
+	}
+
+	// 3. Parse content to build url -> {title, snippet} mapping
+	// Note: content may be truncated (~2000 chars), so not all pages will have snippet info
+	pageInfoMap := parseMultiPageContent(content)
+
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] multi-page: urls=%d, pageInfoMap=%d", len(urlsRaw), len(pageInfoMap))
+	}
+
+	// 4. Create citation for each URL
+	for _, urlVal := range urlsRaw {
+		urlStr, ok := urlVal.(string)
+		if !ok || urlStr == "" {
+			continue
+		}
+
+		// Filter URLs that should not become sources
+		if shouldSkipURL(urlStr) {
+			continue
+		}
+
+		normalizedURL, err := NormalizeURL(urlStr)
+		if err != nil {
+			continue
+		}
+
+		domain, err := ExtractDomain(urlStr)
+		if err != nil {
+			domain = ""
+		}
+
+		title := ""
+		snippet := ""
+
+		// Look up page info (content may be truncated, so some pages won't have info)
+		if info, found := pageInfoMap[normalizedURL]; found {
+			title = info.Title
+			snippet = info.Snippet
+		} else if info, found := pageInfoMap[urlStr]; found {
+			title = info.Title
+			snippet = info.Snippet
+		}
+
+		// Build complete Citation with proper scoring
+		citation := Citation{
+			URL:            normalizedURL,
+			Title:          title,
+			Source:         domain,
+			SourceType:     "web",
+			RetrievedAt:    now,
+			RelevanceScore: 0.8, // fetch tools get fixed 0.8
+			AgentID:        agentID,
+			Snippet:        snippet,
+		}
+
+		// Calculate quality and credibility scores using existing functions
+		citation.QualityScore = ScoreQuality(citation.RelevanceScore, citation.PublishedDate, title != "", snippet != "", now)
+		citation.CredibilityScore = ScoreCredibility(domain)
+
+		citations = append(citations, citation)
+	}
+
+	return citations
+}
+
+// parseMultiPageContent parses merged markdown content to extract title and snippet for each page
+// Format patterns:
+//   - web_subpage_fetch: "# Main Page: {url}" and "## Subpage N: {url}"
+//   - web_crawl:         "# Main Page: {url}" and "## Page N: {url}"
+func parseMultiPageContent(content string) map[string]pageInfo {
+	result := make(map[string]pageInfo)
+
+	if content == "" {
+		return result
+	}
+
+	// Match page headers: # Main Page: URL or ## Subpage N: URL or ## Page N: URL
+	headerPattern := regexp.MustCompile(`(?m)^#{1,2}\s+(?:Main Page|Subpage \d+|Page \d+):\s*(.+)$`)
+	matches := headerPattern.FindAllStringSubmatchIndex(content, -1)
+
+	for i, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+
+		// Extract URL from the header
+		urlStart, urlEnd := match[2], match[3]
+		pageURL := strings.TrimSpace(content[urlStart:urlEnd])
+
+		// Determine content range for this page
+		contentStart := match[1] // end of header line
+		contentEnd := len(content)
+		if i+1 < len(matches) {
+			contentEnd = matches[i+1][0] // start of next header
+		}
+
+		pageContent := content[contentStart:contentEnd]
+
+		// Extract title (may be on next line as **title**)
+		title := extractTitleFromPageContent(pageContent)
+
+		// Extract snippet (first 200 chars of actual content)
+		snippet := extractSnippetFromPageContent(pageContent, 200)
+
+		result[pageURL] = pageInfo{Title: title, Snippet: snippet}
+
+		// Also store with normalized URL as key
+		if normalized, err := NormalizeURL(pageURL); err == nil && normalized != pageURL {
+			result[normalized] = pageInfo{Title: title, Snippet: snippet}
+		}
+	}
+
+	return result
+}
+
+// extractTitleFromPageContent extracts title from page content
+// Looks for **title** pattern on the first non-empty line after the header
+func extractTitleFromPageContent(content string) string {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Look for **title** pattern
+		if strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") {
+			return strings.Trim(line, "*")
+		}
+		// If first non-empty line doesn't match pattern, stop looking
+		break
+	}
+	return ""
+}
+
+// extractSnippetFromPageContent extracts first N characters of meaningful content
+func extractSnippetFromPageContent(content string, maxLen int) string {
+	lines := strings.Split(content, "\n")
+	var sb strings.Builder
+	skipFirstLines := true
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Skip title line if present
+		if skipFirstLines && strings.HasPrefix(line, "**") && strings.HasSuffix(line, "**") {
+			skipFirstLines = false
+			continue
+		}
+		skipFirstLines = false
+
+		// Skip markdown separators
+		if line == "---" || strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ") {
+			continue
+		}
+
+		if sb.Len() > 0 {
+			sb.WriteString(" ")
+		}
+		sb.WriteString(line)
+
+		if sb.Len() >= maxLen {
+			break
+		}
+	}
+
+	result := sb.String()
+	if len(result) > maxLen {
+		result = result[:maxLen]
+	}
+	return result
+}
+
+// shouldSkipURL returns true if the URL should be skipped (not become a source)
+// Filters out sitemap, robots.txt, static assets, etc.
+func shouldSkipURL(urlStr string) bool {
+	lower := strings.ToLower(urlStr)
+
+	// Skip sitemaps, robots, and common non-content URLs
+	skipPatterns := []string{
+		".xml",
+		"sitemap",
+		"robots.txt",
+		".css",
+		".js",
+		".ico",
+		".png",
+		".jpg",
+		".jpeg",
+		".gif",
+		".svg",
+		".woff",
+		".woff2",
+		".ttf",
+		".eot",
+		"favicon",
+		"/feed",
+		"/rss",
+		"/atom",
+	}
+
+	for _, pattern := range skipPatterns {
+		if strings.HasSuffix(lower, pattern) || strings.Contains(lower, pattern+"/") || strings.Contains(lower, pattern+"?") {
+			return true
+		}
+	}
+
+	return false
 }

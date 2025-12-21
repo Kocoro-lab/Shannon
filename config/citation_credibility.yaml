@@ -165,6 +165,6 @@ quality_gates:
 
 # Source diversity rules
 diversity_rules:
-  max_per_domain: 3              # Maximum citations from same domain
+  max_per_domain: 50             # Maximum citations from same domain (increased for subpage fetch scenarios)
   min_unique_domains: 5          # Target minimum unique domains
   diversity_bonus: 0.05          # Bonus for diverse sources

@@ -249,24 +249,28 @@ async def agent_query(request: Request, query: AgentQuery):
             try:
                 from ..roles.presets import get_role_preset, render_system_prompt
 
+                requested_role = None
                 role_name = None
                 if isinstance(query.context, dict):
-                    role_name = query.context.get("role") or query.context.get(
+                    requested_role = query.context.get("role") or query.context.get(
                         "agent_type"
                     )
+                    role_name = requested_role
 
                 # Default to deep_research_agent for research workflows
                 if not role_name and isinstance(query.context, dict):
                     if query.context.get("force_research") or query.context.get("workflow_type") == "research":
                         role_name = "deep_research_agent"
 
-                preset = get_role_preset(str(role_name) if role_name else "generalist")
+                effective_role = str(role_name).strip() if role_name else "generalist"
+                preset = get_role_preset(effective_role)
 
                 # Check for system_prompt in context first, then fall back to preset
                 system_prompt = None
                 if isinstance(query.context, dict) and "system_prompt" in query.context:
                     system_prompt = str(query.context.get("system_prompt"))
 
+                system_prompt_source = "context.system_prompt" if system_prompt else f"role_preset:{effective_role}"
                 if not system_prompt:
                     system_prompt = str(
                         preset.get("system_prompt") or "You are a helpful AI assistant."
@@ -281,12 +285,37 @@ async def agent_query(request: Request, query: AgentQuery):
                     # On any rendering issue, keep original system_prompt
                     logger.warning(f"System prompt rendering failed: {e}")
 
+                # Inject current date for time awareness
+                # Skip for citation_agent (it only inserts [n] markers, no reasoning needed)
+                skip_date_injection = query.agent_id == "citation_agent"
+                if isinstance(query.context, dict) and query.context.get("agent_id") == "citation_agent":
+                    skip_date_injection = True
+                
+                if not skip_date_injection:
+                    # Read from context (set by Go orchestrator) or fallback to local time
+                    current_date = None
+                    if isinstance(query.context, dict):
+                        # Try context["current_date"] first, then prompt_params
+                        current_date = query.context.get("current_date")
+                        if not current_date:
+                            prompt_params = query.context.get("prompt_params")
+                            if isinstance(prompt_params, dict):
+                                current_date = prompt_params.get("current_date")
+                    if not current_date:
+                        from datetime import datetime, timezone
+                        current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    
+                    # Prepend date to system prompt
+                    date_prefix = f"Current date: {current_date} (UTC).\n\n"
+                    system_prompt = date_prefix + system_prompt
+
                 # Add language instruction if target_language is specified in context
                 if isinstance(query.context, dict) and "target_language" in query.context:
                     target_lang = query.context.get("target_language")
                     if target_lang and target_lang != "English":
                         language_instruction = f"\n\nCRITICAL: Respond in {target_lang}. The user's query is in {target_lang}. You MUST respond in the SAME language. DO NOT translate to English."
                         system_prompt = language_instruction + "\n\n" + system_prompt
+
 
                 # Add research-mode instruction for deep content retrieval
                 if isinstance(query.context, dict):
@@ -308,6 +337,10 @@ async def agent_query(request: Request, query: AgentQuery):
                             "\n- Search for '[company] site:linkedin.com' or '[company] site:crunchbase.com'"
                             "\n- For Asian companies, try Japanese/Chinese name variants"
                             "\n- If standard searches return only competitors/unrelated results, this indicates a search strategy problem - try direct URL fetches"
+                            "\n\nSOURCE EVALUATION: Search results are leads, not verified facts. "
+                            "Verify key claims via web_fetch. Mark speculative language (reportedly, allegedly, may). "
+                            "When sources conflict, present both viewpoints - do not silently choose one. "
+                            "Distinguish primary sources from aggregators and marketing content."
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
@@ -1035,9 +1068,9 @@ async def agent_query(request: Request, query: AgentQuery):
                                 "agent_id": query.agent_id,
                                 "mode": query.mode,
                                 "allowed_tools": effective_allowed_tools,
-                                "role": (query.context or {}).get("role")
-                                if isinstance(query.context, dict)
-                                else None,
+                                "role": effective_role,
+                                "requested_role": requested_role,
+                                "system_prompt_source": system_prompt_source,
                                 "provider": interpretation_result.get("provider") or "unknown",
                                 "finish_reason": interpretation_result.get("finish_reason", "stop"),
                                 "requested_max_tokens": max_tokens,
@@ -1074,9 +1107,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "agent_id": query.agent_id,
                     "mode": query.mode,
                     "allowed_tools": effective_allowed_tools,
-                    "role": (query.context or {}).get("role")
-                    if isinstance(query.context, dict)
-                    else None,
+                    "role": effective_role,
+                    "requested_role": requested_role,
+                    "system_prompt_source": system_prompt_source,
                     "provider": result_data.get("provider") or "unknown",
                     "finish_reason": result_data.get("finish_reason", "stop"),
                     "requested_max_tokens": max_tokens,
@@ -1091,6 +1124,15 @@ async def agent_query(request: Request, query: AgentQuery):
         else:
             # Use mock provider for testing
             logger.info("Using mock provider (no API keys configured)")
+            requested_role = None
+            effective_role = "generalist"
+            system_prompt_source = "mock_provider"
+            if isinstance(query.context, dict):
+                requested_role = query.context.get("role") or query.context.get("agent_type")
+                if requested_role:
+                    effective_role = str(requested_role).strip()
+                elif query.context.get("force_research") or query.context.get("workflow_type") == "research":
+                    effective_role = "deep_research_agent"
             result = await mock_provider.generate(
                 query.query,
                 context=query.context,
@@ -1109,9 +1151,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "agent_id": query.agent_id,
                     "mode": query.mode,
                     "allowed_tools": effective_allowed_tools,
-                    "role": (query.context or {}).get("role")
-                    if isinstance(query.context, dict)
-                    else None,
+                    "role": effective_role,
+                    "requested_role": requested_role,
+                    "system_prompt_source": system_prompt_source,
                     "finish_reason": "stop",
                 },
             )
@@ -1466,9 +1508,60 @@ async def _execute_and_format_tools(
                         )
                     else:
                         formatted_output = str(result.output)
-                    formatted_results.append(f"{tool_name} result:\n{formatted_output}")
+                    formatted = f"{tool_name} result:\n{formatted_output}"
+
+                    # Include concise metadata only when it affects epistemic confidence.
+                    if isinstance(result.metadata, dict) and result.metadata:
+                        failed_count = None
+                        try:
+                            failure_summary = result.metadata.get("failure_summary") or {}
+                            failed_count = int(failure_summary.get("failed_count"))
+                        except Exception:
+                            failed_count = None
+
+                        include_meta = (
+                            (not result.success)
+                            or (result.metadata.get("partial_success") is True)
+                            or (failed_count is not None and failed_count > 0)
+                            or (
+                                isinstance(result.metadata.get("attempts"), list)
+                                and len(result.metadata.get("attempts") or []) > 1
+                            )
+                        )
+                        if include_meta:
+                            meta_keys = [
+                                "provider",
+                                "strategy",
+                                "fetch_method",
+                                "provider_used",
+                                "attempts",
+                                "partial_success",
+                                "failure_summary",
+                                "urls_attempted",
+                                "urls_succeeded",
+                                "urls_failed",
+                            ]
+                            compact_meta = {
+                                k: result.metadata.get(k)
+                                for k in meta_keys
+                                if k in result.metadata
+                            }
+                            formatted_meta = _json_fmt.dumps(
+                                _sanitize_payload(compact_meta, max_str=1000, max_items=20),
+                                indent=2,
+                                ensure_ascii=False,
+                            )
+                            formatted += f"\n\n{tool_name} metadata:\n{formatted_meta}"
+
+                    formatted_results.append(formatted)
             else:
                 formatted_results.append(f"Error executing {tool_name}: {result.error}")
+
+            sanitized_result_metadata = (
+                _sanitize_payload(result.metadata, max_str=2000, max_items=20)
+                if (result and isinstance(result.metadata, dict) and result.metadata)
+                else {}
+            )
 
             # Emit TOOL_OBSERVATION event (success or failure)
             if emitter and wf_id:
@@ -1486,6 +1579,7 @@ async def _execute_and_format_tools(
                         payload={
                             "tool": tool_name,
                             "success": bool(result and result.success),
+                            "metadata": sanitized_result_metadata,
                             "usage": {
                                 "duration_ms": duration_ms,
                                 "tokens": result.tokens_used if result and result.tokens_used else 0,
@@ -1504,6 +1598,7 @@ async def _execute_and_format_tools(
                         result.output if result else None, max_str=2000, max_items=20
                     ),
                     "error": result.error if result else None,
+                    "metadata": sanitized_result_metadata,
                     "duration_ms": duration_ms,
                     "tokens_used": result.tokens_used if result else None,
                 }
@@ -1536,6 +1631,7 @@ async def _execute_and_format_tools(
                     "success": False,
                     "output": None,
                     "error": str(e),
+                    "metadata": {},
                     "duration_ms": None,
                     "tokens_used": None,
                 }
@@ -1755,7 +1851,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "3. Business directories: Search '[company] site:crunchbase.com' or '[company] site:linkedin.com'\n"
             "4. For Asian companies: Try Japanese/Chinese name variants in searches\n"
             "5. If web_search returns only competitors, it's a sign the search terms are wrong - try alternative names/domains\n\n"
-            "## Deep Research 2.0: Task Contracts (Optional)\n"
+            "## Deep Research 2.0: Task Contracts (Optional, but REQUIRED for research workflows)\n"
             "For research workflows, you MAY include these fields to define explicit task boundaries:\n"
             "- output_format: {type: 'structured'|'narrative', required_fields: [...], optional_fields: [...]}\n"
             "- source_guidance: {required: ['official', 'aggregator'], optional: ['news'], avoid: ['social']}\n"
@@ -1775,7 +1871,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "estimated_tokens": 500,\n'
             '      "suggested_tools": [],\n'
             '      "tool_parameters": {},\n'
+            '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
             '      "source_guidance": {"required": ["official"], "optional": ["news"]},\n'
+            '      "search_budget": {"max_queries": 10, "max_fetches": 20},\n'
             '      "boundaries": {"in_scope": ["topic"], "out_of_scope": []}\n'
             "    }\n"
             "  ],\n"
@@ -1800,7 +1898,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "estimated_tokens": 800,\n'
             '      "suggested_tools": ["web_search"],\n'
             '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
+            '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
             '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
+            '      "search_budget": {"max_queries": 10, "max_fetches": 20},\n'
             '      "boundaries": {"in_scope": ["stock price", "market analysis"], "out_of_scope": ["company history"]}\n'
             "    }\n"
             "  ],\n"
@@ -1836,8 +1936,42 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "# Planning Phase:\n"
             "1. Analyze the research brief carefully\n"
             "2. Break down into clear, SPECIFIC subtasks (avoid acronyms)\n"
-            "3. Bias toward SINGLE subtask workflow unless clear parallelization opportunity exists\n"
+            "3. Prefer PARALLEL subtasks when possible; keep dependencies minimal\n"
             "4. Each subtask gets COMPLETE STANDALONE INSTRUCTIONS\n\n"
+            "# Dependency Rules (CRITICAL):\n"
+            "- Dependencies are HARD blockers only: add a dependency ONLY if the subtask cannot be executed without the upstream output.\n"
+            "- Do NOT add dependencies for convenience, readability, or optional context reuse.\n"
+            "- If two subtasks can start from the same public sources/URLs independently, they MUST have empty dependencies [].\n"
+            "- Avoid dependency chains (A→B→C) unless truly required; prefer shallow DAGs.\n"
+            "- For website/docs analysis queries, default to 3–6 parallel subtasks by section/theme (e.g., overview, architecture, API, tutorials) WITHOUT dependencies.\n"
+            "- If a discovery/index step is needed (e.g., find navigation/TOC paths), make it ONE small upstream task and keep other tasks independent unless they truly require its output.\n\n"
+            "# Task Contract Requirements (MANDATORY):\n"
+            "Every research subtask MUST include ALL of the following contract fields:\n"
+            "- output_format: {type, required_fields, optional_fields}\n"
+            "- source_guidance: {required: [...], optional: [...], avoid: [...]}\n"
+            "- search_budget: {max_queries, max_fetches}\n"
+            "- boundaries: {in_scope: [...], out_of_scope: [...]}\n\n"
+            "CRITICAL: If you lack information to fill a contract field, use defaults:\n"
+            "- output_format: {type: 'narrative', required_fields: [], optional_fields: []}\n"
+            "- source_guidance: {required: ['official', 'aggregator'], optional: ['news'], avoid: ['social']}\n"
+            "- search_budget: {max_queries: 10, max_fetches: 20}\n"
+            "- boundaries: {in_scope: [...explicitly list...], out_of_scope: [...at least 1 exclusion...]}\n\n"
+            "Subtasks missing ANY contract field will be considered INVALID output.\n\n"
+            "# Detailed Task Description Requirements:\n"
+            "Each subtask description MUST include ALL elements below, using HIGH-DENSITY format (≤5 lines, 1 sentence per element):\n"
+            "1. **Objective** (1 sentence): Single most important goal\n"
+            "2. **Starting Points** (1 sentence): Specific URLs/paths/sites/queries to try first (be concrete)\n"
+            "3. **Key Questions** (1 sentence): 2-3 questions to answer\n"
+            "4. **Scope** (1 sentence): What to INCLUDE + what to EXCLUDE\n"
+            "5. **Tools** (1 sentence): Tool priority order\n\n"
+            "GOOD EXAMPLE (high-density, 5 lines):\n"
+            "\"Research TSMC's current production capacity. Start: tsmc.com/ir quarterly report, search 'TSMC fab construction 2025'. "
+            "Answer: (1) current wafer capacity, (2) new fabs, (3) 2026 projection. "
+            "Include: manufacturing capacity only. Exclude: financial performance. "
+            "Tools: web_fetch (investor reports) → web_search (news).\"\n\n"
+            "BAD EXAMPLES:\n"
+            "- Too vague: \"Research TSMC\"\n"
+            "- Too verbose: Long paragraphs explaining background, multiple unrelated points\n\n"
             "# Research Breakdown Guidelines:\n"
             "- Simple queries (factual, narrow scope): 1-2 subtasks, complexity_score < 0.3\n"
             "- Complex queries (multi-faceted, analytical): 3-5 subtasks, complexity_score >= 0.3\n"
@@ -1856,7 +1990,9 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "**Anti-patterns to avoid:**\n"
             "- DO NOT create subtasks that overlap significantly in scope\n"
             "- DO NOT split tasks that are too granular (combine related questions)\n"
-            "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n\n"
+            "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n"
+            "- NEVER create more than 10 subtasks unless strictly necessary (more subtasks = more overhead = slower results)\n"
+            "- If task seems to require many subtasks, RESTRUCTURE to consolidate similar topics\n\n"
             "NOTE: You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n\n"
         )
 
@@ -1987,8 +2123,24 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     )
                     decompose_system_prompt = decompose_system_prompt + areas_hint
 
+        # Inject current date for time awareness in decomposition
+        current_date = None
+        if query.context and isinstance(query.context, dict):
+            current_date = query.context.get("current_date")
+            if not current_date:
+                prompt_params = query.context.get("prompt_params")
+                if isinstance(prompt_params, dict):
+                    current_date = prompt_params.get("current_date")
+        if not current_date:
+            from datetime import datetime, timezone
+            current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        
+        date_prefix = f"Current date: {current_date} (UTC).\n\n"
+        decompose_system_prompt = date_prefix + decompose_system_prompt
+
         # Build messages with history rehydration for context awareness
         messages = [{"role": "system", "content": decompose_system_prompt}]
+
 
         # Rehydrate history from context if present (same as agent_query endpoint)
         history_rehydrated = False
@@ -2178,11 +2330,58 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                         f"search_budget={search_budget}, boundaries={boundaries}"
                     )
 
+
             # Extract extended fields
             exec_strategy = data.get("execution_strategy", "sequential")
             agent_types = data.get("agent_types", [])
             concurrency_limit = data.get("concurrency_limit", 1)
             token_estimates = data.get("token_estimates", {})
+
+            # ================================================================
+            # Option 3: Post-parse backfill for missing Task Contract fields
+            # ================================================================
+            # Ensure research workflows have complete contract fields even if LLM omits them
+            is_research_workflow = (
+                query.context
+                and isinstance(query.context, dict)
+                and (
+                    query.context.get("force_research") is True
+                    or query.context.get("workflow_type") == "research"
+                    or query.context.get("role") == "deep_research_agent"
+                )
+            )
+
+            if is_research_workflow and subtasks:
+                logger.info(
+                    f"Post-parse backfill: Detected research workflow, checking {len(subtasks)} subtasks for missing contract fields"
+                )
+                backfilled_count = 0
+
+                for subtask in subtasks:
+                    # Backfill output_format if missing
+                    if not subtask.output_format:
+                        subtask.output_format = OutputFormatSpec(
+                            type="narrative", required_fields=[], optional_fields=[]
+                        )
+                        logger.info(
+                            f"Backfilled output_format for subtask {subtask.id} with default narrative"
+                        )
+                        backfilled_count += 1
+
+                    # Backfill search_budget if missing
+                    if not subtask.search_budget:
+                        subtask.search_budget = SearchBudgetSpec(
+                            max_queries=10, max_fetches=20
+                        )
+                        logger.info(
+                            f"Backfilled search_budget for subtask {subtask.id} with default limits"
+                        )
+                        backfilled_count += 1
+
+                if backfilled_count > 0:
+                    logger.info(
+                        f"Post-parse backfill completed: {backfilled_count} fields backfilled across {len(subtasks)} subtasks"
+                    )
 
             # Extract cognitive routing fields from data
             cognitive_strategy = data.get("cognitive_strategy", "decompose")

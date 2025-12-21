@@ -664,6 +664,17 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		logger, _ = zap.NewProduction()
 	}
 
+	// Best-effort role extraction for observability
+	role := ""
+	if input.Context != nil {
+		if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+			role = strings.TrimSpace(v)
+		}
+	}
+	if role == "" {
+		role = "generalist"
+	}
+
 	// Apply persona settings if specified
 	if input.PersonaID != "" {
 		// TODO: Re-enable when personas package is complete
@@ -757,6 +768,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			logger.Error("Policy evaluation failed", zap.Error(err))
 			return AgentExecutionResult{
 				AgentID: input.AgentID,
+				Role:    role,
 				Success: false,
 				Error:   fmt.Sprintf("policy evaluation error: %v", err),
 			}, fmt.Errorf("policy evaluation failed: %w", err)
@@ -790,6 +802,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 				return AgentExecutionResult{
 					AgentID: input.AgentID,
+					Role:    role,
 					Success: false,
 					Error:   fmt.Sprintf("denied by policy: %s", decision.Reason),
 				}, nil // Don't return error to avoid workflow failure, just deny execution
@@ -831,7 +844,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		grpc.WithChainStreamInterceptor(interceptors.WorkflowStreamClientInterceptor()),
 	)
 	if err != nil {
-		return AgentExecutionResult{AgentID: input.AgentID, Success: false, Error: fmt.Sprintf("dial agent-core: %v", err)}, err
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: fmt.Sprintf("dial agent-core: %v", err)}, err
 	}
 	defer conn.Close()
 
@@ -1224,6 +1237,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			Type:       string(StreamEventLLMPrompt),
 			AgentID:    input.AgentID,
 			Message:    truncateQuery(input.Query, MaxPromptChars),
+			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 	}
@@ -1457,6 +1471,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				AgentID:    input.AgentID,
 				Message:    truncateQuery(out, MaxLLMOutputChars),
 				Payload: map[string]interface{}{
+					"role":          role,
 					"tokens_used":   tokens,
 					"model_used":    model,
 					"provider":      provider,
@@ -1471,6 +1486,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 		return AgentExecutionResult{
 			AgentID:        input.AgentID,
+			Role:           role,
 			Response:       out,
 			TokensUsed:     tokens,
 			ModelUsed:      model,
@@ -1611,6 +1627,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				AgentID:    input.AgentID,
 				Message:    truncateQuery(out, MaxLLMOutputChars),
 				Payload: map[string]interface{}{
+					"role":          role,
 					"tokens_used":   tokens,
 					"model_used":    model,
 					"provider":      provider,
@@ -1625,6 +1642,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 		return AgentExecutionResult{
 			AgentID:        input.AgentID,
+			Role:           role,
 			Response:       out,
 			TokensUsed:     tokens,
 			ModelUsed:      model,
@@ -1698,6 +1716,16 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		"tool_count", len(input.SuggestedTools),
 	)
 
+	role := ""
+	if input.Context != nil {
+		if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+			role = strings.TrimSpace(v)
+		}
+	}
+	if role == "" {
+		role = "generalist"
+	}
+
 	// Bail if no tool parameters to use
 	if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
 		logger.Warn("No ToolParameters provided; falling back to regular ExecuteAgent")
@@ -1711,7 +1739,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		toolName = input.SuggestedTools[0]
 	} else {
 		logger.Error("No SuggestedTools provided with ToolParameters; cannot proceed")
-		return AgentExecutionResult{Success: false, Error: "No tool specified for forced execution"}, nil
+		return AgentExecutionResult{Role: role, Success: false, Error: "No tool specified for forced execution"}, nil
 	}
 
 	// Build forced_tool_calls payload for /agent/query
@@ -1737,7 +1765,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	payloadBytes, err := json.Marshal(agentQueryPayload)
 	if err != nil {
 		logger.Error("Failed to marshal agent query payload", "error", err)
-		return AgentExecutionResult{Success: false, Error: "Failed to construct request"}, nil
+		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to construct request"}, nil
 	}
 
 	// Publish TOOL_INVOKED event
@@ -1779,6 +1807,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 			AgentID:    input.AgentID,
 			Message:    message,
 			Payload: map[string]interface{}{
+				"role":   role,
 				"tool":   toolName,
 				"params": sanitizeParams(input.ToolParameters),
 			},
@@ -1799,6 +1828,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    "Tool execution failed: request creation error",
 				Payload: map[string]interface{}{
+					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
@@ -1806,7 +1836,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Success: false, Error: "Failed to create request"}, nil
+		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to create request"}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-ID", input.AgentID)
@@ -1822,6 +1852,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    fmt.Sprintf("Tool execution failed: %v", err),
 				Payload: map[string]interface{}{
+					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
@@ -1829,7 +1860,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
+		return AgentExecutionResult{Role: role, Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
 	}
 	defer resp.Body.Close()
 
@@ -1843,6 +1874,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    fmt.Sprintf("Tool execution failed: HTTP %d", resp.StatusCode),
 				Payload: map[string]interface{}{
+					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
@@ -1850,7 +1882,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
+		return AgentExecutionResult{Role: role, Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
 	}
 
 	// Parse response
@@ -1874,6 +1906,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    "Tool execution failed: invalid response",
 				Payload: map[string]interface{}{
+					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
@@ -1881,7 +1914,14 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Success: false, Error: "Failed to parse response"}, nil
+		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to parse response"}, nil
+	}
+
+	// Prefer role reported by llm-service when available
+	if agentResponse.Metadata != nil {
+		if v, ok := agentResponse.Metadata["role"].(string); ok && strings.TrimSpace(v) != "" {
+			role = strings.TrimSpace(v)
+		}
 	}
 
 	// Extract detailed token metrics from metadata
@@ -1919,6 +1959,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 			AgentID:    input.AgentID,
 			Message:    msg,
 			Payload: map[string]interface{}{
+				"role":        role,
 				"tool":        toolName,
 				"success":     agentResponse.Success,
 				"duration_ms": time.Since(toolStartTime).Milliseconds(),
@@ -1941,6 +1982,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 			AgentID:    input.AgentID,
 			Message:    truncateQuery(agentResponse.Response, MaxLLMOutputChars),
 			Payload: map[string]interface{}{
+				"role":          role,
 				"tokens_used":   agentResponse.TokensUsed,
 				"model_used":    agentResponse.ModelUsed,
 				"provider":      agentResponse.Provider,
@@ -1984,6 +2026,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 
 	return AgentExecutionResult{
 		Success:        agentResponse.Success,
+		Role:           role,
 		Response:       agentResponse.Response,
 		TokensUsed:     agentResponse.TokensUsed,
 		ModelUsed:      agentResponse.ModelUsed,
@@ -2125,6 +2168,15 @@ func getenvInt(key string, def int) int {
 // emitAgentThinkingEvent emits a human-readable thinking event
 func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		role := ""
+		if input.Context != nil {
+			if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+				role = strings.TrimSpace(v)
+			}
+		}
+		if role == "" {
+			role = "generalist"
+		}
 		// Determine the correct workflow ID for streaming (prefer parent)
 		wfID := ""
 		if input.ParentWorkflowID != "" {
@@ -2144,6 +2196,7 @@ func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 			EventType:  StreamEventAgentThinking,
 			AgentID:    input.AgentID,
 			Message:    message,
+			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		}
 		activity.RecordHeartbeat(ctx, eventData)
@@ -2153,6 +2206,7 @@ func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 			Type:       string(eventData.EventType),
 			AgentID:    eventData.AgentID,
 			Message:    eventData.Message,
+			Payload:    eventData.Payload,
 			Timestamp:  eventData.Timestamp,
 		})
 	}
@@ -2161,6 +2215,16 @@ func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 // emitToolSelectionEvent emits events for selected tools
 func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, toolCalls []map[string]interface{}) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
+		role := ""
+		if input.Context != nil {
+			if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+				role = strings.TrimSpace(v)
+			}
+		}
+		if role == "" {
+			role = "generalist"
+		}
+
 		// Determine the correct workflow ID for streaming (prefer parent)
 		wfID := ""
 		if input.ParentWorkflowID != "" {
@@ -2185,7 +2249,12 @@ func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, tool
 				EventType:  StreamEventToolInvoked,
 				AgentID:    input.AgentID,
 				Message:    message,
-				Timestamp:  time.Now(),
+				Payload: map[string]interface{}{
+					"role":   role,
+					"tool":   toolName,
+					"params": call["parameters"],
+				},
+				Timestamp: time.Now(),
 			}
 			activity.RecordHeartbeat(ctx, eventData)
 			// Also publish to Redis Streams for SSE (use parent workflow ID when available)
@@ -2194,6 +2263,7 @@ func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, tool
 				Type:       string(eventData.EventType),
 				AgentID:    eventData.AgentID,
 				Message:    eventData.Message,
+				Payload:    eventData.Payload,
 				Timestamp:  eventData.Timestamp,
 			})
 		}

@@ -15,53 +15,53 @@ type ComplexityAnalysisResult struct {
 
 // OutputFormatSpec defines expected output structure for a subtask
 type OutputFormatSpec struct {
-    Type           string   `json:"type,omitempty"`            // "structured", "narrative", "list"
-    RequiredFields []string `json:"required_fields,omitempty"` // Fields that must be present
-    OptionalFields []string `json:"optional_fields,omitempty"` // Nice-to-have fields
+	Type           string   `json:"type,omitempty"`            // "structured", "narrative", "list"
+	RequiredFields []string `json:"required_fields,omitempty"` // Fields that must be present
+	OptionalFields []string `json:"optional_fields,omitempty"` // Nice-to-have fields
 }
 
 // SourceGuidanceSpec defines source type recommendations for a subtask
 type SourceGuidanceSpec struct {
-    Required []string `json:"required,omitempty"` // Must use these source types (official, aggregator, news, academic)
-    Optional []string `json:"optional,omitempty"` // May use these source types
-    Avoid    []string `json:"avoid,omitempty"`    // Should not use (social, forums)
+	Required []string `json:"required,omitempty"` // Must use these source types (official, aggregator, news, academic)
+	Optional []string `json:"optional,omitempty"` // May use these source types
+	Avoid    []string `json:"avoid,omitempty"`    // Should not use (social, forums)
 }
 
 // SearchBudgetSpec defines search limits for a subtask
 type SearchBudgetSpec struct {
-    MaxQueries int `json:"max_queries,omitempty"` // Maximum web_search calls
-    MaxFetches int `json:"max_fetches,omitempty"` // Maximum web_fetch calls
+	MaxQueries int `json:"max_queries,omitempty"` // Maximum web_search calls
+	MaxFetches int `json:"max_fetches,omitempty"` // Maximum web_fetch calls
 }
 
 // BoundariesSpec defines scope boundaries for a subtask
 type BoundariesSpec struct {
-    InScope    []string `json:"in_scope,omitempty"`    // Topics explicitly within scope
-    OutOfScope []string `json:"out_of_scope,omitempty"` // Topics to avoid (prevent overlap)
+	InScope    []string `json:"in_scope,omitempty"`     // Topics explicitly within scope
+	OutOfScope []string `json:"out_of_scope,omitempty"` // Topics to avoid (prevent overlap)
 }
 
 // Subtask represents a decomposed subtask
 type Subtask struct {
-    ID              string
-    Description     string
-    Dependencies    []string
-    EstimatedTokens int
+	ID              string
+	Description     string
+	Dependencies    []string
+	EstimatedTokens int
 	// Structured subtask classification to avoid brittle string matching
 	TaskType string `json:"task_type,omitempty"`
-    // Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
-    Produces []string
-    Consumes []string
-    // Optional grouping for research-area-driven decomposition
-    ParentArea string `json:"parent_area,omitempty"`
-    // LLM-native tool selection
-    SuggestedTools []string               `json:"suggested_tools"`
-    ToolParameters map[string]interface{} `json:"tool_parameters"`
-    // Persona assignment for specialized agent behavior
-    SuggestedPersona string `json:"suggested_persona"`
-    // Deep Research 2.0: Task Contract fields for explicit boundaries
-    OutputFormat   *OutputFormatSpec   `json:"output_format,omitempty"`   // Expected output structure
-    SourceGuidance *SourceGuidanceSpec `json:"source_guidance,omitempty"` // Source type recommendations
-    SearchBudget   *SearchBudgetSpec   `json:"search_budget,omitempty"`   // Search limits
-    Boundaries     *BoundariesSpec     `json:"boundaries,omitempty"`      // Scope boundaries
+	// Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
+	Produces []string
+	Consumes []string
+	// Optional grouping for research-area-driven decomposition
+	ParentArea string `json:"parent_area,omitempty"`
+	// LLM-native tool selection
+	SuggestedTools []string               `json:"suggested_tools"`
+	ToolParameters map[string]interface{} `json:"tool_parameters"`
+	// Persona assignment for specialized agent behavior
+	SuggestedPersona string `json:"suggested_persona"`
+	// Deep Research 2.0: Task Contract fields for explicit boundaries
+	OutputFormat   *OutputFormatSpec   `json:"output_format,omitempty"`   // Expected output structure
+	SourceGuidance *SourceGuidanceSpec `json:"source_guidance,omitempty"` // Source type recommendations
+	SearchBudget   *SearchBudgetSpec   `json:"search_budget,omitempty"`   // Search limits
+	Boundaries     *BoundariesSpec     `json:"boundaries,omitempty"`      // Scope boundaries
 }
 
 // AgentExecutionInput is the input for agent execution
@@ -84,6 +84,7 @@ type AgentExecutionInput struct {
 // AgentExecutionResult is the result of agent execution
 type AgentExecutionResult struct {
 	AgentID      string
+	Role         string `json:"role,omitempty"`
 	Response     string
 	TokensUsed   int
 	ModelUsed    string
@@ -118,17 +119,17 @@ type SynthesisInput struct {
 
 // SynthesisResult is the result of synthesis
 type SynthesisResult struct {
-    FinalResult  string
-    TokensUsed   int
-    FinishReason string // Reason model stopped: "stop", "length", "content_filter", etc.
-    RequestedMaxTokens int // Max completion tokens requested from provider for this synthesis
-    CompletionTokens int // Output tokens (excludes prompt)
-    EffectiveMaxCompletion int // Actual max completion after provider headroom clamp
-    // Added for accurate cost tracking
-    InputTokens int    // Prompt tokens (when available or inferred)
-    ModelUsed   string // Model used for synthesis
-    Provider    string // Provider used for synthesis
-    CostUsd     float64 // Reported cost from provider metadata when available
+	FinalResult            string
+	TokensUsed             int
+	FinishReason           string // Reason model stopped: "stop", "length", "content_filter", etc.
+	RequestedMaxTokens     int    // Max completion tokens requested from provider for this synthesis
+	CompletionTokens       int    // Output tokens (excludes prompt)
+	EffectiveMaxCompletion int    // Actual max completion after provider headroom clamp
+	// Added for accurate cost tracking
+	InputTokens int     // Prompt tokens (when available or inferred)
+	ModelUsed   string  // Model used for synthesis
+	Provider    string  // Provider used for synthesis
+	CostUsd     float64 // Reported cost from provider metadata when available
 }
 
 // EvaluateResultInput carries data for reflection/quality checks
@@ -162,10 +163,10 @@ type VerificationResult struct {
 
 // ClaimVerification contains verification for a single claim
 type ClaimVerification struct {
-	Claim                string   `json:"claim"`                  // The factual claim text
-	SupportingCitations  []int    `json:"supporting_citations"`   // Citation numbers supporting this claim
-	ConflictingCitations []int    `json:"conflicting_citations"`  // Citation numbers conflicting with this claim
-	Confidence           float64  `json:"confidence"`             // 0.0-1.0 (weighted by citation credibility)
+	Claim                string  `json:"claim"`                 // The factual claim text
+	SupportingCitations  []int   `json:"supporting_citations"`  // Citation numbers supporting this claim
+	ConflictingCitations []int   `json:"conflicting_citations"` // Citation numbers conflicting with this claim
+	Confidence           float64 `json:"confidence"`            // 0.0-1.0 (weighted by citation credibility)
 }
 
 // ConflictReport describes conflicting information

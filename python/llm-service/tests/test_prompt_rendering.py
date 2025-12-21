@@ -13,14 +13,16 @@ def test_missing_variables_render_empty_strings():
     assert out == "Hello , analyze ./src"
 
 
-def test_precedence_prompt_params_over_tool_parameters():
+def test_tool_parameters_not_used_for_rendering():
+    """Verify that tool_parameters is NOT used for variable substitution (only prompt_params)."""
     prompt = "Analyze ${target} at depth ${depth}"
     ctx = {
         "tool_parameters": {"target": "A", "depth": "shallow"},
         "prompt_params": {"target": "B"},
     }
     out = render_system_prompt(prompt, ctx)
-    assert out == "Analyze B at depth shallow"
+    # tool_parameters["depth"] should NOT be used; missing vars become empty
+    assert out == "Analyze B at depth "
 
 
 def test_non_whitelisted_context_not_used():

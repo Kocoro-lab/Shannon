@@ -15,6 +15,7 @@
     .LanguageInstruction - Language matching instruction
     .AgentResults       - Raw agent outputs for synthesis
     .TargetWords        - Target word count for detailed findings
+    .CitationAgentEnabled - When true, do NOT add [n] markers
 */}}
 
 {{- template "system_contract" . -}}
@@ -29,33 +30,13 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 ✓ Each subsection contains 150–250 words minimum
 {{- end }}
 ✓ Executive Summary captures key insights (150–250 words)
-{{- if gt .CitationCount 0 }}
-✓ Each subsection includes ≥2 inline citations [n]
-✓ ALL claims supported by Available Citations (no fabrication)
-✓ Conflicting sources explicitly noted: "[1] says X, [2] says Y"
-{{- else }}
-✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as "unverified"
-{{- end }}
+{{ template "coverage_checklist_citations" . }}
 ✓ Response written in the SAME language as the query
 ✓ Structured Facts appendix contains all key factual claims
 
 {{ template "language_instruction" . }}
 
-{{- if gt .CitationCount 0 }}
-## Citation Integration:
-- Use inline citations [1], [2] for ALL factual claims that have supporting sources
-- Aim for AT LEAST {{ .MinCitations }} inline citations IF sufficient relevant sources exist
-- Use ONLY the provided Available Citations and their existing indices [n]
-- DO NOT cite irrelevant sources just to meet a quota
-- If a research area lacks relevant citations, note explicitly: "Limited information available on [aspect]" rather than citing unrelated sources
-- DO NOT invent new citation numbers; if a claim lacks a matching citation, flag as "unverified"
-- Each unique URL gets ONE citation number only
-- Do NOT include a "## Sources" section; the system will append Sources automatically
-{{- else }}
-## Citation Guidance:
-- Do NOT fabricate citations.
-- If a claim lacks supporting sources, mark it as "unverified".
-{{- end }}
+{{ template "citation_handling_research" . }}
 
 ## Preserve Source Integrity:
 - Keep findings VERBATIM when referencing specific data/quotes
@@ -64,7 +45,9 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 ## Quantitative Synthesis Requirements:
 - When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES when appropriate
 - Tables should compare: size, growth rates, market share, performance metrics, costs, timelines
+{{- if not .CitationAgentEnabled }}
 - Include inline citations [n] for ALL data points in tables
+{{- end }}
 
 ## Output Format:
 
@@ -118,17 +101,27 @@ After the main report, include a "## Structured Facts" section with a JSON code 
 ### Fact Extraction Guidelines:
 - Extract 10-20 discrete, verifiable factual claims from the synthesis
 - Each fact should be a single, atomic statement
-- Assign confidence based on citation quality: 0.9+ for multiple sources, 0.7-0.9 for single source
+- Assign confidence based on evidence quality: 0.9+ for multiple sources, 0.7-0.9 for single source
+{{- if not .CitationAgentEnabled }}
 - Include citation indices that support each fact
+{{- end }}
 - Categories: funding, product, market, technical, team, partnership, regulatory, performance
 - Mark quantitative facts (those with numbers, metrics, percentages) as quantitative: true
 - Include temporal markers when dates/periods are mentioned
 
 ## Quality Standards:
+{{- if .CitationAgentEnabled }}
+- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by evidence
+- DO NOT add unnecessary cautious disclaimers unless evidence is genuinely missing
+- Present well-evidenced facts as definitive conclusions, not tentative observations
+- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
+- NEVER fabricate or hallucinate information
+{{- else }}
 - State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
 - DO NOT add unnecessary cautious disclaimers unless evidence is genuinely missing
 - Present well-cited facts as definitive conclusions, not tentative observations
 - Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
 - NEVER fabricate or hallucinate sources
+{{- end }}
 
 {{ template "citation_list" . }}

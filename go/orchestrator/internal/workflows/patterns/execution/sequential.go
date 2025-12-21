@@ -169,6 +169,7 @@ func ExecuteSequential(
 					EventType:  activities.StreamEventAgentStarted,
 					AgentID:    fmt.Sprintf("agent-%s", task.ID),
 					Timestamp:  workflow.Now(ctx),
+					Payload:    map[string]interface{}{"role": task.Role},
 				}).Get(ctx, nil)
 		}
 
@@ -378,6 +379,7 @@ func ExecuteSequential(
 					EventType:  activities.StreamEventAgentCompleted,
 					AgentID:    fmt.Sprintf("agent-%s", task.ID),
 					Timestamp:  workflow.Now(ctx),
+					Payload:    map[string]interface{}{"role": task.Role},
 				}).Get(ctx, nil)
 		}
 
@@ -451,6 +453,7 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 			Metadata: map[string]interface{}{
 				"workflow": "sequential",
 				"strategy": "sequential",
+				"role":     result.Role,
 			},
 		},
 	)
