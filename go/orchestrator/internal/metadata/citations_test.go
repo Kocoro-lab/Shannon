@@ -84,9 +84,9 @@ func TestNormalizeURL(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "keep root slash",
+			name:     "strip root slash",
 			input:    "https://example.com/",
-			expected: "https://example.com/",
+			expected: "https://example.com",
 			wantErr:  false,
 		},
 	}
@@ -534,13 +534,13 @@ func TestCollectCitations(t *testing.T) {
 
 		citations, stats := CollectCitations(results, now, 15)
 
-		// Should limit to max 3 per domain
-		if len(citations) != 3 {
-			t.Errorf("expected 3 citations (max per domain), got %d", len(citations))
+		// With max_per_domain=50 (config), all 5 citations from same domain are kept
+		if len(citations) != 5 {
+			t.Errorf("expected 5 citations (all same domain, within max_per_domain limit), got %d", len(citations))
 		}
-		// Diversity = unique_domains / total = 1 / 3 = 0.33
-		if abs(stats.SourceDiversity-0.333) > 0.01 {
-			t.Errorf("expected diversity ~0.33 (all same domain), got %.2f", stats.SourceDiversity)
+		// Diversity = unique_domains / total = 1 / 5 = 0.20
+		if abs(stats.SourceDiversity-0.20) > 0.01 {
+			t.Errorf("expected diversity ~0.20 (all same domain), got %.2f", stats.SourceDiversity)
 		}
 
 		// Should keep the highest scored ones
