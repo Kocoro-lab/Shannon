@@ -109,8 +109,12 @@ func isTopicQuery(canonicalName string) bool {
 	}
 
 	// Date patterns indicate topic research (e.g., "AI regulation 2025")
-	if strings.Contains(lower, "2024") || strings.Contains(lower, "2025") || strings.Contains(lower, "2026") {
-		return true
+	// Use relative years to avoid hardcoding
+	currentYear := time.Now().Year()
+	for y := currentYear - 1; y <= currentYear+1; y++ {
+		if strings.Contains(lower, fmt.Sprintf("%d", y)) {
+			return true
+		}
 	}
 
 	return false
