@@ -15,6 +15,13 @@ import (
 	"go.temporal.io/sdk/activity"
 )
 
+// citationNumberPattern matches inline citations like [1], [2], etc. with capture group.
+// Compiled once at package level for performance.
+var citationNumberPattern = regexp.MustCompile(`\[(\d+)\]`)
+
+// citationMarkerPattern matches inline citations without capture group (for position finding).
+var citationMarkerPattern = regexp.MustCompile(`\[\d+\]`)
+
 // CitationForAgent is a simplified citation structure for the Citation Agent
 // (avoids import cycle with metadata package)
 type CitationForAgent struct {
@@ -209,11 +216,12 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 			"citations_added", len(usedCitations),
 		)
 		// Content was modified beyond just adding citations
-		// Return original report but mark as success (we're returning valid content)
+		// Return original report and mark validation as failed (citations were not added)
 		result.Role = role
 		result.CitedReport = input.Report
 		result.CitationsUsed = nil
-		result.ValidationPassed = true
+		result.ValidationPassed = false
+		result.ValidationError = "content modified beyond citations"
 		result.PlacementWarnings = []string{
 			fmt.Sprintf("LLM modified content beyond citations (%s) - using original report", err.Error()),
 		}
@@ -390,7 +398,12 @@ func validateContentImmutability(original, cited string) (bool, error) {
 		if len(strippedRunes) > maxLen {
 			maxLen = len(strippedRunes)
 		}
-		diffRatio = float64(editDist) / float64(maxLen)
+		// Guard against division by zero when both strings are empty
+		if maxLen == 0 {
+			diffRatio = 0.0
+		} else {
+			diffRatio = float64(editDist) / float64(maxLen)
+		}
 	}
 
 	// Tolerate up to 5% difference (LLMs sometimes make minor changes)
@@ -688,8 +701,7 @@ func normalizeForComparison(s string) string {
 
 // validateCitationNumbers returns invalid citation numbers (out of range)
 func validateCitationNumbers(cited string, maxCitations int) []int {
-	re := regexp.MustCompile(`\[(\d+)\]`)
-	matches := re.FindAllStringSubmatch(cited, -1)
+	matches := citationNumberPattern.FindAllStringSubmatch(cited, -1)
 
 	var invalid []int
 	seen := make(map[int]bool)
@@ -716,8 +728,7 @@ func removeInvalidCitations(cited string, invalid []int) string {
 // validateCitationPlacement returns warnings about citation placement issues
 func validateCitationPlacement(cited string) []string {
 	var warnings []string
-	re := regexp.MustCompile(`\[\d+\]`)
-	matches := re.FindAllStringIndex(cited, -1)
+	matches := citationMarkerPattern.FindAllStringIndex(cited, -1)
 
 	for _, m := range matches {
 		start := m[0]
@@ -740,10 +751,9 @@ func validateCitationPlacement(cited string) []string {
 func detectRedundantCitations(cited string) []string {
 	var redundant []string
 	sentences := splitIntoSentences(cited)
-	re := regexp.MustCompile(`\[(\d+)\]`)
 
 	for _, sent := range sentences {
-		matches := re.FindAllStringSubmatch(sent, -1)
+		matches := citationNumberPattern.FindAllStringSubmatch(sent, -1)
 		seen := make(map[string]int)
 		for _, m := range matches {
 			seen[m[1]]++
@@ -759,8 +769,7 @@ func detectRedundantCitations(cited string) []string {
 
 // extractUsedCitationNumbers extracts unique citation numbers used
 func extractUsedCitationNumbers(cited string) []int {
-	re := regexp.MustCompile(`\[(\d+)\]`)
-	matches := re.FindAllStringSubmatch(cited, -1)
+	matches := citationNumberPattern.FindAllStringSubmatch(cited, -1)
 
 	seen := make(map[int]bool)
 	var used []int
