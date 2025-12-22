@@ -474,7 +474,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	// Default to "large" tier for synthesis since this is the final user-facing output.
 	// However, allow explicit overrides via synthesis_model_tier context parameter
 	// (set by ResearchWorkflow from baseContext["model_tier"]).
-	if _, exists := contextMap["model_tier"]; !exists {
+	if tierVal, exists := contextMap["model_tier"]; !exists || tierVal == nil {
+		contextMap["model_tier"] = "large"
+	} else if tierStr, ok := tierVal.(string); !ok || strings.TrimSpace(tierStr) == "" {
 		contextMap["model_tier"] = "large"
 	}
 
