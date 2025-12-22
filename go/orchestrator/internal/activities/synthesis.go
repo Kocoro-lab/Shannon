@@ -470,11 +470,13 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
-	// Ensure synthesis uses capable model tier for high-quality output
-	// ALWAYS use "large" tier for synthesis regardless of context, since this is
-	// the final user-facing output. Agent execution uses smaller tiers for cost
-	// optimization, but synthesis quality is critical.
-	contextMap["model_tier"] = "large"
+	// Ensure synthesis uses capable model tier for high-quality output.
+	// Default to "large" tier for synthesis since this is the final user-facing output.
+	// However, allow explicit overrides via synthesis_model_tier context parameter
+	// (set by ResearchWorkflow from baseContext["model_tier"]).
+	if _, exists := contextMap["model_tier"]; !exists {
+		contextMap["model_tier"] = "large"
+	}
 
 	// Build synthesis query that includes agent results
 	// Truncation is adjusted later once we know whether this is a research-style synthesis.
