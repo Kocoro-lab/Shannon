@@ -96,10 +96,18 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 	}
 	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
 
-	// Determine model tier: use input.ModelTier if set, otherwise default to "small"
+	// Determine model tier: input.ModelTier > context["model_tier"] > default "small"
 	modelTier := input.ModelTier
 	if modelTier == "" {
-		modelTier = "small"
+		// Fallback to context model_tier if present
+		if input.Context != nil {
+			if v, ok := input.Context["model_tier"].(string); ok && strings.TrimSpace(v) != "" {
+				modelTier = strings.TrimSpace(v)
+			}
+		}
+		if modelTier == "" {
+			modelTier = "small"
+		}
 	}
 
 	reqBody := map[string]interface{}{

@@ -2965,7 +2965,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			Citations:        citationsForAgent,
 			ParentWorkflowID: input.ParentWorkflowID,
 			Context:          baseContext,
-			ModelTier:        "large",
+			// ModelTier: respect baseContext["model_tier"] set from synthesis_model_tier
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
