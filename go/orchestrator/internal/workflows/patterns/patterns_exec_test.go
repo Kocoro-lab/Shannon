@@ -135,7 +135,7 @@ func TestParallelRespectsMaxConcurrency(t *testing.T) {
 	}
 }
 
-func TestHybridDependencyWaitDoesNotPollWithFixedSleep(t *testing.T) {
+func TestHybridDependencyWaitUsesIncrementalTimeout(t *testing.T) {
 	suite := &testsuite.WorkflowTestSuite{}
 	env := suite.NewTestWorkflowEnvironment()
 
@@ -151,12 +151,11 @@ func TestHybridDependencyWaitDoesNotPollWithFixedSleep(t *testing.T) {
 		activity.RegisterOptions{Name: "ExecuteAgent"},
 	)
 
-	var sawPollingTimer bool
+	// Track timer durations to verify incremental timeout behavior
+	var timerDurations []time.Duration
 	env.SetOnTimerScheduledListener(func(timerID string, duration time.Duration) {
 		_ = timerID
-		if duration == 3*time.Second {
-			sawPollingTimer = true
-		}
+		timerDurations = append(timerDurations, duration)
 	})
 
 	wf := func(ctx workflow.Context) (int, error) {
@@ -165,10 +164,11 @@ func TestHybridDependencyWaitDoesNotPollWithFixedSleep(t *testing.T) {
 			{ID: "task-2", Description: "b", Dependencies: []string{"task-1"}},
 		}
 		cfg := execution.HybridConfig{
-			MaxConcurrency:        10,
-			EmitEvents:            false,
-			Context:               map[string]interface{}{},
-			DependencyWaitTimeout: 30 * time.Second,
+			MaxConcurrency:          10,
+			EmitEvents:              false,
+			Context:                 map[string]interface{}{},
+			DependencyWaitTimeout:   30 * time.Second,
+			DependencyCheckInterval: 5 * time.Second, // Short interval for test
 		}
 		res, err := execution.ExecuteHybrid(ctx, tasks, "s", []string{}, cfg, 0, "u", "small")
 		if err != nil {
@@ -182,7 +182,65 @@ func TestHybridDependencyWaitDoesNotPollWithFixedSleep(t *testing.T) {
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
 		t.Fatalf("Hybrid workflow failed: %v", env.GetWorkflowError())
 	}
-	if sawPollingTimer {
-		t.Fatalf("expected no 3s polling timers for dependency waits")
+
+	// Verify timers use short intervals (5s) not long timeout (30s)
+	for _, d := range timerDurations {
+		if d > 5*time.Second {
+			t.Fatalf("expected timers to use check interval (5s), got %v", d)
+		}
+	}
+}
+
+func TestHybridDependencyWaitDefaultInterval(t *testing.T) {
+	suite := &testsuite.WorkflowTestSuite{}
+	env := suite.NewTestWorkflowEnvironment()
+
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
+			_ = ctx
+			if in.AgentID == "agent-task-1" {
+				time.Sleep(100 * time.Millisecond)
+			}
+			return activities.AgentExecutionResult{AgentID: in.AgentID, Response: "ok", Success: true, TokensUsed: 1}, nil
+		},
+		activity.RegisterOptions{Name: "ExecuteAgent"},
+	)
+
+	var maxTimerDuration time.Duration
+	env.SetOnTimerScheduledListener(func(timerID string, duration time.Duration) {
+		_ = timerID
+		if duration > maxTimerDuration {
+			maxTimerDuration = duration
+		}
+	})
+
+	wf := func(ctx workflow.Context) (int, error) {
+		tasks := []execution.HybridTask{
+			{ID: "task-1", Description: "a"},
+			{ID: "task-2", Description: "b", Dependencies: []string{"task-1"}},
+		}
+		cfg := execution.HybridConfig{
+			MaxConcurrency:        10,
+			EmitEvents:            false,
+			Context:               map[string]interface{}{},
+			DependencyWaitTimeout: 2 * time.Minute,
+			// DependencyCheckInterval not set - should default to 30s
+		}
+		res, err := execution.ExecuteHybrid(ctx, tasks, "s", []string{}, cfg, 0, "u", "small")
+		if err != nil {
+			return 0, err
+		}
+		return len(res.Results), nil
+	}
+
+	env.RegisterWorkflow(wf)
+	env.ExecuteWorkflow(wf)
+	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil {
+		t.Fatalf("Hybrid workflow failed: %v", env.GetWorkflowError())
+	}
+
+	// Verify default interval is 30s (not full 2 minute timeout)
+	if maxTimerDuration > 30*time.Second {
+		t.Fatalf("expected default check interval to be 30s, but saw timer of %v", maxTimerDuration)
 	}
 }

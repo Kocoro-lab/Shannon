@@ -1425,7 +1425,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					MaxConcurrency:           hybridMax,
 					EmitEvents:               true,
 					Context:                  baseContext,
-					DependencyWaitTimeout:    6 * time.Minute,
+					DependencyWaitTimeout:    6 * time.Minute,  // Total timeout
+					DependencyCheckInterval:  30 * time.Second, // Check every 30s for accurate Temporal UI display
 					PassDependencyResults:    true,
 					ClearDependentToolParams: true,
 				}
