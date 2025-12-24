@@ -123,6 +123,21 @@ SCHEDULE_MAX_BUDGET_USD=10.0
 
 See [Scheduled Tasks](scheduled-tasks.md) for complete scheduling documentation.
 
+### Authentication & Security
+
+```bash
+# JWT secret for token signing (REQUIRED for production)
+# Generate a secure secret with: openssl rand -base64 32
+JWT_SECRET=your-production-secret-here
+
+# Skip authentication (development only)
+# 1 = disabled (easy local development)
+# 0 = enabled (production)
+GATEWAY_SKIP_AUTH=1
+```
+
+**Important**: The default `JWT_SECRET` in `.env.example` is for development only. Always generate a unique secret for production deployments.
+
 ## Common Issues and Solutions
 
 ### Issue: "No web search provider configured"

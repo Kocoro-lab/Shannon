@@ -304,6 +304,26 @@ CREATE TABLE task_executions (
 
 ### API Key Management
 
+#### API Key Formats
+
+Shannon accepts API keys in two formats and automatically normalizes them:
+
+| Input Format | Normalized To | Use Case |
+|--------------|---------------|----------|
+| `sk_abc123` | `sk_abc123` | Internal format, stored in database |
+| `sk-shannon-abc123` | `sk_abc123` | External/OpenAI-style format |
+
+The `sk-shannon-` prefix is stripped and converted to `sk_` internally. This allows compatibility with OpenAI-style key naming conventions while maintaining a consistent internal format.
+
+Both formats work with either header:
+```bash
+# X-API-Key header
+curl -H "X-API-Key: sk_test123" http://localhost:8080/api/v1/tasks
+
+# Authorization Bearer header (also works)
+curl -H "Authorization: Bearer sk-shannon-test123" http://localhost:8080/api/v1/tasks
+```
+
 #### List API Keys
 
 ```bash

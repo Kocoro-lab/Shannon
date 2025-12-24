@@ -139,6 +139,23 @@ curl -N -H "X-API-Key: sk_test_123456" \
   "http://localhost:8080/api/v1/stream/sse?workflow_id=xxx"
 ```
 
+#### API Key Formats
+
+Shannon accepts API keys in two formats:
+
+| Format | Example | Notes |
+|--------|---------|-------|
+| Internal | `sk_abc123` | Standard format, used as-is |
+| External | `sk-shannon-abc123` | OpenAI-style, auto-normalized to `sk_abc123` |
+
+Both formats work with `X-API-Key` header or `Authorization: Bearer` header:
+
+```bash
+# Both of these are equivalent:
+curl -H "X-API-Key: sk_test123" ...
+curl -H "Authorization: Bearer sk-shannon-test123" ...
+```
+
 ### Task Submission
 
 ```bash
@@ -279,7 +296,7 @@ Notes:
 | `POSTGRES_PASSWORD` | `shannon` | Database password |
 | `POSTGRES_DB` | `shannon` | Database name |
 | `REDIS_URL` | `redis://redis:6379` | Redis URL for rate limiting |
-| `JWT_SECRET` | `your-secret-key` | JWT signing secret |
+| `JWT_SECRET` | (required) | JWT signing secret. **Must be changed in production.** Generate with `openssl rand -base64 32` |
 | `GATEWAY_SKIP_AUTH` | `0` (repo), `1` (Compose) | Skip authentication (1=disabled for easy start, 0=enabled for production) |
 
 ## Development
