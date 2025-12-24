@@ -353,17 +353,17 @@ class Tool(ABC):
         # For requests without session_id or agent_id, use request-scoped tracking
         # This prevents false rate limiting across concurrent requests
         # NOTE: Per-request UUID means no cross-request rate limiting without context
-        if self._current_request_id is None:
-            self._current_request_id = uuid.uuid4().hex[:8]
+        # UUID is generated upfront in _reset_request_id() to avoid race conditions
         return f"request:{self._current_request_id}"
 
     def _reset_request_id(self) -> None:
-        """Reset request ID for next execution.
+        """Generate a new request ID for this execution.
 
         Called at the start of each execute() to ensure each execution
-        gets a unique tracker key when no session_id is available.
+        gets a unique tracker key when no session_id/agent_id is available.
+        Generating upfront avoids race conditions in _get_tracker_key().
         """
-        self._current_request_id = None
+        self._current_request_id = uuid.uuid4().hex[:8]
 
     def _get_retry_after(self, tracker_key: str) -> Optional[float]:
         """Check rate limit and return remaining wait time if limited.
