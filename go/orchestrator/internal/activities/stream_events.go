@@ -2,7 +2,6 @@ package activities
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
@@ -72,21 +71,6 @@ type EmitTaskUpdateInput struct {
 // EmitTaskUpdate logs a minimal deterministic event. In future it can publish to a stream.
 func EmitTaskUpdate(ctx context.Context, in EmitTaskUpdateInput) error {
 	logger := activity.GetLogger(ctx)
-
-	if in.Payload == nil {
-		in.Payload = map[string]interface{}{}
-	}
-	if v, ok := in.Payload["role"].(string); !ok || strings.TrimSpace(v) == "" {
-		role := ""
-		if strings.TrimSpace(in.AgentID) != "" {
-			role = strings.ReplaceAll(in.AgentID, "-", "_")
-		}
-		if role == "" {
-			role = "generalist"
-		}
-		in.Payload["role"] = role
-	}
-
 	logger.Info("streaming_v1 event",
 		"workflow_id", in.WorkflowID,
 		"type", string(in.EventType),

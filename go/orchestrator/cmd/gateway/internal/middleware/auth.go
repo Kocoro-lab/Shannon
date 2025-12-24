@@ -55,7 +55,7 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 
 			// In dev mode, respect x-user-id and x-tenant-id headers if provided
 			// This allows testing ownership/tenancy isolation without real auth
-			userID := uuid.MustParse("00000000-0000-0000-0000-000000000002") // default
+			userID := uuid.MustParse("00000000-0000-0000-0000-000000000002")   // default
 			tenantID := uuid.MustParse("00000000-0000-0000-0000-000000000001") // default
 
 			if headerUserID := r.Header.Get("x-user-id"); headerUserID != "" {
@@ -78,7 +78,8 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 				IsAPIKey:  true,
 				TokenType: "api_key",
 			}
-			ctx := context.WithValue(r.Context(), "user", userCtx)
+			ctx := context.WithValue(r.Context(), authpkg.UserContextKey, userCtx)
+			ctx = context.WithValue(ctx, "user", userCtx)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -102,7 +103,8 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 		}
 
 		// Add user context to request context
-		ctx := context.WithValue(r.Context(), "user", userCtx)
+		ctx := context.WithValue(r.Context(), authpkg.UserContextKey, userCtx)
+		ctx = context.WithValue(ctx, "user", userCtx)
 
 		// Log successful authentication
 		m.logger.Debug("Request authenticated",

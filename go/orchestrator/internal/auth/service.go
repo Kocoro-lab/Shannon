@@ -317,6 +317,7 @@ func (s *Service) ValidateAPIKey(ctx context.Context, apiKey string) (*UserConte
 		Scopes:    []string(key.Scopes),
 		IsAPIKey:  true,
 		TokenType: "api_key",
+		APIKeyID:  key.ID,
 	}, nil
 }
 

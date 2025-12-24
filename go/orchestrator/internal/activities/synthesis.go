@@ -38,7 +38,6 @@ func sanitizeAgentOutput(text string) string {
 
 	urlPattern := regexp.MustCompile(`^https?://`)
 	citationPattern := regexp.MustCompile(`^\[\d+\]\s+https?://`)
-	inlineURLPattern := regexp.MustCompile(`https?://\S+`)
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -49,35 +48,12 @@ func sanitizeAgentOutput(text string) string {
 			continue
 		}
 
-		// Inside Sources section: keep descriptive context, drop raw URLs/citation-only lines.
+		// Skip everything inside Sources section
 		if inSourcesSection {
 			// Check if we hit another major section (exit Sources)
 			if strings.HasPrefix(trimmed, "##") && !strings.HasPrefix(trimmed, "## Sources") {
 				inSourcesSection = false
 			} else {
-				// Skip empty lines
-				if trimmed == "" {
-					continue
-				}
-				// Skip bare URLs
-				if urlPattern.MatchString(trimmed) {
-					continue
-				}
-				// Skip citation lines like "[1] https://..."
-				if citationPattern.MatchString(trimmed) {
-					continue
-				}
-				// Skip bullet points with only URLs
-				if strings.HasPrefix(trimmed, "- http") || strings.HasPrefix(trimmed, "* http") || strings.HasPrefix(trimmed, "• http") {
-					continue
-				}
-
-				// Keep descriptive source notes but remove inline URLs to avoid duplication/noise
-				clean := inlineURLPattern.ReplaceAllString(line, "")
-				clean = strings.TrimSpace(clean)
-				if clean != "" && clean != "-" && clean != "*" && clean != "•" {
-					result = append(result, clean)
-				}
 				continue
 			}
 		}
@@ -470,19 +446,21 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
-	// Ensure synthesis uses capable model tier for high-quality output.
-	// Default to "large" tier for synthesis since this is the final user-facing output.
-	// However, allow explicit overrides via synthesis_model_tier context parameter
-	// (set by ResearchWorkflow from baseContext["model_tier"]).
-	if tierVal, exists := contextMap["model_tier"]; !exists || tierVal == nil {
-		contextMap["model_tier"] = "large"
-	} else if tierStr, ok := tierVal.(string); !ok || strings.TrimSpace(tierStr) == "" {
-		contextMap["model_tier"] = "large"
+	// Default to "large" tier for synthesis (user-facing quality critical),
+	// but allow override via context["model_tier"] or "synthesis_model_tier" for cost optimization.
+	// This centralized check ensures all workflows respect synthesis_model_tier without needing
+	// to individually translate it to model_tier.
+	if _, exists := contextMap["model_tier"]; !exists {
+		// Check for synthesis_model_tier override (may be set by any workflow)
+		if tier, ok := contextMap["synthesis_model_tier"].(string); ok && strings.TrimSpace(tier) != "" {
+			contextMap["model_tier"] = strings.ToLower(strings.TrimSpace(tier))
+		} else {
+			contextMap["model_tier"] = "large"
+		}
 	}
 
 	// Build synthesis query that includes agent results
-	// Truncation is adjusted later once we know whether this is a research-style synthesis.
-	maxPerAgentChars := 4000 // Default for non-research
+	const maxPerAgentChars = 4000 // Increased for data-heavy responses (analytics, structured data)
 
 	var b strings.Builder
 
@@ -652,24 +630,6 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 
-	// For research workflows, preserve more detail per agent output, but scale down when many agents exist
-	// to avoid oversized prompts that can degrade recall and increase truncation risk upstream.
-	if isResearch {
-		maxPerAgentChars = 8000
-		switch {
-		case len(input.AgentResults) > 25:
-			maxPerAgentChars = 4000
-		case len(input.AgentResults) > 15:
-			maxPerAgentChars = 6000
-		case len(input.AgentResults) > 10:
-			maxPerAgentChars = 7000
-		}
-		logger.Info("Adjusted per-agent truncation for research synthesis",
-			zap.Int("maxPerAgentChars", maxPerAgentChars),
-			zap.Int("agent_count", len(input.AgentResults)),
-		)
-	}
-
 	// Calculate target words for research synthesis
 	// Deep Research 2.0: Increased multiplier to capture more intermediate findings
 	targetWords := 1200
@@ -719,17 +679,17 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		} else if tmpl := LoadSynthesisTemplate(templateName, nil); tmpl != nil {
 			// Try to render the template
 			data := SynthesisTemplateData{
-				Query:               input.Query,
-				QueryLanguage:       queryLanguage,
-				ResearchAreas:       areas,
-				AvailableCitations:  availableCitationsStr,
-				CitationCount:       availableCitations,
-				MinCitations:        minCitations,
-				LanguageInstruction: languageInstruction,
-				AgentResults:        "", // Agent results appended separately below
-				TargetWords:         targetWords,
-				IsResearch:          isResearch,
-				SynthesisStyle:      synthesisStyle,
+				Query:                input.Query,
+				QueryLanguage:        queryLanguage,
+				ResearchAreas:        areas,
+				AvailableCitations:   availableCitationsStr,
+				CitationCount:        availableCitations,
+				MinCitations:         minCitations,
+				LanguageInstruction:  languageInstruction,
+				AgentResults:         "", // Agent results appended separately below
+				TargetWords:          targetWords,
+				IsResearch:           isResearch,
+				SynthesisStyle:       synthesisStyle,
 				CitationAgentEnabled: citationAgentEnabled,
 			}
 
@@ -796,7 +756,7 @@ Use exactly these top-level headings in your response, and start your answer dir
 Section requirements:
 - Executive Summary: 2–3 sentences; state findings confidently
 - Detailed Findings: %s; state facts authoritatively
-- Limitations and Uncertainties: OMIT entirely if findings are comprehensive; include ONLY if evidence is genuinely insufficient or contradictory
+- Limitations and Uncertainties: OMIT entirely if findings are comprehensive and well-cited; include ONLY if evidence is genuinely insufficient or contradictory
 `, citationInstr)
 		}
 
@@ -820,31 +780,23 @@ Section requirements:
 				}
 			}
 
-			// Build dynamic checklist and citation guidance (citationAgentEnabled defined at top level)
+			// Build dynamic checklist and citation guidance
+			// When citationAgentEnabled=true, the Citation Agent will inject [n] markers after synthesis,
+			// so we should NOT instruct the LLM to add inline citations manually.
 			coverageExtra := ""
 			if hasCitations && !citationAgentEnabled {
 				coverageExtra = "    ✓ Each subsection includes ≥2 inline citations [n]\\n" +
 					"    ✓ ALL claims supported by Available Citations (no fabrication)\\n" +
 					"    ✓ Conflicting sources explicitly noted: \\\"[1] says X, [2] says Y\\\"\\n"
-			} else if citationAgentEnabled {
-				coverageExtra = "    ✓ Focus on accurate content - citations will be added automatically\\n" +
-					"    ✓ Note conflicting information: \\\"Some sources indicate X, while others suggest Y\\\"\\n"
+			} else if hasCitations && citationAgentEnabled {
+				coverageExtra = "    ✓ ALL claims should be supported by the available research findings\\n" +
+					"    ✓ Conflicting findings explicitly noted (citations will be added automatically)\\n"
 			} else {
 				coverageExtra = "    ✓ If no sources are available, do NOT fabricate citations; mark unsupported claims as \\\"unverified\\\"\\n"
 			}
 
 			citationGuidance := ""
-			if citationAgentEnabled {
-				// Citation Agent mode: synthesis should NOT add citations
-				citationGuidance = `## Citation Handling:
-    - DO NOT add any inline citations [n] to your response
-    - A separate Citation Agent will add citations after you finish
-    - Focus ONLY on producing accurate, well-organized content
-    - When referencing facts from sources, write naturally without citation markers
-    - Note conflicting information: "Some sources indicate X, while others suggest Y"
-    - Do NOT include a "## Sources" section; the system handles this automatically
-`
-			} else if hasCitations {
+			if hasCitations && !citationAgentEnabled {
 				citationGuidance = fmt.Sprintf(`## Citation Integration:
     - Use inline citations [1], [2] for ALL factual claims that have supporting sources
     - Aim for AT LEAST %d inline citations IF sufficient relevant sources exist
@@ -855,44 +807,16 @@ Section requirements:
     - Each unique URL gets ONE citation number only
     - Do NOT include a "## Sources" section; the system will append Sources automatically
 `, minCitations)
+			} else if hasCitations && citationAgentEnabled {
+				citationGuidance = `## Citation Note:
+    - Citations will be added automatically after synthesis based on your content.
+    - Focus on presenting findings clearly; do NOT manually insert [n] citation markers.
+    - Do NOT include a "## Sources" section; the system will append Sources automatically.
+`
 			} else {
 				citationGuidance = `## Citation Guidance:
     - Do NOT fabricate citations.
     - If a claim lacks supporting sources, mark it as "unverified".
-`
-			}
-
-			// Build conditional sections based on Citation Agent mode
-			quantitativeCitationLine := ""
-			if !citationAgentEnabled {
-				quantitativeCitationLine = "    - Include inline citations [n] for ALL data points in tables\n"
-			}
-
-			qualityStandards := ""
-			if citationAgentEnabled {
-				// Quality standards WITHOUT citation references (Citation Agent will handle)
-				qualityStandards = `## Quality Standards:
-	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by evidence
-	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm") unless evidence is genuinely missing
-	- Present well-evidenced facts as definitive conclusions, not tentative observations
-	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
-	- If conflicting information exists, note naturally: "Some sources indicate X, while others suggest Y"
-	- Flag gaps ONLY when evidence is genuinely insufficient: "No public data available on [specific aspect]"
-	- If ALL research areas have comprehensive findings: OMIT the "Limitations and Uncertainties" section entirely
-	- NEVER fabricate or hallucinate information
-`
-			} else {
-				// Quality standards WITH citation references
-				qualityStandards = `## Quality Standards:
-	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
-	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm") unless evidence is genuinely missing
-	- Present well-cited facts as definitive conclusions, not tentative observations
-	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
-	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
-	- Flag gaps ONLY when evidence is genuinely insufficient: "No public data available on [specific aspect]"
-	- If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
-	- NEVER fabricate or hallucinate sources
-	- Ensure each inline citation directly supports the specific claim; prefer primary sources over aggregators
 `
 			}
 
@@ -920,38 +844,37 @@ Section requirements:
     ## Quantitative Synthesis Requirements:
     - When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES when appropriate
     - Tables should compare: size, growth rates, market share, performance metrics, costs, timelines
-%s    - If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
+    - Include inline citations [n] for ALL data points in tables
+    - If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
     - Prioritize specific numbers over vague descriptors (e.g., "$5.2B revenue" not "significant revenue")
 
     %s
     %s
 
-%s
-    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, quantitativeCitationLine, outputStructure, areasInstruction, qualityStandards)
+	## Quality Standards:
+	- State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
+	- DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm", "at present we have not found") unless evidence is genuinely missing
+	- Present well-cited facts as definitive conclusions, not tentative observations
+	- Do NOT mention agents, tools, workflows, or internal retrieval; write directly to the user
+	- If conflicting information exists, note explicitly: "Source [1] reports X, while [2] suggests Y"
+	- Flag gaps ONLY when evidence is genuinely insufficient for a specific aspect: "No public data available on [specific aspect]"
+	- If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
+	- NEVER fabricate or hallucinate sources
+	- Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+
+    `, len(areas), coverageExtra, languageInstruction, queryLanguage, citationGuidance, outputStructure, areasInstruction)
 		} else {
 			// Lightweight summarizer (non-research): no heavy structure or checklists
 			fmt.Fprintf(&b, "# Synthesis Requirements:\n\n")
 			fmt.Fprintf(&b, "%s\n", languageInstruction)
 			fmt.Fprintf(&b, "Produce a concise, directly helpful answer. Avoid unnecessary headings.\n")
-			fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n")
-			// Add Citation Agent guidance for non-research mode too
-			if citationAgentEnabled {
-				fmt.Fprintf(&b, "\n## Citation Handling:\n")
-				fmt.Fprintf(&b, "- DO NOT add any inline citations [n] to your response\n")
-				fmt.Fprintf(&b, "- A separate Citation Agent will add citations after you finish\n")
-				fmt.Fprintf(&b, "- When referencing information, write naturally without citation markers\n\n")
-			}
+			fmt.Fprintf(&b, "Do not include a \"Sources\" section; the system appends sources if needed.\n\n")
 		}
 
 		// Include available citations if present (Phase 2.5 fix)
 		if input.Context != nil {
 			if citationList, ok := input.Context["available_citations"].(string); ok && citationList != "" {
-				// Change wording based on Citation Agent mode
-				if citationAgentEnabled {
-					fmt.Fprintf(&b, "## Reference Sources (for your information - do NOT add [n] markers):\n%s\n", citationList)
-				} else {
-					fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
-				}
+				fmt.Fprintf(&b, "## Available Citations (use these in your synthesis):\n%s\n", citationList)
 			}
 		}
 	} // End of !templateUsed fallback block
@@ -988,49 +911,36 @@ Section requirements:
 		}
 	}
 
-	// Ordering matters: for deep research, avoid anchoring on "(Synthesis)" agent outputs.
-	// Use raw agent outputs as the primary evidence, and treat synthesis agents as coverage guides.
+	// Include synthesis results first (these contain aggregated insights)
 	count := 0
-
-	emitAgent := func(r AgentExecutionResult, isSynth bool, maxChars int) {
+	for _, r := range synthesisResults {
+		// Sanitize agent output to remove duplicate sources/citations
+		sanitized := sanitizeAgentOutput(r.Response)
+		// Apply length cap after sanitization (synthesis results get more space)
+		maxSynthesisChars := maxPerAgentChars * 2 // Double the space for synthesis results
+		if len([]rune(sanitized)) > maxSynthesisChars {
+			sanitized = string([]rune(sanitized)[:maxSynthesisChars]) + "..."
+		}
+		fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
+		count++
 		if count >= maxAgents {
-			return
+			break
+		}
+	}
+
+	// Then include individual agent outputs
+	for _, r := range otherResults {
+		if count >= maxAgents {
+			break
 		}
 		// Sanitize agent output to remove duplicate sources/citations
 		sanitized := sanitizeAgentOutput(r.Response)
 		// Apply length cap after sanitization
-		if len([]rune(sanitized)) > maxChars {
-			sanitized = string([]rune(sanitized)[:maxChars]) + "..."
+		if len([]rune(sanitized)) > maxPerAgentChars {
+			sanitized = string([]rune(sanitized)[:maxPerAgentChars]) + "..."
 		}
-		if isSynth {
-			fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
-		} else {
-			fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, sanitized)
-		}
+		fmt.Fprintf(&b, "=== Agent %s ===\n%s\n\n", r.AgentID, sanitized)
 		count++
-	}
-
-	includeSynthesisFirst := !isResearch
-	synthChars := maxPerAgentChars * 2
-	if isResearch {
-		// Keep synthesis outputs smaller in research mode to reduce "summary-of-summary" dominance.
-		synthChars = maxPerAgentChars
-	}
-
-	if includeSynthesisFirst {
-		for _, r := range synthesisResults {
-			emitAgent(r, true, synthChars)
-		}
-		for _, r := range otherResults {
-			emitAgent(r, false, maxPerAgentChars)
-		}
-	} else {
-		for _, r := range otherResults {
-			emitAgent(r, false, maxPerAgentChars)
-		}
-		for _, r := range synthesisResults {
-			emitAgent(r, true, synthChars)
-		}
 	}
 
 	if count == 0 {

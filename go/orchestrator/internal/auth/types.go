@@ -106,6 +106,9 @@ type UserContext struct {
 	Scopes    []string  `json:"scopes"`
 	IsAPIKey  bool      `json:"is_api_key"`
 	TokenType string    `json:"token_type"` // jwt or api_key
+
+	// API key details for rate limiting
+	APIKeyID uuid.UUID `json:"api_key_id,omitempty"` // ID of the API key (if IsAPIKey)
 }
 
 // TokenPair represents access and refresh tokens

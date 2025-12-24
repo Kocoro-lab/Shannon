@@ -2,7 +2,6 @@ package execution
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -87,6 +87,15 @@ func ExecuteSequential(
 		taskContext["role"] = task.Role
 		taskContext["task_id"] = task.ID
 
+		// Compute agent name using station names for deterministic, human-readable IDs
+		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+		if config.Context != nil {
+			if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+				wid = p
+			}
+		}
+		agentName := agents.GetAgentName(wid, i)
+
 		// Fetch agent-specific memory if session exists
 		if sessionID != "" {
 			var am activities.FetchAgentMemoryResult
@@ -94,7 +103,7 @@ func ExecuteSequential(
 				activities.FetchAgentMemory,
 				activities.FetchAgentMemoryInput{
 					SessionID: sessionID,
-					AgentID:   fmt.Sprintf("agent-%s", task.ID),
+					AgentID:   agentName,
 					TopK:      5,
 				}).Get(ctx, &am)
 			if len(am.Items) > 0 {
@@ -157,19 +166,12 @@ func ExecuteSequential(
 
 		// Emit agent started event
 		if config.EmitEvents {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			if config.Context != nil {
-				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-					wid = p
-				}
-			}
 			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 				activities.EmitTaskUpdateInput{
 					WorkflowID: wid,
 					EventType:  activities.StreamEventAgentStarted,
-					AgentID:    fmt.Sprintf("agent-%s", task.ID),
+					AgentID:    agentName,
 					Timestamp:  workflow.Now(ctx),
-					Payload:    map[string]interface{}{"role": task.Role},
 				}).Get(ctx, nil)
 		}
 
@@ -185,19 +187,9 @@ func ExecuteSequential(
 
 		if budgetPerAgent > 0 {
 			// Execute with budget
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			// Prefer parent workflow ID for budget tracking and persistence
-			parentWid := ""
-			if config.Context != nil {
-				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-					parentWid = p
-				}
-			}
 			// Use parent workflow ID when available, otherwise fallback to child ID (trim suffix if present)
 			taskID := wid
-			if parentWid != "" {
-				taskID = parentWid
-			} else if idx := strings.LastIndex(wid, "_"); idx > 0 {
+			if idx := strings.LastIndex(wid, "_"); idx > 0 {
 				taskID = wid[:idx]
 			}
 			err = workflow.ExecuteActivity(ctx,
@@ -205,7 +197,7 @@ func ExecuteSequential(
 				activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
 						Query:            task.Description,
-						AgentID:          fmt.Sprintf("agent-%s", task.ID),
+						AgentID:          agentName,
 						Context:          taskContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
@@ -213,7 +205,7 @@ func ExecuteSequential(
 						SuggestedTools:   task.SuggestedTools,
 						ToolParameters:   task.ToolParameters,
 						PersonaID:        task.PersonaID,
-						ParentWorkflowID: parentWid,
+						ParentWorkflowID: wid,
 					},
 					MaxTokens: budgetPerAgent,
 					UserID:    userID,
@@ -222,18 +214,11 @@ func ExecuteSequential(
 				}).Get(ctx, &result)
 		} else {
 			// Execute without budget
-			// Determine parent workflow if available for streaming correlation
-			parentWid := ""
-			if config.Context != nil {
-				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-					parentWid = p
-				}
-			}
 			err = workflow.ExecuteActivity(ctx,
 				activities.ExecuteAgent,
 				activities.AgentExecutionInput{
 					Query:            task.Description,
-					AgentID:          fmt.Sprintf("agent-%s", task.ID),
+					AgentID:          agentName,
 					Context:          taskContext,
 					Mode:             "standard",
 					SessionID:        sessionID,
@@ -241,7 +226,7 @@ func ExecuteSequential(
 					SuggestedTools:   task.SuggestedTools,
 					ToolParameters:   task.ToolParameters,
 					PersonaID:        task.PersonaID,
-					ParentWorkflowID: parentWid,
+					ParentWorkflowID: wid,
 				}).Get(ctx, &result)
 		}
 
@@ -254,17 +239,11 @@ func ExecuteSequential(
 
 			// Emit error event (parent workflow when available)
 			if config.EmitEvents {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				if config.Context != nil {
-					if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-						wid = p
-					}
-				}
 				_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 					activities.EmitTaskUpdateInput{
 						WorkflowID: wid,
 						EventType:  activities.StreamEventErrorOccurred,
-						AgentID:    fmt.Sprintf("agent-%s", task.ID),
+						AgentID:    agentName,
 						Message:    err.Error(),
 						Timestamp:  workflow.Now(ctx),
 					}).Get(ctx, nil)
@@ -275,13 +254,7 @@ func ExecuteSequential(
 		}
 
 		// Persist agent execution (fire-and-forget). Use parent workflow ID when available.
-		workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
-		if config.Context != nil {
-			if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-				workflowID = p
-			}
-		}
-		persistAgentExecution(ctx, workflowID, fmt.Sprintf("agent-%s", task.ID), task.Description, result)
+		persistAgentExecution(ctx, wid, agentName, task.Description, result)
 
 		// Success
 		results = append(results, result)
@@ -367,19 +340,12 @@ func ExecuteSequential(
 
 		// Emit completion event (parent workflow when available)
 		if config.EmitEvents {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			if config.Context != nil {
-				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-					wid = p
-				}
-			}
 			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 				activities.EmitTaskUpdateInput{
 					WorkflowID: wid,
 					EventType:  activities.StreamEventAgentCompleted,
-					AgentID:    fmt.Sprintf("agent-%s", task.ID),
+					AgentID:    agentName,
 					Timestamp:  workflow.Now(ctx),
-					Payload:    map[string]interface{}{"role": task.Role},
 				}).Get(ctx, nil)
 		}
 
@@ -453,7 +419,6 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 			Metadata: map[string]interface{}{
 				"workflow": "sequential",
 				"strategy": "sequential",
-				"role":     result.Role,
 			},
 		},
 	)

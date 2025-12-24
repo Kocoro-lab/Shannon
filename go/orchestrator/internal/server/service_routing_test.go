@@ -12,6 +12,7 @@ import (
 	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/client"
@@ -80,11 +81,7 @@ func TestExecutionModeRouting(t *testing.T) {
 				capturedInput = args.Get(3).(workflows.TaskInput)
 			}).Return(mockWorkflowRun, nil)
 
-			// Create session manager
-			sessionMgr, err := session.NewManager("localhost:6379", zap.NewNop())
-			if err != nil {
-				t.Fatalf("Failed to create session manager: %v", err)
-			}
+			sessionMgr := newTestSessionManager(t)
 
 			// Create service
 			service := &OrchestratorService{
@@ -171,11 +168,7 @@ func TestDefaultExecutionMode(t *testing.T) {
 		capturedInput = args.Get(3).(workflows.TaskInput)
 	}).Return(mockWorkflowRun, nil)
 
-	// Create session manager
-	sessionMgr, err := session.NewManager("localhost:6379", zap.NewNop())
-	if err != nil {
-		t.Fatalf("Failed to create session manager: %v", err)
-	}
+	sessionMgr := newTestSessionManager(t)
 
 	// Create service
 	service := &OrchestratorService{
@@ -221,8 +214,8 @@ func TestDefaultExecutionMode(t *testing.T) {
 
 // TestPriorityQueueRouting verifies that priority labels correctly route to appropriate task queues
 func TestPriorityQueueRouting(t *testing.T) {
-    // Enable priority queues for this test suite
-    t.Setenv("PRIORITY_QUEUES", "true")
+	// Enable priority queues for this test suite
+	t.Setenv("PRIORITY_QUEUES", "true")
 	tests := []struct {
 		name          string
 		priority      string
@@ -286,11 +279,7 @@ func TestPriorityQueueRouting(t *testing.T) {
 				mock.AnythingOfType("workflows.TaskInput"),
 			).Return(mockWorkflowRun, nil)
 
-			// Create session manager
-			sessionMgr, err := session.NewManager("localhost:6379", zap.NewNop())
-			if err != nil {
-				t.Fatalf("Failed to create session manager: %v", err)
-			}
+			sessionMgr := newTestSessionManager(t)
 
 			// Create service
 			service := &OrchestratorService{
@@ -348,64 +337,79 @@ func TestPriorityQueueRouting(t *testing.T) {
 // TestPriorityQueueRouting_DefaultQueueWhenDisabled verifies that when PRIORITY_QUEUES
 // is not enabled, all priorities route to the default queue.
 func TestPriorityQueueRouting_DefaultQueueWhenDisabled(t *testing.T) {
-    // Ensure priority queues are disabled
-    t.Setenv("PRIORITY_QUEUES", "false")
+	// Ensure priority queues are disabled
+	t.Setenv("PRIORITY_QUEUES", "false")
 
-    // Create mock Temporal client
-    mockClient := &mocks.Client{}
-    mockWorkflowRun := &mocks.WorkflowRun{}
+	// Create mock Temporal client
+	mockClient := &mocks.Client{}
+	mockWorkflowRun := &mocks.WorkflowRun{}
 
-    // Setup expectations
-    mockWorkflowRun.On("GetID").Return("test-workflow-id")
-    mockWorkflowRun.On("GetRunID").Return("test-run-id")
+	// Setup expectations
+	mockWorkflowRun.On("GetID").Return("test-workflow-id")
+	mockWorkflowRun.On("GetRunID").Return("test-run-id")
 
-    var capturedOptions client.StartWorkflowOptions
-    mockClient.On("ExecuteWorkflow",
-        mock.Anything, // context
-        mock.MatchedBy(func(opts client.StartWorkflowOptions) bool {
-            capturedOptions = opts
-            return true
-        }),
-        mock.Anything, // workflow function
-        mock.AnythingOfType("workflows.TaskInput"),
-    ).Return(mockWorkflowRun, nil)
+	var capturedOptions client.StartWorkflowOptions
+	mockClient.On("ExecuteWorkflow",
+		mock.Anything, // context
+		mock.MatchedBy(func(opts client.StartWorkflowOptions) bool {
+			capturedOptions = opts
+			return true
+		}),
+		mock.Anything, // workflow function
+		mock.AnythingOfType("workflows.TaskInput"),
+	).Return(mockWorkflowRun, nil)
 
-    // Create session manager
-    sessionMgr, err := session.NewManager("localhost:6379", zap.NewNop())
-    if err != nil {
-        t.Fatalf("Failed to create session manager: %v", err)
-    }
+	sessionMgr := newTestSessionManager(t)
 
-    // Create service
-    service := &OrchestratorService{
-        temporalClient: mockClient,
-        sessionManager: sessionMgr,
-        logger:         zap.NewNop(),
-    }
+	// Create service
+	service := &OrchestratorService{
+		temporalClient: mockClient,
+		sessionManager: sessionMgr,
+		logger:         zap.NewNop(),
+	}
 
-    // Create request with a high priority label (should be ignored when disabled)
-    req := &pb.SubmitTaskRequest{
-        Metadata: &common.TaskMetadata{
-            UserId: "test-user",
-            Labels: map[string]string{
-                "priority": "critical",
-            },
-        },
-        Query: "test query",
-        Context: &structpb.Struct{
-            Fields: make(map[string]*structpb.Value),
-        },
-    }
+	// Create request with a high priority label (should be ignored when disabled)
+	req := &pb.SubmitTaskRequest{
+		Metadata: &common.TaskMetadata{
+			UserId: "test-user",
+			Labels: map[string]string{
+				"priority": "critical",
+			},
+		},
+		Query: "test query",
+		Context: &structpb.Struct{
+			Fields: make(map[string]*structpb.Value),
+		},
+	}
 
-    // Execute
-    ctx := context.Background()
-    resp, err := service.SubmitTask(ctx, req)
+	// Execute
+	ctx := context.Background()
+	resp, err := service.SubmitTask(ctx, req)
 
-    // Verify
-    assert.NoError(t, err)
-    assert.NotNil(t, resp)
-    assert.Equal(t, "shannon-tasks", capturedOptions.TaskQueue)
+	// Verify
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, "shannon-tasks", capturedOptions.TaskQueue)
 
-    mockClient.AssertExpectations(t)
-    mockWorkflowRun.AssertExpectations(t)
+	mockClient.AssertExpectations(t)
+	mockWorkflowRun.AssertExpectations(t)
+}
+
+func newTestSessionManager(t *testing.T) *session.Manager {
+	t.Helper()
+
+	t.Setenv("REDIS_PASSWORD", "")
+
+	s, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("Failed to start miniredis: %v", err)
+	}
+	t.Cleanup(s.Close)
+
+	sessionMgr, err := session.NewManager(s.Addr(), zap.NewNop())
+	if err != nil {
+		t.Fatalf("Failed to create session manager: %v", err)
+	}
+
+	return sessionMgr
 }

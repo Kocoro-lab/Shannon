@@ -7,6 +7,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 )
 
 // HybridConfig controls hybrid parallel/sequential execution with dependencies
@@ -96,10 +97,12 @@ func ExecuteHybrid(
 	// Launch task executor for each task
 	for i := range tasks {
 		task := tasks[i]
+		idx := i // Capture index for closure
 		workflow.Go(ctx, func(ctx workflow.Context) {
 			executeHybridTask(
 				ctx,
 				task,
+				idx,
 				taskIndex,
 				completedTasks,
 				taskResults,
@@ -167,6 +170,7 @@ type taskExecutionResult struct {
 func executeHybridTask(
 	ctx workflow.Context,
 	task HybridTask,
+	originalIndex int,
 	taskIndex map[string]*HybridTask,
 	completedTasks map[string]bool,
 	taskResults map[string]activities.AgentExecutionResult,
@@ -247,21 +251,23 @@ func executeHybridTask(
 		task.ToolParameters = nil
 	}
 
+	// Compute agent name using station names for deterministic, human-readable IDs
+	wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+	if config.Context != nil {
+		if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+			wid = p
+		}
+	}
+	agentName := agents.GetAgentName(wid, originalIndex)
+
 	// Emit agent started event (parent workflow when available)
 	if config.EmitEvents {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		if config.Context != nil {
-			if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-				wid = p
-			}
-		}
 		_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 			activities.EmitTaskUpdateInput{
 				WorkflowID: wid,
 				EventType:  activities.StreamEventAgentStarted,
-				AgentID:    fmt.Sprintf("agent-%s", task.ID),
+				AgentID:    agentName,
 				Timestamp:  workflow.Now(ctx),
-				Payload:    map[string]interface{}{"role": task.Role},
 			}).Get(ctx, nil)
 	}
 
@@ -296,17 +302,11 @@ func executeHybridTask(
 	if err != nil {
 		// Emit error event (parent workflow when available)
 		if config.EmitEvents {
-			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-			if config.Context != nil {
-				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-					wid = p
-				}
-			}
 			_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 				activities.EmitTaskUpdateInput{
 					WorkflowID: wid,
 					EventType:  activities.StreamEventErrorOccurred,
-					AgentID:    fmt.Sprintf("agent-%s", task.ID),
+					AgentID:    agentName,
 					Message:    err.Error(),
 					Timestamp:  workflow.Now(ctx),
 				}).Get(ctx, nil)
@@ -321,19 +321,12 @@ func executeHybridTask(
 
 	// Emit completion event (parent workflow when available)
 	if config.EmitEvents && len(result.Results) > 0 {
-		wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-		if config.Context != nil {
-			if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-				wid = p
-			}
-		}
 		_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 			activities.EmitTaskUpdateInput{
 				WorkflowID: wid,
 				EventType:  activities.StreamEventAgentCompleted,
-				AgentID:    fmt.Sprintf("agent-%s", task.ID),
+				AgentID:    agentName,
 				Timestamp:  workflow.Now(ctx),
-				Payload:    map[string]interface{}{"role": task.Role},
 			}).Get(ctx, nil)
 	}
 

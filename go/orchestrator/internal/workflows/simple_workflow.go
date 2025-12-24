@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
@@ -32,6 +33,8 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	}
 
+	agentName := agents.GetAgentName(workflowID, 0)
+
 	// Emit workflow started event
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
@@ -41,7 +44,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// Initialize control signal handler for pause/resume/cancel
 	controlHandler := &ControlSignalHandler{
 		WorkflowID: workflowID,
-		AgentID:    "simple-agent",
+		AgentID:    agentName,
 		Logger:     logger,
 		EmitCtx:    emitCtx,
 	}
@@ -50,7 +53,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowStarted,
-		AgentID:    "simple-agent",
+		AgentID:    agentName,
 		Message:    activities.MsgWorkflowStarted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
@@ -59,7 +62,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentThinking,
-		AgentID:    "simple-agent",
+		AgentID:    agentName,
 		Message:    activities.MsgThinking(input.Query),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
@@ -77,7 +80,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentStarted,
-		AgentID:    "simple-agent",
+		AgentID:    agentName,
 		Message:    activities.MsgProcessing(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
@@ -113,7 +116,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventDataProcessing,
-				AgentID:    "simple-agent",
+				AgentID:    agentName,
 				Message:    activities.MsgMemoryRecalled(len(hierMemory.Items)),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
@@ -142,7 +145,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventDataProcessing,
-				AgentID:    "simple-agent",
+				AgentID:    agentName,
 				Message:    activities.MsgMemoryRecalled(len(sessionMemory.Items)),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
@@ -200,7 +203,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 					WorkflowID: workflowID,
 					EventType:  activities.StreamEventDataProcessing,
-					AgentID:    "simple-agent",
+					AgentID:    agentName,
 					Message:    activities.MsgCompressionApplied(),
 					Timestamp:  workflow.Now(ctx),
 				}).Get(ctx, nil)
@@ -267,7 +270,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 					WorkflowID: workflowID,
 					EventType:  activities.StreamEventDataProcessing,
-					AgentID:    "simple-agent",
+					AgentID:    agentName,
 					Message:    activities.MsgSummaryAdded(),
 					Timestamp:  workflow.Now(ctx),
 				}).Get(ctx, nil)
@@ -301,7 +304,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflowID,
 			EventType:  activities.StreamEventErrorOccurred,
-			AgentID:    "simple-agent",
+			AgentID:    agentName,
 			Message:    activities.MsgTaskFailed(err.Error()),
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil)
@@ -326,7 +329,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			activities.PersistAgentExecutionStandalone,
 			activities.PersistAgentExecutionInput{
 				WorkflowID: workflowID,
-				AgentID:    "simple-agent",
+				AgentID:    agentName,
 				Input:      input.Query,
 				Output:     result.Response,
 				State:      "COMPLETED",
@@ -361,7 +364,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				activities.PersistToolExecutionStandalone,
 				activities.PersistToolExecutionInput{
 					WorkflowID: workflowID,
-					AgentID:    "simple-agent",
+					AgentID:    agentName,
 					ToolName:   tool.Tool,
 					Output:     outputStr,
 					Success:    tool.Success,
@@ -452,7 +455,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			var resultsForCitations []interface{}
 			for _, te := range result.ToolExecutions {
 				resultsForCitations = append(resultsForCitations, map[string]interface{}{
-					"agent_id": "simple-agent",
+					"agent_id": agentName,
 					"tool_executions": []interface{}{
 						map[string]interface{}{
 							"tool":    te.Tool,
@@ -507,7 +510,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		// Convert to agent results format for synthesis
 		agentResults := []activities.AgentExecutionResult{
 			{
-				AgentID:    "simple-agent",
+				AgentID:    agentName,
 				Response:   result.Response,
 				Success:    true,
 				TokensUsed: result.TokensUsed,
@@ -541,7 +544,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		for _, te := range result.ToolExecutions {
 			if !te.Success || (te.Error != "") {
 				toolErrors = append(toolErrors, map[string]string{
-					"agent_id": "simple-agent",
+					"agent_id": agentName,
 					"tool":     te.Tool,
 					"error":    te.Error,
 				})
@@ -564,7 +567,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			UserID:       input.UserID,
 			SessionID:    input.SessionID,
 			TaskID:       workflowID, // may not be UUID; DB layer resolves via workflow_id when possible
-			AgentID:      "simple-agent",
+			AgentID:      agentName,
 			Model:        result.ModelUsed,
 			Provider:     provider,
 			InputTokens:  inTok,
@@ -582,11 +585,27 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		"tokens_used", totalTokens,
 	)
 
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if finalResult != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    finalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": totalTokens,
+				"model_used":  result.ModelUsed,
+			},
+		}).Get(ctx, nil)
+	}
+
 	// Emit completion event
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventAgentCompleted,
-		AgentID:    "simple-agent",
+		AgentID:    agentName,
 		Message:    activities.MsgTaskDone(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
@@ -595,7 +614,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
 		EventType:  activities.StreamEventWorkflowCompleted,
-		AgentID:    "simple-agent",
+		AgentID:    agentName,
 		Message:    activities.MsgWorkflowCompleted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)

@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
@@ -84,81 +85,11 @@ func containsAsWord(text, term string) bool {
 	return true
 }
 
-// isTopicQuery detects if a canonical name represents a broad topic vs specific entity
-// Topic indicators: descriptive phrases, long names, broad terms
-func isTopicQuery(canonicalName string) bool {
-	lower := strings.ToLower(canonicalName)
-
-	// Long descriptive names are likely topics (e.g., "AI Development Landscape (December 2025)")
-	if len(canonicalName) > 40 {
-		return true
-	}
-
-	// Common topic indicator keywords
-	topicKeywords := []string{
-		"landscape", "overview", "analysis", "trends", "developments",
-		"latest", "recent", "updates", "news", "industry", "market",
-		"research", "study", "report", "insights", "review",
-		"comparison", "best", "top", "guide", "introduction",
-	}
-
-	for _, keyword := range topicKeywords {
-		if strings.Contains(lower, keyword) {
-			return true
-		}
-	}
-
-	// Date patterns indicate topic research (e.g., "AI regulation 2025")
-	// Use relative years to avoid hardcoding
-	currentYear := time.Now().Year()
-	for y := currentYear - 1; y <= currentYear+1; y++ {
-		if strings.Contains(lower, fmt.Sprintf("%d", y)) {
-			return true
-		}
-	}
-
-	return false
-}
-
 func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string, aliases []string, officialDomains []string) []metadata.Citation {
 	if canonicalName == "" || len(citations) == 0 {
 		return citations
 	}
 
-	// Detect topic-based research vs entity-specific research
-	// Topic research indicators: no official domains + descriptive/broad canonical name
-	isTopicResearch := len(officialDomains) == 0 && isTopicQuery(canonicalName)
-
-	// For topic research, skip entity filtering and return high-quality citations
-	if isTopicResearch {
-		// Sort by quality × credibility and return top citations
-		type scored struct {
-			citation metadata.Citation
-			score    float64
-		}
-		var scoredCitations []scored
-		for _, c := range citations {
-			score := c.QualityScore * c.CredibilityScore
-			scoredCitations = append(scoredCitations, scored{citation: c, score: score})
-		}
-		sort.Slice(scoredCitations, func(i, j int) bool {
-			return scoredCitations[i].score > scoredCitations[j].score
-		})
-
-		// Return top 30 citations for topic research (higher than entity research)
-		maxKeep := 30
-		if len(scoredCitations) > maxKeep {
-			scoredCitations = scoredCitations[:maxKeep]
-		}
-
-		var result []metadata.Citation
-		for _, sc := range scoredCitations {
-			result = append(result, sc.citation)
-		}
-		return result
-	}
-
-	// Entity-specific research: use strict filtering
 	const (
 		threshold = 0.5 // Minimum relevance score to pass (raised to reduce noise)
 		minKeep   = 5   // Safety floor: keep at least this many for deep research
@@ -492,12 +423,6 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		baseContext["parent_workflow_id"] = input.ParentWorkflowID
 	}
 
-	// Set research workflow identifiers for Python-side backfill and role selection
-	// NOTE: Do not set baseContext["role"] here; stage-specific activities may override role
-	// (e.g., research_refiner) and we want Temporal UI to reflect the effective stage role.
-	baseContext["workflow_type"] = "research"
-	baseContext["force_research"] = true
-
 	// Memory retrieval with gate precedence (hierarchical > simple session)
 	hierarchicalVersion := workflow.GetVersion(ctx, "memory_retrieval_v1", workflow.DefaultVersion, 1)
 	sessionVersion := workflow.GetVersion(ctx, "session_memory_v1", workflow.DefaultVersion, 1)
@@ -609,15 +534,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	var totalTokens int
 	var refineResult activities.RefineResearchQueryResult
 	refinedQuery := input.Query // Default to original query
-	refineContext := make(map[string]interface{}, len(baseContext)+1)
-	for k, v := range baseContext {
-		refineContext[k] = v
-	}
-	refineContext["role"] = "research_refiner"
 	err := workflow.ExecuteActivity(ctx, constants.RefineResearchQueryActivity,
 		activities.RefineResearchQueryInput{
 			Query:   input.Query,
-			Context: refineContext,
+			Context: baseContext,
 		}).Get(ctx, &refineResult)
 
 	if err == nil && refineResult.RefinedQuery != "" {
@@ -745,17 +665,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 	// Step 1: Decompose the (now refined) research query
 	var decomp activities.DecompositionResult
-	decomposeContext := make(map[string]interface{}, len(baseContext)+1)
-	for k, v := range baseContext {
-		decomposeContext[k] = v
-	}
-	// Decomposition uses the research supervisor prompt; expose role accordingly for observability.
-	decomposeContext["role"] = "research_supervisor"
 	err = workflow.ExecuteActivity(ctx,
 		constants.DecomposeTaskActivity,
 		activities.DecompositionInput{
 			Query:          refinedQuery, // Use refined query here
-			Context:        decomposeContext,
+			Context:        baseContext,
 			AvailableTools: []string{},
 		}).Get(ctx, &decomp)
 
@@ -869,12 +783,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						prefetchContext["research_mode"] = "prefetch"
 						prefetchContext["prefetch_url"] = url
 
+						// Use station names with offset for prefetch agents
+						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+idx)
 						var prefetchResult activities.AgentExecutionResult
 						err := workflow.ExecuteActivity(gctx,
 							"ExecuteAgent",
 							activities.AgentExecutionInput{
 								Query:          fmt.Sprintf("Use web_subpage_fetch on %s to extract key company information from subpages like about, team, products.", url),
-								AgentID:        fmt.Sprintf("domain-prefetch-%d", idx),
+								AgentID:        prefetchAgentName,
 								Context:        prefetchContext,
 								Mode:           "standard",
 								SessionID:      input.SessionID,
@@ -927,11 +843,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						inTok := payload.Result.InputTokens
 						outTok := payload.Result.OutputTokens
 						recCtx := opts.WithTokenRecordOptions(ctx)
+						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
 						_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 							UserID:       input.UserID,
 							SessionID:    input.SessionID,
 							TaskID:       workflowID,
-							AgentID:      fmt.Sprintf("domain-prefetch-%d", payload.Index),
+							AgentID:      prefetchAgentName,
 							Model:        payload.Result.ModelUsed,
 							Provider:     payload.Result.Provider,
 							InputTokens:  inTok,
@@ -957,14 +874,6 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	if err := controlHandler.CheckPausePoint(ctx, "pre_agent_execution"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
-
-	// Execution context: enforce deep research role for all agent executions in ResearchWorkflow.
-	// Keep baseContext free of "role" so non-execution activities (e.g., refiner) can use their own role.
-	execBaseContext := make(map[string]interface{}, len(baseContext)+1)
-	for k, v := range baseContext {
-		execBaseContext[k] = v
-	}
-	execBaseContext["role"] = "deep_research_agent"
 
 	// Step 2: Execute based on complexity
 	if decomp.ComplexityScore < 0.5 || len(decomp.Subtasks) <= 1 {
@@ -1011,13 +920,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			UserID:         input.UserID,
 			EmitEvents:     true,
 			ModelTier:      modelTier,
-			Context:        execBaseContext,
+			Context:        baseContext,
 		}
 
 		reactResult, err := patterns.ReactLoop(
 			ctx,
 			refinedQuery,
-			execBaseContext,
+			baseContext,
 			input.SessionID,
 			convertHistoryForAgent(input.History),
 			reactConfig,
@@ -1038,7 +947,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		// Persist agent executions from ReactLoop
 		workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 		for i, result := range reactResult.AgentResults {
-			agentID := fmt.Sprintf("react-agent-%d", i)
+			agentID := agents.GetAgentName(workflowID, i)
 			persistAgentExecutionLocal(ctx, workflowID, agentID, refinedQuery, result)
 		}
 
@@ -1100,7 +1009,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 					// Build context with dependency results
 					subtaskContext := make(map[string]interface{})
-					for k, v := range execBaseContext {
+					for k, v := range baseContext {
 						subtaskContext[k] = v
 					}
 					if contract := buildTaskContractContext(subtask); contract != nil {
@@ -1177,7 +1086,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// Persist agent executions for this subtask
 						workflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 						for i, result := range reactResult.AgentResults {
-							agentID := fmt.Sprintf("react-subtask-%s-agent-%d", subtaskID, i)
+							agentID := agents.GetAgentName(workflowID, i)
 							persistAgentExecutionLocal(ctx, workflowID, agentID, subtask.Description, result)
 						}
 					} else {
@@ -1229,12 +1138,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// Allow tuning ReAct iterations via context with safe clamp (2..8)
 						// Default depends on strategy: quick -> 2, otherwise 3
 						reactMaxIterations := 3
-						if sv, ok := execBaseContext["research_strategy"].(string); ok {
+						if sv, ok := baseContext["research_strategy"].(string); ok {
 							if strings.ToLower(strings.TrimSpace(sv)) == "quick" {
 								reactMaxIterations = 2
 							}
 						}
-						if v, ok := execBaseContext["react_max_iterations"]; ok {
+						if v, ok := baseContext["react_max_iterations"]; ok {
 							switch t := v.(type) {
 							case int:
 								reactMaxIterations = t
@@ -1263,13 +1172,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							UserID:         input.UserID,
 							EmitEvents:     true,
 							ModelTier:      modelTier,
-							Context:        execBaseContext,
+							Context:        baseContext,
 						}
 
 						reactResult, err := patterns.ReactLoop(
 							gctx,
 							st.Description,
-							execBaseContext,
+							baseContext,
 							input.SessionID,
 							convertHistoryForAgent(input.History),
 							reactConfig,
@@ -1280,7 +1189,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							// Persist agent executions for this parallel subtask
 							workflowID := workflow.GetInfo(gctx).WorkflowExecution.ID
 							for i, result := range reactResult.AgentResults {
-								agentID := fmt.Sprintf("react-parallel-%s-agent-%d", st.ID, i)
+								agentID := agents.GetAgentName(workflowID, i)
 								persistAgentExecutionLocal(gctx, workflowID, agentID, st.Description, result)
 							}
 							resultsChan.Send(gctx, reactResult)
@@ -1327,7 +1236,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "deep_research_agent"
+					role := "researcher"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -1460,7 +1369,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "deep_research_agent"
+					role := "researcher"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -1692,7 +1601,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					workflow.Go(ctx, func(gctx workflow.Context) {
 						// Build localized search context
 						localCtx := make(map[string]interface{})
-						for k, v := range execBaseContext {
+						for k, v := range baseContext {
 							localCtx[k] = v
 						}
 						localCtx["search_language"] = lang
@@ -2007,16 +1916,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 	baseContext["model_tier"] = synthTier
 
-	// Use longer timeout for synthesis (7 min)
-	synthCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 7 * time.Minute,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 2,
-		},
-	})
-
 	var synthesis activities.SynthesisResult
-	err = workflow.ExecuteActivity(synthCtx,
+	err = workflow.ExecuteActivity(ctx,
 		activities.SynthesizeResultsLLM,
 		activities.SynthesisInput{
 			// Pass original query through; synthesis embeds its own
@@ -2384,7 +2285,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 					// Build context with task contract
 					gapContext := make(map[string]interface{})
-					for k, v := range execBaseContext {
+					for k, v := range baseContext {
 						gapContext[k] = v
 					}
 					gapContext["research_mode"] = "gap_fill"
@@ -2702,7 +2603,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								defer sem.Release(1)
 
 								gapContext := make(map[string]interface{})
-								for k, v := range execBaseContext {
+								for k, v := range baseContext {
 									gapContext[k] = v
 								}
 								gapContext["research_mode"] = "gap_fill"
@@ -2711,7 +2612,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 								// Use react_max_iterations from context if provided, default to 2 for gap-filling efficiency
 								gapReactMaxIterations := 2
-								if v, ok := execBaseContext["react_max_iterations"]; ok {
+								if v, ok := baseContext["react_max_iterations"]; ok {
 									switch t := v.(type) {
 									case int:
 										gapReactMaxIterations = t
@@ -2915,7 +2816,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
-	// Step 3.9: Citation Agent - add citations to synthesis (enabled by default)
+	// Citation Agent: add inline citations to synthesis result (when enabled)
 	citationAgentEnabled := true // Default: enabled
 	if v, ok := baseContext["enable_citation_agent"].(bool); ok {
 		citationAgentEnabled = v
@@ -2965,11 +2866,18 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			Citations:        citationsForAgent,
 			ParentWorkflowID: input.ParentWorkflowID,
 			Context:          baseContext,
-			// ModelTier: respect baseContext["model_tier"] set from synthesis_model_tier
+			ModelTier:        "small", // Structured task - small tier sufficient
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
 			logger.Warn("CitationAgent: failed, using original synthesis", "error", cerr)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to service error",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 		} else if citationResult.ValidationPassed {
 			// Use cited report and rebuild Sources with correct Used inline/Additional labels
 			citationsList := ""
@@ -2994,6 +2902,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			logger.Warn("CitationAgent: validation failed, using original synthesis",
 				"error", citationResult.ValidationError,
 			)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to validation failure",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 		}
 	}
 
@@ -3348,6 +3263,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if finalResult != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    finalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": totalTokens,
+			},
+		}).Get(ctx, nil)
+	}
+
 	// Emit WORKFLOW_COMPLETED before returning
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
@@ -3651,7 +3581,6 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 			Metadata: map[string]interface{}{
 				"workflow": "research",
 				"strategy": "react",
-				"role":     result.Role,
 			},
 		},
 	)

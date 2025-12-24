@@ -14,6 +14,7 @@ import (
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/handlers"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/middleware"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/openai"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/proxy"
 	authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
@@ -112,6 +113,13 @@ func main() {
 	scheduleHandler := handlers.NewScheduleHandler(orchClient, pgDB, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
+
+	// OpenAI-compatible API handler
+	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
+	openaiHandler, err := openai.NewHandler(orchClient, pgDB, redisClient, logger, adminURL)
+	if err != nil {
+		logger.Warn("Failed to create OpenAI handler, /v1/* endpoints disabled", zap.Error(err))
+	}
 
 	// Create middlewares
 	authMiddleware := middleware.NewAuthMiddleware(authService, logger).Middleware
@@ -447,8 +455,45 @@ func main() {
 		),
 	)
 
+	// OpenAI-compatible API endpoints (/v1/*)
+	if openaiHandler != nil {
+		// POST /v1/chat/completions - main chat completion endpoint
+		mux.Handle("POST /v1/chat/completions",
+			tracingMiddleware(
+				authMiddleware(
+					validationMiddleware(
+						rateLimiter(
+							http.HandlerFunc(openaiHandler.ChatCompletions),
+						),
+					),
+				),
+			),
+		)
+
+		// GET /v1/models - list available models
+		mux.Handle("GET /v1/models",
+			tracingMiddleware(
+				authMiddleware(
+					http.HandlerFunc(openaiHandler.ListModels),
+				),
+			),
+		)
+
+		// GET /v1/models/{model} - get specific model info
+		mux.Handle("GET /v1/models/{model}",
+			tracingMiddleware(
+				authMiddleware(
+					http.HandlerFunc(openaiHandler.GetModel),
+				),
+			),
+		)
+
+		logger.Info("OpenAI-compatible API enabled",
+			zap.String("endpoints", "/v1/chat/completions, /v1/models"),
+		)
+	}
+
 	// SSE/WebSocket reverse proxy to admin server
-	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
 	streamProxy, err := proxy.NewStreamingProxy(adminURL, logger)
 	if err != nil {
 		logger.Fatal("Failed to create streaming proxy", zap.Error(err))

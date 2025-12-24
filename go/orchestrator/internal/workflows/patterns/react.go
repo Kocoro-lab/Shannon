@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -98,18 +99,15 @@ func ReactLoop(
 			wfID = p
 		}
 	}
-	role := "generalist"
-	if baseContext != nil {
-		if v, ok := baseContext["role"].(string); ok && strings.TrimSpace(v) != "" {
-			role = strings.TrimSpace(v)
-		}
-	}
 
 	for iteration < config.MaxIterations {
 		logger.Info("ReAct iteration",
 			"iteration", iteration+1,
 			"observations_count", len(observations),
 		)
+
+		reasonerID := agents.GetAgentName(wfID, iteration*2)
+		actorID := agents.GetAgentName(wfID, iteration*2+1)
 
 		// Emit iteration progress
 		streaming.Get().Publish(wfID, streaming.Event{
@@ -124,9 +122,8 @@ func ReactLoop(
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       "AGENT_STARTED",
-			AgentID:    fmt.Sprintf("reasoner-%d", iteration),
+			AgentID:    reasonerID,
 			Message:    activities.MsgReactReasoning(),
-			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 
@@ -162,7 +159,7 @@ func ReactLoop(
 				activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
 						Query:            reasonQuery,
-						AgentID:          fmt.Sprintf("reasoner-%d", iteration),
+						AgentID:          reasonerID,
 						Context:          reasonContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
@@ -186,7 +183,7 @@ func ReactLoop(
 				"ExecuteAgent",
 				activities.AgentExecutionInput{
 					Query:            reasonQuery,
-					AgentID:          fmt.Sprintf("reasoner-%d", iteration),
+					AgentID:          reasonerID,
 					Context:          reasonContext,
 					Mode:             "standard",
 					SessionID:        sessionID,
@@ -204,9 +201,8 @@ func ReactLoop(
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       "AGENT_COMPLETED",
-			AgentID:    fmt.Sprintf("reasoner-%d", iteration),
+			AgentID:    reasonerID,
 			Message:    activities.MsgReactReasoningDone(),
-			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 
@@ -247,7 +243,7 @@ func ReactLoop(
 				UserID:       opts.UserID,
 				SessionID:    sessionID,
 				TaskID:       wid,
-				AgentID:      fmt.Sprintf("reasoner-%d", iteration),
+				AgentID:      reasonerID,
 				Model:        model,
 				Provider:     provider,
 				InputTokens:  inTok,
@@ -414,9 +410,8 @@ func ReactLoop(
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       "AGENT_STARTED",
-			AgentID:    fmt.Sprintf("actor-%d", iteration),
+			AgentID:    actorID,
 			Message:    activities.MsgReactActing(),
-			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		})
 
@@ -435,7 +430,7 @@ func ReactLoop(
 				activities.BudgetedAgentInput{
 					AgentInput: activities.AgentExecutionInput{
 						Query:            actionQuery,
-						AgentID:          fmt.Sprintf("actor-%d", iteration),
+						AgentID:          actorID,
 						Context:          actionContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
@@ -460,7 +455,7 @@ func ReactLoop(
 				"ExecuteAgent",
 				activities.AgentExecutionInput{
 					Query:            actionQuery,
-					AgentID:          fmt.Sprintf("actor-%d", iteration),
+					AgentID:          actorID,
 					Context:          actionContext,
 					Mode:             "standard",
 					SessionID:        sessionID,
@@ -479,9 +474,8 @@ func ReactLoop(
 			streaming.Get().Publish(wfID, streaming.Event{
 				WorkflowID: wfID,
 				Type:       "AGENT_COMPLETED",
-				AgentID:    fmt.Sprintf("actor-%d", iteration),
+				AgentID:    actorID,
 				Message:    activities.MsgReactActingDone(),
-				Payload:    map[string]interface{}{"role": role},
 				Timestamp:  time.Now(),
 			})
 
@@ -507,7 +501,7 @@ func ReactLoop(
 			} else {
 				logger.Warn("Empty action response; skipping record",
 					"iteration", iteration+1,
-					"agent_id", fmt.Sprintf("actor-%d", iteration),
+					"agent_id", actorID,
 				)
 			}
 
@@ -550,7 +544,7 @@ func ReactLoop(
 					UserID:       opts.UserID,
 					SessionID:    sessionID,
 					TaskID:       wid,
-					AgentID:      fmt.Sprintf("actor-%d", iteration),
+					AgentID:      actorID,
 					Model:        model,
 					Provider:     provider,
 					InputTokens:  inTok,

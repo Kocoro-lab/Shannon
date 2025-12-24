@@ -150,24 +150,21 @@ func (a *Activities) IntermediateSynthesis(ctx context.Context, input Intermedia
 func buildIntermediateSynthesisPrompt(input IntermediateSynthesisInput) string {
 	var sb strings.Builder
 
-	sb.WriteString(`You are a research synthesis assistant. Your job is to preserve information fidelity while
-organizing partial research results into an intermediate state used for coverage evaluation.
+	sb.WriteString(`You are a research synthesis assistant. Your task is to combine partial research results
+into a coherent intermediate synthesis.
 
-IMPORTANT: This is NOT the final user-facing report. Do NOT write a polished narrative. Optimize for:
-1) lossless capture of concrete details and edge cases, 2) clear indexing/coverage, 3) actionable gaps.
-
-## Your Goals (fidelity-first):
-1. Extract and retain concrete facts (numbers, dates, names, versions, constraints, exceptions)
-2. Deduplicate ONLY exact repeats; do NOT merge distinct facts into abstract summaries
-3. Track what areas have evidence vs what areas are still missing
-4. Be conservative on completeness; only claim high confidence when coverage is truly comprehensive
+## Your Goals:
+1. Combine findings from multiple research agents into a unified understanding
+2. Identify key findings and confidence levels
+3. Assess coverage - what areas have been well-researched vs gaps
+4. Determine if more research iterations are needed
 
 ## Iteration Context:
 `)
 	sb.WriteString(fmt.Sprintf("- Current iteration: %d of %d\n", input.Iteration, input.MaxIterations))
 
 	if input.PreviousSynthesis != "" {
-		sb.WriteString("- Previous intermediate state exists (provided below); treat it as a working index, not ground truth\n")
+		sb.WriteString("- Building on previous synthesis (provided below)\n")
 	} else {
 		sb.WriteString("- First iteration - establishing baseline understanding\n")
 	}
@@ -180,26 +177,19 @@ IMPORTANT: This is NOT the final user-facing report. Do NOT write a polished nar
 ## Response Format:
 Return a JSON object with these fields:
 {
-  "synthesis": "A compact INDEX of the evidence so far (not a narrative). Use short bullet-like lines; keep numbers/dates/names verbatim.",
-  "key_findings": ["Atomic fact 1 with concrete details", "Atomic fact 2 with concrete details", ...],
-  "coverage_areas": ["Area label 1", "Area label 2", ...],
+  "synthesis": "Combined understanding so far...",
+  "key_findings": ["Finding 1", "Finding 2", ...],
+  "coverage_areas": ["Area 1", "Area 2", ...],
   "confidence_score": 0.7,
   "needs_more_research": true,
   "suggested_focus": ["Gap 1 to explore", "Gap 2 to explore"]
 }
 
-	## Guidelines:
-	- key_findings MUST be factual and detail-rich. Prefer 20-60 items over 5-10 vague bullets.
-	- Preserve exact values: "$12.3M", "2024-08", "v0.12.1", "SSE", "Temporal", etc.
-	- Include important constraints/conditions (e.g., "only for X", "requires Y") as part of the fact.
-	- Structural fidelity: if agent results contain structured artifacts (tables, checklists, JSON/YAML, code blocks), treat them as high-signal. Do NOT discard them.
-	  - Prefer converting each table row / checklist item / key-value field into atomic key_findings entries (single-line) while preserving headers/field names and values verbatim.
-	  - Use stable prefixes like "TABLE:", "CHECKLIST:", "KV:", "CODE:" so downstream steps can recognize them.
-	- JSON safety: output MUST be valid JSON. Avoid raw newlines inside JSON strings; keep each key_findings entry as a single line (no markdown code fences).
-	- Do NOT invent citations or URLs. Do NOT add a Sources section.
-	- confidence_score: set >=0.85 ONLY if the major dimensions of the query have multiple concrete facts and there are no critical unknowns.
-	- needs_more_research: true unless confidence is genuinely high or max iterations reached.
-	- suggested_focus: only if needs_more_research is true; make each item a concrete missing question.
+## Guidelines:
+- confidence_score: 0.0-1.0, set to 0.8+ if you have comprehensive coverage
+- needs_more_research: false if confidence >= 0.8 or if max iterations reached
+- suggested_focus: only if needs_more_research is true
+- Be concise but thorough in the synthesis
 `)
 
 	return sb.String()
@@ -216,27 +206,12 @@ func buildAgentResultsContent(input IntermediateSynthesisInput) string {
 	}
 
 	sb.WriteString("## New Agent Results:\n\n")
-
-	// Truncation policy: preserve details when result count is small, but avoid exploding context.
-	// Note: this is a heuristic; the LLM output is structured and should prioritize atomic facts.
-	maxPerAgentChars := 3000
-	switch {
-	case len(input.AgentResults) <= 6:
-		maxPerAgentChars = 8000
-	case len(input.AgentResults) <= 12:
-		maxPerAgentChars = 6000
-	case len(input.AgentResults) <= 20:
-		maxPerAgentChars = 4000
-	default:
-		maxPerAgentChars = 3000
-	}
-
 	for i, result := range input.AgentResults {
 		sb.WriteString(fmt.Sprintf("### Agent %d (%s):\n", i+1, result.AgentID))
 		if result.Success {
 			response := result.Response
-			if len(response) > maxPerAgentChars {
-				response = response[:maxPerAgentChars] + "...[truncated]"
+			if len(response) > 3000 {
+				response = response[:3000] + "...[truncated]"
 			}
 			sb.WriteString(response)
 		} else {

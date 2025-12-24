@@ -1,0 +1,108 @@
+# OpenAI-Compatible Model Registry
+# Maps OpenAI-style model names to Shannon workflow configurations
+#
+# Usage:
+#   POST /v1/chat/completions
+#   {"model": "shannon-deep-research", "messages": [...]}
+
+models:
+  # Deep Research - Iterative research with coverage optimization
+  shannon-deep-research:
+    workflow_mode: research
+    context:
+      force_research: true
+      research_strategy: deep
+      iterative_research_enabled: true
+      iterative_max_iterations: 3
+    description: "Deep research with iterative refinement and source verification"
+    max_tokens_default: 8192
+    rate_limit:
+      requests_per_minute: 10
+      tokens_per_minute: 100000
+
+  # Quick Research - Fast research for simple queries
+  shannon-quick-research:
+    workflow_mode: research
+    context:
+      force_research: true
+      research_strategy: quick
+    description: "Fast research for simple queries"
+    max_tokens_default: 4096
+    rate_limit:
+      requests_per_minute: 30
+      tokens_per_minute: 150000
+
+  # Standard Research - Balanced depth and speed
+  shannon-standard-research:
+    workflow_mode: research
+    context:
+      force_research: true
+      research_strategy: standard
+    description: "Balanced research with moderate depth"
+    max_tokens_default: 4096
+    rate_limit:
+      requests_per_minute: 20
+      tokens_per_minute: 120000
+
+  # Academic Research - Citation-heavy scholarly research
+  shannon-academic-research:
+    workflow_mode: research
+    context:
+      force_research: true
+      research_strategy: academic
+      enable_verification: true
+    description: "Academic-style research with citation verification"
+    max_tokens_default: 8192
+    rate_limit:
+      requests_per_minute: 10
+      tokens_per_minute: 100000
+
+  # Ads Research - Google Ads competitor analysis
+  shannon-ads-research:
+    workflow_mode: simple
+    context:
+      role: ads_research
+    description: "Google Ads competitor and keyword research"
+    max_tokens_default: 4096
+    rate_limit:
+      requests_per_minute: 30
+      tokens_per_minute: 150000
+
+  # Chat - General purpose chat completion
+  shannon-chat:
+    workflow_mode: simple
+    context: {}
+    description: "General chat completion"
+    max_tokens_default: 4096
+    rate_limit:
+      requests_per_minute: 60
+      tokens_per_minute: 200000
+
+  # Complex - Multi-agent supervisor workflow
+  shannon-complex:
+    workflow_mode: supervisor
+    context: {}
+    description: "Multi-agent orchestration for complex tasks"
+    max_tokens_default: 8192
+    rate_limit:
+      requests_per_minute: 15
+      tokens_per_minute: 100000
+
+# Default model when none specified
+default_model: shannon-chat
+
+# Global settings
+settings:
+  # Maximum allowed max_tokens (hard limit)
+  max_tokens_limit: 16384
+
+  # Default temperature if not specified
+  default_temperature: 0.7
+
+  # Session TTL for multi-turn conversations (seconds)
+  session_ttl: 86400  # 24 hours
+
+  # Default rate limits (used if model doesn't specify)
+  default_rate_limit:
+    requests_per_minute: 60
+    tokens_per_minute: 200000

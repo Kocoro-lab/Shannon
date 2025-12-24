@@ -9,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -30,6 +31,8 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 	if workflowID == "" {
 		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	}
+
+	agentName := agents.GetAgentName(workflowID, 0)
 
 	// Initialize control signal handler for pause/resume/cancel
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -115,7 +118,7 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		Query:     input.Query,
 		Context:   input.Context,
 		SessionID: input.SessionID,
-		AgentID:   "streaming-agent",
+		AgentID:   agentName,
 		Mode:      input.Mode,
 	}
 
@@ -178,6 +181,39 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		"final_checkpoint", finalCheckpointID,
 	)
 
+	// Record token usage for streaming agent (non-budgeted path).
+	if input.UserID != "" && streamRes.TokensUsed > 0 {
+		recCtx := opts.WithTokenRecordOptions(ctx)
+		inTok := streamRes.InputTokens
+		outTok := streamRes.OutputTokens
+		if inTok == 0 && outTok == 0 {
+			// Token breakdown not provided by LLM provider - estimate 60/40 split
+			// This may cause billing inaccuracy; fix provider to return actual breakdown
+			inTok = streamRes.TokensUsed * 6 / 10
+			outTok = streamRes.TokensUsed - inTok
+			workflow.GetLogger(ctx).Warn("Token breakdown estimated (60/40 split)",
+				"total_tokens", streamRes.TokensUsed,
+				"estimated_input", inTok,
+				"estimated_output", outTok,
+				"model", streamRes.ModelUsed,
+				"provider", streamRes.Provider)
+		}
+		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+			UserID:       input.UserID,
+			SessionID:    input.SessionID,
+			TaskID:       workflowID,
+			AgentID:      agentName,
+			Model:        streamRes.ModelUsed,
+			Provider:     streamRes.Provider,
+			InputTokens:  inTok,
+			OutputTokens: outTok,
+			Metadata: map[string]interface{}{
+				"phase":    "stream",
+				"workflow": "streaming",
+			},
+		}).Get(recCtx, nil)
+	}
+
 	// Update session with token usage
 	if input.SessionID != "" {
 		var sessionUpdateResult activities.SessionUpdateResult
@@ -208,7 +244,7 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 
 	// Prepare a single-agent result for aggregation
 	ar := activities.AgentExecutionResult{
-		AgentID:      "streaming-agent",
+		AgentID:      agentName,
 		ModelUsed:    streamRes.ModelUsed,
 		TokensUsed:   streamRes.TokensUsed,
 		InputTokens:  streamRes.InputTokens,
@@ -218,6 +254,10 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 	if ar.InputTokens == 0 && ar.OutputTokens == 0 && ar.TokensUsed > 0 {
 		ar.InputTokens = ar.TokensUsed * 6 / 10
 		ar.OutputTokens = ar.TokensUsed - ar.InputTokens
+		workflow.GetLogger(ctx).Warn("Token breakdown estimated for metadata (60/40 split)",
+			"total_tokens", ar.TokensUsed,
+			"estimated_input", ar.InputTokens,
+			"estimated_output", ar.OutputTokens)
 	}
 	agentMeta := metadata.AggregateAgentMetadata([]activities.AgentExecutionResult{ar}, 0)
 	for k, v := range agentMeta {
@@ -236,6 +276,22 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 	// Check pause/cancel before completion
 	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if streamRes.Response != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    streamRes.Response,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": streamRes.TokensUsed,
+				"model_used":  streamRes.ModelUsed,
+			},
+		}).Get(ctx, nil)
 	}
 
 	return TaskResult{
@@ -286,26 +342,29 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 
 	// Create multiple streaming inputs for parallel execution
 	streamingActivities := activities.NewStreamingActivities()
+	agent1 := agents.GetAgentName(workflowID, 0)
+	agent2 := agents.GetAgentName(workflowID, 1)
+	agent3 := agents.GetAgentName(workflowID, 2)
 	inputs := []activities.StreamExecuteInput{
 		{
 			Query:     input.Query + " (perspective 1)",
 			Context:   input.Context,
 			SessionID: input.SessionID,
-			AgentID:   "agent-1",
+			AgentID:   agent1,
 			Mode:      input.Mode,
 		},
 		{
 			Query:     input.Query + " (perspective 2)",
 			Context:   input.Context,
 			SessionID: input.SessionID,
-			AgentID:   "agent-2",
+			AgentID:   agent2,
 			Mode:      input.Mode,
 		},
 		{
 			Query:     input.Query + " (perspective 3)",
 			Context:   input.Context,
 			SessionID: input.SessionID,
-			AgentID:   "agent-3",
+			AgentID:   agent3,
 			Mode:      input.Mode,
 		},
 	}
@@ -339,6 +398,54 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		}
 		results = append(results, result)
 		totalTokens += result.TokensUsed
+	}
+
+	// Record token usage for each streaming agent (non-budgeted path).
+	// This ensures parallel streaming tokens are captured in token_usage so
+	// orchestrator aggregation and quota/overage accounting see full costs.
+	if input.UserID != "" {
+		recCtx := opts.WithTokenRecordOptions(ctx)
+		for _, res := range results {
+			// Skip zero-token runs to avoid noisy rows.
+			if res.TokensUsed <= 0 && res.InputTokens <= 0 && res.OutputTokens <= 0 {
+				continue
+			}
+
+			inTok := res.InputTokens
+			outTok := res.OutputTokens
+			if inTok == 0 && outTok == 0 && res.TokensUsed > 0 {
+				inTok = res.TokensUsed * 6 / 10
+				outTok = res.TokensUsed - inTok
+				workflow.GetLogger(ctx).Warn("Token breakdown estimated for parallel stream (60/40 split)",
+					"total_tokens", res.TokensUsed,
+					"estimated_input", inTok,
+					"estimated_output", outTok,
+					"model", res.ModelUsed,
+					"provider", res.Provider)
+			}
+
+			// Fallbacks for missing model/provider
+			model := res.ModelUsed
+			provider := res.Provider
+			if provider == "" {
+				provider = ""
+			}
+
+			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:       input.UserID,
+				SessionID:    input.SessionID,
+				TaskID:       workflowID,
+				AgentID:      res.AgentID,
+				Model:        model,
+				Provider:     provider,
+				InputTokens:  inTok,
+				OutputTokens: outTok,
+				Metadata: map[string]interface{}{
+					"phase":    "stream",
+					"workflow": "streaming",
+				},
+			}).Get(recCtx, nil)
+		}
 	}
 
 	// Collect citations from streaming agent results (best-effort)
@@ -541,6 +648,11 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 		if (ar.InputTokens == 0 && ar.OutputTokens == 0) && ar.TokensUsed > 0 {
 			ar.InputTokens = ar.TokensUsed * 6 / 10
 			ar.OutputTokens = ar.TokensUsed - ar.InputTokens
+			logger.Warn("Token breakdown estimated for agent metadata (60/40 split)",
+				"total_tokens", ar.TokensUsed,
+				"estimated_input", ar.InputTokens,
+				"estimated_output", ar.OutputTokens,
+				"model", ar.ModelUsed)
 		}
 		agentResultsForMeta = append(agentResultsForMeta, ar)
 	}
@@ -561,6 +673,21 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	// Check pause/cancel before completion
 	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if synthesis.FinalResult != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    synthesis.FinalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": totalTokens,
+			},
+		}).Get(ctx, nil)
 	}
 
 	// Emit WORKFLOW_COMPLETED before returning

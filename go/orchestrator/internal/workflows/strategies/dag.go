@@ -10,6 +10,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
@@ -166,6 +167,8 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			"subtasks", len(decomp.Subtasks),
 		)
 
+		simpleAgentName := agents.GetAgentName(workflowID, 0)
+
 		// Execute single agent
 		var simpleResult activities.ExecuteSimpleTaskResult
 		err = workflow.ExecuteActivity(ctx,
@@ -187,7 +190,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 
 		agentResults = append(agentResults, activities.AgentExecutionResult{
-			AgentID:    "simple-agent",
+			AgentID:    simpleAgentName,
 			Response:   simpleResult.Response,
 			TokensUsed: simpleResult.TokensUsed,
 			Success:    simpleResult.Success,
@@ -196,7 +199,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 		// Update session
 		if input.SessionID != "" {
-			_ = updateSessionWithAgentUsage(ctx, input.SessionID, simpleResult.Response, totalTokens, 1, []activities.AgentExecutionResult{{AgentID: "simple-agent", TokensUsed: simpleResult.TokensUsed, ModelUsed: simpleResult.ModelUsed, Success: true, Response: simpleResult.Response}})
+			_ = updateSessionWithAgentUsage(ctx, input.SessionID, simpleResult.Response, totalTokens, 1, []activities.AgentExecutionResult{{AgentID: simpleAgentName, TokensUsed: simpleResult.TokensUsed, ModelUsed: simpleResult.ModelUsed, Success: true, Response: simpleResult.Response}})
 			_ = recordToVectorStore(ctx, input, simpleResult.Response, "simple", decomp.ComplexityScore)
 		}
 
@@ -210,7 +213,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		// Aggregate agent metadata from the single result to populate model/provider/tokens
 		ar := []activities.AgentExecutionResult{
 			{
-				AgentID:    "simple-agent",
+				AgentID:    simpleAgentName,
 				Response:   simpleResult.Response,
 				TokensUsed: simpleResult.TokensUsed,
 				Success:    simpleResult.Success,
@@ -707,11 +710,18 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			Report:           reportForCitation, // Clean report without Sources
 			Citations:        citationsForAgent,
 			ParentWorkflowID: wid,
-			ModelTier:        "medium",
+			ModelTier:        "small", // Structured task - small tier sufficient
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
 			logger.Warn("CitationAgent failed, using original synthesis", "error", cerr)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to service error",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 		} else if citationResult.ValidationPassed {
 			// Use cited report and rebuild Sources with correct Used inline/Additional labels
 			// The new report has [n] markers, so FormatReportWithCitations will correctly
@@ -737,6 +747,13 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			logger.Warn("CitationAgent validation failed, keeping original synthesis",
 				"error", citationResult.ValidationError,
 			)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to validation failure",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 			// Keep original finalResult (which already has Sources)
 		}
 	}
@@ -994,6 +1011,28 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	// Check pause/cancel before completion
 	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if finalResult != "" {
+		payload := map[string]interface{}{
+			"tokens_used": totalTokens,
+		}
+		if model, ok := meta["model_used"].(string); ok && model != "" {
+			payload["model_used"] = model
+		} else if model, ok := meta["model"].(string); ok && model != "" {
+			payload["model_used"] = model
+		}
+
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    finalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload:    payload,
+		}).Get(ctx, nil)
 	}
 
 	// Emit WORKFLOW_COMPLETED before returning

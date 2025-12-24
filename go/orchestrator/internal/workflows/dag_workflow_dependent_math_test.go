@@ -71,16 +71,20 @@ func TestDependentMath_NoPlaceholdersAndNumericValuePropagation(t *testing.T) {
 	)
 
 	// 2) ExecuteAgent: emulate deterministic calculator using previous_results numeric value
+	// Note: Agent IDs are now station names, so we use Context["task_id"] to identify tasks
 	var clearedTP2, clearedTP3 bool
 	env.RegisterActivityWithOptions(
 		func(ctx context.Context, in activities.AgentExecutionInput) (activities.AgentExecutionResult, error) {
+			// Get task ID from context (set by execution patterns)
+			taskID, _ := in.Context["task_id"].(string)
+
 			// Check that tool_parameters are cleared for dependent tasks
-			switch in.AgentID {
-			case "agent-task-2":
+			switch taskID {
+			case "task-2":
 				if len(in.ToolParameters) == 0 {
 					clearedTP2 = true
 				}
-			case "agent-task-3":
+			case "task-3":
 				if len(in.ToolParameters) == 0 {
 					clearedTP3 = true
 				}
@@ -89,10 +93,10 @@ func TestDependentMath_NoPlaceholdersAndNumericValuePropagation(t *testing.T) {
 			// Compute result based on previous_results numeric value when present
 			// Fall back to task-1 constant if no dependencies
 			var resp string
-			switch in.AgentID {
-			case "agent-task-1":
+			switch taskID {
+			case "task-1":
 				resp = "200.0" // 50 * 4
-			case "agent-task-2":
+			case "task-2":
 				if prev, ok := in.Context["previous_results"].(map[string]interface{}); ok {
 					if vmap, ok := prev["task-1"].(map[string]interface{}); ok {
 						if vv, ok := vmap["numeric_value"].(float64); ok {
@@ -103,7 +107,7 @@ func TestDependentMath_NoPlaceholdersAndNumericValuePropagation(t *testing.T) {
 				if resp == "" {
 					resp = "300.0"
 				}
-			case "agent-task-3":
+			case "task-3":
 				if prev, ok := in.Context["previous_results"].(map[string]interface{}); ok {
 					if vmap, ok := prev["task-2"].(map[string]interface{}); ok {
 						if vv, ok := vmap["numeric_value"].(float64); ok {

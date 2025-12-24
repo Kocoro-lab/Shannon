@@ -14,18 +14,18 @@ import (
 
 // SynthesisTemplateData contains all variables available to synthesis templates.
 type SynthesisTemplateData struct {
-	Query               string
-	QueryLanguage       string
-	ResearchAreas       []string
-	AvailableCitations  string
-	CitationCount       int
-	MinCitations        int
-	LanguageInstruction string
-	AgentResults        string
-	TargetWords         int
-	IsResearch          bool
-	SynthesisStyle      string
-	CitationAgentEnabled bool // When true, synthesis should NOT add [n] markers - Citation Agent handles it
+	Query                string
+	QueryLanguage        string
+	ResearchAreas        []string
+	AvailableCitations   string
+	CitationCount        int
+	MinCitations         int
+	LanguageInstruction  string
+	AgentResults         string
+	TargetWords          int
+	IsResearch           bool
+	SynthesisStyle       string
+	CitationAgentEnabled bool // Whether Citation Agent post-processing is active
 }
 
 // synthesisTemplateCache caches loaded templates for performance.

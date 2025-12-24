@@ -443,6 +443,21 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 		"final_confidence", finalConfidence,
 	)
 
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if finalResult != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    finalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": totalTokens,
+			},
+		}).Get(ctx, nil)
+	}
+
 	// Emit WORKFLOW_COMPLETED before returning
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,

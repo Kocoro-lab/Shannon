@@ -2,7 +2,6 @@ package execution
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
@@ -10,6 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -122,21 +122,23 @@ func ExecuteParallel(
 				taskContext["parent_area"] = task.ParentArea
 			}
 
+			// Compute agent name using station names for deterministic, human-readable IDs
+			wid := workflow.GetInfo(ctx).WorkflowExecution.ID
+			if config.Context != nil {
+				if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
+					wid = p
+				}
+			}
+			agentName := agents.GetAgentName(wid, i)
+
 			// Emit agent started event (publish under parent workflow when available)
 			if config.EmitEvents {
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-				if config.Context != nil {
-					if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-						wid = p
-					}
-				}
 				_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 					activities.EmitTaskUpdateInput{
 						WorkflowID: wid,
 						EventType:  activities.StreamEventAgentStarted,
-						AgentID:    fmt.Sprintf("agent-%s", task.ID),
+						AgentID:    agentName,
 						Timestamp:  workflow.Now(ctx),
-						Payload:    map[string]interface{}{"role": task.Role},
 					}).Get(ctx, nil)
 			}
 
@@ -145,7 +147,6 @@ func ExecuteParallel(
 
 			if budgetPerAgent > 0 {
 				// Execute with budget
-				wid := workflow.GetInfo(ctx).WorkflowExecution.ID
 				// Prefer parent workflow ID for budget tracking and persistence
 				parentWid := ""
 				if config.Context != nil {
@@ -165,7 +166,7 @@ func ExecuteParallel(
 					activities.BudgetedAgentInput{
 						AgentInput: activities.AgentExecutionInput{
 							Query:            task.Description,
-							AgentID:          fmt.Sprintf("agent-%s", task.ID),
+							AgentID:          agentName,
 							Context:          taskContext,
 							Mode:             "standard",
 							SessionID:        sessionID,
@@ -193,7 +194,7 @@ func ExecuteParallel(
 					activities.ExecuteAgent,
 					activities.AgentExecutionInput{
 						Query:            task.Description,
-						AgentID:          fmt.Sprintf("agent-%s", task.ID),
+						AgentID:          agentName,
 						Context:          taskContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
@@ -256,11 +257,12 @@ func ExecuteParallel(
 									wid = p
 								}
 							}
+							agentName := agents.GetAgentName(wid, fwi.Index)
 							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 								activities.EmitTaskUpdateInput{
 									WorkflowID: wid,
 									EventType:  activities.StreamEventErrorOccurred,
-									AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
+									AgentID:    agentName,
 									Message:    err.Error(),
 									Timestamp:  workflow.Now(ctx),
 								}).Get(ctx, nil)
@@ -359,23 +361,17 @@ func ExecuteParallel(
 								workflowID = p
 							}
 						}
-						persistAgentExecutionLocal(ctx, workflowID, fmt.Sprintf("agent-%s", tasks[fwi.Index].ID), tasks[fwi.Index].Description, result)
+						agentName := agents.GetAgentName(workflowID, fwi.Index)
+						persistAgentExecutionLocal(ctx, workflowID, agentName, tasks[fwi.Index].Description, result)
 
 						// Emit completion event (parent workflow when available)
 						if config.EmitEvents {
-							wid := workflow.GetInfo(ctx).WorkflowExecution.ID
-							if config.Context != nil {
-								if p, ok := config.Context["parent_workflow_id"].(string); ok && p != "" {
-									wid = p
-								}
-							}
 							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 								activities.EmitTaskUpdateInput{
-									WorkflowID: wid,
+									WorkflowID: workflowID,
 									EventType:  activities.StreamEventAgentCompleted,
-									AgentID:    fmt.Sprintf("agent-%s", tasks[fwi.Index].ID),
+									AgentID:    agentName,
 									Timestamp:  workflow.Now(ctx),
-									Payload:    map[string]interface{}{"role": tasks[fwi.Index].Role},
 								}).Get(ctx, nil)
 						}
 
@@ -478,7 +474,6 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 			Metadata: map[string]interface{}{
 				"workflow": "parallel",
 				"strategy": "parallel",
-				"role":     result.Role,
 			},
 		})
 

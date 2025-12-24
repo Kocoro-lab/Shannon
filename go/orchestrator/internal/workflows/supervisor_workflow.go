@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
@@ -520,6 +521,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 
 	for i, st := range decomp.Subtasks {
+		agentName := agents.GetAgentName(workflowID, i)
 		// Check pause/cancel before each subtask
 		if err := controlHandler.CheckPausePoint(ctx, fmt.Sprintf("pre_subtask_%d", i)); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -538,7 +540,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflowID,
 			EventType:  activities.StreamEventProgress,
-			AgentID:    fmt.Sprintf("agent-%s", st.ID),
+			AgentID:    agentName,
 			Message:    progressMessage,
 			Timestamp:  workflow.Now(ctx),
 		}).Get(ctx, nil); err != nil {
@@ -563,11 +565,11 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			childCtx["role"] = role
 			// Protect slice modification from concurrent query handler reads
 			teamAgentsMu.Lock()
-			teamAgents = append(teamAgents, AgentInfo{AgentID: fmt.Sprintf("agent-%s", st.ID), Role: role})
+			teamAgents = append(teamAgents, AgentInfo{AgentID: agentName, Role: role})
 			teamAgentsMu.Unlock()
 			// Optional: record role assignment in mailbox
 			if workflow.GetVersion(ctx, "mailbox_v1", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
-				msg := MailboxMessage{From: "supervisor", To: fmt.Sprintf("agent-%s", st.ID), Role: role, Content: "role_assigned"}
+				msg := MailboxMessage{From: "supervisor", To: agentName, Role: role, Content: "role_assigned"}
 				// Send to channel instead of direct append to avoid race condition
 				msgChan.Send(ctx, msg)
 			}
@@ -579,7 +581,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventRoleAssigned,
-				AgentID:    fmt.Sprintf("agent-%s", st.ID),
+				AgentID:    agentName,
 				Message:    role,
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil); err != nil {
@@ -621,7 +623,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 						WorkflowID: workflowID,
 						EventType:  activities.StreamEventDataProcessing,
-						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						AgentID:    agentName,
 						Message:    activities.MsgCompressionApplied(),
 						Timestamp:  workflow.Now(ctx),
 					}).Get(ctx, nil)
@@ -629,7 +631,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 						WorkflowID: workflowID,
 						EventType:  activities.StreamEventDataProcessing,
-						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						AgentID:    agentName,
 						Message:    activities.MsgSummaryAdded(),
 						Timestamp:  workflow.Now(ctx),
 					}).Get(ctx, nil)
@@ -686,7 +688,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 							WorkflowID: workflowID,
 							EventType:  activities.StreamEventWaiting,
-							AgentID:    fmt.Sprintf("agent-%s", st.ID),
+							AgentID:    agentName,
 							Message:    waitMessage,
 							Timestamp:  workflow.Now(ctx),
 						}).Get(ctx, nil); err != nil {
@@ -745,7 +747,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				if err := workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 					WorkflowID: workflowID,
 					EventType:  activities.StreamEventDependencySatisfied,
-					AgentID:    fmt.Sprintf("agent-%s", st.ID),
+					AgentID:    agentName,
 					Message:    topic,
 					Timestamp:  workflow.Now(ctx),
 				}).Get(ctx, nil); err != nil {
@@ -797,7 +799,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 
 		// Performance-based agent selection (epsilon-greedy)
-		defaultAgentID := fmt.Sprintf("agent-%s", st.ID)
+		defaultAgentID := agentName
 		availableAgents := []string{defaultAgentID} // TODO: populate from registry
 		selectedAgent, err := SelectAgentForTask(ctx, st.ID, availableAgents, defaultAgentID)
 		if err != nil {
@@ -864,7 +866,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 						WorkflowID: workflowID,
 						EventType:  activities.StreamEventProgress,
-						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						AgentID:    agentName,
 						Message:    activities.MsgBudget(res.TokensUsed, agentMax),
 						Timestamp:  workflow.Now(ctx),
 					}).Get(ctx, nil)
@@ -891,7 +893,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					activities.PersistAgentExecutionStandalone,
 					activities.PersistAgentExecutionInput{
 						WorkflowID: workflowID,
-						AgentID:    fmt.Sprintf("agent-%s", st.ID),
+						AgentID:    agentName,
 						Input:      st.Description,
 						Output:     res.Response,
 						State:      state,
@@ -924,7 +926,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 							activities.PersistToolExecutionStandalone,
 							activities.PersistToolExecutionInput{
 								WorkflowID:     workflowID,
-								AgentID:        fmt.Sprintf("agent-%s", st.ID),
+								AgentID:        agentName,
 								ToolName:       texec.Tool,
 								InputParams:    st.ToolParameters,
 								Output:         outputStr,
@@ -1306,11 +1308,18 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			Report:           reportForCitation,
 			Citations:        citationsForAgent,
 			ParentWorkflowID: workflowID,
-			ModelTier:        "medium",
+			ModelTier:        "small", // Structured task - small tier sufficient
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
 			logger.Warn("CitationAgent failed, using original synthesis", "error", cerr)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to service error",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 		} else if citationResult.ValidationPassed {
 			// Use cited report and rebuild Sources with correct Used inline/Additional labels
 			// The new report has [n] markers, so FormatReportWithCitations will correctly
@@ -1336,8 +1345,32 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			logger.Warn("CitationAgent validation failed, keeping original synthesis",
 				"error", citationResult.ValidationError,
 			)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to validation failure",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 			// Keep original synth.FinalResult (which already has Sources)
 		}
+	}
+
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// This is the canonical answer after all processing (synthesis + citation).
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if synth.FinalResult != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    synth.FinalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": synth.TokensUsed,
+				"model_used":  synth.ModelUsed,
+			},
+		}).Get(ctx, nil)
 	}
 
 	// Compute total tokens across child results + synthesis
