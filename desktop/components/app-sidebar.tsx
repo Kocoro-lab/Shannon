@@ -3,7 +3,8 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Plus, History, Sparkles, Microscope, Bot, CalendarClock } from "lucide-react";
+import { Plus, History, Sparkles, Microscope, Bot, Settings, LogOut } from "lucide-react";
+import { logout, getStoredUser } from "@/lib/auth";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useEffect, useState, Suspense, useCallback, useRef } from "react";
 import { useSelector } from "react-redux";
@@ -119,10 +120,10 @@ function SidebarInner() {
       active: pathname.startsWith("/agents"),
     },
     {
-      label: "Schedules",
-      icon: CalendarClock,
-      href: "/schedules",
-      active: pathname.startsWith("/schedules"),
+      label: "Settings",
+      icon: Settings,
+      href: "/settings",
+      active: pathname.startsWith("/settings"),
     },
   ];
 
@@ -210,9 +211,21 @@ function SidebarInner() {
         )}
       </SidebarContent>
       <SidebarFooter>
-        <div className="flex items-center justify-between px-2 py-2">
-          <span className="text-sm">Theme</span>
-          <ThemeToggle />
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-2 py-2">
+            <span className="text-sm">Theme</span>
+            <ThemeToggle />
+          </div>
+          {/* Show logout only if authenticated (not using dev X-User-Id) */}
+          {!process.env.NEXT_PUBLIC_USER_ID && getStoredUser() && (
+            <button
+              onClick={logout}
+              className="flex w-full items-center gap-2 px-2 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+            >
+              <LogOut className="h-4 w-4" />
+              <span>Sign out</span>
+            </button>
+          )}
         </div>
       </SidebarFooter>
     </Sidebar>

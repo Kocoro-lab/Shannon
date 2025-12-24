@@ -1,23 +1,161 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
+import { getAccessToken, getAPIKey } from "@/lib/auth";
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
-// Auth headers helper - reads from environment or uses test UUID for development
-// Default user ID matches migrations/postgres/003_authentication.sql seed data
-// Note: Tenant is derived from user record by backend, not sent as header
+// =============================================================================
+// Auth Headers Helper
+// =============================================================================
+
+// Auth headers helper - uses API key if available, falls back to JWT token, then X-User-Id for dev
 function getAuthHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
-    
-    // User ID - default is the seeded admin user from migrations
-    // Backend CORS allows: X-User-Id (case sensitive)
-    const userId = process.env.NEXT_PUBLIC_USER_ID || "00000000-0000-0000-0000-000000000002";
+
+    // Try API key first (preferred for OSS backend)
+    const apiKey = getAPIKey();
+    if (apiKey) {
+        headers["X-API-Key"] = apiKey;
+        return headers;
+    }
+
+    // Try JWT token (for authenticated users without API key)
+    const token = getAccessToken();
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+        return headers;
+    }
+
+    // Fallback to X-User-Id for local development without auth
+    // Default user ID matches migrations/postgres/003_authentication.sql seed data
+    const userId = process.env.NEXT_PUBLIC_USER_ID;
     if (userId) {
         headers["X-User-Id"] = userId;
     }
-    
+
     return headers;
 }
+
+// =============================================================================
+// Auth Types
+// =============================================================================
+
+export interface AuthUserInfo {
+    email: string;
+    username: string;
+    name?: string;
+    picture?: string;
+}
+
+export interface AuthResponse {
+    user_id: string;
+    tenant_id: string;
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+    api_key?: string;
+    tier: string;
+    is_new_user: boolean;
+    quotas: Record<string, any>;
+    user: AuthUserInfo;
+}
+
+export interface MeResponse {
+    user_id: string;
+    tenant_id: string;
+    email: string;
+    username: string;
+    name?: string;
+    picture?: string;
+    tier: string;
+    quotas: Record<string, any>;
+    rate_limits: Record<string, any>;
+}
+
+// =============================================================================
+// Auth API Functions
+// =============================================================================
+
+export async function register(
+    email: string,
+    username: string,
+    password: string,
+    fullName?: string
+): Promise<AuthResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            email,
+            username,
+            password,
+            full_name: fullName,
+        }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `Registration failed: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+export async function login(email: string, password: string): Promise<AuthResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.message || `Login failed: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+export async function refreshToken(refreshToken: string): Promise<{
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+}> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+
+    if (!response.ok) {
+        throw new Error("Token refresh failed");
+    }
+
+    return response.json();
+}
+
+export async function getCurrentUser(): Promise<MeResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/me`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        throw new Error("Failed to get current user");
+    }
+
+    return response.json();
+}
+
+// =============================================================================
+// Task Types
+// =============================================================================
 
 export interface TaskSubmitRequest {
     query: string;
@@ -41,6 +179,7 @@ export async function submitTask(request: TaskSubmitRequest): Promise<TaskSubmit
         method: "POST",
         headers: {
             "Content-Type": "application/json",
+            ...getAuthHeaders(),
         },
         body: JSON.stringify(request),
     });
@@ -54,7 +193,9 @@ export async function submitTask(request: TaskSubmitRequest): Promise<TaskSubmit
 }
 
 export async function getTask(taskId: string) {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}`);
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}`, {
+        headers: getAuthHeaders(),
+    });
 
     if (!response.ok) {
         throw new Error(`Failed to get task: ${response.statusText}`);
@@ -82,7 +223,9 @@ export interface TaskListResponse {
 }
 
 export async function listTasks(limit: number = 50, offset: number = 0): Promise<TaskListResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks?limit=${limit}&offset=${offset}`);
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks?limit=${limit}&offset=${offset}`, {
+        headers: getAuthHeaders(),
+    });
 
     if (!response.ok) {
         throw new Error(`Failed to list tasks: ${response.statusText}`);
@@ -92,7 +235,21 @@ export async function listTasks(limit: number = 50, offset: number = 0): Promise
 }
 
 export function getStreamUrl(workflowId: string): string {
-    return `${API_BASE_URL}/api/v1/stream/sse?workflow_id=${workflowId}`;
+    const baseUrl = `${API_BASE_URL}/api/v1/stream/sse?workflow_id=${workflowId}`;
+
+    // Add API key for SSE auth (EventSource can't use headers)
+    const apiKey = getAPIKey();
+    if (apiKey) {
+        return `${baseUrl}&api_key=${encodeURIComponent(apiKey)}`;
+    }
+
+    // Fallback to token for SSE auth
+    const token = getAccessToken();
+    if (token) {
+        return `${baseUrl}&token=${encodeURIComponent(token)}`;
+    }
+
+    return baseUrl;
 }
 
 // Session Types
@@ -195,7 +352,9 @@ export interface SessionEventsResponse {
 // Session API Functions
 
 export async function listSessions(limit: number = 20, offset: number = 0): Promise<SessionListResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions?limit=${limit}&offset=${offset}`);
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions?limit=${limit}&offset=${offset}`, {
+        headers: getAuthHeaders(),
+    });
 
     if (!response.ok) {
         throw new Error(`Failed to list sessions: ${response.statusText}`);
@@ -205,7 +364,9 @@ export async function listSessions(limit: number = 20, offset: number = 0): Prom
 }
 
 export async function getSession(sessionId: string): Promise<Session> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}`);
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}`, {
+        headers: getAuthHeaders(),
+    });
 
     if (!response.ok) {
         throw new Error(`Failed to get session: ${response.statusText}`);
@@ -215,7 +376,9 @@ export async function getSession(sessionId: string): Promise<Session> {
 }
 
 export async function getSessionHistory(sessionId: string): Promise<SessionHistoryResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/history`);
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/history`, {
+        headers: getAuthHeaders(),
+    });
 
     if (!response.ok) {
         throw new Error(`Failed to get session history: ${response.statusText}`);
@@ -234,7 +397,9 @@ export async function getSessionEvents(sessionId: string, limit: number = 10, of
         params.append('include_payload', 'true');
     }
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/events?${params.toString()}`);
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/events?${params.toString()}`, {
+        headers: getAuthHeaders(),
+    });
 
     if (!response.ok) {
         throw new Error(`Failed to get session events: ${response.statusText}`);
@@ -268,6 +433,7 @@ export async function pauseTask(taskId: string, reason?: string): Promise<TaskCo
         method: "POST",
         headers: {
             "Content-Type": "application/json",
+            ...getAuthHeaders(),
         },
         body: JSON.stringify(reason ? { reason } : {}),
     });
@@ -285,6 +451,7 @@ export async function resumeTask(taskId: string, reason?: string): Promise<TaskC
         method: "POST",
         headers: {
             "Content-Type": "application/json",
+            ...getAuthHeaders(),
         },
         body: JSON.stringify(reason ? { reason } : {}),
     });
@@ -302,6 +469,7 @@ export async function cancelTask(taskId: string, reason?: string): Promise<{ suc
         method: "POST",
         headers: {
             "Content-Type": "application/json",
+            ...getAuthHeaders(),
         },
         body: JSON.stringify(reason ? { reason } : {}),
     });
@@ -316,7 +484,7 @@ export async function cancelTask(taskId: string, reason?: string): Promise<{ suc
 
 export async function getTaskControlState(taskId: string): Promise<ControlStateResponse> {
     const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/control-state`, {
-        // Use the same auth mechanism as other API calls (cookies / Authorization headers).
+        headers: getAuthHeaders(),
     });
 
     if (!response.ok) {
