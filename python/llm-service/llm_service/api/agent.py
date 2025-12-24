@@ -2038,7 +2038,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         elif isinstance(query.context, dict) and (
             query.context.get("force_research")
             or query.context.get("workflow_type") == "research"
-            or query.context.get("role") == "deep_research_agent"
+            or query.context.get("role") in ["deep_research_agent", "research_supervisor"]
         ):
             identity_prompt = RESEARCH_SUPERVISOR_IDENTITY
             prompt_source = "research"
