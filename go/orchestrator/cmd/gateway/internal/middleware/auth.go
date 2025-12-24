@@ -174,6 +174,18 @@ func (m *AuthMiddleware) extractToken(r *http.Request) (string, string) {
 		}
 	}
 
+	// For SSE/WebSocket endpoints, check query parameters
+	// Browser's EventSource API cannot send custom headers, so we support query params
+	if strings.Contains(r.URL.Path, "/stream/") {
+		if apiKey := r.URL.Query().Get("api_key"); apiKey != "" {
+			return apiKey, "api_key"
+		}
+		if token := r.URL.Query().Get("token"); token != "" {
+			tokenType := m.detectTokenType(token)
+			return token, tokenType
+		}
+	}
+
 	return "", ""
 }
 
