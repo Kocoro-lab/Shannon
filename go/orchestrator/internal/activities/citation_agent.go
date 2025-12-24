@@ -310,11 +310,22 @@ Insert [n] at the END of sentences/clauses containing factual claims:
 Match claims to citations based on:
 1. Topic relevance (same subject matter)
 2. Data correspondence (same numbers, dates, names)
-3. Source authority (official sites, news outlets)
+3. Source authority (see priority below)
 
 Use ALL signals: URL path, title, domain, AND snippet content.
 If snippet is empty, cite if URL/title clearly matches the topic.
 If no citation matches a claim, leave it uncited.
+
+## SOURCE PRIORITY (Critical)
+
+When MULTIPLE citations support the SAME claim, choose ONE based on this priority:
+1. **Official sources** (highest): Company official sites, .gov, .edu domains
+2. **Authoritative aggregators**: Crunchbase, PitchBook, LinkedIn, Wikipedia
+3. **Reputable news**: Reuters, TechCrunch, industry publications
+4. **Other sources** (lowest): Blogs, forums, lesser-known sites
+
+ONLY cite lower-priority sources if they contain UNIQUE information not found in higher-priority sources.
+Example: If both [3] official site and [15] blog mention "founded in 2010", cite [3] only.
 
 ## OUTPUT FORMAT
 <cited_report>

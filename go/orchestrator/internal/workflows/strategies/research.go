@@ -36,11 +36,11 @@ import (
 // Filtering Strategy:
 //  1. Always keep ALL official domain citations (bypass threshold)
 //  2. Keep non-official citations scoring >= threshold
-//  3. Backfill to minKeep (8) using quality×credibility+entity_score
+//  3. Backfill to minKeep (10) using quality×credibility+entity_score
 //
 // Prevents Over-Filtering:
-//   - Lower threshold (0.3 vs 0.5) for better recall
-//   - Higher minKeep (8 vs 3) for deep research coverage
+//   - Lower threshold (0.3) allows title/snippet matches (0.4) to pass
+//   - Higher minKeep (10) for deep research coverage
 //   - Official sites guaranteed inclusion
 //
 // Search Engine Variance:
@@ -91,8 +91,8 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 	}
 
 	const (
-		threshold = 0.5 // Minimum relevance score to pass (raised to reduce noise)
-		minKeep   = 5   // Safety floor: keep at least this many for deep research
+		threshold = 0.3 // Minimum relevance score to pass (title/snippet match = 0.4 can pass)
+		minKeep   = 10  // Safety floor: keep at least this many for deep research
 	)
 
 	// Normalize canonical name and aliases for matching
@@ -1334,7 +1334,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					MaxConcurrency:           hybridMax,
 					EmitEvents:               true,
 					Context:                  baseContext,
-					DependencyWaitTimeout:    6 * time.Minute,
+					DependencyWaitTimeout:    6 * time.Minute,  // Total timeout
+					DependencyCheckInterval:  30 * time.Second, // Check every 30s for accurate Temporal UI display
 					PassDependencyResults:    true,
 					ClearDependentToolParams: true,
 				}
@@ -2822,9 +2823,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		citationAgentEnabled = v
 	}
 	if citationAgentEnabled && len(collectedCitations) > 0 {
-		logger.Info("CitationAgent: starting citation addition", "citations_count", len(collectedCitations))
+		logger.Info("CitationAgent: starting citation addition",
+			"total_citations", len(collectedCitations),
+		)
 
-		// Convert metadata.Citation to CitationForAgent (avoids import cycle)
+		// Convert to CitationForAgent (avoids import cycle)
+		// Pass ALL citations - let CitationAgent decide which to use based on prompt guidance
 		citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
 		for _, c := range collectedCitations {
 			citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
