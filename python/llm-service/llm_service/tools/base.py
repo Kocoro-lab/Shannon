@@ -4,10 +4,17 @@ Base Tool interface for Shannon platform
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime, timedelta
 from enum import Enum
+from typing import Any, Dict, List, Optional, Union
 import json
-from datetime import datetime
+import time
+import uuid
+
+# Rate limiting constants
+RATE_LIMIT_HIGH_THROUGHPUT_THRESHOLD = 60  # req/min - skip per-session tracking above this
+RATE_LIMIT_SKIP_THRESHOLD = 100  # req/min - skip rate limiting entirely above this
+TRACKER_MAX_ENTRIES = 100  # Maximum entries in execution tracker before cleanup
 
 
 class ToolParameterType(Enum):
@@ -92,7 +99,9 @@ class Tool(ABC):
         self.parameters = self._get_parameters()
         self._execution_count = 0
         # Track rate limits per session/user instead of globally
-        self._execution_tracker = {}  # {session_id: last_execution_time}
+        self._execution_tracker: Dict[str, datetime] = {}
+        # Request-scoped ID for rate limiting when no session/agent context
+        self._current_request_id: Optional[str] = None
 
     @abstractmethod
     def _get_metadata(self) -> ToolMetadata:
@@ -130,25 +139,38 @@ class Tool(ABC):
             observer: Optional callback(event_name, payload) for intermediate status updates
             **kwargs: Tool-specific parameters
         """
-        import time
-
         start_time = time.time()
+
+        # Reset request ID for this execution (ensures unique key per execute call)
+        self._reset_request_id()
 
         try:
             # Coerce and validate parameters
             kwargs = self._coerce_parameters(kwargs)
             self._validate_parameters(kwargs)
 
-            # Check rate limits (skip for high-rate tools like calculator)
-            if self.metadata.rate_limit and self.metadata.rate_limit < 100:
-                # Extract session_id from context if available
-                session_id = None
-                if session_context and isinstance(session_context, dict):
-                    session_id = session_context.get("session_id")
+            # Extract session_id and agent_id from context
+            session_id = None
+            agent_id = None
+            if session_context and isinstance(session_context, dict):
+                session_id = session_context.get("session_id")
+                agent_id = session_context.get("agent_id")
 
-                if not self._check_rate_limit(session_id):
+            # Get consistent tracker key for this execution
+            tracker_key = self._get_tracker_key(session_id, agent_id)
+
+            # Check rate limits (skip for high-rate tools like calculator)
+            if self.metadata.rate_limit and self.metadata.rate_limit < RATE_LIMIT_SKIP_THRESHOLD:
+                retry_after = self._get_retry_after(tracker_key)
+                if retry_after is not None:
+                    # Rate limited - return remaining wait time
+                    # NOTE: Do NOT update tracker on rejection to avoid extending wait window
                     return ToolResult(
-                        success=False, output=None, error="Rate limit exceeded"
+                        success=False,
+                        output=None,
+                        error=f"Rate limit exceeded. Retry after {retry_after:.1f}s",
+                        metadata={"retry_after_seconds": int(retry_after) + 1},
+                        execution_time_ms=int((time.time() - start_time) * 1000),
                     )
 
             # Execute the tool with session context if tool is session-aware
@@ -161,27 +183,20 @@ class Tool(ABC):
                     session_context=None, observer=observer, **kwargs
                 )
 
-            # Track execution
+            # Track execution (both success and failure from _execute_impl)
             self._execution_count += 1
-            # Extract session_id for tracking or use thread ID for parallel execution
-            import threading
+            # Only track session/agent-scoped keys (request-scoped UUIDs can't be
+            # rate-limited across requests anyway, so tracking them wastes memory)
+            if not tracker_key.startswith("request:"):
+                self._execution_tracker[tracker_key] = datetime.now()
 
-            session_id = None
-            if session_context and isinstance(session_context, dict):
-                session_id = session_context.get("session_id")
-            tracker_key = (
-                session_id if session_id else f"thread_{threading.get_ident()}"
-            )
-            self._execution_tracker[tracker_key] = datetime.now()
-
-            # Clean up old entries (keep only last 100 sessions)
-            if len(self._execution_tracker) > 100:
-                # Remove oldest entries
-                sorted_keys = sorted(
-                    self._execution_tracker.items(), key=lambda x: x[1]
-                )
-                for key, _ in sorted_keys[: len(sorted_keys) - 100]:
-                    del self._execution_tracker[key]
+                # Clean up old entries to prevent memory growth
+                if len(self._execution_tracker) > TRACKER_MAX_ENTRIES:
+                    sorted_keys = sorted(
+                        self._execution_tracker.items(), key=lambda x: x[1]
+                    )
+                    for key, _ in sorted_keys[: len(sorted_keys) - TRACKER_MAX_ENTRIES]:
+                        del self._execution_tracker[key]
 
             # Add execution time
             execution_time = int((time.time() - start_time) * 1000)
@@ -315,36 +330,70 @@ class Tool(ABC):
             return isinstance(value, expected)
         return False
 
-    def _check_rate_limit(self, session_id: str = None) -> bool:
-        """Check if rate limit is exceeded for this session"""
+    def _get_tracker_key(
+        self, session_id: Optional[str], agent_id: Optional[str] = None
+    ) -> str:
+        """Generate consistent tracker key for rate limiting.
+
+        Uses session_id if available, then agent_id as fallback.
+        This avoids the threading.get_ident() issue where all asyncio coroutines
+        share the same thread ID in a single-threaded event loop.
+
+        Args:
+            session_id: Optional session ID from context
+            agent_id: Optional agent ID for fallback tracking
+
+        Returns:
+            A unique key for tracking rate limits
+        """
+        if session_id:
+            return f"session:{session_id}"
+        if agent_id:
+            return f"agent:{agent_id}"
+        # For requests without session_id or agent_id, use request-scoped tracking
+        # This prevents false rate limiting across concurrent requests
+        # NOTE: Per-request UUID means no cross-request rate limiting without context
+        # UUID is generated upfront in _reset_request_id() to avoid race conditions
+        return f"request:{self._current_request_id}"
+
+    def _reset_request_id(self) -> None:
+        """Generate a new request ID for this execution.
+
+        Called at the start of each execute() to ensure each execution
+        gets a unique tracker key when no session_id/agent_id is available.
+        Generating upfront avoids race conditions in _get_tracker_key().
+        """
+        self._current_request_id = uuid.uuid4().hex[:8]
+
+    def _get_retry_after(self, tracker_key: str) -> Optional[float]:
+        """Check rate limit and return remaining wait time if limited.
+
+        Args:
+            tracker_key: The key to use for tracking (session or request based)
+
+        Returns:
+            None if execution is allowed, or remaining seconds to wait if rate limited
+        """
         if not self.metadata.rate_limit:
-            return True
+            return None
 
-        # For high-throughput tools (rate_limit >= 60), disable per-session tracking
-        # This allows parallel execution across different agents
-        if self.metadata.rate_limit >= 60:
-            return True
-
-        # Use session_id for tracking, or generate a unique key for each agent
-        # to avoid blocking parallel agent executions
-        import threading
-
-        tracker_key = session_id if session_id else f"thread_{threading.get_ident()}"
+        # Skip rate limiting for high-throughput tools
+        if self.metadata.rate_limit >= RATE_LIMIT_HIGH_THROUGHPUT_THRESHOLD:
+            return None
 
         if tracker_key not in self._execution_tracker:
-            return True
+            return None
 
         last_execution = self._execution_tracker[tracker_key]
-
-        # Simple rate limiting - checks if enough time has passed
-        from datetime import timedelta
-
-        # Calculate minimum interval between calls
-        # rate_limit is requests per minute, so interval is 60 / rate_limit seconds
         min_interval = timedelta(seconds=60.0 / self.metadata.rate_limit)
         elapsed = datetime.now() - last_execution
 
-        return elapsed >= min_interval
+        if elapsed >= min_interval:
+            return None
+
+        # Return remaining time to wait
+        remaining = min_interval - elapsed
+        return remaining.total_seconds()
 
     def get_schema(self) -> Dict[str, Any]:
         """

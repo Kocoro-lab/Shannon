@@ -1404,6 +1404,7 @@ async def _execute_and_format_tools(
                 safe_keys = {
                     "session_id",
                     "user_id",
+                    "agent_id",  # For tool rate limiting fallback key
                     "prompt_params",
                     "official_domains",
                     # Controls for auto-fetch in web_search
