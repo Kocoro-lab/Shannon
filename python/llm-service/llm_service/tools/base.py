@@ -4,10 +4,17 @@ Base Tool interface for Shannon platform
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from datetime import datetime, timedelta
 from enum import Enum
+from typing import Any, Dict, List, Optional, Union
 import json
-from datetime import datetime
+import time
+import uuid
+
+# Rate limiting constants
+RATE_LIMIT_HIGH_THROUGHPUT_THRESHOLD = 60  # req/min - skip per-session tracking above this
+RATE_LIMIT_SKIP_THRESHOLD = 100  # req/min - skip rate limiting entirely above this
+TRACKER_MAX_ENTRIES = 100  # Maximum entries in execution tracker before cleanup
 
 
 class ToolParameterType(Enum):
@@ -92,7 +99,9 @@ class Tool(ABC):
         self.parameters = self._get_parameters()
         self._execution_count = 0
         # Track rate limits per session/user instead of globally
-        self._execution_tracker = {}  # {session_id: last_execution_time}
+        self._execution_tracker: Dict[str, datetime] = {}
+        # Request-scoped ID for rate limiting when no session/agent context
+        self._current_request_id: Optional[str] = None
 
     @abstractmethod
     def _get_metadata(self) -> ToolMetadata:
@@ -130,8 +139,6 @@ class Tool(ABC):
             observer: Optional callback(event_name, payload) for intermediate status updates
             **kwargs: Tool-specific parameters
         """
-        import time
-
         start_time = time.time()
 
         # Reset request ID for this execution (ensures unique key per execute call)
@@ -153,7 +160,7 @@ class Tool(ABC):
             tracker_key = self._get_tracker_key(session_id, agent_id)
 
             # Check rate limits (skip for high-rate tools like calculator)
-            if self.metadata.rate_limit and self.metadata.rate_limit < 100:
+            if self.metadata.rate_limit and self.metadata.rate_limit < RATE_LIMIT_SKIP_THRESHOLD:
                 retry_after = self._get_retry_after(tracker_key)
                 if retry_after is not None:
                     # Rate limited - return remaining wait time
@@ -178,16 +185,18 @@ class Tool(ABC):
 
             # Track execution (both success and failure from _execute_impl)
             self._execution_count += 1
-            self._execution_tracker[tracker_key] = datetime.now()
+            # Only track session/agent-scoped keys (request-scoped UUIDs can't be
+            # rate-limited across requests anyway, so tracking them wastes memory)
+            if not tracker_key.startswith("request:"):
+                self._execution_tracker[tracker_key] = datetime.now()
 
-            # Clean up old entries (keep only last 100 sessions)
-            if len(self._execution_tracker) > 100:
-                # Remove oldest entries
-                sorted_keys = sorted(
-                    self._execution_tracker.items(), key=lambda x: x[1]
-                )
-                for key, _ in sorted_keys[: len(sorted_keys) - 100]:
-                    del self._execution_tracker[key]
+                # Clean up old entries to prevent memory growth
+                if len(self._execution_tracker) > TRACKER_MAX_ENTRIES:
+                    sorted_keys = sorted(
+                        self._execution_tracker.items(), key=lambda x: x[1]
+                    )
+                    for key, _ in sorted_keys[: len(sorted_keys) - TRACKER_MAX_ENTRIES]:
+                        del self._execution_tracker[key]
 
             # Add execution time
             execution_time = int((time.time() - start_time) * 1000)
@@ -344,9 +353,7 @@ class Tool(ABC):
         # For requests without session_id or agent_id, use request-scoped tracking
         # This prevents false rate limiting across concurrent requests
         # NOTE: Per-request UUID means no cross-request rate limiting without context
-        import uuid
-
-        if not hasattr(self, "_current_request_id") or self._current_request_id is None:
+        if self._current_request_id is None:
             self._current_request_id = uuid.uuid4().hex[:8]
         return f"request:{self._current_request_id}"
 
@@ -370,18 +377,14 @@ class Tool(ABC):
         if not self.metadata.rate_limit:
             return None
 
-        # Skip rate limiting for high-throughput tools (>= 60 req/min)
-        if self.metadata.rate_limit >= 60:
+        # Skip rate limiting for high-throughput tools
+        if self.metadata.rate_limit >= RATE_LIMIT_HIGH_THROUGHPUT_THRESHOLD:
             return None
 
         if tracker_key not in self._execution_tracker:
             return None
 
         last_execution = self._execution_tracker[tracker_key]
-
-        # Calculate minimum interval between calls
-        from datetime import timedelta
-
         min_interval = timedelta(seconds=60.0 / self.metadata.rate_limit)
         elapsed = datetime.now() - last_execution
 
