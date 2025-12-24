@@ -112,7 +112,9 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 		// Validate based on token type
 		switch tokenType {
 		case "api_key":
-			userCtx, err = m.authService.ValidateAPIKey(r.Context(), token)
+			// Normalize API key format before validation (sk-shannon-xxx → sk_xxx)
+			normalizedToken := m.normalizeAPIKey(token)
+			userCtx, err = m.authService.ValidateAPIKey(r.Context(), normalizedToken)
 			if err != nil {
 				m.logger.Debug("API key validation failed",
 					zap.Error(err),
@@ -176,17 +178,36 @@ func (m *AuthMiddleware) extractToken(r *http.Request) (string, string) {
 }
 
 // detectTokenType determines if a token is an API key or JWT.
-// API keys start with "sk_" prefix, JWTs start with "eyJ" (base64-encoded JSON).
+// API keys start with "sk_" or "sk-shannon-" prefix.
+// JWTs must start with "eyJ" (base64 for '{"') and have 3 dot-separated segments.
 func (m *AuthMiddleware) detectTokenType(token string) string {
-	if strings.HasPrefix(token, "sk_") {
+	// Check for API key prefixes first (both internal sk_ and external sk-shannon- formats)
+	if strings.HasPrefix(token, "sk_") || strings.HasPrefix(token, "sk-shannon-") {
 		return "api_key"
 	}
-	// JWTs have 3 parts separated by dots and start with base64-encoded JSON header
+
+	// JWT detection: must have 3 segments and start with "eyJ" (base64-encoded JSON object)
+	// The "eyJ" prefix indicates the header starts with '{"' which is standard for JWTs
+	// This avoids misclassifying API keys that happen to contain two dots
 	if strings.HasPrefix(token, "eyJ") && strings.Count(token, ".") == 2 {
 		return "jwt"
 	}
+
 	// Default to API key for backwards compatibility
 	return "api_key"
+}
+
+// normalizeAPIKey converts external API key formats to internal format.
+// sk-shannon-xxx → sk_xxx (strips "sk-shannon-" prefix and ensures "sk_" prefix)
+func (m *AuthMiddleware) normalizeAPIKey(token string) string {
+	token = strings.TrimSpace(token)
+	if strings.HasPrefix(token, "sk-shannon-") {
+		token = strings.TrimPrefix(token, "sk-shannon-")
+		if !strings.HasPrefix(token, "sk_") {
+			token = "sk_" + token
+		}
+	}
+	return token
 }
 
 // getKeyPrefix returns the first few characters of the API key for logging
