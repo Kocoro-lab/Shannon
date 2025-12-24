@@ -419,8 +419,14 @@ func main() {
 	}
 	if shCfgForAuth != nil {
 		dbx := sqlx.NewDb(dbClient.GetDB(), "postgres")
-		jwtManager = authpkg.NewJWTManager(shCfgForAuth.Auth.JWTSecret, shCfgForAuth.Auth.AccessTokenExpiry, shCfgForAuth.Auth.RefreshTokenExpiry)
-		authService = authpkg.NewService(dbx, logger, shCfgForAuth.Auth.JWTSecret)
+		// JWT_SECRET env var takes priority over config file for production flexibility
+		jwtSecret := shCfgForAuth.Auth.JWTSecret
+		if envSecret := os.Getenv("JWT_SECRET"); envSecret != "" {
+			jwtSecret = envSecret
+			logger.Info("Using JWT_SECRET from environment variable")
+		}
+		jwtManager = authpkg.NewJWTManager(jwtSecret, shCfgForAuth.Auth.AccessTokenExpiry, shCfgForAuth.Auth.RefreshTokenExpiry)
+		authService = authpkg.NewService(dbx, logger, jwtSecret)
 		authMiddleware = authpkg.NewMiddleware(authService, jwtManager, shCfgForAuth.Auth.SkipAuth)
 		logger.Info("Auth middleware initialized from config",
 			zap.Bool("skip_auth", shCfgForAuth.Auth.SkipAuth),
@@ -428,8 +434,15 @@ func main() {
 	} else {
 		// Fallback if config manager not available
 		dbx := sqlx.NewDb(dbClient.GetDB(), "postgres")
-		jwtManager = authpkg.NewJWTManager("change-this-to-a-secure-32-char-minimum-secret", 30*time.Minute, 7*24*time.Hour)
-		authService = authpkg.NewService(dbx, logger, "change-this-to-a-secure-32-char-minimum-secret")
+		// Check for JWT_SECRET env var even in fallback mode
+		jwtSecret := os.Getenv("JWT_SECRET")
+		if jwtSecret == "" {
+			jwtSecret = "change-this-to-a-secure-32-char-minimum-secret"
+		} else {
+			logger.Info("Using JWT_SECRET from environment variable (fallback mode)")
+		}
+		jwtManager = authpkg.NewJWTManager(jwtSecret, 30*time.Minute, 7*24*time.Hour)
+		authService = authpkg.NewService(dbx, logger, jwtSecret)
 		authMiddleware = authpkg.NewMiddleware(authService, jwtManager, true)
 		logger.Info("Auth middleware initialized with defaults (skip_auth=true)")
 	}

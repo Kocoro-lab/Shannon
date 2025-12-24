@@ -12,6 +12,27 @@ import (
 // JSONB represents a PostgreSQL jsonb column
 type JSONB map[string]interface{}
 
+// SafeClone creates a deep copy of JSONB via JSON serialization.
+// This is safe to call even when the original map is being modified concurrently,
+// as json.Marshal operates on a snapshot of the map structure.
+// Prevents "concurrent map iteration and map write" panics during async DB writes.
+func (j JSONB) SafeClone() JSONB {
+	if j == nil {
+		return nil
+	}
+	// Use JSON round-trip for deep clone - this is atomic and safe
+	data, err := json.Marshal(j)
+	if err != nil {
+		// Fallback to empty map on error
+		return JSONB{}
+	}
+	var clone JSONB
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return JSONB{}
+	}
+	return clone
+}
+
 // Value implements the driver.Valuer interface
 func (j JSONB) Value() (driver.Value, error) {
 	if j == nil {

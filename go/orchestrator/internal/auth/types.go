@@ -53,16 +53,21 @@ type User struct {
 
 // Tenant represents an organization/workspace
 type Tenant struct {
-	ID                uuid.UUID `json:"id" db:"id"`
-	Name              string    `json:"name" db:"name"`
-	Slug              string    `json:"slug" db:"slug"`
-	Plan              string    `json:"plan" db:"plan"` // free, pro, enterprise
-	TokenLimit        int       `json:"token_limit" db:"token_limit"`
-	MonthlyTokenUsage int       `json:"monthly_token_usage" db:"monthly_token_usage"`
-	RateLimitPerHour  int       `json:"rate_limit_per_hour" db:"rate_limit_per_hour"`
-	IsActive          bool      `json:"is_active" db:"is_active"`
-	CreatedAt         time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at" db:"updated_at"`
+	ID                uuid.UUID  `json:"id" db:"id"`
+	Name              string     `json:"name" db:"name"`
+	Slug              string     `json:"slug" db:"slug"`
+	Plan              string     `json:"plan" db:"plan"` // free, pro, enterprise
+	TokenLimit        int        `json:"token_limit" db:"token_limit"`
+	MonthlyTokenUsage int        `json:"monthly_token_usage" db:"monthly_token_usage"`
+	DailyTokenLimit   *int       `json:"daily_token_limit,omitempty" db:"daily_token_limit"`
+	DailyTokenUsage   int        `json:"daily_token_usage" db:"daily_token_usage"`
+	RateLimitPerHour  int        `json:"rate_limit_per_hour" db:"rate_limit_per_hour"`
+	OverageTokens     int64      `json:"overage_tokens" db:"overage_tokens"`
+	UsageResetAt      *time.Time `json:"usage_reset_at,omitempty" db:"usage_reset_at"`
+	IsActive          bool       `json:"is_active" db:"is_active"`
+	CreatedAt         time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at" db:"updated_at"`
+	Metadata          JSONMap    `json:"metadata,omitempty" db:"metadata"`
 }
 
 // APIKey represents an API key for programmatic access

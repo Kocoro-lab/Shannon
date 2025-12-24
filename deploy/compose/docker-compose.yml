@@ -203,6 +203,8 @@ services:
       # Template configuration
       - TEMPLATES_PATH=${TEMPLATES_PATH:-/app/config/workflows/examples:/app/config/workflows/user}
       - SYNTHESIS_TEMPLATES_DIR=${SYNTHESIS_TEMPLATES_DIR:-/app/config/templates/synthesis}
+      # JWT secret for auth (must match gateway JWT_SECRET)
+      - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
     depends_on:
       temporal:
         condition: service_started

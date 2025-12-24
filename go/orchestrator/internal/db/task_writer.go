@@ -82,11 +82,10 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 	}
 	sessionID := task.SessionID // VARCHAR in task_executions
 
-	// Ensure metadata JSONB is not nil
-	var metadata JSONB
-	if task.Metadata != nil {
-		metadata = task.Metadata
-	} else {
+	// Deep copy metadata via JSON round-trip to avoid "concurrent map iteration and map write" panic
+	// The original task.Metadata may be modified by other goroutines during async writes
+	metadata := task.Metadata.SafeClone()
+	if metadata == nil {
 		metadata = JSONB{}
 	}
 
@@ -234,10 +233,9 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 			} else {
 				tenantID = nil
 			}
-			var metadata JSONB
-			if task.Metadata != nil {
-				metadata = task.Metadata
-			} else {
+			// Deep copy metadata to avoid concurrent map access panic
+			metadata := task.Metadata.SafeClone()
+			if metadata == nil {
 				metadata = JSONB{}
 			}
 

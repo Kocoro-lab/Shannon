@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -198,10 +199,12 @@ func compareTokenHash(hash1, hash2 string) bool {
 	return subtle.ConstantTimeCompare([]byte(hash1), []byte(hash2)) == 1
 }
 
-// ExtractBearerToken extracts the token from Authorization header
+// ExtractBearerToken extracts the token from Authorization header.
+// Supports case-insensitive "Bearer" prefix (Bearer, bearer, BEARER, etc.)
 func ExtractBearerToken(authHeader string) (string, error) {
-	if len(authHeader) < 7 || authHeader[:7] != "Bearer " {
+	authHeader = strings.TrimSpace(authHeader)
+	if len(authHeader) < 7 || !strings.EqualFold(authHeader[:6], "Bearer") || authHeader[6] != ' ' {
 		return "", fmt.Errorf("invalid authorization header format")
 	}
-	return authHeader[7:], nil
+	return strings.TrimSpace(authHeader[7:]), nil
 }

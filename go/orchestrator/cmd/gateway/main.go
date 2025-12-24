@@ -121,6 +121,9 @@ func main() {
 		logger.Warn("Failed to create OpenAI handler, /v1/* endpoints disabled", zap.Error(err))
 	}
 
+	// Auth handler
+	authHandler := handlers.NewAuthHandler(authService, pgDB, logger)
+
 	// Create middlewares
 	authMiddleware := middleware.NewAuthMiddleware(authService, logger).Middleware
 	rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
@@ -137,6 +140,46 @@ func main() {
 
 	// OpenAPI spec (no auth required)
 	mux.HandleFunc("GET /openapi.json", openapiHandler.ServeSpec)
+
+	// Auth endpoints (no auth required for register/login, auth required for others)
+	mux.HandleFunc("POST /api/v1/auth/register", authHandler.Register)
+	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
+	mux.HandleFunc("POST /api/v1/auth/refresh", authHandler.Refresh)
+	mux.Handle("GET /api/v1/auth/me",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(authHandler.Me),
+			),
+		),
+	)
+	mux.Handle("POST /api/v1/auth/refresh-key",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(authHandler.RefreshKey),
+			),
+		),
+	)
+	mux.Handle("GET /api/v1/auth/api-keys",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(authHandler.ListAPIKeys),
+			),
+		),
+	)
+	mux.Handle("POST /api/v1/auth/api-keys",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(authHandler.CreateKey),
+			),
+		),
+	)
+	mux.Handle("DELETE /api/v1/auth/api-keys/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(authHandler.RevokeKey),
+			),
+		),
+	)
 
 	// Task endpoints (require auth)
 	mux.Handle("POST /api/v1/tasks",

@@ -28,11 +28,12 @@ User Registration → Tenant Creation → JWT Generation → Authenticated Reque
 ### Core Authentication
 - ✅ Database schema with tenant support
 - ✅ JWT token generation and validation
-- ✅ API key management system
+- ✅ API key management system (create, list, revoke, rotate)
 - ✅ Password hashing with bcrypt
-- ✅ HTTP endpoints (register/login)
+- ✅ HTTP endpoints (register, login, refresh, me)
 - ✅ gRPC middleware enforcement
 - ✅ Configuration via shannon.yaml
+- ✅ Rate limiting (per-IP sliding window)
 
 ### Multi-Tenancy Enforcement
 - ✅ **Sessions**: Redis and PostgreSQL filtering by tenant_id
@@ -55,10 +56,15 @@ auth:
   refresh_token_expiry: "168h"
 ```
 
+Or via environment variables:
+```bash
+export GATEWAY_SKIP_AUTH=0  # Enable auth (1 = skip, 0 = enforce)
+```
+
 ### 2. Register a User
 
 ```bash
-curl -X POST http://localhost:8081/api/auth/register \
+curl -X POST http://localhost:8080/api/v1/auth/register \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -71,20 +77,33 @@ curl -X POST http://localhost:8081/api/auth/register \
 Response:
 ```json
 {
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "refresh_token_string",
+  "expires_in": 1800,
+  "api_key": "sk_live_abc123...",
+  "tier": "free",
+  "is_new_user": true,
+  "quotas": {
+    "monthly_tokens": 100000,
+    "rate_limit_minute": 60,
+    "rate_limit_hour": 1000
+  },
   "user": {
-    "id": "user-uuid",
     "email": "user@example.com",
     "username": "johndoe",
-    "tenant_id": "tenant-uuid",
-    "role": "user"
+    "name": "John Doe"
   }
 }
 ```
 
+**Important**: The `api_key` is only returned on registration. Store it securely - it won't be shown again.
+
 ### 3. Login
 
 ```bash
-curl -X POST http://localhost:8081/api/auth/login \
+curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{
     "email": "user@example.com",
@@ -95,30 +114,91 @@ curl -X POST http://localhost:8081/api/auth/login \
 Response:
 ```json
 {
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
   "access_token": "eyJhbGciOiJIUzI1NiIs...",
   "refresh_token": "refresh_token_string",
-  "token_type": "Bearer",
+  "expires_in": 1800,
+  "api_key": "",
+  "tier": "free",
+  "is_new_user": false,
+  "quotas": {...},
+  "user": {...}
+}
+```
+
+### 4. Refresh Access Token
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{
+    "refresh_token": "your_refresh_token_here"
+  }'
+```
+
+Response:
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "refresh_token": "new_refresh_token",
   "expires_in": 1800
 }
 ```
 
-### 4. Make Authenticated Requests
+### 5. Make Authenticated Requests
 
-#### gRPC with JWT
+#### HTTP with API Key (Recommended)
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "X-API-Key: sk_live_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Hello Shannon"}'
+```
+
+#### HTTP with Bearer Token (API Key)
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Authorization: Bearer sk_live_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Hello Shannon"}'
+```
+
+#### gRPC with API Key
 ```bash
 grpcurl -plaintext \
-  -H "authorization: Bearer <access_token>" \
+  -H "x-api-key: sk_live_abc123..." \
   -d '{"query":"Hello Shannon"}' \
   localhost:50052 shannon.orchestrator.OrchestratorService/SubmitTask
 ```
 
-#### HTTP with API Key
+### 6. Get Current User Info
+
 ```bash
-# Via Gateway (recommended for HTTP)
-curl -X POST http://localhost:8080/api/v1/tasks \
-  -H "X-API-Key: sk_test_123456" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"Hello Shannon"}'
+curl http://localhost:8080/api/v1/auth/me \
+  -H "X-API-Key: sk_live_abc123..."
+```
+
+Response:
+```json
+{
+  "user_id": "550e8400-e29b-41d4-a716-446655440000",
+  "tenant_id": "550e8400-e29b-41d4-a716-446655440001",
+  "email": "user@example.com",
+  "username": "johndoe",
+  "name": "John Doe",
+  "tier": "free",
+  "quotas": {
+    "monthly_tokens": 100000,
+    "monthly_usage": 1234,
+    "rate_limit_minute": 60,
+    "rate_limit_hour": 1000
+  },
+  "rate_limits": {
+    "minute": {"limit": 60, "remaining": 60},
+    "hour": {"limit": 1000, "remaining": 1000}
+  }
+}
 ```
 
 ## Multi-Tenancy Design
@@ -204,23 +284,118 @@ CREATE TABLE task_executions (
 
 ## API Reference
 
-### Authentication Endpoints
+### Authentication Endpoints (No Auth Required)
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/auth/register` | POST | Register new user |
-| `/api/auth/login` | POST | Login and get tokens |
-| `/api/auth/refresh` | POST | Refresh access token (TODO) |
-| `/api/auth/logout` | POST | Revoke tokens (TODO) |
+| `/api/v1/auth/register` | POST | Register new user with email/password |
+| `/api/v1/auth/login` | POST | Login and get tokens |
+| `/api/v1/auth/refresh` | POST | Refresh access token |
+
+### Protected Endpoints (Auth Required)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/auth/me` | GET | Get current user info |
+| `/api/v1/auth/api-keys` | GET | List all API keys for user |
+| `/api/v1/auth/api-keys` | POST | Create new API key |
+| `/api/v1/auth/api-keys/{id}` | DELETE | Revoke an API key |
+| `/api/v1/auth/refresh-key` | POST | Rotate current API key |
+
+### API Key Management
+
+#### List API Keys
+
+```bash
+curl http://localhost:8080/api/v1/auth/api-keys \
+  -H "X-API-Key: sk_live_abc123..."
+```
+
+Response:
+```json
+{
+  "keys": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "name": "Default API Key",
+      "key_prefix": "sk_live_",
+      "description": "Auto-generated on registration",
+      "created_at": "2024-01-15T10:30:00Z",
+      "last_used_at": "2024-01-15T12:00:00Z",
+      "is_active": true
+    }
+  ],
+  "total": 1
+}
+```
+
+#### Create API Key
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/api-keys \
+  -H "X-API-Key: sk_live_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "CI/CD Pipeline",
+    "description": "For GitHub Actions"
+  }'
+```
+
+Response:
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440002",
+  "name": "CI/CD Pipeline",
+  "api_key": "sk_live_xyz789...",
+  "key_prefix": "sk_live_",
+  "created_at": "2024-01-15T14:00:00Z",
+  "warning": "Store this API key securely. It will not be shown again."
+}
+```
+
+**Important**: The full API key is only returned once. Store it securely.
+
+#### Revoke API Key
+
+```bash
+curl -X DELETE http://localhost:8080/api/v1/auth/api-keys/550e8400-e29b-41d4-a716-446655440002 \
+  -H "X-API-Key: sk_live_abc123..."
+```
+
+Response:
+```json
+{
+  "success": true,
+  "message": "API key revoked successfully"
+}
+```
+
+#### Rotate Current API Key
+
+Revokes the current API key and generates a new one:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/auth/refresh-key \
+  -H "X-API-Key: sk_live_abc123..."
+```
+
+Response:
+```json
+{
+  "api_key": "sk_live_new123...",
+  "previous_key_revoked": true
+}
+```
 
 ### Required Headers
 
 | Service | Header | Format |
 |---------|--------|--------|
-| gRPC | `authorization` | `Bearer <jwt_token>` |
 | gRPC | `x-api-key` | `<api_key>` |
-| HTTP | `Authorization` | `Bearer <jwt_token>` |
 | HTTP | `X-API-Key` | `<api_key>` |
+| HTTP | `Authorization` | `Bearer <api_key>` |
+
+**Note**: API keys start with `sk_live_` (production) or `sk_test_` (development).
 
 ## Configuration
 
@@ -295,8 +470,15 @@ docker compose -f deploy/compose/docker-compose.yml restart orchestrator
 
 4. **Create initial admin**
 ```bash
-# Use default admin or create via API
-curl -X POST http://localhost:8081/api/auth/register ...
+# Register via API
+curl -X POST http://localhost:8080/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "admin@example.com",
+    "username": "admin",
+    "password": "SecurePass123!",
+    "full_name": "Admin User"
+  }'
 ```
 
 ## Security Best Practices
@@ -363,16 +545,36 @@ logging:
 | Vector Isolation | ✅ | ❌ | ⚠️ | ❌ |
 | Audit Logging | ✅ | ⚠️ | ✅ | ❌ |
 
+## Rate Limiting
+
+Authentication endpoints are rate-limited to prevent abuse:
+
+| Endpoint | Limit |
+|----------|-------|
+| `/api/v1/auth/register` | 30 requests/minute per IP |
+| `/api/v1/auth/login` | 30 requests/minute per IP |
+| `/api/v1/auth/refresh` | 60 requests/minute per IP |
+
+When rate limited, the API returns HTTP 429:
+```json
+{
+  "error": "rate_limit_exceeded",
+  "message": "Too many login attempts. Please try again later."
+}
+```
+
 ## Future Enhancements
 
-- [ ] OAuth2 providers (Google, GitHub, Microsoft)
+- [ ] OAuth2 providers (Google, GitHub, Microsoft) - Enterprise only
 - [ ] SAML 2.0 for enterprise SSO
 - [ ] Two-factor authentication (2FA)
-- [ ] Refresh token endpoint
+- [x] Refresh token endpoint ✅ Implemented
+- [x] API key management (create, list, revoke) ✅ Implemented
+- [x] API key rotation ✅ Implemented
 - [ ] Admin CLI for user management
 - [ ] Tenant usage analytics dashboard
 - [ ] Fine-grained permissions (resource-level)
-- [ ] API key rotation policies
+- [ ] Email verification
 
 ## Support
 
