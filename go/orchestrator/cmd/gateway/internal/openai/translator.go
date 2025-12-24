@@ -242,19 +242,23 @@ func (t *Translator) buildContext(req *ChatCompletionRequest, modelConfig *Model
 		ctx["max_tokens"] = modelConfig.MaxTokensDefault
 	}
 
-	// Apply temperature
-	if req.Temperature > 0 {
-		ctx["temperature"] = req.Temperature
+	// Apply temperature (pointer check to properly handle temperature=0)
+	if req.Temperature != nil {
+		ctx["temperature"] = *req.Temperature
 	}
 
-	// Apply top_p
-	if req.TopP > 0 {
-		ctx["top_p"] = req.TopP
+	// Apply top_p (pointer check to properly handle top_p=0)
+	if req.TopP != nil {
+		ctx["top_p"] = *req.TopP
 	}
 
-	// Apply stop sequences
+	// Apply stop sequences - convert to []interface{} for structpb compatibility
 	if len(req.Stop) > 0 {
-		ctx["stop"] = req.Stop
+		stopSeqs := make([]interface{}, len(req.Stop))
+		for i, s := range req.Stop {
+			stopSeqs[i] = s
+		}
+		ctx["stop"] = stopSeqs
 	}
 
 	// Apply user ID for tracking
@@ -271,7 +275,15 @@ func (t *Translator) buildContext(req *ChatCompletionRequest, modelConfig *Model
 	// Include conversation history for context (except last user message which is the query)
 	history := t.buildConversationHistory(req.Messages)
 	if len(history) > 0 {
-		ctx["conversation_history"] = history
+		// Convert to []interface{} with map[string]interface{} for structpb compatibility
+		historyIntf := make([]interface{}, len(history))
+		for i, h := range history {
+			historyIntf[i] = map[string]interface{}{
+				"role":    h["role"],
+				"content": h["content"],
+			}
+		}
+		ctx["conversation_history"] = historyIntf
 	}
 
 	return ctx

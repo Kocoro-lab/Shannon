@@ -11,22 +11,37 @@ import (
 	"go.uber.org/zap"
 )
 
-// AuthMiddleware provides authentication middleware
+// APIKeyValidator interface for API key validation
 type APIKeyValidator interface {
 	ValidateAPIKey(ctx context.Context, apiKey string) (*authpkg.UserContext, error)
 }
 
-// AuthMiddleware provides authentication middleware
-type AuthMiddleware struct {
-	authService APIKeyValidator
-	logger      *zap.Logger
+// JWTValidator interface for JWT token validation
+type JWTValidator interface {
+	ValidateAccessToken(tokenString string) (*authpkg.UserContext, error)
 }
 
-// NewAuthMiddleware creates a new authentication middleware
+// AuthMiddleware provides authentication middleware supporting both API keys and JWTs
+type AuthMiddleware struct {
+	authService  APIKeyValidator
+	jwtValidator JWTValidator // Optional: if nil, JWT auth is disabled
+	logger       *zap.Logger
+}
+
+// NewAuthMiddleware creates a new authentication middleware (API key only)
 func NewAuthMiddleware(authService APIKeyValidator, logger *zap.Logger) *AuthMiddleware {
 	return &AuthMiddleware{
 		authService: authService,
 		logger:      logger,
+	}
+}
+
+// NewAuthMiddlewareWithJWT creates a new authentication middleware with JWT support
+func NewAuthMiddlewareWithJWT(authService APIKeyValidator, jwtValidator JWTValidator, logger *zap.Logger) *AuthMiddleware {
+	return &AuthMiddleware{
+		authService:  authService,
+		jwtValidator: jwtValidator,
+		logger:       logger,
 	}
 }
 
@@ -84,21 +99,42 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Extract API key from headers only (no query params)
-		apiKey := m.extractAPIKey(r)
-		if apiKey == "" {
-			m.sendUnauthorized(w, "API key is required")
+		// Extract token from headers (API key or JWT)
+		token, tokenType := m.extractToken(r)
+		if token == "" {
+			m.sendUnauthorized(w, "Authentication required")
 			return
 		}
 
-		// Validate API key using the auth service
-		userCtx, err := m.authService.ValidateAPIKey(r.Context(), apiKey)
-		if err != nil {
-			m.logger.Debug("API key validation failed",
-				zap.Error(err),
-				zap.String("api_key_prefix", m.getKeyPrefix(apiKey)),
-			)
-			m.sendUnauthorized(w, "Invalid API key")
+		var userCtx *authpkg.UserContext
+		var err error
+
+		// Validate based on token type
+		switch tokenType {
+		case "api_key":
+			userCtx, err = m.authService.ValidateAPIKey(r.Context(), token)
+			if err != nil {
+				m.logger.Debug("API key validation failed",
+					zap.Error(err),
+					zap.String("api_key_prefix", m.getKeyPrefix(token)),
+				)
+				m.sendUnauthorized(w, "Invalid API key")
+				return
+			}
+		case "jwt":
+			if m.jwtValidator == nil {
+				m.logger.Debug("JWT validation not configured, rejecting JWT token")
+				m.sendUnauthorized(w, "JWT authentication not supported")
+				return
+			}
+			userCtx, err = m.jwtValidator.ValidateAccessToken(token)
+			if err != nil {
+				m.logger.Debug("JWT validation failed", zap.Error(err))
+				m.sendUnauthorized(w, "Invalid or expired token")
+				return
+			}
+		default:
+			m.sendUnauthorized(w, "Invalid authentication token")
 			return
 		}
 
@@ -118,22 +154,39 @@ func (m *AuthMiddleware) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-// extractAPIKey extracts the API key from the request
-func (m *AuthMiddleware) extractAPIKey(r *http.Request) string {
-	// Check X-API-Key header
+// extractToken extracts the authentication token and its type from the request.
+// Returns (token, type) where type is "api_key" or "jwt".
+func (m *AuthMiddleware) extractToken(r *http.Request) (string, string) {
+	// Check X-API-Key header (always an API key)
 	if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
-		return apiKey
+		return apiKey, "api_key"
 	}
 
 	// Check Authorization header with Bearer token
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		parts := strings.Split(auth, " ")
-		if len(parts) == 2 && strings.ToLower(parts[0]) == "bearer" {
-			return parts[1]
+		if len(parts) == 2 && strings.EqualFold(parts[0], "bearer") {
+			token := parts[1]
+			tokenType := m.detectTokenType(token)
+			return token, tokenType
 		}
 	}
 
-	return ""
+	return "", ""
+}
+
+// detectTokenType determines if a token is an API key or JWT.
+// API keys start with "sk_" prefix, JWTs start with "eyJ" (base64-encoded JSON).
+func (m *AuthMiddleware) detectTokenType(token string) string {
+	if strings.HasPrefix(token, "sk_") {
+		return "api_key"
+	}
+	// JWTs have 3 parts separated by dots and start with base64-encoded JSON header
+	if strings.HasPrefix(token, "eyJ") && strings.Count(token, ".") == 2 {
+		return "jwt"
+	}
+	// Default to API key for backwards compatibility
+	return "api_key"
 }
 
 // getKeyPrefix returns the first few characters of the API key for logging

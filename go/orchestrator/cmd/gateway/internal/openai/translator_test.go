@@ -208,6 +208,7 @@ func TestTranslate(t *testing.T) {
 	translator := NewTranslator(registry)
 
 	t.Run("valid request", func(t *testing.T) {
+		temp := 0.8
 		req := &ChatCompletionRequest{
 			Model: "shannon-chat",
 			Messages: []ChatMessage{
@@ -215,7 +216,7 @@ func TestTranslate(t *testing.T) {
 			},
 			Stream:      true,
 			MaxTokens:   100,
-			Temperature: 0.8,
+			Temperature: &temp,
 		}
 
 		result, err := translator.Translate(req, "user-123", "tenant-456")

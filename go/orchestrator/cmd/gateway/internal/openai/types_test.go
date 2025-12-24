@@ -67,11 +67,11 @@ func TestChatCompletionRequestJSON(t *testing.T) {
 	if req.MaxTokens != 100 {
 		t.Errorf("MaxTokens = %d, want 100", req.MaxTokens)
 	}
-	if req.Temperature != 0.8 {
-		t.Errorf("Temperature = %f, want 0.8", req.Temperature)
+	if req.Temperature == nil || *req.Temperature != 0.8 {
+		t.Errorf("Temperature = %v, want 0.8", req.Temperature)
 	}
-	if req.TopP != 0.9 {
-		t.Errorf("TopP = %f, want 0.9", req.TopP)
+	if req.TopP == nil || *req.TopP != 0.9 {
+		t.Errorf("TopP = %v, want 0.9", req.TopP)
 	}
 	if len(req.Stop) != 1 || req.Stop[0] != "END" {
 		t.Errorf("Stop = %v, want [END]", req.Stop)

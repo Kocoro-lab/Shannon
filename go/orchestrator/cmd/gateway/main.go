@@ -89,9 +89,10 @@ func main() {
 		logger.Fatal("Failed to connect to Redis", zap.Error(err))
 	}
 
-	// Initialize auth service (direct access to internal package)
+	// Initialize auth service and JWT manager (direct access to internal package)
 	jwtSecret := getEnvOrDefault("JWT_SECRET", "your-secret-key")
 	authService := authpkg.NewService(pgDB, logger, jwtSecret)
+	jwtManager := authpkg.NewJWTManager(jwtSecret, 30*time.Minute, 7*24*time.Hour)
 
 	// Connect to orchestrator gRPC
 	orchAddr := getEnvOrDefault("ORCHESTRATOR_GRPC", "orchestrator:50052")
@@ -124,8 +125,8 @@ func main() {
 	// Auth handler
 	authHandler := handlers.NewAuthHandler(authService, pgDB, logger)
 
-	// Create middlewares
-	authMiddleware := middleware.NewAuthMiddleware(authService, logger).Middleware
+	// Create middlewares (with JWT support for Authorization: Bearer <jwt> tokens)
+	authMiddleware := middleware.NewAuthMiddlewareWithJWT(authService, jwtManager, logger).Middleware
 	rateLimiter := middleware.NewRateLimiter(redisClient, logger).Middleware
 	idempotencyMiddleware := middleware.NewIdempotencyMiddleware(redisClient, logger).Middleware
 	tracingMiddleware := middleware.NewTracingMiddleware(logger).Middleware

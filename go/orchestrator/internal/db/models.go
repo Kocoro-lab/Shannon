@@ -13,14 +13,16 @@ import (
 type JSONB map[string]interface{}
 
 // SafeClone creates a deep copy of JSONB via JSON serialization.
-// This is safe to call even when the original map is being modified concurrently,
-// as json.Marshal operates on a snapshot of the map structure.
-// Prevents "concurrent map iteration and map write" panics during async DB writes.
+// NOTE: This is NOT fully concurrency-safe. If the original map is being modified
+// concurrently during the Marshal call, a panic can still occur. The caller must
+// ensure no concurrent writes are happening when SafeClone is called.
+// This function helps prevent panics during async DB writes by creating a copy
+// BEFORE passing to the async writer, reducing the window for concurrent access.
 func (j JSONB) SafeClone() JSONB {
 	if j == nil {
 		return nil
 	}
-	// Use JSON round-trip for deep clone - this is atomic and safe
+	// Deep copy via JSON round-trip
 	data, err := json.Marshal(j)
 	if err != nil {
 		// Fallback to empty map on error

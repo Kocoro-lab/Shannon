@@ -15,8 +15,8 @@ type ChatCompletionRequest struct {
 	Messages         []ChatMessage  `json:"messages"`
 	Stream           bool           `json:"stream,omitempty"`
 	MaxTokens        int            `json:"max_tokens,omitempty"`
-	Temperature      float64        `json:"temperature,omitempty"`
-	TopP             float64        `json:"top_p,omitempty"`
+	Temperature      *float64       `json:"temperature,omitempty"` // Pointer to distinguish 0 from unset
+	TopP             *float64       `json:"top_p,omitempty"`       // Pointer to distinguish 0 from unset
 	N                int            `json:"n,omitempty"`
 	Stop             []string       `json:"stop,omitempty"`
 	PresencePenalty  float64        `json:"presence_penalty,omitempty"`
