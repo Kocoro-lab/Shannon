@@ -134,8 +134,8 @@ export async function refreshAccessToken(): Promise<boolean> {
 
 export function logout(): void {
     clearTokens();
-    // Redirect to login
+    // OSS mode: Redirect to run page (no login required)
     if (typeof window !== "undefined") {
-        window.location.href = "/login";
+        window.location.href = "/run-detail?session_id=new";
     }
 }

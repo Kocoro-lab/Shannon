@@ -70,7 +70,26 @@ func (m *Middleware) HTTPMiddleware(next http.Handler) http.Handler {
 				return
 			}
 
-			http.Error(w, "Missing authorization", http.StatusUnauthorized)
+			// For SSE/WebSocket endpoints, check query parameters
+			// Browser's EventSource API cannot send custom headers
+			if strings.Contains(r.URL.Path, "/stream/") {
+				if qApiKey := r.URL.Query().Get("api_key"); qApiKey != "" {
+					// Normalize sk-shannon-xxx → sk_xxx
+					if strings.HasPrefix(qApiKey, "sk-shannon-") {
+						qApiKey = "sk_" + strings.TrimPrefix(qApiKey, "sk-shannon-")
+					}
+					userCtx, err := m.authService.ValidateAPIKey(r.Context(), qApiKey)
+					if err != nil {
+						http.Error(w, `{"error":"Invalid API key"}`, http.StatusUnauthorized)
+						return
+					}
+					ctx := context.WithValue(r.Context(), UserContextKey, userCtx)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+			}
+
+			http.Error(w, `{"error":"API key is required"}`, http.StatusUnauthorized)
 			return
 		}
 

@@ -76,7 +76,8 @@ export default function SettingsPage() {
 
     const handleLogout = () => {
         logout();
-        router.push("/login");
+        // OSS mode: go back to run page (logout just clears local storage)
+        router.push("/run-detail?session_id=new");
     };
 
     const getTierInfo = (t: Tier) => {
