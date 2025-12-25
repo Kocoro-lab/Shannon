@@ -117,7 +117,7 @@ go/orchestrator/.gomodcache/
 /target/
 rust/agent-core/target/
 rust/*/target/
-Cargo.lock
+# Note: Cargo.lock is committed for agent-core (binary project) for reproducible builds
 
 # Backup files
 *.bak

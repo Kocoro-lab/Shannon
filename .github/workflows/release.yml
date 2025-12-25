@@ -48,10 +48,16 @@ jobs:
         with:
           go-version: '1.22'
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Generate Proto files
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+          pip install grpcio-tools==1.68.1 protobuf==5.29.2
           export PATH="$PATH:$(go env GOPATH)/bin"
           make proto
 
@@ -78,6 +84,8 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_TOKEN }}
 
+      # agent-core: amd64 only (Rust + QEMU arm64 is too slow ~60min)
+      # Other services: multi-arch (Go/Python are fast under QEMU)
       - name: Build and push ${{ matrix.service.name }}
         uses: docker/build-push-action@v5
         with:
@@ -89,7 +97,7 @@ jobs:
             ${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:latest
           cache-from: type=registry,ref=${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:buildcache
           cache-to: type=registry,ref=${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:buildcache,mode=max
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.service.name == 'agent-core' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
 
       - name: Image digest
         run: echo "Published ${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:${{ steps.version.outputs.version }}"
@@ -226,6 +234,80 @@ jobs:
       - name: Display artifact structure
         run: ls -R desktop-artifacts
 
+      - name: Generate latest.json for Tauri auto-update
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          VERSION_NUM="${VERSION#v}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          BASE_URL="https://github.com/Kocoro-lab/Shannon/releases/download/${VERSION}"
+
+          # Find actual artifact files and their signatures
+          echo "=== Artifact structure ==="
+          find desktop-artifacts -type f -name "*.sig" -o -name "*.tar.gz" -o -name "*.AppImage" -o -name "*.exe" -o -name "*.msi" | head -20
+
+          # Find files first, then derive signatures from file paths to ensure consistency
+          MAC_SIG=""
+          LINUX_SIG=""
+          WIN_SIG=""
+
+          # macOS - find file, then signature
+          MAC_FILE_PATH=$(find desktop-artifacts -name "*.app.tar.gz" 2>/dev/null | head -1)
+          MAC_FILE=$(basename "$MAC_FILE_PATH" 2>/dev/null || echo "Shannon.app.tar.gz")
+          if [ -f "${MAC_FILE_PATH}.sig" ]; then
+            MAC_SIG=$(cat "${MAC_FILE_PATH}.sig")
+          fi
+
+          # Linux - find file, then signature
+          LINUX_FILE_PATH=$(find desktop-artifacts -name "*.AppImage" 2>/dev/null | head -1)
+          LINUX_FILE=$(basename "$LINUX_FILE_PATH" 2>/dev/null || echo "shannon_${VERSION_NUM}_amd64.AppImage")
+          if [ -f "${LINUX_FILE_PATH}.sig" ]; then
+            LINUX_SIG=$(cat "${LINUX_FILE_PATH}.sig")
+          fi
+
+          # Windows - prefer NSIS (.exe) over MSI, then signature
+          WIN_FILE_PATH=$(find desktop-artifacts -name "*-setup.exe" 2>/dev/null | head -1)
+          if [ -z "$WIN_FILE_PATH" ]; then
+            WIN_FILE_PATH=$(find desktop-artifacts -name "*.msi" 2>/dev/null | head -1)
+          fi
+          WIN_FILE=$(basename "$WIN_FILE_PATH" 2>/dev/null || echo "Shannon_${VERSION_NUM}_x64-setup.exe")
+          if [ -f "${WIN_FILE_PATH}.sig" ]; then
+            WIN_SIG=$(cat "${WIN_FILE_PATH}.sig")
+          fi
+
+          # Create latest.json for Tauri updater
+          cat > desktop-artifacts/latest.json << EOF
+          {
+            "version": "${VERSION_NUM}",
+            "notes": "See https://github.com/Kocoro-lab/Shannon/releases/tag/${VERSION}",
+            "pub_date": "${DATE}",
+            "platforms": {
+              "darwin-universal": {
+                "signature": "${MAC_SIG}",
+                "url": "${BASE_URL}/${MAC_FILE}"
+              },
+              "darwin-x86_64": {
+                "signature": "${MAC_SIG}",
+                "url": "${BASE_URL}/${MAC_FILE}"
+              },
+              "darwin-aarch64": {
+                "signature": "${MAC_SIG}",
+                "url": "${BASE_URL}/${MAC_FILE}"
+              },
+              "linux-x86_64": {
+                "signature": "${LINUX_SIG}",
+                "url": "${BASE_URL}/${LINUX_FILE}"
+              },
+              "windows-x86_64": {
+                "signature": "${WIN_SIG}",
+                "url": "${BASE_URL}/${WIN_FILE}"
+              }
+            }
+          }
+          EOF
+
+          echo "=== Generated latest.json ==="
+          cat desktop-artifacts/latest.json
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
@@ -236,6 +318,7 @@ jobs:
             desktop-artifacts/shannon-desktop-macos/**/*
             desktop-artifacts/shannon-desktop-windows/**/*
             desktop-artifacts/shannon-desktop-linux/**/*
+            desktop-artifacts/latest.json
           body: |
             ## Shannon ${{ steps.version.outputs.version }}
 

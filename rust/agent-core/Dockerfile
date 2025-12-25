@@ -3,8 +3,8 @@ FROM rust:latest as builder
 
 WORKDIR /usr/src/app
 
-# Copy manifests (Cargo.lock might not exist yet)
-COPY rust/agent-core/Cargo.toml ./
+# Copy manifests and lockfile for deterministic builds
+COPY rust/agent-core/Cargo.toml rust/agent-core/Cargo.lock ./
 COPY rust/agent-core/build.rs ./
 
 # Copy proto files for build.rs

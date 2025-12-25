@@ -41,10 +41,15 @@ echo "⬇️  Downloading docker-compose.release.yml..."
 curl -fsSL "${GITHUB_RAW}/deploy/compose/docker-compose.release.yml" -o docker-compose.release.yml
 echo "✅ Downloaded docker-compose.release.yml"
 
-# Download grafana compose (required by include directive)
+# Download grafana compose and config files (required by include directive)
 echo "⬇️  Downloading Grafana/Prometheus config..."
-mkdir -p grafana
+mkdir -p grafana/config/provisioning/dashboards grafana/scripts grafana/data/prometheus-data grafana/data/grafana-data
 curl -fsSL "${GITHUB_RAW}/deploy/compose/grafana/docker-compose-grafana-prometheus.yml" -o grafana/docker-compose-grafana-prometheus.yml
+curl -fsSL "${GITHUB_RAW}/deploy/compose/grafana/config/prometheus.yml" -o grafana/config/prometheus.yml
+curl -fsSL "${GITHUB_RAW}/deploy/compose/grafana/config/grafana.ini" -o grafana/config/grafana.ini
+curl -fsSL "${GITHUB_RAW}/deploy/compose/grafana/scripts/import-dashboards.sh" -o grafana/scripts/import-dashboards.sh
+curl -fsSL "${GITHUB_RAW}/deploy/compose/grafana/config/provisioning/dashboards/node-exporter-1860.json" -o grafana/config/provisioning/dashboards/node-exporter-1860.json
+curl -fsSL "${GITHUB_RAW}/deploy/compose/grafana/config/provisioning/dashboards/tier-drift-monitoring.json" -o grafana/config/provisioning/dashboards/tier-drift-monitoring.json
 echo "✅ Downloaded Grafana config"
 
 # Download .env.example
@@ -59,13 +64,15 @@ curl -fsSL "${GITHUB_RAW}/config/features.yaml" -o config/features.yaml
 curl -fsSL "${GITHUB_RAW}/config/models.yaml" -o config/models.yaml
 curl -fsSL "${GITHUB_RAW}/config/research_strategies.yaml" -o config/research_strategies.yaml
 curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/_base.tmpl" -o config/templates/synthesis/_base.tmpl
-curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/default.tmpl" -o config/templates/synthesis/default.tmpl
+curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/normal_default.tmpl" -o config/templates/synthesis/normal_default.tmpl
+curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/research_comprehensive.tmpl" -o config/templates/synthesis/research_comprehensive.tmpl
+curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/research_concise.tmpl" -o config/templates/synthesis/research_concise.tmpl
 echo "✅ Downloaded config files"
 
 # Download Python WASM interpreter
 echo "⬇️  Downloading Python WASM interpreter (~20MB)..."
 mkdir -p wasm-interpreters
-WASM_URL="https://github.com/nicmcd/python-wasi/releases/download/v0.1.0/python-3.11.4.wasm"
+WASM_URL="https://github.com/vmware-labs/webassembly-language-runtimes/releases/download/python%2F3.11.4%2B20230714-11be424/python-3.11.4.wasm"
 curl -fsSL "$WASM_URL" -o wasm-interpreters/python-3.11.4.wasm
 echo "✅ Downloaded Python WASM interpreter"
 
