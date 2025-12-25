@@ -503,30 +503,140 @@ func extractCitationsFromResponse(response string, agentID string, now time.Time
 }
 
 // containsLLMSignals detects if text contains LLM-generated content signals.
-// This is used to filter out polluted snippets that contain agent response text
-// instead of actual webpage content.
+// Uses a three-tier approach:
+// 1. Strong signals: immediate pollution (tool-call/XML residue)
+// 2. JSON detection: requires ≥2 JSON keys to trigger
+// 3. Weak signals: need ≥2 matches AND at least one extraction keyword
 func containsLLMSignals(text string) bool {
 	if text == "" {
 		return false
 	}
-	signals := []string{
-		// XML/function call residue from tool calls
-		"</invoke>", "</function_calls>", "<parameter", "</parameter>",
-		"<", "</", "<function_calls>",
-		// Chinese LLM signals - common agent output patterns
-		"我需要", "基于我的", "根据我的研究", "让我",
-		"基于目前的技术限制", "遇到的技术障碍",
-		"我无法", "我没有", "我将", "我会",
-		// English LLM signals - common agent output patterns
-		"I found", "I need to", "Based on my", "Let me",
-		"I'll", "I will", "I'm going to", "I cannot",
-		"I was unable", "I have found", "I've found",
+
+	// 强信号：任一匹配即判污染（仅保留高置信度 tool/XML 残留）
+	strongSignals := []string{
+		// XML/function call 残留（泛化前缀匹配）
+		"</invoke>", "</function_calls>", "<function_calls>",
+		"<parameter>", "</parameter>", "<invoke ",
+		"<web_fetch>", "</web_fetch>", "<web_search>", "</web_search>",
+		"<web_subpage_fetch>", "</web_subpage_fetch>",
+		"<attempt_", "</attempt_", // 泛化匹配 <attempt_*> 系列
+
+		// 工具调用结构残留（独立词和 JSON 格式）
+		"tool_executions",
+		"web_subpage_fetch", // 独立匹配
+		`"tool": "web_fetch"`, `"tool": "web_search"`,
+		`'tool': 'web_fetch'`, `'tool': 'web_search'`,
+
+		// 高置信度 Agent 模板（含完整动作+对象组合）
+		"信息提取结果", "情報抽出結果",
+		"公司信息提取", "子页面分析",
+		"我已成功从", "successfully extracted from",
+		"深入抓取", "サブページから抽出",
+
+		// Agent 规划/元评论语句 (Phase 3)
+		"Direct fetch of",                  // Agent 建议动作
+		"were not included in the initial", // Agent 元评论
+		"would be needed (these",           // 精确匹配带括号组合
+
+		// Agent 结构化输出格式
+		"**URL:**",                    // Agent 提取的 URL 字段
+		"Key Business Products",       // Agent 分析标题
+		"Products Identified",         // Agent 分析标题变体
 	}
-	for _, sig := range signals {
+
+	for _, sig := range strongSignals {
 		if strings.Contains(text, sig) {
 			return true
 		}
 	}
+
+	// 提取/抽出关键词：弱信号必须配合这些才触发
+	extractionKeywords := []string{
+		// 中文
+		"提取", "抽取", "整理", "获取结果",
+		// 日语
+		"抽出", "取得",
+		// 英文
+		"extract", "retriev",
+	}
+
+	hasExtractionKeyword := false
+	for _, kw := range extractionKeywords {
+		if strings.Contains(text, kw) {
+			hasExtractionKeyword = true
+			break
+		}
+	}
+
+	// JSON-like 结构检测：需 ≥2 个 JSON key 同时出现
+	jsonKeys := []string{
+		`"results":`, `'results':`,
+		`"title":`, `{'title':`, `'title':`,
+		`"url":`, `'url':`,
+		`"source":`, `'source':`,
+		`"position":`, `'position':`,
+	}
+	jsonKeyCount := 0
+	for _, jk := range jsonKeys {
+		if strings.Contains(text, jk) {
+			jsonKeyCount++
+		}
+	}
+	if jsonKeyCount >= 2 {
+		return true
+	}
+
+	// 结构化字段检测 (Phase 3)：需 ≥2 个同时出现才触发
+	structuredFields := []string{
+		"- **Industry:**",
+		"- **Website:**",
+		"- **Founded:**",
+		"- **Headquarters:**",
+		"- **CEO:**",
+		"- **Revenue:**",
+		"- **Employees:**",
+		"- **Company:**",
+	}
+	fieldCount := 0
+	for _, f := range structuredFields {
+		if strings.Contains(text, f) {
+			fieldCount++
+		}
+	}
+	if fieldCount >= 2 {
+		return true
+	}
+
+	// 弱信号：需 ≥2 个匹配 + 必须有提取关键词
+	if !hasExtractionKeyword {
+		return false // 无提取关键词，弱信号不触发
+	}
+
+	weakSignals := []string{
+		// 中文弱信号（移除"以下是"等高频词）
+		"我需要", "让我", "基于我的", "关键信息",
+
+		// 日语弱信号（移除"以下の"、"情報を"等高频词）
+		"ツールで", "抽出しました", "取得しました",
+
+		// 英文弱信号
+		"I found", "Let me", "Based on my", "Here is the",
+
+		// Markdown 结构弱信号
+		"## 基本", "## 概要", "## Summary",
+		"**公司", "**企業", "**Company",
+	}
+
+	weakCount := 0
+	for _, sig := range weakSignals {
+		if strings.Contains(text, sig) {
+			weakCount++
+			if weakCount >= 2 {
+				return true
+			}
+		}
+	}
+
 	return false
 }
 

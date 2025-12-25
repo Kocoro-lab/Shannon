@@ -746,3 +746,74 @@ func TestExtractCitationFromSearchResult(t *testing.T) {
 		}
 	})
 }
+
+// safeTruncate safely truncates string for error messages
+func safeTruncate(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen]) + "..."
+}
+
+func TestContainsLLMSignals(t *testing.T) {
+	// 必须检测为污染
+	polluted := []struct {
+		name string
+		text string
+	}{
+		{"strong: XML残留", `</invoke></function_calls>`},
+		{"strong: 中文Agent模板", `# PTMind 信息提取结果 我已成功从网站提取`},
+		{"strong: 日语Agent模板", `サブページから抽出した情報`},
+		{"json: 多key泄漏", `{'title': 'Example', 'results': [...]}`},
+		{"weak+extraction: 中文组合", `让我提取一下关键信息`},
+		{"weak+extraction: 日语组合", `ツールで抽出しました`},
+		{"strong: tool_executions", `Processing tool_executions from agent`},
+		// Phase 3: Agent 规划/元评论
+		{"strong: Agent规划", `**To obtain complete leadership roster:** Direct fetch of https://openai.com/about`},
+		{"strong: Agent元评论", `these were not included in the initial subpage_fetch results`},
+		{"strong: Agent推理", `would be needed (these pages were not fetched)`},
+		// Phase 3: 结构化字段组合 (≥2)
+		{"structured: 多字段", "- **Industry:** Software\n- **Website:** https://example.com"},
+		{"structured: 三字段", "- **CEO:** John\n- **Founded:** 2020\n- **Revenue:** $10M"},
+		// Phase 3.1: 泛化 tool 残留 + Agent 结构化输出
+		{"strong: attempt_tag", `<attempt_web_search query="google products">`},
+		{"strong: attempt_close", `</attempt_fetch>`},
+		{"strong: URL字段", `**URL:** https://alphabet.com/about - Main corporate page`},
+		{"strong: Products标题", `Key Business Products Identified from web search`},
+	}
+
+	// 必须不误杀（正常网页内容）
+	clean := []struct {
+		name string
+		text string
+	}{
+		{"正常英文页面", `## Company Overview PTMind was founded in 2010`},
+		{"单个弱信号无extraction", `I found this article helpful`},
+		{"正常中文页面", `以下是我们的产品介绍`},
+		{"正常HTML", `<div class="content">Hello World</div>`},
+		{"单个JSON key", `{"title": "Normal API Doc"}`},
+		{"正常日文页面", `以下の情報をご確認ください`},
+		{"介绍web fetch的文章", `How to use web fetch API in JavaScript`},
+		{"空字符串", ``},
+		// Phase 3: 单个结构化字段不触发
+		{"单字段不触发", `- **Industry:** Software Development and AI Research`},
+		{"真实profile页", "Our company profile:\n- **Industry:** Technology\nWe focus on innovation."},
+	}
+
+	for _, tc := range polluted {
+		t.Run("污染:"+tc.name, func(t *testing.T) {
+			if !containsLLMSignals(tc.text) {
+				t.Errorf("should detect pollution: %s", safeTruncate(tc.text, 40))
+			}
+		})
+	}
+
+	for _, tc := range clean {
+		t.Run("正常:"+tc.name, func(t *testing.T) {
+			if containsLLMSignals(tc.text) {
+				t.Errorf("false positive: %s", safeTruncate(tc.text, 40))
+			}
+		})
+	}
+}
