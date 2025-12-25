@@ -80,6 +80,7 @@ services:
 
   agent-core:
     image: waylandzhang/agent-core:${VERSION:-latest}
+    platform: linux/amd64  # Only amd64 built (arm64 uses Rosetta)
     restart: unless-stopped
     environment:
       - RUST_LOG=info,shannon_agent_core::wasi_sandbox=debug,wasmtime=debug
