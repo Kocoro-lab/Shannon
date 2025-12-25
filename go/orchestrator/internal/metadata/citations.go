@@ -359,6 +359,9 @@ func extractCitationFromSearchResult(result map[string]interface{}, agentID stri
 		snippet, _ = result["snippet"].(string)
 	}
 
+	// Try to get content for snippet fallback
+	content, _ := result["content"].(string)
+
 	// Normalize URL for deduplication
 	normalizedURL, err := NormalizeURL(urlStr)
 	if err != nil {
@@ -370,6 +373,9 @@ func extractCitationFromSearchResult(result map[string]interface{}, agentID stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract domain: %w", err)
 	}
+
+	// Ensure snippet is not empty
+	snippet = ensureSnippet(snippet, content, title, normalizedURL, 30)
 
 	// Extract scores and metadata
 	relevanceScore := 0.5 // default
@@ -419,11 +425,14 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 	}
 
 	title, _ := result["title"].(string)
+	content, _ := result["content"].(string)
 
-	// For web_fetch, use first 200 characters of content as snippet (UTF-8 safe)
+	// Try explicit snippet field first, then fall back to content
 	snippet := ""
-	if content, ok := result["content"].(string); ok && len(content) > 0 {
-		snippet = truncateRunes(content, 200)
+	if s, ok := result["snippet"].(string); ok && len(s) > 0 {
+		snippet = s
+	} else if len(content) > 0 {
+		snippet = truncateRunes(content, 500)
 	}
 
 	// Normalize URL
@@ -437,6 +446,9 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract domain: %w", err)
 	}
+
+	// Ensure snippet is not empty
+	snippet = ensureSnippet(snippet, content, title, normalizedURL, 30)
 
 	// Try to parse published date
 	var publishedDate *time.Time
@@ -488,6 +500,34 @@ func extractCitationsFromResponse(response string, agentID string, now time.Time
 	}
 
 	return citations
+}
+
+// containsLLMSignals detects if text contains LLM-generated content signals.
+// This is used to filter out polluted snippets that contain agent response text
+// instead of actual webpage content.
+func containsLLMSignals(text string) bool {
+	if text == "" {
+		return false
+	}
+	signals := []string{
+		// XML/function call residue from tool calls
+		"</invoke>", "</function_calls>", "<parameter", "</parameter>",
+		"<", "</", "<function_calls>",
+		// Chinese LLM signals - common agent output patterns
+		"我需要", "基于我的", "根据我的研究", "让我",
+		"基于目前的技术限制", "遇到的技术障碍",
+		"我无法", "我没有", "我将", "我会",
+		// English LLM signals - common agent output patterns
+		"I found", "I need to", "Based on my", "Let me",
+		"I'll", "I will", "I'm going to", "I cannot",
+		"I was unable", "I have found", "I've found",
+	}
+	for _, sig := range signals {
+		if strings.Contains(text, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractCitationsFromPlainTextResponse extracts citations by scanning plain-text
@@ -601,6 +641,13 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 		if len([]rune(snippet)) > 220 {
 			snippet = string([]rune(snippet)[:220]) + "..."
 		}
+
+		// Filter out LLM-generated content pollution
+		// This prevents agent response text from being stored as webpage snippets
+		if containsLLMSignals(snippet) {
+			return ""
+		}
+
 		return snippet
 	}
 
@@ -994,6 +1041,36 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max]) + "..."
 }
 
+// ensureSnippet guarantees a non-empty snippet from available fields.
+// Priority: existing snippet (if clean) -> content -> title + url fallback
+func ensureSnippet(snippet, content, title, urlStr string, minLen int) string {
+	// Clear polluted snippets that contain LLM-generated content
+	if containsLLMSignals(snippet) {
+		snippet = ""
+	}
+
+	// Already has sufficient clean snippet
+	if len([]rune(snippet)) >= minLen {
+		return snippet
+	}
+
+	// Try content (also check for pollution)
+	if len([]rune(content)) >= minLen && !containsLLMSignals(content) {
+		return truncateRunes(content, 500)
+	}
+
+	// Fallback to title + url for minimal context
+	if title != "" {
+		return fmt.Sprintf("%s - %s", title, urlStr)
+	}
+
+	// Return whatever we have (only if it's not polluted)
+	if !containsLLMSignals(snippet) {
+		return snippet
+	}
+	return ""
+}
+
 // enforceDiversity limits citations per domain to maintain source diversity
 func enforceDiversity(citations []Citation, maxPerDomain int) []Citation {
 	domainCount := make(map[string]int)
@@ -1136,6 +1213,9 @@ func extractCitationsFromMultiPageResult(output map[string]interface{}, agentID 
 			snippet = info.Snippet
 		}
 
+		// Ensure snippet is not empty - use title + url as fallback
+		snippet = ensureSnippet(snippet, "", title, normalizedURL, 30)
+
 		// Build complete Citation with proper scoring
 		citation := Citation{
 			URL:            normalizedURL,
@@ -1194,8 +1274,8 @@ func parseMultiPageContent(content string) map[string]pageInfo {
 		// Extract title (may be on next line as **title**)
 		title := extractTitleFromPageContent(pageContent)
 
-		// Extract snippet (first 200 chars of actual content)
-		snippet := extractSnippetFromPageContent(pageContent, 200)
+		// Extract snippet (first 500 chars of actual content)
+		snippet := extractSnippetFromPageContent(pageContent, 500)
 
 		result[pageURL] = pageInfo{Title: title, Snippet: snippet}
 
