@@ -271,21 +271,40 @@ func buildCompanyPrefetchURLs(canonicalName string, officialDomains []string) []
 	return buildCompanyPrefetchURLsWithLocale(canonicalName, officialDomains, "")
 }
 
+// languageToCode normalizes language strings to 2-letter codes.
+// Handles variants like zh-cn, zh-hans, japanese, etc.
 func languageToCode(lang string) string {
 	l := strings.ToLower(strings.TrimSpace(lang))
-	switch l {
-	case "ja", "japanese":
-		return "ja"
-	case "zh", "chinese":
+	// Handle Chinese variants: zh-cn, zh-hans, zh-tw, chinese, etc.
+	if strings.HasPrefix(l, "zh") || l == "chinese" {
 		return "zh"
-	case "ko", "korean":
-		return "ko"
-	default:
-		if len(l) == 2 {
-			return l
-		}
-		return ""
 	}
+	// Handle Japanese variants: ja, ja-jp, japanese, etc.
+	if strings.HasPrefix(l, "ja") || l == "japanese" {
+		return "ja"
+	}
+	// Handle Korean variants: ko, ko-kr, korean, etc.
+	if strings.HasPrefix(l, "ko") || l == "korean" {
+		return "ko"
+	}
+	if len(l) == 2 {
+		return l
+	}
+	return ""
+}
+
+// extractRegionCodeFromTargetLanguages extracts regional language code from LLM-determined target_languages.
+// Returns the first regional code found (zh, ja, ko), or empty string if none.
+// This is used to determine locale-specific sources based on company region, not query language.
+func extractRegionCodeFromTargetLanguages(targetLanguages []string) string {
+	for _, lang := range targetLanguages {
+		code := languageToCode(lang)
+		switch code {
+		case "zh", "ja", "ko":
+			return code
+		}
+	}
+	return ""
 }
 
 // buildCompanyPrefetchURLsWithLocale constructs URLs including locale-specific sources
@@ -748,8 +767,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			enabled = v
 		}
 		if enabled {
-			langCode := languageToCode(refineResult.DetectedLanguage)
-			urls := buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, refineResult.OfficialDomains, langCode)
+			// Use LLM-determined target_languages (based on company region) instead of query language.
+			// This ensures Chinese sources (tianyancha, etc.) are only used for Chinese companies.
+			regionCode := extractRegionCodeFromTargetLanguages(refineResult.TargetLanguages)
+			urls := buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, refineResult.OfficialDomains, regionCode)
 			if len(urls) > 0 {
 				// Cap prefetch attempts to avoid excessive tool usage (official + top aggregators)
 				if len(urls) > 5 {
