@@ -1,0 +1,274 @@
+name: Release - Build and Push Docker Images
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v0.1.0, v0.1.1, etc.
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+        type: string
+
+env:
+  DOCKER_HUB_ORG: waylandzhang  # Change this to Docker Hub username/org
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - name: agent-core
+            context: .
+            dockerfile: rust/agent-core/Dockerfile
+          - name: orchestrator
+            context: go/orchestrator
+            dockerfile: Dockerfile
+          - name: llm-service
+            context: python/llm-service
+            dockerfile: Dockerfile
+          - name: gateway
+            context: .
+            dockerfile: go/orchestrator/cmd/gateway/Dockerfile
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_number=${VERSION#v}" >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service.name }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.service.context }}
+          file: ${{ matrix.service.context }}/${{ matrix.service.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:${{ steps.version.outputs.version }}
+            ${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:latest
+          cache-from: type=registry,ref=${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:buildcache,mode=max
+          platforms: linux/amd64,linux/arm64
+
+      - name: Image digest
+        run: echo "Published ${{ env.DOCKER_HUB_ORG }}/${{ matrix.service.name }}:${{ steps.version.outputs.version }}"
+
+  build-desktop:
+    name: Build Desktop App - ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: universal-apple-darwin
+            bundle: dmg
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            bundle: msi
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            bundle: appimage
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust targets (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      - name: Install Rust target (non-macOS)
+        if: matrix.platform != 'macos-latest'
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: |
+          cd desktop
+          npm ci
+
+      - name: Build Tauri app (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          cd desktop
+          npm run tauri build -- --target universal-apple-darwin
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Build Tauri app (Windows/Linux)
+        if: matrix.platform != 'macos-latest'
+        run: |
+          cd desktop
+          npm run tauri build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      - name: Upload artifacts (macOS)
+        if: matrix.platform == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shannon-desktop-macos
+          path: |
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+          retention-days: 7
+
+      - name: Upload artifacts (Windows)
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shannon-desktop-windows
+          path: |
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+          retention-days: 7
+
+      - name: Upload artifacts (Linux)
+        if: matrix.platform == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: shannon-desktop-linux
+          path: |
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+          retention-days: 7
+
+  create-release:
+    needs: [build-and-push, build-desktop]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Download all desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: desktop-artifacts
+
+      - name: Display artifact structure
+        run: ls -R desktop-artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Release ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            desktop-artifacts/shannon-desktop-macos/**/*
+            desktop-artifacts/shannon-desktop-windows/**/*
+            desktop-artifacts/shannon-desktop-linux/**/*
+          body: |
+            ## Shannon ${{ steps.version.outputs.version }}
+
+            ### 🖥️ Desktop Apps
+
+            Download the desktop application for your platform:
+
+            **macOS** (Universal Binary - Intel & Apple Silicon)
+            - `.dmg` installer (recommended)
+            - `.app.tar.gz` for manual installation
+
+            **Windows**
+            - `.msi` installer (recommended)
+            - `.exe` NSIS installer (alternative)
+
+            **Linux**
+            - `.AppImage` (portable, no installation required)
+            - `.deb` package (Debian/Ubuntu)
+
+            ### 🐳 Docker Images
+
+            ```bash
+            docker pull waylandzhang/gateway:${{ steps.version.outputs.version }}
+            docker pull waylandzhang/orchestrator:${{ steps.version.outputs.version }}
+            docker pull waylandzhang/agent-core:${{ steps.version.outputs.version }}
+            docker pull waylandzhang/llm-service:${{ steps.version.outputs.version }}
+            ```
+
+            ### 🚀 Quick Start
+
+            **Option 1: One-command install**
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/${{ steps.version.outputs.version }}/scripts/install.sh | bash
+            ```
+
+            **Option 2: Docker Compose**
+            ```bash
+            curl -O https://raw.githubusercontent.com/Kocoro-lab/Shannon/${{ steps.version.outputs.version }}/deploy/compose/docker-compose.release.yml
+            docker compose -f docker-compose.release.yml up -d
+            ```
+
+            ### 📚 Documentation
+
+            - [Quick Start Guide](https://github.com/Kocoro-lab/Shannon#quick-start)
+            - [Desktop App Guide](https://github.com/Kocoro-lab/Shannon/tree/main/desktop)
+            - [API Documentation](https://github.com/Kocoro-lab/Shannon/tree/main/docs)
+
+            ### 📝 What's Changed
+
+            See [CHANGELOG.md](https://github.com/Kocoro-lab/Shannon/blob/${{ steps.version.outputs.version }}/CHANGELOG.md) for detailed changes.
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, 'alpha') || contains(steps.version.outputs.version, 'beta') || contains(steps.version.outputs.version, 'rc') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

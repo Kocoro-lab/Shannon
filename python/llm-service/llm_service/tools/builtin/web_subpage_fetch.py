@@ -17,7 +17,6 @@ For exploratory crawling where structure is unknown, use web_crawl instead.
 import aiohttp
 import asyncio
 import os
-import re
 import logging
 import socket
 from typing import Dict, Optional, List, Any, Tuple

@@ -13,9 +13,9 @@ from .python_wasi_executor import PythonWasiExecutorTool
 
 # Private features (enterprise version only) - gracefully degrade if not present
 try:
-    from .ads_research import AdsSerpExtractTool, AdsTransparencySearchTool, AdsCompetitorDiscoverTool
-    from .lp_analyze import LPVisualAnalyzeTool
-    from .ads_creative_analyze import AdsCreativeAnalyzeTool
+    from .ads_research import AdsSerpExtractTool, AdsTransparencySearchTool, AdsCompetitorDiscoverTool  # noqa: F401
+    from .lp_analyze import LPVisualAnalyzeTool  # noqa: F401
+    from .ads_creative_analyze import AdsCreativeAnalyzeTool  # noqa: F401
     _HAS_ADS_TOOLS = True
 except ImportError:
     _HAS_ADS_TOOLS = False

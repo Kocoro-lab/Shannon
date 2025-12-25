@@ -1,174 +1,209 @@
 # Shannon Desktop App
 
-Cross-platform desktop application for Shannon multi-agent AI platform, built with Next.js + Tauri.
+Multi-platform desktop application for Shannon AI agents built with [Tauri](https://tauri.app/) and [Next.js](https://nextjs.org/).
 
-**Supported Platforms:** macOS (Apple Silicon & Intel), Windows 10/11, Linux, **iOS 13.0+**
+## 🚀 Quick Start
 
----
+### Option 1: Local Web UI (Development)
 
-## Quick Start
+Run the UI as a local web application without building native binaries:
 
 ```bash
-# Development
+# Install dependencies
 npm install
-npm run tauri:dev
 
-# Production Build (Universal DMG for macOS)
-npm run tauri:build
+# Start development server
+npm run dev
+
+# Open http://localhost:3000
 ```
 
-**Output:** `src-tauri/target/release/bundle/dmg/shannon-desktop_0.1.0_universal.dmg`
+**Features in web mode:**
+- Real-time SSE event streaming
+- Session and task management
+- Visual workflow execution
+- Dark mode support
+- Instant hot reload for development
 
-**Note:** Builds are configured as **universal binaries** by default, supporting both Apple Silicon (ARM64) and Intel (x86_64) Macs.
+### Option 2: Native Desktop App
 
----
+#### Download Pre-built Binaries (Recommended)
 
-## Prerequisites
+Download the latest release for your platform from [GitHub Releases](https://github.com/Kocoro-lab/Shannon/releases/latest):
 
-- Node.js 18+
-- Rust 1.70+
-- Xcode Command Line Tools
+- **macOS** (Universal Binary - Intel & Apple Silicon)
+  - `.dmg` installer (drag-and-drop installation)
+  - `.app.tar.gz` for manual installation
 
----
+- **Windows**
+  - `.msi` installer (Windows Installer)
+  - `.exe` NSIS installer (alternative)
 
-## Common Commands
+- **Linux**
+  - `.AppImage` (portable, no installation required)
+  - `.deb` package (Debian/Ubuntu)
+
+#### Build from Source
+
+Build the native desktop application for your platform:
 
 ```bash
-# Clean build
-rm -rf .next out src-tauri/target/release/bundle && npm run tauri:build
+# Install dependencies
+npm install
 
-# Verify DMG checksum
-cd src-tauri/target/release/bundle/dmg
-shasum -a 256 shannon-desktop_0.1.0_universal.dmg
+# Build for your platform
+npm run tauri:build
 
-# Open built DMG
-open src-tauri/target/release/bundle/dmg/shannon-desktop_0.1.0_universal.dmg
-
-# Build for specific architecture only (if needed)
-npm run tauri:build -- --target aarch64-apple-darwin  # Apple Silicon only
-npm run tauri:build -- --target x86_64-apple-darwin   # Intel only
+# Output locations:
+# macOS:   src-tauri/target/universal-apple-darwin/release/bundle/dmg/
+# Windows: src-tauri/target/release/bundle/msi/
+# Linux:   src-tauri/target/release/bundle/appimage/
 ```
 
----
+**Additional build guides:**
+- [macOS Build Guide](desktop-app-build-guide.md)
+- [Windows Build Guide](desktop-app-windows-build.md)
+- [iOS Build Guide](desktop-app-ios-build.md) (requires Xcode)
 
-## Project Structure
+## 🎯 Why Use the Desktop App?
+
+| Feature | Web UI | Native App |
+|---------|--------|------------|
+| **Quick Testing** | ✅ Instant (`npm run dev`) | ⚠️ Requires build |
+| **System Integration** | ❌ | ✅ System tray, notifications |
+| **Offline History** | ❌ | ✅ Dexie.js local database |
+| **Performance** | ⚠️ Browser overhead | ✅ Native rendering |
+| **File System Access** | ❌ Limited | ✅ Full Tauri APIs |
+| **Auto-updates** | ❌ | ✅ Built-in updater |
+| **Memory Usage** | ⚠️ Higher (browser) | ✅ Optimized |
+
+## 🛠️ Development
+
+### Project Structure
 
 ```
 desktop/
-├── app/              # Next.js pages (React 19)
-├── components/       # UI components (Shadcn/ui)
-├── lib/              # Redux store, utilities
-├── src-tauri/        # Rust backend
-├── public/           # Static assets
-└── package.json
+├── app/              # Next.js app router pages
+├── components/       # React components
+│   ├── ui/          # shadcn/ui components
+│   └── ...          # Custom components
+├── lib/             # Utilities and helpers
+├── hooks/           # React hooks
+├── src-tauri/       # Tauri Rust backend
+│   ├── src/        # Rust source code
+│   ├── icons/      # App icons
+│   └── Cargo.toml  # Rust dependencies
+├── public/          # Static assets
+└── package.json    # Node dependencies
 ```
 
----
-
-## Troubleshooting
-
-### Build Fails: Module Not Found
+### Available Scripts
 
 ```bash
-npm install @tauri-apps/plugin-shell
+# Development
+npm run dev          # Next.js dev server (web mode)
+npm run tauri:dev    # Tauri dev mode (native app with hot reload)
+
+# Production
+npm run build        # Build Next.js static export
+npm run tauri:build  # Build native app for your platform
+
+# Linting
+npm run lint         # Run ESLint
 ```
 
-### TypeScript Errors in run-detail/page.tsx
+### Environment Configuration
 
-Valid `runStatus` values: `"idle" | "running" | "completed" | "failed"`
-
-Don't check for `"error"` - it's not a valid status.
-
-### Universal Binary Requirements
-
-**Required Rust targets** for universal macOS builds:
+Create `.env.local` for development:
 
 ```bash
-rustup target add aarch64-apple-darwin  # Apple Silicon
-rustup target add x86_64-apple-darwin   # Intel
-```
-
-**Verify targets installed:**
-
-```bash
-rustup target list --installed
-```
-
-If a target is missing, the build will fail with architecture-specific errors.
-
----
-
-## Architecture Notes
-
-**Universal Binary Support:**
-- macOS builds are configured as **universal binaries** by default
-- Supports both Intel (x86_64) and Apple Silicon (ARM64) Macs in a single DMG
-- Configured via `tauri.conf.json` → `bundle.macOS.targets: ["universal"]`
-- Uses `lipo` under the hood to combine architecture-specific binaries
-
-**Build Process:**
-1. Tauri compiles Rust backend for both `aarch64-apple-darwin` and `x86_64-apple-darwin`
-2. Next.js frontend is bundled (architecture-agnostic)
-3. Both Rust binaries are combined into a universal binary
-4. DMG is created with the universal binary
-
----
-
-## Technology Stack
-
-- **Framework:** Next.js 16.0.3 (Turbopack)
-- **Runtime:** Tauri 2.x
-- **UI:** Shadcn/ui + Tailwind CSS
-- **State:** Redux Toolkit
-- **Backend:** Shannon Gateway API (Go)
-
----
-
-## API Configuration
-
-Set Shannon API endpoint via environment variable:
-
-```bash
-# Copy example and configure
-cp .env.local.example .env.local
-
-# .env.local (default: localhost)
+# Backend API endpoint
 NEXT_PUBLIC_API_URL=http://localhost:8080
+
+# Optional: Enable debug mode
+NEXT_PUBLIC_DEBUG=true
 ```
 
----
+See [`.env.local.example`](.env.local.example) for all available options.
 
-## Development Tips
+## 📦 Tech Stack
 
-1. **Hot Reload:** Changes to `app/` auto-reload in dev mode
-2. **Rust Changes:** Require full rebuild (`npm run tauri:build`)
-3. **Type Safety:** Run `npm run build` to catch TypeScript errors
-4. **Redux DevTools:** Available in development mode
+- **Frontend Framework**: [Next.js 16](https://nextjs.org/) with App Router
+- **UI Components**: [shadcn/ui](https://ui.shadcn.com/) + [Radix UI](https://www.radix-ui.com/)
+- **Styling**: [Tailwind CSS](https://tailwindcss.com/)
+- **Desktop Runtime**: [Tauri v2](https://tauri.app/)
+- **State Management**: [Zustand](https://zustand-demo.pmnd.rs/) + [Redux Toolkit](https://redux-toolkit.js.org/)
+- **Local Database**: [Dexie.js](https://dexie.org/) (IndexedDB wrapper)
+- **Flow Diagrams**: [@xyflow/react](https://reactflow.dev/)
+- **Markdown Rendering**: [react-markdown](https://github.com/remarkjs/react-markdown)
 
----
+## 🏗️ Building for Production
 
-## Distribution
+### Prerequisites
 
-**Build Artifacts:**
-- **macOS:** Universal DMG (`shannon-desktop_0.1.0_universal.dmg`) - supports both Intel and Apple Silicon
-- **iOS:** `.app` bundle for simulator/device testing (see [iOS Build Guide](desktop-app-ios-build.md))
-- **Windows:** MSI installer (see [Windows Build Guide](desktop-app-windows-build.md))
-- **Linux:** AppImage/DEB (planned)
+- **Node.js** 20+
+- **Rust** (latest stable) - Install from [rustup.rs](https://rustup.rs/)
+- **Platform-specific dependencies**:
+  - **macOS**: Xcode Command Line Tools
+  - **Windows**: Microsoft C++ Build Tools
+  - **Linux**: See [Tauri Prerequisites](https://tauri.app/v2/guides/prerequisites/)
 
-### iOS Build (Quick)
+### Build Commands
 
 ```bash
-# Simulator
-npm run tauri ios build -- --target aarch64-sim
+# macOS
+npm run tauri:build -- --target universal-apple-darwin
 
-# Physical device (requires Apple ID)
-npm run tauri ios build -- --target aarch64
+# Windows
+npm run tauri:build -- --target x86_64-pc-windows-msvc
+
+# Linux
+npm run tauri:build -- --target x86_64-unknown-linux-gnu
+
+# iOS (macOS only, requires Xcode)
+npm run tauri ios build
 ```
 
-**Full iOS documentation:** See [desktop-app-ios-build.md](desktop-app-ios-build.md)
+## 🔄 Updates
 
----
+The desktop app includes automatic update checking:
 
-**Platforms:** macOS (universal: aarch64 + x86_64), iOS (aarch64), Windows (x86_64), Linux (x86_64)
-**Version:** 0.1.0
-**License:** See root LICENSE
+- **Check on startup**: Looks for new releases from GitHub
+- **Background updates**: Downloads updates silently
+- **User prompt**: Asks before installing updates
+
+Configure in `src-tauri/tauri.conf.json`.
+
+## 🐛 Troubleshooting
+
+### Web UI won't start
+
+```bash
+# Clear Next.js cache
+rm -rf .next
+npm install
+npm run dev
+```
+
+### Tauri build fails
+
+```bash
+# Update Rust toolchain
+rustup update
+
+# Clean build artifacts
+cd src-tauri
+cargo clean
+cd ..
+npm run tauri:build
+```
+
+## 📚 Additional Resources
+
+- [Tauri Documentation](https://tauri.app/v2/guides/)
+- [Next.js Documentation](https://nextjs.org/docs)
+- [Shannon Backend API](../docs/)
+
+## 📄 License
+
+MIT License - see [LICENSE](../LICENSE) for details.

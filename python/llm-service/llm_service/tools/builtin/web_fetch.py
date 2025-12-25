@@ -262,8 +262,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     raise Exception("Firecrawl rate limit exceeded (429)")
                 elif response.status != 200:
                     error_text = await response.text()
-                    sanitized = self.sanitize_error_message(error_text)
-                    logger.error(f"Firecrawl scrape error: {response.status}")
+                    logger.error(f"Firecrawl scrape error: {response.status} - {self.sanitize_error_message(error_text)}")
                     raise Exception(f"Firecrawl error: {response.status}")
 
                 data = await response.json()
@@ -519,7 +518,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             
             # Add page with index (don't expose URLs in content to avoid citation extraction)
             if i == 0:
-                page_header = f"# Main Page\n"
+                page_header = "# Main Page\n"
                 if page_title:
                     page_header += f"**{page_title}**\n\n"
             else:
@@ -840,7 +839,7 @@ class WebFetchTool(Tool):
 
         # Other settings
         self.user_agent = os.getenv(
-            "WEB_FETCH_USER_AGENT", "Shannon-Research/1.0 (+https://shannon.kocoro.dev)"
+            "WEB_FETCH_USER_AGENT", "Shannon-Research/1.0 (+https://docs.shannon.run)"
         )
         self.timeout = int(os.getenv("WEB_FETCH_TIMEOUT", "30"))
         # Security limits
@@ -858,7 +857,6 @@ class WebFetchTool(Tool):
         if self.firecrawl_provider:
             active_providers.append("Firecrawl")
         active_providers.append("Python")  # Always available
-        provider_str = ", ".join(active_providers)
 
         return ToolMetadata(
             name="web_fetch",
@@ -951,7 +949,6 @@ class WebFetchTool(Tool):
         deprecated_subpages = kwargs.get("subpages", 0)
         deprecated_subpage_target = kwargs.get("subpage_target")
         deprecated_required_paths = kwargs.get("required_paths")
-        deprecated_query_type = kwargs.get("query_type")
 
         if deprecated_subpages > 0 or deprecated_subpage_target or deprecated_required_paths:
             logger.warning(

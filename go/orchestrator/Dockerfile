@@ -26,7 +26,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -a -installsuffix cgo -o orchestr
 # Runtime stage
 FROM alpine:3.19
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates netcat-openbsd
 
 WORKDIR /root/
 

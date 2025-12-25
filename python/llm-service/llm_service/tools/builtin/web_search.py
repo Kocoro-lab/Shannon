@@ -651,7 +651,7 @@ class WebSearchTool(Tool):
                 )
 
             timeout = aiohttp.ClientTimeout(total=WebSearchProvider.DEFAULT_TIMEOUT)
-            headers = {"User-Agent": "Shannon-Search/1.0 (+https://shannon.kocoro.dev)"}
+            headers = {"User-Agent": "Shannon-Search/1.0 (+https://docs.shannon.run)"}
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(site_url, headers=headers, allow_redirects=True) as resp:
                     if resp.status != 200:
