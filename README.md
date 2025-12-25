@@ -38,51 +38,24 @@ Battle-tested infrastructure for AI agents that solves the problems you hit at s
 
 ### Installation
 
-Choose your preferred installation method:
-
-#### Option 1: Quick Install (Recommended)
-
-One-command installation with interactive setup:
+**Quick Install:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/v0.1.0/scripts/install.sh | bash
 ```
 
-This script will:
-- Download production configuration
-- Prompt for API keys interactively
-- Pull Docker images and start services
-- Verify everything is running
+This downloads config, prompts for API keys, pulls Docker images, and starts services.
 
-#### Option 2: Manual Install
-
-For users who prefer manual control:
-
-```bash
-# Clone repository (or download specific release)
-git clone --depth 1 --branch v0.1.0 https://github.com/Kocoro-lab/Shannon.git
-cd Shannon
-
-# Configure environment
-cp .env.example .env
-nano .env  # Add your API keys
-
-# Start services (automatically uses latest images)
-docker compose -f deploy/compose/docker-compose.release.yml up -d
-
-# Verify services
-docker compose -f deploy/compose/docker-compose.release.yml ps
-```
-
-**Required API Keys (choose one):**
+**Required API Keys** (choose one):
 - OpenAI: `OPENAI_API_KEY=sk-...`
 - Anthropic: `ANTHROPIC_API_KEY=sk-ant-...`
 - Or any OpenAI-compatible endpoint
 
 **Optional but recommended:**
 - Web Search: `SERPAPI_API_KEY=...` (get key at [serpapi.com](https://serpapi.com))
+- Web Fetch: `FIRECRAWL_API_KEY=...` (get key at [firecrawl.dev](https://firecrawl.dev))
 
-> **For Contributors:** Want to build from source? See [Development Setup](#development) below.
+> **Building from source?** See [Development](#development) below.
 >
 > **Platform-specific guides:** [Ubuntu](docs/ubuntu-quickstart.md) · [Rocky Linux](docs/rocky-linux-quickstart.md) · [Windows](docs/windows-setup-guide-en.md) · [Windows (中文)](docs/windows-setup-guide-cn.md)
 
@@ -90,49 +63,7 @@ docker compose -f deploy/compose/docker-compose.release.yml ps
 
 Shannon provides multiple ways to interact with AI agents. Choose the option that works best for you:
 
-#### Option 1: Web UI (Local Development)
-
-The fastest way to try Shannon — run the desktop app as a local web server:
-
-```bash
-# In a new terminal (backend should already be running)
-cd desktop
-npm install
-npm run dev
-
-# Open http://localhost:3000 in your browser
-```
-
-**Perfect for:**
-- Quick testing and exploration
-- Development and debugging
-- Real-time event streaming visualization
-
-#### Option 2: Native Desktop App
-
-Download pre-built desktop applications from [GitHub Releases](https://github.com/Kocoro-lab/Shannon/releases/latest):
-
-- **[macOS (Universal)](https://github.com/Kocoro-lab/Shannon/releases/latest)** — Intel & Apple Silicon
-- **[Windows (x64)](https://github.com/Kocoro-lab/Shannon/releases/latest)** — MSI or EXE installer
-- **[Linux (x64)](https://github.com/Kocoro-lab/Shannon/releases/latest)** — AppImage or DEB package
-
-Or build from source:
-
-```bash
-cd desktop
-npm install
-npm run tauri:build  # Builds for your platform
-```
-
-**Native app benefits:**
-- System tray integration and native notifications
-- Offline task history (Dexie.js local database)
-- Better performance and lower memory usage
-- Auto-updates from GitHub releases
-
-See [Desktop App Guide](desktop/README.md) for more details.
-
-#### Option 3: REST API
+#### Option 1: REST API
 
 Use Shannon's HTTP REST API directly. For complete API documentation, see **[docs.shannon.run](https://docs.shannon.run)**.
 
@@ -159,7 +90,7 @@ curl "http://localhost:8080/api/v1/tasks/task-dev-123"
 - Automation scripts and workflows
 - Language-agnostic integration
 
-#### Option 4: Python SDK
+#### Option 2: Python SDK
 
 Install the official Shannon Python SDK:
 
@@ -196,6 +127,48 @@ shannon submit "What is the capital of France?"
 
 See [Python SDK Documentation](https://pypi.org/project/shannon-sdk/) for the full API reference.
 
+#### Option 3: Native Desktop App
+
+Download pre-built desktop applications from [GitHub Releases](https://github.com/Kocoro-lab/Shannon/releases/latest):
+
+- **[macOS (Universal)](https://github.com/Kocoro-lab/Shannon/releases/latest)** — Intel & Apple Silicon
+- **[Windows (x64)](https://github.com/Kocoro-lab/Shannon/releases/latest)** — MSI or EXE installer
+- **[Linux (x64)](https://github.com/Kocoro-lab/Shannon/releases/latest)** — AppImage or DEB package
+
+Or build from source:
+
+```bash
+cd desktop
+npm install
+npm run tauri:build  # Builds for your platform
+```
+
+**Native app benefits:**
+- System tray integration and native notifications
+- Offline task history (Dexie.js local database)
+- Better performance and lower memory usage
+- Auto-updates from GitHub releases
+
+See [Desktop App Guide](desktop/README.md) for more details.
+
+#### Option 4: Web UI (Needs Source Download)
+
+Run the desktop app as a local web server for development:
+
+```bash
+# In a new terminal (backend should already be running)
+cd desktop
+npm install
+npm run dev
+
+# Open http://localhost:3000 in your browser
+```
+
+**Perfect for:**
+- Quick testing and exploration
+- Development and debugging
+- Real-time event streaming visualization
+
 ### Configuring Tool API Keys
 
 Add these to your `.env` file based on which tools you need:
@@ -214,6 +187,16 @@ FIRECRAWL_API_KEY=your-firecrawl-key    # firecrawl.dev (recommended for product
 ```
 
 > **Tip:** For quick setup, just add `SERPAPI_API_KEY`. Get a key at [serpapi.com](https://serpapi.com).
+
+### Ports & Endpoints
+
+| Service | Port | Endpoint | Purpose |
+|---------|------|----------|---------|
+| **Gateway** | 8080 | `http://localhost:8080` | REST API, OpenAI-compatible `/v1` |
+| **Admin/Events** | 8081 | `http://localhost:8081` | SSE/WebSocket streaming, health |
+| **Orchestrator** | 50052 | `localhost:50052` | gRPC (internal) |
+| **Temporal UI** | 8088 | `http://localhost:8088` | Workflow debugging |
+| **Grafana** | 3030 | `http://localhost:3030` | Metrics dashboard |
 
 ## Architecture
 
@@ -250,6 +233,60 @@ export OPENAI_API_BASE=http://localhost:8080/v1
 # Your existing OpenAI code works unchanged
 ```
 
+### Real-time Event Streaming
+```bash
+# Monitor agent execution in real-time (SSE)
+curl -N "http://localhost:8080/api/v1/stream/sse?workflow_id=task-dev-123"
+
+# Events include:
+# - WORKFLOW_STARTED, WORKFLOW_COMPLETED
+# - AGENT_STARTED, AGENT_COMPLETED
+# - TOOL_INVOKED, TOOL_OBSERVATION
+# - LLM_PARTIAL, LLM_OUTPUT
+```
+
+### Research Workflows
+```bash
+# Multi-agent research with automatic synthesis
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Compare renewable energy adoption in EU vs US",
+    "context": {
+      "force_research": true,
+      "research_strategy": "deep"
+    }
+  }'
+# Orchestrates multiple research agents and synthesizes findings with citations
+```
+
+### Session Continuity
+```bash
+# Multi-turn conversations with context memory
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is GDP?", "session_id": "econ-101"}'
+
+# Follow-up remembers previous context (within history window)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query": "How does it relate to inflation?", "session_id": "econ-101"}'
+# Agent recalls recent conversation history from the same session
+```
+
+### Scheduled Tasks
+```bash
+# Run tasks on a schedule (cron syntax)
+curl -X POST http://localhost:8080/api/v1/schedules \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Daily Market Analysis",
+    "cron_expression": "0 9 * * *",
+    "task_query": "Analyze market trends",
+    "max_budget_per_run_usd": 0.50
+  }'
+```
+
 ### 15+ LLM Providers
 - **OpenAI**: GPT-4, GPT-3.5, GPT-4 Turbo
 - **Anthropic**: Claude 3 Opus/Sonnet/Haiku, Claude 3.5 Sonnet
@@ -258,26 +295,6 @@ export OPENAI_API_BASE=http://localhost:8080/v1
 - **Local Models**: Ollama, LM Studio, vLLM
 - Automatic failover between providers
 
-### Scheduled Tasks
-```bash
-# Run tasks on a schedule (cron syntax)
-curl -X POST http://localhost:8080/api/v1/schedules \
-  -d '{
-    "name": "Daily Market Analysis",
-    "cron": "0 9 * * *",
-    "task_query": "Analyze market trends",
-    "max_budget_per_run_usd": 0.50
-  }'
-```
-
-### Research Workflows
-Multiple research strategies for different use cases:
-- **Quick**: Fast searches with small models
-- **Standard**: Balanced quality and cost
-- **Deep**: Multi-step research with synthesis
-- **Academic**: Citation-focused research
-- **Exploratory**: Tree-of-thoughts exploration
-
 ### MCP Integration
 Native support for Model Context Protocol:
 - Custom tool registration
@@ -285,15 +302,9 @@ Native support for Model Context Protocol:
 - Rate limiting and circuit breakers
 - Cost tracking for MCP tool usage
 
-### Native Desktop Apps
-- **macOS**: Native app with system integration
-- **iOS**: Mobile agent execution
-- Real-time event streaming
-- Workflow visualization
-
 ## Key Features
 
-### Time-Travel Debugging
+### Time-Travel Debugging (Needs Source Download)
 
 ```bash
 # Production agent failed? Replay it locally step-by-step
@@ -366,14 +377,6 @@ deny_tool["database_write"] {
 - **Audit Trail** — Complete trace of every decision and data access
 - **On-Premise Ready** — No cloud dependencies, runs entirely in your infrastructure
 
-```bash
-# Multi-tenant example
-curl -X POST http://localhost:8080/api/v1/tasks \
-  -H "X-API-Key: sk_tenant_a_key" \
-  -H "X-Tenant-ID: data-science" \
-  -d '{"query": "Train a model on our dataset"}'
-```
-
 ## Configuration
 
 Shannon uses layered configuration:
@@ -388,6 +391,50 @@ Key files:
 - `config/opa/policies/` — Access control rules
 
 See [Configuration Guide](config/README.md) for details.
+
+## Troubleshooting
+
+### Health Checks
+
+```bash
+# Check all services
+docker compose -f deploy/compose/docker-compose.release.yml ps
+
+# Gateway health
+curl http://localhost:8080/health
+
+# Admin health
+curl http://localhost:8081/health
+```
+
+### View Logs
+
+```bash
+# All services
+docker compose -f deploy/compose/docker-compose.release.yml logs -f
+
+# Specific service
+docker compose -f deploy/compose/docker-compose.release.yml logs -f orchestrator
+docker compose -f deploy/compose/docker-compose.release.yml logs -f gateway
+docker compose -f deploy/compose/docker-compose.release.yml logs -f llm-service
+```
+
+### Common Issues
+
+**Services not starting:**
+- Check `.env` has required API keys (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`)
+- Ensure ports 8080, 8081, 50052 are not in use
+- Run `docker compose -f deploy/compose/docker-compose.release.yml down && docker compose -f deploy/compose/docker-compose.release.yml up -d` to recreate
+
+**Task execution fails:**
+- Verify LLM API key is valid: `echo $OPENAI_API_KEY`
+- Check orchestrator logs for errors
+- Ensure config files exist in `./config/` directory
+
+**Out of memory:**
+- Reduce `WASI_MEMORY_LIMIT_MB` (default: 512)
+- Lower `HISTORY_WINDOW_MESSAGES` (default: 50)
+- Check Docker memory limits
 
 ## Documentation
 
@@ -404,7 +451,7 @@ See [Configuration Guide](config/README.md) for details.
 
 ### Building from Source
 
-Contributors can build and run Shannon locally from source:
+For contributors who want to build and run Shannon locally:
 
 ```bash
 # Clone the repository
@@ -414,7 +461,7 @@ cd Shannon
 # Setup development environment
 make setup                              # Creates .env, generates proto files
 echo "OPENAI_API_KEY=sk-..." >> .env    # Add your API key
-./scripts/setup_python_wasi.sh          # Download Python WASI interpreter (20MB)
+./scripts/setup_python_wasi.sh          # Download Python WASI interpreter (~20MB)
 
 # Start all services (builds locally)
 make dev
@@ -422,6 +469,17 @@ make dev
 # Run tests
 make smoke  # E2E smoke tests
 make ci     # Full CI suite
+```
+
+### Using Pre-built Images (No Build)
+
+If you cloned the repo but want to use pre-built images instead of building:
+
+```bash
+cd Shannon
+cp .env.example .env
+nano .env  # Add your API keys
+docker compose -f deploy/compose/docker-compose.release.yml up -d
 ```
 
 ### Development Commands
