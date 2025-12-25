@@ -757,52 +757,52 @@ func safeTruncate(s string, maxLen int) string {
 }
 
 func TestContainsLLMSignals(t *testing.T) {
-	// 必须检测为污染
+	// Must be detected as pollution
 	polluted := []struct {
 		name string
 		text string
 	}{
-		{"strong: XML残留", `</invoke></function_calls>`},
-		{"strong: 中文Agent模板", `# PTMind 信息提取结果 我已成功从网站提取`},
-		{"strong: 日语Agent模板", `サブページから抽出した情報`},
-		{"json: 多key泄漏", `{'title': 'Example', 'results': [...]}`},
-		{"weak+extraction: 中文组合", `让我提取一下关键信息`},
-		{"weak+extraction: 日语组合", `ツールで抽出しました`},
+		{"strong: XML residue", `</invoke></function_calls>`},
+		{"strong: Chinese Agent template", `# PTMind 信息提取结果 我已成功从网站提取`},
+		{"strong: Japanese Agent template", `サブページから抽出した情報`},
+		{"json: multi-key leak", `{'title': 'Example', 'results': [...]}`},
+		{"weak+extraction: Chinese combo", `让我提取一下关键信息`},
+		{"weak+extraction: Japanese combo", `ツールで抽出しました`},
 		{"strong: tool_executions", `Processing tool_executions from agent`},
-		// Phase 3: Agent 规划/元评论
-		{"strong: Agent规划", `**To obtain complete leadership roster:** Direct fetch of https://openai.com/about`},
-		{"strong: Agent元评论", `these were not included in the initial subpage_fetch results`},
-		{"strong: Agent推理", `would be needed (these pages were not fetched)`},
-		// Phase 3: 结构化字段组合 (≥2)
-		{"structured: 多字段", "- **Industry:** Software\n- **Website:** https://example.com"},
-		{"structured: 三字段", "- **CEO:** John\n- **Founded:** 2020\n- **Revenue:** $10M"},
-		// Phase 3.1: 泛化 tool 残留 + Agent 结构化输出
+		// Phase 3: Agent planning/meta-commentary
+		{"strong: Agent planning", `**To obtain complete leadership roster:** Direct fetch of https://openai.com/about`},
+		{"strong: Agent meta-comment", `these were not included in the initial subpage_fetch results`},
+		{"strong: Agent reasoning", `would be needed (these pages were not fetched)`},
+		// Phase 3: Structured field combination (≥2)
+		{"structured: multi-field", "- **Industry:** Software\n- **Website:** https://example.com"},
+		{"structured: three-field", "- **CEO:** John\n- **Founded:** 2020\n- **Revenue:** $10M"},
+		// Phase 3.1: Generalized tool residue + Agent structured output
 		{"strong: attempt_tag", `<attempt_web_search query="google products">`},
 		{"strong: attempt_close", `</attempt_fetch>`},
-		{"strong: URL字段", `**URL:** https://alphabet.com/about - Main corporate page`},
-		{"strong: Products标题", `Key Business Products Identified from web search`},
+		{"strong: URL field", `**URL:** https://alphabet.com/about - Main corporate page`},
+		{"strong: Products header", `Key Business Products Identified from web search`},
 	}
 
-	// 必须不误杀（正常网页内容）
+	// Must NOT be falsely flagged (normal web content)
 	clean := []struct {
 		name string
 		text string
 	}{
-		{"正常英文页面", `## Company Overview PTMind was founded in 2010`},
-		{"单个弱信号无extraction", `I found this article helpful`},
-		{"正常中文页面", `以下是我们的产品介绍`},
-		{"正常HTML", `<div class="content">Hello World</div>`},
-		{"单个JSON key", `{"title": "Normal API Doc"}`},
-		{"正常日文页面", `以下の情報をご確認ください`},
-		{"介绍web fetch的文章", `How to use web fetch API in JavaScript`},
-		{"空字符串", ``},
-		// Phase 3: 单个结构化字段不触发
-		{"单字段不触发", `- **Industry:** Software Development and AI Research`},
-		{"真实profile页", "Our company profile:\n- **Industry:** Technology\nWe focus on innovation."},
+		{"normal English page", `## Company Overview PTMind was founded in 2010`},
+		{"single weak signal no extraction", `I found this article helpful`},
+		{"normal Chinese page", `以下是我们的产品介绍`},
+		{"normal HTML", `<div class="content">Hello World</div>`},
+		{"single JSON key", `{"title": "Normal API Doc"}`},
+		{"normal Japanese page", `以下の情報をご確認ください`},
+		{"web fetch article", `How to use web fetch API in JavaScript`},
+		{"empty string", ``},
+		// Phase 3: Single structured field should not trigger
+		{"single field no trigger", `- **Industry:** Software Development and AI Research`},
+		{"real profile page", "Our company profile:\n- **Industry:** Technology\nWe focus on innovation."},
 	}
 
 	for _, tc := range polluted {
-		t.Run("污染:"+tc.name, func(t *testing.T) {
+		t.Run("polluted:"+tc.name, func(t *testing.T) {
 			if !containsLLMSignals(tc.text) {
 				t.Errorf("should detect pollution: %s", safeTruncate(tc.text, 40))
 			}
@@ -810,10 +810,226 @@ func TestContainsLLMSignals(t *testing.T) {
 	}
 
 	for _, tc := range clean {
-		t.Run("正常:"+tc.name, func(t *testing.T) {
+		t.Run("clean:"+tc.name, func(t *testing.T) {
 			if containsLLMSignals(tc.text) {
 				t.Errorf("false positive: %s", safeTruncate(tc.text, 40))
 			}
 		})
+	}
+}
+
+func TestEnsureSnippet(t *testing.T) {
+	const minLen = MinSnippetLength // 30
+
+	tests := []struct {
+		name     string
+		snippet  string
+		content  string
+		title    string
+		url      string
+		minLen   int
+		expected string
+	}{
+		// Priority 1: Clean snippet of sufficient length
+		{
+			name:     "returns clean snippet when sufficient length",
+			snippet:  "This is a valid snippet with more than thirty characters.",
+			content:  "Some content here",
+			title:    "Some Title",
+			url:      "https://example.com",
+			minLen:   minLen,
+			expected: "This is a valid snippet with more than thirty characters.",
+		},
+
+		// Priority 1b: Polluted snippet should be cleared
+		{
+			name:     "clears polluted snippet and uses content",
+			snippet:  "</invoke></function_calls> some polluted text here",
+			content:  "Clean content that is more than thirty chars.",
+			title:    "Title",
+			url:      "https://example.com",
+			minLen:   minLen,
+			expected: "Clean content that is more than thirty chars.",
+		},
+
+		// Priority 2: Use content when snippet is too short
+		{
+			name:     "uses content when snippet too short",
+			snippet:  "Short",
+			content:  "This content is long enough to be used as snippet.",
+			title:    "Title",
+			url:      "https://example.com",
+			minLen:   minLen,
+			expected: "This content is long enough to be used as snippet.",
+		},
+
+		// Priority 2b: Skip polluted content
+		{
+			name:     "skips polluted content and uses title fallback",
+			snippet:  "Short",
+			content:  "信息提取结果 polluted content that should be skipped",
+			title:    "Article Title",
+			url:      "https://example.com/page",
+			minLen:   minLen,
+			expected: "Article Title - https://example.com/page",
+		},
+
+		// Priority 3: Title + URL fallback
+		{
+			name:     "uses title+url fallback when content too short",
+			snippet:  "Short",
+			content:  "Also short",
+			title:    "Page Title",
+			url:      "https://example.com/article",
+			minLen:   minLen,
+			expected: "Page Title - https://example.com/article",
+		},
+
+		// Priority 4: Return short but clean snippet
+		{
+			name:     "returns short clean snippet when no alternatives",
+			snippet:  "Short",
+			content:  "",
+			title:    "",
+			url:      "https://example.com",
+			minLen:   minLen,
+			expected: "Short",
+		},
+
+		// Edge case: Empty everything
+		{
+			name:     "returns empty when all inputs empty",
+			snippet:  "",
+			content:  "",
+			title:    "",
+			url:      "",
+			minLen:   minLen,
+			expected: "",
+		},
+
+		// Edge case: Polluted snippet with no fallbacks
+		{
+			name:     "returns empty when snippet polluted and no fallbacks",
+			snippet:  "Direct fetch of https://example.com would be needed",
+			content:  "",
+			title:    "",
+			url:      "",
+			minLen:   minLen,
+			expected: "",
+		},
+
+		// Edge case: Content truncation (MaxSnippetLength = 500)
+		{
+			name:    "truncates long content to max length",
+			snippet: "Short",
+			content: strings.Repeat("A", 600), // 600 char content
+			title:   "Title",
+			url:     "https://example.com",
+			minLen:  minLen,
+			// truncateRunes returns first 500 chars + "..."
+			expected: strings.Repeat("A", MaxSnippetLength) + "...",
+		},
+
+		// Edge case: Unicode handling (30+ runes required)
+		{
+			name:     "handles unicode correctly in length check",
+			snippet:  "日本語テキストが三十文字以上あります。これは有効なスニペットです。", // 32 runes
+			content:  "Content",
+			title:    "Title",
+			url:      "https://example.com",
+			minLen:   minLen,
+			expected: "日本語テキストが三十文字以上あります。これは有効なスニペットです。",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := ensureSnippet(tc.snippet, tc.content, tc.title, tc.url, tc.minLen)
+			if result != tc.expected {
+				t.Errorf("ensureSnippet() = %q, want %q", safeTruncate(result, 60), safeTruncate(tc.expected, 60))
+			}
+		})
+	}
+}
+
+// Benchmark tests for containsLLMSignals to measure performance
+// and guide optimization decisions (Priority 2 follow-up)
+
+func BenchmarkContainsLLMSignals_CleanText(b *testing.B) {
+	// Worst case: clean text requires checking all patterns
+	text := `## Company Overview
+
+	PTMind was founded in 2010 as a technology company focused on data analytics
+	and marketing solutions. The company has grown to serve over 10,000 customers
+	across Asia Pacific, with headquarters in Tokyo, Japan. Our flagship product
+	Datadeck provides real-time business intelligence dashboards for enterprises.`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		containsLLMSignals(text)
+	}
+}
+
+func BenchmarkContainsLLMSignals_StrongSignal(b *testing.B) {
+	// Best case: strong signal found early
+	text := `</invoke></function_calls> some additional text here`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		containsLLMSignals(text)
+	}
+}
+
+func BenchmarkContainsLLMSignals_JSONKeys(b *testing.B) {
+	// Moderate case: JSON key detection
+	text := `{'title': 'Example Page', 'results': [{'url': 'https://example.com'}]}`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		containsLLMSignals(text)
+	}
+}
+
+func BenchmarkContainsLLMSignals_StructuredFields(b *testing.B) {
+	// Moderate case: structured field combination detection
+	text := `- **Industry:** Software Development
+- **Website:** https://example.com
+- **Founded:** 2010`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		containsLLMSignals(text)
+	}
+}
+
+func BenchmarkContainsLLMSignals_WeakSignals(b *testing.B) {
+	// Moderate case: weak signals with extraction keyword
+	text := `Let me extract the information. I found several items. Based on my research...`
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		containsLLMSignals(text)
+	}
+}
+
+func BenchmarkContainsLLMSignals_LongText(b *testing.B) {
+	// Stress test: long text (simulating real web content)
+	text := strings.Repeat("This is some normal web content. ", 100)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		containsLLMSignals(text)
+	}
+}
+
+func BenchmarkEnsureSnippet(b *testing.B) {
+	snippet := "Short snippet"
+	content := strings.Repeat("This is content. ", 50)
+	title := "Page Title"
+	url := "https://example.com/page"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ensureSnippet(snippet, content, title, url, MinSnippetLength)
 	}
 }
