@@ -47,6 +47,7 @@ services:
       POSTGRES_DB: shannon
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./migrations/postgres:/docker-entrypoint-initdb.d:ro
     ports:
       - "5432:5432"
     healthcheck:
@@ -76,7 +77,27 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 5 bash -c '</dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks: [shannon-net]
+
+  qdrant-init:
+    image: python:3.11-slim
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ./migrations/qdrant:/app/migrations/qdrant:ro
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    command: >
+      sh -c "pip install -q qdrant-client && python /app/migrations/qdrant/create_collections.py"
+    networks: [shannon-net]
+    restart: "no"
 
   agent-core:
     image: waylandzhang/agent-core:${VERSION:-latest}

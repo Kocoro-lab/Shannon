@@ -76,6 +76,28 @@ WASM_URL="https://github.com/vmware-labs/webassembly-language-runtimes/releases/
 curl -fsSL "$WASM_URL" -o wasm-interpreters/python-3.11.4.wasm
 echo "✅ Downloaded Python WASM interpreter"
 
+# Download database migrations
+echo "⬇️  Downloading database migrations..."
+mkdir -p migrations/postgres migrations/qdrant
+for i in 001 002 003 004 005 006 007 008 009 010 011; do
+    case $i in
+        001) file="001_initial_schema.sql" ;;
+        002) file="002_persistence_tables.sql" ;;
+        003) file="003_authentication.sql" ;;
+        004) file="004_event_logs.sql" ;;
+        005) file="005_alter_memory_system.sql" ;;
+        006) file="006_supervisor_memory_tables.sql" ;;
+        007) file="007_session_soft_delete.sql" ;;
+        008) file="008_add_model_provider_to_tasks.sql" ;;
+        009) file="009_scheduled_tasks.sql" ;;
+        010) file="010_auth_user_link.sql" ;;
+        011) file="011_add_agent_id_to_token_usage.sql" ;;
+    esac
+    curl -fsSL "${GITHUB_RAW}/migrations/postgres/${file}" -o "migrations/postgres/${file}"
+done
+curl -fsSL "${GITHUB_RAW}/migrations/qdrant/create_collections.py" -o migrations/qdrant/create_collections.py
+echo "✅ Downloaded database migrations"
+
 # Create .env if it doesn't exist
 if [ ! -f .env ]; then
     cp .env.example .env

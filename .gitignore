@@ -197,12 +197,15 @@ protos/gen/
 **/*.pb.go
 **/*_pb2.py
 **/*_pb2_grpc.py
+# Explicitly allow pre-generated Python protos (protobuf 5.x compatible)
+!python/llm-service/llm_service/grpc_gen/
+!python/llm-service/llm_service/grpc_gen/**
 *.pb.cc
 *.pb.h
 **/generated/
 
 # Python gRPC generated files
-python/llm-service/llm_service/grpc_gen/
+# python/llm-service/llm_service/grpc_gen/  # Committed for reproducible builds with protobuf 5.x
 python/llm-service/llm_service/generated/
 python/llm-service/llm_service/**/__pycache__/
 go/orchestrator/.pytest_cache/

@@ -48,18 +48,16 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Generate Proto files
+      - name: Generate Go Proto files
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-          pip install grpcio-tools==1.68.1 protobuf==5.29.2
           export PATH="$PATH:$(go env GOPATH)/bin"
-          make proto
+          # Only generate Go protos; Python grpc_gen is pre-committed with protobuf 5.x
+          cd protos && protoc -I. \
+            --go_out=../go/orchestrator/internal/pb --go_opt=paths=source_relative \
+            --go-grpc_out=../go/orchestrator/internal/pb --go-grpc_opt=paths=source_relative \
+            agent/*.proto common/*.proto llm/*.proto orchestrator/*.proto session/*.proto
 
       - name: Extract version from tag
         id: version
@@ -349,16 +347,14 @@ jobs:
 
             ### 🚀 Quick Start
 
-            **Option 1: One-command install**
+            **Recommended: One-command install**
             ```bash
             curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/${{ steps.version.outputs.version }}/scripts/install.sh | bash
             ```
 
-            **Option 2: Docker Compose**
-            ```bash
-            curl -O https://raw.githubusercontent.com/Kocoro-lab/Shannon/${{ steps.version.outputs.version }}/deploy/compose/docker-compose.release.yml
-            docker compose -f docker-compose.release.yml up -d
-            ```
+            This downloads all required files (config, migrations, WASM interpreter) and starts services.
+
+            **Manual setup**: Clone the repo and use `deploy/compose/docker-compose.release.yml` with the full directory structure.
 
             ### 📚 Documentation
 
