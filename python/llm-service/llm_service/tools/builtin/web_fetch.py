@@ -277,10 +277,12 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 if len(content) > max_length:
                     content = content[:max_length]
 
+                title = result_data.get("metadata", {}).get("title", "")
                 return {
                     "url": result_data.get("url", url),
-                    "title": result_data.get("metadata", {}).get("title", ""),
+                    "title": title,
                     "content": content,
+                    "snippet": content[:500] if content else title,  # For citation extraction
                     "author": result_data.get("metadata", {}).get("author"),
                     "published_date": result_data.get("metadata", {}).get("publishedDate"),
                     "word_count": len(content.split()),
@@ -1621,6 +1623,7 @@ class WebFetchTool(Tool):
                         "url": str(response.url),  # Final URL after redirects
                         "title": title,
                         "content": markdown,
+                        "snippet": markdown[:500] if markdown else title,  # For citation extraction
                         "author": author,
                         "published_date": published_date,
                         "word_count": len(markdown.split()),
@@ -1773,12 +1776,14 @@ class WebFetchTool(Tool):
                         result = results[0]
                         content = result.get("text", "")
 
+                        exa_title = result.get("title", "")
                         return ToolResult(
                             success=True,
                             output={
                                 "url": result.get("url", url),
-                                "title": result.get("title", ""),
+                                "title": exa_title,
                                 "content": content,
+                                "snippet": content[:500] if content else exa_title,  # For citation extraction
                                 "author": result.get("author"),
                                 "published_date": result.get("publishedDate"),
                                 "word_count": len(content.split()),

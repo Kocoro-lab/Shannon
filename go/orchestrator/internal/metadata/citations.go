@@ -15,6 +15,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Snippet length constants for citation extraction
+const (
+	MaxSnippetLength    = 500 // Maximum characters for snippet content
+	MinSnippetLength    = 30  // Minimum characters for a valid snippet
+	MinLLMSignalMatches = 2   // Required matches for weak signals and structured fields
+)
+
 // Citation represents a single source citation with quality metrics
 type Citation struct {
 	URL              string     `json:"url"`
@@ -359,6 +366,9 @@ func extractCitationFromSearchResult(result map[string]interface{}, agentID stri
 		snippet, _ = result["snippet"].(string)
 	}
 
+	// Try to get content for snippet fallback
+	content, _ := result["content"].(string)
+
 	// Normalize URL for deduplication
 	normalizedURL, err := NormalizeURL(urlStr)
 	if err != nil {
@@ -370,6 +380,9 @@ func extractCitationFromSearchResult(result map[string]interface{}, agentID stri
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract domain: %w", err)
 	}
+
+	// Ensure snippet is not empty
+	snippet = ensureSnippet(snippet, content, title, normalizedURL, MinSnippetLength)
 
 	// Extract scores and metadata
 	relevanceScore := 0.5 // default
@@ -419,11 +432,14 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 	}
 
 	title, _ := result["title"].(string)
+	content, _ := result["content"].(string)
 
-	// For web_fetch, use first 200 characters of content as snippet (UTF-8 safe)
+	// Try explicit snippet field first, then fall back to content
 	snippet := ""
-	if content, ok := result["content"].(string); ok && len(content) > 0 {
-		snippet = truncateRunes(content, 200)
+	if s, ok := result["snippet"].(string); ok && len(s) > 0 {
+		snippet = s
+	} else if len(content) > 0 {
+		snippet = truncateRunes(content, MaxSnippetLength)
 	}
 
 	// Normalize URL
@@ -437,6 +453,9 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 	if err != nil {
 		return nil, fmt.Errorf("failed to extract domain: %w", err)
 	}
+
+	// Ensure snippet is not empty
+	snippet = ensureSnippet(snippet, content, title, normalizedURL, MinSnippetLength)
 
 	// Try to parse published date
 	var publishedDate *time.Time
@@ -488,6 +507,144 @@ func extractCitationsFromResponse(response string, agentID string, now time.Time
 	}
 
 	return citations
+}
+
+// containsLLMSignals detects if text contains LLM-generated content signals.
+// Uses a three-tier approach:
+// 1. Strong signals: immediate pollution (tool-call/XML residue)
+// 2. JSON detection: requires ≥2 JSON keys to trigger
+// 3. Weak signals: need ≥2 matches AND at least one extraction keyword
+func containsLLMSignals(text string) bool {
+	if text == "" {
+		return false
+	}
+
+	// Strong signals: any match = immediate pollution (high-confidence tool/XML residue only)
+	strongSignals := []string{
+		// XML/function call residue (generalized prefix matching)
+		"</invoke>", "</function_calls>", "<function_calls>",
+		"<parameter>", "</parameter>", "<invoke ",
+		"<web_fetch>", "</web_fetch>", "<web_search>", "</web_search>",
+		"<web_subpage_fetch>", "</web_subpage_fetch>",
+		"<attempt_", "</attempt_", // Generalized matching for <attempt_*> series
+
+		// Tool call structure residue (standalone words and JSON format)
+		"tool_executions",
+		"web_subpage_fetch", // standalone match
+		`"tool": "web_fetch"`, `"tool": "web_search"`,
+		`'tool': 'web_fetch'`, `'tool': 'web_search'`,
+
+		// High-confidence Agent templates (complete action+object combinations)
+		"信息提取结果", "情報抽出結果",
+		"公司信息提取", "子页面分析",
+		"我已成功从", "successfully extracted from",
+		"深入抓取", "サブページから抽出",
+
+		// Agent planning/meta-commentary statements (Phase 3)
+		"Direct fetch of",                  // Agent suggested action
+		"were not included in the initial", // Agent meta-commentary
+		"would be needed (these",           // Exact match with parenthesis
+
+		// Agent structured output format
+		"**URL:**",                    // Agent extracted URL field
+		"Key Business Products",       // Agent analysis header
+		"Products Identified",         // Agent analysis header variant
+	}
+
+	for _, sig := range strongSignals {
+		if strings.Contains(text, sig) {
+			return true
+		}
+	}
+
+	// Extraction keywords: weak signals must be combined with these to trigger
+	extractionKeywords := []string{
+		// Chinese
+		"提取", "抽取", "整理", "获取结果",
+		// Japanese
+		"抽出", "取得",
+		// English
+		"extract", "retriev",
+	}
+
+	hasExtractionKeyword := false
+	for _, kw := range extractionKeywords {
+		if strings.Contains(text, kw) {
+			hasExtractionKeyword = true
+			break
+		}
+	}
+
+	// JSON-like structure detection: requires ≥2 JSON keys present
+	jsonKeys := []string{
+		`"results":`, `'results':`,
+		`"title":`, `{'title':`, `'title':`,
+		`"url":`, `'url':`,
+		`"source":`, `'source':`,
+		`"position":`, `'position':`,
+	}
+	jsonKeyCount := 0
+	for _, jk := range jsonKeys {
+		if strings.Contains(text, jk) {
+			jsonKeyCount++
+		}
+	}
+	if jsonKeyCount >= MinLLMSignalMatches {
+		return true
+	}
+
+	// Structured field detection (Phase 3): requires ≥2 fields to trigger
+	structuredFields := []string{
+		"- **Industry:**",
+		"- **Website:**",
+		"- **Founded:**",
+		"- **Headquarters:**",
+		"- **CEO:**",
+		"- **Revenue:**",
+		"- **Employees:**",
+		"- **Company:**",
+	}
+	fieldCount := 0
+	for _, f := range structuredFields {
+		if strings.Contains(text, f) {
+			fieldCount++
+		}
+	}
+	if fieldCount >= MinLLMSignalMatches {
+		return true
+	}
+
+	// Weak signals: require ≥2 matches + extraction keyword
+	if !hasExtractionKeyword {
+		return false // No extraction keyword, weak signals don't trigger
+	}
+
+	weakSignals := []string{
+		// Chinese weak signals (excluding high-frequency words like "以下是")
+		"我需要", "让我", "基于我的", "关键信息",
+
+		// Japanese weak signals (excluding "以下の", "情報を", etc.)
+		"ツールで", "抽出しました", "取得しました",
+
+		// English weak signals
+		"I found", "Let me", "Based on my", "Here is the",
+
+		// Markdown structure weak signals
+		"## 基本", "## 概要", "## Summary",
+		"**公司", "**企業", "**Company",
+	}
+
+	weakCount := 0
+	for _, sig := range weakSignals {
+		if strings.Contains(text, sig) {
+			weakCount++
+			if weakCount >= MinLLMSignalMatches {
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // extractCitationsFromPlainTextResponse extracts citations by scanning plain-text
@@ -601,6 +758,13 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 		if len([]rune(snippet)) > 220 {
 			snippet = string([]rune(snippet)[:220]) + "..."
 		}
+
+		// Filter out LLM-generated content pollution
+		// This prevents agent response text from being stored as webpage snippets
+		if containsLLMSignals(snippet) {
+			return ""
+		}
+
 		return snippet
 	}
 
@@ -994,6 +1158,36 @@ func truncateRunes(s string, max int) string {
 	return string(r[:max]) + "..."
 }
 
+// ensureSnippet guarantees a non-empty snippet from available fields.
+// Priority: existing snippet (if clean) -> content -> title + url fallback
+func ensureSnippet(snippet, content, title, urlStr string, minLen int) string {
+	// Clear polluted snippets that contain LLM-generated content
+	if containsLLMSignals(snippet) {
+		snippet = ""
+	}
+
+	// Already has sufficient clean snippet
+	if len([]rune(snippet)) >= minLen {
+		return snippet
+	}
+
+	// Try content (also check for pollution)
+	if len([]rune(content)) >= minLen && !containsLLMSignals(content) {
+		return truncateRunes(content, MaxSnippetLength)
+	}
+
+	// Fallback to title + url for minimal context
+	if title != "" {
+		return fmt.Sprintf("%s - %s", title, urlStr)
+	}
+
+	// Return whatever we have (only if it's not polluted)
+	if !containsLLMSignals(snippet) {
+		return snippet
+	}
+	return ""
+}
+
 // enforceDiversity limits citations per domain to maintain source diversity
 func enforceDiversity(citations []Citation, maxPerDomain int) []Citation {
 	domainCount := make(map[string]int)
@@ -1136,6 +1330,9 @@ func extractCitationsFromMultiPageResult(output map[string]interface{}, agentID 
 			snippet = info.Snippet
 		}
 
+		// Ensure snippet is not empty - use title + url as fallback
+		snippet = ensureSnippet(snippet, "", title, normalizedURL, MinSnippetLength)
+
 		// Build complete Citation with proper scoring
 		citation := Citation{
 			URL:            normalizedURL,
@@ -1194,8 +1391,8 @@ func parseMultiPageContent(content string) map[string]pageInfo {
 		// Extract title (may be on next line as **title**)
 		title := extractTitleFromPageContent(pageContent)
 
-		// Extract snippet (first 200 chars of actual content)
-		snippet := extractSnippetFromPageContent(pageContent, 200)
+		// Extract snippet (first 500 chars of actual content)
+		snippet := extractSnippetFromPageContent(pageContent, MaxSnippetLength)
 
 		result[pageURL] = pageInfo{Title: title, Snippet: snippet}
 

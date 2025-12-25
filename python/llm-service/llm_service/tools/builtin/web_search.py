@@ -19,6 +19,41 @@ from .web_fetch import WebFetchTool
 logger = logging.getLogger(__name__)
 
 
+def _ensure_snippet(result: Dict[str, Any], min_length: int = 30) -> str:
+    """
+    Ensure result has a meaningful snippet, generate from available fields if missing.
+
+    Priority: snippet -> text -> content -> description -> title + url
+    """
+    snippet = result.get("snippet", "")
+
+    # Already has sufficient snippet
+    if snippet and len(snippet) >= min_length:
+        return snippet
+
+    # Try alternative fields
+    alternatives = [
+        result.get("text", ""),
+        result.get("content", ""),
+        result.get("description", ""),
+        result.get("og_description", ""),
+        result.get("meta_description", ""),
+        result.get("markdown", ""),
+    ]
+
+    for alt in alternatives:
+        if alt and len(alt) >= min_length:
+            return alt[:500]  # Cap at 500 chars
+
+    # Last resort: combine title + url for minimal context
+    title = result.get("title", "")
+    url = result.get("url", "")
+    if title:
+        return f"{title} - {url}"
+
+    return snippet  # Return whatever we have
+
+
 class SearchProvider(Enum):
     EXA = "exa"
     FIRECRAWL = "firecrawl"
@@ -675,15 +710,15 @@ class WebSearchTool(Tool):
                     continue
                 seen.add(full)
                 title = (a.get_text() or "").strip()
-                links.append(
-                    {
-                        "title": title or full,
-                        "snippet": "",
-                        "content": "",
-                        "url": full,
-                        "source": "fallback_scrape",
-                    }
-                )
+                result_data = {
+                    "title": title or full,
+                    "snippet": "",
+                    "content": "",
+                    "url": full,
+                    "source": "fallback_scrape",
+                }
+                result_data["snippet"] = _ensure_snippet(result_data)
+                links.append(result_data)
                 if len(links) >= max_results:
                     break
 

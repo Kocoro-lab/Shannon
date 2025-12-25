@@ -32,33 +32,33 @@ type RefineResearchQueryInput struct {
 
 // ResearchDimension represents a structured research area with source guidance
 type ResearchDimension struct {
-    Dimension   string   `json:"dimension"`              // Name of the research dimension (e.g., "Entity Identity")
-    Questions   []string `json:"questions"`              // Specific questions to answer
-    SourceTypes []string `json:"source_types"`           // Recommended source types (official, aggregator, news, academic)
-    Priority    string   `json:"priority"`               // high, medium, low
+	Dimension   string   `json:"dimension"`    // Name of the research dimension (e.g., "Entity Identity")
+	Questions   []string `json:"questions"`    // Specific questions to answer
+	SourceTypes []string `json:"source_types"` // Recommended source types (official, aggregator, news, academic)
+	Priority    string   `json:"priority"`     // high, medium, low
 }
 
 // RefineResearchQueryResult contains the expanded research scope
 type RefineResearchQueryResult struct {
-    OriginalQuery string   `json:"original_query"`
-    RefinedQuery  string   `json:"refined_query"`
-    ResearchAreas []string `json:"research_areas"`
-    Rationale     string   `json:"rationale"`
-    TokensUsed    int      `json:"tokens_used"`
-    ModelUsed     string   `json:"model_used,omitempty"`
-    Provider      string   `json:"provider,omitempty"`
-    DetectedLanguage string `json:"detected_language,omitempty"` // Language detected from query
-    // Entity disambiguation and search guidance
-    CanonicalName      string   `json:"canonical_name,omitempty"`
-    ExactQueries       []string `json:"exact_queries,omitempty"`
-    OfficialDomains    []string `json:"official_domains,omitempty"`
-    DisambiguationTerms []string `json:"disambiguation_terms,omitempty"`
-    // Deep Research 2.0: Dynamic dimension generation
-    QueryType           string              `json:"query_type,omitempty"`            // company, industry, scientific, comparative, exploratory
-    ResearchDimensions  []ResearchDimension `json:"research_dimensions,omitempty"`   // Structured dimensions with source guidance
-    LocalizationNeeded  bool                `json:"localization_needed,omitempty"`   // Whether to search in local languages
-    TargetLanguages     []string            `json:"target_languages,omitempty"`      // Languages to search (e.g., ["en", "zh", "ja"])
-    LocalizedNames      map[string][]string `json:"localized_names,omitempty"`       // Entity names in local languages
+	OriginalQuery    string   `json:"original_query"`
+	RefinedQuery     string   `json:"refined_query"`
+	ResearchAreas    []string `json:"research_areas"`
+	Rationale        string   `json:"rationale"`
+	TokensUsed       int      `json:"tokens_used"`
+	ModelUsed        string   `json:"model_used,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	DetectedLanguage string   `json:"detected_language,omitempty"` // Language detected from query
+	// Entity disambiguation and search guidance
+	CanonicalName       string   `json:"canonical_name,omitempty"`
+	ExactQueries        []string `json:"exact_queries,omitempty"`
+	OfficialDomains     []string `json:"official_domains,omitempty"`
+	DisambiguationTerms []string `json:"disambiguation_terms,omitempty"`
+	// Deep Research 2.0: Dynamic dimension generation
+	QueryType          string              `json:"query_type,omitempty"`          // company, industry, scientific, comparative, exploratory
+	ResearchDimensions []ResearchDimension `json:"research_dimensions,omitempty"` // Structured dimensions with source guidance
+	LocalizationNeeded bool                `json:"localization_needed,omitempty"` // Whether to search in local languages
+	TargetLanguages    []string            `json:"target_languages,omitempty"`    // Languages to search (e.g., ["en", "zh", "ja"])
+	LocalizedNames     map[string][]string `json:"localized_names,omitempty"`     // Entity names in local languages
 }
 
 // RefineResearchQuery expands vague queries into structured research plans
@@ -73,7 +73,7 @@ func (a *Activities) RefineResearchQuery(ctx context.Context, in RefineResearchQ
 	url := fmt.Sprintf("%s/agent/query", base)
 
 	// Build prompt for query refinement with dynamic dimension generation
-	    refinementPrompt := fmt.Sprintf(`You are a research query expansion expert.
+	refinementPrompt := fmt.Sprintf(`You are a research query expansion expert.
 
 IMPORTANT: This is the PLANNING stage only. Plan first; do NOT start writing the final report or conducting searches. Return ONLY a structured plan.
 
@@ -150,10 +150,24 @@ Based on the query type, create 4-7 research dimensions. Each dimension should h
 - Future Outlook (news, academic) - predictions, trends
 
 ## Step 3: Localization Assessment
-If the entity has non-English presence (e.g., Chinese company, Japanese market), set:
-- localization_needed: true
-- target_languages: relevant language codes (e.g., ["en", "zh"] for Chinese companies)
+CRITICAL: Set target_languages based on the ENTITY'S GEOGRAPHIC ORIGIN, NOT the query language.
+- If researching a CHINESE company (headquartered/primarily operates in China), include "zh" in target_languages
+- If researching a JAPANESE company, include "ja" in target_languages
+- If researching a KOREAN company, include "ko" in target_languages
+- If researching a GLOBAL/US/EU company, do NOT add regional languages even if query is in Chinese/Japanese
+
+Examples (pay close attention):
+- "研究一下 OpenAI" → target_languages: ["en"] (US company, query happens to be in Chinese)
+- "Research ByteDance" → target_languages: ["en", "zh"] (Chinese company, query in English)
+- "ソニーについて調べて" → target_languages: ["en", "ja"] (Japanese company)
+- "帮我调研一下 Google" → target_languages: ["en"] (US company, NOT ["zh"])
+- "Analyze Alibaba's business model" → target_languages: ["en", "zh"] (Chinese company)
+
+Set the following fields:
+- localization_needed: true (only if entity is from a non-English region)
+- target_languages: based on COMPANY REGION, always include "en", add regional code only if company is from that region
 - localized_names: entity names in those languages
+
 
 ## Step 4: Domain Discovery (ONLY for company/entity research)
 Only if query_type is "company" (or "comparative" where at least one entity is a company), identify ALL relevant domains including:
@@ -199,26 +213,26 @@ Constraints:
 - PRESERVE exact entity strings (do not split/normalize).
 - Provide disambiguation terms to avoid entity mix-ups.`, in.Query)
 
-    // Prepare request body. Role should be passed via context, not top-level.
-    ctxMap := in.Context
-    if ctxMap == nil {
-        ctxMap = map[string]any{}
-    }
-    ctxMap["role"] = "research_refiner"
-    // Request JSON-structured output when provider supports it; non-supporting providers will ignore
-    ctxMap["response_format"] = map[string]any{"type": "json_object"}
+	// Prepare request body. Role should be passed via context, not top-level.
+	ctxMap := in.Context
+	if ctxMap == nil {
+		ctxMap = map[string]any{}
+	}
+	ctxMap["role"] = "research_refiner"
+	// Request JSON-structured output when provider supports it; non-supporting providers will ignore
+	ctxMap["response_format"] = map[string]any{"type": "json_object"}
 
-    reqBody := map[string]any{
-        "query":      refinementPrompt,
-        "context":    ctxMap,
-        "max_tokens": 8192, // Refinement produces structured JSON output; 4096 default can truncate
-    }
+	reqBody := map[string]any{
+		"query":      refinementPrompt,
+		"context":    ctxMap,
+		"max_tokens": 8192, // Refinement produces structured JSON output; 4096 default can truncate
+	}
 
 	body, err := json.Marshal(reqBody)
-    if err != nil {
-        ometrics.RefinementErrors.Inc()
-        return nil, fmt.Errorf("failed to marshal request: %w", err)
-    }
+	if err != nil {
+		ometrics.RefinementErrors.Inc()
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
 
 	// HTTP client with workflow interceptor for tracing
 	client := &http.Client{
@@ -298,139 +312,139 @@ Constraints:
 		ModelUsed  string `json:"model_used"`
 		Provider   string `json:"provider"`
 	}
-    if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
-        ometrics.RefinementErrors.Inc()
-        return nil, fmt.Errorf("failed to decode response: %w", err)
-    }
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		ometrics.RefinementErrors.Inc()
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
 
 	// Parse JSON from response (strip markdown fences if present)
-    responseText := llmResp.Response
-    responseText = strings.TrimSpace(responseText)
-    if strings.HasPrefix(responseText, "```json") {
-        responseText = strings.TrimPrefix(responseText, "```json")
-        responseText = strings.TrimPrefix(responseText, "```")
-        if idx := strings.LastIndex(responseText, "```"); idx != -1 {
-            responseText = responseText[:idx]
-        }
-        responseText = strings.TrimSpace(responseText)
-    } else if strings.HasPrefix(responseText, "```") {
-        responseText = strings.TrimPrefix(responseText, "```")
-        if idx := strings.LastIndex(responseText, "```"); idx != -1 {
-            responseText = responseText[:idx]
-        }
-        responseText = strings.TrimSpace(responseText)
-    }
+	responseText := llmResp.Response
+	responseText = strings.TrimSpace(responseText)
+	if strings.HasPrefix(responseText, "```json") {
+		responseText = strings.TrimPrefix(responseText, "```json")
+		responseText = strings.TrimPrefix(responseText, "```")
+		if idx := strings.LastIndex(responseText, "```"); idx != -1 {
+			responseText = responseText[:idx]
+		}
+		responseText = strings.TrimSpace(responseText)
+	} else if strings.HasPrefix(responseText, "```") {
+		responseText = strings.TrimPrefix(responseText, "```")
+		if idx := strings.LastIndex(responseText, "```"); idx != -1 {
+			responseText = responseText[:idx]
+		}
+		responseText = strings.TrimSpace(responseText)
+	}
 
-    var refinedData struct {
-        RefinedQuery       string   `json:"refined_query"`
-        ResearchAreas      []string `json:"research_areas"`
-        Rationale          string   `json:"rationale"`
-        CanonicalName      string   `json:"canonical_name"`
-        ExactQueries       []string `json:"exact_queries"`
-        OfficialDomains    []string `json:"official_domains"`
-        DisambiguationTerms []string `json:"disambiguation_terms"`
-        // Deep Research 2.0 fields
-        QueryType          string              `json:"query_type"`
-        ResearchDimensions []ResearchDimension `json:"research_dimensions"`
-        LocalizationNeeded bool                `json:"localization_needed"`
-        TargetLanguages    []string            `json:"target_languages"`
-        // Use interface{} to flexibly handle both map[string]string and map[string][]string
-        LocalizedNames     interface{} `json:"localized_names"`
-    }
-    if err := json.Unmarshal([]byte(responseText), &refinedData); err != nil {
-        // If JSON parsing fails, fallback to using original query
-        a.logger.Warn("Failed to parse refinement JSON, using original query",
-            zap.Error(err),
-            zap.String("response", llmResp.Response),
-        )
-        return &RefineResearchQueryResult{
-            OriginalQuery: in.Query,
-            RefinedQuery:  in.Query,
-            ResearchAreas: []string{in.Query},
-            Rationale:     "Query refinement failed, using original query",
-            TokensUsed:    llmResp.TokensUsed,
-            ModelUsed:     llmResp.ModelUsed,
-            Provider:      llmResp.Provider,
-        }, nil
-    }
+	var refinedData struct {
+		RefinedQuery        string   `json:"refined_query"`
+		ResearchAreas       []string `json:"research_areas"`
+		Rationale           string   `json:"rationale"`
+		CanonicalName       string   `json:"canonical_name"`
+		ExactQueries        []string `json:"exact_queries"`
+		OfficialDomains     []string `json:"official_domains"`
+		DisambiguationTerms []string `json:"disambiguation_terms"`
+		// Deep Research 2.0 fields
+		QueryType          string              `json:"query_type"`
+		ResearchDimensions []ResearchDimension `json:"research_dimensions"`
+		LocalizationNeeded bool                `json:"localization_needed"`
+		TargetLanguages    []string            `json:"target_languages"`
+		// Use interface{} to flexibly handle both map[string]string and map[string][]string
+		LocalizedNames interface{} `json:"localized_names"`
+	}
+	if err := json.Unmarshal([]byte(responseText), &refinedData); err != nil {
+		// If JSON parsing fails, fallback to using original query
+		a.logger.Warn("Failed to parse refinement JSON, using original query",
+			zap.Error(err),
+			zap.String("response", llmResp.Response),
+		)
+		return &RefineResearchQueryResult{
+			OriginalQuery: in.Query,
+			RefinedQuery:  in.Query,
+			ResearchAreas: []string{in.Query},
+			Rationale:     "Query refinement failed, using original query",
+			TokensUsed:    llmResp.TokensUsed,
+			ModelUsed:     llmResp.ModelUsed,
+			Provider:      llmResp.Provider,
+		}, nil
+	}
 
-    // Detect language from original query
-    detectedLang := detectLanguage(in.Query)
+	// Detect language from original query
+	detectedLang := detectLanguage(in.Query)
 
-    // Validate language detection quality
-    langConfidence := validateLanguageDetection(in.Query, detectedLang, logger)
-    if langConfidence < 0.5 {
-        logger.Warn("Low confidence in language detection - results may be unreliable",
-            "detected_language", detectedLang,
-            "confidence", langConfidence,
-            "query", truncateStr(in.Query, 100),
-        )
-    }
+	// Validate language detection quality
+	langConfidence := validateLanguageDetection(in.Query, detectedLang, logger)
+	if langConfidence < 0.5 {
+		logger.Warn("Low confidence in language detection - results may be unreliable",
+			"detected_language", detectedLang,
+			"confidence", langConfidence,
+			"query", truncateStr(in.Query, 100),
+		)
+	}
 
-    // Convert LocalizedNames from interface{} to map[string][]string
-    // LLM may return either map[string]string or map[string][]string
-    localizedNames := make(map[string][]string)
-    if refinedData.LocalizedNames != nil {
-        if rawMap, ok := refinedData.LocalizedNames.(map[string]interface{}); ok {
-            for lang, val := range rawMap {
-                switch v := val.(type) {
-                case string:
-                    // Single string: convert to single-element array
-                    localizedNames[lang] = []string{v}
-                case []interface{}:
-                    // Array of values: convert to string array
-                    strs := make([]string, 0, len(v))
-                    for _, elem := range v {
-                        if s, ok := elem.(string); ok {
-                            strs = append(strs, s)
-                        }
-                    }
-                    localizedNames[lang] = strs
-                }
-            }
-        }
-    }
+	// Convert LocalizedNames from interface{} to map[string][]string
+	// LLM may return either map[string]string or map[string][]string
+	localizedNames := make(map[string][]string)
+	if refinedData.LocalizedNames != nil {
+		if rawMap, ok := refinedData.LocalizedNames.(map[string]interface{}); ok {
+			for lang, val := range rawMap {
+				switch v := val.(type) {
+				case string:
+					// Single string: convert to single-element array
+					localizedNames[lang] = []string{v}
+				case []interface{}:
+					// Array of values: convert to string array
+					strs := make([]string, 0, len(v))
+					for _, elem := range v {
+						if s, ok := elem.(string); ok {
+							strs = append(strs, s)
+						}
+					}
+					localizedNames[lang] = strs
+				}
+			}
+		}
+	}
 
-    result := &RefineResearchQueryResult{
-        OriginalQuery: in.Query,
-        RefinedQuery:  refinedData.RefinedQuery,
-        ResearchAreas: refinedData.ResearchAreas,
-        Rationale:     refinedData.Rationale,
-        TokensUsed:    llmResp.TokensUsed,
-        ModelUsed:     llmResp.ModelUsed,
-        Provider:      llmResp.Provider,
-        DetectedLanguage: detectedLang,
-        CanonicalName: refinedData.CanonicalName,
-        ExactQueries:  refinedData.ExactQueries,
-        OfficialDomains: refinedData.OfficialDomains,
-        DisambiguationTerms: refinedData.DisambiguationTerms,
-        // Deep Research 2.0 fields
-        QueryType:          refinedData.QueryType,
-        ResearchDimensions: refinedData.ResearchDimensions,
-        LocalizationNeeded: refinedData.LocalizationNeeded,
-        TargetLanguages:    refinedData.TargetLanguages,
-        LocalizedNames:     localizedNames,
-    }
+	result := &RefineResearchQueryResult{
+		OriginalQuery:       in.Query,
+		RefinedQuery:        refinedData.RefinedQuery,
+		ResearchAreas:       refinedData.ResearchAreas,
+		Rationale:           refinedData.Rationale,
+		TokensUsed:          llmResp.TokensUsed,
+		ModelUsed:           llmResp.ModelUsed,
+		Provider:            llmResp.Provider,
+		DetectedLanguage:    detectedLang,
+		CanonicalName:       refinedData.CanonicalName,
+		ExactQueries:        refinedData.ExactQueries,
+		OfficialDomains:     refinedData.OfficialDomains,
+		DisambiguationTerms: refinedData.DisambiguationTerms,
+		// Deep Research 2.0 fields
+		QueryType:          refinedData.QueryType,
+		ResearchDimensions: refinedData.ResearchDimensions,
+		LocalizationNeeded: refinedData.LocalizationNeeded,
+		TargetLanguages:    refinedData.TargetLanguages,
+		LocalizedNames:     localizedNames,
+	}
 
-    // Tiny fallback: if canonical_name is empty, derive from the first exact_queries entry (strip quotes)
-    if result.CanonicalName == "" && len(result.ExactQueries) > 0 {
-        candidate := result.ExactQueries[0]
-        // Remove surrounding quotes if present (e.g., "\"Acme Analytics\"")
-        for len(candidate) >= 2 {
-            if (candidate[0] == '"' && candidate[len(candidate)-1] == '"') ||
-               (candidate[0] == '\'' && candidate[len(candidate)-1] == '\'') {
-                candidate = candidate[1:len(candidate)-1]
-                continue
-            }
-            break
-        }
-        if candidate != "" {
-            result.CanonicalName = candidate
-        }
-    }
+	// Tiny fallback: if canonical_name is empty, derive from the first exact_queries entry (strip quotes)
+	if result.CanonicalName == "" && len(result.ExactQueries) > 0 {
+		candidate := result.ExactQueries[0]
+		// Remove surrounding quotes if present (e.g., "\"Acme Analytics\"")
+		for len(candidate) >= 2 {
+			if (candidate[0] == '"' && candidate[len(candidate)-1] == '"') ||
+				(candidate[0] == '\'' && candidate[len(candidate)-1] == '\'') {
+				candidate = candidate[1 : len(candidate)-1]
+				continue
+			}
+			break
+		}
+		if candidate != "" {
+			result.CanonicalName = candidate
+		}
+	}
 
-    // Record latency
-    ometrics.RefinementLatency.Observe(time.Since(start).Seconds())
+	// Record latency
+	ometrics.RefinementLatency.Observe(time.Since(start).Seconds())
 
 	return result, nil
 }
@@ -445,15 +459,15 @@ func removeURLs(text string) string {
 
 // detectLanguage performs simple heuristic language detection based on character ranges
 func detectLanguage(query string) string {
-    if query == "" {
-        return "English"
-    }
+	if query == "" {
+		return "English"
+	}
 
-    cleanedQuery := removeURLs(query)
-    // If URL/domain stripping leaves any text, prefer it even if it's short (e.g. "总结https://...").
-    if strings.TrimSpace(cleanedQuery) != "" {
-        query = cleanedQuery
-    }
+	cleanedQuery := removeURLs(query)
+	// If URL/domain stripping leaves any text, prefer it even if it's short (e.g. "总结https://...").
+	if strings.TrimSpace(cleanedQuery) != "" {
+		query = cleanedQuery
+	}
 
 	// Count characters by Unicode range
 	var cjk, cyrillic, arabic, latin int
@@ -476,10 +490,10 @@ func detectLanguage(query string) string {
 		}
 	}
 
-    total := cjk + cyrillic + arabic + latin
-    if total == 0 {
-        return "English" // Default if no recognized characters
-    }
+	total := cjk + cyrillic + arabic + latin
+	if total == 0 {
+		return "English" // Default if no recognized characters
+	}
 
 	// Determine language based on character composition
 	cjkPercent := float64(cjk) / float64(total)
@@ -524,12 +538,12 @@ func detectLanguage(query string) string {
 	if strings.Contains(lowerQuery, "ç") || strings.Contains(lowerQuery, "à") || strings.Contains(lowerQuery, "è") {
 		return "French"
 	}
-    if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
-        return "German"
-    }
+	if strings.Contains(lowerQuery, "ä") || strings.Contains(lowerQuery, "ö") || strings.Contains(lowerQuery, "ü") || strings.Contains(lowerQuery, "ß") {
+		return "German"
+	}
 
-    // Default to English for Latin scripts (most common for research queries)
-    return "English"
+	// Default to English for Latin scripts (most common for research queries)
+	return "English"
 }
 
 // validateLanguageDetection returns a confidence score (0.0-1.0) for language detection
