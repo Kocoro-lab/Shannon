@@ -946,15 +946,40 @@ class WebSearchTool(Tool):
             },
             "financial": {
                 "category": "financial report",
-                "sites": ["sec.gov", "nasdaq.com", "yahoo.com"],
+                "sites": [
+                    # Global startup funding sources
+                    "crunchbase.com",
+                    "pitchbook.com",
+                    "dealroom.co",
+                    # Public company sources
+                    "sec.gov",
+                    "nasdaq.com",
+                    "yahoo.com",
+                ],
             },
             "local_cn": {
                 "category": None,
-                "sites": ["36kr.com", "iyiou.com", "tianyancha.com", "qichacha.com", "it-juzi.com"],
+                "sites": [
+                    # China funding/company data sources (prioritized)
+                    "tianyancha.com",   # 天眼查 - company registry + funding
+                    "qichacha.com",     # 企查查 - company registry + funding
+                    "it-juzi.com",      # IT桔子 - startup funding database
+                    "36kr.com",         # 36氪 - tech news + funding
+                    "iyiou.com",        # 亿欧 - industry news + funding
+                    "pedaily.cn",       # 投资界 - PE/VC news
+                ],
             },
             "local_jp": {
                 "category": None,
-                "sites": ["nikkei.com", "prtimes.jp", "newswitch.jp", "toyokeizai.net"],
+                "sites": [
+                    # Japan funding/company data sources (prioritized)
+                    "initial.inc",      # INITIAL - Japan's largest startup database
+                    "entrepedia.jp",    # Entrepedia - Japan startup encyclopedia
+                    "thebridge.jp",     # The Bridge - Japan tech startup news
+                    "jp.techcrunch.com",  # TechCrunch Japan
+                    "nikkei.com",       # 日経 - business news
+                    "prtimes.jp",       # PR Times - press releases
+                ],
             },
         }
 
