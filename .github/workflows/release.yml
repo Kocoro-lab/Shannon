@@ -53,6 +53,8 @@ jobs:
           go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
           export PATH="$PATH:$(go env GOPATH)/bin"
+          # Create output directory (gitignored, so doesn't exist in checkout)
+          mkdir -p go/orchestrator/internal/pb
           # Only generate Go protos; Python grpc_gen is pre-committed with protobuf 5.x
           cd protos && protoc -I. \
             --go_out=../go/orchestrator/internal/pb --go_opt=paths=source_relative \
