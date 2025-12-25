@@ -99,11 +99,11 @@ echo "Optional but recommended:"
 echo "  • Web Search: SERPAPI_API_KEY=... (get key at serpapi.com)"
 echo ""
 
-# Ask if user wants to edit now
-read -p "Would you like to edit .env now? (y/n) " -n 1 -r
+# Ask if user wants to edit now (read from terminal, not pipe)
+read -p "Would you like to edit .env now? (y/n) " -n 1 -r < /dev/tty
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    ${EDITOR:-nano} .env
+    ${EDITOR:-nano} .env < /dev/tty
 fi
 
 echo ""
