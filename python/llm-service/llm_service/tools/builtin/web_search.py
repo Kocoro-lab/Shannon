@@ -938,7 +938,14 @@ class WebSearchTool(Tool):
                 "- gl: Country code (e.g., 'jp', 'cn', 'de') - affects result ranking\n"
                 "- hl: Language (e.g., 'ja', 'zh-CN') - affects UI and some results\n"
                 "- location: City-level targeting (e.g., 'Tokyo, Japan')\n"
-                "- time_filter: Recency ('day', 'week', 'month', 'year')"
+                "- time_filter: Recency ('day', 'week', 'month', 'year')\n"
+                "\n"
+                "QUERY LANGUAGE BEST PRACTICE:\n"
+                "- For google/google_scholar/google_news/youtube: Prefer ENGLISH queries for best global coverage\n"
+                "- For baidu: Use CHINESE queries\n"
+                "- Exception: Use local language when specifically searching local markets/news "
+                "(e.g., Chinese for China-specific companies, Japanese for Japan market)\n"
+                "- If user query is non-English, translate to English before searching (unless exception applies)"
             )
         elif isinstance(self.provider, ExaSearchProvider):
             desc = (
