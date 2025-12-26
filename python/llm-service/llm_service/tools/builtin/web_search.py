@@ -527,6 +527,65 @@ class SerpAPISearchProvider(WebSearchProvider):
                 data = await response.json()
                 results = []
 
+                # Handle Google Finance special response format
+                if self.engine == "google_finance":
+                    # Extract summary (current price, change, etc.)
+                    summary = data.get("summary", {})
+                    if summary:
+                        price_info = {
+                            "title": f"{summary.get('title', 'Stock')} ({summary.get('stock', '')})",
+                            "snippet": f"Price: {summary.get('price', 'N/A')} {summary.get('currency', '')} | Change: {summary.get('price_movement', {}).get('percentage', 'N/A')}% ({summary.get('price_movement', {}).get('movement', '')})",
+                            "content": f"Exchange: {summary.get('exchange', '')} | Previous close: {summary.get('previous_close', 'N/A')}",
+                            "url": f"https://www.google.com/finance/quote/{summary.get('stock', '')}:{summary.get('exchange', '')}",
+                            "source": "google_finance",
+                            "type": "stock_quote",
+                            "raw_data": summary,
+                        }
+                        results.append(price_info)
+
+                    # Extract key stats if available
+                    key_stats = data.get("key_stats", {})
+                    if key_stats:
+                        stats_info = {
+                            "title": "Key Statistics",
+                            "snippet": str(key_stats),
+                            "source": "google_finance",
+                            "type": "key_stats",
+                        }
+                        results.append(stats_info)
+
+                    return results[:max_results]
+
+                # Handle Google Finance Markets special response format
+                if self.engine == "google_finance_markets":
+                    # Extract market trends
+                    market_trends = data.get("market_trends", [])
+                    for trend in market_trends:
+                        trend_title = trend.get("title", "Market Trend")
+                        for item in trend.get("results", [])[:5]:  # Limit items per trend
+                            results.append({
+                                "title": f"{item.get('name', '')} ({item.get('stock', '')})",
+                                "snippet": f"Price: {item.get('price', 'N/A')} | Change: {item.get('price_movement', {}).get('percentage', 'N/A')}%",
+                                "url": item.get("link", ""),
+                                "source": "google_finance_markets",
+                                "type": trend_title,
+                            })
+
+                    # Also include markets overview
+                    markets = data.get("markets", {})
+                    for region, items in markets.items():
+                        if isinstance(items, list):
+                            for item in items[:3]:
+                                results.append({
+                                    "title": f"{item.get('name', '')} ({region})",
+                                    "snippet": f"Price: {item.get('price', 'N/A')} | Change: {item.get('price_movement', {}).get('percentage', 'N/A')}%",
+                                    "url": item.get("link", ""),
+                                    "source": "google_finance_markets",
+                                    "type": f"market_{region}",
+                                })
+
+                    return results[:max_results]
+
                 # Process organic search results (note: organic_results not organic!)
                 for result in data.get("organic_results", []):
                     results.append(
