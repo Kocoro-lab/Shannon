@@ -206,6 +206,12 @@ Example: A company "Acme Corp" might operate a product called "AcmeCloud" with d
   "localized_names": {}
 }
 
+## Step 5: Temporal Search Guidance
+For time-sensitive topics (leadership, funding, market data, recent news), include the current year in search queries:
+- Good: "OpenAI leadership [current year]", "ByteDance funding round [current year]"
+- Avoid: Generic queries like "OpenAI leadership" which may return outdated results
+This ensures searches prioritize recent information.
+
 Constraints:
 - Do NOT include citations or source excerpts.
 - Do NOT invent or fabricate URLs. If the original query includes a URL, you MUST preserve it verbatim in refined_query (do not remove it).
