@@ -872,6 +872,8 @@ class WebSearchTool(Tool):
                 "- google_scholar: Academic papers and citations\n"
                 "- youtube: Video content search\n"
                 "- google_news: Recent news articles\n"
+                "- google_finance: Stock/currency/crypto quotes (query='GOOGL:NASDAQ' or 'BTC-USD')\n"
+                "- google_finance_markets: Market trends (use with trend param: indexes, gainers, losers, most-active, cryptocurrencies, currencies)\n"
                 "\n"
                 "Localization options:\n"
                 "- gl: Country code (e.g., 'jp', 'cn', 'de') - affects result ranking\n"
@@ -961,7 +963,7 @@ class WebSearchTool(Tool):
                     type=ToolParameterType.STRING,
                     description=(
                         "Search engine: google (default), bing, baidu, "
-                        "google_scholar, youtube, google_news."
+                        "google_scholar, youtube, google_news, google_finance, google_finance_markets."
                     ),
                     required=False,
                     default="google",
@@ -988,6 +990,18 @@ class WebSearchTool(Tool):
                     name="time_filter",
                     type=ToolParameterType.STRING,
                     description="Recency filter: 'day', 'week', 'month', 'year'",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="window",
+                    type=ToolParameterType.STRING,
+                    description="Time window for google_finance: '1D', '5D', '1M', '6M', 'YTD', '1Y', '5Y', 'MAX'",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="trend",
+                    type=ToolParameterType.STRING,
+                    description="Market trend type for google_finance_markets: 'indexes', 'most-active', 'gainers', 'losers', 'cryptocurrencies', 'currencies'",
                     required=False,
                 ),
             ])
@@ -1253,6 +1267,8 @@ class WebSearchTool(Tool):
                 hl = kwargs.get("hl")
                 location = kwargs.get("location")
                 time_filter = kwargs.get("time_filter")
+                window = kwargs.get("window")
+                trend = kwargs.get("trend")
 
                 # Update provider engine
                 self.provider.engine = engine
@@ -1269,6 +1285,12 @@ class WebSearchTool(Tool):
                     tbs_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
                     if time_filter in tbs_map:
                         extra_params["tbs"] = tbs_map[time_filter]
+
+                # Google Finance specific parameters
+                if engine == "google_finance" and window:
+                    extra_params["window"] = window
+                if engine == "google_finance_markets" and trend:
+                    extra_params["trend"] = trend
 
                 results = await self.provider.search(query, max_results, **extra_params)
             else:
