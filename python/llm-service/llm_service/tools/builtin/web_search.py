@@ -484,10 +484,10 @@ class SerpAPISearchProvider(WebSearchProvider):
         # See: https://serpapi.com/search-engine-apis
         self.engine = engine.lower() if engine else "google"
 
-    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    async def search(self, query: str, max_results: int = 5, **extra_params) -> List[Dict[str, Any]]:
         # Validate max_results
         max_results = self.validate_max_results(max_results)
-        
+
         # SerpAPI uses GET requests with query parameters
         params = {
             "q": query,
@@ -495,6 +495,9 @@ class SerpAPISearchProvider(WebSearchProvider):
             "engine": self.engine,  # Configurable search engine
             "num": max_results,
         }
+
+        # Merge extra params (gl, hl, location, tbs, etc.)
+        params.update(extra_params)
 
         async with aiohttp.ClientSession() as session:
             timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
@@ -844,10 +847,77 @@ class WebSearchTool(Tool):
                 "SearchProvider", ""
             )
 
+        # Generate description based on provider type
+        if isinstance(self.provider, SerpAPISearchProvider):
+            desc = (
+                "Search the web using SerpAPI with multiple engine support. "
+                "Discovers URLs and snippets for a given query. "
+                "Default engine is Google."
+                "\n\n"
+                "USE WHEN:\n"
+                "- Finding information, companies, people, or topics\n"
+                "- Need recent news, academic papers, or videos\n"
+                "- Want results from specific regions or languages\n"
+                "\n"
+                "NOT FOR:\n"
+                "- Reading full page content (use web_fetch after getting URLs)\n"
+                "- Crawling entire websites (use web_crawl)\n"
+                "\n"
+                "Returns: {provider, query, results: [{title, snippet, url, source, position, date}], result_count}."
+                "\n\n"
+                "Available engines and their strengths:\n"
+                "- google (default): Best global coverage, most comprehensive\n"
+                "- bing: Good alternative, sometimes different results\n"
+                "- baidu: Chinese language search, good for China-hosted content\n"
+                "- google_scholar: Academic papers and citations\n"
+                "- youtube: Video content search\n"
+                "- google_news: Recent news articles\n"
+                "\n"
+                "Localization options:\n"
+                "- gl: Country code (e.g., 'jp', 'cn', 'de') - affects result ranking\n"
+                "- hl: Language (e.g., 'ja', 'zh-CN') - affects UI and some results\n"
+                "- location: City-level targeting (e.g., 'Tokyo, Japan')\n"
+                "- time_filter: Recency ('day', 'week', 'month', 'year')"
+            )
+        elif isinstance(self.provider, ExaSearchProvider):
+            desc = (
+                "Search the web using Exa neural semantic search. "
+                "Discovers URLs and snippets with AI-powered relevance ranking."
+                "\n\n"
+                "USE WHEN:\n"
+                "- Need semantic/conceptual search (not just keyword matching)\n"
+                "- Searching for companies, research papers, news, GitHub repos\n"
+                "\n"
+                "NOT FOR:\n"
+                "- Reading full page content (use web_fetch after getting URLs)\n"
+                "\n"
+                "Returns: {provider, query, results: [{title, snippet, url, score, published_date}], result_count}."
+                "\n\n"
+                "Search modes:\n"
+                "- neural: Semantic similarity search\n"
+                "- keyword: Exact match search\n"
+                "- auto (default): Automatic selection\n"
+                "\n"
+                "Categories: company, research paper, news, pdf, github, tweet, linkedin, financial report"
+            )
+        else:
+            desc = (
+                f"Search the web using {provider_name}. "
+                "Discovers URLs and snippets for a given query."
+                "\n\n"
+                "USE WHEN:\n"
+                "- Finding information on any topic\n"
+                "\n"
+                "NOT FOR:\n"
+                "- Reading full page content (use web_fetch after getting URLs)\n"
+                "\n"
+                "Returns: {provider, query, results: [{title, snippet, url}], result_count}."
+            )
+
         return ToolMetadata(
             name="web_search",
-            version="3.0.0",
-            description=f"Search the web using {provider_name}. Results are LEADS - verify key facts via web_fetch. Mark aggregator/marketing/speculative content.",
+            version="3.1.0",
+            description=desc,
             category="search",
             author="Shannon",
             requires_auth=True,
@@ -861,61 +931,108 @@ class WebSearchTool(Tool):
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
-        return [
+        # Base parameters (common to all providers)
+        params = [
             ToolParameter(
                 name="query",
                 type=ToolParameterType.STRING,
-                description="The search query",
+                description=(
+                    "Search query. Supports operators: site:, inurl:, intitle:. "
+                    "Examples: 'OpenAI GPT-4', 'site:github.com transformer'"
+                ),
                 required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ToolParameterType.INTEGER,
-                description="Maximum number of results to return (Exa: up to 100 for neural search, 10 for keyword)",
+                description="Maximum results to return (1-100). Default: 10",
                 required=False,
                 default=10,
                 min_value=1,
                 max_value=100,
             ),
-            ToolParameter(
-                name="search_type",
-                type=ToolParameterType.STRING,
-                description=(
-                    "Search mode (Exa only). Preferred values: "
-                    "'neural' (semantic search), 'keyword' (exact match), or 'auto' (automatic selection). "
-                    "Invalid values will automatically fall back to 'auto'. Default: 'auto'"
+        ]
+
+        # SerpAPI-specific parameters
+        if isinstance(self.provider, SerpAPISearchProvider):
+            params.extend([
+                ToolParameter(
+                    name="engine",
+                    type=ToolParameterType.STRING,
+                    description=(
+                        "Search engine: google (default), bing, baidu, "
+                        "google_scholar, youtube, google_news."
+                    ),
+                    required=False,
+                    default="google",
                 ),
-                required=False,
-                default="auto",
-            ),
-            ToolParameter(
-                name="category",
-                type=ToolParameterType.STRING,
-                description="Content category filter (Exa only): company, research paper, news, pdf, github, tweet, personal site, linkedin, financial report",
-                required=False,
-            ),
+                ToolParameter(
+                    name="gl",
+                    type=ToolParameterType.STRING,
+                    description="Country code for geo-targeted results (e.g., 'jp', 'cn', 'us', 'de')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="hl",
+                    type=ToolParameterType.STRING,
+                    description="Language code for results (e.g., 'ja', 'zh-CN', 'en')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="location",
+                    type=ToolParameterType.STRING,
+                    description="City-level location (e.g., 'Tokyo, Japan', 'Shanghai, China')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="time_filter",
+                    type=ToolParameterType.STRING,
+                    description="Recency filter: 'day', 'week', 'month', 'year'",
+                    required=False,
+                ),
+            ])
+
+        # Exa-specific parameters
+        elif isinstance(self.provider, ExaSearchProvider):
+            params.extend([
+                ToolParameter(
+                    name="search_type",
+                    type=ToolParameterType.STRING,
+                    description="Search mode: 'neural' (semantic), 'keyword' (exact), 'auto' (default)",
+                    required=False,
+                    default="auto",
+                ),
+                ToolParameter(
+                    name="category",
+                    type=ToolParameterType.STRING,
+                    description=(
+                        "Content category: company, research paper, news, pdf, "
+                        "github, tweet, linkedin, financial report"
+                    ),
+                    required=False,
+                ),
+            ])
+
+        # Common advanced parameters (all providers)
+        params.extend([
             ToolParameter(
                 name="source_type",
                 type=ToolParameterType.STRING,
                 description=(
-                    "Deep Research 2.0 source type for intelligent routing. "
-                    "Values: 'official' (company sites, .gov, .edu), 'aggregator' (crunchbase, wikipedia), "
-                    "'news' (recent articles), 'academic' (arxiv, papers), 'github', 'financial', "
-                    "'local_cn' (Chinese sources), 'local_jp' (Japanese sources). "
-                    "When set, overrides category with appropriate Exa settings."
+                    "Source routing for Deep Research: official, aggregator, news, "
+                    "academic, github, financial, local_cn, local_jp"
                 ),
                 required=False,
             ),
             ToolParameter(
                 name="site_filter",
                 type=ToolParameterType.STRING,
-                description=(
-                    "Restrict search to specific sites. Comma-separated list of domains "
-                    "(e.g., 'crunchbase.com,linkedin.com'). Used with source_type for targeted searches."
-                ),
+                description="Restrict to domains (e.g., 'crunchbase.com,linkedin.com')",
                 required=False,
             ),
-        ]
+        ])
+
+        return params
 
     async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
         """
@@ -1124,11 +1241,36 @@ class WebSearchTool(Tool):
                 except Exception:
                     pass
 
-            # Pass Exa-specific parameters if using ExaSearchProvider
+            # Pass provider-specific parameters
             if isinstance(self.provider, ExaSearchProvider):
                 results = await self.provider.search(
                     query, max_results, search_type=search_type, category=category
                 )
+            elif isinstance(self.provider, SerpAPISearchProvider):
+                # Extract SerpAPI-specific parameters
+                engine = kwargs.get("engine", "google")
+                gl = kwargs.get("gl")
+                hl = kwargs.get("hl")
+                location = kwargs.get("location")
+                time_filter = kwargs.get("time_filter")
+
+                # Update provider engine
+                self.provider.engine = engine
+
+                # Build extra params dict
+                extra_params = {}
+                if gl:
+                    extra_params["gl"] = gl
+                if hl:
+                    extra_params["hl"] = hl
+                if location:
+                    extra_params["location"] = location
+                if time_filter:
+                    tbs_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
+                    if time_filter in tbs_map:
+                        extra_params["tbs"] = tbs_map[time_filter]
+
+                results = await self.provider.search(query, max_results, **extra_params)
             else:
                 results = await self.provider.search(query, max_results)
 
