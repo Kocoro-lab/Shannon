@@ -36,6 +36,8 @@ _PRESETS: Dict[str, Dict[str, object]] = {
   - Prefer sources with more recent publication dates (check `published_date` in search results)
   - When available, note the source's publication date in your findings
   - If a source lacks a date, flag this uncertainty
+  - Include the current year in search queries (e.g., "OpenAI leadership [current year]" instead of "OpenAI leadership")
+- **Always include the year when describing events** (e.g., "In March 2024..." not "In March...")
 - Include temporal context when relevant: "As of Q4 2024..." or "Based on 2024 data..."
 - Do NOT assume events after your knowledge cutoff have occurred; verify with tool calls.
 

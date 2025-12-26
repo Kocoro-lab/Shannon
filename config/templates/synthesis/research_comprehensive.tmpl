@@ -99,7 +99,8 @@ Do NOT skip any research areas. Generate comprehensive content for ALL sections 
 ## Quality Standards:
 {{- if .CitationAgentEnabled }}
 - State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by evidence
-- For time-sensitive topics, include temporal context: "As of [date]..." or "Based on [year] data..."
+- **Temporal context is critical**: Always include the year when describing events (e.g., "In March 2024..." not "In March..."). For events older than 6 months, add relative context: "In September 2024 (over a year ago)..."
+- Start the Executive Summary with a temporal anchor: "As of [current month/year]..." to establish recency
 - When sources conflict due to different publication dates, note this explicitly and prefer the most recent
 - If the query asks for "latest" or "current" information, verify recency of sources used
 - DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm") unless evidence is genuinely missing
@@ -111,7 +112,8 @@ Do NOT skip any research areas. Generate comprehensive content for ALL sections 
 - NEVER fabricate or hallucinate information
 {{- else }}
 - State findings CONFIDENTLY and AUTHORITATIVELY when well-supported by citations
-- For time-sensitive topics, include temporal context: "As of [date]..." or "Based on [year] data..."
+- **Temporal context is critical**: Always include the year when describing events (e.g., "In March 2024..." not "In March..."). For events older than 6 months, add relative context: "In September 2024 (over a year ago)..."
+- Start the Executive Summary with a temporal anchor: "As of [current month/year]..." to establish recency
 - When sources conflict due to different publication dates, note this explicitly and prefer the most recent
 - If the query asks for "latest" or "current" information, verify recency of sources used
 - DO NOT add unnecessary cautious disclaimers (e.g., "we were unable to confirm", "at present we have not found") unless evidence is genuinely missing
