@@ -518,6 +518,64 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 	}
 
+	// Route to BrowserUseWorkflow if browser_use role is present (unified agent loop)
+	browserUseVersion := workflow.GetVersion(ctx, "browser_use_routing_v1", workflow.DefaultVersion, 2)
+	if browserUseVersion >= 2 && rolePresent && input.Context != nil {
+		if role, ok := input.Context["role"].(string); ok && role == "browser_use" {
+			logger.Info("Routing to BrowserUseWorkflow based on browser_use role")
+			// Force LLM to use browser tools (prevents hallucinating completion without tool calls)
+			input.Context["force_tools"] = true
+			if result, handled, err := routeStrategyWorkflow(ctx, input, "browser_use", decomp.Mode, emitCtx, controlHandler); handled {
+				return result, err
+			}
+		}
+	} else if browserUseVersion == 1 && rolePresent && input.Context != nil {
+		// Legacy: v1 used ReactWorkflow
+		if role, ok := input.Context["role"].(string); ok && role == "browser_use" {
+			logger.Info("Routing to ReactWorkflow based on browser_use role (legacy v1)")
+			input.Context["force_tools"] = true
+			if result, handled, err := routeStrategyWorkflow(ctx, input, "react", decomp.Mode, emitCtx, controlHandler); handled {
+				return result, err
+			}
+		}
+	}
+
+	// Auto-detect browser intent and assign browser_use role if not already set
+	// Only returns true for sites that REQUIRE JavaScript rendering (conservative)
+	autoDetectVersion := workflow.GetVersion(ctx, "browser_auto_detect_v2", workflow.DefaultVersion, 1)
+	if autoDetectVersion >= 1 && !rolePresent && detectBrowserIntent(input.Query) {
+		logger.Info("Auto-detected browser intent, assigning browser_use role")
+		if input.Context == nil {
+			input.Context = map[string]interface{}{}
+		}
+		input.Context["role"] = "browser_use"
+		input.Context["role_auto_detected"] = true
+		// Force LLM to use browser tools (prevents hallucinating completion without tool calls)
+		input.Context["force_tools"] = true
+
+		// Emit role assignment event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+			EventType:  activities.StreamEventRoleAssigned,
+			AgentID:    "browser_use",
+			Message:    activities.MsgRoleAssigned("browser_use (auto-detected)", 10),
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"role":          "browser_use",
+				"auto_detected": true,
+			},
+		}).Get(ctx, nil)
+
+		// Use BrowserUseWorkflow for v2+, ReactWorkflow for legacy v1
+		strategy := "browser_use"
+		if browserUseVersion == 1 {
+			strategy = "react"
+		}
+		if result, handled, err := routeStrategyWorkflow(ctx, input, strategy, decomp.Mode, emitCtx, controlHandler); handled {
+			return result, err
+		}
+	}
+
 	// Check if P2P is forced via context
 	forceP2P := GetContextBool(input.Context, "force_p2p")
 	if forceP2P {
@@ -844,7 +902,7 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		// Add task context to metadata for API exposure
 		result = AddTaskContextToMetadata(result, input.Context)
 		return result, true, nil
-	case "react", "exploratory", "research", "scientific":
+	case "react", "exploratory", "research", "scientific", "browser_use":
 		// Check pause/cancel before starting child workflow
 		if controlHandler != nil {
 			if err := controlHandler.CheckPausePoint(ctx, "pre_"+strategyLower+"_workflow"); err != nil {
@@ -866,6 +924,9 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		case "scientific":
 			wfName = "ScientificWorkflow"
 			wfFunc = strategies.ScientificWorkflow
+		case "browser_use":
+			wfName = "BrowserUseWorkflow"
+			wfFunc = strategies.BrowserUseWorkflow
 		}
 
 		strategiesInput := convertToStrategiesInput(input)
@@ -969,4 +1030,25 @@ func recommendStrategy(ctx workflow.Context, input TaskInput) (*activities.Recom
 		return nil, err
 	}
 	return &rec, nil
+}
+
+// detectBrowserIntent checks if the query requires browser automation.
+// This is conservative: only returns true for sites that REQUIRE JavaScript rendering.
+// For static sites, web_fetch is more efficient than browser automation.
+func detectBrowserIntent(query string) bool {
+	lq := strings.ToLower(query)
+
+	// Sites that require JavaScript rendering (conservative list).
+	// Only include sites where web_fetch cannot extract meaningful content.
+	jsRequiredDomains := []string{
+		"weixin.qq.com",
+		"mp.weixin.qq.com",
+	}
+	for _, domain := range jsRequiredDomains {
+		if strings.Contains(lq, domain) {
+			return true
+		}
+	}
+
+	return false
 }

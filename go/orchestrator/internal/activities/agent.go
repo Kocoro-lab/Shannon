@@ -1242,6 +1242,49 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		})
 	}
 
+	// publishToolObservation emits TOOL_OBSERVATION events for all tools.
+	// For browser_screenshot, include full output in payload so the UI can render the image.
+	publishToolObservation := func(toolName string, success bool, output interface{}) {
+		if wfID == "" || toolName == "" {
+			return
+		}
+
+		var msg string
+		if success {
+			// Avoid marshaling huge screenshot blobs just to build a message.
+			outputStr := ""
+			if toolName != "browser_screenshot" && output != nil {
+				if str, ok := output.(string); ok {
+					outputStr = str
+				} else if bytes, err := json.Marshal(output); err == nil {
+					outputStr = string(bytes)
+				}
+			}
+			msg = MsgToolCompleted(toolName, outputStr)
+		} else {
+			msg = MsgToolFailed(toolName)
+		}
+
+		payload := map[string]interface{}{
+			"role":    role,
+			"tool":    toolName,
+			"success": success,
+		}
+		// Include full screenshot output for browser_screenshot so UI can render image
+		if toolName == "browser_screenshot" && success && output != nil {
+			payload["output"] = output
+		}
+
+		streaming.Get().Publish(wfID, streaming.Event{
+			WorkflowID: wfID,
+			Type:       string(StreamEventToolObs),
+			AgentID:    input.AgentID,
+			Message:    msg,
+			Payload:    payload,
+			Timestamp:  time.Now(),
+		})
+	}
+
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
 	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
@@ -1353,36 +1396,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						output = tr.Output.AsInterface()
 					}
 
-					// Emit TOOL_OBSERVATION event with human-readable message
-					if wfID != "" && toolName != "" {
-						var msg string
-						if tr.Status == commonpb.StatusCode_STATUS_CODE_OK {
-							// Format output for human-readable message
-							outputStr := ""
-							if output != nil {
-								if str, ok := output.(string); ok {
-									outputStr = str
-								} else if bytes, err := json.Marshal(output); err == nil {
-									outputStr = string(bytes)
-								}
-							}
-							msg = MsgToolCompleted(toolName, outputStr)
-						} else {
-							msg = MsgToolFailed(toolName)
-						}
-
-						streaming.Get().Publish(wfID, streaming.Event{
-							WorkflowID: wfID,
-							Type:       string(StreamEventToolObs),
-							AgentID:    input.AgentID,
-							Message:    msg,
-							Payload: map[string]interface{}{
-								"tool":    toolName,
-								"success": tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
-							},
-							Timestamp: time.Now(),
-						})
-					}
+					publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 
 					toolExecs = append(toolExecs, ToolExecution{
 						Tool:    toolName,
@@ -1552,6 +1566,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			if tr.Output != nil {
 				output = tr.Output.AsInterface()
 			}
+			publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 			toolExecs = append(toolExecs, ToolExecution{
 				Tool:    toolName,
 				Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,

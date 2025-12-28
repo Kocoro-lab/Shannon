@@ -866,3 +866,39 @@ func countCitations(result activities.AgentExecutionResult) int {
 	}
 	return count
 }
+
+// truncateBase64Images removes only base64 image data from observations/actions
+// to prevent context overflow. Screenshots are already emitted to UI via TOOL_OBSERVATION events.
+// This is safe for all workflows - only removes binary image data, not text content.
+func truncateBase64Images(content string) string {
+	// Check for base64 image data patterns (screenshots, images)
+	// Common patterns: "screenshot": "iVBOR...", "image": "data:image/png;base64,..."
+	// Only targets actual base64 data, not text descriptions
+	base64Patterns := []string{
+		`"screenshot": "`,
+		`"screenshot":"`,
+	}
+
+	result := content
+	for _, pattern := range base64Patterns {
+		for {
+			idx := strings.Index(result, pattern)
+			if idx == -1 {
+				break
+			}
+			// Find the start of the base64 data
+			startIdx := idx + len(pattern)
+			// Find the end (closing quote)
+			endIdx := strings.Index(result[startIdx:], `"`)
+			if endIdx > 500 { // Only truncate if base64 is large (>500 chars = likely actual image)
+				// Replace with placeholder, keeping JSON structure valid
+				truncated := result[:startIdx] + "[SCREENSHOT_STORED_SEPARATELY]" + result[startIdx+endIdx:]
+				result = truncated
+			} else {
+				break // Not a base64 image, stop processing this pattern
+			}
+		}
+	}
+
+	return result
+}

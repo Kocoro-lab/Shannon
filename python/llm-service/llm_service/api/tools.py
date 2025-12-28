@@ -23,6 +23,34 @@ from ..tools.builtin import (
     PythonWasiExecutorTool,
 )
 
+# Optional: browser automation tools (graceful fallback if not present)
+try:
+    from ..tools.builtin import (
+        BrowserNavigateTool,
+        BrowserClickTool,
+        BrowserTypeTool,
+        BrowserScreenshotTool,
+        BrowserExtractTool,
+        BrowserScrollTool,
+        BrowserWaitTool,
+        BrowserEvaluateTool,
+        BrowserCloseTool,
+    )
+
+    _BROWSER_TOOLS = [
+        BrowserNavigateTool,
+        BrowserClickTool,
+        BrowserTypeTool,
+        BrowserScreenshotTool,
+        BrowserExtractTool,
+        BrowserScrollTool,
+        BrowserWaitTool,
+        BrowserEvaluateTool,
+        BrowserCloseTool,
+    ]
+except Exception:
+    _BROWSER_TOOLS = []
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
 
@@ -310,6 +338,7 @@ async def startup_event():
         FileWriteTool,
         PythonWasiExecutorTool,
     ]
+    tools_to_register.extend(_BROWSER_TOOLS)
 
     for tool_class in tools_to_register:
         try:

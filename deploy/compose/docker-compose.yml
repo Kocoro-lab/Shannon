@@ -316,12 +316,16 @@ services:
       # Events ingestion
       - EVENTS_INGEST_URL=${EVENTS_INGEST_URL:-http://orchestrator:8081/events}
       - EVENTS_AUTH_TOKEN=${EVENTS_AUTH_TOKEN:-}
+      # Browser automation (playwright-service)
+      - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-http://playwright-service:8002}
     depends_on:
       redis:
         condition: service_healthy
       qdrant:
         condition: service_started
       postgres:
+        condition: service_healthy
+      playwright-service:
         condition: service_healthy
     ports:
       - "8000:8000"
@@ -335,6 +339,32 @@ services:
       - ../../wasm-interpreters:/opt/wasm-interpreters:ro
     networks: [shannon-net]
 
+  playwright-service:
+    build:
+      context: ../../python/playwright-service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8002
+      - DEBUG=${DEBUG:-false}
+      # Session management
+      - SESSION_TTL_SECONDS=${BROWSER_SESSION_TTL:-300}
+      - MAX_SESSIONS=${BROWSER_MAX_SESSIONS:-50}
+      # Browser settings
+      - HEADLESS=${BROWSER_HEADLESS:-true}
+      - VIEWPORT_WIDTH=${BROWSER_VIEWPORT_WIDTH:-1280}
+      - VIEWPORT_HEIGHT=${BROWSER_VIEWPORT_HEIGHT:-720}
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8002/health''); print(''ok'')"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks: [shannon-net]
+    shm_size: 2gb
 
   gateway:
     build:

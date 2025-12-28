@@ -343,3 +343,4 @@ chrome-extension/
 
 # antigravity
 .agent/
+.gomodcache/
