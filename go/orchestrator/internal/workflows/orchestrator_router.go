@@ -61,9 +61,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Warn("Failed to emit workflow started event", "error", err)
 	}
 
-	// Start async title generation immediately (non-blocking)
+	// Start async title generation only for first task in session (non-blocking)
 	// Title is generated from query, doesn't need task result, so start early for better UX
-	startAsyncTitleGeneration(ctx, input.SessionID, input.Query)
+	// Skip if history exists - indicates this is not the first task in the session
+	if len(input.History) == 0 {
+		startAsyncTitleGeneration(ctx, input.SessionID, input.Query)
+	}
 
 	// Conservative activity options for fast planning
 	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
