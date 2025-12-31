@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	workflowservice "go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -850,7 +851,16 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 	// Describe workflow for non-blocking status
 	desc, err := s.temporalClient.DescribeWorkflowExecution(ctx, req.TaskId, "")
 	if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-		return nil, status.Error(codes.NotFound, fmt.Sprintf("task not found: %v", err))
+		// Only fallback to DB for NotFound errors (Temporal retention expired)
+		// Other errors (outages, permission issues) should propagate as Internal
+		var notFoundErr *serviceerror.NotFound
+		if errors.As(err, &notFoundErr) && s.dbClient != nil {
+			return s.getTaskStatusFromDB(ctx, req.TaskId)
+		}
+		if err != nil {
+			return nil, status.Error(codes.Internal, fmt.Sprintf("failed to describe workflow: %v", err))
+		}
+		return nil, status.Error(codes.NotFound, "task not found")
 	}
 
 	// Enforce tenant ownership using memo if available
@@ -891,6 +901,70 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			if ctrlResp.Get(&ctrlState) == nil && ctrlState.IsPaused {
 				statusOut = pb.TaskStatus_TASK_STATUS_PAUSED
 				statusStr = "PAUSED"
+			}
+		}
+
+		// Race condition mitigation: the stream may emit WORKFLOW_COMPLETED slightly
+		// before Temporal's visibility APIs show the workflow as closed.
+		// Treat the stream signal as a hint and retry Describe briefly; only return
+		// a terminal status once Temporal confirms it.
+		if statusOut == pb.TaskStatus_TASK_STATUS_RUNNING {
+			if streaming.Get().HasEmittedCompletion(ctx, req.TaskId) {
+				s.logger.Debug("WORKFLOW_COMPLETED seen in stream; retrying Temporal Describe",
+					zap.String("task_id", req.TaskId))
+
+				retryCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+				defer cancel()
+
+			retryLoop:
+				for attempt := 0; attempt < 3; attempt++ {
+					if attempt > 0 {
+						delay := time.Duration(attempt) * 50 * time.Millisecond
+						timer := time.NewTimer(delay)
+						select {
+						case <-retryCtx.Done():
+							timer.Stop()
+							break retryLoop
+						case <-timer.C:
+						}
+					}
+
+					descAfterWait, descErr := s.temporalClient.DescribeWorkflowExecution(retryCtx, req.TaskId, "")
+					if descErr != nil || descAfterWait == nil || descAfterWait.WorkflowExecutionInfo == nil {
+						if retryCtx.Err() != nil {
+							break
+						}
+						continue
+					}
+
+					// Update status only when Temporal confirms a non-running state.
+					if descAfterWait.WorkflowExecutionInfo.Status == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+						continue
+					}
+
+					desc = descAfterWait
+					switch descAfterWait.WorkflowExecutionInfo.Status {
+					case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+						statusOut = pb.TaskStatus_TASK_STATUS_COMPLETED
+						statusStr = "COMPLETED"
+					case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+						statusOut = pb.TaskStatus_TASK_STATUS_TIMEOUT
+						statusStr = "TIMEOUT"
+					case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+						statusOut = pb.TaskStatus_TASK_STATUS_FAILED
+						statusStr = "FAILED"
+					case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+						statusOut = pb.TaskStatus_TASK_STATUS_CANCELLED
+						statusStr = "CANCELLED"
+					case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+						statusOut = pb.TaskStatus_TASK_STATUS_FAILED
+						statusStr = "FAILED"
+					default:
+						statusOut = pb.TaskStatus_TASK_STATUS_RUNNING
+						statusStr = "RUNNING"
+					}
+					break retryLoop
+				}
 			}
 		}
 	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
@@ -2279,112 +2353,259 @@ func mapProtoStatusToDB(st pb.TaskStatus) string {
 }
 
 // watchAndPersist waits for workflow completion and persists terminal state to DB.
+// It loops until the workflow reaches a terminal state (no hard timeout) to support
+// long-running workflows like SupervisorWorkflow that can run for hours or days.
 func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 	if s.temporalClient == nil || s.dbClient == nil {
 		return
 	}
-	// Wait for workflow completion with a long safety timeout to prevent leaks on stuck workflows
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer waitCancel()
 
-	// Wait for workflow completion (ignore result content; we'll describe for status/timestamps)
-	we := s.temporalClient.GetWorkflow(waitCtx, workflowID, runID)
-	var tmp interface{}
-	_ = we.Get(waitCtx, &tmp)
+	// Loop until workflow reaches terminal state. Use per-iteration timeouts
+	// but no overall deadline - workflows can legitimately run for hours/days.
+	const pollInterval = 5 * time.Minute
+	const maxConsecutiveErrors = 12 // Give up after ~1 hour of consecutive errors
 
-	// Short TTL for post-completion persistence
-	persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer persistCancel()
+	consecutiveErrors := 0
+	for {
+		// Per-iteration timeout for the wait call
+		waitCtx, waitCancel := context.WithTimeout(context.Background(), pollInterval)
 
-	// Describe to fetch status and times
-	desc, err := s.temporalClient.DescribeWorkflowExecution(persistCtx, workflowID, runID)
-	if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
-		s.logger.Warn("watchAndPersist: describe failed", zap.String("workflow_id", workflowID), zap.Error(err))
-		return
-	}
+		// Try to wait for workflow completion
+		// Pass empty runID to track the latest run (handles CONTINUED_AS_NEW correctly)
+		we := s.temporalClient.GetWorkflow(waitCtx, workflowID, "")
+		var tmp interface{}
+		waitErr := we.Get(waitCtx, &tmp)
+		waitCancel()
 
-	st := desc.WorkflowExecutionInfo.GetStatus()
-	statusStr := "RUNNING"
-	switch st {
-	case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
-		statusStr = "COMPLETED"
-	case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
-		statusStr = "FAILED"
-	case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
-		statusStr = "TIMEOUT"
-	case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
-		statusStr = "CANCELLED"
-	case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
-		statusStr = "FAILED"
-	default:
-		statusStr = "RUNNING"
-	}
+		// Check workflow status
+		// Pass empty runID to get the latest run - handles CONTINUED_AS_NEW correctly
+		descCtx, descCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		desc, err := s.temporalClient.DescribeWorkflowExecution(descCtx, workflowID, "")
+		descCancel()
 
-	start := time.Now()
-	if desc.WorkflowExecutionInfo.GetStartTime() != nil {
-		start = desc.WorkflowExecutionInfo.GetStartTime().AsTime()
-	}
-	end := getWorkflowEndTime(desc)
+		if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
+			consecutiveErrors++
+			s.logger.Warn("watchAndPersist: describe failed",
+				zap.String("workflow_id", workflowID),
+				zap.Int("consecutive_errors", consecutiveErrors),
+				zap.Error(err))
+			if consecutiveErrors >= maxConsecutiveErrors {
+				s.logger.Error("watchAndPersist: giving up after too many consecutive errors",
+					zap.String("workflow_id", workflowID))
+				// Mark task as FAILED in DB to avoid leaving it stuck in RUNNING state
+				failCtx, failCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if _, err2 := s.dbClient.Wrapper().ExecContext(
+					failCtx,
+					`UPDATE task_executions
+					 SET status = 'FAILED',
+					     error_message = COALESCE(error_message, 'Workflow status unknown: persistence monitoring failed after consecutive errors'),
+					     completed_at = NOW()
+					 WHERE workflow_id = $1
+					   AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')`,
+					workflowID,
+				); err2 != nil {
+					s.logger.Error("watchAndPersist: failed to mark task as FAILED",
+						zap.String("workflow_id", workflowID),
+						zap.Error(err2))
+				} else {
+					s.logger.Info("watchAndPersist: marked task as FAILED due to monitoring failure",
+						zap.String("workflow_id", workflowID))
+				}
+				failCancel()
+				return
+			}
+			time.Sleep(30 * time.Second) // Back off before retry
+			continue
+		}
+		consecutiveErrors = 0 // Reset on successful describe
 
-	// Only update terminal fields to avoid clobbering richer data written elsewhere.
-	// Do not overwrite tokens/cost/model/provider/metadata.
-	durationMs := int(end.Sub(start).Milliseconds())
-	// Update terminal fields only if row already exists (created by SubmitTask or GetTaskStatus)
-	// Use UPDATE instead of INSERT to avoid NOT NULL constraint violations on required fields
-	if _, err2 := s.dbClient.Wrapper().ExecContext(
-		persistCtx,
-		`UPDATE task_executions
-         SET status = $2,
-             completed_at = $3,
-             duration_ms = COALESCE(duration_ms, $4)
-         WHERE workflow_id = $1
-           AND status NOT IN ('COMPLETED', 'FAILED')`,
-		workflowID, statusStr, end, durationMs,
-	); err2 != nil {
-		s.logger.Warn("watchAndPersist: final status update failed", zap.String("workflow_id", workflowID), zap.Error(err2))
-	} else {
-		s.logger.Debug("watchAndPersist: final status updated", zap.String("workflow_id", workflowID), zap.String("status", statusStr))
-	}
+		st := desc.WorkflowExecutionInfo.GetStatus()
+		isTerminal := st == enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED ||
+			st == enumspb.WORKFLOW_EXECUTION_STATUS_FAILED ||
+			st == enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT ||
+			st == enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED ||
+			st == enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED
 
-	// Trigger rich persistence (result + token/cost aggregation) using the same logic as GetTaskStatus.
-	// This ensures DB has full metrics even if no client polls status.
-	// Safe to call here: SaveTaskExecution is idempotent by workflow_id.
-	if _, err := s.GetTaskStatus(persistCtx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
-		s.logger.Warn("watchAndPersist: GetTaskStatus persistence failed", zap.String("workflow_id", workflowID), zap.Error(err))
-	} else {
-		s.logger.Debug("watchAndPersist: terminal metrics persisted", zap.String("workflow_id", workflowID))
-	}
-
-	// Best-effort polling to tolerate visibility lag: re-run persistence until totals or result appear
-	// Poll every ~2 seconds up to ~12 seconds total (6 attempts)
-	// Exit early once total_tokens > 0 or result is non-empty
-	const maxAttempts = 6
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		// Check current DB state
-		var tokens sql.NullInt64
-		var res sql.NullString
-		row := s.dbClient.Wrapper().QueryRowContext(persistCtx,
-			`SELECT total_tokens, result FROM task_executions WHERE workflow_id = $1`, workflowID,
-		)
-		if err := row.Scan(&tokens, &res); err == nil {
-			hasTokens := tokens.Valid && tokens.Int64 > 0
-			hasResult := res.Valid && res.String != ""
-			if hasTokens || hasResult {
-				s.logger.Debug("watchAndPersist: persistence confirmed",
+		if !isTerminal {
+			// Workflow still running (or CONTINUED_AS_NEW) - continue waiting
+			// Since we pass empty runID, CONTINUED_AS_NEW is handled correctly
+			// by tracking the new run automatically
+			if waitErr != nil {
+				s.logger.Debug("watchAndPersist: workflow still running, will retry",
 					zap.String("workflow_id", workflowID),
-					zap.Bool("has_tokens", hasTokens),
-					zap.Bool("has_result", hasResult),
-				)
-				break
+					zap.String("status", st.String()))
+			}
+			continue
+		}
+
+		// Workflow reached terminal state - persist it
+		statusStr := "RUNNING"
+		switch st {
+		case enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED:
+			statusStr = "COMPLETED"
+		case enumspb.WORKFLOW_EXECUTION_STATUS_FAILED:
+			statusStr = "FAILED"
+		case enumspb.WORKFLOW_EXECUTION_STATUS_TIMED_OUT:
+			statusStr = "TIMEOUT"
+		case enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED:
+			statusStr = "CANCELLED"
+		case enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED:
+			statusStr = "FAILED"
+		}
+
+		s.logger.Info("watchAndPersist: workflow reached terminal state",
+			zap.String("workflow_id", workflowID),
+			zap.String("status", statusStr))
+
+		start := time.Now()
+		if desc.WorkflowExecutionInfo.GetStartTime() != nil {
+			start = desc.WorkflowExecutionInfo.GetStartTime().AsTime()
+		}
+		end := getWorkflowEndTime(desc)
+		durationMs := int(end.Sub(start).Milliseconds())
+
+		// Persist terminal state
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
+
+		// Update terminal fields only for terminal workflows
+		if _, err2 := s.dbClient.Wrapper().ExecContext(
+			persistCtx,
+			`UPDATE task_executions
+             SET status = $2,
+                 completed_at = $3,
+                 duration_ms = COALESCE(duration_ms, $4)
+             WHERE workflow_id = $1
+               AND status NOT IN ('COMPLETED', 'FAILED')`,
+			workflowID, statusStr, end, durationMs,
+		); err2 != nil {
+			s.logger.Warn("watchAndPersist: final status update failed",
+				zap.String("workflow_id", workflowID),
+				zap.Error(err2))
+		} else {
+			s.logger.Debug("watchAndPersist: final status updated",
+				zap.String("workflow_id", workflowID),
+				zap.String("status", statusStr))
+		}
+
+		// Trigger rich persistence (result + token/cost aggregation)
+		if _, err := s.GetTaskStatus(persistCtx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
+			s.logger.Warn("watchAndPersist: GetTaskStatus persistence failed",
+				zap.String("workflow_id", workflowID),
+				zap.Error(err))
+		} else {
+			s.logger.Debug("watchAndPersist: terminal metrics persisted",
+				zap.String("workflow_id", workflowID))
+		}
+
+		// Best-effort polling to tolerate visibility lag
+		const maxAttempts = 6
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			var tokens sql.NullInt64
+			var res sql.NullString
+			row := s.dbClient.Wrapper().QueryRowContext(persistCtx,
+				`SELECT total_tokens, result FROM task_executions WHERE workflow_id = $1`, workflowID,
+			)
+			if err := row.Scan(&tokens, &res); err == nil {
+				hasTokens := tokens.Valid && tokens.Int64 > 0
+				hasResult := res.Valid && res.String != ""
+				if hasTokens || hasResult {
+					s.logger.Debug("watchAndPersist: persistence confirmed",
+						zap.String("workflow_id", workflowID),
+						zap.Bool("has_tokens", hasTokens),
+						zap.Bool("has_result", hasResult))
+					break
+				}
+			}
+			if _, err := s.GetTaskStatus(persistCtx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
+				s.logger.Debug("watchAndPersist: retry GetTaskStatus failed",
+					zap.String("workflow_id", workflowID),
+					zap.Error(err))
+			}
+			time.Sleep(2 * time.Second)
+		}
+
+		persistCancel()
+		return // Done - workflow persisted
+	}
+}
+
+// getTaskStatusFromDB retrieves task status from database when Temporal workflow history has expired.
+// This allows querying historical completed tasks beyond Temporal's retention period.
+func (s *OrchestratorService) getTaskStatusFromDB(ctx context.Context, taskID string) (*pb.GetTaskStatusResponse, error) {
+	var (
+		dbStatus         string
+		dbResult         sql.NullString
+		dbError          sql.NullString
+		dbQuery          sql.NullString
+		dbSessionID      sql.NullString
+		dbMode           sql.NullString
+		dbModelUsed      sql.NullString
+		dbProvider       sql.NullString
+		dbTotalTokens    sql.NullInt32
+		dbPromptTokens   sql.NullInt32
+		dbCompletionToks sql.NullInt32
+		dbTotalCost      sql.NullFloat64
+		dbTenantID       sql.NullString
+	)
+
+	err := s.dbClient.Wrapper().QueryRowContext(ctx, `
+		SELECT status, result, error_message, query, session_id, mode,
+		       model_used, provider, total_tokens, prompt_tokens, completion_tokens,
+		       total_cost_usd, tenant_id
+		FROM task_executions
+		WHERE workflow_id = $1
+		LIMIT 1
+	`, taskID).Scan(&dbStatus, &dbResult, &dbError, &dbQuery, &dbSessionID, &dbMode,
+		&dbModelUsed, &dbProvider, &dbTotalTokens, &dbPromptTokens, &dbCompletionToks,
+		&dbTotalCost, &dbTenantID)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, status.Error(codes.NotFound, "task not found")
+		}
+		return nil, status.Error(codes.Internal, fmt.Sprintf("database error: %v", err))
+	}
+
+	// Enforce tenant ownership
+	if dbTenantID.Valid && dbTenantID.String != "" {
+		if uc, ucErr := auth.GetUserContext(ctx); ucErr == nil && uc != nil {
+			if uc.TenantID.String() != dbTenantID.String {
+				return nil, status.Error(codes.NotFound, "task not found")
 			}
 		}
-
-		// Retry persistence and sleep before next check
-		if _, err := s.GetTaskStatus(persistCtx, &pb.GetTaskStatusRequest{TaskId: workflowID}); err != nil {
-			s.logger.Debug("watchAndPersist: retry GetTaskStatus failed", zap.String("workflow_id", workflowID), zap.Error(err))
-		}
-		time.Sleep(2 * time.Second)
 	}
+
+	// Map DB status to proto status
+	var pbStatus pb.TaskStatus
+	switch dbStatus {
+	case "COMPLETED":
+		pbStatus = pb.TaskStatus_TASK_STATUS_COMPLETED
+	case "FAILED":
+		pbStatus = pb.TaskStatus_TASK_STATUS_FAILED
+	case "CANCELLED":
+		pbStatus = pb.TaskStatus_TASK_STATUS_CANCELLED
+	case "TIMEOUT":
+		pbStatus = pb.TaskStatus_TASK_STATUS_TIMEOUT
+	default:
+		pbStatus = pb.TaskStatus_TASK_STATUS_UNSPECIFIED
+	}
+
+	resp := &pb.GetTaskStatusResponse{
+		TaskId:       taskID,
+		Status:       pbStatus,
+		Result:       dbResult.String,
+		ErrorMessage: dbError.String,
+	}
+
+	// Note: Gateway enriches response with metrics from DB, so we only need
+	// to return status/result here. The unused dbXxx vars are scanned but
+	// intentionally not populated in the proto response.
+
+	s.logger.Info("Retrieved task status from database (Temporal history expired)",
+		zap.String("task_id", taskID),
+		zap.String("status", dbStatus))
+
+	return resp, nil
 }
 
 // getWorkflowEndTime returns the workflow end time, preferring Temporal CloseTime.

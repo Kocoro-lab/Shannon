@@ -720,6 +720,43 @@ func (m *Manager) GetLastStreamID(workflowID string) string {
 	return messages[0].ID
 }
 
+// HasEmittedCompletion checks if WORKFLOW_COMPLETED has been emitted for a workflow.
+// This is a hint for visibility races (stream may show completion slightly before Temporal does).
+func (m *Manager) HasEmittedCompletion(ctx context.Context, workflowID string) bool {
+	if m.redis == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+
+	streamKey := m.streamKey(workflowID)
+
+	// Only scan the tail of the stream to keep this cheap.
+	const scanCount int64 = 10
+	messages, err := m.redis.XRevRangeN(checkCtx, streamKey, "+", "-", scanCount).Result()
+	if err != nil {
+		if err == redis.Nil || checkCtx.Err() != nil {
+			return false
+		}
+		m.logger.Debug("Failed to check completion status in Redis",
+			zap.String("workflow_id", workflowID),
+			zap.Error(err))
+		return false
+	}
+
+	for _, msg := range messages {
+		if eventType, ok := msg.Values["type"].(string); ok && eventType == "WORKFLOW_COMPLETED" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Shutdown gracefully shuts down the manager, stopping all stream readers and flushing persistence.
 // It waits for all goroutines to complete with the provided context timeout.
 func (m *Manager) Shutdown(ctx context.Context) error {
