@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,39 +40,43 @@ type ShannonSSEEvent struct {
 
 // Streamer transforms Shannon SSE events to OpenAI format.
 type Streamer struct {
-	logger         *zap.Logger
-	completionID   string
-	modelName      string
-	created        int64
-	sentRole       bool
-	seenPartial    bool
-	totalTokens    *Usage
-	metrics        *MetricsRecorder
-	firstTokenSent bool
+	logger          *zap.Logger
+	completionID    string
+	modelName       string
+	created         int64
+	sentRole        bool
+	seenPartial     bool
+	totalTokens     *Usage
+	metrics         *MetricsRecorder
+	firstTokenSent  bool
+	sawFinalOutput  bool
+	lastClientWrite time.Time // Track last write to client for keepalive timing
 }
 
 // NewStreamer creates a new response streamer.
 func NewStreamer(logger *zap.Logger, modelName string) *Streamer {
 	return &Streamer{
-		logger:       logger,
-		completionID: GenerateCompletionID(),
-		modelName:    modelName,
-		created:      time.Now().Unix(),
-		sentRole:     false,
-		totalTokens:  &Usage{},
+		logger:          logger,
+		completionID:    GenerateCompletionID(),
+		modelName:       modelName,
+		created:         time.Now().Unix(),
+		sentRole:        false,
+		totalTokens:     &Usage{},
+		lastClientWrite: time.Now(),
 	}
 }
 
 // NewStreamerWithMetrics creates a new response streamer with metrics recording.
 func NewStreamerWithMetrics(logger *zap.Logger, modelName string, metrics *MetricsRecorder) *Streamer {
 	return &Streamer{
-		logger:       logger,
-		completionID: GenerateCompletionID(),
-		modelName:    modelName,
-		created:      time.Now().Unix(),
-		sentRole:     false,
-		totalTokens:  &Usage{},
-		metrics:      metrics,
+		logger:          logger,
+		completionID:    GenerateCompletionID(),
+		modelName:       modelName,
+		created:         time.Now().Unix(),
+		sentRole:        false,
+		totalTokens:     &Usage{},
+		metrics:         metrics,
+		lastClientWrite: time.Now(),
 	}
 }
 
@@ -103,6 +109,32 @@ func (s *Streamer) StreamResponse(ctx context.Context, sseReader io.Reader, w ht
 	go func() {
 		defer close(lineCh)
 		scanner := bufio.NewScanner(sseReader)
+		// Configure scanner buffer for large responses
+		// Cap values to prevent excessive memory allocation from bad env vars
+		const maxBufBytesCap = 1 * 1024 * 1024    // 1MB max initial buffer
+		const maxTokenBytesCap = 64 * 1024 * 1024 // 64MB max token size cap
+
+		bufBytes := 64 * 1024 // 64KB initial buffer
+		if v := os.Getenv("OPENAI_SSE_SCANNER_BUFFER_BYTES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				bufBytes = n
+				if bufBytes > maxBufBytesCap {
+					bufBytes = maxBufBytesCap
+				}
+			}
+		}
+		maxBytes := 16 * 1024 * 1024 // 16MB max token size
+		if v := os.Getenv("OPENAI_SSE_SCANNER_MAX_BYTES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				maxBytes = n
+				if maxBytes > maxTokenBytesCap {
+					maxBytes = maxTokenBytesCap
+				}
+			}
+		}
+		buf := make([]byte, bufBytes)
+		scanner.Buffer(buf, maxBytes)
+
 		for scanner.Scan() {
 			select {
 			case lineCh <- sseLineResult{line: scanner.Text()}:
@@ -133,8 +165,12 @@ func (s *Streamer) StreamResponse(ctx context.Context, sseReader io.Reader, w ht
 			return ctx.Err()
 
 		case <-heartbeatTicker.C:
-			// Send SSE comment as keepalive (clients should ignore comments)
-			s.writeHeartbeat(w, flusher)
+			// Only send keepalive if we haven't written to client recently.
+			// This prevents keepalive gaps when upstream sends frequent pings
+			// but we're not forwarding content to the client.
+			if time.Since(s.lastClientWrite) >= HeartbeatInterval {
+				s.writeHeartbeat(w, flusher)
+			}
 
 		case result, ok := <-lineCh:
 			if !ok {
@@ -150,6 +186,13 @@ func (s *Streamer) StreamResponse(ctx context.Context, sseReader io.Reader, w ht
 			}
 
 			line := result.line
+
+			// Forward upstream SSE comments (like ": ping") as keepalives to client.
+			// This ensures client connection stays alive during long quiet periods.
+			if strings.HasPrefix(line, ":") {
+				s.writeHeartbeat(w, flusher)
+				continue
+			}
 
 			// Parse SSE format
 			if strings.HasPrefix(line, "event:") {
@@ -168,9 +211,6 @@ func (s *Streamer) StreamResponse(ctx context.Context, sseReader io.Reader, w ht
 				eventType = ""
 				eventData = ""
 			}
-
-			// Reset heartbeat timer after receiving data
-			heartbeatTicker.Reset(HeartbeatInterval)
 		}
 	}
 
@@ -242,6 +282,7 @@ func (s *Streamer) processEvent(eventType, data string, w http.ResponseWriter, f
 				// B-lite: Stream final output in chunks for progressive display.
 				// This gives streaming UX while ensuring correctness (single canonical answer).
 				s.writeContentChunked(w, flusher, content)
+				s.sawFinalOutput = true
 			}
 		} else {
 			s.logger.Debug("Skipping non-final LLM_OUTPUT",
@@ -251,6 +292,12 @@ func (s *Streamer) processEvent(eventType, data string, w http.ResponseWriter, f
 		return nil
 
 	case isEndEvent(eventType, event.Type):
+		// Some workflows may emit WORKFLOW_COMPLETED before emitting the canonical "final_output" LLM_OUTPUT.
+		// If we haven't seen final output yet, keep the stream open until STREAM_END or EOF.
+		if isWorkflowCompletedEvent(eventType, event.Type) && !s.sawFinalOutput {
+			s.writeEventChunk(w, flusher, "WORKFLOW_COMPLETED", event)
+			return nil
+		}
 		return errStreamEnd
 
 	case isAgentEvent(effectiveType):
@@ -278,6 +325,10 @@ func isOutputEvent(eventName, eventType string) bool {
 
 func isEndEvent(eventName, eventType string) bool {
 	return eventName == "done" || eventName == "STREAM_END" || eventName == "WORKFLOW_COMPLETED" || eventType == "STREAM_END" || eventType == "WORKFLOW_COMPLETED"
+}
+
+func isWorkflowCompletedEvent(eventName, eventType string) bool {
+	return eventName == "WORKFLOW_COMPLETED" || eventType == "WORKFLOW_COMPLETED"
 }
 
 // isFinalPhaseAgent returns true if the agent_id represents a final-phase agent
@@ -454,6 +505,7 @@ func (s *Streamer) writeChunk(w http.ResponseWriter, flusher http.Flusher, chunk
 
 	fmt.Fprintf(w, "data: %s\n\n", data)
 	flusher.Flush()
+	s.lastClientWrite = time.Now()
 }
 
 // writeEventChunk writes an agent event chunk (no content, just shannon_events).
@@ -494,6 +546,7 @@ func (s *Streamer) writeEventChunk(w http.ResponseWriter, flusher http.Flusher, 
 func (s *Streamer) writeHeartbeat(w http.ResponseWriter, flusher http.Flusher) {
 	fmt.Fprintf(w, ": keepalive\n\n")
 	flusher.Flush()
+	s.lastClientWrite = time.Now()
 	s.logger.Debug("Sent SSE heartbeat")
 }
 

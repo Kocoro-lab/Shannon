@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -192,8 +193,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleStreamingResponse(ctx context.Context, w http.ResponseWriter, r *http.Request, workflowID, modelName string, req *ChatCompletionRequest, apiKeyID string, metrics *MetricsRecorder) {
 	// Build SSE URL - include agent events for rich UI experiences
 	// LLM events: LLM_PARTIAL (streaming), LLM_OUTPUT (final)
+	// Stream lifecycle: STREAM_END
 	// Subscribe to all event types that the streamer forwards:
 	// - LLM events: LLM_PARTIAL, LLM_OUTPUT
+	// - Stream lifecycle: STREAM_END
 	// - Workflow lifecycle: WORKFLOW_STARTED, WORKFLOW_COMPLETED, WORKFLOW_FAILED, WORKFLOW_PAUSING, WORKFLOW_PAUSED, WORKFLOW_RESUMED, WORKFLOW_CANCELLING, WORKFLOW_CANCELLED
 	// - Agent lifecycle: AGENT_STARTED, AGENT_COMPLETED, AGENT_THINKING
 	// - Tool events: TOOL_INVOKED, TOOL_OBSERVATION
@@ -201,7 +204,7 @@ func (h *Handler) handleStreamingResponse(ctx context.Context, w http.ResponseWr
 	// - Team/coordination: TEAM_RECRUITED, TEAM_RETIRED, TEAM_STATUS, ROLE_ASSIGNED, DELEGATION, DEPENDENCY_SATISFIED
 	// - Budget/approval: BUDGET_THRESHOLD, APPROVAL_REQUESTED, APPROVAL_DECISION
 	// - Errors: ERROR_OCCURRED
-	sseEventTypes := "LLM_PARTIAL,LLM_OUTPUT," +
+	sseEventTypes := "LLM_PARTIAL,LLM_OUTPUT,STREAM_END," +
 		"WORKFLOW_STARTED,WORKFLOW_COMPLETED,WORKFLOW_FAILED,WORKFLOW_PAUSING,WORKFLOW_PAUSED,WORKFLOW_RESUMED,WORKFLOW_CANCELLING,WORKFLOW_CANCELLED," +
 		"AGENT_STARTED,AGENT_COMPLETED,AGENT_THINKING," +
 		"TOOL_INVOKED,TOOL_OBSERVATION," +
@@ -228,7 +231,20 @@ func (h *Handler) handleStreamingResponse(ctx context.Context, w http.ResponseWr
 	}
 
 	// Make SSE request
-	client := &http.Client{Timeout: 10 * time.Minute}
+	// Use custom transport with connection timeouts but no request timeout.
+	// Deep research and other long-running workflows can stream beyond 10 minutes.
+	// The client request context controls cancellation when the caller disconnects.
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second, // Connection timeout
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second, // Wait for response headers
+			IdleConnTimeout:       90 * time.Second,
+		},
+	}
 	sseResp, err := client.Do(sseReq)
 	if err != nil {
 		h.logger.Error("Failed to connect to SSE", zap.Error(err), zap.String("url", sseURL))
@@ -281,7 +297,9 @@ func (h *Handler) handleNonStreamingResponse(ctx context.Context, w http.Respons
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	timeout := time.After(5 * time.Minute)
+	// 35-minute timeout to support deep research and other long-running tasks.
+	// For very long tasks, consider using streaming or async polling instead.
+	timeout := time.After(35 * time.Minute)
 
 	for {
 		select {
