@@ -443,17 +443,18 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 	// Only persist important events, not streaming deltas
 	if m.dbClient != nil && m.persistCh != nil && shouldPersistEvent(evt.Type) {
 		// Non-blocking enqueue; drop if full (we never block streaming)
+		// Sanitize message and payload to remove large base64 images (browser screenshots)
 		el := db.EventLog{
 			WorkflowID: evt.WorkflowID,
 			Type:       evt.Type,
 			AgentID:    evt.AgentID,
-			Message:    sanitizeUTF8(evt.Message),
+			Message:    sanitizeEventMessage(evt.Message),
 			Timestamp:  evt.Timestamp,
 			Seq:        evt.Seq,
 			StreamID:   evt.StreamID,
 		}
 		if evt.Payload != nil {
-			el.Payload = db.JSONB(evt.Payload)
+			el.Payload = db.JSONB(sanitizeEventPayload(evt.Payload))
 		}
 		select {
 		case m.persistCh <- el:
@@ -552,6 +553,109 @@ func sanitizeUTF8(s string) string {
 		s = s[size:]
 	}
 	return b.String()
+}
+
+// SanitizeBase64Image truncates large base64-encoded images in strings to prevent
+// Redis/Postgres bloat from browser automation screenshots.
+// Returns the sanitized string with base64 data replaced by a placeholder.
+func SanitizeBase64Image(s string) string {
+	if s == "" {
+		return s
+	}
+
+	// Common base64 image patterns from browser tools
+	patterns := []string{
+		`"screenshot": "data:image/`,
+		`"screenshot":"data:image/`,
+		`"image": "data:image/`,
+		`"image":"data:image/`,
+		`"base64": "`,
+		`"base64":"`,
+	}
+
+	result := s
+	for _, pattern := range patterns {
+		for {
+			idx := strings.Index(result, pattern)
+			if idx == -1 {
+				break
+			}
+
+			// Find the start of the base64 data (after the pattern)
+			startIdx := idx + len(pattern)
+			if startIdx >= len(result) {
+				break
+			}
+
+			// Find the closing quote
+			endIdx := strings.Index(result[startIdx:], `"`)
+			if endIdx == -1 {
+				break
+			}
+
+			dataLen := endIdx
+			// Only truncate if the data is larger than a reasonable threshold (1KB)
+			if dataLen > 1024 {
+				// Replace the base64 data with a placeholder
+				placeholder := "[BASE64_IMAGE_TRUNCATED]"
+				result = result[:startIdx] + placeholder + result[startIdx+endIdx:]
+			} else {
+				// Skip past this occurrence to prevent infinite loop
+				break
+			}
+		}
+	}
+
+	return result
+}
+
+// sanitizeEventMessage sanitizes event message content for storage.
+// Removes invalid UTF-8 and truncates large base64 images.
+func sanitizeEventMessage(s string) string {
+	s = sanitizeUTF8(s)
+	s = SanitizeBase64Image(s)
+	return s
+}
+
+// sanitizeEventPayload sanitizes payload map for storage.
+// Truncates large base64 images in string values.
+func sanitizeEventPayload(payload map[string]interface{}) map[string]interface{} {
+	if payload == nil {
+		return nil
+	}
+
+	const maxDepth = 4
+	var sanitizeValue func(key string, v interface{}, depth int) interface{}
+	sanitizeValue = func(key string, v interface{}, depth int) interface{} {
+		if v == nil || depth > maxDepth {
+			return v
+		}
+
+		switch val := v.(type) {
+		case string:
+			// Handle raw base64 values directly (common for browser_screenshot payloads).
+			if (key == "screenshot" || key == "popup_screenshot") && len(val) > 1024 {
+				return "[BASE64_IMAGE_TRUNCATED]"
+			}
+			return SanitizeBase64Image(val)
+		case map[string]interface{}:
+			return sanitizeEventPayload(val)
+		case []interface{}:
+			out := make([]interface{}, 0, len(val))
+			for _, item := range val {
+				out = append(out, sanitizeValue("", item, depth+1))
+			}
+			return out
+		default:
+			return v
+		}
+	}
+
+	sanitized := make(map[string]interface{}, len(payload))
+	for k, v := range payload {
+		sanitized[k] = sanitizeValue(k, v, 0)
+	}
+	return sanitized
 }
 
 // persistWorker batches event logs and writes them asynchronously.
