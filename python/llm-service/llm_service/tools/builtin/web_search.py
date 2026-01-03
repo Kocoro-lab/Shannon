@@ -484,15 +484,24 @@ class SerpAPISearchProvider(WebSearchProvider):
         # See: https://serpapi.com/search-engine-apis
         self.engine = engine.lower() if engine else "google"
 
-    async def search(self, query: str, max_results: int = 5, **extra_params) -> List[Dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        engine: Optional[str] = None,
+        **extra_params: Any,
+    ) -> List[Dict[str, Any]]:
         # Validate max_results
         max_results = self.validate_max_results(max_results)
+
+        # Use passed engine or fall back to instance default (avoids race condition)
+        effective_engine = engine.lower() if engine else self.engine
 
         # SerpAPI uses GET requests with query parameters
         params = {
             "q": query,
             "api_key": self.api_key,
-            "engine": self.engine,  # Configurable search engine
+            "engine": effective_engine,
             "num": max_results,
         }
 
@@ -528,7 +537,7 @@ class SerpAPISearchProvider(WebSearchProvider):
                 results = []
 
                 # Handle Google Finance special response format
-                if self.engine == "google_finance":
+                if effective_engine == "google_finance":
                     # Extract summary (current price, change, etc.)
                     summary = data.get("summary", {})
                     if summary:
@@ -557,7 +566,7 @@ class SerpAPISearchProvider(WebSearchProvider):
                     return results[:max_results]
 
                 # Handle Google Finance Markets special response format
-                if self.engine == "google_finance_markets":
+                if effective_engine == "google_finance_markets":
                     # Extract market trends
                     market_trends = data.get("market_trends", [])
                     for trend in market_trends:
@@ -1327,7 +1336,7 @@ class WebSearchTool(Tool):
                     query, max_results, search_type=search_type, category=category
                 )
             elif isinstance(self.provider, SerpAPISearchProvider):
-                # Extract SerpAPI-specific parameters
+                # Extract and validate SerpAPI-specific parameters
                 engine = kwargs.get("engine", "google")
                 gl = kwargs.get("gl")
                 hl = kwargs.get("hl")
@@ -1336,21 +1345,69 @@ class WebSearchTool(Tool):
                 window = kwargs.get("window")
                 trend = kwargs.get("trend")
 
-                # Update provider engine
-                self.provider.engine = engine
+                # Validate engine
+                valid_engines = {
+                    "google", "bing", "baidu", "google_scholar",
+                    "youtube", "google_news", "google_finance", "google_finance_markets"
+                }
+                if engine not in valid_engines:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid engine '{engine}'. Valid options: {', '.join(sorted(valid_engines))}",
+                    )
+
+                # Validate time_filter
+                valid_time_filters = {"day", "week", "month", "year"}
+                if time_filter and time_filter not in valid_time_filters:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid time_filter '{time_filter}'. Valid options: {', '.join(sorted(valid_time_filters))}",
+                    )
+
+                # Validate window (for google_finance)
+                valid_windows = {"1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"}
+                if window and window not in valid_windows:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid window '{window}'. Valid options: {', '.join(sorted(valid_windows))}",
+                    )
+
+                # Validate trend (for google_finance_markets)
+                valid_trends = {"indexes", "most-active", "gainers", "losers", "climate-leaders", "crypto", "currencies"}
+                if trend and trend not in valid_trends:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid trend '{trend}'. Valid options: {', '.join(sorted(valid_trends))}",
+                    )
+
+                # Sanitize location (basic alphanumeric + spaces/commas only)
+                if location:
+                    if not re.match(r"^[\w\s,.-]+$", location):
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error="Invalid location format. Use alphanumeric characters, spaces, commas, periods, and hyphens only.",
+                        )
 
                 # Build extra params dict
-                extra_params = {}
+                extra_params: Dict[str, Any] = {}
                 if gl:
-                    extra_params["gl"] = gl
+                    # Basic validation: 2-letter country code
+                    if len(gl) == 2 and gl.isalpha():
+                        extra_params["gl"] = gl.lower()
                 if hl:
-                    extra_params["hl"] = hl
+                    # Basic validation: language code format (e.g., "en", "zh-CN")
+                    if re.match(r"^[a-z]{2}(-[A-Z]{2})?$", hl):
+                        extra_params["hl"] = hl
                 if location:
                     extra_params["location"] = location
                 if time_filter:
                     tbs_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
-                    if time_filter in tbs_map:
-                        extra_params["tbs"] = tbs_map[time_filter]
+                    extra_params["tbs"] = tbs_map[time_filter]
 
                 # Google Finance specific parameters
                 if engine == "google_finance" and window:
@@ -1358,7 +1415,8 @@ class WebSearchTool(Tool):
                 if engine == "google_finance_markets" and trend:
                     extra_params["trend"] = trend
 
-                results = await self.provider.search(query, max_results, **extra_params)
+                # Pass engine as parameter instead of mutating provider state
+                results = await self.provider.search(query, max_results, engine=engine, **extra_params)
             else:
                 results = await self.provider.search(query, max_results)
 
