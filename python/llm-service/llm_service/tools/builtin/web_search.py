@@ -484,17 +484,29 @@ class SerpAPISearchProvider(WebSearchProvider):
         # See: https://serpapi.com/search-engine-apis
         self.engine = engine.lower() if engine else "google"
 
-    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        engine: Optional[str] = None,
+        **extra_params: Any,
+    ) -> List[Dict[str, Any]]:
         # Validate max_results
         max_results = self.validate_max_results(max_results)
-        
+
+        # Use passed engine or fall back to instance default (avoids race condition)
+        effective_engine = engine.lower() if engine else self.engine
+
         # SerpAPI uses GET requests with query parameters
         params = {
             "q": query,
             "api_key": self.api_key,
-            "engine": self.engine,  # Configurable search engine
+            "engine": effective_engine,
             "num": max_results,
         }
+
+        # Merge extra params (gl, hl, location, tbs, etc.)
+        params.update(extra_params)
 
         async with aiohttp.ClientSession() as session:
             timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
@@ -523,6 +535,65 @@ class SerpAPISearchProvider(WebSearchProvider):
 
                 data = await response.json()
                 results = []
+
+                # Handle Google Finance special response format
+                if effective_engine == "google_finance":
+                    # Extract summary (current price, change, etc.)
+                    summary = data.get("summary", {})
+                    if summary:
+                        price_info = {
+                            "title": f"{summary.get('title', 'Stock')} ({summary.get('stock', '')})",
+                            "snippet": f"Price: {summary.get('price', 'N/A')} {summary.get('currency', '')} | Change: {summary.get('price_movement', {}).get('percentage', 'N/A')}% ({summary.get('price_movement', {}).get('movement', '')})",
+                            "content": f"Exchange: {summary.get('exchange', '')} | Previous close: {summary.get('previous_close', 'N/A')}",
+                            "url": f"https://www.google.com/finance/quote/{summary.get('stock', '')}:{summary.get('exchange', '')}",
+                            "source": "google_finance",
+                            "type": "stock_quote",
+                            "raw_data": summary,
+                        }
+                        results.append(price_info)
+
+                    # Extract key stats if available
+                    key_stats = data.get("key_stats", {})
+                    if key_stats:
+                        stats_info = {
+                            "title": "Key Statistics",
+                            "snippet": str(key_stats),
+                            "source": "google_finance",
+                            "type": "key_stats",
+                        }
+                        results.append(stats_info)
+
+                    return results[:max_results]
+
+                # Handle Google Finance Markets special response format
+                if effective_engine == "google_finance_markets":
+                    # Extract market trends
+                    market_trends = data.get("market_trends", [])
+                    for trend in market_trends:
+                        trend_title = trend.get("title", "Market Trend")
+                        for item in trend.get("results", [])[:5]:  # Limit items per trend
+                            results.append({
+                                "title": f"{item.get('name', '')} ({item.get('stock', '')})",
+                                "snippet": f"Price: {item.get('price', 'N/A')} | Change: {item.get('price_movement', {}).get('percentage', 'N/A')}%",
+                                "url": item.get("link", ""),
+                                "source": "google_finance_markets",
+                                "type": trend_title,
+                            })
+
+                    # Also include markets overview
+                    markets = data.get("markets", {})
+                    for region, items in markets.items():
+                        if isinstance(items, list):
+                            for item in items[:3]:
+                                results.append({
+                                    "title": f"{item.get('name', '')} ({region})",
+                                    "snippet": f"Price: {item.get('price', 'N/A')} | Change: {item.get('price_movement', {}).get('percentage', 'N/A')}%",
+                                    "url": item.get("link", ""),
+                                    "source": "google_finance_markets",
+                                    "type": f"market_{region}",
+                                })
+
+                    return results[:max_results]
 
                 # Process organic search results (note: organic_results not organic!)
                 for result in data.get("organic_results", []):
@@ -844,10 +915,86 @@ class WebSearchTool(Tool):
                 "SearchProvider", ""
             )
 
+        # Generate description based on provider type
+        if isinstance(self.provider, SerpAPISearchProvider):
+            desc = (
+                "Search the web using SerpAPI with multiple engine support. "
+                "Discovers URLs and snippets for a given query. "
+                "Default engine is Google."
+                "\n\n"
+                "USE WHEN:\n"
+                "- Finding information, companies, people, or topics\n"
+                "- Need recent news, academic papers, or videos\n"
+                "- Want results from specific regions or languages\n"
+                "\n"
+                "NOT FOR:\n"
+                "- Reading full page content (use web_fetch after getting URLs)\n"
+                "- Crawling entire websites (use web_crawl)\n"
+                "\n"
+                "Returns: {provider, query, results: [{title, snippet, url, source, position, date}], result_count}."
+                "\n\n"
+                "Available engines and their strengths:\n"
+                "- google (default): Best global coverage, most comprehensive\n"
+                "- bing: Good alternative, sometimes different results\n"
+                "- baidu: Chinese language search, good for China-hosted content\n"
+                "- google_scholar: Academic papers and citations\n"
+                "- youtube: Video content search\n"
+                "- google_news: Recent news articles\n"
+                "- google_finance: Stock/currency/crypto quotes. IMPORTANT: query MUST be ticker symbol format like 'GOOGL:NASDAQ', 'AAPL:NASDAQ', 'BTC-USD', 'EUR-USD' - NOT natural language\n"
+                "- google_finance_markets: Market overview. Use trend param (indexes/gainers/losers/most-active/cryptocurrencies/currencies), query can be empty\n"
+                "\n"
+                "Localization options:\n"
+                "- gl: Country code (e.g., 'jp', 'cn', 'de') - affects result ranking\n"
+                "- hl: Language (e.g., 'ja', 'zh-CN') - affects UI and some results\n"
+                "- location: City-level targeting (e.g., 'Tokyo, Japan')\n"
+                "- time_filter: Recency ('day', 'week', 'month', 'year')\n"
+                "\n"
+                "QUERY LANGUAGE BEST PRACTICE:\n"
+                "- For google/google_scholar/google_news/youtube: Prefer ENGLISH queries for best global coverage\n"
+                "- For baidu: Use CHINESE queries\n"
+                "- Exception: Use local language when specifically searching local markets/news "
+                "(e.g., Chinese for China-specific companies, Japanese for Japan market)\n"
+                "- If user query is non-English, translate to English before searching (unless exception applies)"
+            )
+        elif isinstance(self.provider, ExaSearchProvider):
+            desc = (
+                "Search the web using Exa neural semantic search. "
+                "Discovers URLs and snippets with AI-powered relevance ranking."
+                "\n\n"
+                "USE WHEN:\n"
+                "- Need semantic/conceptual search (not just keyword matching)\n"
+                "- Searching for companies, research papers, news, GitHub repos\n"
+                "\n"
+                "NOT FOR:\n"
+                "- Reading full page content (use web_fetch after getting URLs)\n"
+                "\n"
+                "Returns: {provider, query, results: [{title, snippet, url, score, published_date}], result_count}."
+                "\n\n"
+                "Search modes:\n"
+                "- neural: Semantic similarity search\n"
+                "- keyword: Exact match search\n"
+                "- auto (default): Automatic selection\n"
+                "\n"
+                "Categories: company, research paper, news, pdf, github, tweet, linkedin, financial report"
+            )
+        else:
+            desc = (
+                f"Search the web using {provider_name}. "
+                "Discovers URLs and snippets for a given query."
+                "\n\n"
+                "USE WHEN:\n"
+                "- Finding information on any topic\n"
+                "\n"
+                "NOT FOR:\n"
+                "- Reading full page content (use web_fetch after getting URLs)\n"
+                "\n"
+                "Returns: {provider, query, results: [{title, snippet, url}], result_count}."
+            )
+
         return ToolMetadata(
             name="web_search",
-            version="3.0.0",
-            description=f"Search the web using {provider_name}. Results are LEADS - verify key facts via web_fetch. Mark aggregator/marketing/speculative content.",
+            version="3.1.0",
+            description=desc,
             category="search",
             author="Shannon",
             requires_auth=True,
@@ -861,61 +1008,120 @@ class WebSearchTool(Tool):
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
-        return [
+        # Base parameters (common to all providers)
+        params = [
             ToolParameter(
                 name="query",
                 type=ToolParameterType.STRING,
-                description="The search query",
+                description=(
+                    "Search query. Supports operators: site:, inurl:, intitle:. "
+                    "Examples: 'OpenAI GPT-4', 'site:github.com transformer'"
+                ),
                 required=True,
             ),
             ToolParameter(
                 name="max_results",
                 type=ToolParameterType.INTEGER,
-                description="Maximum number of results to return (Exa: up to 100 for neural search, 10 for keyword)",
+                description="Maximum results to return (1-100). Default: 10",
                 required=False,
                 default=10,
                 min_value=1,
                 max_value=100,
             ),
-            ToolParameter(
-                name="search_type",
-                type=ToolParameterType.STRING,
-                description=(
-                    "Search mode (Exa only). Preferred values: "
-                    "'neural' (semantic search), 'keyword' (exact match), or 'auto' (automatic selection). "
-                    "Invalid values will automatically fall back to 'auto'. Default: 'auto'"
+        ]
+
+        # SerpAPI-specific parameters
+        if isinstance(self.provider, SerpAPISearchProvider):
+            params.extend([
+                ToolParameter(
+                    name="engine",
+                    type=ToolParameterType.STRING,
+                    description=(
+                        "Search engine: google (default), bing, baidu, "
+                        "google_scholar, youtube, google_news, google_finance, google_finance_markets."
+                    ),
+                    required=False,
+                    default="google",
                 ),
-                required=False,
-                default="auto",
-            ),
-            ToolParameter(
-                name="category",
-                type=ToolParameterType.STRING,
-                description="Content category filter (Exa only): company, research paper, news, pdf, github, tweet, personal site, linkedin, financial report",
-                required=False,
-            ),
+                ToolParameter(
+                    name="gl",
+                    type=ToolParameterType.STRING,
+                    description="Country code for geo-targeted results (e.g., 'jp', 'cn', 'us', 'de')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="hl",
+                    type=ToolParameterType.STRING,
+                    description="Language code for results (e.g., 'ja', 'zh-CN', 'en')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="location",
+                    type=ToolParameterType.STRING,
+                    description="City-level location (e.g., 'Tokyo, Japan', 'Shanghai, China')",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="time_filter",
+                    type=ToolParameterType.STRING,
+                    description="Recency filter: 'day', 'week', 'month', 'year'",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="window",
+                    type=ToolParameterType.STRING,
+                    description="Time window for google_finance: '1D', '5D', '1M', '6M', 'YTD', '1Y', '5Y', 'MAX'",
+                    required=False,
+                ),
+                ToolParameter(
+                    name="trend",
+                    type=ToolParameterType.STRING,
+                    description="Market trend type for google_finance_markets: 'indexes', 'most-active', 'gainers', 'losers', 'cryptocurrencies', 'currencies'",
+                    required=False,
+                ),
+            ])
+
+        # Exa-specific parameters
+        elif isinstance(self.provider, ExaSearchProvider):
+            params.extend([
+                ToolParameter(
+                    name="search_type",
+                    type=ToolParameterType.STRING,
+                    description="Search mode: 'neural' (semantic), 'keyword' (exact), 'auto' (default)",
+                    required=False,
+                    default="auto",
+                ),
+                ToolParameter(
+                    name="category",
+                    type=ToolParameterType.STRING,
+                    description=(
+                        "Content category: company, research paper, news, pdf, "
+                        "github, tweet, linkedin, financial report"
+                    ),
+                    required=False,
+                ),
+            ])
+
+        # Common advanced parameters (all providers)
+        params.extend([
             ToolParameter(
                 name="source_type",
                 type=ToolParameterType.STRING,
                 description=(
-                    "Deep Research 2.0 source type for intelligent routing. "
-                    "Values: 'official' (company sites, .gov, .edu), 'aggregator' (crunchbase, wikipedia), "
-                    "'news' (recent articles), 'academic' (arxiv, papers), 'github', 'financial', "
-                    "'local_cn' (Chinese sources), 'local_jp' (Japanese sources). "
-                    "When set, overrides category with appropriate Exa settings."
+                    "Source routing for Deep Research: official, aggregator, news, "
+                    "academic, github, financial, local_cn, local_jp"
                 ),
                 required=False,
             ),
             ToolParameter(
                 name="site_filter",
                 type=ToolParameterType.STRING,
-                description=(
-                    "Restrict search to specific sites. Comma-separated list of domains "
-                    "(e.g., 'crunchbase.com,linkedin.com'). Used with source_type for targeted searches."
-                ),
+                description="Restrict to domains (e.g., 'crunchbase.com,linkedin.com')",
                 required=False,
             ),
-        ]
+        ])
+
+        return params
 
     async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
         """
@@ -1124,11 +1330,93 @@ class WebSearchTool(Tool):
                 except Exception:
                     pass
 
-            # Pass Exa-specific parameters if using ExaSearchProvider
+            # Pass provider-specific parameters
             if isinstance(self.provider, ExaSearchProvider):
                 results = await self.provider.search(
                     query, max_results, search_type=search_type, category=category
                 )
+            elif isinstance(self.provider, SerpAPISearchProvider):
+                # Extract and validate SerpAPI-specific parameters
+                engine = kwargs.get("engine", "google")
+                gl = kwargs.get("gl")
+                hl = kwargs.get("hl")
+                location = kwargs.get("location")
+                time_filter = kwargs.get("time_filter")
+                window = kwargs.get("window")
+                trend = kwargs.get("trend")
+
+                # Validate engine
+                valid_engines = {
+                    "google", "bing", "baidu", "google_scholar",
+                    "youtube", "google_news", "google_finance", "google_finance_markets"
+                }
+                if engine not in valid_engines:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid engine '{engine}'. Valid options: {', '.join(sorted(valid_engines))}",
+                    )
+
+                # Validate time_filter
+                valid_time_filters = {"day", "week", "month", "year"}
+                if time_filter and time_filter not in valid_time_filters:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid time_filter '{time_filter}'. Valid options: {', '.join(sorted(valid_time_filters))}",
+                    )
+
+                # Validate window (for google_finance)
+                valid_windows = {"1D", "5D", "1M", "6M", "YTD", "1Y", "5Y", "MAX"}
+                if window and window not in valid_windows:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid window '{window}'. Valid options: {', '.join(sorted(valid_windows))}",
+                    )
+
+                # Validate trend (for google_finance_markets)
+                valid_trends = {"indexes", "most-active", "gainers", "losers", "climate-leaders", "crypto", "currencies"}
+                if trend and trend not in valid_trends:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Invalid trend '{trend}'. Valid options: {', '.join(sorted(valid_trends))}",
+                    )
+
+                # Sanitize location (basic alphanumeric + spaces/commas only)
+                if location:
+                    if not re.match(r"^[\w\s,.-]+$", location):
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error="Invalid location format. Use alphanumeric characters, spaces, commas, periods, and hyphens only.",
+                        )
+
+                # Build extra params dict
+                extra_params: Dict[str, Any] = {}
+                if gl:
+                    # Basic validation: 2-letter country code
+                    if len(gl) == 2 and gl.isalpha():
+                        extra_params["gl"] = gl.lower()
+                if hl:
+                    # Basic validation: language code format (e.g., "en", "zh-CN")
+                    if re.match(r"^[a-z]{2}(-[A-Z]{2})?$", hl):
+                        extra_params["hl"] = hl
+                if location:
+                    extra_params["location"] = location
+                if time_filter:
+                    tbs_map = {"day": "qdr:d", "week": "qdr:w", "month": "qdr:m", "year": "qdr:y"}
+                    extra_params["tbs"] = tbs_map[time_filter]
+
+                # Google Finance specific parameters
+                if engine == "google_finance" and window:
+                    extra_params["window"] = window
+                if engine == "google_finance_markets" and trend:
+                    extra_params["trend"] = trend
+
+                # Pass engine as parameter instead of mutating provider state
+                results = await self.provider.search(query, max_results, engine=engine, **extra_params)
             else:
                 results = await self.provider.search(query, max_results)
 
