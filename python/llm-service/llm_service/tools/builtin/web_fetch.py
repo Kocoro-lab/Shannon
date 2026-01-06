@@ -862,17 +862,16 @@ class WebFetchTool(Tool):
 
         return ToolMetadata(
             name="web_fetch",
-            version="3.0.0",  # Bumped for single-page focus
+            version="3.1.0",  # Bumped for batch URL support
             description=(
-                "Fetch full content from a single web page for detailed analysis. "
-                "Returns clean markdown text from the specified URL. "
-                "Use after web_search to read a specific page."
-                "\n\n"
-                "Returns: {url, title, content, method, word_count, char_count}."
-                "\n\n"
-                "For fetching MULTIPLE pages from a website, use:\n"
-                "• web_subpage_fetch: Targeted multi-page with path selection (Map + Scrape)\n"
-                "• web_crawl: Exploratory crawl for unknown structure"
+                "Fetch content from web pages. Supports single URL or batch mode.\n\n"
+                "SINGLE PAGE: web_fetch(url=\"https://...\")\n"
+                "BATCH MODE: web_fetch(urls=[\"https://...\", \"https://...\"])\n\n"
+                "BEST PRACTICE: After web_search returns multiple URLs, use urls=[] "
+                "to fetch them all at once instead of calling web_fetch multiple times.\n\n"
+                "Returns:\n"
+                "- Single mode: {url, title, content, method, word_count, char_count}\n"
+                "- Batch mode: {pages[], succeeded, failed, total_chars, partial_success}"
             ),
             category="retrieval",
             author="Shannon",
@@ -890,17 +889,46 @@ class WebFetchTool(Tool):
             ToolParameter(
                 name="url",
                 type=ToolParameterType.STRING,
-                description="URL of the page to fetch",
-                required=True,
+                description="Single URL to fetch. Use this OR urls[], not both.",
+                required=False,  # Now optional - either url or urls required
+            ),
+            ToolParameter(
+                name="urls",
+                type=ToolParameterType.ARRAY,
+                description=(
+                    "Multiple URLs to fetch in parallel. "
+                    "Use this when you have 2+ URLs from web_search results. "
+                    "Example: [\"https://example.com/page1\", \"https://example.com/page2\"]. "
+                    "Use urls=[] OR url=, not both."
+                ),
+                required=False,
             ),
             ToolParameter(
                 name="max_length",
                 type=ToolParameterType.INTEGER,
-                description="Maximum content length in characters (for LLM context efficiency)",
+                description="Max chars per page (batch mode: total budget divided among pages)",
                 required=False,
                 default=10000,
                 min_value=1000,
                 max_value=50000,
+            ),
+            ToolParameter(
+                name="concurrency",
+                type=ToolParameterType.INTEGER,
+                description="Max concurrent fetches for batch mode (default: 3)",
+                required=False,
+                default=3,
+                min_value=1,
+                max_value=10,
+            ),
+            ToolParameter(
+                name="total_chars_cap",
+                type=ToolParameterType.INTEGER,
+                description="Max total chars for batch mode (default: 40000)",
+                required=False,
+                default=40000,
+                min_value=5000,
+                max_value=100000,
             ),
             # DEPRECATED: Keep for backward compatibility with Go orchestrator
             # These will be removed in a future version
@@ -942,6 +970,30 @@ class WebFetchTool(Tool):
         """Execute web content fetch using selected provider."""
 
         url = kwargs.get("url")
+        urls = kwargs.get("urls")
+
+        # Parameter validation: require url OR urls, not both, not neither
+        if not url and not urls:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Must provide url or urls parameter"
+            )
+        if url and urls:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Provide url OR urls, not both"
+            )
+
+        # Batch mode: delegate to _fetch_batch
+        if urls:
+            logger.info(f"Batch fetch mode: {len(urls)} URLs")
+            # Remove urls from kwargs to avoid duplicate argument error
+            batch_kwargs = {k: v for k, v in kwargs.items() if k not in ('url', 'urls')}
+            return await self._fetch_batch(urls, session_context=session_context, **batch_kwargs)
+
+        # Single URL mode (existing logic below)
         # Provider is now controlled by WEB_FETCH_PROVIDER env var only
         provider_name = self.default_provider
         max_length = kwargs.get("max_length", 10000)
@@ -1175,6 +1227,189 @@ class WebFetchTool(Tool):
 
         # Default fallback
         return self.default_provider if self.default_provider != "auto" else "python"
+
+    async def _fetch_batch(
+        self,
+        urls: List[str],
+        session_context: Optional[Dict] = None,
+        **kwargs
+    ) -> ToolResult:
+        """
+        Fetch multiple URLs in parallel with concurrency control.
+
+        Args:
+            urls: List of URLs to fetch
+            session_context: Optional session context
+            **kwargs: Additional parameters (max_length, concurrency, total_chars_cap)
+
+        Returns:
+            ToolResult with aggregated results:
+            - pages[]: Array of {url, success, title, content, error}
+            - succeeded: Count of successful fetches
+            - failed: Count of failed fetches
+            - total_chars: Total characters fetched
+            - partial_success: True if some succeeded and some failed
+        """
+        max_length = kwargs.get("max_length", 10000)
+        concurrency = kwargs.get("concurrency", 3)
+        total_chars_cap = kwargs.get("total_chars_cap", 40000)
+
+        # Validate URLs list
+        if not urls or not isinstance(urls, list):
+            return ToolResult(
+                success=False,
+                output=None,
+                error="urls must be a non-empty list"
+            )
+
+        # Filter and validate individual URLs
+        valid_urls = []
+        for u in urls:
+            if not isinstance(u, str) or not u.strip():
+                logger.warning(f"Skipping invalid URL in batch: {u}")
+                continue
+            # Basic URL validation
+            try:
+                parsed = urlparse(u)
+                if parsed.scheme in ("http", "https") and parsed.netloc:
+                    valid_urls.append(u.strip())
+                else:
+                    logger.warning(f"Skipping non-HTTP URL: {u}")
+            except Exception:
+                logger.warning(f"Skipping malformed URL: {u}")
+
+        if not valid_urls:
+            return ToolResult(
+                success=False,
+                output=None,
+                error="No valid URLs in batch"
+            )
+
+        logger.info(f"Batch fetching {len(valid_urls)} URLs (concurrency={concurrency})")
+
+        # Calculate per-URL budget (divide total budget among URLs)
+        per_url_budget = max(max_length // len(valid_urls), 2000)
+
+        # Concurrency control
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def fetch_one(url: str) -> Dict[str, Any]:
+            """Fetch a single URL with semaphore control."""
+            async with semaphore:
+                try:
+                    # Call the existing single-URL fetch logic
+                    result = await self._fetch_pure_python(url, per_url_budget, subpages=0)
+                    if result.success and result.output:
+                        return {
+                            "url": result.output.get("url", url),
+                            "success": True,
+                            "title": result.output.get("title", ""),
+                            "content": result.output.get("content", ""),
+                            "char_count": len(result.output.get("content", "")),
+                        }
+                    else:
+                        return {
+                            "url": url,
+                            "success": False,
+                            "error": result.error or "Unknown error",
+                        }
+                except Exception as e:
+                    logger.error(f"Batch fetch error for {url}: {e}")
+                    return {
+                        "url": url,
+                        "success": False,
+                        "error": str(e),
+                    }
+
+        # Execute all fetches concurrently
+        results = await asyncio.gather(
+            *[fetch_one(u) for u in valid_urls],
+            return_exceptions=True
+        )
+
+        # Aggregate results
+        pages = []
+        succeeded = 0
+        failed = 0
+        total_chars = 0
+        urls_succeeded = []
+        urls_failed = []
+
+        for i, result in enumerate(results):
+            url = valid_urls[i]
+
+            # Handle exceptions from gather
+            if isinstance(result, Exception):
+                pages.append({
+                    "url": url,
+                    "success": False,
+                    "error": str(result),
+                })
+                failed += 1
+                urls_failed.append({"url": url, "reason": str(result)})
+                continue
+
+            pages.append(result)
+
+            if result.get("success"):
+                succeeded += 1
+                urls_succeeded.append(url)
+                content_len = result.get("char_count", 0)
+                total_chars += content_len
+
+                # Check total chars cap
+                if total_chars >= total_chars_cap:
+                    logger.info(
+                        f"Reached total_chars_cap ({total_chars_cap}), "
+                        f"stopping at {i + 1}/{len(valid_urls)} URLs"
+                    )
+                    # Mark remaining URLs as skipped
+                    for remaining_url in valid_urls[i + 1:]:
+                        pages.append({
+                            "url": remaining_url,
+                            "success": False,
+                            "error": "Skipped: total_chars_cap reached",
+                        })
+                        failed += 1
+                        urls_failed.append({
+                            "url": remaining_url,
+                            "reason": "total_chars_cap reached"
+                        })
+                    break
+            else:
+                failed += 1
+                urls_failed.append({
+                    "url": url,
+                    "reason": result.get("error", "Unknown")
+                })
+
+        # Build output
+        output = {
+            "pages": pages,
+            "succeeded": succeeded,
+            "failed": failed,
+            "total_chars": total_chars,
+            "partial_success": succeeded > 0 and failed > 0,
+        }
+
+        # Build metadata
+        metadata = {
+            "fetch_method": "batch",
+            "urls_requested": urls,
+            "urls_attempted": valid_urls,
+            "urls_succeeded": urls_succeeded,
+            "urls_failed": urls_failed,
+            "concurrency": concurrency,
+            "per_url_budget": per_url_budget,
+            "total_chars_cap": total_chars_cap,
+        }
+
+        return ToolResult(
+            success=succeeded > 0,
+            output=output,
+            error=None if succeeded > 0 else "All URLs failed to fetch",
+            metadata=metadata,
+        )
 
     def _normalize_url(self, url: str) -> str:
         """
