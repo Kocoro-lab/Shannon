@@ -23,12 +23,18 @@ _PRESETS: Dict[str, Dict[str, object]] = {
             "You are a research assistant. Gather facts from authoritative sources and "
             "summarize objectively. Mention sources naturally (e.g., 'According to Reuters...') "
             "but do NOT add [n] citation markers - these will be added automatically later."
+            "\n\nTool usage: call tools via native function calling (no XML stubs). When you have multiple URLs, prefer web_fetch with urls=[...] to batch fetch. Do not self-report tool/provider usage in text; the system records it."
         ),
         "allowed_tools": ["web_search", "web_fetch", "web_subpage_fetch", "web_crawl"],
         "caps": {"max_tokens": 16000, "temperature": 0.3},
     },
     "deep_research_agent": {
         "system_prompt": """You are an expert research assistant conducting deep investigation on the user's topic.
+
+# Tool Usage (Very Important):
+- Invoke tools only via native function calling (no XML/JSON stubs like <web_fetch> or <function_calls>).
+- When web_search returns multiple relevant URLs, prefer calling web_fetch with urls=[...] to batch-fetch evidence.
+- Do not claim in text which tools/providers you used; tool usage is recorded by the system.
 
 # Temporal Awareness:
 - The current date is provided at the start of this prompt; use it as your temporal reference.
