@@ -910,6 +910,26 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		)
 	}
 
+	// Research mode guard: If web_search is suggested but no fetch tools, add web_fetch
+	// This ensures DR policy can execute search→fetch chain even if decomposition only suggested search
+	isResearchMode := false
+	if input.Context != nil {
+		if util.GetContextBool(input.Context, "force_research") {
+			isResearchMode = true
+		} else if rs, ok := input.Context["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+			isResearchMode = true
+		} else if rm, ok := input.Context["research_mode"].(string); ok && strings.TrimSpace(rm) != "" {
+			isResearchMode = true
+		}
+	}
+	if isResearchMode && hasWebSearch && !hasWebFetch {
+		allowedByRole = append(allowedByRole, "web_fetch", "web_subpage_fetch")
+		logger.Info("Research mode: Added web_fetch alongside web_search to enable search→fetch chain",
+			zap.String("agent_id", input.AgentID),
+			zap.Strings("final_tools", allowedByRole),
+		)
+	}
+
 	// Pass tool parameters to context if provided and valid
 	if len(input.ToolParameters) > 0 {
 		// Check if tool parameters have required fields

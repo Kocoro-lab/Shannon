@@ -319,7 +319,9 @@ async def agent_query(request: Request, query: AgentQuery):
 
 
                 # Add research-mode instruction for deep content retrieval
-                if isinstance(query.context, dict):
+                # EXCEPTION: Do NOT inject for REASON steps (no tools, pure reasoning)
+                is_reason_step = query.query.strip().startswith("REASON (")
+                if isinstance(query.context, dict) and not is_reason_step:
                     is_research = (
                         query.context.get("force_research")
                         or query.context.get("research_strategy")
@@ -366,6 +368,18 @@ async def agent_query(request: Request, query: AgentQuery):
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
+
+                # REASON step: Add explicit instruction to prevent stub output
+                if is_reason_step:
+                    reason_instruction = (
+                        "\n\nIMPORTANT: This is a REASONING step. You have NO tools available."
+                        "\n- Output ONLY your reasoning and decision (search/no_search)."
+                        "\n- Do NOT output any tool calls, XML tags, JSON, or function call stubs."
+                        "\n- Do NOT use <function_calls>, <invoke>, <web_fetch>, or similar markup."
+                        "\n- Simply provide your reasoning in plain text."
+                    )
+                    system_prompt = system_prompt + reason_instruction
+                    logger.info("Applied REASON step instruction (no tools, no stubs)")
 
                 # Deep Research 2.0: Add task contract instructions if present in context
                 if isinstance(query.context, dict):
@@ -569,15 +583,27 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 registry = get_registry()
                 # Use preset only if allowed_tools is None (not provided), not if it's [] (explicitly empty)
-                # EXCEPTION: If a role preset is active and allowed_tools is [], treat as None (use role preset's tools)
-                # This handles the bypass decomposition case where orchestrator passes [] but role defines tools
+                # IMPORTANT: allowed_tools=[] means "explicitly no tools" - do NOT override with preset
+                # This is critical for REASON steps in ReactLoop which must not have tools available
                 requested = query.allowed_tools
                 preset_allowed = list(preset.get("allowed_tools", []))
 
-                # If requested is explicitly empty [] AND role preset has tools, use preset tools
-                if requested is not None and len(requested) == 0 and preset and len(preset_allowed) > 0:
-                    logger.info(f"Role preset active with empty allowed_tools - using role preset tools: {preset_allowed}")
-                    requested = None  # Treat as if not provided
+                # Check for explicit "use preset tools" flag in context (opt-in bypass)
+                use_preset_tools_override = (
+                    isinstance(query.context, dict)
+                    and query.context.get("use_preset_tools") is True
+                )
+
+                # Only use preset if:
+                # 1. requested is None (not provided), OR
+                # 2. explicit use_preset_tools=True override in context
+                if requested is not None and len(requested) == 0:
+                    if use_preset_tools_override and preset and len(preset_allowed) > 0:
+                        logger.info(f"Explicit use_preset_tools override - using role preset tools: {preset_allowed}")
+                        requested = None
+                    else:
+                        # allowed_tools=[] explicitly means NO tools - respect this
+                        logger.info("allowed_tools=[] explicitly set - no tools will be available")
 
                 if requested is None:
                     base = preset_allowed
@@ -1063,6 +1089,72 @@ async def agent_query(request: Request, query: AgentQuery):
                 result_data = interpretation_result
             else:
                 result_data = last_result_data or {}
+
+            # Stub Guard: Clean any pseudo tool-call stubs from final output
+            # These can appear when LLM outputs XML/JSON tool calls instead of native function calling
+            stub_patterns = [
+                r"<function_calls>",
+                r"<invoke\s",
+                r"</invoke>",
+                r"<web_fetch[>\s]",
+                r"<web_search[>\s]",
+                r"<web_crawl[>\s]",
+                r'"tool"\s*:\s*"web_',
+                r'"name"\s*:\s*"web_',
+            ]
+            import re as _re
+            stub_detected = any(_re.search(p, str(response_text), _re.IGNORECASE) for p in stub_patterns)
+
+            if stub_detected:
+                logger.warning("Stub Guard: detected pseudo tool-call stub in response, running interpretation pass")
+                try:
+                    # Run interpretation pass to get clean final answer
+                    stub_cleanup_result = await request.app.state.providers.generate_completion(
+                        messages=messages + [
+                            {"role": "assistant", "content": str(response_text)},
+                            {"role": "user", "content": (
+                                "Your previous response contained tool call markup (XML tags or JSON) that should not appear in the final output. "
+                                "Please provide your final answer in clean text without any <function_calls>, <invoke>, <web_fetch>, or similar markup. "
+                                "Summarize any tool results you mentioned and provide a direct answer."
+                            )}
+                        ],
+                        tier=tier,
+                        specific_model=model_override,
+                        provider_override=provider_override,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                        tools=None,  # No tools for cleanup pass
+                        workflow_id=request.headers.get("X-Workflow-ID")
+                        or request.headers.get("x-workflow-id"),
+                        agent_id=query.agent_id,
+                    )
+                    cleaned_text = stub_cleanup_result.get("output_text", "")
+                    if cleaned_text and not any(_re.search(p, cleaned_text, _re.IGNORECASE) for p in stub_patterns):
+                        response_text = cleaned_text
+                        logger.info("Stub Guard: successfully cleaned response via interpretation pass")
+                        # Update token counts
+                        cleanup_usage = stub_cleanup_result.get("usage", {}) or {}
+                        try:
+                            total_tokens += int(cleanup_usage.get("total_tokens") or 0)
+                            total_input_tokens += int(cleanup_usage.get("input_tokens") or 0)
+                            total_output_tokens += int(cleanup_usage.get("output_tokens") or 0)
+                            total_cost_usd += float(cleanup_usage.get("cost_usd") or 0.0)
+                        except Exception:
+                            pass
+                    else:
+                        # Fallback: strip stub patterns via regex
+                        logger.warning("Stub Guard: interpretation pass still contains stubs, falling back to regex strip")
+                        response_text = _re.sub(r"<function_calls>[\s\S]*?</function_calls>", "", str(response_text))
+                        response_text = _re.sub(r"<invoke[\s\S]*?</invoke>", "", response_text)
+                        response_text = _re.sub(r"<web_fetch[\s\S]*?>[\s\S]*?(?:</web_fetch>)?", "", response_text)
+                        response_text = _re.sub(r"<web_search[\s\S]*?>[\s\S]*?(?:</web_search>)?", "", response_text)
+                        response_text = response_text.strip()
+                except Exception as e:
+                    logger.error(f"Stub Guard cleanup failed: {e}, falling back to regex strip")
+                    response_text = _re.sub(r"<function_calls>[\s\S]*?</function_calls>", "", str(response_text))
+                    response_text = _re.sub(r"<invoke[\s\S]*?</invoke>", "", response_text)
+                    response_text = response_text.strip()
 
             result = {
                 "response": response_text,

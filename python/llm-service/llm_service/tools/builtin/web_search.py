@@ -595,6 +595,34 @@ class SerpAPISearchProvider(WebSearchProvider):
 
                     return results[:max_results]
 
+                # Handle Google News special response format
+                if effective_engine == "google_news":
+                    # Google News returns results in news_results, not organic_results
+                    news_results = data.get("news_results", [])
+
+                    # Fallback to top_stories if news_results is empty
+                    if not news_results:
+                        news_results = data.get("top_stories", [])
+
+                    for result in news_results:
+                        results.append(
+                            {
+                                "title": result.get("title", ""),
+                                "snippet": result.get("snippet", result.get("date", "")),
+                                "content": result.get("snippet", ""),
+                                "url": result.get("link", ""),
+                                "source": "serpapi_news",
+                                "position": result.get("position", 0),
+                                "date": result.get("date"),
+                                "news_source": result.get("source", {}).get("name", "") if isinstance(result.get("source"), dict) else result.get("source", ""),
+                                "thumbnail": result.get("thumbnail"),
+                            }
+                        )
+
+                    # Ensure we don't exceed max_results
+                    results = results[:max_results]
+                    return results
+
                 # Process organic search results (note: organic_results not organic!)
                 for result in data.get("organic_results", []):
                     results.append(
@@ -1421,13 +1449,35 @@ class WebSearchTool(Tool):
                 results = await self.provider.search(query, max_results)
 
             if not results:
+                # Provide specific empty result reason instead of generic "knowledge cutoff" narrative
+                provider_name = self.provider.__class__.__name__
+                engine_info = kwargs.get("engine", "google") if isinstance(self.provider, SerpAPISearchProvider) else "default"
+
+                empty_reason = f"Search returned no results. Provider: {provider_name}, Engine: {engine_info}, Query: '{query[:100]}...'"
+
+                # Suggest troubleshooting steps
+                suggestions = []
+                if "google_news" in engine_info:
+                    suggestions.append("Try broader search terms or different time filters")
+                    suggestions.append("News results may be limited for this topic/region")
+                elif "google_finance" in engine_info:
+                    suggestions.append("Ensure ticker format is correct (e.g., 'GOOGL:NASDAQ')")
+                else:
+                    suggestions.append("Try rephrasing the query or using different keywords")
+                    suggestions.append("Try a different search engine (bing, baidu)")
+
+                logger.warning(f"Empty search results: {empty_reason}")
+
                 return ToolResult(
-                    success=True,
+                    success=True,  # Search executed successfully, just no results
                     output=[],
                     metadata={
                         "query": query,
-                        "provider": self.provider.__class__.__name__,
+                        "provider": provider_name,
                         "result_count": 0,
+                        "empty_reason": empty_reason,
+                        "suggestions": suggestions,
+                        "note": "Search returned empty results. This is NOT a knowledge cutoff issue - the search was executed but found no matching content.",
                     },
                 )
 
