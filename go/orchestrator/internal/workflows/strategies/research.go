@@ -2919,7 +2919,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 		var citationResult activities.CitationAgentResult
 		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 180 * time.Second,
+			StartToCloseTimeout: 360 * time.Second, // Extended for long reports with medium tier
 			RetryPolicy: &temporal.RetryPolicy{
 				InitialInterval:    time.Second,
 				BackoffCoefficient: 2.0,

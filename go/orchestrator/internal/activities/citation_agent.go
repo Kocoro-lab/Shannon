@@ -119,8 +119,15 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Dynamic timeout based on report length: base 120s + 30s per 1000 chars, max 300s
+	reportLen := len(input.Report)
+	timeoutSec := 120 + (reportLen/1000)*30
+	if timeoutSec > 300 {
+		timeoutSec = 300
+	}
+
 	client := &http.Client{
-		Timeout:   150 * time.Second,
+		Timeout:   time.Duration(timeoutSec) * time.Second,
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 
@@ -183,7 +190,10 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 	// Extract cited report from tags
 	citedReport := extractCitedReport(llmResp.Response)
 	if citedReport == "" {
-		citedReport = llmResp.Response // Fallback to raw response
+		// Fallback: clean any partial tags from raw response
+		citedReport = strings.ReplaceAll(llmResp.Response, "<cited_report>", "")
+		citedReport = strings.ReplaceAll(citedReport, "</cited_report>", "")
+		citedReport = strings.TrimSpace(citedReport)
 	}
 
 	result := &CitationAgentResult{
