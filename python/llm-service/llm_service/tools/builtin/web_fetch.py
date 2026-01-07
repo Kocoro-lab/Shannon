@@ -35,6 +35,44 @@ MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  #
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
 
 
+def sanitize_snippet(content: str, title: str, max_len: int = 500) -> str:
+    """
+    Sanitize and truncate content for use as a citation snippet.
+
+    Avoids noise from navigation menus, UI elements, etc.
+
+    Args:
+        content: The raw content to create snippet from
+        title: Fallback title if content is unusable
+        max_len: Maximum snippet length (default 500)
+
+    Returns:
+        A clean snippet string
+    """
+    # Fallback to title if content is too short or empty
+    if not content or len(content.strip()) < 50:
+        return title or ""
+
+    snippet = content[:max_len]
+
+    # Try to truncate at sentence boundary for cleaner snippets
+    # Look for sentence endings: '. ', '! ', '? '
+    for end_marker in ['. ', '! ', '? ', '。', '！', '？']:
+        last_idx = snippet.rfind(end_marker)
+        if last_idx > 100:  # Keep at least 100 chars
+            snippet = snippet[:last_idx + len(end_marker)]
+            break
+
+    # Check for navigation-heavy content (many list items)
+    lines = snippet.split('\n')
+    nav_count = sum(1 for line in lines if line.strip().startswith(('-', '*', '•')))
+    if len(lines) > 3 and nav_count / len(lines) > 0.4:
+        # Too navigation-heavy, use title instead
+        return title or snippet[:200]
+
+    return snippet.strip()
+
+
 class FetchProvider(Enum):
     """Available fetch providers"""
     EXA = "exa"
@@ -282,7 +320,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     "url": result_data.get("url", url),
                     "title": title,
                     "content": content,
-                    "snippet": content[:500] if content else title,  # For citation extraction
+                    "snippet": sanitize_snippet(content, title),  # For citation extraction
                     "author": result_data.get("metadata", {}).get("author"),
                     "published_date": result_data.get("metadata", {}).get("publishedDate"),
                     "word_count": len(content.split()),
@@ -1858,7 +1896,7 @@ class WebFetchTool(Tool):
                         "url": str(response.url),  # Final URL after redirects
                         "title": title,
                         "content": markdown,
-                        "snippet": markdown[:500] if markdown else title,  # For citation extraction
+                        "snippet": sanitize_snippet(markdown, title),  # For citation extraction
                         "author": author,
                         "published_date": published_date,
                         "word_count": len(markdown.split()),
@@ -2018,7 +2056,7 @@ class WebFetchTool(Tool):
                                 "url": result.get("url", url),
                                 "title": exa_title,
                                 "content": content,
-                                "snippet": content[:500] if content else exa_title,  # For citation extraction
+                                "snippet": sanitize_snippet(content, exa_title),  # For citation extraction
                                 "author": result.get("author"),
                                 "published_date": result.get("publishedDate"),
                                 "word_count": len(content.split()),

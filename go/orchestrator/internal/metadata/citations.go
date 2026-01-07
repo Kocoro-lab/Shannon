@@ -1526,5 +1526,36 @@ func shouldSkipURL(urlStr string) bool {
 		}
 	}
 
+	// Skip low-value page types (authentication, search, error, legal, forms)
+	lowValuePatterns := []string{
+		// Authentication pages
+		"/login", "/signin", "/sign-in", "/auth",
+		"/register", "/signup", "/sign-up",
+		"/logout", "/signout", "/sign-out",
+		// Search/results pages (usually not useful as citations)
+		"/search", "/results",
+		// Error pages
+		"/404", "/error", "not-found", "/500",
+		// Legal/policy pages (boilerplate, not useful for research)
+		"/terms", "/tos", "/terms-of-service",
+		"/privacy", "/privacy-policy",
+		"/legal", "/legal-notice",
+		"/cookie", "/cookies",
+		// Contact/form pages (mostly forms, not content)
+		"/contact", "/contact-us", "/get-in-touch",
+		"/support", "/help",
+	}
+
+	for _, pattern := range lowValuePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+
+	// Skip URLs with search query parameters
+	if strings.Contains(lower, "?q=") || strings.Contains(lower, "?search=") || strings.Contains(lower, "?query=") {
+		return true
+	}
+
 	return false
 }
