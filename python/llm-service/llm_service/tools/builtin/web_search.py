@@ -444,9 +444,6 @@ class SerperSearchProvider(WebSearchProvider):
                         {
                             "title": result.get("title", ""),
                             "snippet": result.get("snippet", ""),
-                            "content": result.get(
-                                "snippet", ""
-                            ),  # Serper doesn't provide full content
                             "url": result.get("link", ""),
                             "source": "serper",
                             "position": result.get("position", 0),
@@ -609,7 +606,6 @@ class SerpAPISearchProvider(WebSearchProvider):
                             {
                                 "title": result.get("title", ""),
                                 "snippet": result.get("snippet", result.get("date", "")),
-                                "content": result.get("snippet", ""),
                                 "url": result.get("link", ""),
                                 "source": "serpapi_news",
                                 "position": result.get("position", 0),
@@ -629,9 +625,6 @@ class SerpAPISearchProvider(WebSearchProvider):
                         {
                             "title": result.get("title", ""),
                             "snippet": result.get("snippet", ""),
-                            "content": result.get(
-                                "snippet", ""
-                            ),  # SerpAPI doesn't provide full content
                             "url": result.get("link", ""),
                             "source": "serpapi",
                             "position": result.get("position", 0),
@@ -724,9 +717,6 @@ class BingSearchProvider(WebSearchProvider):
                         {
                             "title": result.get("name", ""),
                             "snippet": result.get("snippet", ""),
-                            "content": result.get(
-                                "snippet", ""
-                            ),  # Bing doesn't provide full content in search
                             "url": result.get("url", ""),
                             "source": "bing",
                             "display_url": result.get("displayUrl", ""),
