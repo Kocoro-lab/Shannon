@@ -2465,21 +2465,66 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				})
 			}
 
-			// Collect gap-filling results
+			// Collect gap-filling results with value gating (P1-1)
+			// Initialize URL tracking from existing agent results
+			existingURLs := make(map[string]bool)
+			existingDomains := make(map[string]bool)
+			updateExistingURLs(agentResults, existingURLs, existingDomains)
+
+			gapMetrics := GapFillMetrics{TotalAgents: numGapAgents}
+
 			for i := 0; i < numGapAgents; i++ {
 				var payload gapAgentResult
 				gapChan.Receive(ctx, &payload)
+
 				if len(payload.Results) > 0 {
-					agentResults = append(agentResults, payload.Results...)
-					originalAgentResults = append(originalAgentResults, payload.Results...)
-					totalTokens += payload.Tokens
-					gapFillingOccurred = true // Mark that new research was added
+					// Evaluate incremental value before accepting
+					accept, newURLs, newDomains := evaluateGapFillValue(
+						payload.Results, existingURLs, existingDomains,
+					)
+
+					if accept {
+						agentResults = append(agentResults, payload.Results...)
+						originalAgentResults = append(originalAgentResults, payload.Results...)
+						totalTokens += payload.Tokens
+						gapFillingOccurred = true
+
+						gapMetrics.AcceptedAgents++
+						gapMetrics.NewURLsFound += newURLs
+						gapMetrics.NewDomainsFound += newDomains
+
+						// Update tracking sets
+						updateExistingURLs(payload.Results, existingURLs, existingDomains)
+					} else {
+						gapMetrics.SkippedLowValue++
+						logger.Info("Gap-fill result skipped (low incremental value)",
+							"new_urls", newURLs,
+							"new_domains", newDomains,
+							"agent_index", i,
+						)
+					}
+				}
+
+				// Early exit: saturation reached (enough evidence collected)
+				if gapMetrics.NewDomainsFound >= 5 || gapMetrics.NewURLsFound >= 15 {
+					logger.Info("Gap-fill saturation reached, stopping early",
+						"new_domains", gapMetrics.NewDomainsFound,
+						"new_urls", gapMetrics.NewURLsFound,
+						"agents_processed", i+1,
+						"agents_remaining", numGapAgents-i-1,
+					)
+					break
 				}
 			}
 
 			logger.Info("Deep Research 2.0: Gap-filling iteration complete",
 				"iteration", iteration,
 				"total_agent_results", len(agentResults),
+				"gap_agents_total", gapMetrics.TotalAgents,
+				"gap_agents_accepted", gapMetrics.AcceptedAgents,
+				"gap_agents_skipped", gapMetrics.SkippedLowValue,
+				"new_urls_found", gapMetrics.NewURLsFound,
+				"new_domains_found", gapMetrics.NewDomainsFound,
 			)
 		}
 
@@ -3808,3 +3853,100 @@ func validateTaskContracts(subtasks []activities.Subtask, logger simpleLogger) e
 // Note: Post-synthesis language validation was removed.
 // Language handling now occurs earlier (refine stage sets target_language),
 // and the synthesis activity embeds a language instruction.
+
+// ============================================================================
+// Gap-filling Value Gating (P1-1)
+// ============================================================================
+
+// GapFillMetrics tracks gap-filling effectiveness
+type GapFillMetrics struct {
+	TotalAgents     int
+	AcceptedAgents  int
+	SkippedLowValue int
+	NewURLsFound    int
+	NewDomainsFound int
+}
+
+// extractURLsFromAgentResults extracts unique URLs from agent tool executions
+func extractURLsFromAgentResults(results []activities.AgentExecutionResult) []string {
+	urlSet := make(map[string]bool)
+	var urls []string
+
+	for _, r := range results {
+		for _, te := range r.ToolExecutions {
+			// Extract URLs from web_fetch and web_search tool inputs
+			if te.Tool == "web_fetch" || te.Tool == "web_search" {
+				if params, ok := te.InputParams.(map[string]interface{}); ok {
+					if urlStr, ok := params["url"].(string); ok && urlStr != "" {
+						if !urlSet[urlStr] {
+							urlSet[urlStr] = true
+							urls = append(urls, urlStr)
+						}
+					}
+				}
+			}
+
+			// Also extract URLs from tool outputs (search results)
+			if te.Tool == "web_search" && te.Success {
+				if output, ok := te.Output.(map[string]interface{}); ok {
+					if results, ok := output["results"].([]interface{}); ok {
+						for _, result := range results {
+							if resultMap, ok := result.(map[string]interface{}); ok {
+								if urlStr, ok := resultMap["url"].(string); ok && urlStr != "" {
+									if !urlSet[urlStr] {
+										urlSet[urlStr] = true
+										urls = append(urls, urlStr)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return urls
+}
+
+// evaluateGapFillValue determines if gap-fill results add sufficient incremental value
+// Returns: (accept, newURLs, newDomains)
+func evaluateGapFillValue(
+	newResults []activities.AgentExecutionResult,
+	existingURLs map[string]bool,
+	existingDomains map[string]bool,
+) (bool, int, int) {
+	newURLs := 0
+	newDomains := 0
+
+	urls := extractURLsFromAgentResults(newResults)
+	for _, u := range urls {
+		if !existingURLs[u] {
+			newURLs++
+			domain, err := metadata.ExtractDomain(u)
+			if err == nil && domain != "" && !existingDomains[domain] {
+				newDomains++
+			}
+		}
+	}
+
+	// Value gate: accept if at least 2 new URLs OR 1 new domain
+	accept := newURLs >= 2 || newDomains >= 1
+	return accept, newURLs, newDomains
+}
+
+// updateExistingURLs adds URLs from results to the existing sets
+func updateExistingURLs(
+	results []activities.AgentExecutionResult,
+	existingURLs map[string]bool,
+	existingDomains map[string]bool,
+) {
+	urls := extractURLsFromAgentResults(results)
+	for _, u := range urls {
+		existingURLs[u] = true
+		domain, err := metadata.ExtractDomain(u)
+		if err == nil && domain != "" {
+			existingDomains[domain] = true
+		}
+	}
+}

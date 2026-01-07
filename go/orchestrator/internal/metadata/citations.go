@@ -44,6 +44,18 @@ type CitationStats struct {
 	AvgQuality      float64 `json:"avg_quality"`
 	AvgCredibility  float64 `json:"avg_credibility"`
 	SourceDiversity float64 `json:"source_diversity"` // unique_domains / total_sources
+
+	// P1-4: Extended metrics for observability
+	QualityBuckets map[string]int `json:"quality_buckets,omitempty"` // "low", "medium", "high" → count
+	TopDomains     []DomainCount  `json:"top_domains,omitempty"`     // Top 10 domains by count
+	DuplicateURLs  int            `json:"duplicate_urls,omitempty"`  // Number of duplicate URLs removed
+	PerAgentCount  map[string]int `json:"per_agent_count,omitempty"` // agent_id → citation count
+}
+
+// DomainCount represents a domain and its citation count
+type DomainCount struct {
+	Domain string `json:"domain"`
+	Count  int    `json:"count"`
 }
 
 // CredibilityConfig holds domain credibility scoring rules
@@ -1045,7 +1057,34 @@ func CollectCitations(results []interface{}, now time.Time, maxCitations int) ([
 	stats := calculateCitationStats(rankedCitations)
 
 	if isCitationsDebugEnabled() {
-		log.Printf("[citations] final_total=%d unique_domains=%d avg_quality=%.2f avg_cred=%.2f", len(rankedCitations), stats.UniqueDomains, stats.AvgQuality, stats.AvgCredibility)
+		log.Printf("[citations] final_total=%d unique_domains=%d avg_quality=%.2f avg_cred=%.2f",
+			len(rankedCitations), stats.UniqueDomains, stats.AvgQuality, stats.AvgCredibility)
+
+		// P1-4: Extended metrics logging
+		log.Printf("[citations] quality_buckets: low=%d medium=%d high=%d",
+			stats.QualityBuckets["low"], stats.QualityBuckets["medium"], stats.QualityBuckets["high"])
+
+		if len(stats.TopDomains) > 0 {
+			var topDomainsStr string
+			for i, d := range stats.TopDomains {
+				if i > 0 {
+					topDomainsStr += ", "
+				}
+				topDomainsStr += fmt.Sprintf("%s(%d)", d.Domain, d.Count)
+				if i >= 4 { // Show top 5 in log
+					break
+				}
+			}
+			log.Printf("[citations] top_domains: %s", topDomainsStr)
+		}
+
+		if len(stats.PerAgentCount) > 0 {
+			log.Printf("[citations] per_agent_count: %v", stats.PerAgentCount)
+		}
+
+		if stats.DuplicateURLs > 0 {
+			log.Printf("[citations] duplicate_urls_removed=%d", stats.DuplicateURLs)
+		}
 	}
 
 	return rankedCitations, stats
@@ -1271,14 +1310,44 @@ func calculateCitationStats(citations []Citation) CitationStats {
 	}
 
 	uniqueDomains := make(map[string]bool)
+	domainCounts := make(map[string]int)
+	perAgentCount := make(map[string]int)
+	qualityBuckets := map[string]int{"low": 0, "medium": 0, "high": 0}
+	urlSet := make(map[string]bool)
+	duplicateURLs := 0
 	totalQuality := 0.0
 	totalCredibility := 0.0
 
 	for _, c := range citations {
 		uniqueDomains[c.Source] = true
+		domainCounts[c.Source]++
 		totalQuality += c.QualityScore
 		totalCredibility += c.CredibilityScore
+
+		// P1-4: Quality buckets
+		switch {
+		case c.QualityScore < 0.3:
+			qualityBuckets["low"]++
+		case c.QualityScore < 0.6:
+			qualityBuckets["medium"]++
+		default:
+			qualityBuckets["high"]++
+		}
+
+		// P1-4: Duplicate URL tracking
+		if urlSet[c.URL] {
+			duplicateURLs++
+		}
+		urlSet[c.URL] = true
+
+		// P1-4: Per-agent count
+		if c.AgentID != "" {
+			perAgentCount[c.AgentID]++
+		}
 	}
+
+	// P1-4: Top domains (sorted by count, top 10)
+	topDomains := getTopDomains(domainCounts, 10)
 
 	return CitationStats{
 		TotalSources:    len(citations),
@@ -1286,7 +1355,31 @@ func calculateCitationStats(citations []Citation) CitationStats {
 		AvgQuality:      totalQuality / float64(len(citations)),
 		AvgCredibility:  totalCredibility / float64(len(citations)),
 		SourceDiversity: CalculateSourceDiversity(citations),
+		QualityBuckets:  qualityBuckets,
+		TopDomains:      topDomains,
+		DuplicateURLs:   duplicateURLs,
+		PerAgentCount:   perAgentCount,
 	}
+}
+
+// getTopDomains returns the top N domains by citation count
+func getTopDomains(domainCounts map[string]int, n int) []DomainCount {
+	// Convert to slice for sorting
+	domains := make([]DomainCount, 0, len(domainCounts))
+	for domain, count := range domainCounts {
+		domains = append(domains, DomainCount{Domain: domain, Count: count})
+	}
+
+	// Sort by count descending
+	sort.Slice(domains, func(i, j int) bool {
+		return domains[i].Count > domains[j].Count
+	})
+
+	// Take top N
+	if len(domains) > n {
+		domains = domains[:n]
+	}
+	return domains
 }
 
 // pageInfo holds title and snippet extracted from merged multi-page content

@@ -156,22 +156,59 @@ def tokenize(text: str) -> List[str]:
     return tokens
 
 
+class CorpusStats:
+    """P1-5: Corpus statistics for IDF calculation."""
+    def __init__(self):
+        self.doc_freq: Dict[str, int] = {}  # term → number of documents containing it
+        self.total_docs: int = 0
+        self.avg_doc_len: float = 200.0
+
+    @classmethod
+    def from_citations(cls, citations: List["Citation"]) -> "CorpusStats":
+        """Compute corpus statistics from a list of citations."""
+        stats = cls()
+        stats.total_docs = len(citations)
+
+        if not citations:
+            return stats
+
+        total_tokens = 0
+        for c in citations:
+            text = f"{c.title or ''} {c.content or c.snippet or ''}"
+            tokens = tokenize(text)
+            total_tokens += len(tokens)
+
+            # Count document frequency (each term counted once per document)
+            unique_terms = set(tokens)
+            for term in unique_terms:
+                stats.doc_freq[term] = stats.doc_freq.get(term, 0) + 1
+
+        if stats.total_docs > 0:
+            stats.avg_doc_len = total_tokens / stats.total_docs
+
+        return stats
+
+
 def bm25_score(
     query_tokens: List[str],
     doc_tokens: List[str],
     k1: float = 1.5,
     b: float = 0.75,
-    avg_doc_len: float = 200.0
+    avg_doc_len: float = 200.0,
+    corpus_stats: Optional[CorpusStats] = None
 ) -> float:
     """
-    Compute simplified BM25 score between query and document.
+    Compute BM25 score between query and document.
+
+    P1-5: Now includes IDF weighting when corpus_stats is provided.
 
     Args:
         query_tokens: Tokenized query (claim)
         doc_tokens: Tokenized document (citation content)
         k1: Term frequency saturation parameter
         b: Length normalization parameter
-        avg_doc_len: Estimated average document length
+        avg_doc_len: Estimated average document length (used if corpus_stats not provided)
+        corpus_stats: Optional corpus statistics for IDF calculation
 
     Returns:
         BM25 relevance score (higher = more relevant)
@@ -182,14 +219,30 @@ def bm25_score(
     doc_freq = Counter(doc_tokens)
     doc_len = len(doc_tokens)
 
+    # Use corpus stats if available
+    if corpus_stats and corpus_stats.total_docs > 0:
+        avg_doc_len = corpus_stats.avg_doc_len
+        N = corpus_stats.total_docs
+    else:
+        N = 0  # No IDF if no corpus stats
+
     score = 0.0
     for term in set(query_tokens):
         tf = doc_freq.get(term, 0)
         if tf > 0:
-            # Simplified BM25 formula (without IDF since we don't have corpus stats)
-            numerator = tf * (k1 + 1)
-            denominator = tf + k1 * (1 - b + b * doc_len / avg_doc_len)
-            score += numerator / denominator
+            # TF component (BM25 saturation)
+            tf_component = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_len))
+
+            # IDF component (P1-5: proper inverse document frequency)
+            if N > 0 and corpus_stats:
+                n = corpus_stats.doc_freq.get(term, 0)
+                # BM25 IDF formula: log((N - n + 0.5) / (n + 0.5) + 1)
+                # The +1 inside log prevents negative scores for very common terms
+                idf = math.log((N - n + 0.5) / (n + 0.5) + 1)
+            else:
+                idf = 1.0  # No IDF weighting without corpus stats
+
+            score += idf * tf_component
 
     return score
 
@@ -197,15 +250,19 @@ def bm25_score(
 def retrieve_relevant_citations(
     claim: str,
     citations: List[Citation],
-    top_k: int = 5
+    top_k: int = 5,
+    corpus_stats: Optional[CorpusStats] = None
 ) -> List[Tuple[int, Citation, float]]:
     """
-    Retrieve top-k most relevant citations for a claim using BM25-like scoring.
+    Retrieve top-k most relevant citations for a claim using BM25 scoring.
+
+    P1-5: Now uses IDF weighting via corpus_stats for better precision.
 
     Args:
         claim: The claim to find evidence for
         citations: List of all available citations
         top_k: Number of top citations to return
+        corpus_stats: Optional pre-computed corpus stats (computed if not provided)
 
     Returns:
         List of (original_1based_index, citation, relevance_score) tuples
@@ -218,6 +275,10 @@ def retrieve_relevant_citations(
     if not claim_tokens:
         return []
 
+    # P1-5: Compute corpus stats if not provided
+    if corpus_stats is None:
+        corpus_stats = CorpusStats.from_citations(citations)
+
     # Score each citation
     scored: List[Tuple[int, Citation, float]] = []
     for idx, c in enumerate(citations):
@@ -225,8 +286,8 @@ def retrieve_relevant_citations(
         citation_text = f"{c.title or ''} {c.content or c.snippet or ''}"
         citation_tokens = tokenize(citation_text)
 
-        # BM25-like scoring
-        score = bm25_score(claim_tokens, citation_tokens)
+        # BM25 scoring with IDF
+        score = bm25_score(claim_tokens, citation_tokens, corpus_stats=corpus_stats)
 
         # Boost by credibility (0.5 baseline + 0.5 * credibility)
         score *= (0.5 + 0.5 * c.credibility_score)
@@ -633,7 +694,8 @@ def _detect_conflicts(
 async def _verify_single_claim_v2(
     claim: str,
     all_citations: List[Citation],
-    providers: Any
+    providers: Any,
+    corpus_stats: Optional[CorpusStats] = None
 ) -> ClaimVerificationV2:
     """
     Verify a single claim with evidence retrieval + three-category output.
@@ -642,10 +704,12 @@ async def _verify_single_claim_v2(
     - supported: At least one source explicitly supports the claim
     - unsupported: A source explicitly contradicts the claim
     - insufficient_evidence: Sources don't directly address the claim
+
+    P1-5: Accepts pre-computed corpus_stats for efficient IDF-weighted retrieval.
     """
 
-    # Step 1: Retrieve top-5 relevant citations via BM25
-    relevant = retrieve_relevant_citations(claim, all_citations, top_k=5)
+    # Step 1: Retrieve top-5 relevant citations via BM25 (with IDF)
+    relevant = retrieve_relevant_citations(claim, all_citations, top_k=5, corpus_stats=corpus_stats)
 
     if not relevant:
         return ClaimVerificationV2(
@@ -864,10 +928,15 @@ async def verify_claims_v2(
             avg_retrieval_score=0.0
         )
 
+    # P1-5: Pre-compute corpus stats once for all claims (IDF efficiency)
+    corpus_stats = CorpusStats.from_citations(citation_objs)
+    logger.debug(f"[verification_v2] Corpus stats: {corpus_stats.total_docs} docs, "
+                 f"{len(corpus_stats.doc_freq)} unique terms, avg_len={corpus_stats.avg_doc_len:.1f}")
+
     # Verify each claim with V2 logic
     verifications: List[ClaimVerificationV2] = []
     for claim in claims:
-        v = await _verify_single_claim_v2(claim, citation_objs, llm_client)
+        v = await _verify_single_claim_v2(claim, citation_objs, llm_client, corpus_stats=corpus_stats)
         verifications.append(v)
 
     # Aggregate by verdict
