@@ -153,22 +153,41 @@ type VerifyClaimsInput struct {
 	Citations []interface{} // Available citations (from metadata.CollectCitations)
 }
 
-// VerificationResult contains claim verification analysis
+// VerificationResult contains claim verification analysis (V2 format with three-category classification)
 type VerificationResult struct {
-	OverallConfidence float64             `json:"overall_confidence"` // 0.0-1.0
-	TotalClaims       int                 `json:"total_claims"`       // Number of claims extracted
-	SupportedClaims   int                 `json:"supported_claims"`   // Claims with supporting citations
-	UnsupportedClaims []string            `json:"unsupported_claims"` // List of unsupported claim texts
-	Conflicts         []ConflictReport    `json:"conflicts"`          // Conflicting information found
-	ClaimDetails      []ClaimVerification `json:"claim_details"`      // Per-claim analysis
+	OverallConfidence float64          `json:"overall_confidence"` // 0.0-1.0
+	TotalClaims       int              `json:"total_claims"`       // Number of claims extracted
+	SupportedClaims   int              `json:"supported_claims"`   // Claims with supporting citations (count)
+	Conflicts         []ConflictReport `json:"conflicts"`          // Conflicting information found
+
+	// V2 three-category fields
+	UnsupportedClaims          int `json:"unsupported_claims"`           // Claims contradicted by sources (count)
+	InsufficientEvidenceClaims int `json:"insufficient_evidence_claims"` // Claims without sufficient evidence (count)
+
+	// V2 claim text lists
+	SupportedClaimTexts    []string `json:"supported_claim_texts,omitempty"`
+	UnsupportedClaimTexts  []string `json:"unsupported_claim_texts,omitempty"`
+	InsufficientClaimTexts []string `json:"insufficient_claim_texts,omitempty"`
+
+	// V2 claim details with verdict and retrieval info
+	ClaimDetails []ClaimVerification `json:"claim_details"`
+
+	// V2 quality metrics
+	EvidenceCoverage  float64 `json:"evidence_coverage"`   // % of claims with definitive verdict
+	AvgRetrievalScore float64 `json:"avg_retrieval_score"` // Average top-1 BM25 relevance
 }
 
-// ClaimVerification contains verification for a single claim
+// ClaimVerification contains verification for a single claim (V2 format)
 type ClaimVerification struct {
 	Claim                string  `json:"claim"`                 // The factual claim text
 	SupportingCitations  []int   `json:"supporting_citations"`  // Citation numbers supporting this claim
 	ConflictingCitations []int   `json:"conflicting_citations"` // Citation numbers conflicting with this claim
 	Confidence           float64 `json:"confidence"`            // 0.0-1.0 (weighted by citation credibility)
+
+	// V2 fields
+	Verdict         string             `json:"verdict,omitempty"`          // "supported" | "unsupported" | "insufficient_evidence"
+	RetrievalScores map[int]float64    `json:"retrieval_scores,omitempty"` // citation_id -> BM25 relevance score
+	Reasoning       string             `json:"reasoning,omitempty"`        // Brief explanation for verdict
 }
 
 // ConflictReport describes conflicting information

@@ -3,6 +3,8 @@ package strategies
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -355,6 +357,267 @@ func extractRegionCodeFromTargetLanguages(targetLanguages []string) string {
 		}
 	}
 	return ""
+}
+
+func buildCompanyDomainDiscoverySearchQuery(canonicalName string, disambiguationTerms []string, regionCode string) string {
+	name := strings.TrimSpace(canonicalName)
+	if name == "" {
+		return ""
+	}
+
+	q := fmt.Sprintf("%s official website", name)
+	switch regionCode {
+	case "zh":
+		q = fmt.Sprintf("%s 官网 官方网站", name)
+	case "ja":
+		q = fmt.Sprintf("%s 公式サイト official website", name)
+	case "ko":
+		q = fmt.Sprintf("%s 공식 사이트 official website", name)
+	}
+
+	// Filter out generic tech terms that pollute search results with competitors
+	genericTerms := map[string]bool{
+		"analytics": true, "platform": true, "marketing": true, "technology": true,
+		"software": true, "saas": true, "cloud": true, "data": true, "ai": true,
+		"tool": true, "tools": true, "solution": true, "solutions": true,
+		"service": true, "services": true, "digital": true, "automation": true,
+	}
+
+	// Add up to 2 non-generic disambiguation terms to reduce entity mix-ups.
+	var filteredTerms []string
+	for _, term := range disambiguationTerms {
+		termLower := strings.ToLower(strings.TrimSpace(term))
+		if termLower != "" && !genericTerms[termLower] {
+			filteredTerms = append(filteredTerms, term)
+		}
+	}
+	if len(filteredTerms) > 2 {
+		filteredTerms = filteredTerms[:2]
+	}
+	if len(filteredTerms) > 0 {
+		q = strings.TrimSpace(q + " " + strings.Join(filteredTerms, " "))
+	}
+
+	return q
+}
+
+func stripCodeFences(s string) string {
+	t := strings.TrimSpace(s)
+	if strings.HasPrefix(t, "```json") {
+		t = strings.TrimPrefix(t, "```json")
+		t = strings.TrimPrefix(t, "```")
+		if idx := strings.LastIndex(t, "```"); idx != -1 {
+			t = t[:idx]
+		}
+		return strings.TrimSpace(t)
+	}
+	if strings.HasPrefix(t, "```") {
+		t = strings.TrimPrefix(t, "```")
+		if idx := strings.LastIndex(t, "```"); idx != -1 {
+			t = t[:idx]
+		}
+		return strings.TrimSpace(t)
+	}
+	return t
+}
+
+func registrableDomain(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return ""
+	}
+	if strings.Contains(h, ":") {
+		// Drop port if present.
+		if hh, _, err := net.SplitHostPort(h); err == nil {
+			h = hh
+		} else {
+			// Best-effort: split on last ':' for malformed host:port
+			if i := strings.LastIndex(h, ":"); i > 0 {
+				h = h[:i]
+			}
+		}
+	}
+	if h == "" {
+		return ""
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ""
+	}
+	if h == "localhost" {
+		return ""
+	}
+
+	labels := strings.Split(h, ".")
+	if len(labels) < 2 {
+		return ""
+	}
+
+	// Minimal multi-label public suffix handling for common company research TLDs.
+	// This avoids collapsing e.g. sony.co.jp -> co.jp via naive last-2-labels logic.
+	suffix2 := labels[len(labels)-2] + "." + labels[len(labels)-1]
+	suffix3 := ""
+	if len(labels) >= 3 {
+		suffix3 = labels[len(labels)-3] + "." + suffix2
+	}
+
+	multiLabelSuffixes := map[string]struct{}{
+		// Japan
+		"co.jp": {}, "ne.jp": {}, "or.jp": {}, "ac.jp": {}, "go.jp": {}, "ed.jp": {}, "lg.jp": {},
+		// China
+		"com.cn": {}, "net.cn": {}, "org.cn": {}, "gov.cn": {}, "edu.cn": {},
+		// Korea
+		"co.kr": {}, "or.kr": {}, "go.kr": {}, "ac.kr": {}, "re.kr": {},
+		// UK/AU (common in global companies)
+		"co.uk": {}, "org.uk": {}, "ac.uk": {},
+		"com.au": {}, "net.au": {}, "org.au": {}, "edu.au": {},
+	}
+
+	if _, ok := multiLabelSuffixes[suffix3]; ok && len(labels) >= 4 {
+		return strings.Join(labels[len(labels)-4:], ".")
+	}
+	if _, ok := multiLabelSuffixes[suffix2]; ok && len(labels) >= 3 {
+		return strings.Join(labels[len(labels)-3:], ".")
+	}
+
+	return suffix2
+}
+
+func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, canonicalName string) []string {
+	seen := make(map[string]bool)
+	var out []string
+
+	// Normalize canonical name for matching
+	canonicalLower := strings.ToLower(strings.ReplaceAll(canonicalName, " ", ""))
+
+	addURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "https://" + raw
+		}
+		pu, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+		host := registrableDomain(pu.Host)
+		if host == "" {
+			return
+		}
+
+		// Exclude common aggregator/social/platform domains
+		disallowed := map[string]struct{}{
+			// Social & aggregator
+			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
+			"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
+			"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+			// Generic platforms that pollute results
+			"google.com": {}, "salesforce.com": {}, "shopify.com": {}, "optimizely.com": {},
+			"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+			// Domain registrars & info sites
+			"register.domains": {}, "porkbun.com": {}, "nominus.com": {}, "squarespace.com": {},
+			"github.io": {}, "github.com": {}, "githubusercontent.com": {},
+			// Job boards
+			"hiredchina.com": {}, "glassdoor.com": {}, "indeed.com": {}, "zhipin.com": {},
+			// App stores
+			"apps.shopify.com": {}, "chromewebstore.google.com": {}, "play.google.com": {},
+		}
+		if _, ok := disallowed[host]; ok {
+			return
+		}
+
+		// Relevance check: domain should be related to canonical name
+		// This prevents profitmind.com from being included when searching for PTmind
+		hostLower := strings.ToLower(host)
+		hostBase := strings.TrimSuffix(strings.TrimSuffix(hostLower, ".com"), ".co")
+		hostBase = strings.TrimSuffix(hostBase, ".jp")
+		hostBase = strings.TrimSuffix(hostBase, ".cn")
+
+		isRelevant := false
+		// Check if host contains canonical name (ptengine contains ptengine)
+		if strings.Contains(hostLower, canonicalLower) {
+			isRelevant = true
+		}
+		// Check if canonical name contains host base (ptmind contains ptmind from ptmind.com)
+		if strings.Contains(canonicalLower, hostBase) && len(hostBase) >= 3 {
+			isRelevant = true
+		}
+		// Allow if no canonical name provided (fallback)
+		if canonicalLower == "" {
+			isRelevant = true
+		}
+
+		if !isRelevant {
+			return
+		}
+
+		if !seen[host] {
+			seen[host] = true
+			out = append(out, host)
+		}
+	}
+
+	for _, te := range toolExecs {
+		if te.Tool != "web_search" || !te.Success || te.Output == nil {
+			continue
+		}
+
+		switch v := te.Output.(type) {
+		case map[string]interface{}:
+			// Common shape: {results:[{url:...}, ...]}
+			if rawResults, ok := v["results"].([]interface{}); ok {
+				for _, rr := range rawResults {
+					if m, ok2 := rr.(map[string]interface{}); ok2 {
+						if u, ok3 := m["url"].(string); ok3 {
+							addURL(u)
+						}
+					}
+				}
+			}
+		case []interface{}:
+			// Alternate shape: [{url:...}, ...]
+			for _, rr := range v {
+				if m, ok2 := rr.(map[string]interface{}); ok2 {
+					if u, ok3 := m["url"].(string); ok3 {
+						addURL(u)
+					}
+				}
+			}
+		default:
+			// Fallback: best-effort string parse
+			if s, ok := te.Output.(string); ok {
+				addURL(s)
+			}
+		}
+	}
+
+	return out
+}
+
+func domainsFromDiscoveryResponse(resp string) []string {
+	type domainDiscoveryResponse struct {
+		Domains []string `json:"domains"`
+	}
+
+	var parsed domainDiscoveryResponse
+	if err := json.Unmarshal([]byte(stripCodeFences(resp)), &parsed); err != nil {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, d := range parsed.Domains {
+		host := registrableDomain(d)
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
 }
 
 // buildCompanyPrefetchURLsWithLocale constructs URLs including locale-specific sources
@@ -823,7 +1086,137 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			// Use LLM-determined target_languages (based on company region) instead of query language.
 			// This ensures Chinese sources (tianyancha, etc.) are only used for Chinese companies.
 			regionCode := extractRegionCodeFromTargetLanguages(refineResult.TargetLanguages)
-			urls := buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, refineResult.OfficialDomains, regionCode)
+
+			officialDomainsForPrefetch := refineResult.OfficialDomains
+			domainDiscoveryVersion := workflow.GetVersion(ctx, "domain_discovery_search_first_v1", workflow.DefaultVersion, 1)
+			if domainDiscoveryVersion >= 1 && strings.TrimSpace(refineResult.CanonicalName) != "" {
+				searchQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, regionCode)
+				if searchQuery != "" {
+					discoveryContext := map[string]interface{}{
+						"user_id":    input.UserID,
+						"session_id": input.SessionID,
+						"model_tier": "small",
+					}
+					if input.ParentWorkflowID != "" {
+						discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
+					}
+
+					var discoveryResult activities.AgentExecutionResult
+					discoveryErr := workflow.ExecuteActivity(ctx,
+						"ExecuteAgent",
+						activities.AgentExecutionInput{
+							Query: fmt.Sprintf(
+								"Extract the official website domains for the company %q.\n\n"+
+									"Use ONLY the provided web_search results (do not guess).\n"+
+									"Return JSON ONLY with this schema:\n"+
+									"{\"domains\":[\"example.com\",\"example.co.jp\",...]}.\n"+
+									"Rules:\n"+
+									"- Include corporate + major product/brand + key regional domains if they appear in results.\n"+
+									"- Exclude directory/social/news domains (wikipedia, linkedin, crunchbase, etc.).\n"+
+									"- Return at most 12 domains.\n",
+								refineResult.CanonicalName,
+							),
+							AgentID:   "domain_discovery",
+							Context:   discoveryContext,
+							Mode:      "standard",
+							SessionID: input.SessionID,
+							History:   convertHistoryForAgent(input.History),
+							SuggestedTools: []string{
+								"web_search",
+							},
+							ToolParameters: map[string]interface{}{
+								"tool":        "web_search",
+								"query":       searchQuery,
+								"max_results": 20,
+							},
+							ParentWorkflowID: input.ParentWorkflowID,
+						},
+					).Get(ctx, &discoveryResult)
+
+					if discoveryErr != nil || !discoveryResult.Success {
+						logger.Warn("Domain discovery search-first failed; falling back to refinement domains",
+							"canonical_name", refineResult.CanonicalName,
+							"search_query", searchQuery,
+							"error", discoveryErr,
+							"agent_error", discoveryResult.Error,
+						)
+					} else {
+						searchDomains := domainsFromWebSearchToolExecutions(discoveryResult.ToolExecutions, refineResult.CanonicalName)
+						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
+
+						// Prefer LLM-selected domains, but only keep domains that are grounded in search result URLs.
+						groundedSet := make(map[string]bool)
+						for _, d := range searchDomains {
+							groundedSet[d] = true
+						}
+						var discovered []string
+						for _, d := range llmDomains {
+							if groundedSet[d] {
+								discovered = append(discovered, d)
+							}
+						}
+						if len(discovered) == 0 {
+							discovered = searchDomains
+						}
+
+						if len(discovered) > 0 {
+							// Merge: search-discovered + refinement-guessed domains (dedup)
+							merged := discovered
+							seen := make(map[string]bool)
+							for _, d := range discovered {
+								seen[d] = true
+							}
+							for _, d := range refineResult.OfficialDomains {
+								if !seen[d] {
+									merged = append(merged, d)
+									seen[d] = true
+								}
+							}
+
+							baseContext["official_domains"] = merged
+							baseContext["official_domains_source"] = "search_first_merged"
+
+							officialDomainsForPrefetch = merged
+
+							// Multinational companies need more prefetch slots
+							maxPrefetch := 5
+							if len(refineResult.TargetLanguages) > 1 {
+								maxPrefetch = 8
+							}
+							if len(officialDomainsForPrefetch) > maxPrefetch {
+								officialDomainsForPrefetch = officialDomainsForPrefetch[:maxPrefetch]
+							}
+
+							logger.Info("Domain discovery search-first succeeded",
+								"canonical_name", refineResult.CanonicalName,
+								"search_query", searchQuery,
+								"discovered", discovered,
+								"merged", merged,
+								"refinement_domains", refineResult.OfficialDomains,
+							)
+						}
+
+						if discoveryResult.TokensUsed > 0 || discoveryResult.InputTokens > 0 || discoveryResult.OutputTokens > 0 {
+							inTok := discoveryResult.InputTokens
+							outTok := discoveryResult.OutputTokens
+							recCtx := opts.WithTokenRecordOptions(ctx)
+							_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+								UserID:       input.UserID,
+								SessionID:    input.SessionID,
+								TaskID:       workflowID,
+								AgentID:      "domain_discovery",
+								Model:        discoveryResult.ModelUsed,
+								Provider:     discoveryResult.Provider,
+								InputTokens:  inTok,
+								OutputTokens: outTok,
+								Metadata:     map[string]interface{}{"phase": "domain_discovery"},
+							}).Get(recCtx, nil)
+						}
+					}
+				}
+			}
+
+			urls := buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, officialDomainsForPrefetch, regionCode)
 			if len(urls) > 0 {
 				// Cap prefetch attempts to avoid excessive tool usage (official + top aggregators)
 				if len(urls) > 5 {
@@ -2465,21 +2858,66 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				})
 			}
 
-			// Collect gap-filling results
+			// Collect gap-filling results with value gating (P1-1)
+			// Initialize URL tracking from existing agent results
+			existingURLs := make(map[string]bool)
+			existingDomains := make(map[string]bool)
+			updateExistingURLs(agentResults, existingURLs, existingDomains)
+
+			gapMetrics := GapFillMetrics{TotalAgents: numGapAgents}
+
 			for i := 0; i < numGapAgents; i++ {
 				var payload gapAgentResult
 				gapChan.Receive(ctx, &payload)
+
 				if len(payload.Results) > 0 {
-					agentResults = append(agentResults, payload.Results...)
-					originalAgentResults = append(originalAgentResults, payload.Results...)
-					totalTokens += payload.Tokens
-					gapFillingOccurred = true // Mark that new research was added
+					// Evaluate incremental value before accepting
+					accept, newURLs, newDomains := evaluateGapFillValue(
+						payload.Results, existingURLs, existingDomains,
+					)
+
+					if accept {
+						agentResults = append(agentResults, payload.Results...)
+						originalAgentResults = append(originalAgentResults, payload.Results...)
+						totalTokens += payload.Tokens
+						gapFillingOccurred = true
+
+						gapMetrics.AcceptedAgents++
+						gapMetrics.NewURLsFound += newURLs
+						gapMetrics.NewDomainsFound += newDomains
+
+						// Update tracking sets
+						updateExistingURLs(payload.Results, existingURLs, existingDomains)
+					} else {
+						gapMetrics.SkippedLowValue++
+						logger.Info("Gap-fill result skipped (low incremental value)",
+							"new_urls", newURLs,
+							"new_domains", newDomains,
+							"agent_index", i,
+						)
+					}
+				}
+
+				// Early exit: saturation reached (enough evidence collected)
+				if gapMetrics.NewDomainsFound >= 5 || gapMetrics.NewURLsFound >= 15 {
+					logger.Info("Gap-fill saturation reached, stopping early",
+						"new_domains", gapMetrics.NewDomainsFound,
+						"new_urls", gapMetrics.NewURLsFound,
+						"agents_processed", i+1,
+						"agents_remaining", numGapAgents-i-1,
+					)
+					break
 				}
 			}
 
 			logger.Info("Deep Research 2.0: Gap-filling iteration complete",
 				"iteration", iteration,
 				"total_agent_results", len(agentResults),
+				"gap_agents_total", gapMetrics.TotalAgents,
+				"gap_agents_accepted", gapMetrics.AcceptedAgents,
+				"gap_agents_skipped", gapMetrics.SkippedLowValue,
+				"new_urls_found", gapMetrics.NewURLsFound,
+				"new_domains_found", gapMetrics.NewDomainsFound,
 			)
 		}
 
@@ -3808,3 +4246,100 @@ func validateTaskContracts(subtasks []activities.Subtask, logger simpleLogger) e
 // Note: Post-synthesis language validation was removed.
 // Language handling now occurs earlier (refine stage sets target_language),
 // and the synthesis activity embeds a language instruction.
+
+// ============================================================================
+// Gap-filling Value Gating (P1-1)
+// ============================================================================
+
+// GapFillMetrics tracks gap-filling effectiveness
+type GapFillMetrics struct {
+	TotalAgents     int
+	AcceptedAgents  int
+	SkippedLowValue int
+	NewURLsFound    int
+	NewDomainsFound int
+}
+
+// extractURLsFromAgentResults extracts unique URLs from agent tool executions
+func extractURLsFromAgentResults(results []activities.AgentExecutionResult) []string {
+	urlSet := make(map[string]bool)
+	var urls []string
+
+	for _, r := range results {
+		for _, te := range r.ToolExecutions {
+			// Extract URLs from web_fetch and web_search tool inputs
+			if te.Tool == "web_fetch" || te.Tool == "web_search" {
+				if params, ok := te.InputParams.(map[string]interface{}); ok {
+					if urlStr, ok := params["url"].(string); ok && urlStr != "" {
+						if !urlSet[urlStr] {
+							urlSet[urlStr] = true
+							urls = append(urls, urlStr)
+						}
+					}
+				}
+			}
+
+			// Also extract URLs from tool outputs (search results)
+			if te.Tool == "web_search" && te.Success {
+				if output, ok := te.Output.(map[string]interface{}); ok {
+					if results, ok := output["results"].([]interface{}); ok {
+						for _, result := range results {
+							if resultMap, ok := result.(map[string]interface{}); ok {
+								if urlStr, ok := resultMap["url"].(string); ok && urlStr != "" {
+									if !urlSet[urlStr] {
+										urlSet[urlStr] = true
+										urls = append(urls, urlStr)
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return urls
+}
+
+// evaluateGapFillValue determines if gap-fill results add sufficient incremental value
+// Returns: (accept, newURLs, newDomains)
+func evaluateGapFillValue(
+	newResults []activities.AgentExecutionResult,
+	existingURLs map[string]bool,
+	existingDomains map[string]bool,
+) (bool, int, int) {
+	newURLs := 0
+	newDomains := 0
+
+	urls := extractURLsFromAgentResults(newResults)
+	for _, u := range urls {
+		if !existingURLs[u] {
+			newURLs++
+			domain, err := metadata.ExtractDomain(u)
+			if err == nil && domain != "" && !existingDomains[domain] {
+				newDomains++
+			}
+		}
+	}
+
+	// Value gate: accept if at least 2 new URLs OR 1 new domain
+	accept := newURLs >= 2 || newDomains >= 1
+	return accept, newURLs, newDomains
+}
+
+// updateExistingURLs adds URLs from results to the existing sets
+func updateExistingURLs(
+	results []activities.AgentExecutionResult,
+	existingURLs map[string]bool,
+	existingDomains map[string]bool,
+) {
+	urls := extractURLsFromAgentResults(results)
+	for _, u := range urls {
+		existingURLs[u] = true
+		domain, err := metadata.ExtractDomain(u)
+		if err == nil && domain != "" {
+			existingDomains[domain] = true
+		}
+	}
+}

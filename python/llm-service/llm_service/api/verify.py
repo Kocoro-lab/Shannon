@@ -4,12 +4,16 @@ import logging
 import json
 import math
 import re
+from collections import Counter
 from typing import List, Dict, Any, Optional, Tuple
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
 logger = logging.getLogger(__name__)
+
+# CJK character pattern for language detection and tokenization
+CJK_PATTERN = re.compile(r'[\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ff]')
 
 router = APIRouter()
 
@@ -52,6 +56,252 @@ class VerificationResult(BaseModel):
     unsupported_claims: List[str] = Field(default_factory=list)
     conflicts: List[ConflictReport] = Field(default_factory=list)
     claim_details: List[ClaimVerification] = Field(default_factory=list)
+
+
+# ============================================================================
+# V2 Models with three-category classification
+# ============================================================================
+
+class ClaimVerificationV2(BaseModel):
+    """V2 Verification result with three-category classification."""
+    claim: str
+    verdict: str = "insufficient_evidence"  # "supported" | "unsupported" | "insufficient_evidence"
+    supporting_citations: List[int] = Field(default_factory=list)
+    conflicting_citations: List[int] = Field(default_factory=list)
+    confidence: float = 0.0
+    retrieval_scores: Dict[int, float] = Field(default_factory=dict)  # citation_id → relevance
+    reasoning: str = ""
+
+
+class VerificationResultV2(BaseModel):
+    """V2 Overall verification result with three-category breakdown."""
+    overall_confidence: float
+    total_claims: int
+
+    # Three-category counts
+    supported_claims: int
+    unsupported_claims: int
+    insufficient_evidence_claims: int
+
+    # Lists for each category
+    supported_claim_texts: List[str] = Field(default_factory=list)
+    unsupported_claim_texts: List[str] = Field(default_factory=list)
+    insufficient_claim_texts: List[str] = Field(default_factory=list)
+
+    # Details
+    claim_details: List[ClaimVerificationV2] = Field(default_factory=list)
+    conflicts: List[ConflictReport] = Field(default_factory=list)
+
+    # Quality metrics
+    evidence_coverage: float = 0.0  # % of claims with relevant citations found
+    avg_retrieval_score: float = 0.0  # Average top-1 retrieval relevance
+
+
+# ============================================================================
+# V2 Helper Functions: Language Detection & BM25 Retrieval
+# ============================================================================
+
+def detect_language(text: str) -> str:
+    """
+    Detect if text is primarily CJK (Chinese/Japanese/Korean) or Latin-based.
+
+    Args:
+        text: Text to analyze (first ~500 chars recommended)
+
+    Returns:
+        "zh" for CJK-dominant text, "en" otherwise
+    """
+    if not text:
+        return "en"
+
+    # Count CJK characters vs total alphanumeric
+    cjk_count = len(CJK_PATTERN.findall(text))
+    # Count Latin letters
+    latin_count = len(re.findall(r'[a-zA-Z]', text))
+
+    total = cjk_count + latin_count
+    if total == 0:
+        return "en"
+
+    # If >30% CJK, treat as CJK-dominant
+    if cjk_count / total > 0.3:
+        return "zh"
+    return "en"
+
+
+def tokenize(text: str) -> List[str]:
+    """
+    Tokenize text supporting both CJK (character-level) and Latin (word-level).
+
+    Args:
+        text: Text to tokenize
+
+    Returns:
+        List of tokens (CJK chars + Latin words)
+    """
+    if not text:
+        return []
+
+    tokens = []
+
+    # CJK: character-level tokenization
+    for char in text:
+        if CJK_PATTERN.match(char):
+            tokens.append(char)
+
+    # Latin: word-level tokenization (lowercase)
+    words = re.findall(r'\b\w+\b', text.lower())
+    tokens.extend(words)
+
+    return tokens
+
+
+class CorpusStats:
+    """P1-5: Corpus statistics for IDF calculation."""
+    def __init__(self):
+        self.doc_freq: Dict[str, int] = {}  # term → number of documents containing it
+        self.total_docs: int = 0
+        self.avg_doc_len: float = 200.0
+
+    @classmethod
+    def from_citations(cls, citations: List["Citation"]) -> "CorpusStats":
+        """Compute corpus statistics from a list of citations."""
+        stats = cls()
+        stats.total_docs = len(citations)
+
+        if not citations:
+            return stats
+
+        total_tokens = 0
+        for c in citations:
+            text = f"{c.title or ''} {c.content or c.snippet or ''}"
+            tokens = tokenize(text)
+            total_tokens += len(tokens)
+
+            # Count document frequency (each term counted once per document)
+            unique_terms = set(tokens)
+            for term in unique_terms:
+                stats.doc_freq[term] = stats.doc_freq.get(term, 0) + 1
+
+        if stats.total_docs > 0:
+            stats.avg_doc_len = total_tokens / stats.total_docs
+
+        return stats
+
+
+def bm25_score(
+    query_tokens: List[str],
+    doc_tokens: List[str],
+    k1: float = 1.5,
+    b: float = 0.75,
+    avg_doc_len: float = 200.0,
+    corpus_stats: Optional[CorpusStats] = None
+) -> float:
+    """
+    Compute BM25 score between query and document.
+
+    P1-5: Now includes IDF weighting when corpus_stats is provided.
+
+    Args:
+        query_tokens: Tokenized query (claim)
+        doc_tokens: Tokenized document (citation content)
+        k1: Term frequency saturation parameter
+        b: Length normalization parameter
+        avg_doc_len: Estimated average document length (used if corpus_stats not provided)
+        corpus_stats: Optional corpus statistics for IDF calculation
+
+    Returns:
+        BM25 relevance score (higher = more relevant)
+    """
+    if not query_tokens or not doc_tokens:
+        return 0.0
+
+    doc_freq = Counter(doc_tokens)
+    doc_len = len(doc_tokens)
+
+    # Use corpus stats if available
+    if corpus_stats and corpus_stats.total_docs > 0:
+        avg_doc_len = corpus_stats.avg_doc_len
+        N = corpus_stats.total_docs
+    else:
+        N = 0  # No IDF if no corpus stats
+
+    score = 0.0
+    for term in set(query_tokens):
+        tf = doc_freq.get(term, 0)
+        if tf > 0:
+            # TF component (BM25 saturation)
+            tf_component = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * doc_len / avg_doc_len))
+
+            # IDF component (P1-5: proper inverse document frequency)
+            if N > 0 and corpus_stats:
+                n = corpus_stats.doc_freq.get(term, 0)
+                # BM25 IDF formula: log((N - n + 0.5) / (n + 0.5) + 1)
+                # The +1 inside log prevents negative scores for very common terms
+                idf = math.log((N - n + 0.5) / (n + 0.5) + 1)
+            else:
+                idf = 1.0  # No IDF weighting without corpus stats
+
+            score += idf * tf_component
+
+    return score
+
+
+def retrieve_relevant_citations(
+    claim: str,
+    citations: List[Citation],
+    top_k: int = 5,
+    corpus_stats: Optional[CorpusStats] = None
+) -> List[Tuple[int, Citation, float]]:
+    """
+    Retrieve top-k most relevant citations for a claim using BM25 scoring.
+
+    P1-5: Now uses IDF weighting via corpus_stats for better precision.
+
+    Args:
+        claim: The claim to find evidence for
+        citations: List of all available citations
+        top_k: Number of top citations to return
+        corpus_stats: Optional pre-computed corpus stats (computed if not provided)
+
+    Returns:
+        List of (original_1based_index, citation, relevance_score) tuples
+    """
+    if not citations or not claim:
+        return []
+
+    # Tokenize claim
+    claim_tokens = tokenize(claim)
+    if not claim_tokens:
+        return []
+
+    # P1-5: Compute corpus stats if not provided
+    if corpus_stats is None:
+        corpus_stats = CorpusStats.from_citations(citations)
+
+    # Score each citation
+    scored: List[Tuple[int, Citation, float]] = []
+    for idx, c in enumerate(citations):
+        # Combine title + content/snippet for matching
+        citation_text = f"{c.title or ''} {c.content or c.snippet or ''}"
+        citation_tokens = tokenize(citation_text)
+
+        # BM25 scoring with IDF
+        score = bm25_score(claim_tokens, citation_tokens, corpus_stats=corpus_stats)
+
+        # Boost by credibility (0.5 baseline + 0.5 * credibility)
+        score *= (0.5 + 0.5 * c.credibility_score)
+
+        # 1-indexed for citation references
+        scored.append((idx + 1, c, score))
+
+    # Sort by score descending, take top-k
+    scored.sort(key=lambda x: x[2], reverse=True)
+
+    # Filter out zero-score citations
+    scored = [(idx, c, s) for idx, c, s in scored if s > 0]
+
+    return scored[:top_k]
 
 
 def _extract_cited_numbers(text: str, max_citations: int, limit: int = 50) -> set:
@@ -201,7 +451,30 @@ async def verify_claims(
 async def _extract_claims(answer: str, providers: Any) -> List[str]:
     """Extract factual claims from synthesis using LLM."""
 
-    prompt = f"""Extract all factual claims from the following text.
+    # P0 fix: Detect language and use appropriate prompt
+    # This ensures claims are extracted correctly for CJK text
+    lang = detect_language(answer[:500])
+
+    if lang == "zh":
+        prompt = f"""从以下文本中提取所有事实性陈述。
+事实性陈述是指可以通过来源验证的声明。
+
+文本:
+{answer[:8000]}
+
+指令:
+1. 只提取事实性陈述（非观点或解释）
+2. 每个陈述应是单一、可验证的声明
+3. 以编号列表形式返回
+4. 限制在最重要的 10 个陈述
+
+输出格式:
+1. [第一个陈述]
+2. [第二个陈述]
+...
+"""
+    else:
+        prompt = f"""Extract all factual claims from the following text.
 A factual claim is a statement that can be verified against sources.
 
 Text:
@@ -414,6 +687,318 @@ def _detect_conflicts(
     return conflicts
 
 
+# ============================================================================
+# V2 Verification Functions (Three-category with BM25 retrieval)
+# ============================================================================
+
+async def _verify_single_claim_v2(
+    claim: str,
+    all_citations: List[Citation],
+    providers: Any,
+    corpus_stats: Optional[CorpusStats] = None
+) -> ClaimVerificationV2:
+    """
+    Verify a single claim with evidence retrieval + three-category output.
+
+    Uses BM25 to find relevant citations, then LLM judges:
+    - supported: At least one source explicitly supports the claim
+    - unsupported: A source explicitly contradicts the claim
+    - insufficient_evidence: Sources don't directly address the claim
+
+    P1-5: Accepts pre-computed corpus_stats for efficient IDF-weighted retrieval.
+    """
+
+    # Step 1: Retrieve top-5 relevant citations via BM25 (with IDF)
+    relevant = retrieve_relevant_citations(claim, all_citations, top_k=5, corpus_stats=corpus_stats)
+
+    if not relevant:
+        return ClaimVerificationV2(
+            claim=claim,
+            verdict="insufficient_evidence",
+            confidence=0.3,
+            reasoning="No relevant citations found via retrieval"
+        )
+
+    # Step 2: Build context from relevant citations only
+    citation_context = "\n\n".join([
+        f"[{idx}] (relevance: {score:.2f}) {c.title or c.source or c.url}\n{(c.content or c.snippet or '')[:500]}"
+        for idx, c, score in relevant
+    ])
+
+    valid_nums = [idx for idx, _, _ in relevant]
+    retrieval_scores = {idx: score for idx, _, score in relevant}
+
+    # Step 3: Language-aware prompt
+    lang = detect_language(claim)
+
+    if lang == "zh":
+        prompt = f"""判断以下陈述是否被来源支持。
+
+陈述: {claim}
+
+相关来源 (按相关性排序):
+{citation_context}
+
+## 输出要求
+输出 JSON:
+{{
+    "verdict": "supported" | "unsupported" | "insufficient_evidence",
+    "supporting": [citation_ids...],
+    "conflicting": [citation_ids...],
+    "confidence": 0.0-1.0,
+    "reasoning": "简短解释"
+}}
+
+## 判定标准
+- **supported**: 至少一个来源明确支持该陈述（有直接证据）
+- **unsupported**: 有来源明确反驳该陈述（有矛盾证据）
+- **insufficient_evidence**: 来源不直接涉及该陈述，或证据不足以判断
+
+只使用以下 citation ID: {valid_nums}
+只输出 JSON，无其他内容。
+"""
+    else:
+        prompt = f"""Judge whether the following claim is supported by sources.
+
+Claim: {claim}
+
+Relevant sources (ranked by relevance):
+{citation_context}
+
+## Output format
+{{
+    "verdict": "supported" | "unsupported" | "insufficient_evidence",
+    "supporting": [citation_ids...],
+    "conflicting": [citation_ids...],
+    "confidence": 0.0-1.0,
+    "reasoning": "brief explanation"
+}}
+
+## Judgment criteria
+- **supported**: At least one source explicitly supports the claim (direct evidence)
+- **unsupported**: A source explicitly contradicts the claim (conflicting evidence)
+- **insufficient_evidence**: Sources don't directly address the claim, or evidence is inconclusive
+
+Only use citation IDs: {valid_nums}
+Output JSON only.
+"""
+
+    try:
+        from llm_service.providers.base import ModelTier
+
+        result = await providers.generate_completion(
+            messages=[{"role": "user", "content": prompt}],
+            tier=ModelTier.SMALL,
+            max_tokens=500,
+            temperature=0.0
+        )
+
+        response = result.get("output_text", "").strip()
+
+        # Parse JSON
+        json_start = response.find('{')
+        json_end = response.rfind('}') + 1
+        if json_start != -1 and json_end > json_start:
+            parsed = json.loads(response[json_start:json_end])
+        else:
+            parsed = json.loads(response)
+
+        verdict = parsed.get("verdict", "insufficient_evidence")
+        # Normalize verdict
+        if verdict not in ("supported", "unsupported", "insufficient_evidence"):
+            verdict = "insufficient_evidence"
+
+        supporting = [n for n in parsed.get("supporting", []) if n in valid_nums]
+        conflicting = [n for n in parsed.get("conflicting", []) if n in valid_nums]
+        base_confidence = float(parsed.get("confidence", 0.5))
+        reasoning = parsed.get("reasoning", "")
+
+        # Adjust confidence based on verdict and retrieval quality
+        if verdict == "supported" and supporting:
+            # Boost by retrieval score of best supporting citation
+            max_retrieval = max(retrieval_scores.get(n, 0) for n in supporting)
+            # Weighted: 60% LLM confidence + 40% retrieval quality (normalized)
+            confidence = 0.6 * base_confidence + 0.4 * min(1.0, max_retrieval / 5.0)
+            # Ensure minimum confidence for supported claims
+            confidence = max(confidence, 0.5)
+        elif verdict == "unsupported" and conflicting:
+            # High confidence in contradiction
+            confidence = base_confidence * 0.9
+            confidence = max(confidence, 0.6)
+        else:
+            # insufficient_evidence - moderate confidence
+            confidence = 0.3 + 0.2 * base_confidence
+
+        # Clamp to [0, 1]
+        confidence = max(0.0, min(1.0, confidence))
+
+        return ClaimVerificationV2(
+            claim=claim,
+            verdict=verdict,
+            supporting_citations=supporting,
+            conflicting_citations=conflicting,
+            confidence=confidence,
+            retrieval_scores=retrieval_scores,
+            reasoning=reasoning
+        )
+
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
+        logger.warning(f"[verification_v2] Failed to parse LLM response: {e}")
+        return ClaimVerificationV2(
+            claim=claim,
+            verdict="insufficient_evidence",
+            confidence=0.3,
+            reasoning=f"Parse error: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"[verification_v2] Unexpected error: {e}")
+        return ClaimVerificationV2(
+            claim=claim,
+            verdict="insufficient_evidence",
+            confidence=0.3,
+            reasoning=f"Error: {str(e)}"
+        )
+
+
+def _detect_conflicts_v2(
+    verifications: List[ClaimVerificationV2],
+    citations: List[Citation]
+) -> List[ConflictReport]:
+    """Detect conflicting information across sources for V2 verifications."""
+    conflicts = []
+    for v in verifications:
+        if v.supporting_citations and v.conflicting_citations:
+            src1 = v.supporting_citations[0]
+            src2 = v.conflicting_citations[0]
+
+            if 0 < src1 <= len(citations) and 0 < src2 <= len(citations):
+                conflicts.append(ConflictReport(
+                    claim=v.claim,
+                    source1=src1,
+                    source1_text=citations[src1-1].title,
+                    source2=src2,
+                    source2_text=citations[src2-1].title
+                ))
+    return conflicts
+
+
+async def verify_claims_v2(
+    answer: str,
+    citations: List[Dict[str, Any]],
+    llm_client: Any
+) -> VerificationResultV2:
+    """
+    V2: Verify claims with BM25 evidence retrieval and three-category output.
+
+    Improvements over V1:
+    - BM25 retrieval finds relevant citations before LLM judgment
+    - Three-category output: supported / unsupported / insufficient_evidence
+    - Language-aware prompts for CJK and Latin text
+    - Better confidence calibration
+
+    Args:
+        answer: Synthesis result containing claims
+        citations: List of citation dicts from orchestrator
+        llm_client: LLM client for claim extraction and verification
+
+    Returns:
+        VerificationResultV2 with three-category breakdown and quality metrics
+    """
+
+    # Parse citations
+    citation_objs: List[Citation] = []
+    for idx, raw in enumerate(citations or []):
+        try:
+            citation_objs.append(Citation(**(raw or {})))
+        except Exception as e:
+            logger.warning(f"[verification_v2] Failed to parse citation[{idx}]: {e}")
+
+    # Extract claims (reuse existing function)
+    claims = await _extract_claims(answer, llm_client)
+    logger.info(f"[verification_v2] Extracted {len(claims)} claims from synthesis")
+
+    if not claims:
+        return VerificationResultV2(
+            overall_confidence=1.0,
+            total_claims=0,
+            supported_claims=0,
+            unsupported_claims=0,
+            insufficient_evidence_claims=0,
+            evidence_coverage=1.0,
+            avg_retrieval_score=0.0
+        )
+
+    # P1-5: Pre-compute corpus stats once for all claims (IDF efficiency)
+    corpus_stats = CorpusStats.from_citations(citation_objs)
+    logger.debug(f"[verification_v2] Corpus stats: {corpus_stats.total_docs} docs, "
+                 f"{len(corpus_stats.doc_freq)} unique terms, avg_len={corpus_stats.avg_doc_len:.1f}")
+
+    # Verify each claim with V2 logic
+    verifications: List[ClaimVerificationV2] = []
+    for claim in claims:
+        v = await _verify_single_claim_v2(claim, citation_objs, llm_client, corpus_stats=corpus_stats)
+        verifications.append(v)
+
+    # Aggregate by verdict
+    supported = sum(1 for v in verifications if v.verdict == "supported")
+    unsupported = sum(1 for v in verifications if v.verdict == "unsupported")
+    insufficient = sum(1 for v in verifications if v.verdict == "insufficient_evidence")
+
+    # Collect claim texts by category
+    supported_texts = [v.claim for v in verifications if v.verdict == "supported"]
+    unsupported_texts = [v.claim for v in verifications if v.verdict == "unsupported"]
+    insufficient_texts = [v.claim for v in verifications if v.verdict == "insufficient_evidence"]
+
+    # Calculate quality metrics
+    # Evidence coverage: % of claims that got a definitive verdict (not insufficient)
+    evidence_coverage = (supported + unsupported) / len(verifications) if verifications else 0.0
+
+    # Average top-1 retrieval score
+    retrieval_scores = []
+    for v in verifications:
+        if v.retrieval_scores:
+            retrieval_scores.append(max(v.retrieval_scores.values()))
+    avg_retrieval = sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.0
+
+    # Overall confidence (weighted by verdict type)
+    if verifications:
+        conf_scores = []
+        for v in verifications:
+            if v.verdict == "supported":
+                conf_scores.append(v.confidence)
+            elif v.verdict == "unsupported":
+                # Unsupported claims reduce overall confidence
+                conf_scores.append(1.0 - v.confidence)
+            else:
+                # Insufficient evidence is neutral
+                conf_scores.append(0.5)
+        overall_conf = sum(conf_scores) / len(conf_scores)
+    else:
+        overall_conf = 1.0
+
+    # Detect conflicts
+    conflicts = _detect_conflicts_v2(verifications, citation_objs)
+
+    logger.info(f"[verification_v2] Results: supported={supported}, unsupported={unsupported}, "
+                f"insufficient={insufficient}, overall_conf={overall_conf:.2f}, "
+                f"evidence_coverage={evidence_coverage:.2f}")
+
+    return VerificationResultV2(
+        overall_confidence=overall_conf,
+        total_claims=len(claims),
+        supported_claims=supported,
+        unsupported_claims=unsupported,
+        insufficient_evidence_claims=insufficient,
+        supported_claim_texts=supported_texts,
+        unsupported_claim_texts=unsupported_texts,
+        insufficient_claim_texts=insufficient_texts,
+        claim_details=verifications,
+        conflicts=conflicts,
+        evidence_coverage=evidence_coverage,
+        avg_retrieval_score=avg_retrieval
+    )
+
+
 # ======================================================================
 # FastAPI Endpoint
 # ======================================================================
@@ -422,6 +1007,7 @@ class VerifyClaimsRequest(BaseModel):
     """Request body for claim verification endpoint."""
     answer: str
     citations: List[Dict[str, Any]]
+    use_v2: bool = True  # Default to V2
 
 
 @router.post("/api/verify_claims")
@@ -432,10 +1018,11 @@ async def verify_claims_endpoint(request: Request, body: VerifyClaimsRequest):
     POST /api/verify_claims
     {
         "answer": "synthesis text with claims",
-        "citations": [{"url": "...", "title": "...", "content": "..."}]
+        "citations": [{"url": "...", "title": "...", "content": "..."}],
+        "use_v2": true  // optional, defaults to true
     }
 
-    Returns:
+    V1 Returns (use_v2=false):
     {
         "overall_confidence": 0.82,
         "total_claims": 10,
@@ -444,27 +1031,62 @@ async def verify_claims_endpoint(request: Request, body: VerifyClaimsRequest):
         "conflicts": [],
         "claim_details": [...]
     }
+
+    V2 Returns (use_v2=true, default):
+    {
+        "overall_confidence": 0.72,
+        "total_claims": 10,
+        "supported_claims": 5,
+        "unsupported_claims": 1,
+        "insufficient_evidence_claims": 4,
+        "supported_claim_texts": [...],
+        "unsupported_claim_texts": [...],
+        "insufficient_claim_texts": [...],
+        "claim_details": [...],  // with verdict, retrieval_scores, reasoning
+        "conflicts": [],
+        "evidence_coverage": 0.6,
+        "avg_retrieval_score": 3.2
+    }
     """
     try:
         # Get LLM providers from app state
         providers = request.app.state.providers
 
-        # Use verify_claims function (it uses providers.generate_completion internally)
-        result = await verify_claims(
-            answer=body.answer,
-            citations=body.citations,
-            llm_client=providers  # Pass providers as llm_client
-        )
-
-        return result.dict()
+        if body.use_v2:
+            # V2: BM25 retrieval + three-category output
+            result = await verify_claims_v2(
+                answer=body.answer,
+                citations=body.citations,
+                llm_client=providers
+            )
+            return result.model_dump()
+        else:
+            # V1: Legacy verification
+            result = await verify_claims(
+                answer=body.answer,
+                citations=body.citations,
+                llm_client=providers
+            )
+            return result.model_dump()
 
     except Exception as e:
         logger.error(f"[verify_claims_endpoint] Error: {e}", exc_info=True)
         # Return a safe default response on error
-        return VerificationResult(
-            overall_confidence=0.5,
-            total_claims=0,
-            supported_claims=0,
-            unsupported_claims=[],
-            conflicts=[]
-        ).dict()
+        if body.use_v2:
+            return VerificationResultV2(
+                overall_confidence=0.5,
+                total_claims=0,
+                supported_claims=0,
+                unsupported_claims=0,
+                insufficient_evidence_claims=0,
+                evidence_coverage=0.0,
+                avg_retrieval_score=0.0
+            ).model_dump()
+        else:
+            return VerificationResult(
+                overall_confidence=0.5,
+                total_claims=0,
+                supported_claims=0,
+                unsupported_claims=[],
+                conflicts=[]
+            ).model_dump()

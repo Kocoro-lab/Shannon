@@ -21,10 +21,11 @@ func (a *Activities) VerifyClaimsActivity(ctx context.Context, input VerifyClaim
 	)
 	logger.Info("Starting claim verification")
 
-	// Prepare request payload
+	// Prepare request payload (V2 format with three-category classification)
 	payload := map[string]interface{}{
 		"answer":    input.Answer,
 		"citations": input.Citations,
+		"use_v2":    true, // Request V2 format with BM25 retrieval and three-category output
 	}
 
 	payloadBytes, err := json.Marshal(payload)
@@ -63,11 +64,14 @@ func (a *Activities) VerifyClaimsActivity(ctx context.Context, input VerifyClaim
 		return VerificationResult{}, fmt.Errorf("failed to decode response: %w", err)
 	}
 
-	logger.Info("Verification completed",
+	logger.Info("Verification completed (V2)",
 		zap.Float64("overall_confidence", result.OverallConfidence),
 		zap.Int("total_claims", result.TotalClaims),
 		zap.Int("supported", result.SupportedClaims),
-		zap.Int("unsupported", len(result.UnsupportedClaims)),
+		zap.Int("unsupported", result.UnsupportedClaims),
+		zap.Int("insufficient_evidence", result.InsufficientEvidenceClaims),
+		zap.Float64("evidence_coverage", result.EvidenceCoverage),
+		zap.Float64("avg_retrieval_score", result.AvgRetrievalScore),
 		zap.Int("conflicts", len(result.Conflicts)),
 	)
 

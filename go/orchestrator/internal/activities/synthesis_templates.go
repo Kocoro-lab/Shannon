@@ -25,7 +25,8 @@ type SynthesisTemplateData struct {
 	TargetWords          int
 	IsResearch           bool
 	SynthesisStyle       string
-	CitationAgentEnabled bool // Whether Citation Agent post-processing is active
+	CitationAgentEnabled bool   // Whether Citation Agent post-processing is active
+	CurrentDate          string // Current date for temporal reference (e.g., "January 7, 2026")
 }
 
 // synthesisTemplateCache caches loaded templates for performance.

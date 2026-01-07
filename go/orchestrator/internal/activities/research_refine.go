@@ -91,6 +91,22 @@ Determine which category best fits:
 - "comparative": Comparison between entities (products, companies, technologies)
 - "exploratory": Open-ended exploration of a topic or concept
 
+### Entity Recognition Rules (CRITICAL)
+When classifying queries, pay special attention to these cases:
+1. **Capitalized words as company names**: If a query contains a capitalized English word that could be a company/product name, treat it as a potential entity even if it's also a common English word (e.g., "Apple", "Meta", "Snap", "Block", "Unity", "Zoom", "Slack", "Box")
+2. **Company research patterns**: Queries like "调研[X]这个公司", "research [X] company", "[X]について調査" where [X] is a proper noun indicate company research, even if [X] is an unusual name
+3. **Prefer "company" over "industry"**: When a specific name is mentioned alongside company-related terms (公司, company, Inc, Corp, スタートアップ), prefer query_type="company" over "industry"
+
+Examples (GOOD vs BAD):
+| Query | ✅ GOOD | ❌ BAD |
+|-------|---------|--------|
+| "Research Snap's social media strategy" | query_type="company", canonical_name="Snap" | query_type="industry", canonical_name="Social Media" |
+| "Analyze Block's payment business" | query_type="company", canonical_name="Block" | query_type="industry", canonical_name="Payment Industry" |
+| "研究一下Zoom这家公司" | query_type="company", canonical_name="Zoom" | query_type="industry", canonical_name="Video Conferencing" |
+| "调研Unity的游戏引擎业务" | query_type="company", canonical_name="Unity" | query_type="scientific", canonical_name="Game Engines" |
+| "Slackについて調査して" | query_type="company", canonical_name="Slack" | query_type="industry", canonical_name="Enterprise Communication" |
+| "Metaのメタバース戦略を分析" | query_type="company", canonical_name="Meta" | query_type="exploratory", canonical_name="Metaverse" |
+
 ## Step 2: Generate Research Dimensions
 Based on the query type, create 4-7 research dimensions. Each dimension should have:
 - A clear name
