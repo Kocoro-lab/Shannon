@@ -2,14 +2,18 @@ package activities
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	"go.temporal.io/sdk/activity"
@@ -44,21 +48,51 @@ type CitationAgentInput struct {
 
 // CitationAgentResult is the result of the Citation Agent activity
 type CitationAgentResult struct {
-	Role              string   `json:"role,omitempty"`
-	CitedReport       string   `json:"cited_report"`
-	CitationsUsed     []int    `json:"citations_used"`
-	ValidationPassed  bool     `json:"validation_passed"`
-	ValidationError   string   `json:"validation_error,omitempty"`
-	PlacementWarnings []string `json:"placement_warnings,omitempty"`
-	RedundantCount    int      `json:"redundant_count"`
-	TokensUsed        int      `json:"tokens_used"`
-	ModelUsed         string   `json:"model_used"`
-	Provider          string   `json:"provider"`
-	InputTokens       int      `json:"input_tokens"`
-	OutputTokens      int      `json:"output_tokens"`
+	Role              string          `json:"role,omitempty"`
+	CitedReport       string          `json:"cited_report"`
+	CitationsUsed     []int           `json:"citations_used"`
+	ValidationPassed  bool            `json:"validation_passed"`
+	ValidationError   string          `json:"validation_error,omitempty"`
+	PlacementWarnings []string        `json:"placement_warnings,omitempty"`
+	RedundantCount    int             `json:"redundant_count"`
+	TokensUsed        int             `json:"tokens_used"`
+	ModelUsed         string          `json:"model_used"`
+	Provider          string          `json:"provider"`
+	InputTokens       int             `json:"input_tokens"`
+	OutputTokens      int             `json:"output_tokens"`
+	PlacementStats    *PlacementStats `json:"placement_stats,omitempty"` // V2: placement statistics
 }
 
-// AddCitations adds inline citations to a report using LLM
+// PlacementStats contains statistics about citation placement (V2)
+type PlacementStats struct {
+	Total       int     `json:"total"`        // Total placements requested
+	Applied     int     `json:"applied"`      // Successfully applied
+	Failed      int     `json:"failed"`       // Failed to apply
+	SuccessRate float64 `json:"success_rate"` // Applied / Total
+}
+
+// CitationPlacement represents a single citation placement instruction (V2)
+type CitationPlacement struct {
+	SentenceIndex int    `json:"sentence_index"` // 0-based index of the sentence
+	SentenceHash  string `json:"sentence_hash"`  // First 6 chars of MD5(normalized_sentence)
+	CitationIDs   []int  `json:"citation_ids"`   // Array of citation numbers
+	Confidence    string `json:"confidence"`     // "high" | "medium" | "low"
+	Reason        string `json:"reason"`         // Brief explanation
+}
+
+// PlacementPlan is the LLM output structure for V2 citation placement
+type PlacementPlan struct {
+	Placements []CitationPlacement `json:"placements"`
+}
+
+// PlacementResult contains the result of applying placements
+type PlacementResult struct {
+	Applied    int   // Successfully applied placements
+	Failed     int   // Failed placements
+	FailedIdxs []int // Sentence indices that failed
+}
+
+// AddCitations adds inline citations to a report using LLM (V2 with fallback to legacy)
 func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
@@ -70,7 +104,7 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}
 	}
 
-	logger.Info("CitationAgent: starting",
+	logger.Info("CitationAgent: starting (V2)",
 		"report_length", len(input.Report),
 		"citations_count", len(input.Citations),
 		"role", role,
@@ -84,6 +118,38 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 			ValidationPassed: true,
 		}, nil
 	}
+
+	// Try V2 approach first (indexed placement plan)
+	result, err := a.addCitationsV2(ctx, input, role)
+	if err != nil {
+		logger.Warn("CitationAgent V2 failed, falling back to legacy", "error", err)
+		return a.addCitationsLegacy(ctx, input, role)
+	}
+
+	// Check if V2 produced usable results
+	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 {
+		logger.Info("CitationAgent V2 succeeded",
+			"applied", result.PlacementStats.Applied,
+			"failed", result.PlacementStats.Failed,
+			"success_rate", result.PlacementStats.SuccessRate,
+		)
+		return result, nil
+	}
+
+	// V2 didn't produce citations, fall back to legacy
+	logger.Info("CitationAgent V2 produced no citations, trying legacy")
+	return a.addCitationsLegacy(ctx, input, role)
+}
+
+// addCitationsLegacy is the original citation approach (used as fallback)
+func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	logger.Info("CitationAgent Legacy: starting",
+		"report_length", len(input.Report),
+		"citations_count", len(input.Citations),
+		"role", role,
+	)
 
 	// Build the prompt
 	systemPrompt := buildCitationAgentPrompt()
@@ -875,4 +941,474 @@ func splitIntoSentences(text string) []string {
 		}
 	}
 	return sentences
+}
+
+// ============================================================================
+// V2 Citation Placement Functions (Indexed Placement Plan approach)
+// ============================================================================
+
+// addCitationsV2 implements the indexed placement plan approach
+// LLM outputs JSON with sentence_index + hash, code applies deterministically
+func (a *Activities) addCitationsV2(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	// Step 1: Preprocess report - add sentence numbers
+	sentences := splitSentencesV2(input.Report)
+	numberedReport, sentenceHashes := addSentenceNumbers(sentences)
+
+	logger.Info("CitationAgent V2: preprocessed report",
+		"sentence_count", len(sentences),
+	)
+
+	// Step 2: Build V2 prompt and call LLM
+	systemPrompt := buildCitationPlacementPromptV2()
+	userContent := buildCitationUserContentV2(numberedReport, input.Citations, sentenceHashes)
+
+	// Call LLM service
+	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
+	if llmServiceURL == "" {
+		llmServiceURL = "http://llm-service:8000"
+	}
+	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	// Use medium tier for V2 (better instruction following)
+	modelTier := input.ModelTier
+	if modelTier == "" {
+		modelTier = "medium"
+	}
+
+	reqBody := map[string]interface{}{
+		"query":       userContent,
+		"max_tokens":  4096,
+		"temperature": 0.0,
+		"agent_id":    "citation_agent_v2",
+		"model_tier":  modelTier,
+		"context": map[string]interface{}{
+			"system_prompt":      systemPrompt,
+			"parent_workflow_id": input.ParentWorkflowID,
+		},
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Timeout: 90s for V2 (simpler output)
+	client := &http.Client{
+		Timeout:   90 * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(reqJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", "citation_agent_v2")
+	if input.ParentWorkflowID != "" {
+		req.Header.Set("X-Workflow-ID", input.ParentWorkflowID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("LLM call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d from LLM service", resp.StatusCode)
+	}
+
+	// Parse LLM response
+	var llmResp struct {
+		Success  bool   `json:"success"`
+		Response string `json:"response"`
+		Metadata struct {
+			InputTokens  int     `json:"input_tokens"`
+			OutputTokens int     `json:"output_tokens"`
+			CostUSD      float64 `json:"cost_usd"`
+		} `json:"metadata"`
+		TokensUsed int    `json:"tokens_used"`
+		ModelUsed  string `json:"model_used"`
+		Provider   string `json:"provider"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+	}
+
+	// Step 3: Parse placement plan from LLM response
+	placementPlan, err := parsePlacementPlan(llmResp.Response)
+	if err != nil {
+		logger.Warn("CitationAgent V2: failed to parse placement plan", "error", err)
+		return nil, fmt.Errorf("failed to parse placement plan: %w", err)
+	}
+
+	logger.Info("CitationAgent V2: parsed placement plan",
+		"placements", len(placementPlan.Placements),
+	)
+
+	if len(placementPlan.Placements) == 0 {
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			CitationsUsed:    nil,
+			ValidationPassed: true,
+			TokensUsed:       llmResp.TokensUsed,
+			ModelUsed:        llmResp.ModelUsed,
+			Provider:         llmResp.Provider,
+			InputTokens:      llmResp.Metadata.InputTokens,
+			OutputTokens:     llmResp.Metadata.OutputTokens,
+			PlacementStats:   &PlacementStats{Total: 0, Applied: 0, Failed: 0, SuccessRate: 0},
+		}, nil
+	}
+
+	// Step 4: Apply placements deterministically
+	citedReport, placementResult := applyPlacementsV2(sentences, placementPlan, sentenceHashes, len(input.Citations))
+
+	logger.Info("CitationAgent V2: applied placements",
+		"applied", placementResult.Applied,
+		"failed", placementResult.Failed,
+	)
+
+	// Calculate success rate
+	total := placementResult.Applied + placementResult.Failed
+	successRate := 0.0
+	if total > 0 {
+		successRate = float64(placementResult.Applied) / float64(total)
+	}
+
+	// Step 5: Determine validation status based on partial success strategy
+	// Accept if: ≥50% success rate OR ≥5 placements applied
+	validationPassed := successRate >= 0.5 || placementResult.Applied >= 5
+
+	var warnings []string
+	if placementResult.Failed > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d/%d placements failed", placementResult.Failed, total))
+	}
+
+	return &CitationAgentResult{
+		Role:              role,
+		CitedReport:       citedReport,
+		CitationsUsed:     extractUsedCitationNumbers(citedReport),
+		ValidationPassed:  validationPassed,
+		PlacementWarnings: warnings,
+		TokensUsed:        llmResp.TokensUsed,
+		ModelUsed:         llmResp.ModelUsed,
+		Provider:          llmResp.Provider,
+		InputTokens:       llmResp.Metadata.InputTokens,
+		OutputTokens:      llmResp.Metadata.OutputTokens,
+		PlacementStats: &PlacementStats{
+			Total:       total,
+			Applied:     placementResult.Applied,
+			Failed:      placementResult.Failed,
+			SuccessRate: successRate,
+		},
+	}, nil
+}
+
+// splitSentencesV2 splits text into sentences preserving original format
+// Handles Chinese (。！？), English (.!?), and newlines
+func splitSentencesV2(text string) []string {
+	var sentences []string
+	var current strings.Builder
+
+	runes := []rune(text)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		current.WriteRune(r)
+
+		// Check for sentence-ending punctuation
+		isSentenceEnd := false
+		switch r {
+		case '.', '!', '?', '。', '！', '？':
+			isSentenceEnd = true
+		case '\n':
+			// Newline after content is also a sentence boundary
+			if current.Len() > 1 {
+				isSentenceEnd = true
+			}
+		}
+
+		if isSentenceEnd {
+			// Include trailing whitespace in the sentence
+			for i+1 < len(runes) && unicode.IsSpace(runes[i+1]) && runes[i+1] != '\n' {
+				i++
+				current.WriteRune(runes[i])
+			}
+
+			s := current.String()
+			if strings.TrimSpace(s) != "" {
+				sentences = append(sentences, s)
+			}
+			current.Reset()
+		}
+	}
+
+	// Don't forget the last sentence
+	if current.Len() > 0 {
+		s := current.String()
+		if strings.TrimSpace(s) != "" {
+			sentences = append(sentences, s)
+		}
+	}
+
+	return sentences
+}
+
+// addSentenceNumbers adds [0], [1], etc. prefixes and computes hashes
+func addSentenceNumbers(sentences []string) (string, []string) {
+	var sb strings.Builder
+	hashes := make([]string, len(sentences))
+
+	for i, s := range sentences {
+		// Compute hash of normalized sentence
+		hashes[i] = computeSentenceHash(s)
+
+		// Add numbered prefix
+		sb.WriteString(fmt.Sprintf("[%d] %s", i, s))
+	}
+
+	return sb.String(), hashes
+}
+
+// computeSentenceHash returns first 6 chars of MD5(normalized_sentence)
+func computeSentenceHash(s string) string {
+	normalized := normalizeForHash(s)
+	hash := md5.Sum([]byte(normalized))
+	return hex.EncodeToString(hash[:])[:6]
+}
+
+// normalizeForHash removes whitespace and punctuation for hash computation
+func normalizeForHash(s string) string {
+	var sb strings.Builder
+	for _, r := range s {
+		// Keep only letters and digits (CJK + Latin)
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			sb.WriteRune(r)
+		}
+	}
+	return sb.String()
+}
+
+// buildCitationPlacementPromptV2 returns the V2 system prompt
+func buildCitationPlacementPromptV2() string {
+	return `You are a citation placement specialist.
+
+## YOUR TASK
+Analyze the report and identify where citations should be placed.
+Output a JSON placement plan - DO NOT output the report text.
+
+## INPUT
+You will receive:
+1. Report text with numbered sentences: [0] First sentence. [1] Second sentence...
+2. Citation list with content snippets
+3. Sentence hashes for verification
+
+## OUTPUT FORMAT (JSON only)
+{
+  "placements": [
+    {
+      "sentence_index": 3,
+      "sentence_hash": "a1b2c3",
+      "citation_ids": [7, 12],
+      "confidence": "high",
+      "reason": "revenue data 23.4B matches source"
+    }
+  ]
+}
+
+## FIELDS
+- sentence_index: 0-based index of the sentence (from numbered input)
+- sentence_hash: First 6 chars of the hash shown for that sentence
+- citation_ids: Array of citation numbers (1-indexed) that support this sentence
+- confidence: "high" | "medium" | "low"
+- reason: Brief explanation of why this citation supports the claim
+
+## RULES
+1. Only cite factual claims (statistics, dates, names, figures)
+2. Skip section headers, transitions, synthesis language
+3. Maximum 25 placements
+4. If unsure, use confidence="low" or skip entirely
+5. Prefer official sources over news
+
+## WHAT TO CITE
+✓ Statistics, financial figures, dates
+✓ Company facts (founding, location, size)
+✓ Named people with roles/titles
+✓ Specific claims readers would verify
+
+## WHAT TO SKIP
+✗ Section headers, transitions
+✗ Common knowledge
+✗ Synthesis language ("This shows that...")
+✗ Claims with NO matching source
+
+## EXAMPLE OUTPUT
+{
+  "placements": [
+    {
+      "sentence_index": 5,
+      "sentence_hash": "d4e5f6",
+      "citation_ids": [3],
+      "confidence": "high",
+      "reason": "revenue figure $2.3B exact match"
+    },
+    {
+      "sentence_index": 12,
+      "sentence_hash": "abc123",
+      "citation_ids": [1, 7],
+      "confidence": "medium",
+      "reason": "company founding year from official page"
+    }
+  ]
+}
+
+Output ONLY the JSON, nothing else.`
+}
+
+// buildCitationUserContentV2 builds the user content for V2
+func buildCitationUserContentV2(numberedReport string, citations []CitationForAgent, hashes []string) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Available Citations:\n")
+	for i, c := range citations {
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		snippet := c.Snippet
+		if len(snippet) > 400 {
+			snippet = snippet[:400] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", i+1, title, c.URL))
+		if snippet != "" {
+			sb.WriteString(fmt.Sprintf("    Content: %s\n", snippet))
+		}
+	}
+
+	sb.WriteString("\n## Sentence Hashes:\n")
+	for i, h := range hashes {
+		sb.WriteString(fmt.Sprintf("[%d] hash=%s\n", i, h))
+	}
+
+	sb.WriteString("\n## Report to Analyze:\n")
+	sb.WriteString(numberedReport)
+	sb.WriteString("\n\nOutput your placement plan as JSON:")
+
+	return sb.String()
+}
+
+// parsePlacementPlan parses the LLM response into a PlacementPlan
+func parsePlacementPlan(response string) (*PlacementPlan, error) {
+	response = strings.TrimSpace(response)
+
+	// Try to find JSON in the response
+	jsonStart := strings.Index(response, "{")
+	jsonEnd := strings.LastIndex(response, "}")
+
+	if jsonStart == -1 || jsonEnd == -1 || jsonEnd <= jsonStart {
+		return nil, fmt.Errorf("no JSON object found in response")
+	}
+
+	jsonStr := response[jsonStart : jsonEnd+1]
+
+	var plan PlacementPlan
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	return &plan, nil
+}
+
+// applyPlacementsV2 applies the placement plan to the original sentences
+func applyPlacementsV2(sentences []string, plan *PlacementPlan, hashes []string, maxCitationNum int) (string, PlacementResult) {
+	result := PlacementResult{}
+
+	// Track which sentences have been modified
+	modified := make([]string, len(sentences))
+	copy(modified, sentences)
+
+	// Sort placements by sentence index (descending) to avoid index shifts
+	placements := make([]CitationPlacement, len(plan.Placements))
+	copy(placements, plan.Placements)
+	sort.Slice(placements, func(i, j int) bool {
+		return placements[i].SentenceIndex > placements[j].SentenceIndex
+	})
+
+	for _, p := range placements {
+		// Bounds check
+		if p.SentenceIndex < 0 || p.SentenceIndex >= len(sentences) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// Filter valid citation IDs
+		validCitationIDs := filterValidCitationIDs(p.CitationIDs, maxCitationNum)
+		if len(validCitationIDs) == 0 {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// Hash verification with adjacent sentence fallback
+		targetIdx := p.SentenceIndex
+		if p.SentenceHash != "" && p.SentenceHash != hashes[targetIdx] {
+			// Try adjacent sentences
+			found := false
+			for _, offset := range []int{-1, 1} {
+				adjIdx := targetIdx + offset
+				if adjIdx >= 0 && adjIdx < len(hashes) && hashes[adjIdx] == p.SentenceHash {
+					targetIdx = adjIdx
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Hash mismatch and no adjacent match - still try to apply (lenient mode)
+				// but log this as a potential issue
+			}
+		}
+
+		// Apply citations to the sentence
+		modified[targetIdx] = appendCitationsToSentence(modified[targetIdx], validCitationIDs)
+		result.Applied++
+	}
+
+	// Reconstruct the report
+	return strings.Join(modified, ""), result
+}
+
+// filterValidCitationIDs filters citation IDs to only valid ones
+func filterValidCitationIDs(ids []int, maxNum int) []int {
+	var valid []int
+	seen := make(map[int]bool)
+	for _, id := range ids {
+		if id >= 1 && id <= maxNum && !seen[id] {
+			valid = append(valid, id)
+			seen[id] = true
+		}
+	}
+	return valid
+}
+
+// appendCitationsToSentence appends [n] markers to the end of a sentence
+func appendCitationsToSentence(sentence string, citationIDs []int) string {
+	if len(citationIDs) == 0 {
+		return sentence
+	}
+
+	// Find the position to insert citations (before trailing whitespace/newline)
+	trimmed := strings.TrimRight(sentence, " \t\n\r")
+	trailing := sentence[len(trimmed):]
+
+	// Build citation markers
+	var markers strings.Builder
+	for _, id := range citationIDs {
+		markers.WriteString(fmt.Sprintf("[%d]", id))
+	}
+
+	return trimmed + markers.String() + trailing
 }
