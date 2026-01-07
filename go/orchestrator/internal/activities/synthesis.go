@@ -678,6 +678,19 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 			logger.Info("Using verbatim synthesis template override")
 		} else if tmpl := LoadSynthesisTemplate(templateName, nil); tmpl != nil {
 			// Try to render the template
+			// Extract current date from context for temporal awareness
+			currentDate := ""
+			if input.Context != nil {
+				if d, ok := input.Context["current_date_human"].(string); ok && d != "" {
+					currentDate = d
+				} else if d, ok := input.Context["current_date"].(string); ok && d != "" {
+					currentDate = d
+				}
+			}
+			if currentDate == "" {
+				currentDate = time.Now().UTC().Format("January 2, 2006")
+			}
+
 			data := SynthesisTemplateData{
 				Query:                input.Query,
 				QueryLanguage:        queryLanguage,
@@ -691,6 +704,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				IsResearch:           isResearch,
 				SynthesisStyle:       synthesisStyle,
 				CitationAgentEnabled: citationAgentEnabled,
+				CurrentDate:          currentDate,
 			}
 
 			rendered, err := RenderSynthesisTemplate(tmpl, data)

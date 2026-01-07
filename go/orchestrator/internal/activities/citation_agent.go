@@ -1122,6 +1122,7 @@ func (a *Activities) addCitationsV2(ctx context.Context, input CitationAgentInpu
 
 // splitSentencesV2 splits text into sentences preserving original format
 // Handles Chinese (。！？), English (.!?), and newlines
+// Preserves blank lines to maintain markdown structure
 func splitSentencesV2(text string) []string {
 	var sentences []string
 	var current strings.Builder
@@ -1134,7 +1135,18 @@ func splitSentencesV2(text string) []string {
 		// Check for sentence-ending punctuation
 		isSentenceEnd := false
 		switch r {
-		case '.', '!', '?', '。', '！', '？':
+		case '.':
+			// Check if this is a decimal point (digit.digit) - NOT a sentence boundary
+			// e.g., "$30.8 billion", "3.14", "v1.2.3"
+			prevIsDigit := i > 0 && unicode.IsDigit(runes[i-1])
+			nextIsDigit := i+1 < len(runes) && unicode.IsDigit(runes[i+1])
+			if prevIsDigit && nextIsDigit {
+				// This is a decimal point, not a sentence boundary
+				isSentenceEnd = false
+			} else {
+				isSentenceEnd = true
+			}
+		case '!', '?', '。', '！', '？':
 			isSentenceEnd = true
 		case '\n':
 			// Newline after content is also a sentence boundary
@@ -1144,14 +1156,16 @@ func splitSentencesV2(text string) []string {
 		}
 
 		if isSentenceEnd {
-			// Include trailing whitespace in the sentence
+			// Include trailing whitespace in the sentence (except newlines to preserve paragraph breaks)
 			for i+1 < len(runes) && unicode.IsSpace(runes[i+1]) && runes[i+1] != '\n' {
 				i++
 				current.WriteRune(runes[i])
 			}
 
 			s := current.String()
-			if strings.TrimSpace(s) != "" {
+			// Preserve blank lines (only newlines) for markdown formatting
+			// But skip truly empty strings
+			if len(s) > 0 {
 				sentences = append(sentences, s)
 			}
 			current.Reset()
@@ -1161,7 +1175,7 @@ func splitSentencesV2(text string) []string {
 	// Don't forget the last sentence
 	if current.Len() > 0 {
 		s := current.String()
-		if strings.TrimSpace(s) != "" {
+		if len(s) > 0 {
 			sentences = append(sentences, s)
 		}
 	}

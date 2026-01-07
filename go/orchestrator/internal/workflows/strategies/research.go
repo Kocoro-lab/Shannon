@@ -375,13 +375,27 @@ func buildCompanyDomainDiscoverySearchQuery(canonicalName string, disambiguation
 		q = fmt.Sprintf("%s 공식 사이트 official website", name)
 	}
 
-	// Add up to 2 disambiguation terms to reduce entity mix-ups.
-	if len(disambiguationTerms) > 0 {
-		terms := disambiguationTerms
-		if len(terms) > 2 {
-			terms = terms[:2]
+	// Filter out generic tech terms that pollute search results with competitors
+	genericTerms := map[string]bool{
+		"analytics": true, "platform": true, "marketing": true, "technology": true,
+		"software": true, "saas": true, "cloud": true, "data": true, "ai": true,
+		"tool": true, "tools": true, "solution": true, "solutions": true,
+		"service": true, "services": true, "digital": true, "automation": true,
+	}
+
+	// Add up to 2 non-generic disambiguation terms to reduce entity mix-ups.
+	var filteredTerms []string
+	for _, term := range disambiguationTerms {
+		termLower := strings.ToLower(strings.TrimSpace(term))
+		if termLower != "" && !genericTerms[termLower] {
+			filteredTerms = append(filteredTerms, term)
 		}
-		q = strings.TrimSpace(q + " " + strings.Join(terms, " "))
+	}
+	if len(filteredTerms) > 2 {
+		filteredTerms = filteredTerms[:2]
+	}
+	if len(filteredTerms) > 0 {
+		q = strings.TrimSpace(q + " " + strings.Join(filteredTerms, " "))
 	}
 
 	return q
@@ -470,9 +484,12 @@ func registrableDomain(host string) string {
 	return suffix2
 }
 
-func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution) []string {
+func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, canonicalName string) []string {
 	seen := make(map[string]bool)
 	var out []string
+
+	// Normalize canonical name for matching
+	canonicalLower := strings.ToLower(strings.ReplaceAll(canonicalName, " ", ""))
 
 	addURL := func(raw string) {
 		raw = strings.TrimSpace(raw)
@@ -491,13 +508,49 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution) []
 			return
 		}
 
-		// Exclude common aggregator/social domains; those are covered separately by config sources.
+		// Exclude common aggregator/social/platform domains
 		disallowed := map[string]struct{}{
+			// Social & aggregator
 			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
 			"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
 			"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+			// Generic platforms that pollute results
+			"google.com": {}, "salesforce.com": {}, "shopify.com": {}, "optimizely.com": {},
+			"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+			// Domain registrars & info sites
+			"register.domains": {}, "porkbun.com": {}, "nominus.com": {}, "squarespace.com": {},
+			"github.io": {}, "github.com": {}, "githubusercontent.com": {},
+			// Job boards
+			"hiredchina.com": {}, "glassdoor.com": {}, "indeed.com": {}, "zhipin.com": {},
+			// App stores
+			"apps.shopify.com": {}, "chromewebstore.google.com": {}, "play.google.com": {},
 		}
 		if _, ok := disallowed[host]; ok {
+			return
+		}
+
+		// Relevance check: domain should be related to canonical name
+		// This prevents profitmind.com from being included when searching for PTmind
+		hostLower := strings.ToLower(host)
+		hostBase := strings.TrimSuffix(strings.TrimSuffix(hostLower, ".com"), ".co")
+		hostBase = strings.TrimSuffix(hostBase, ".jp")
+		hostBase = strings.TrimSuffix(hostBase, ".cn")
+
+		isRelevant := false
+		// Check if host contains canonical name (ptengine contains ptengine)
+		if strings.Contains(hostLower, canonicalLower) {
+			isRelevant = true
+		}
+		// Check if canonical name contains host base (ptmind contains ptmind from ptmind.com)
+		if strings.Contains(canonicalLower, hostBase) && len(hostBase) >= 3 {
+			isRelevant = true
+		}
+		// Allow if no canonical name provided (fallback)
+		if canonicalLower == "" {
+			isRelevant = true
+		}
+
+		if !isRelevant {
 			return
 		}
 
@@ -1088,7 +1141,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							"agent_error", discoveryResult.Error,
 						)
 					} else {
-						searchDomains := domainsFromWebSearchToolExecutions(discoveryResult.ToolExecutions)
+						searchDomains := domainsFromWebSearchToolExecutions(discoveryResult.ToolExecutions, refineResult.CanonicalName)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
 
 						// Prefer LLM-selected domains, but only keep domains that are grounded in search result URLs.
@@ -1107,19 +1160,39 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						}
 
 						if len(discovered) > 0 {
-							baseContext["official_domains"] = discovered
-							baseContext["official_domains_source"] = "search_first"
+							// Merge: search-discovered + refinement-guessed domains (dedup)
+							merged := discovered
+							seen := make(map[string]bool)
+							for _, d := range discovered {
+								seen[d] = true
+							}
+							for _, d := range refineResult.OfficialDomains {
+								if !seen[d] {
+									merged = append(merged, d)
+									seen[d] = true
+								}
+							}
 
-							// Keep prefetch small to preserve space for aggregator sources under the global cap.
-							officialDomainsForPrefetch = discovered
-							if len(officialDomainsForPrefetch) > 3 {
-								officialDomainsForPrefetch = officialDomainsForPrefetch[:3]
+							baseContext["official_domains"] = merged
+							baseContext["official_domains_source"] = "search_first_merged"
+
+							officialDomainsForPrefetch = merged
+
+							// Multinational companies need more prefetch slots
+							maxPrefetch := 5
+							if len(refineResult.TargetLanguages) > 1 {
+								maxPrefetch = 8
+							}
+							if len(officialDomainsForPrefetch) > maxPrefetch {
+								officialDomainsForPrefetch = officialDomainsForPrefetch[:maxPrefetch]
 							}
 
 							logger.Info("Domain discovery search-first succeeded",
 								"canonical_name", refineResult.CanonicalName,
 								"search_query", searchQuery,
-								"domains", discovered,
+								"discovered", discovered,
+								"merged", merged,
+								"refinement_domains", refineResult.OfficialDomains,
 							)
 						}
 

@@ -12,6 +12,11 @@
 
 {{- define "system_contract" -}}
 You are synthesizing results from multiple research agents into a coherent final answer.
+{{- if .CurrentDate }}
+
+## Temporal Reference:
+Current date: **{{.CurrentDate}}** (UTC). Use this as your reference point for "as of" statements and when determining what is "current" or "recent".
+{{- end }}
 
 ## Protected Contract (DO NOT OVERRIDE):
 {{- if .CitationAgentEnabled }}
