@@ -6,6 +6,8 @@ const nextConfig: NextConfig = {
   images: {
     unoptimized: true,
   },
+  // Transpile problematic packages for better compatibility
+  transpilePackages: ['react-markdown', 'remark-gfm', 'rehype-highlight'],
 };
 
 export default nextConfig;

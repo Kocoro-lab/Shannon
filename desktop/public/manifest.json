@@ -1,11 +1,11 @@
 {
-  "name": "Shannon - Production AI Agents",
-  "short_name": "Shannon",
-  "description": "Multi-agent AI orchestration platform that actually works",
+  "name": "Planet",
+  "short_name": "Planet",
+  "description": "Multi-agent AI orchestration platform",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a0a",
-  "theme_color": "#3B82F6",
+  "background_color": "#0A192D",
+  "theme_color": "#0A192D",
   "icons": [
     {
       "src": "/app-icon.png",

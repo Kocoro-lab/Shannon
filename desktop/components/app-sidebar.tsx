@@ -133,7 +133,7 @@ function SidebarInner() {
         <Link href="/run-detail?session_id=new" onClick={handleNavClick} className="flex items-center gap-2 px-2 py-2 hover:opacity-80 transition-opacity">
           <Image 
             src="/app-icon.png" 
-            alt="Shannon Agents" 
+            alt="Planet" 
             width={28} 
             height={28}
             className="rounded-md"
@@ -143,7 +143,7 @@ function SidebarInner() {
             }}
           />
           <h2 className="text-lg font-semibold tracking-tight">
-            Shannon
+            Planet Agents
           </h2>
         </Link>
       </SidebarHeader>
@@ -219,6 +219,7 @@ function SidebarInner() {
           {/* Show logout only if authenticated (not using dev X-User-Id) */}
           {!process.env.NEXT_PUBLIC_USER_ID && getStoredUser() && (
             <button
+              type="button"
               onClick={logout}
               className="flex w-full items-center gap-2 px-2 py-2 text-sm text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
             >

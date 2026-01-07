@@ -6,6 +6,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Use Python 3.12 if available (3.14 has compatibility issues with grpcio-tools)
+if command -v python3.12 &> /dev/null; then
+    PYTHON_CMD="python3.12"
+elif command -v python3.13 &> /dev/null; then
+    PYTHON_CMD="python3.13"
+elif command -v python3.11 &> /dev/null; then
+    PYTHON_CMD="python3.11"
+else
+    PYTHON_CMD="python3"
+fi
+echo "Using Python: $($PYTHON_CMD --version)"
+
 # Add Go bin to PATH
 export PATH="$HOME/go/bin:$PATH"
 
@@ -29,16 +41,16 @@ if ! command -v protoc-gen-go &> /dev/null; then
 fi
 
 # Ensure Python grpc tools are installed with correct protobuf version
-if ! python3 -c "import grpc_tools" 2>/dev/null; then
+if ! $PYTHON_CMD -c "import grpc_tools" 2>/dev/null; then
     echo "Installing Python gRPC tools with protobuf 5.29.2..."
-    pip3 install grpcio-tools==1.68.1 protobuf==5.29.2
+    $PYTHON_CMD -m pip install --break-system-packages grpcio-tools==1.68.1 protobuf==5.29.2
 else
     # Check protobuf version
-    PROTOBUF_VERSION=$(python3 -c "import google.protobuf; print(google.protobuf.__version__)" 2>/dev/null || echo "unknown")
+    PROTOBUF_VERSION=$($PYTHON_CMD -c "import google.protobuf; print(google.protobuf.__version__)" 2>/dev/null || echo "unknown")
     if [[ ! "$PROTOBUF_VERSION" =~ ^5\. ]]; then
         echo "Warning: Protobuf version $PROTOBUF_VERSION detected, expected 5.x"
         echo "Installing correct version..."
-        pip3 install --upgrade protobuf==5.29.2 grpcio-tools==1.68.1
+        $PYTHON_CMD -m pip install --break-system-packages --upgrade protobuf==5.29.2 grpcio-tools==1.68.1
     fi
 fi
 
@@ -66,7 +78,7 @@ fi
 echo "Generating Python protobuf files with grpc_tools.protoc (protobuf 5.x)..."
 mkdir -p gen/python
 # Use Python's bundled protoc to ensure version compatibility
-python3 -m grpc_tools.protoc \
+$PYTHON_CMD -m grpc_tools.protoc \
     --python_out=gen/python \
     --grpc_python_out=gen/python \
     --pyi_out=gen/python \

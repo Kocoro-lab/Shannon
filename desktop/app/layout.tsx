@@ -1,46 +1,35 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import { Providers } from "@/components/providers";
 import "./globals.css";
 
-const geistSans = Geist({
-    variable: "--font-geist-sans",
-    subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-    variable: "--font-geist-mono",
-    subsets: ["latin"],
-});
-
 export const metadata: Metadata = {
     title: {
-        default: "Shannon - Multi-Agent AI Platform",
-        template: "%s | Shannon",
+        default: "Planet",
+        template: "%s | Planet",
     },
-    description: "Open-source multi-agent AI orchestration platform. Enterprise-grade automation with intelligent agent scheduling and monitoring.",
+    description: "Multi-agent AI orchestration platform.",
     keywords: ["AI agents", "automation", "multi-agent", "orchestration", "open source", "agent scheduling"],
-    authors: [{ name: "Shannon" }],
-    creator: "Shannon",
+    authors: [{ name: "Planet" }],
+    creator: "Planet",
     openGraph: {
         type: "website",
         locale: "en_US",
-        siteName: "Shannon",
-        title: "Shannon - Multi-Agent AI Platform",
-        description: "Open-source multi-agent AI orchestration platform. Enterprise-grade automation with intelligent agent scheduling and monitoring.",
+        siteName: "Planet",
+        title: "Planet",
+        description: "Multi-agent AI orchestration platform.",
         images: [
             {
                 url: "/og-image.png",
                 width: 1200,
                 height: 630,
-                alt: "Shannon - Multi-Agent AI Platform",
+                alt: "Planet",
             },
         ],
     },
     twitter: {
         card: "summary_large_image",
-        title: "Shannon - Multi-Agent AI Platform",
-        description: "Open-source multi-agent AI orchestration platform.",
+        title: "Planet",
+        description: "Multi-agent AI orchestration platform.",
         images: ["/og-image.png"],
     },
     icons: {
@@ -58,7 +47,7 @@ export default function RootLayout({
     return (
         <html lang="en" suppressHydrationWarning>
             <body
-                className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+                className="antialiased"
             >
                 <Providers>
                     {children}

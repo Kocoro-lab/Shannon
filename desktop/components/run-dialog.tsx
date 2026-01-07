@@ -68,7 +68,7 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
                 <DialogHeader>
                     <DialogTitle>Run {scenarioName}</DialogTitle>
                     <DialogDescription>
-                        Enter your query to submit to Shannon.
+                        Enter your query to submit to Planet.
                     </DialogDescription>
                 </DialogHeader>
                 <div className="grid gap-4 py-4">

@@ -7,8 +7,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: "Roboto", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-heading: "Inter", ui-sans-serif, system-ui, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -46,71 +47,128 @@
 
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  /* Prometheus / Planet light theme */
+  --background: #d6dde6; /* Light canvas to separate cards */
+  --foreground: #0a192d; /* Navy */
+
+  /* Surface separation (Flat 2.0: no borders, distinct fills) */
+  --sidebar: #ededed; /* Slightly lighter than background */
+  --sidebar-foreground: #0a192d;
+  --card: #ffffff;
+  --card-foreground: #0a192d;
+  --popover: #ffffff;
+  --popover-foreground: #0a192d;
+
+  /* Brand + semantic colors */
+  --primary: #0a192d; /* Navy */
+  --primary-foreground: #f8f8f8;
+  --secondary: #ffdd00; /* Yellow */
+  --secondary-foreground: #0a192d;
+  --accent: #00a3a3; /* Turquoise */
+  --accent-foreground: #0a192d;
+  --destructive: #ff4d4d; /* Red */
+  --destructive-foreground: #0a192d;
+
+  --muted: #c2cad6;
+  --muted-foreground: #334155;
+
+  --border: #cccccc; /* Medium Gray (mostly unused once borders removed) */
+  --input: #ffffff;
+  --ring: #4d9fff; /* Light Blue */
+
+  /* Charts (aligned with brand palette) */
+  --chart-1: #4d9fff; /* Light Blue */
+  --chart-2: #00a3a3; /* Turquoise */
+  --chart-3: #9d8df1; /* Lavender */
+  --chart-4: #ff5500; /* Orange */
+  --chart-5: #ffdd00; /* Yellow */
+
+  /* Sidebar tokens used by shadcn sidebar */
+  --sidebar-primary: #0a192d;
+  --sidebar-primary-foreground: #f8f8f8;
+  --sidebar-accent: #ededed;
+  --sidebar-accent-foreground: #0a192d;
+  --sidebar-border: transparent;
+  --sidebar-ring: #4d9fff;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Prometheus / Planet dark theme */
+  --background: #0a192d; /* Navy */
+  --foreground: #f8f8f8; /* Ultra Light Gray */
+
+  /* Surface separation (Flat 2.0: no borders, distinct fills) */
+  --sidebar: #102a49; /* Light Navy */
+  --sidebar-foreground: #f8f8f8;
+  --card: #173a66; /* Slightly brighter than sidebar */
+  --card-foreground: #f8f8f8;
+  --popover: #173a66;
+  --popover-foreground: #f8f8f8;
+
+  /* Brand + semantic colors */
+  --primary: #4d9fff; /* Light Blue */
+  --primary-foreground: #0a192d;
+  --secondary: #ffdd00; /* Yellow */
+  --secondary-foreground: #0a192d;
+  --accent: #00a3a3; /* Turquoise */
+  --accent-foreground: #0a192d;
+  --destructive: #ff4d4d; /* Red */
+  --destructive-foreground: #0a192d;
+
+  --muted: #0f2947;
+  --muted-foreground: #cbd5e1;
+
+  --border: rgba(255, 255, 255, 0.10);
+  --input: #0f2440;
+  --ring: #4d9fff;
+
+  /* Charts */
+  --chart-1: #4d9fff;
+  --chart-2: #00a3a3;
+  --chart-3: #9d8df1;
+  --chart-4: #ff5500;
+  --chart-5: #ffdd00;
+
+  --sidebar-primary: #4d9fff;
+  --sidebar-primary-foreground: #0a192d;
+  --sidebar-accent: #122b4b;
+  --sidebar-accent-foreground: #f8f8f8;
+  --sidebar-border: transparent;
+  --sidebar-ring: #4d9fff;
+}
+
+/* Local font setup (bundled with the Tauri app) */
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/Roboto-Regular.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("/fonts/Roboto-Medium.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Roboto";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/Roboto-Bold.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/Inter-Bold.woff2") format("woff2");
 }
 
 @layer base {
@@ -119,5 +177,15 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+  }
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-heading);
+    font-weight: 700;
   }
 }

@@ -114,17 +114,45 @@ npm run lint         # Run ESLint
 
 ### Environment Configuration
 
-Create `.env.local` for development:
+The desktop app needs to know how to connect to your Shannon backend. Create a `.env.local` file in the `desktop/` directory:
+
+**Quick Setup (Automated):**
 
 ```bash
-# Backend API endpoint
+# From the project root
+cd desktop
+cp .env.local.example .env.local
+```
+
+The `.env.local` file is already configured for local development with these settings:
+
+```bash
+# Backend API endpoint (Shannon Gateway)
 NEXT_PUBLIC_API_URL=http://localhost:8080
 
-# Optional: Enable debug mode
+# Development mode - uses default user ID (no login required)
+NEXT_PUBLIC_USER_ID=user_01h0000000000000000000000
+
+# Enable debug logging
 NEXT_PUBLIC_DEBUG=true
 ```
 
-See [`.env.local.example`](.env.local.example) for all available options.
+**Configuration Options:**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NEXT_PUBLIC_API_URL` | Shannon Gateway endpoint | `http://localhost:8080` |
+| `NEXT_PUBLIC_USER_ID` | Default user for dev mode (bypasses auth) | `user_01h0000000000000000000000` |
+| `NEXT_PUBLIC_API_KEY` | API key for authentication (optional) | - |
+| `NEXT_PUBLIC_DEBUG` | Enable debug logging | `false` |
+
+**Authentication Modes:**
+
+1. **Development Mode (No Auth)**: Set `NEXT_PUBLIC_USER_ID` to bypass authentication
+2. **API Key Auth**: Set `NEXT_PUBLIC_API_KEY` or log in to get one
+3. **JWT Auth**: Use the login page to authenticate with email/password
+
+See [`.env.local.example`](.env.local.example) for more details.
 
 ## 📦 Tech Stack
 
@@ -150,19 +178,34 @@ See [`.env.local.example`](.env.local.example) for all available options.
 
 ### Build Commands
 
+**Quick Build for Local Docker Compose (Recommended):**
+
 ```bash
-# macOS
-npm run tauri:build -- --target universal-apple-darwin
-
-# Windows
-npm run tauri:build -- --target x86_64-pc-windows-msvc
-
-# Linux
-npm run tauri:build -- --target x86_64-unknown-linux-gnu
-
-# iOS (macOS only, requires Xcode)
-npm run tauri ios build
+# Automated build script with checks
+./build-local.sh
 ```
+
+**Manual Build:**
+
+```bash
+# Build for current platform
+npm run tauri:build
+
+# Platform-specific builds
+npm run tauri:build -- --target universal-apple-darwin  # macOS Universal
+npm run tauri:build -- --target x86_64-pc-windows-msvc  # Windows
+npm run tauri:build -- --target x86_64-unknown-linux-gnu  # Linux
+npm run tauri ios build  # iOS (macOS only, requires Xcode)
+```
+
+**Important:** The built app will connect to `http://localhost:8080` (your local Docker Compose services). Make sure the backend is running before using the app:
+
+```bash
+cd ..
+make dev
+```
+
+See [TAURI_BUILD_GUIDE.md](TAURI_BUILD_GUIDE.md) for detailed build instructions.
 
 ## 🔄 Updates
 
