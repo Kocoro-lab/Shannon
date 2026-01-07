@@ -13,6 +13,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/budget"
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 )
 
 // BudgetActivities handles token budget operations
@@ -326,11 +327,13 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 	}
 
 	// Record the actual usage with the model that was actually used
-	// Use the model from result if available, otherwise fall back to what we selected
+	// Use the model from result if available, otherwise fall back to tier's priority-one model
 	actualModel := result.ModelUsed
-	if actualModel == "" {
-		// If agent didn't report a model, leave it empty to use defaults in pricing
-		actualModel = ""
+	if strings.TrimSpace(actualModel) == "" {
+		// Fallback to tier's priority-one model for accurate cost tracking
+		if m := pricing.GetPriorityOneModel(input.ModelTier); m != "" {
+			actualModel = m
+		}
 	}
 	// Determine actual provider. Prefer result.Provider when available; fallback to detection from model.
 	actualProvider := result.Provider

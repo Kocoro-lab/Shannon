@@ -249,6 +249,56 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 	return filtered
 }
 
+// CitationFilterResult holds the result of citation filtering with fallback logic.
+type CitationFilterResult struct {
+	Citations []metadata.Citation
+	Before    int
+	After     int
+	Retention float64
+	Applied   bool // true if filter applied, false if fallback (kept original)
+}
+
+// Constants for citation filter fallback thresholds
+const (
+	citationFilterMinCount     = 20  // Minimum citations to accept filter result
+	citationFilterMinRetention = 0.3 // Minimum retention rate (30%)
+)
+
+// ApplyCitationFilterWithFallback applies entity-based filtering with automatic
+// fallback when the filter would remove too many citations.
+// Returns a CitationFilterResult containing the filtered citations and metadata.
+func ApplyCitationFilterWithFallback(
+	citations []metadata.Citation,
+	canonicalName string,
+	aliases []string,
+	domains []string,
+) CitationFilterResult {
+	beforeCount := len(citations)
+	if beforeCount == 0 {
+		return CitationFilterResult{Citations: citations, Applied: false}
+	}
+
+	filtered := FilterCitationsByEntity(citations, canonicalName, aliases, domains)
+	retention := float64(len(filtered)) / float64(beforeCount)
+
+	result := CitationFilterResult{
+		Before:    beforeCount,
+		After:     len(filtered),
+		Retention: retention,
+	}
+
+	// Apply filter only if results are reasonable (>=20 citations OR >=30% retention)
+	if len(filtered) >= citationFilterMinCount || retention >= citationFilterMinRetention {
+		result.Citations = filtered
+		result.Applied = true
+	} else {
+		result.Citations = citations // Keep original
+		result.Applied = false
+	}
+
+	return result
+}
+
 func hasSuccessfulToolExecutions(results []activities.AgentExecutionResult) bool {
 	for _, ar := range results {
 		for _, te := range ar.ToolExecutions {
@@ -753,6 +803,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 
 	modelTier := determineModelTier(baseContext, "medium")
+	// Ensure baseContext always has model_tier for consistent propagation
+	// (parallel/hybrid execution may use non-budget path which reads from context)
+	baseContext["model_tier"] = modelTier
 	var agentResults []activities.AgentExecutionResult
 	var domainPrefetchResults []activities.AgentExecutionResult
 	domainPrefetchTokens := 0
@@ -1879,21 +1932,28 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				if eq, ok := baseContext["exact_queries"].([]string); ok {
 					aliases = eq
 				}
-				// Filter citations by entity relevance
-				beforeCount := len(citations)
+				// Filter citations by entity relevance with automatic fallback
 				logger.Info("Applying citation entity filter",
-					"pre_filter_count", beforeCount,
+					"pre_filter_count", len(citations),
 					"canonical_name", canonicalName,
 					"official_domains", domains,
 					"alias_count", len(aliases),
 				)
-				citations = FilterCitationsByEntity(citations, canonicalName, aliases, domains)
-				logger.Info("Citation filter completed",
-					"before", beforeCount,
-					"after", len(citations),
-					"removed", beforeCount-len(citations),
-					"retention_rate", float64(len(citations))/float64(beforeCount),
-				)
+				filterResult := ApplyCitationFilterWithFallback(citations, canonicalName, aliases, domains)
+				citations = filterResult.Citations
+				if filterResult.Applied {
+					logger.Info("Citation filter applied",
+						"before", filterResult.Before,
+						"after", filterResult.After,
+						"retention", filterResult.Retention,
+					)
+				} else {
+					logger.Warn("Citation filter too aggressive, keeping original",
+						"before", filterResult.Before,
+						"filtered", filterResult.After,
+						"retention", filterResult.Retention,
+					)
+				}
 			}
 			collectedCitations = citations
 			// Format into numbered list lines expected by FormatReportWithCitations
@@ -2457,13 +2517,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					if eq, ok := baseContext["exact_queries"].([]string); ok {
 						aliases = eq
 					}
-					beforeCount := len(updatedCitations)
-					updatedCitations = FilterCitationsByEntity(updatedCitations, canonicalName, aliases, domains)
-					logger.Info("Gap-filling citation filter applied",
-						"before", beforeCount,
-						"after", len(updatedCitations),
-						"removed", beforeCount-len(updatedCitations),
-					)
+					filterResult := ApplyCitationFilterWithFallback(updatedCitations, canonicalName, aliases, domains)
+					updatedCitations = filterResult.Citations
+					if filterResult.Applied {
+						logger.Info("Gap-filling citation filter applied",
+							"before", filterResult.Before,
+							"after", filterResult.After,
+							"retention", filterResult.Retention,
+						)
+					} else {
+						logger.Warn("Gap-filling citation filter too aggressive, keeping original",
+							"before", filterResult.Before,
+							"filtered", filterResult.After,
+							"retention", filterResult.Retention,
+						)
+					}
 				}
 				collectedCitations = updatedCitations
 
@@ -2743,13 +2811,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								if eq, ok := baseContext["exact_queries"].([]string); ok {
 									aliases = eq
 								}
-								beforeCount := len(allCitations)
-								allCitations = FilterCitationsByEntity(allCitations, canonicalName, aliases, domains)
-								logger.Info("Iterative gap-filling citation filter applied",
-									"before", beforeCount,
-									"after", len(allCitations),
-									"removed", beforeCount-len(allCitations),
-								)
+								filterResult := ApplyCitationFilterWithFallback(allCitations, canonicalName, aliases, domains)
+								allCitations = filterResult.Citations
+								if filterResult.Applied {
+									logger.Info("Iterative gap-filling citation filter applied",
+										"before", filterResult.Before,
+										"after", filterResult.After,
+										"retention", filterResult.Retention,
+									)
+								} else {
+									logger.Warn("Iterative gap-filling citation filter too aggressive, keeping original",
+										"before", filterResult.Before,
+										"filtered", filterResult.After,
+										"retention", filterResult.Retention,
+									)
+								}
 							}
 
 							if len(allCitations) > 0 {
@@ -2878,7 +2954,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 		var citationResult activities.CitationAgentResult
 		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 180 * time.Second,
+			StartToCloseTimeout: 360 * time.Second, // Extended for long reports with medium tier
 			RetryPolicy: &temporal.RetryPolicy{
 				InitialInterval:    time.Second,
 				BackoffCoefficient: 2.0,
@@ -2886,12 +2962,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			},
 		})
 
+		// Determine citation model tier based on research strategy
+		citationModelTier := "small"
+		if sv, ok := baseContext["research_strategy"].(string); ok {
+			if sv == "deep" || sv == "academic" {
+				citationModelTier = "medium" // Better instruction-following for complex reports
+			}
+		}
+
 		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
 			Report:           reportForCitation,
 			Citations:        citationsForAgent,
 			ParentWorkflowID: input.ParentWorkflowID,
 			Context:          baseContext,
-			ModelTier:        "small", // Structured task - small tier sufficient
+			ModelTier:        citationModelTier,
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
@@ -3638,8 +3722,8 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 					InputParams:    nil, // Tool execution from agent doesn't provide input params
 					Output:         outputStr,
 					Success:        tool.Success,
-					TokensConsumed: 0, // Not provided by agent
-					DurationMs:     0, // Not provided by agent
+					TokensConsumed: 0,               // Not provided by agent
+					DurationMs:     tool.DurationMs, // From agent-core proto
 					Error:          tool.Error,
 				},
 			)

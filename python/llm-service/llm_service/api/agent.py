@@ -1,6 +1,7 @@
 """Agent API endpoints for HTTP communication with Agent-Core."""
 
 import logging
+import os
 from typing import Dict, Any, Optional, List, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -167,7 +168,7 @@ class AgentQuery(BaseModel):
         default=0.7, description="Temperature for generation"
     )
     model_tier: Optional[str] = Field(
-        default="small", description="Model tier: small, medium, or large"
+        default=None, description="Model tier: small, medium, or large (None = use context or default to small)"
     )
     model_override: Optional[str] = Field(
         default=None,
@@ -318,7 +319,9 @@ async def agent_query(request: Request, query: AgentQuery):
 
 
                 # Add research-mode instruction for deep content retrieval
-                if isinstance(query.context, dict):
+                # EXCEPTION: Do NOT inject for REASON steps (no tools, pure reasoning)
+                is_reason_step = query.query.strip().startswith("REASON (")
+                if isinstance(query.context, dict) and not is_reason_step:
                     is_research = (
                         query.context.get("force_research")
                         or query.context.get("research_strategy")
@@ -331,6 +334,10 @@ async def agent_query(request: Request, query: AgentQuery):
                             "For each important question, use web_search to find sources, "
                             "then call web_fetch on the top 3-5 relevant URLs to read the full content before answering. "
                             "This ensures you have comprehensive information, not just summaries."
+                            "\n\nTOOL USAGE (CRITICAL):"
+                            "\n- Invoke tools ONLY via native function calling (no XML/JSON stubs like <web_fetch> or <function_calls>)."
+                            "\n- When you have multiple URLs, prefer web_fetch(urls=[...]) to batch fetch instead of calling web_fetch repeatedly."
+                            "\n- Do NOT claim in text which tools/providers you used; the system records tool usage."
                             "\n\nCOMPANY/ENTITY RESEARCH: When researching a company or organization:"
                             "\n- FIRST try web_fetch on the likely official domain (e.g., 'companyname.com', 'companyname.io')"
                             "\n- Try alternative domains: products may have different names (e.g., Ptmind → ptengine.com)"
@@ -361,6 +368,18 @@ async def agent_query(request: Request, query: AgentQuery):
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
+
+                # REASON step: Add explicit instruction to prevent stub output
+                if is_reason_step:
+                    reason_instruction = (
+                        "\n\nIMPORTANT: This is a REASONING step. You have NO tools available."
+                        "\n- Output ONLY your reasoning and decision (search/no_search)."
+                        "\n- Do NOT output any tool calls, XML tags, JSON, or function call stubs."
+                        "\n- Do NOT use <function_calls>, <invoke>, <web_fetch>, or similar markup."
+                        "\n- Simply provide your reasoning in plain text."
+                    )
+                    system_prompt = system_prompt + reason_instruction
+                    logger.info("Applied REASON step instruction (no tools, no stubs)")
 
                 # Deep Research 2.0: Add task contract instructions if present in context
                 if isinstance(query.context, dict):
@@ -564,15 +583,27 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 registry = get_registry()
                 # Use preset only if allowed_tools is None (not provided), not if it's [] (explicitly empty)
-                # EXCEPTION: If a role preset is active and allowed_tools is [], treat as None (use role preset's tools)
-                # This handles the bypass decomposition case where orchestrator passes [] but role defines tools
+                # IMPORTANT: allowed_tools=[] means "explicitly no tools" - do NOT override with preset
+                # This is critical for REASON steps in ReactLoop which must not have tools available
                 requested = query.allowed_tools
                 preset_allowed = list(preset.get("allowed_tools", []))
 
-                # If requested is explicitly empty [] AND role preset has tools, use preset tools
-                if requested is not None and len(requested) == 0 and preset and len(preset_allowed) > 0:
-                    logger.info(f"Role preset active with empty allowed_tools - using role preset tools: {preset_allowed}")
-                    requested = None  # Treat as if not provided
+                # Check for explicit "use preset tools" flag in context (opt-in bypass)
+                use_preset_tools_override = (
+                    isinstance(query.context, dict)
+                    and query.context.get("use_preset_tools") is True
+                )
+
+                # Only use preset if:
+                # 1. requested is None (not provided), OR
+                # 2. explicit use_preset_tools=True override in context
+                if requested is not None and len(requested) == 0:
+                    if use_preset_tools_override and preset and len(preset_allowed) > 0:
+                        logger.info(f"Explicit use_preset_tools override - using role preset tools: {preset_allowed}")
+                        requested = None
+                    else:
+                        # allowed_tools=[] explicitly means NO tools - respect this
+                        logger.info("allowed_tools=[] explicitly set - no tools will be available")
 
                 if requested is None:
                     base = preset_allowed
@@ -599,6 +630,11 @@ async def agent_query(request: Request, query: AgentQuery):
 
             # Collect structured tool executions for upstream observability/persistence
             tool_execution_records: List[Dict[str, Any]] = []
+            seed_raw_tool_results: List[Dict[str, Any]] = []
+            seed_search_urls: List[str] = []
+            seed_fetch_success = False
+            seed_last_tool_results = ""
+            seed_loop_function_call: Optional[str] = None
 
             # Generate completion with tools if specified
             if effective_allowed_tools:
@@ -638,6 +674,11 @@ async def agent_query(request: Request, query: AgentQuery):
 
             # If forced_tool_calls are provided, execute them sequentially then interpret
             if query.forced_tool_calls:
+                if query.stream:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="forced_tool_calls are not supported with stream=true",
+                    )
                 # Validate tools against effective allowlist
                 forced_calls = []
                 for c in query.forced_tool_calls or []:
@@ -656,7 +697,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 logger.info(
                     f"Executing forced tool sequence: {[fc['name'] for fc in forced_calls]}"
                 )
-                tool_results, exec_records = await _execute_and_format_tools(
+                tool_results, exec_records, raw_records = await _execute_and_format_tools(
                     forced_calls,
                     effective_allowed_tools or [],
                     query.query,
@@ -665,7 +706,19 @@ async def agent_query(request: Request, query: AgentQuery):
                 )
                 tool_execution_records.extend(exec_records)
 
-                # Add messages and interpret results with LLM (no tools enabled)
+                # Seed tool-loop context from forced tool executions (e.g., precomputed web_search)
+                seed_raw_tool_results.extend(raw_records)
+                for rr in raw_records:
+                    if rr.get("tool") == "web_search" and rr.get("success"):
+                        seed_search_urls.extend(
+                            _extract_urls_from_search_output(rr.get("output"))
+                        )
+                    if rr.get("tool") in {"web_fetch", "web_subpage_fetch", "web_crawl"} and rr.get("success"):
+                        seed_fetch_success = True
+                seed_last_tool_results = tool_results or ""
+                seed_loop_function_call = "auto" if tools_param else None
+
+                # Add messages and continue with the normal tool loop (tools enabled)
                 if forced_calls:
                     messages.append(
                         {
@@ -676,64 +729,11 @@ async def agent_query(request: Request, query: AgentQuery):
                 messages.append(
                     {
                         "role": "user",
-                        "content": f"Tool execution result:\n{tool_results}\n\nBased on this result, please provide a clear and complete answer to the original query.",
+                        "content": (
+                            f"Tool execution result:\n{tool_results}\n\n"
+                            "If the information is insufficient, you may call another tool; otherwise, answer the original query."
+                        ),
                     }
-                )
-
-                interpretation_result = (
-                    await request.app.state.providers.generate_completion(
-                        messages=messages,
-                        tier=tier,
-                        specific_model=model_override,
-                        provider_override=provider_override,
-                        max_tokens=max_tokens,
-                        temperature=temperature,
-                        response_format=response_format,
-                        tools=None,
-                        workflow_id=request.headers.get("X-Workflow-ID")
-                        or request.headers.get("x-workflow-id"),
-                        agent_id=query.agent_id,
-                    )
-                )
-
-                response_text = interpretation_result.get("output_text", tool_results)
-                total_tokens = interpretation_result.get("usage", {}).get(
-                    "total_tokens", 0
-                )
-
-                result = {
-                    "response": response_text,
-                    "tokens_used": total_tokens,
-                    "model_used": interpretation_result.get("model", "unknown"),
-                }
-                tools_used = sorted(
-                    {rec.get("tool") for rec in tool_execution_records if rec.get("tool")}
-                )
-
-                return AgentResponse(
-                    success=True,
-                    response=result["response"],
-                    tokens_used=result["tokens_used"],
-                    model_used=result["model_used"],
-                    provider=interpretation_result.get("provider") or "unknown",
-                    finish_reason=interpretation_result.get("finish_reason", "stop"),
-                    metadata={
-                        "agent_id": query.agent_id,
-                        "mode": query.mode,
-                        "allowed_tools": effective_allowed_tools,
-                        "role": (query.context or {}).get("role")
-                        if isinstance(query.context, dict)
-                        else None,
-                        "provider": interpretation_result.get("provider") or "unknown",
-                        "finish_reason": interpretation_result.get("finish_reason", "stop"),
-                        "input_tokens": interpretation_result.get("usage", {}).get("prompt_tokens")
-                        or interpretation_result.get("usage", {}).get("input_tokens"),
-                        "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
-                        or interpretation_result.get("usage", {}).get("output_tokens"),
-                        "cost_usd": (interpretation_result.get("usage", {}) or {}).get("cost_usd", 0.0),
-                        "tools_used": tools_used,
-                        "tool_executions": tool_execution_records,
-                    },
                 )
 
             # When force_tools enabled and tools available, force model to use a tool
@@ -837,276 +837,329 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-            result_data = await request.app.state.providers.generate_completion(
-                messages=messages,
-                tier=tier,
-                specific_model=model_override,
-                provider_override=provider_override,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format=response_format,
-                tools=tools_param,
-                function_call=function_call,
-                workflow_id=request.headers.get("X-Workflow-ID")
-                or request.headers.get("x-workflow-id"),
-                agent_id=query.agent_id,
+            # -----------------------------
+            # Non-stream: multi-tool loop
+            # -----------------------------
+            def _get_budget(name: str, default_val: int) -> int:
+                try:
+                    if isinstance(query.context, dict) and query.context.get(name) is not None:
+                        val = int(query.context.get(name))
+                        if val > 0:
+                            return val
+                except Exception:
+                    pass
+                try:
+                    env_key = name.upper()
+                    env_val = os.getenv(env_key)
+                    if env_val:
+                        val = int(env_val)
+                        if val > 0:
+                            return val
+                except Exception:
+                    pass
+                return default_val
+
+            max_tool_iterations = _get_budget("max_tool_iterations", 3)
+            max_total_tool_calls = _get_budget("max_total_tool_calls", 5)
+            max_total_tool_output_chars = _get_budget("max_total_tool_output_chars", 60000)
+            max_urls_to_fetch = _get_budget("max_urls_to_fetch", 10)
+            max_consecutive_tool_failures = _get_budget("max_consecutive_tool_failures", 2)
+            research_mode = (
+                isinstance(query.context, dict)
+                and (
+                    query.context.get("force_research")
+                    or query.context.get("research_strategy")
+                    or query.context.get("research_mode")
+                    or query.context.get("workflow_type") == "research"
+                    or query.context.get("role") == "deep_research_agent"
+                )
+            )
+            followup_instruction = (
+                "If the information is insufficient, you may call another tool; otherwise, answer the original query."
             )
 
-            # Process the response (Responses API shape)
-            response_text = result_data.get("output_text", "")
+            total_tokens = 0
+            total_input_tokens = 0
+            total_output_tokens = 0
+            total_cost_usd = 0.0
+            total_tool_output_chars = 0
+            loop_iterations = 0
+            consecutive_tool_failures = 0
+            stop_reason = "unknown"
+            did_forced_fetch = False
+            response_text = ""
+            raw_tool_results: List[Dict[str, Any]] = list(seed_raw_tool_results)
+            search_urls: List[str] = list(seed_search_urls)
+            fetch_success = bool(seed_fetch_success)
+            last_tool_results = seed_last_tool_results
+            last_result_data: Optional[Dict[str, Any]] = None
 
-            # Extract tool calls from function_call field (unified provider response format)
-            tool_calls_from_output = []
-            function_call = result_data.get("function_call")
-            if function_call and isinstance(function_call, dict):
-                name = function_call.get("name")
-                if name:
-                    args = function_call.get("arguments") or {}
-                    # Handle JSON string arguments from some providers
-                    if isinstance(args, str):
-                        import json
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse arguments as JSON: {args}")
-                            args = {}
-                    tool_calls_from_output.append({"name": name, "arguments": args})
-                    logger.info(
-                        f"✅ Parsed tool call: {name} with args: {list(args.keys()) if isinstance(args, dict) else 'N/A'}"
-                    )
-                else:
-                    logger.warning(
-                        f"Skipping malformed tool call without name: {function_call}"
-                    )
+            fetch_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
+            loop_function_call = seed_loop_function_call or function_call
 
-            # Execute tools if requested
-            total_tokens = result_data.get("usage", {}).get("total_tokens", 0)
+            while True:
+                result_data = await request.app.state.providers.generate_completion(
+                    messages=messages,
+                    tier=tier,
+                    specific_model=model_override,
+                    provider_override=provider_override,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tools=tools_param,
+                    function_call=loop_function_call,
+                    workflow_id=request.headers.get("X-Workflow-ID")
+                    or request.headers.get("x-workflow-id"),
+                    agent_id=query.agent_id,
+                )
+                last_result_data = result_data
 
-            if tool_calls_from_output and effective_allowed_tools:
-                tool_results, exec_records = await _execute_and_format_tools(
+                response_text = result_data.get("output_text", "") or response_text
+                usage = result_data.get("usage", {}) or {}
+                try:
+                    total_tokens += int(usage.get("total_tokens") or 0)
+                    total_input_tokens += int(usage.get("input_tokens") or 0)
+                    total_output_tokens += int(usage.get("output_tokens") or 0)
+                    total_cost_usd += float(usage.get("cost_usd") or 0.0)
+                except Exception:
+                    pass
+
+                # Extract tool calls from function_call field (unified provider response format)
+                tool_calls_from_output = []
+                fc = result_data.get("function_call")
+                if fc and isinstance(fc, dict):
+                    name = fc.get("name")
+                    if name:
+                        args = fc.get("arguments") or {}
+                        if isinstance(args, str):
+                            import json
+
+                            try:
+                                args = json.loads(args)
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to parse arguments as JSON: {args}")
+                                args = {}
+                        tool_calls_from_output.append({"name": name, "arguments": args})
+                        logger.info(
+                            f"✅ Parsed tool call: {name} with args: {list(args.keys()) if isinstance(args, dict) else 'N/A'}"
+                        )
+                    else:
+                        logger.warning(f"Skipping malformed tool call without name: {fc}")
+
+                if not tool_calls_from_output or not effective_allowed_tools:
+                    stop_reason = "no_tool_call"
+                    break
+
+                tool_results, exec_records, raw_records = await _execute_and_format_tools(
                     tool_calls_from_output,
                     effective_allowed_tools,
                     query.query,
                     request,
                     query.context,
                 )
+                last_tool_results = tool_results
                 tool_execution_records.extend(exec_records)
-                if tool_results:
-                    # Re-engage LLM to interpret tool results
-                    # Add the assistant's tool call and the tool results to conversation
-                    messages.append(
-                        {
-                            "role": "assistant",
-                            "content": f"I'll execute the {tool_calls_from_output[0]['name']} tool to help with this task.",
-                        }
-                    )
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": f"Tool execution result:\n{tool_results}\n\nBased on this result, please provide a clear and complete answer to the original query.",
-                        }
-                    )
+                raw_tool_results.extend(raw_records)
 
-                    # Call LLM again to interpret the tool results
-                    logger.info(
-                        "Tool execution completed, re-engaging LLM for interpretation"
-                    )
-                    interpretation_result = (
-                        await request.app.state.providers.generate_completion(
-                            messages=messages,
-                            tier=tier,
-                            specific_model=model_override,
-                            provider_override=provider_override,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            response_format=response_format,
-                            tools=None,  # No tools for interpretation pass
-                            workflow_id=request.headers.get("X-Workflow-ID")
-                            or request.headers.get("x-workflow-id"),
-                            agent_id=query.agent_id,
-                        )
-                    )
+                if loop_function_call == "any":
+                    loop_function_call = "auto"
 
-                    # Use the interpretation as the final response
-                    response_text = interpretation_result.get(
-                        "output_text", tool_results
-                    )
+                for rr in raw_records:
+                    if rr.get("tool") == "web_search" and rr.get("success"):
+                        search_urls.extend(_extract_urls_from_search_output(rr.get("output")))
+                    if rr.get("tool") in fetch_tools and rr.get("success"):
+                        fetch_success = True
 
-                    # Add tokens from interpretation pass
-                    interpretation_tokens = interpretation_result.get("usage", {}).get(
-                        "total_tokens", 0
-                    )
-                    total_tokens += interpretation_tokens
+                if raw_records and not all(r.get("success") for r in raw_records):
+                    consecutive_tool_failures += 1
+                else:
+                    consecutive_tool_failures = 0
 
-                    logger.info(
-                        f"Tool result interpretation: original_tokens={result_data.get('usage', {}).get('total_tokens', 0)}, "
-                        f"interpretation_tokens={interpretation_tokens}, total={total_tokens}"
-                    )
+                total_tool_output_chars += len(tool_results or "")
+                loop_iterations += 1
 
-            # Optional fallback: tool auto-selection when enabled and no tool calls were chosen
-            try:
-                tool_autoselect = bool(
-                    isinstance(query.context, dict)
-                    and query.context.get("tool_autoselect")
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": f"I'll execute the {tool_calls_from_output[0]['name']} tool to help with this task.",
+                    }
                 )
-            except Exception:
-                tool_autoselect = False
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"Tool execution result:\n{tool_results}\n\n{followup_instruction}",
+                    }
+                )
 
+                if consecutive_tool_failures >= max_consecutive_tool_failures:
+                    stop_reason = "consecutive_tool_failures"
+                    logger.info(
+                        f"Stopping tool loop due to consecutive failures: {consecutive_tool_failures}"
+                    )
+                    break
+
+                if (
+                    loop_iterations >= max_tool_iterations
+                    or len(tool_execution_records) >= max_total_tool_calls
+                    or total_tool_output_chars >= max_total_tool_output_chars
+                ):
+                    stop_reason = "budget"
+                    logger.info(
+                        f"Stopping tool loop due to budget: iterations={loop_iterations}, tool_calls={len(tool_execution_records)}, chars={total_tool_output_chars}"
+                    )
+                    break
+
+                continue
+
+            # DR forced fetch if needed (search done but no fetch success)
             if (
-                (not tool_calls_from_output)
-                and effective_allowed_tools
-                and tool_autoselect
+                research_mode
+                and search_urls
+                and not fetch_success
+                and fetch_tools.intersection(set(effective_allowed_tools or []))
             ):
                 try:
-                    from ..tools import get_registry
-
-                    registry = get_registry()
-                    tools_summary = []
-                    for name in effective_allowed_tools:
-                        tool = registry.get_tool(name)
-                        if not tool:
-                            continue
-                        schema = tool.get_schema() or {}
-                        props = list(
-                            (schema.get("parameters", {}) or {})
-                            .get("properties", {})
-                            .keys()
-                        )
-                        tools_summary.append(
-                            {
-                                "name": name,
-                                "description": tool.metadata.description,
-                                "parameters": props,
-                            }
-                        )
-
-                    sys = (
-                        "You are a tool selection assistant. Read the task and choose suitable tools. "
-                        'Return compact JSON only: {"selected_tools": [names], "calls": [{"tool_name": name, "parameters": object}]}. '
-                        "Only include tools from the provided list. Prefer minimal arguments."
-                    )
-                    user_obj = {
-                        "task": query.query,
-                        "context_keys": list((query.context or {}).keys())[:5],
-                        "tools": tools_summary,
-                        "max_tools": 1,
-                    }
-                    selection = await request.app.state.providers.generate_completion(
-                        messages=[
-                            {"role": "system", "content": sys},
-                            {"role": "user", "content": str(user_obj)},
-                        ],
-                        tier=tier,
-                        max_tokens=4096,
-                        temperature=0.1,
-                        response_format={"type": "json_object"},
-                        workflow_id=request.headers.get("X-Workflow-ID")
-                        or request.headers.get("x-workflow-id"),
-                        agent_id=query.agent_id,
-                    )
-                    import json as _json
-
-                    raw = selection.get("output_text", "")
-                    calls = []
-                    try:
-                        data = _json.loads(raw)
-                        for c in data.get("calls", []) or []:
-                            name = c.get("tool_name")
-                            if name in effective_allowed_tools:
-                                calls.append(
-                                    {
-                                        "name": name,
-                                        "arguments": c.get("parameters") or {},
-                                    }
-                                )
-                    except Exception:
-                        calls = []
-
-                    if calls:
-                        auto_results, exec_records = await _execute_and_format_tools(
-                            calls,
+                    deduped_urls = []
+                    seen = set()
+                    for u in search_urls:
+                        if u and u not in seen:
+                            seen.add(u)
+                            deduped_urls.append(u)
+                    urls_to_fetch = deduped_urls[:max_urls_to_fetch]
+                    if urls_to_fetch:
+                        did_forced_fetch = True
+                        logger.info(f"DR policy: auto-fetching URLs={len(urls_to_fetch)} after search")
+                        policy_calls = [{"name": "web_fetch", "arguments": {"urls": urls_to_fetch}}]
+                        policy_results, policy_execs, policy_raw = await _execute_and_format_tools(
+                            policy_calls,
                             effective_allowed_tools,
                             query.query,
                             request,
                             query.context,
                         )
-                        tool_execution_records.extend(exec_records)
-                        # Add the selection + results to the dialogue and interpret
-                        if calls:
+                        last_tool_results = policy_results or last_tool_results
+                        tool_execution_records.extend(policy_execs)
+                        raw_tool_results.extend(policy_raw)
+                        if policy_results:
                             messages.append(
                                 {
                                     "role": "assistant",
-                                    "content": f"I'll execute the {calls[0]['name']} tool to help.",
+                                    "content": "Executing web_fetch on search results for evidence.",
                                 }
                             )
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": f"Tool execution result:\n{auto_results}\n\nBased on this result, provide a clear and complete answer.",
-                            }
-                        )
-                        interpretation_result = (
-                            await request.app.state.providers.generate_completion(
-                                messages=messages,
-                                tier=tier,
-                                specific_model=model_override,
-                                provider_override=provider_override,
-                                max_tokens=max_tokens,
-                                temperature=temperature,
-                                response_format=response_format,
-                                tools=None,
-                                workflow_id=request.headers.get("X-Workflow-ID")
-                                or request.headers.get("x-workflow-id"),
-                                agent_id=query.agent_id,
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": f"Tool execution result:\n{policy_results}\n\n{followup_instruction}",
+                                }
                             )
-                        )
-                        response_text = interpretation_result.get(
-                            "output_text", auto_results
-                        )
-                        total_tokens = interpretation_result.get("usage", {}).get(
-                            "total_tokens", 0
-                        )
-                        result = {
-                            "response": response_text,
-                            "tokens_used": total_tokens,
-                            "model_used": interpretation_result.get("model", "unknown"),
-                        }
-                        tools_used = sorted(
-                            {rec.get("tool") for rec in tool_execution_records if rec.get("tool")}
-                        )
-                        return AgentResponse(
-                            success=True,
-                            response=result["response"],
-                            tokens_used=result["tokens_used"],
-                            model_used=result["model_used"],
-                            provider=interpretation_result.get("provider") or "unknown",
-                            finish_reason=interpretation_result.get("finish_reason", "stop"),
-                            metadata={
-                                "agent_id": query.agent_id,
-                                "mode": query.mode,
-                                "allowed_tools": effective_allowed_tools,
-                                "role": effective_role,
-                                "requested_role": requested_role,
-                                "system_prompt_source": system_prompt_source,
-                                "provider": interpretation_result.get("provider") or "unknown",
-                                "finish_reason": interpretation_result.get("finish_reason", "stop"),
-                                "requested_max_tokens": max_tokens,
-                                "input_tokens": interpretation_result.get("usage", {}).get("prompt_tokens")
-                                or interpretation_result.get("usage", {}).get("input_tokens"),
-                                "output_tokens": interpretation_result.get("usage", {}).get("completion_tokens")
-                                or interpretation_result.get("usage", {}).get("output_tokens"),
-                                "cost_usd": (interpretation_result.get("usage", {}) or {}).get("cost_usd", 0.0),
-                                "tools_used": tools_used,
-                                "tool_executions": tool_execution_records,
-                            },
-                        )
+                        if any(r.get("tool") in fetch_tools and r.get("success") for r in policy_raw):
+                            fetch_success = True
                 except Exception as e:
-                    logger.warning(f"tool_autoselect failed: {e}")
+                    logger.warning(f"DR forced fetch failed: {e}")
+
+            # Final interpretation pass if we executed any tools or budgets were hit
+            if tool_execution_records and (
+                stop_reason != "no_tool_call"
+                or did_forced_fetch
+                or not (response_text and str(response_text).strip())
+            ):
+                interpretation_result = await request.app.state.providers.generate_completion(
+                    messages=messages,
+                    tier=tier,
+                    specific_model=model_override,
+                    provider_override=provider_override,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                    tools=None,  # No tools for interpretation pass
+                    workflow_id=request.headers.get("X-Workflow-ID")
+                    or request.headers.get("x-workflow-id"),
+                    agent_id=query.agent_id,
+                )
+                response_text = interpretation_result.get("output_text", last_tool_results)
+                i_usage = interpretation_result.get("usage", {}) or {}
+                try:
+                    total_tokens += int(i_usage.get("total_tokens") or 0)
+                    total_input_tokens += int(i_usage.get("input_tokens") or 0)
+                    total_output_tokens += int(i_usage.get("output_tokens") or 0)
+                    total_cost_usd += float(i_usage.get("cost_usd") or 0.0)
+                except Exception:
+                    pass
+                result_data = interpretation_result
+            else:
+                result_data = last_result_data or {}
+
+            # Stub Guard: Clean any pseudo tool-call stubs from final output
+            # These can appear when LLM outputs XML/JSON tool calls instead of native function calling
+            stub_patterns = [
+                r"<function_calls>",
+                r"<invoke\s",
+                r"</invoke>",
+                r"<web_fetch[>\s]",
+                r"<web_search[>\s]",
+                r"<web_crawl[>\s]",
+                r'"tool"\s*:\s*"web_',
+                r'"name"\s*:\s*"web_',
+            ]
+            import re as _re
+            stub_detected = any(_re.search(p, str(response_text), _re.IGNORECASE) for p in stub_patterns)
+
+            if stub_detected:
+                logger.warning("Stub Guard: detected pseudo tool-call stub in response, running interpretation pass")
+                try:
+                    # Run interpretation pass to get clean final answer
+                    stub_cleanup_result = await request.app.state.providers.generate_completion(
+                        messages=messages + [
+                            {"role": "assistant", "content": str(response_text)},
+                            {"role": "user", "content": (
+                                "Your previous response contained tool call markup (XML tags or JSON) that should not appear in the final output. "
+                                "Please provide your final answer in clean text without any <function_calls>, <invoke>, <web_fetch>, or similar markup. "
+                                "Summarize any tool results you mentioned and provide a direct answer."
+                            )}
+                        ],
+                        tier=tier,
+                        specific_model=model_override,
+                        provider_override=provider_override,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                        tools=None,  # No tools for cleanup pass
+                        workflow_id=request.headers.get("X-Workflow-ID")
+                        or request.headers.get("x-workflow-id"),
+                        agent_id=query.agent_id,
+                    )
+                    cleaned_text = stub_cleanup_result.get("output_text", "")
+                    if cleaned_text and not any(_re.search(p, cleaned_text, _re.IGNORECASE) for p in stub_patterns):
+                        response_text = cleaned_text
+                        logger.info("Stub Guard: successfully cleaned response via interpretation pass")
+                        # Update token counts
+                        cleanup_usage = stub_cleanup_result.get("usage", {}) or {}
+                        try:
+                            total_tokens += int(cleanup_usage.get("total_tokens") or 0)
+                            total_input_tokens += int(cleanup_usage.get("input_tokens") or 0)
+                            total_output_tokens += int(cleanup_usage.get("output_tokens") or 0)
+                            total_cost_usd += float(cleanup_usage.get("cost_usd") or 0.0)
+                        except Exception:
+                            pass
+                    else:
+                        # Fallback: strip stub patterns via regex
+                        logger.warning("Stub Guard: interpretation pass still contains stubs, falling back to regex strip")
+                        response_text = _re.sub(r"<function_calls>[\s\S]*?</function_calls>", "", str(response_text))
+                        response_text = _re.sub(r"<invoke[\s\S]*?</invoke>", "", response_text)
+                        response_text = _re.sub(r"<web_fetch[\s\S]*?>[\s\S]*?(?:</web_fetch>)?", "", response_text)
+                        response_text = _re.sub(r"<web_search[\s\S]*?>[\s\S]*?(?:</web_search>)?", "", response_text)
+                        response_text = response_text.strip()
+                except Exception as e:
+                    logger.error(f"Stub Guard cleanup failed: {e}, falling back to regex strip")
+                    response_text = _re.sub(r"<function_calls>[\s\S]*?</function_calls>", "", str(response_text))
+                    response_text = _re.sub(r"<invoke[\s\S]*?</invoke>", "", response_text)
+                    response_text = response_text.strip()
 
             result = {
                 "response": response_text,
                 "tokens_used": total_tokens,
-                "model_used": result_data.get("model", "unknown"),
+                "model_used": (result_data or {}).get("model", "unknown"),
             }
 
             tools_used = sorted(
@@ -1118,8 +1171,8 @@ async def agent_query(request: Request, query: AgentQuery):
                 response=result["response"],
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
-                provider=result_data.get("provider") or "unknown",
-                finish_reason=result_data.get("finish_reason", "stop"),
+                provider=(result_data or {}).get("provider") or "unknown",
+                finish_reason=(result_data or {}).get("finish_reason", "stop"),
                 metadata={
                     "agent_id": query.agent_id,
                     "mode": query.mode,
@@ -1127,13 +1180,13 @@ async def agent_query(request: Request, query: AgentQuery):
                     "role": effective_role,
                     "requested_role": requested_role,
                     "system_prompt_source": system_prompt_source,
-                    "provider": result_data.get("provider") or "unknown",
-                    "finish_reason": result_data.get("finish_reason", "stop"),
+                    "provider": (result_data or {}).get("provider") or "unknown",
+                    "finish_reason": (result_data or {}).get("finish_reason", "stop"),
                     "requested_max_tokens": max_tokens,
-                    "input_tokens": (result_data.get("usage", {}) or {}).get("input_tokens"),
-                    "output_tokens": (result_data.get("usage", {}) or {}).get("output_tokens"),
-                    "cost_usd": (result_data.get("usage", {}) or {}).get("cost_usd", 0.0),
-                    "effective_max_completion": result_data.get("effective_max_completion"),
+                    "input_tokens": total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                    "cost_usd": total_cost_usd,
+                    "effective_max_completion": (result_data or {}).get("effective_max_completion"),
                     "tools_used": tools_used,
                     "tool_executions": tool_execution_records,
                 },
@@ -1187,10 +1240,10 @@ async def _execute_and_format_tools(
     query: str = "",
     request=None,
     context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, List[Dict[str, Any]]]:
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Execute tool calls and format results into natural language."""
     if not tool_calls:
-        return "", []
+        return "", [], []
 
     from ..tools import get_registry
 
@@ -1198,6 +1251,7 @@ async def _execute_and_format_tools(
 
     formatted_results = []
     tool_execution_records: List[Dict[str, Any]] = []
+    raw_tool_results: List[Dict[str, Any]] = []
 
     # Set up event emitter and workflow/agent IDs for tool events
     emitter = None
@@ -1619,6 +1673,17 @@ async def _execute_and_format_tools(
                     "metadata": sanitized_result_metadata,
                     "duration_ms": duration_ms,
                     "tokens_used": result.tokens_used if result else None,
+                    "tool_input": _sanitize_payload(args, max_str=2000, max_items=20),
+                }
+            )
+
+            raw_tool_results.append(
+                {
+                    "tool": tool_name,
+                    "success": bool(result and result.success),
+                    "output": result.output if result else None,
+                    "error": result.error if result else None,
+                    "metadata": result.metadata if result else {},
                 }
             )
 
@@ -1655,7 +1720,53 @@ async def _execute_and_format_tools(
                 }
             )
 
-    return ("\n\n".join(formatted_results) if formatted_results else "", tool_execution_records)
+            raw_tool_results.append(
+                {
+                    "tool": tool_name,
+                    "success": False,
+                    "output": None,
+                    "error": str(e),
+                    "metadata": {},
+                }
+            )
+
+    return (
+        "\n\n".join(formatted_results) if formatted_results else "",
+        tool_execution_records,
+        raw_tool_results,
+    )
+
+
+def _extract_urls_from_search_output(output: Any) -> List[str]:
+    urls: List[str] = []
+    try:
+        candidates: Any = []
+        if isinstance(output, list):
+            candidates = output
+        elif isinstance(output, dict):
+            candidates = (
+                output.get("results")
+                or output.get("data")
+                or output.get("items")
+                or []
+            )
+        if isinstance(candidates, list):
+            for item in candidates:
+                if isinstance(item, dict):
+                    url = item.get("url") or item.get("link")
+                    if url and isinstance(url, str):
+                        url = url.strip()
+                        if url.startswith(("http://", "https://")):
+                            urls.append(url)
+    except Exception:
+        return []
+    deduped: List[str] = []
+    seen = set()
+    for u in urls:
+        if u and u not in seen:
+            seen.add(u)
+            deduped.append(u)
+    return deduped
 
 
 class OutputFormatSpec(BaseModel):

@@ -882,16 +882,44 @@ func extractCitationsFromToolOutput(toolName string, output interface{}, agentID
 		}
 
 	case "web_fetch":
-		// Single page fetch
+		// Handle both single page and batch fetch formats
 		if outputMap, ok := output.(map[string]interface{}); ok {
-			if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
-				citations = append(citations, *citation)
+			// Check for batch format: {pages: [...], succeeded: N, failed: M}
+			if pages, ok := outputMap["pages"].([]interface{}); ok {
+				for _, page := range pages {
+					if pageMap, ok := page.(map[string]interface{}); ok {
+						// Only extract from successful pages
+						if success, _ := pageMap["success"].(bool); success {
+							if citation, err := extractCitationFromFetchResult(pageMap, agentID, now); err == nil {
+								citations = append(citations, *citation)
+							}
+						}
+					}
+				}
+			} else {
+				// Single page format (backward compatible)
+				if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
+					citations = append(citations, *citation)
+				}
 			}
 		} else if s, ok := output.(string); ok && s != "" {
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(s), &m); err == nil {
-				if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
-					citations = append(citations, *citation)
+				// Check for batch format in JSON string
+				if pages, ok := m["pages"].([]interface{}); ok {
+					for _, page := range pages {
+						if pageMap, ok := page.(map[string]interface{}); ok {
+							if success, _ := pageMap["success"].(bool); success {
+								if citation, err := extractCitationFromFetchResult(pageMap, agentID, now); err == nil {
+									citations = append(citations, *citation)
+								}
+							}
+						}
+					}
+				} else {
+					if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
+						citations = append(citations, *citation)
+					}
 				}
 			}
 		}
@@ -1496,6 +1524,37 @@ func shouldSkipURL(urlStr string) bool {
 		if strings.HasSuffix(lower, pattern) || strings.Contains(lower, pattern+"/") || strings.Contains(lower, pattern+"?") {
 			return true
 		}
+	}
+
+	// Skip low-value page types (authentication, search, error, legal, forms)
+	lowValuePatterns := []string{
+		// Authentication pages
+		"/login", "/signin", "/sign-in", "/auth",
+		"/register", "/signup", "/sign-up",
+		"/logout", "/signout", "/sign-out",
+		// Search/results pages (usually not useful as citations)
+		"/search", "/results",
+		// Error pages
+		"/404", "/error", "not-found", "/500",
+		// Legal/policy pages (boilerplate, not useful for research)
+		"/terms", "/tos", "/terms-of-service",
+		"/privacy", "/privacy-policy",
+		"/legal", "/legal-notice",
+		"/cookie", "/cookies",
+		// Contact/form pages (mostly forms, not content)
+		"/contact", "/contact-us", "/get-in-touch",
+		"/support", "/help",
+	}
+
+	for _, pattern := range lowValuePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+
+	// Skip URLs with search query parameters
+	if strings.Contains(lower, "?q=") || strings.Contains(lower, "?search=") || strings.Contains(lower, "?query=") {
+		return true
 	}
 
 	return false

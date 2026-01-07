@@ -214,6 +214,12 @@ func ExecuteSequential(
 				}).Get(ctx, &result)
 		} else {
 			// Execute without budget
+			// Inject model_tier to taskContext to ensure consistent tier selection
+			// (budget path injects via BudgetedAgentInput.ModelTier -> budget.go:298)
+			if modelTier != "" {
+				taskContext["model_tier"] = modelTier
+			}
+
 			err = workflow.ExecuteActivity(ctx,
 				activities.ExecuteAgent,
 				activities.AgentExecutionInput{
@@ -442,6 +448,9 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 				}
 			}
 
+			// Extract input params from tool execution (from HTTP path)
+			inputParamsMap, _ := tool.InputParams.(map[string]interface{})
+
 			workflow.ExecuteActivity(
 				persistCtx,
 				activities.PersistToolExecutionStandalone,
@@ -449,11 +458,11 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 					WorkflowID:     workflowID,
 					AgentID:        agentID,
 					ToolName:       tool.Tool,
-					InputParams:    nil,
+					InputParams:    inputParamsMap,
 					Output:         outputStr,
 					Success:        tool.Success,
 					TokensConsumed: 0,
-					DurationMs:     0,
+					DurationMs:     tool.DurationMs,
 					Error:          tool.Error,
 				},
 			)

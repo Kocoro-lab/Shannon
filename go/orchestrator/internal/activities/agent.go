@@ -910,6 +910,26 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		)
 	}
 
+	// Research mode guard: If web_search is suggested but no fetch tools, add web_fetch
+	// This ensures DR policy can execute search→fetch chain even if decomposition only suggested search
+	isResearchMode := false
+	if input.Context != nil {
+		if util.GetContextBool(input.Context, "force_research") {
+			isResearchMode = true
+		} else if rs, ok := input.Context["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+			isResearchMode = true
+		} else if rm, ok := input.Context["research_mode"].(string); ok && strings.TrimSpace(rm) != "" {
+			isResearchMode = true
+		}
+	}
+	if isResearchMode && hasWebSearch && !hasWebFetch {
+		allowedByRole = append(allowedByRole, "web_fetch", "web_subpage_fetch")
+		logger.Info("Research mode: Added web_fetch alongside web_search to enable search→fetch chain",
+			zap.String("agent_id", input.AgentID),
+			zap.Strings("final_tools", allowedByRole),
+		)
+	}
+
 	// Pass tool parameters to context if provided and valid
 	if len(input.ToolParameters) > 0 {
 		// Check if tool parameters have required fields
@@ -1399,10 +1419,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 
 					toolExecs = append(toolExecs, ToolExecution{
-						Tool:    toolName,
-						Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
-						Output:  output,
-						Error:   tr.ErrorMessage,
+						Tool:       toolName,
+						Success:    tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+						Output:     output,
+						Error:      tr.ErrorMessage,
+						DurationMs: tr.GetExecutionTimeMs(),
 					})
 
 					if toolName != "" {
@@ -1568,10 +1589,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			}
 			publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 			toolExecs = append(toolExecs, ToolExecution{
-				Tool:    toolName,
-				Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
-				Output:  output,
-				Error:   tr.ErrorMessage,
+				Tool:       toolName,
+				Success:    tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+				Output:     output,
+				Error:      tr.ErrorMessage,
+				DurationMs: tr.GetExecutionTimeMs(),
 			})
 			if toolName != "" {
 				if _, ok := seenTools[toolName]; !ok {
@@ -1754,7 +1776,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		toolName = input.SuggestedTools[0]
 	} else {
 		logger.Error("No SuggestedTools provided with ToolParameters; cannot proceed")
-		return AgentExecutionResult{Role: role, Success: false, Error: "No tool specified for forced execution"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "No tool specified for forced execution"}, nil
 	}
 
 	// Build forced_tool_calls payload for /agent/query
@@ -1780,7 +1802,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	payloadBytes, err := json.Marshal(agentQueryPayload)
 	if err != nil {
 		logger.Error("Failed to marshal agent query payload", "error", err)
-		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to construct request"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "Failed to construct request"}, nil
 	}
 
 	// Publish TOOL_INVOKED event
@@ -1851,7 +1873,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to create request"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "Failed to create request"}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-ID", input.AgentID)
@@ -1875,7 +1897,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
 	}
 	defer resp.Body.Close()
 
@@ -1897,7 +1919,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
 	}
 
 	// Parse response
@@ -1929,7 +1951,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to parse response"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "Failed to parse response"}, nil
 	}
 
 	// Prefer role reported by llm-service when available
@@ -2028,11 +2050,19 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 					success, _ := m["success"].(bool)
 					output := m["output"]
 					errStr, _ := m["error"].(string)
+					inputParams := m["tool_input"]
+					// Extract duration_ms from Python llm-service response
+					var durationMs int64
+					if d, ok3 := m["duration_ms"].(float64); ok3 {
+						durationMs = int64(d)
+					}
 					toolExecs = append(toolExecs, ToolExecution{
-						Tool:    name,
-						Success: success,
-						Output:  output,
-						Error:   errStr,
+						Tool:        name,
+						Success:     success,
+						Output:      output,
+						Error:       errStr,
+						DurationMs:  durationMs,
+						InputParams: inputParams,
 					})
 				}
 			}
@@ -2040,6 +2070,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	}
 
 	return AgentExecutionResult{
+		AgentID:        input.AgentID,
 		Success:        agentResponse.Success,
 		Role:           role,
 		Response:       agentResponse.Response,

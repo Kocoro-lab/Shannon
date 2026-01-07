@@ -63,6 +63,9 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 				}
 			}
 
+			// Extract input params from tool execution (from HTTP path)
+			inputParamsMap, _ := tool.InputParams.(map[string]interface{})
+
 			workflow.ExecuteActivity(
 				persistCtx,
 				activities.PersistToolExecutionStandalone,
@@ -70,11 +73,11 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 					WorkflowID:     workflowID,
 					AgentID:        agentID,
 					ToolName:       tool.Tool,
-					InputParams:    nil, // Tool execution from agent doesn't provide input params
+					InputParams:    inputParamsMap,
 					Output:         outputStr,
 					Success:        tool.Success,
-					TokensConsumed: 0, // Not provided by agent
-					DurationMs:     0, // Not provided by agent
+					TokensConsumed: 0,               // Not provided by agent
+					DurationMs:     tool.DurationMs, // From agent-core proto
 					Error:          tool.Error,
 				},
 			)
