@@ -693,6 +693,196 @@ func BenchmarkNormalizeForComparison(b *testing.B) {
 	}
 }
 
+// ============================================================================
+// SplitSentencesV2 Tests - Decimal Point Detection
+// ============================================================================
+
+func TestSplitSentencesV2_DecimalPoints(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          string
+		expectedCount  int
+		expectedFirst  string // First sentence (trimmed)
+		expectedSecond string // Second sentence if exists (trimmed)
+	}{
+		{
+			name:          "decimal in dollar amount - single sentence",
+			input:         "The market grew to $30.8 billion in 2024.",
+			expectedCount: 1,
+			expectedFirst: "The market grew to $30.8 billion in 2024.",
+		},
+		{
+			name:           "decimal in dollar amount - two sentences",
+			input:          "Revenue was $30.8 billion. NVIDIA leads the market.",
+			expectedCount:  2,
+			expectedFirst:  "Revenue was $30.8 billion. ",
+			expectedSecond: "NVIDIA leads the market.",
+		},
+		{
+			name:          "percentage with decimal",
+			input:         "Intel's share dropped 3.5% last quarter.",
+			expectedCount: 1,
+			expectedFirst: "Intel's share dropped 3.5% last quarter.",
+		},
+		{
+			name:          "multiple decimals in one sentence",
+			input:         "Revenue was $30.8B with 3.5% growth and 2.1x multiple.",
+			expectedCount: 1,
+			expectedFirst: "Revenue was $30.8B with 3.5% growth and 2.1x multiple.",
+		},
+		{
+			name:          "Chinese with decimal percentage",
+			input:         "Tokyo Electron占全球市场份额的10.2%。",
+			expectedCount: 1,
+			expectedFirst: "Tokyo Electron占全球市场份额的10.2%。",
+		},
+		{
+			name:           "mixed language with decimals",
+			input:          "市场规模达到$30.8B。增长率为15.3%。",
+			expectedCount:  2,
+			expectedFirst:  "市场规模达到$30.8B。",
+			expectedSecond: "增长率为15.3%。",
+		},
+		{
+			name:          "version number",
+			input:         "Using Python v3.11.2 for this project.",
+			expectedCount: 1,
+			expectedFirst: "Using Python v3.11.2 for this project.",
+		},
+		{
+			name:          "IP address style numbers",
+			input:         "The ratio is 1.2.3 formatted.",
+			expectedCount: 1,
+			expectedFirst: "The ratio is 1.2.3 formatted.",
+		},
+		{
+			name:           "sentence ending with number then period",
+			input:          "The price is $30. That's expensive.",
+			expectedCount:  2,
+			expectedFirst:  "The price is $30. ",
+			expectedSecond: "That's expensive.",
+		},
+		{
+			name:          "decimal at end of sentence",
+			input:         "The growth rate was 3.5.",
+			expectedCount: 1,
+			expectedFirst: "The growth rate was 3.5.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := splitSentencesV2(tt.input)
+
+			if len(result) != tt.expectedCount {
+				t.Errorf("splitSentencesV2(%q) returned %d sentences, want %d.\nGot: %v",
+					tt.input, len(result), tt.expectedCount, result)
+				return
+			}
+
+			if len(result) > 0 && result[0] != tt.expectedFirst {
+				t.Errorf("splitSentencesV2(%q) first sentence = %q, want %q",
+					tt.input, result[0], tt.expectedFirst)
+			}
+
+			if len(result) > 1 && tt.expectedSecond != "" && result[1] != tt.expectedSecond {
+				t.Errorf("splitSentencesV2(%q) second sentence = %q, want %q",
+					tt.input, result[1], tt.expectedSecond)
+			}
+		})
+	}
+}
+
+func TestSplitSentencesV2_PreservesMarkdown(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expectedCount int
+	}{
+		{
+			name:          "preserves newline as sentence boundary",
+			input:         "First line.\nSecond line.",
+			expectedCount: 2,
+		},
+		{
+			name:          "preserves blank lines",
+			input:         "Paragraph one.\n\nParagraph two.",
+			expectedCount: 3, // sentence, blank, sentence
+		},
+		{
+			name:          "header followed by content",
+			input:         "## Market Analysis\nThe market grew.",
+			expectedCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := splitSentencesV2(tt.input)
+			if len(result) != tt.expectedCount {
+				t.Errorf("splitSentencesV2(%q) returned %d sentences, want %d.\nGot: %v",
+					tt.input, len(result), tt.expectedCount, result)
+			}
+		})
+	}
+}
+
+func TestAppendCitationsToSentence(t *testing.T) {
+	tests := []struct {
+		name        string
+		sentence    string
+		citationIDs []int
+		expected    string
+	}{
+		{
+			name:        "single citation",
+			sentence:    "Revenue grew 19%.",
+			citationIDs: []int{1},
+			expected:    "Revenue grew 19%.[1]",
+		},
+		{
+			name:        "multiple citations",
+			sentence:    "Revenue grew 19%.",
+			citationIDs: []int{1, 3, 5},
+			expected:    "Revenue grew 19%.[1][3][5]",
+		},
+		{
+			name:        "sentence with trailing space",
+			sentence:    "Revenue grew 19%. ",
+			citationIDs: []int{1},
+			expected:    "Revenue grew 19%.[1] ",
+		},
+		{
+			name:        "sentence with trailing newline",
+			sentence:    "Revenue grew 19%.\n",
+			citationIDs: []int{1},
+			expected:    "Revenue grew 19%.[1]\n",
+		},
+		{
+			name:        "empty citation list",
+			sentence:    "Revenue grew 19%.",
+			citationIDs: []int{},
+			expected:    "Revenue grew 19%.",
+		},
+		{
+			name:        "Chinese sentence",
+			sentence:    "收入增长了19%。",
+			citationIDs: []int{2},
+			expected:    "收入增长了19%。[2]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := appendCitationsToSentence(tt.sentence, tt.citationIDs)
+			if result != tt.expected {
+				t.Errorf("appendCitationsToSentence(%q, %v) = %q, want %q",
+					tt.sentence, tt.citationIDs, result, tt.expected)
+			}
+		})
+	}
+}
+
 func BenchmarkValidateContentImmutability(b *testing.B) {
 	original := `The quick brown fox jumps over the lazy dog. This sentence contains multiple facts that need citations.
 Revenue grew 19% year over year. The company was founded in 2020 and has since expanded to 50 countries.
