@@ -1890,13 +1890,25 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					"official_domains", domains,
 					"alias_count", len(aliases),
 				)
-				citations = FilterCitationsByEntity(citations, canonicalName, aliases, domains)
-				logger.Info("Citation filter completed",
-					"before", beforeCount,
-					"after", len(citations),
-					"removed", beforeCount-len(citations),
-					"retention_rate", float64(len(citations))/float64(beforeCount),
-				)
+				filtered := FilterCitationsByEntity(citations, canonicalName, aliases, domains)
+				retention := float64(len(filtered)) / float64(beforeCount)
+
+				// Only apply filter if results are reasonable (>=20 citations OR >=30% retention)
+				if len(filtered) >= 20 || retention >= 0.3 {
+					citations = filtered
+					logger.Info("Citation filter applied",
+						"before", beforeCount,
+						"after", len(filtered),
+						"retention", retention,
+					)
+				} else {
+					// Filter too aggressive, keep original citations
+					logger.Warn("Citation filter too aggressive, keeping original",
+						"before", beforeCount,
+						"filtered", len(filtered),
+						"retention", retention,
+					)
+				}
 			}
 			collectedCitations = citations
 			// Format into numbered list lines expected by FormatReportWithCitations
@@ -2461,12 +2473,25 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						aliases = eq
 					}
 					beforeCount := len(updatedCitations)
-					updatedCitations = FilterCitationsByEntity(updatedCitations, canonicalName, aliases, domains)
-					logger.Info("Gap-filling citation filter applied",
-						"before", beforeCount,
-						"after", len(updatedCitations),
-						"removed", beforeCount-len(updatedCitations),
-					)
+					filtered := FilterCitationsByEntity(updatedCitations, canonicalName, aliases, domains)
+					retention := float64(len(filtered)) / float64(beforeCount)
+
+					// Only apply filter if results are reasonable (>=20 citations OR >=30% retention)
+					if len(filtered) >= 20 || retention >= 0.3 {
+						updatedCitations = filtered
+						logger.Info("Gap-filling citation filter applied",
+							"before", beforeCount,
+							"after", len(filtered),
+							"retention", retention,
+						)
+					} else {
+						// Filter too aggressive, keep original citations
+						logger.Warn("Gap-filling citation filter too aggressive, keeping original",
+							"before", beforeCount,
+							"filtered", len(filtered),
+							"retention", retention,
+						)
+					}
 				}
 				collectedCitations = updatedCitations
 
@@ -2747,12 +2772,25 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 									aliases = eq
 								}
 								beforeCount := len(allCitations)
-								allCitations = FilterCitationsByEntity(allCitations, canonicalName, aliases, domains)
-								logger.Info("Iterative gap-filling citation filter applied",
-									"before", beforeCount,
-									"after", len(allCitations),
-									"removed", beforeCount-len(allCitations),
-								)
+								filtered := FilterCitationsByEntity(allCitations, canonicalName, aliases, domains)
+								retention := float64(len(filtered)) / float64(beforeCount)
+
+								// Only apply filter if results are reasonable (>=20 citations OR >=30% retention)
+								if len(filtered) >= 20 || retention >= 0.3 {
+									allCitations = filtered
+									logger.Info("Iterative gap-filling citation filter applied",
+										"before", beforeCount,
+										"after", len(filtered),
+										"retention", retention,
+									)
+								} else {
+									// Filter too aggressive, keep original citations
+									logger.Warn("Iterative gap-filling citation filter too aggressive, keeping original",
+										"before", beforeCount,
+										"filtered", len(filtered),
+										"retention", retention,
+									)
+								}
 							}
 
 							if len(allCitations) > 0 {
@@ -2889,12 +2927,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			},
 		})
 
+		// Determine citation model tier based on research strategy
+		citationModelTier := "small"
+		if sv, ok := baseContext["research_strategy"].(string); ok {
+			if sv == "deep" || sv == "academic" {
+				citationModelTier = "medium" // Better instruction-following for complex reports
+			}
+		}
+
 		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
 			Report:           reportForCitation,
 			Citations:        citationsForAgent,
 			ParentWorkflowID: input.ParentWorkflowID,
 			Context:          baseContext,
-			ModelTier:        "small", // Structured task - small tier sufficient
+			ModelTier:        citationModelTier,
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {
