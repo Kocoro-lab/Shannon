@@ -1419,10 +1419,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 
 					toolExecs = append(toolExecs, ToolExecution{
-						Tool:    toolName,
-						Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
-						Output:  output,
-						Error:   tr.ErrorMessage,
+						Tool:       toolName,
+						Success:    tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+						Output:     output,
+						Error:      tr.ErrorMessage,
+						DurationMs: tr.GetExecutionTimeMs(),
 					})
 
 					if toolName != "" {
@@ -1588,10 +1589,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			}
 			publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 			toolExecs = append(toolExecs, ToolExecution{
-				Tool:    toolName,
-				Success: tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
-				Output:  output,
-				Error:   tr.ErrorMessage,
+				Tool:       toolName,
+				Success:    tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+				Output:     output,
+				Error:      tr.ErrorMessage,
+				DurationMs: tr.GetExecutionTimeMs(),
 			})
 			if toolName != "" {
 				if _, ok := seenTools[toolName]; !ok {
@@ -2048,11 +2050,17 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 					success, _ := m["success"].(bool)
 					output := m["output"]
 					errStr, _ := m["error"].(string)
+					// Extract duration_ms from Python llm-service response
+					var durationMs int64
+					if d, ok3 := m["duration_ms"].(float64); ok3 {
+						durationMs = int64(d)
+					}
 					toolExecs = append(toolExecs, ToolExecution{
-						Tool:    name,
-						Success: success,
-						Output:  output,
-						Error:   errStr,
+						Tool:       name,
+						Success:    success,
+						Output:     output,
+						Error:      errStr,
+						DurationMs: durationMs,
 					})
 				}
 			}

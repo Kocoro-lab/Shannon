@@ -453,7 +453,7 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 					Output:         outputStr,
 					Success:        tool.Success,
 					TokensConsumed: 0,
-					DurationMs:     0,
+					DurationMs:     tool.DurationMs,
 					Error:          tool.Error,
 				},
 			)

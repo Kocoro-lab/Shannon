@@ -3638,8 +3638,8 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 					InputParams:    nil, // Tool execution from agent doesn't provide input params
 					Output:         outputStr,
 					Success:        tool.Success,
-					TokensConsumed: 0, // Not provided by agent
-					DurationMs:     0, // Not provided by agent
+					TokensConsumed: 0,               // Not provided by agent
+					DurationMs:     tool.DurationMs, // From agent-core proto
 					Error:          tool.Error,
 				},
 			)

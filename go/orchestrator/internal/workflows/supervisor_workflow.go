@@ -932,7 +932,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 								Output:         outputStr,
 								Success:        texec.Success,
 								TokensConsumed: 0,
-								DurationMs:     0,
+								DurationMs:     texec.DurationMs,
 								Error:          texec.Error,
 								Metadata: map[string]interface{}{
 									"workflow": "supervisor",

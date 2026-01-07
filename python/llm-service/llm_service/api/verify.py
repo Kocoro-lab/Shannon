@@ -3,7 +3,8 @@
 import logging
 import json
 import math
-from typing import List, Dict, Any, Optional
+import re
+from typing import List, Dict, Any, Optional, Tuple
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
@@ -53,6 +54,71 @@ class VerificationResult(BaseModel):
     claim_details: List[ClaimVerification] = Field(default_factory=list)
 
 
+def _extract_cited_numbers(text: str, max_citations: int, limit: int = 50) -> set:
+    """
+    Extract citation numbers referenced in text (e.g., [1], [37]).
+
+    Args:
+        text: Text potentially containing citation references
+        max_citations: Maximum valid citation number (len(citations))
+        limit: Maximum number of unique citations to extract (prevent OOM)
+
+    Returns:
+        Set of valid citation numbers found in text
+    """
+    cited_numbers = set()
+    for match in re.findall(r'\[(\d+)\]', text):
+        try:
+            num = int(match)
+            if 0 < num <= max_citations:
+                cited_numbers.add(num)
+            if len(cited_numbers) >= limit:
+                break
+        except ValueError:
+            continue
+    return cited_numbers
+
+
+def _build_relevant_citations(
+    citations: List["Citation"],
+    cited_numbers: set,
+    min_count: int = 10,
+    max_count: int = 25
+) -> List[Tuple[int, "Citation"]]:
+    """
+    Build a list of relevant citations preserving original indices.
+
+    Args:
+        citations: Full list of Citation objects
+        cited_numbers: Set of citation numbers actually referenced in answer
+        min_count: Minimum citations to include (pad with top-K if needed)
+        max_count: Maximum citations to include
+
+    Returns:
+        List of (original_index, citation) tuples
+    """
+    relevant = []
+
+    # First, add all actually cited citations (preserving original index)
+    for num in sorted(cited_numbers):
+        if num <= len(citations):
+            relevant.append((num, citations[num - 1]))
+        if len(relevant) >= max_count:
+            break
+
+    # If we have fewer than min_count, pad with top-K fallback
+    if len(relevant) < min_count:
+        existing_nums = {num for num, _ in relevant}
+        for i, c in enumerate(citations[:20]):  # Check first 20
+            idx = i + 1
+            if idx not in existing_nums:
+                relevant.append((idx, c))
+                if len(relevant) >= min_count:
+                    break
+
+    return relevant
+
+
 async def verify_claims(
     answer: str,
     citations: List[Dict[str, Any]],
@@ -78,6 +144,14 @@ async def verify_claims(
         except Exception as e:
             logger.warning(f"[verification] Failed to parse citation[{idx}]: {e}")
 
+    # Extract which citation numbers are actually referenced in the answer
+    cited_numbers = _extract_cited_numbers(answer, len(citation_objs), limit=50)
+    logger.debug(f"[verification] Found {len(cited_numbers)} unique citation references in answer: {sorted(cited_numbers)[:10]}...")
+
+    # Build relevant citations with original indices preserved
+    relevant_citations = _build_relevant_citations(citation_objs, cited_numbers, min_count=10, max_count=25)
+    logger.debug(f"[verification] Using {len(relevant_citations)} relevant citations for verification")
+
     # Step 1: Extract factual claims using LLM
     claims = await _extract_claims(answer, llm_client)
     logger.info(f"[verification] Extracted {len(claims)} claims from synthesis")
@@ -89,10 +163,10 @@ async def verify_claims(
             supported_claims=0
         )
 
-    # Step 2: Cross-reference each claim against citations
+    # Step 2: Cross-reference each claim against citations (using relevant citations with original indices)
     claim_verifications = []
     for claim in claims:
-        verification = await _verify_single_claim(claim, citation_objs, llm_client)
+        verification = await _verify_single_claim(claim, relevant_citations, llm_client)
         claim_verifications.append(verification)
 
     # Step 3: Calculate aggregate metrics
@@ -131,7 +205,7 @@ async def _extract_claims(answer: str, providers: Any) -> List[str]:
 A factual claim is a statement that can be verified against sources.
 
 Text:
-{answer[:3000]}
+{answer[:8000]}
 
 Instructions:
 1. Extract only factual claims (not opinions or interpretations)
@@ -186,19 +260,32 @@ Output format:
 
 async def _verify_single_claim(
     claim: str,
-    citations: List[Citation],
+    indexed_citations: List[Tuple[int, Citation]],
     providers: Any
 ) -> ClaimVerification:
-    """Verify a single claim against available citations."""
+    """
+    Verify a single claim against available citations.
 
-    if not citations:
+    Args:
+        claim: The factual claim to verify
+        indexed_citations: List of (original_index, citation) tuples preserving original numbering
+        providers: LLM provider for verification
+    """
+
+    if not indexed_citations:
         return ClaimVerification(claim=claim, confidence=0.0)
 
-    # Build citation context (limit content length)
+    # Build mapping from original index to citation for lookup
+    idx_to_citation = {idx: c for idx, c in indexed_citations}
+
+    # Build citation context using ORIGINAL indices (e.g., [1], [37], [42])
     citation_context = "\n\n".join([
-        f"[{i+1}] {(c.title or c.source or c.url)}\n{((c.content or c.snippet) or '')[:500]}"
-        for i, c in enumerate(citations[:15])  # Limit to 15 citations
+        f"[{idx}] {(c.title or c.source or c.url)}\n{((c.content or c.snippet) or '')[:500]}"
+        for idx, c in indexed_citations
     ])
+
+    # List valid citation numbers for the prompt
+    valid_nums = sorted(idx_to_citation.keys())
 
     prompt = f"""Verify the following claim against the provided sources.
 
@@ -214,12 +301,14 @@ For each source, determine if it:
 
 Output JSON format:
 {{
-    "supporting": [1, 3],  // Citation numbers that support
-    "conflicting": [2],    // Citation numbers that conflict
+    "supporting": [{valid_nums[0]}],  // Citation numbers that support (use actual numbers shown above)
+    "conflicting": [],    // Citation numbers that conflict
     "confidence": 0.85     // 0.0-1.0 confidence in claim
 }}
 
-IMPORTANT: Only output the JSON, nothing else.
+IMPORTANT:
+- Only use citation numbers from the sources above: {valid_nums}
+- Only output the JSON, nothing else.
 """
 
     try:
@@ -251,27 +340,25 @@ IMPORTANT: Only output the JSON, nothing else.
         conflicting = result.get("conflicting", [])
         base_confidence = result.get("confidence", 0.5)
 
+        # Filter to only valid citation numbers and get credibility weights
+        valid_supporting = [n for n in supporting if n in idx_to_citation]
+        valid_conflicting = [n for n in conflicting if n in idx_to_citation]
+
         # Weight confidence by citation credibility and count with diminishing returns (log2)
-        if supporting:
-            valid_indices = [i-1 for i in supporting if 0 < i <= len(citations)]
-            if valid_indices:
-                credibility_weights = [citations[i].credibility_score for i in valid_indices]
-                avg_cred = (sum(credibility_weights) / len(credibility_weights)) if credibility_weights else 0.5
-                # Diminishing returns for multiple sources
-                num_sources = len(valid_indices)
-                bonus = min(0.25, 0.2 * math.log2(max(1, num_sources)))  # cap 25%
-                confidence = base_confidence * avg_cred * (1.0 + bonus if num_sources > 1 else 1.0)
-            else:
-                confidence = base_confidence * 0.5
+        if valid_supporting:
+            credibility_weights = [idx_to_citation[n].credibility_score for n in valid_supporting]
+            avg_cred = (sum(credibility_weights) / len(credibility_weights)) if credibility_weights else 0.5
+            # Diminishing returns for multiple sources
+            num_sources = len(valid_supporting)
+            bonus = min(0.25, 0.2 * math.log2(max(1, num_sources)))  # cap 25%
+            confidence = base_confidence * avg_cred * (1.0 + bonus if num_sources > 1 else 1.0)
         else:
             confidence = 0.0
 
         # Weighted conflict penalty proportional to conflict strength
-        if conflicting:
-            conf_indices = [i-1 for i in conflicting if 0 < i <= len(citations)]
-            sup_indices = [i-1 for i in supporting if 0 < i <= len(citations)]
-            conflict_weight = sum(citations[i].credibility_score for i in conf_indices) if conf_indices else 0.0
-            support_weight = sum(citations[i].credibility_score for i in sup_indices) if sup_indices else 0.0
+        if valid_conflicting:
+            conflict_weight = sum(idx_to_citation[n].credibility_score for n in valid_conflicting)
+            support_weight = sum(idx_to_citation[n].credibility_score for n in valid_supporting) if valid_supporting else 0.0
             denom = conflict_weight + support_weight
             if denom > 0:
                 conflict_ratio = conflict_weight / denom
@@ -288,8 +375,8 @@ IMPORTANT: Only output the JSON, nothing else.
 
         return ClaimVerification(
             claim=claim,
-            supporting_citations=supporting,
-            conflicting_citations=conflicting,
+            supporting_citations=valid_supporting,
+            conflicting_citations=valid_conflicting,
             confidence=confidence
         )
 
