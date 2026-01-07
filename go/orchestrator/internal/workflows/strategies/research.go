@@ -249,6 +249,56 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 	return filtered
 }
 
+// CitationFilterResult holds the result of citation filtering with fallback logic.
+type CitationFilterResult struct {
+	Citations []metadata.Citation
+	Before    int
+	After     int
+	Retention float64
+	Applied   bool // true if filter applied, false if fallback (kept original)
+}
+
+// Constants for citation filter fallback thresholds
+const (
+	citationFilterMinCount     = 20  // Minimum citations to accept filter result
+	citationFilterMinRetention = 0.3 // Minimum retention rate (30%)
+)
+
+// ApplyCitationFilterWithFallback applies entity-based filtering with automatic
+// fallback when the filter would remove too many citations.
+// Returns a CitationFilterResult containing the filtered citations and metadata.
+func ApplyCitationFilterWithFallback(
+	citations []metadata.Citation,
+	canonicalName string,
+	aliases []string,
+	domains []string,
+) CitationFilterResult {
+	beforeCount := len(citations)
+	if beforeCount == 0 {
+		return CitationFilterResult{Citations: citations, Applied: false}
+	}
+
+	filtered := FilterCitationsByEntity(citations, canonicalName, aliases, domains)
+	retention := float64(len(filtered)) / float64(beforeCount)
+
+	result := CitationFilterResult{
+		Before:    beforeCount,
+		After:     len(filtered),
+		Retention: retention,
+	}
+
+	// Apply filter only if results are reasonable (>=20 citations OR >=30% retention)
+	if len(filtered) >= citationFilterMinCount || retention >= citationFilterMinRetention {
+		result.Citations = filtered
+		result.Applied = true
+	} else {
+		result.Citations = citations // Keep original
+		result.Applied = false
+	}
+
+	return result
+}
+
 func hasSuccessfulToolExecutions(results []activities.AgentExecutionResult) bool {
 	for _, ar := range results {
 		for _, te := range ar.ToolExecutions {
@@ -1882,31 +1932,26 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				if eq, ok := baseContext["exact_queries"].([]string); ok {
 					aliases = eq
 				}
-				// Filter citations by entity relevance
-				beforeCount := len(citations)
+				// Filter citations by entity relevance with automatic fallback
 				logger.Info("Applying citation entity filter",
-					"pre_filter_count", beforeCount,
+					"pre_filter_count", len(citations),
 					"canonical_name", canonicalName,
 					"official_domains", domains,
 					"alias_count", len(aliases),
 				)
-				filtered := FilterCitationsByEntity(citations, canonicalName, aliases, domains)
-				retention := float64(len(filtered)) / float64(beforeCount)
-
-				// Only apply filter if results are reasonable (>=20 citations OR >=30% retention)
-				if len(filtered) >= 20 || retention >= 0.3 {
-					citations = filtered
+				filterResult := ApplyCitationFilterWithFallback(citations, canonicalName, aliases, domains)
+				citations = filterResult.Citations
+				if filterResult.Applied {
 					logger.Info("Citation filter applied",
-						"before", beforeCount,
-						"after", len(filtered),
-						"retention", retention,
+						"before", filterResult.Before,
+						"after", filterResult.After,
+						"retention", filterResult.Retention,
 					)
 				} else {
-					// Filter too aggressive, keep original citations
 					logger.Warn("Citation filter too aggressive, keeping original",
-						"before", beforeCount,
-						"filtered", len(filtered),
-						"retention", retention,
+						"before", filterResult.Before,
+						"filtered", filterResult.After,
+						"retention", filterResult.Retention,
 					)
 				}
 			}
@@ -2472,24 +2517,19 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					if eq, ok := baseContext["exact_queries"].([]string); ok {
 						aliases = eq
 					}
-					beforeCount := len(updatedCitations)
-					filtered := FilterCitationsByEntity(updatedCitations, canonicalName, aliases, domains)
-					retention := float64(len(filtered)) / float64(beforeCount)
-
-					// Only apply filter if results are reasonable (>=20 citations OR >=30% retention)
-					if len(filtered) >= 20 || retention >= 0.3 {
-						updatedCitations = filtered
+					filterResult := ApplyCitationFilterWithFallback(updatedCitations, canonicalName, aliases, domains)
+					updatedCitations = filterResult.Citations
+					if filterResult.Applied {
 						logger.Info("Gap-filling citation filter applied",
-							"before", beforeCount,
-							"after", len(filtered),
-							"retention", retention,
+							"before", filterResult.Before,
+							"after", filterResult.After,
+							"retention", filterResult.Retention,
 						)
 					} else {
-						// Filter too aggressive, keep original citations
 						logger.Warn("Gap-filling citation filter too aggressive, keeping original",
-							"before", beforeCount,
-							"filtered", len(filtered),
-							"retention", retention,
+							"before", filterResult.Before,
+							"filtered", filterResult.After,
+							"retention", filterResult.Retention,
 						)
 					}
 				}
@@ -2771,24 +2811,19 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								if eq, ok := baseContext["exact_queries"].([]string); ok {
 									aliases = eq
 								}
-								beforeCount := len(allCitations)
-								filtered := FilterCitationsByEntity(allCitations, canonicalName, aliases, domains)
-								retention := float64(len(filtered)) / float64(beforeCount)
-
-								// Only apply filter if results are reasonable (>=20 citations OR >=30% retention)
-								if len(filtered) >= 20 || retention >= 0.3 {
-									allCitations = filtered
+								filterResult := ApplyCitationFilterWithFallback(allCitations, canonicalName, aliases, domains)
+								allCitations = filterResult.Citations
+								if filterResult.Applied {
 									logger.Info("Iterative gap-filling citation filter applied",
-										"before", beforeCount,
-										"after", len(filtered),
-										"retention", retention,
+										"before", filterResult.Before,
+										"after", filterResult.After,
+										"retention", filterResult.Retention,
 									)
 								} else {
-									// Filter too aggressive, keep original citations
 									logger.Warn("Iterative gap-filling citation filter too aggressive, keeping original",
-										"before", beforeCount,
-										"filtered", len(filtered),
-										"retention", retention,
+										"before", filterResult.Before,
+										"filtered", filterResult.After,
+										"retention", filterResult.Retention,
 									)
 								}
 							}
