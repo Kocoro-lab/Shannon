@@ -101,11 +101,12 @@ type AgentExecutionResult struct {
 
 // ToolExecution summarizes a single tool invocation result returned by Agent-Core
 type ToolExecution struct {
-	Tool       string      `json:"tool"`
-	Success    bool        `json:"success"`
-	Output     interface{} `json:"output,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	DurationMs int64       `json:"duration_ms,omitempty"`
+	Tool        string      `json:"tool"`
+	Success     bool        `json:"success"`
+	Output      interface{} `json:"output,omitempty"`
+	Error       string      `json:"error,omitempty"`
+	DurationMs  int64       `json:"duration_ms,omitempty"`
+	InputParams interface{} `json:"tool_input,omitempty"`
 }
 
 // SynthesisInput is the input for result synthesis

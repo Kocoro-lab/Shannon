@@ -2050,17 +2050,19 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 					success, _ := m["success"].(bool)
 					output := m["output"]
 					errStr, _ := m["error"].(string)
+					inputParams := m["tool_input"]
 					// Extract duration_ms from Python llm-service response
 					var durationMs int64
 					if d, ok3 := m["duration_ms"].(float64); ok3 {
 						durationMs = int64(d)
 					}
 					toolExecs = append(toolExecs, ToolExecution{
-						Tool:       name,
-						Success:    success,
-						Output:     output,
-						Error:      errStr,
-						DurationMs: durationMs,
+						Tool:        name,
+						Success:     success,
+						Output:      output,
+						Error:       errStr,
+						DurationMs:  durationMs,
+						InputParams: inputParams,
 					})
 				}
 			}

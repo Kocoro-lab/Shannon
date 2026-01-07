@@ -1673,6 +1673,7 @@ async def _execute_and_format_tools(
                     "metadata": sanitized_result_metadata,
                     "duration_ms": duration_ms,
                     "tokens_used": result.tokens_used if result else None,
+                    "tool_input": _sanitize_payload(args, max_str=2000, max_items=20),
                 }
             )
 
