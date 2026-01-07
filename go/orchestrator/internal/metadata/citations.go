@@ -882,16 +882,44 @@ func extractCitationsFromToolOutput(toolName string, output interface{}, agentID
 		}
 
 	case "web_fetch":
-		// Single page fetch
+		// Handle both single page and batch fetch formats
 		if outputMap, ok := output.(map[string]interface{}); ok {
-			if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
-				citations = append(citations, *citation)
+			// Check for batch format: {pages: [...], succeeded: N, failed: M}
+			if pages, ok := outputMap["pages"].([]interface{}); ok {
+				for _, page := range pages {
+					if pageMap, ok := page.(map[string]interface{}); ok {
+						// Only extract from successful pages
+						if success, _ := pageMap["success"].(bool); success {
+							if citation, err := extractCitationFromFetchResult(pageMap, agentID, now); err == nil {
+								citations = append(citations, *citation)
+							}
+						}
+					}
+				}
+			} else {
+				// Single page format (backward compatible)
+				if citation, err := extractCitationFromFetchResult(outputMap, agentID, now); err == nil {
+					citations = append(citations, *citation)
+				}
 			}
 		} else if s, ok := output.(string); ok && s != "" {
 			var m map[string]interface{}
 			if err := json.Unmarshal([]byte(s), &m); err == nil {
-				if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
-					citations = append(citations, *citation)
+				// Check for batch format in JSON string
+				if pages, ok := m["pages"].([]interface{}); ok {
+					for _, page := range pages {
+						if pageMap, ok := page.(map[string]interface{}); ok {
+							if success, _ := pageMap["success"].(bool); success {
+								if citation, err := extractCitationFromFetchResult(pageMap, agentID, now); err == nil {
+									citations = append(citations, *citation)
+								}
+							}
+						}
+					}
+				} else {
+					if citation, err := extractCitationFromFetchResult(m, agentID, now); err == nil {
+						citations = append(citations, *citation)
+					}
 				}
 			}
 		}
