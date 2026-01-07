@@ -214,6 +214,12 @@ func ExecuteSequential(
 				}).Get(ctx, &result)
 		} else {
 			// Execute without budget
+			// Inject model_tier to taskContext to ensure consistent tier selection
+			// (budget path injects via BudgetedAgentInput.ModelTier -> budget.go:298)
+			if modelTier != "" {
+				taskContext["model_tier"] = modelTier
+			}
+
 			err = workflow.ExecuteActivity(ctx,
 				activities.ExecuteAgent,
 				activities.AgentExecutionInput{

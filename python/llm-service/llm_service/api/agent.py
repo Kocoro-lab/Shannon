@@ -168,7 +168,7 @@ class AgentQuery(BaseModel):
         default=0.7, description="Temperature for generation"
     )
     model_tier: Optional[str] = Field(
-        default="small", description="Model tier: small, medium, or large"
+        default=None, description="Model tier: small, medium, or large (None = use context or default to small)"
     )
     model_override: Optional[str] = Field(
         default=None,

@@ -753,6 +753,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 
 	modelTier := determineModelTier(baseContext, "medium")
+	// Ensure baseContext always has model_tier for consistent propagation
+	// (parallel/hybrid execution may use non-budget path which reads from context)
+	baseContext["model_tier"] = modelTier
 	var agentResults []activities.AgentExecutionResult
 	var domainPrefetchResults []activities.AgentExecutionResult
 	domainPrefetchTokens := 0
