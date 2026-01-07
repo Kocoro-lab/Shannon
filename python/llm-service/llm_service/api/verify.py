@@ -390,7 +390,30 @@ async def verify_claims(
 async def _extract_claims(answer: str, providers: Any) -> List[str]:
     """Extract factual claims from synthesis using LLM."""
 
-    prompt = f"""Extract all factual claims from the following text.
+    # P0 fix: Detect language and use appropriate prompt
+    # This ensures claims are extracted correctly for CJK text
+    lang = detect_language(answer[:500])
+
+    if lang == "zh":
+        prompt = f"""从以下文本中提取所有事实性陈述。
+事实性陈述是指可以通过来源验证的声明。
+
+文本:
+{answer[:8000]}
+
+指令:
+1. 只提取事实性陈述（非观点或解释）
+2. 每个陈述应是单一、可验证的声明
+3. 以编号列表形式返回
+4. 限制在最重要的 10 个陈述
+
+输出格式:
+1. [第一个陈述]
+2. [第二个陈述]
+...
+"""
+    else:
+        prompt = f"""Extract all factual claims from the following text.
 A factual claim is a statement that can be verified against sources.
 
 Text:

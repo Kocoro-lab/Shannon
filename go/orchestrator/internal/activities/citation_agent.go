@@ -127,7 +127,9 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 	}
 
 	// Check if V2 produced usable results
-	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 {
+	// P0 fix: Also check ValidationPassed to ensure consistency with downstream code
+	// that may check ValidationPassed to decide whether to use the cited report
+	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 && result.ValidationPassed {
 		logger.Info("CitationAgent V2 succeeded",
 			"applied", result.PlacementStats.Applied,
 			"failed", result.PlacementStats.Failed,
@@ -136,8 +138,18 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		return result, nil
 	}
 
-	// V2 didn't produce citations, fall back to legacy
-	logger.Info("CitationAgent V2 produced no citations, trying legacy")
+	// V2 didn't pass validation threshold or produced no citations
+	// Log details for debugging
+	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 {
+		logger.Info("CitationAgent V2 below validation threshold, trying legacy",
+			"applied", result.PlacementStats.Applied,
+			"failed", result.PlacementStats.Failed,
+			"success_rate", result.PlacementStats.SuccessRate,
+			"validation_passed", result.ValidationPassed,
+		)
+	} else {
+		logger.Info("CitationAgent V2 produced no citations, trying legacy")
+	}
 	return a.addCitationsLegacy(ctx, input, role)
 }
 
@@ -1356,7 +1368,7 @@ func applyPlacementsV2(sentences []string, plan *PlacementPlan, hashes []string,
 		// Hash verification with adjacent sentence fallback
 		targetIdx := p.SentenceIndex
 		if p.SentenceHash != "" && p.SentenceHash != hashes[targetIdx] {
-			// Try adjacent sentences
+			// Try adjacent sentences (±1)
 			found := false
 			for _, offset := range []int{-1, 1} {
 				adjIdx := targetIdx + offset
@@ -1367,8 +1379,11 @@ func applyPlacementsV2(sentences []string, plan *PlacementPlan, hashes []string,
 				}
 			}
 			if !found {
-				// Hash mismatch and no adjacent match - still try to apply (lenient mode)
-				// but log this as a potential issue
+				// Hash mismatch and no adjacent match - record as FAILED to prevent wrong placement
+				// This is a P0 fix: lenient apply could insert citations at wrong positions
+				result.Failed++
+				result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+				continue
 			}
 		}
 
