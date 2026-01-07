@@ -1776,7 +1776,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		toolName = input.SuggestedTools[0]
 	} else {
 		logger.Error("No SuggestedTools provided with ToolParameters; cannot proceed")
-		return AgentExecutionResult{Role: role, Success: false, Error: "No tool specified for forced execution"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "No tool specified for forced execution"}, nil
 	}
 
 	// Build forced_tool_calls payload for /agent/query
@@ -1802,7 +1802,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	payloadBytes, err := json.Marshal(agentQueryPayload)
 	if err != nil {
 		logger.Error("Failed to marshal agent query payload", "error", err)
-		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to construct request"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "Failed to construct request"}, nil
 	}
 
 	// Publish TOOL_INVOKED event
@@ -1873,7 +1873,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to create request"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "Failed to create request"}, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Agent-ID", input.AgentID)
@@ -1897,7 +1897,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: fmt.Sprintf("Request failed: %v", err)}, nil
 	}
 	defer resp.Body.Close()
 
@@ -1919,7 +1919,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: fmt.Sprintf("HTTP %d", resp.StatusCode)}, nil
 	}
 
 	// Parse response
@@ -1951,7 +1951,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				Timestamp: time.Now(),
 			})
 		}
-		return AgentExecutionResult{Role: role, Success: false, Error: "Failed to parse response"}, nil
+		return AgentExecutionResult{AgentID: input.AgentID, Role: role, Success: false, Error: "Failed to parse response"}, nil
 	}
 
 	// Prefer role reported by llm-service when available
@@ -2070,6 +2070,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	}
 
 	return AgentExecutionResult{
+		AgentID:        input.AgentID,
 		Success:        agentResponse.Success,
 		Role:           role,
 		Response:       agentResponse.Response,
