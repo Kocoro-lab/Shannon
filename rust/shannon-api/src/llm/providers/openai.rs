@@ -100,11 +100,12 @@ impl LlmDriver for OpenAiDriver {
         // Add tools if present
         if !req.tools.is_empty() {
             body["tools"] = serde_json::Value::Array(req.tools.clone());
-        }
-
-        // Add parallel tool calls setting if specified
-        if let Some(parallel) = self.settings.parallel_tool_calls {
-            body["parallel_tool_calls"] = serde_json::Value::Bool(parallel);
+            
+            // Only add parallel_tool_calls when tools are specified
+            // (OpenAI API rejects this parameter otherwise)
+            if let Some(parallel) = self.settings.parallel_tool_calls {
+                body["parallel_tool_calls"] = serde_json::Value::Bool(parallel);
+            }
         }
 
         let mut request = self.client.post(self.api_url()).json(&body);
