@@ -3,13 +3,21 @@
 
 import { getAccessToken, getAPIKey } from "@/lib/auth";
 
-// Detect if we're running inside Tauri
-const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+// Runtime detection of Tauri environment
+// This must be a function called at runtime, not a constant evaluated at build time
+function getApiBaseUrl(): string {
+    // Check if running in browser and Tauri is available
+    if (typeof window !== 'undefined' && '__TAURI__' in window) {
+        return "http://127.0.0.1:8765";
+    }
+    // Fall back to environment variable or default
+    return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+}
 
-// Use embedded API URL for Tauri, otherwise use configured or default
-const API_BASE_URL = isTauri 
-    ? "http://127.0.0.1:8765"
-    : (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080");
+// Get the API base URL at runtime
+function getApiUrl(path: string): string {
+    return `${getApiBaseUrl()}${path}`;
+}
 
 // =============================================================================
 // Auth Headers Helper
@@ -89,7 +97,7 @@ export async function register(
     password: string,
     fullName?: string
 ): Promise<AuthResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/register`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -111,7 +119,7 @@ export async function register(
 }
 
 export async function login(email: string, password: string): Promise<AuthResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/login`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -132,7 +140,7 @@ export async function refreshToken(refreshToken: string): Promise<{
     refresh_token: string;
     expires_in: number;
 }> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/refresh`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -148,7 +156,7 @@ export async function refreshToken(refreshToken: string): Promise<{
 }
 
 export async function getCurrentUser(): Promise<MeResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/me`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/me`, {
         headers: getAuthHeaders(),
     });
 
@@ -185,7 +193,7 @@ export interface TaskSubmitResponse {
 }
 
 export async function submitTask(request: TaskSubmitRequest): Promise<TaskSubmitResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -203,7 +211,7 @@ export async function submitTask(request: TaskSubmitRequest): Promise<TaskSubmit
 }
 
 export async function getTask(taskId: string) {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}`, {
         headers: getAuthHeaders(),
     });
 
@@ -233,7 +241,7 @@ export interface TaskListResponse {
 }
 
 export async function listTasks(limit: number = 50, offset: number = 0): Promise<TaskListResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks?limit=${limit}&offset=${offset}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks?limit=${limit}&offset=${offset}`, {
         headers: getAuthHeaders(),
     });
 
@@ -245,7 +253,7 @@ export async function listTasks(limit: number = 50, offset: number = 0): Promise
 }
 
 export function getStreamUrl(workflowId: string): string {
-    const baseUrl = `${API_BASE_URL}/api/v1/stream/sse?workflow_id=${workflowId}`;
+    const baseUrl = `${getApiBaseUrl()}/api/v1/stream/sse?workflow_id=${workflowId}`;
 
     // Add API key for SSE auth (EventSource can't use headers)
     const apiKey = getAPIKey();
@@ -362,7 +370,7 @@ export interface SessionEventsResponse {
 // Session API Functions
 
 export async function listSessions(limit: number = 20, offset: number = 0): Promise<SessionListResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions?limit=${limit}&offset=${offset}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/sessions?limit=${limit}&offset=${offset}`, {
         headers: getAuthHeaders(),
     });
 
@@ -374,7 +382,7 @@ export async function listSessions(limit: number = 20, offset: number = 0): Prom
 }
 
 export async function getSession(sessionId: string): Promise<Session> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/sessions/${sessionId}`, {
         headers: getAuthHeaders(),
     });
 
@@ -386,7 +394,7 @@ export async function getSession(sessionId: string): Promise<Session> {
 }
 
 export async function getSessionHistory(sessionId: string): Promise<SessionHistoryResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/history`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/sessions/${sessionId}/history`, {
         headers: getAuthHeaders(),
     });
 
@@ -407,7 +415,7 @@ export async function getSessionEvents(sessionId: string, limit: number = 10, of
         params.append('include_payload', 'true');
     }
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/events?${params.toString()}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/sessions/${sessionId}/events?${params.toString()}`, {
         headers: getAuthHeaders(),
     });
 
@@ -439,7 +447,7 @@ export interface ControlStateResponse {
 // Task Control API Functions
 
 export async function pauseTask(taskId: string, reason?: string): Promise<TaskControlResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/pause`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}/pause`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -457,7 +465,7 @@ export async function pauseTask(taskId: string, reason?: string): Promise<TaskCo
 }
 
 export async function resumeTask(taskId: string, reason?: string): Promise<TaskControlResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/resume`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}/resume`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -475,7 +483,7 @@ export async function resumeTask(taskId: string, reason?: string): Promise<TaskC
 }
 
 export async function cancelTask(taskId: string, reason?: string): Promise<{ success: boolean }> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/cancel`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}/cancel`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -493,7 +501,7 @@ export async function cancelTask(taskId: string, reason?: string): Promise<{ suc
 }
 
 export async function getTaskControlState(taskId: string): Promise<ControlStateResponse> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/control-state`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}/control-state`, {
         headers: getAuthHeaders(),
     });
 
@@ -594,7 +602,7 @@ export async function listSchedules(
         params.set('status', status);
     }
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules?${params}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules?${params}`, {
         headers: getAuthHeaders(),
     });
 
@@ -606,7 +614,7 @@ export async function listSchedules(
 }
 
 export async function getSchedule(scheduleId: string): Promise<ScheduleInfo> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules/${scheduleId}`, {
         headers: getAuthHeaders(),
     });
 
@@ -627,7 +635,7 @@ export async function getScheduleRuns(
         page_size: String(pageSize),
     });
 
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}/runs?${params}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules/${scheduleId}/runs?${params}`, {
         headers: getAuthHeaders(),
     });
 
@@ -639,7 +647,7 @@ export async function getScheduleRuns(
 }
 
 export async function createSchedule(request: CreateScheduleRequest): Promise<ScheduleInfo> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -660,7 +668,7 @@ export async function updateSchedule(
     scheduleId: string,
     request: UpdateScheduleRequest
 ): Promise<ScheduleInfo> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules/${scheduleId}`, {
         method: "PUT",
         headers: {
             "Content-Type": "application/json",
@@ -678,7 +686,7 @@ export async function updateSchedule(
 }
 
 export async function pauseSchedule(scheduleId: string, reason?: string): Promise<ScheduleInfo> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}/pause`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules/${scheduleId}/pause`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -696,7 +704,7 @@ export async function pauseSchedule(scheduleId: string, reason?: string): Promis
 }
 
 export async function resumeSchedule(scheduleId: string, reason?: string): Promise<ScheduleInfo> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}/resume`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules/${scheduleId}/resume`, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -714,7 +722,7 @@ export async function resumeSchedule(scheduleId: string, reason?: string): Promi
 }
 
 export async function deleteSchedule(scheduleId: string): Promise<void> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/schedules/${scheduleId}`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/schedules/${scheduleId}`, {
         method: "DELETE",
         headers: getAuthHeaders(),
     });
@@ -761,7 +769,7 @@ export interface SubtaskProgress {
  * Poll task progress - fallback for when SSE connection fails
  */
 export async function pollTaskProgress(taskId: string): Promise<TaskProgress> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/progress`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}/progress`, {
         headers: getAuthHeaders(),
     });
 
@@ -800,7 +808,7 @@ export async function getTaskOutput(taskId: string): Promise<{
     cost_usd: number;
     completed_at?: string;
 }> {
-    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/output`, {
+    const response = await fetch(`${getApiBaseUrl()}/api/v1/tasks/${taskId}/output`, {
         headers: getAuthHeaders(),
     });
 
