@@ -3,7 +3,13 @@
 
 import { getAccessToken, getAPIKey } from "@/lib/auth";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+// Detect if we're running inside Tauri
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+// Use embedded API URL for Tauri, otherwise use configured or default
+const API_BASE_URL = isTauri 
+    ? "http://127.0.0.1:8765"
+    : (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080");
 
 // =============================================================================
 // Auth Headers Helper

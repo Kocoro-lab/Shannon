@@ -5,7 +5,7 @@ description = "Shannon Desktop - AI Platform Client with Embedded Mode Support"
 authors = ["Shannon Team"]
 license = "MIT"
 repository = "https://github.com/Prometheus-AGS/Shannon"
-edition = "2024"
+edition = "2021"
 rust-version = "1.91.1"
 
 [lib]
@@ -24,6 +24,8 @@ desktop = [
     "dep:shannon-api",
     "dep:tokio",
     "dep:surrealdb",
+    "dep:reqwest",
+    "dep:axum",
     # Future: "sync",
 ]
 
@@ -35,11 +37,11 @@ mobile = [
     # Future: "sync",
 ]
 
-# iOS-specific configuration
-ios = ["mobile", "tauri/ios"]
+# iOS-specific configuration (built via tauri ios command)
+ios = ["mobile"]
 
-# Android-specific configuration
-android = ["mobile", "tauri/android"]
+# Android-specific configuration (built via tauri android command)
+android = ["mobile"]
 
 # Sync features (P2P mesh network)
 # Commented until shannon-sync crate is implemented
@@ -76,11 +78,14 @@ tauri = { version = "2.9.2", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 
-# Shannon core (embedded mode)
-shannon-api = { path = "../../rust/shannon-api", features = ["embedded"], optional = true }
+# Shannon core (embedded mode - no grpc/orchestrator needed)
+shannon-api = { path = "../../rust/shannon-api", default-features = false, features = ["embedded", "gateway"], optional = true }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"], optional = true }
+
+# Web server for embedded API
+axum = { version = "0.8", optional = true }
 
 # Embedded database backends
 surrealdb = { version = "2.2", features = ["kv-rocksdb"], optional = true }

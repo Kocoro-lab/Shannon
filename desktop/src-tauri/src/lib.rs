@@ -120,10 +120,66 @@ pub fn run() {
                 }
 
                 log::info!("Data directory: {:?}", app_data_dir);
-                log::info!("Embedded Shannon API will be available at http://127.0.0.1:8765");
+                log::info!("Starting embedded Shannon API on port 8765...");
 
-                // Note: The actual API server is started asynchronously
-                // The frontend should poll is_embedded_api_running() before making requests
+                // Start the embedded API server in a background thread with its own runtime.
+                // The server runs for the lifetime of the application.
+                let state: tauri::State<'_, TauriEmbeddedState> = app.state();
+                let state_clone = state.inner().clone();
+                let data_dir = app_data_dir.clone();
+                
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new()
+                        .expect("Failed to create tokio runtime");
+                    
+                    rt.block_on(async move {
+                        // Create and store the handle first
+                        let handle = embedded_api::EmbeddedApiHandle::with_port(8765);
+                        handle.should_run.store(true, std::sync::atomic::Ordering::SeqCst);
+                        state_clone.set_handle(handle.clone());
+                        
+                        // Set environment for embedded mode
+                        std::env::set_var("SHANNON_MODE", "embedded");
+                        std::env::set_var("WORKFLOW_ENGINE", "durable");
+                        std::env::set_var("DATABASE_DRIVER", "surrealdb");
+                        std::env::set_var("SURREALDB_PATH", data_dir.join("shannon.db").to_string_lossy().to_string());
+                        
+                        // Load configuration
+                        let config = match shannon_api::config::AppConfig::load() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("Failed to load config: {}", e);
+                                return;
+                            }
+                        };
+                        
+                        // Create the application
+                        let app = match shannon_api::server::create_app(config).await {
+                            Ok(a) => a,
+                            Err(e) => {
+                                log::error!("Failed to create app: {}", e);
+                                return;
+                            }
+                        };
+                        
+                        // Bind to localhost
+                        let addr = "127.0.0.1:8765";
+                        let listener = match tokio::net::TcpListener::bind(addr).await {
+                            Ok(l) => l,
+                            Err(e) => {
+                                log::error!("Failed to bind to {}: {}", addr, e);
+                                return;
+                            }
+                        };
+                        
+                        log::info!("Embedded Shannon API listening on {}", addr);
+                        
+                        // Run the server (this blocks until shutdown)
+                        if let Err(e) = axum::serve(listener, app).await {
+                            log::error!("Embedded API server error: {}", e);
+                        }
+                    });
+                });
             }
 
             // Mobile mode: Start embedded API with SQLite

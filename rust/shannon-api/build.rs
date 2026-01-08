@@ -48,8 +48,8 @@ fn compile_protos() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from("src/proto");
     std::fs::create_dir_all(&out_dir)?;
 
-    // Configure tonic-build using the Builder pattern (tonic-build 0.14+)
-    tonic_build::Builder::new()
+    // Configure tonic-build
+    tonic_build::configure()
         .build_server(false) // We only need client code
         .build_client(true)
         .out_dir(&out_dir) // Output to src/proto for visibility

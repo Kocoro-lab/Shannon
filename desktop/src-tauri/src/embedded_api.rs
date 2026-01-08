@@ -78,20 +78,13 @@ impl EmbeddedState {
 
         // Initialize SurrealDB with RocksDB backend
         let db_path = app_data_dir.join("shannon.db");
-        let db = Surreal::new::<RocksDb>(&db_path).await?;
+        let db = Surreal::new::<RocksDb>(db_path.clone()).await?;
 
         // Select namespace and database
         db.use_ns("shannon").use_db("main").await?;
 
-        // Run schema migrations
-        let schema = include_str!("../../rust/shannon-api/src/database/schema.rs");
-        // Extract just the SurrealDB schema constant
-        if let Some(start) = schema.find("DEFINE TABLE runs") {
-            let schema_sql = &schema[start..];
-            if let Some(end) = schema_sql.find("\";") {
-                let _ = db.query(&schema_sql[..end]).await;
-            }
-        }
+        // Schema migrations are handled by the Shannon API when it initializes
+        // The embedded API server will create tables as needed
 
         tracing::info!("SurrealDB initialized at {:?}", db_path);
 
@@ -138,7 +131,7 @@ impl EmbeddedState {
 #[derive(Clone)]
 pub struct EmbeddedApiHandle {
     /// Whether the server should be running.
-    should_run: Arc<AtomicBool>,
+    pub should_run: Arc<AtomicBool>,
     /// Current port the server is listening on.
     port: u16,
 }
@@ -289,18 +282,21 @@ pub async fn start_embedded_api(_port: Option<u16>) -> Result<EmbeddedApiHandle,
 pub mod commands {
     use super::*;
     use std::sync::Mutex;
+    use std::sync::Arc;
     use tauri::State;
 
     /// State wrapper for the embedded API handle.
+    /// Uses Arc internally to allow sharing across async boundaries.
+    #[derive(Clone)]
     pub struct TauriEmbeddedState {
-        handle: Mutex<Option<EmbeddedApiHandle>>,
+        handle: Arc<Mutex<Option<EmbeddedApiHandle>>>,
     }
 
     impl TauriEmbeddedState {
         #[must_use]
         pub fn new() -> Self {
             Self {
-                handle: Mutex::new(None),
+                handle: Arc::new(Mutex::new(None)),
             }
         }
 
