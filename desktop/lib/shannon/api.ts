@@ -158,11 +158,15 @@ export async function getCurrentUser(): Promise<MeResponse> {
 // =============================================================================
 
 export interface TaskSubmitRequest {
-    query: string;
+    prompt: string;  // Changed from 'query' to match backend API
     session_id?: string;
-    context?: Record<string, any>;
-    research_strategy?: "quick" | "standard" | "deep" | "academic";
-    max_concurrent_agents?: number;
+    task_type?: string;
+    model?: string;
+    max_tokens?: number;
+    temperature?: number;
+    system_prompt?: string;
+    tools?: any[];
+    metadata?: Record<string, any>;
 }
 
 export interface TaskSubmitResponse {
@@ -713,4 +717,90 @@ export async function deleteSchedule(scheduleId: string): Promise<void> {
         const errorText = await response.text();
         throw new Error(`Failed to delete schedule: ${response.statusText} - ${errorText}`);
     }
+}
+
+// =============================================================================
+// Task Progress Types
+// =============================================================================
+
+export interface TaskProgress {
+    task_id: string;
+    workflow_id: string;
+    status: "pending" | "running" | "completed" | "failed" | "cancelled";
+    progress_percent: number;
+    current_step: string;
+    total_steps: number;
+    completed_steps: number;
+    elapsed_time_ms: number;
+    estimated_remaining_ms?: number;
+    subtasks?: SubtaskProgress[];
+    tokens_used: number;
+    cost_usd: number;
+    current_agent?: string;
+    last_updated: string;
+}
+
+export interface SubtaskProgress {
+    id: string;
+    description: string;
+    status: "pending" | "running" | "completed" | "failed";
+    agent_id?: string;
+}
+
+// =============================================================================
+// Task Polling API Functions
+// =============================================================================
+
+/**
+ * Poll task progress - fallback for when SSE connection fails
+ */
+export async function pollTaskProgress(taskId: string): Promise<TaskProgress> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/progress`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        // If progress endpoint doesn't exist, fall back to basic task info
+        if (response.status === 404) {
+            const task = await getTask(taskId);
+            return {
+                task_id: taskId,
+                workflow_id: task.workflow_id || taskId,
+                status: task.status as TaskProgress["status"],
+                progress_percent: task.status === "completed" ? 100 : task.status === "running" ? 50 : 0,
+                current_step: task.status === "running" ? "Processing..." : task.status,
+                total_steps: 1,
+                completed_steps: task.status === "completed" ? 1 : 0,
+                elapsed_time_ms: 0,
+                tokens_used: task.total_token_usage?.total_tokens || 0,
+                cost_usd: task.total_token_usage?.cost_usd || 0,
+                last_updated: new Date().toISOString(),
+            };
+        }
+        throw new Error(`Failed to get task progress: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+/**
+ * Get task final output - useful when SSE missed the completion event
+ */
+export async function getTaskOutput(taskId: string): Promise<{
+    task_id: string;
+    output: string;
+    status: string;
+    tokens_used: number;
+    cost_usd: number;
+    completed_at?: string;
+}> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${taskId}/output`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to get task output: ${response.statusText}`);
+    }
+
+    return response.json();
 }

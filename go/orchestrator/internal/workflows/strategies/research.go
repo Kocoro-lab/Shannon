@@ -449,11 +449,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		"version", "v2",
 	)
 
-	// Configure activity options
+	// Configure activity options for deep research
+	// Extended timeout for complex research tasks that may take longer
 	activityOptions := workflow.ActivityOptions{
-		StartToCloseTimeout: 5 * time.Minute,
+		StartToCloseTimeout: 30 * time.Minute, // Deep research can take 30+ mins
+		HeartbeatTimeout:    60 * time.Second, // Regular heartbeats
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 3,
+			MaximumAttempts:        5,
+			InitialInterval:        10 * time.Second,
+			BackoffCoefficient:     2.0,
+			MaximumInterval:        2 * time.Minute,
+			NonRetryableErrorTypes: []string{"CANCELLED", "VALIDATION_ERROR"},
 		},
 	}
 	ctx = workflow.WithActivityOptions(ctx, activityOptions)

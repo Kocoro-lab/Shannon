@@ -1869,8 +1869,11 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
     for the orchestrator to execute. Tool selection is entirely
     determined by the LLM without any pattern matching.
     """
+    import time
+    start_time = time.time()
+    
     try:
-        logger.info(f"Decomposing task: {query.query[:100]}...")
+        logger.info(f"Decompose request received: query_length={len(query.query)} chars, context_keys={list(query.context.keys()) if isinstance(query.context, dict) else 'None'}")
 
         # Get LLM providers
         providers = getattr(request.app.state, "providers", None)
@@ -2327,240 +2330,293 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             f"Decompose: Prepared {len(messages)} messages (history_rehydrated={history_rehydrated})"
         )
 
-        try:
-            result = await providers.generate_completion(
-                messages=messages,
-                tier=ModelTier.SMALL,
-                max_tokens=8192,  # Increased from 4096 to prevent truncation on complex decompositions
-                temperature=0.1,
-                response_format={"type": "json_object"},
-                specific_model=(
-                    settings.decomposition_model_id
-                    if settings and settings.decomposition_model_id
-                    else None
-                ),
-            )
-
-            import json as _json
-
-            raw = result.get("output_text", "")
-            logger.debug(f"LLM raw response: {raw[:500]}")
-
-            data = None
+        # Retry logic for token limit errors
+        max_tokens = 16384  # Initial token limit
+        max_retries = 2
+        retry_count = 0
+        result = None
+        data = None
+        
+        while retry_count <= max_retries:
             try:
-                data = _json.loads(raw)
-            except Exception as parse_err:
-                logger.warning(f"JSON parse error: {parse_err}, response_length={len(raw)}, starts_with_brace={raw.strip().startswith('{') if raw else False}")
-                # Try to find first {...} in response
-                import re
-
-                match = re.search(r"\{.*\}", raw, re.DOTALL)
-                if match:
-                    try:
-                        data = _json.loads(match.group())
-                    except Exception:
-                        pass
-
-            if not data:
-                # Log only metadata to avoid PII exposure
-                logger.error(f"Decomposition failed: LLM did not return valid JSON. response_length={len(raw)}, response_type={'empty' if not raw else 'text' if not raw.strip().startswith('{') else 'malformed_json'}")
-                raise ValueError("LLM did not return valid JSON")
-
-            # Extract fields with defaults
-            mode = data.get("mode", "standard")
-            score = float(data.get("complexity_score", 0.5))
-            subtasks_raw = data.get("subtasks", [])
-
-            # Parse subtasks
-            subtasks = []
-            total_tokens = 0
-
-            # Validation: Check if subtasks is null or empty but complexity suggests it should have tasks
-            if (not subtasks_raw or subtasks_raw is None) and score >= 0.3:
-                logger.warning(
-                    f"Invalid decomposition: complexity={score} but no subtasks. Creating fallback subtask."
+                # Use MEDIUM tier for decomposition (faster, more capable than SMALL/nano)
+                # This prevents timeouts and token limit issues on complex research queries
+                result = await providers.generate_completion(
+                    messages=messages,
+                    tier=ModelTier.MEDIUM,  # Changed from SMALL to MEDIUM for better performance
+                    max_tokens=max_tokens,  # Dynamically adjusted based on retries
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                    specific_model=(
+                        settings.decomposition_model_id
+                        if settings and settings.decomposition_model_id
+                        else None
+                    ),
                 )
-                # Create a generic subtask without pattern matching - let LLM decide tools
-                subtasks_raw = [
-                    {
-                        "id": "task-1",
-                        "description": query.query[:200],
-                        "dependencies": [],
-                        "estimated_tokens": 500,
-                        "suggested_tools": [],
-                        "tool_parameters": {},
-                    }
-                ]
 
-            for st in subtasks_raw:
-                if not isinstance(st, dict):
+                import json as _json
+
+                raw = result.get("output_text", "")
+                logger.debug(f"LLM raw response: {raw[:500]}")
+                
+                # Check if token limit was hit
+                finish_reason = result.get("finish_reason", "stop")
+                if finish_reason == "length" and retry_count < max_retries:
+                    # Token limit hit, retry with higher limit
+                    old_max = max_tokens
+                    max_tokens = min(max_tokens * 2, 32768)  # Double up to 32K max
+                    retry_count += 1
+                    logger.warning(
+                        f"Token limit hit (finish_reason=length), retrying with higher limit: "
+                        f"{old_max} -> {max_tokens} (attempt {retry_count + 1}/{max_retries + 1})"
+                    )
+                    continue  # Retry with higher token limit
+
+                data = None
+                try:
+                    data = _json.loads(raw)
+                except Exception as parse_err:
+                    logger.warning(f"JSON parse error: {parse_err}, response_length={len(raw)}, starts_with_brace={raw.strip().startswith('{') if raw else False}")
+                    # Try to find first {...} in response
+                    import re
+
+                    match = re.search(r"\{.*\}", raw, re.DOTALL)
+                    if match:
+                        try:
+                            data = _json.loads(match.group())
+                        except Exception:
+                            pass
+
+                if not data:
+                    # If we hit token limit and have retries left, try again
+                    if finish_reason == "length" and retry_count < max_retries:
+                        old_max = max_tokens
+                        max_tokens = min(max_tokens * 2, 32768)
+                        retry_count += 1
+                        logger.warning(
+                            f"Empty response with finish_reason=length, retrying: "
+                            f"{old_max} -> {max_tokens} (attempt {retry_count + 1}/{max_retries + 1})"
+                        )
+                        continue
+                    
+                    # Log only metadata to avoid PII exposure
+                    logger.error(f"Decomposition failed: LLM did not return valid JSON. response_length={len(raw)}, response_type={'empty' if not raw else 'text' if not raw.strip().startswith('{') else 'malformed_json'}, finish_reason={finish_reason}")
+                    raise ValueError("LLM did not return valid JSON")
+                
+                # Success - break out of retry loop
+                break
+                
+            except ValueError:
+                # Re-raise ValueError (JSON parsing failure)
+                raise
+            except Exception as e:
+                # For other errors, retry if we have attempts left
+                if retry_count < max_retries:
+                    retry_count += 1
+                    logger.warning(f"Decomposition attempt {retry_count}/{max_retries + 1} failed: {e}, retrying...")
                     continue
+                else:
+                    # Out of retries
+                    raise
+        
+        # Extract fields with defaults (after successful completion of retry loop)
+        mode = data.get("mode", "standard")
+        score = float(data.get("complexity_score", 0.5))
+        subtasks_raw = data.get("subtasks", [])
 
-                # Extract tool information if present
-                suggested_tools = st.get("suggested_tools", [])
-                tool_params = st.get("tool_parameters", {})
-                deps = st.get("dependencies", []) or []
+        # Parse subtasks
+        subtasks = []
+        total_tokens = 0
 
-                # Log tool analysis by LLM
-                if suggested_tools:
-                    logger.info(
-                        f"LLM tool analysis: suggested_tools={suggested_tools}, tool_parameters={tool_params}"
-                    )
-                    # For dependent subtasks, clear tool_parameters to avoid placeholders
-                    if isinstance(deps, list) and len(deps) > 0:
-                        tool_params = {}
-                    else:
-                        # Add the tool name to parameters if not present and tools are suggested
-                        if (
-                            suggested_tools
-                            and "tool" not in tool_params
-                            and len(suggested_tools) > 0
-                        ):
-                            tool_params["tool"] = suggested_tools[0]
-
-                # Determine structured task type when available or infer for synthesis-like tasks
-                task_type = str(st.get("task_type") or "")
-                if not task_type:
-                    desc_lower = str(st.get("description", "")).strip().lower()
-                    if (
-                        "synthesize" in desc_lower
-                        or "synthesis" in desc_lower
-                        or "summarize" in desc_lower
-                        or "summary" in desc_lower
-                        or "combine" in desc_lower
-                        or "aggregate" in desc_lower
-                    ):
-                        task_type = "synthesis"
-
-                # Keep tool_params as-is without template resolution
-
-                # Deep Research 2.0: Parse task contract fields
-                output_format = None
-                source_guidance = None
-                search_budget = None
-                boundaries = None
-
-                if st.get("output_format") and isinstance(st.get("output_format"), dict):
-                    try:
-                        output_format = OutputFormatSpec(**st["output_format"])
-                    except Exception as e:
-                        logger.warning(f"Failed to parse output_format: {e}")
-
-                if st.get("source_guidance") and isinstance(st.get("source_guidance"), dict):
-                    try:
-                        source_guidance = SourceGuidanceSpec(**st["source_guidance"])
-                    except Exception as e:
-                        logger.warning(f"Failed to parse source_guidance: {e}")
-
-                if st.get("search_budget") and isinstance(st.get("search_budget"), dict):
-                    try:
-                        search_budget = SearchBudgetSpec(**st["search_budget"])
-                    except Exception as e:
-                        logger.warning(f"Failed to parse search_budget: {e}")
-
-                if st.get("boundaries") and isinstance(st.get("boundaries"), dict):
-                    try:
-                        boundaries = BoundariesSpec(**st["boundaries"])
-                    except Exception as e:
-                        logger.warning(f"Failed to parse boundaries: {e}")
-
-                subtask = Subtask(
-                    id=st.get("id", f"task-{len(subtasks) + 1}"),
-                    description=st.get("description", ""),
-                    dependencies=st.get("dependencies", []),
-                    estimated_tokens=st.get("estimated_tokens", 300),
-                    task_type=task_type,
-                    parent_area=str(st.get("parent_area", "")) if st.get("parent_area") is not None else "",
-                    suggested_tools=suggested_tools,
-                    tool_parameters=tool_params,
-                    output_format=output_format,
-                    source_guidance=source_guidance,
-                    search_budget=search_budget,
-                    boundaries=boundaries,
-                )
-                subtasks.append(subtask)
-                total_tokens += subtask.estimated_tokens
-
-                # Log task contract fields for debugging
-                if any([output_format, source_guidance, search_budget, boundaries]):
-                    logger.info(
-                        f"Deep Research 2.0 task contract for {subtask.id}: "
-                        f"output_format={output_format}, source_guidance={source_guidance}, "
-                        f"search_budget={search_budget}, boundaries={boundaries}"
-                    )
-
-
-            # Extract extended fields
-            exec_strategy = data.get("execution_strategy", "sequential")
-            agent_types = data.get("agent_types", [])
-            concurrency_limit = data.get("concurrency_limit", 1)
-            token_estimates = data.get("token_estimates", {})
-
-            # ================================================================
-            # Option 3: Post-parse backfill for missing Task Contract fields
-            # ================================================================
-            # Ensure research workflows have complete contract fields even if LLM omits them
-            is_research_workflow = (
-                query.context
-                and isinstance(query.context, dict)
-                and (
-                    query.context.get("force_research") is True
-                    or query.context.get("workflow_type") == "research"
-                    or query.context.get("role") == "deep_research_agent"
-                )
+        # Validation: Check if subtasks is null or empty but complexity suggests it should have tasks
+        if (not subtasks_raw or subtasks_raw is None) and score >= 0.3:
+            logger.warning(
+                f"Invalid decomposition: complexity={score} but no subtasks. Creating fallback subtask."
             )
+            # Create a generic subtask without pattern matching - let LLM decide tools
+            subtasks_raw = [
+                {
+                    "id": "task-1",
+                    "description": query.query[:200],
+                    "dependencies": [],
+                    "estimated_tokens": 500,
+                    "suggested_tools": [],
+                    "tool_parameters": {},
+                }
+            ]
 
-            if is_research_workflow and subtasks:
+        for st in subtasks_raw:
+            if not isinstance(st, dict):
+                continue
+
+            # Extract tool information if present
+            suggested_tools = st.get("suggested_tools", [])
+            tool_params = st.get("tool_parameters", {})
+            deps = st.get("dependencies", []) or []
+
+            # Log tool analysis by LLM
+            if suggested_tools:
                 logger.info(
-                    f"Post-parse backfill: Detected research workflow, checking {len(subtasks)} subtasks for missing contract fields"
+                    f"LLM tool analysis: suggested_tools={suggested_tools}, tool_parameters={tool_params}"
                 )
-                backfilled_count = 0
+                # For dependent subtasks, clear tool_parameters to avoid placeholders
+                if isinstance(deps, list) and len(deps) > 0:
+                    tool_params = {}
+                else:
+                    # Add the tool name to parameters if not present and tools are suggested
+                    if (
+                        suggested_tools
+                        and "tool" not in tool_params
+                        and len(suggested_tools) > 0
+                    ):
+                        tool_params["tool"] = suggested_tools[0]
 
-                for subtask in subtasks:
-                    # Backfill output_format if missing
-                    if not subtask.output_format:
-                        subtask.output_format = OutputFormatSpec(
-                            type="narrative", required_fields=[], optional_fields=[]
-                        )
-                        logger.info(
-                            f"Backfilled output_format for subtask {subtask.id} with default narrative"
-                        )
-                        backfilled_count += 1
+            # Determine structured task type when available or infer for synthesis-like tasks
+            task_type = str(st.get("task_type") or "")
+            if not task_type:
+                desc_lower = str(st.get("description", "")).strip().lower()
+                if (
+                    "synthesize" in desc_lower
+                    or "synthesis" in desc_lower
+                    or "summarize" in desc_lower
+                    or "summary" in desc_lower
+                    or "combine" in desc_lower
+                    or "aggregate" in desc_lower
+                ):
+                    task_type = "synthesis"
 
-                    # Backfill search_budget if missing
-                    if not subtask.search_budget:
-                        subtask.search_budget = SearchBudgetSpec(
-                            max_queries=10, max_fetches=20
-                        )
-                        logger.info(
-                            f"Backfilled search_budget for subtask {subtask.id} with default limits"
-                        )
-                        backfilled_count += 1
+            # Keep tool_params as-is without template resolution
 
-                if backfilled_count > 0:
-                    logger.info(
-                        f"Post-parse backfill completed: {backfilled_count} fields backfilled across {len(subtasks)} subtasks"
+            # Deep Research 2.0: Parse task contract fields
+            output_format = None
+            source_guidance = None
+            search_budget = None
+            boundaries = None
+
+            if st.get("output_format") and isinstance(st.get("output_format"), dict):
+                try:
+                    output_format = OutputFormatSpec(**st["output_format"])
+                except Exception as e:
+                    logger.warning(f"Failed to parse output_format: {e}")
+
+            if st.get("source_guidance") and isinstance(st.get("source_guidance"), dict):
+                try:
+                    source_guidance = SourceGuidanceSpec(**st["source_guidance"])
+                except Exception as e:
+                    logger.warning(f"Failed to parse source_guidance: {e}")
+
+            if st.get("search_budget") and isinstance(st.get("search_budget"), dict):
+                try:
+                    search_budget = SearchBudgetSpec(**st["search_budget"])
+                except Exception as e:
+                    logger.warning(f"Failed to parse search_budget: {e}")
+
+            if st.get("boundaries") and isinstance(st.get("boundaries"), dict):
+                try:
+                    boundaries = BoundariesSpec(**st["boundaries"])
+                except Exception as e:
+                    logger.warning(f"Failed to parse boundaries: {e}")
+
+            subtask = Subtask(
+                id=st.get("id", f"task-{len(subtasks) + 1}"),
+                description=st.get("description", ""),
+                dependencies=st.get("dependencies", []),
+                estimated_tokens=st.get("estimated_tokens", 300),
+                task_type=task_type,
+                parent_area=str(st.get("parent_area", "")) if st.get("parent_area") is not None else "",
+                suggested_tools=suggested_tools,
+                tool_parameters=tool_params,
+                output_format=output_format,
+                source_guidance=source_guidance,
+                search_budget=search_budget,
+                boundaries=boundaries,
+            )
+            subtasks.append(subtask)
+            total_tokens += subtask.estimated_tokens
+
+            # Log task contract fields for debugging
+            if any([output_format, source_guidance, search_budget, boundaries]):
+                logger.info(
+                    f"Deep Research 2.0 task contract for {subtask.id}: "
+                    f"output_format={output_format}, source_guidance={source_guidance}, "
+                    f"search_budget={search_budget}, boundaries={boundaries}"
+                )
+
+
+        # Extract extended fields
+        exec_strategy = data.get("execution_strategy", "sequential")
+        agent_types = data.get("agent_types", [])
+        concurrency_limit = data.get("concurrency_limit", 1)
+        token_estimates = data.get("token_estimates", {})
+
+        # ================================================================
+        # Option 3: Post-parse backfill for missing Task Contract fields
+        # ================================================================
+        # Ensure research workflows have complete contract fields even if LLM omits them
+        is_research_workflow = (
+            query.context
+            and isinstance(query.context, dict)
+            and (
+                query.context.get("force_research") is True
+                or query.context.get("workflow_type") == "research"
+                or query.context.get("role") == "deep_research_agent"
+            )
+        )
+
+        if is_research_workflow and subtasks:
+            logger.info(
+                f"Post-parse backfill: Detected research workflow, checking {len(subtasks)} subtasks for missing contract fields"
+            )
+            backfilled_count = 0
+
+            for subtask in subtasks:
+                # Backfill output_format if missing
+                if not subtask.output_format:
+                    subtask.output_format = OutputFormatSpec(
+                        type="narrative", required_fields=[], optional_fields=[]
                     )
+                    logger.info(
+                        f"Backfilled output_format for subtask {subtask.id} with default narrative"
+                    )
+                    backfilled_count += 1
 
-            # Extract cognitive routing fields from data
-            cognitive_strategy = data.get("cognitive_strategy", "decompose")
-            confidence = data.get("confidence", 0.8)
-            fallback_strategy = data.get("fallback_strategy", "decompose")
+                # Backfill search_budget if missing
+                if not subtask.search_budget:
+                    subtask.search_budget = SearchBudgetSpec(
+                        max_queries=10, max_fetches=20
+                    )
+                    logger.info(
+                        f"Backfilled search_budget for subtask {subtask.id} with default limits"
+                    )
+                    backfilled_count += 1
 
-            usage = result.get("usage") or {}
-            in_tok = int(usage.get("input_tokens") or 0)
-            out_tok = int(usage.get("output_tokens") or 0)
-            tot_tok = int(usage.get("total_tokens") or (in_tok + out_tok))
-            cost_usd = float(usage.get("cost_usd") or 0.0)
-            model_used = str(result.get("model") or "")
-            provider = str(result.get("provider") or "unknown")
+            if backfilled_count > 0:
+                logger.info(
+                    f"Post-parse backfill completed: {backfilled_count} fields backfilled across {len(subtasks)} subtasks"
+                )
 
-            return DecompositionResponse(
-                mode=mode,
-                complexity_score=score,
-                subtasks=subtasks,
-                total_estimated_tokens=total_tokens,
-                execution_strategy=exec_strategy,
+        # Extract cognitive routing fields from data
+        cognitive_strategy = data.get("cognitive_strategy", "decompose")
+        confidence = data.get("confidence", 0.8)
+        fallback_strategy = data.get("fallback_strategy", "decompose")
+
+        usage = result.get("usage") or {}
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or 0)
+        tot_tok = int(usage.get("total_tokens") or (in_tok + out_tok))
+        cost_usd = float(usage.get("cost_usd") or 0.0)
+        model_used = str(result.get("model") or "")
+        provider = str(result.get("provider") or "unknown")
+
+        duration = time.time() - start_time
+        logger.info(f"Decompose completed in {duration:.2f}s: subtasks={len(subtasks)}, complexity={score:.2f}, tokens={tot_tok}")
+        
+        return DecompositionResponse(
+            mode=mode,
+            complexity_score=score,
+            subtasks=subtasks,
+            total_estimated_tokens=total_tokens,
+            execution_strategy=exec_strategy,
                 agent_types=agent_types,
                 concurrency_limit=concurrency_limit,
                 token_estimates=token_estimates,
@@ -2575,18 +2631,11 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 provider=provider,
             )
 
-        except Exception as e:
-            logger.error(f"LLM decomposition failed: {e}")
-            # Return error instead of using heuristics
-            raise HTTPException(
-                status_code=503,
-                detail=f"LLM service unavailable for decomposition: {str(e)}",
-            )
-
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error decomposing task: {e}")
+        duration = time.time() - start_time
+        logger.error(f"Error decomposing task after {duration:.2f}s: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

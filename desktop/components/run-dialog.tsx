@@ -40,8 +40,8 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
 
         try {
             const response = await submitTask({
-                query: query.trim(),
-                research_strategy: "standard",
+                prompt: query.trim(),
+                task_type: "chat",
             });
 
             setOpen(false);

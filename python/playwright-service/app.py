@@ -110,6 +110,117 @@ POPUP_DETECTION_JS = """
 }
 """
 
+# Readability-like content extraction JavaScript
+# Simplified version of Mozilla's Readability algorithm
+READABILITY_JS = """
+() => {
+    // Helper to get text density (text length / element length)
+    const getTextDensity = (el) => {
+        const text = el.textContent || '';
+        const html = el.innerHTML || '';
+        return html.length > 0 ? text.length / html.length : 0;
+    };
+
+    // Helper to score content nodes
+    const scoreNode = (el) => {
+        let score = 0;
+        const tagName = el.tagName.toLowerCase();
+        
+        // Boost article-like tags
+        if (['article', 'main', 'section'].includes(tagName)) score += 5;
+        if (['div', 'span'].includes(tagName)) score += 1;
+        if (['p', 'pre', 'blockquote'].includes(tagName)) score += 3;
+        
+        // Boost by class/id hints
+        const classId = (el.className + ' ' + el.id).toLowerCase();
+        if (/article|body|content|entry|main|post|text|blog/.test(classId)) score += 25;
+        if (/comment|meta|nav|sidebar|footer|header|ad/.test(classId)) score -= 25;
+        
+        // Boost by text density
+        const density = getTextDensity(el);
+        if (density > 0.3) score += 10;
+        
+        // Boost by paragraph count
+        const paragraphs = el.querySelectorAll('p');
+        score += Math.min(paragraphs.length * 3, 30);
+        
+        return score;
+    };
+
+    // Find the best content container
+    let bestElement = document.body;
+    let bestScore = -1;
+
+    const candidates = document.querySelectorAll('article, main, [role="main"], .content, .post, .article, .entry, #content, #main');
+    if (candidates.length > 0) {
+        candidates.forEach(el => {
+            const score = scoreNode(el);
+            if (score > bestScore) {
+                bestScore = score;
+                bestElement = el;
+            }
+        });
+    } else {
+        // Fall back to scoring all divs
+        document.querySelectorAll('div, section').forEach(el => {
+            if (el.textContent.length > 200) {
+                const score = scoreNode(el);
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestElement = el;
+                }
+            }
+        });
+    }
+
+    // Extract article metadata
+    const getMetaContent = (name) => {
+        const meta = document.querySelector(`meta[name="${name}"], meta[property="${name}"]`);
+        return meta ? meta.content : null;
+    };
+
+    // Get title
+    let title = document.querySelector('h1')?.textContent?.trim();
+    if (!title) title = getMetaContent('og:title') || document.title;
+
+    // Get author
+    const author = getMetaContent('author') || 
+                   document.querySelector('[rel="author"], .author, .byline')?.textContent?.trim();
+
+    // Get excerpt/description
+    const excerpt = getMetaContent('og:description') || getMetaContent('description');
+
+    // Get site name
+    const siteName = getMetaContent('og:site_name') || window.location.hostname;
+
+    // Clean the content
+    const clone = bestElement.cloneNode(true);
+    
+    // Remove unwanted elements
+    clone.querySelectorAll('script, style, nav, footer, header, aside, .ad, .advertisement, .social, .share, .comments, form, iframe').forEach(el => el.remove());
+
+    // Get clean text content
+    const textContent = clone.textContent
+        .replace(/\\s+/g, ' ')
+        .replace(/\\n\\s*\\n/g, '\\n\\n')
+        .trim();
+
+    // Get HTML content
+    const htmlContent = clone.innerHTML;
+
+    return {
+        title: title,
+        content: htmlContent,
+        text_content: textContent,
+        author: author,
+        excerpt: excerpt,
+        site_name: siteName,
+        word_count: textContent.split(/\\s+/).length,
+        url: window.location.href,
+    };
+}
+"""
+
 # JavaScript to remove popup elements from DOM
 POPUP_REMOVAL_JS = """
 () => {
@@ -374,6 +485,10 @@ class BrowserActionType(str, Enum):
     WAIT = "wait"
     EXTRACT = "extract"
     EVALUATE = "evaluate"
+    # Enhanced research capabilities
+    READABILITY = "readability"  # Extract clean article content
+    MULTI_TAB_OPEN = "multi_tab_open"  # Open multiple URLs in tabs
+    MULTI_TAB_EXTRACT = "multi_tab_extract"  # Extract from all open tabs
 
 
 class BrowserActionRequest(BaseModel):
@@ -415,6 +530,10 @@ class BrowserActionRequest(BaseModel):
     viewport_height: Optional[int] = Field(720, description="Viewport height")
     locale: Optional[str] = Field("en-US", description="Browser locale")
 
+    # Multi-tab research
+    urls: Optional[List[str]] = Field(None, description="URLs for multi-tab operations")
+    max_tabs: Optional[int] = Field(5, description="Maximum concurrent tabs for multi-tab operations")
+
 
 class ElementInfo(BaseModel):
     """Information about a page element."""
@@ -445,6 +564,12 @@ class BrowserActionResponse(BaseModel):
 
     # Evaluate result
     result: Optional[Any] = None
+
+    # Readability/article extraction result
+    article: Optional[Dict[str, Any]] = None  # {title, content, text_content, author, excerpt, site_name}
+
+    # Multi-tab results
+    tab_results: Optional[List[Dict[str, Any]]] = None
 
     # Metadata
     elapsed_ms: Optional[int] = None
@@ -597,6 +722,97 @@ async def browser_action(request: BrowserActionRequest):
 
             eval_result = await page.evaluate(request.script)
             result.result = eval_result
+
+        elif request.action == BrowserActionType.READABILITY:
+            # Extract clean article content using Readability-like algorithm
+            if request.url:
+                # Navigate first if URL provided
+                validate_url(request.url)
+                await page.goto(request.url, timeout=request.timeout_ms, wait_until=request.wait_until)
+                await page.wait_for_timeout(1000)  # Wait for dynamic content
+
+            # Dismiss popups first
+            for selector in POPUP_SELECTORS[:5]:  # Try first 5 selectors
+                try:
+                    element = page.locator(selector).first
+                    if await element.is_visible(timeout=300):
+                        await element.click(timeout=500)
+                        await page.wait_for_timeout(300)
+                except Exception:
+                    continue
+
+            # Extract article using Readability algorithm
+            article_data = await page.evaluate(READABILITY_JS)
+            result.article = article_data
+            result.content = article_data.get("text_content", "")
+            result.title = article_data.get("title", "")
+            result.url = page.url
+
+        elif request.action == BrowserActionType.MULTI_TAB_OPEN:
+            # Open multiple URLs in parallel tabs for research
+            if not request.urls:
+                raise HTTPException(status_code=400, detail="URLs required for multi_tab_open action")
+
+            # Validate all URLs first
+            for url in request.urls:
+                validate_url(url)
+
+            # Get the context from the page
+            context = page.context
+
+            # Limit the number of tabs
+            urls_to_open = request.urls[:request.max_tabs]
+
+            # Open tabs concurrently
+            async def open_tab(url: str):
+                try:
+                    new_page = await context.new_page()
+                    await new_page.goto(url, timeout=request.timeout_ms, wait_until=request.wait_until)
+                    title = await new_page.title()
+                    return {"url": url, "title": title, "success": True}
+                except Exception as e:
+                    return {"url": url, "error": str(e), "success": False}
+
+            tab_results = await asyncio.gather(*[open_tab(url) for url in urls_to_open])
+            result.tab_results = tab_results
+            result.result = {"tabs_opened": len([r for r in tab_results if r.get("success")])}
+
+        elif request.action == BrowserActionType.MULTI_TAB_EXTRACT:
+            # Extract content from all open tabs in the session
+            context = page.context
+            pages = context.pages
+
+            async def extract_from_page(p):
+                try:
+                    url = p.url
+                    if url == "about:blank":
+                        return None
+
+                    # Use Readability extraction
+                    article_data = await p.evaluate(READABILITY_JS)
+                    return {
+                        "url": url,
+                        "title": article_data.get("title", ""),
+                        "content": article_data.get("text_content", ""),
+                        "word_count": article_data.get("word_count", 0),
+                        "success": True,
+                    }
+                except Exception as e:
+                    return {"url": p.url, "error": str(e), "success": False}
+
+            tab_results = await asyncio.gather(*[extract_from_page(p) for p in pages])
+            # Filter out None results (blank pages)
+            tab_results = [r for r in tab_results if r is not None]
+            result.tab_results = tab_results
+
+            # Combine all content
+            all_content = []
+            for r in tab_results:
+                if r.get("success") and r.get("content"):
+                    all_content.append(f"## {r.get('title', 'Untitled')}\n\nSource: {r.get('url')}\n\n{r.get('content')}")
+
+            result.content = "\n\n---\n\n".join(all_content)
+            result.result = {"tabs_extracted": len(tab_results)}
 
         result.elapsed_ms = int((time.time() - start_time) * 1000)
         return result

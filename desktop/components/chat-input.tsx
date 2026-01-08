@@ -77,18 +77,17 @@ export function ChatInput({
 
         try {
             const context: Record<string, unknown> = {};
-            let research_strategy: "deep" | "academic" | "quick" | "standard" | undefined;
 
             if (selectedAgent === "deep_research") {
                 context.force_research = true;
-                research_strategy = researchStrategy;
+                context.research_strategy = researchStrategy;
             }
 
             const response = await submitTask({
-                query: query.trim(),
+                prompt: query.trim(),
                 session_id: sessionId,
-                context: Object.keys(context).length ? context : undefined,
-                research_strategy,
+                task_type: selectedAgent === "deep_research" ? "research" : "chat",
+                metadata: Object.keys(context).length ? context : undefined,
             });
 
             setQuery("");

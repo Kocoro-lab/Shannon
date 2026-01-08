@@ -1,7 +1,7 @@
 [package]
 name = "shannon-agent-core"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "shannon_agent_core"
@@ -10,44 +10,46 @@ path = "src/lib.rs"
 [features]
 default = ["wasi"]
 wasi = ["dep:wasmtime", "dep:wasmtime-wasi"]
+microvm = []
 default-no-wasi = []
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.41", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync", "io-util"] }
+tokio = { version = "1.49.0", features = ["full"] }
+tokio-stream = { version = "0.1.18", features = ["sync", "io-util"] }
 
 # gRPC
-tonic = { version = "0.12", features = ["tls"] }
-tonic-reflection = "0.12"
-prost = "0.13"
-prost-types = "0.13"
+tonic = { version = "0.14.2" }
+tonic-reflection = "0.14.2"
+tonic-prost = "0.14.2"
+prost = "0.14.1"
+prost-types = "0.14.1"
 
 # WASM runtime (optional, gated behind wasi feature)
 wasmtime = { version = "28.0", optional = true }
 wasmtime-wasi = { version = "28.0", optional = true }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-regex = "1"
-base64 = "0.22"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+serde_yaml = "0.9.34"
+regex = "1.12.2"
+base64 = "0.22.1"
 
 # Math evaluation
 meval = "0.2"
 
 # HTTP client
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
-http = "1.1"
+http = "1.4.0"
 
 # Error handling
-anyhow = "1.0"
-thiserror = "1.0"
+anyhow = "1.0.100"
+thiserror = "2.0.17"
 
 # Logging and Tracing
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
 opentelemetry = { version = "0.27", features = ["trace"] }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
@@ -55,35 +57,80 @@ opentelemetry-semantic-conventions = "0.27"
 tracing-opentelemetry = "0.28"
 
 # Metrics
-prometheus = "0.13"
-hyper = { version = "1.5", features = ["server", "http1"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
+prometheus = "0.14.0"
+hyper = { version = "1.8.1", features = ["server", "http1"] }
+tokio-util = { version = "0.7.18", features = ["codec", "io"] }
 http-body-util = "0.1"
 
 # Redis (optional distributed rate limiting)
-redis = { version = "0.24", features = ["aio", "tokio-comp", "connection-manager"] }
+redis = { version = "1.0.2", features = ["aio", "tokio-comp", "connection-manager"] }
 
 
 # Memory management
-bytes = "1.8"
+bytes = "1.11.0"
 
 # Policy engine (OPA)
-opa-wasm = "0.1"
+opa-wasm = "0.1.9"
 
 # Utilities
-uuid = { version = "1.11", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-futures = "0.3"
-tempfile = "3.14"
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+futures = "0.3.31"
+tempfile = "3.24.0"
 
 # System integration (for resource limits)
-libc = "0.2"
+libc = "0.2.180"
+
+# Async traits
+async-trait = "0.1"
+
+# Parking lot scheduler for worker pools
+# prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-parking-lot-rs", features = ["tokio-runtime", "config"] }
+
+# Channel for mailbox pattern
+crossbeam-channel = "0.5"
+parking_lot = "0.12.5"
+
+# Serialization for checkpoints
+bincode = "1.3"
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14.2"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
-criterion = "0.5"
-proptest = "1.6"
-serial_test = "3.2"
+criterion = "0.8.1"
+proptest = "1.9.0"
+serial_test = "3.3.1"
+
+# Rust compiler lints (Microsoft Pragmatic Rust Guidelines)
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+# Clippy lints (Microsoft Pragmatic Rust Guidelines)
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+# Restriction lints for consistency and quality
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+empty_drop = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+undocumented_unsafe_blocks = "warn"
+# Allow some pedantic lints that are too noisy
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

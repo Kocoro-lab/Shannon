@@ -1,26 +1,145 @@
 [package]
-name = "app"
+name = "shannon-desktop"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
-edition = "2021"
-rust-version = "1.77.2"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Shannon Desktop - AI Platform Client with Embedded Mode Support"
+authors = ["Shannon Team"]
+license = "MIT"
+repository = "https://github.com/Prometheus-AGS/Shannon"
+edition = "2024"
+rust-version = "1.91.1"
 
 [lib]
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# ============================================================================
+# FEATURES
+# ============================================================================
+
+[features]
+default = ["desktop"]
+
+# Desktop mode: RocksDB-backed SurrealDB + full sync capabilities
+desktop = [
+    "dep:shannon-api",
+    "dep:tokio",
+    "dep:surrealdb",
+    # Future: "sync",
+]
+
+# Mobile mode: SQLite + sync capabilities (lighter weight)
+mobile = [
+    "dep:shannon-api",
+    "dep:tokio",
+    "dep:rusqlite",
+    # Future: "sync",
+]
+
+# iOS-specific configuration
+ios = ["mobile", "tauri/ios"]
+
+# Android-specific configuration
+android = ["mobile", "tauri/android"]
+
+# Sync features (P2P mesh network)
+# Commented until shannon-sync crate is implemented
+# sync = ["dep:shannon-sync", "dep:yrs", "dep:webrtc"]
+
+# Cloud mode: connect to remote Shannon API (no embedded features)
+cloud = ["dep:reqwest"]
+
+# Development/debug features
+devtools = ["tauri/devtools"]
+
+# ============================================================================
+# BUILD DEPENDENCIES
+# ============================================================================
+
 [build-dependencies]
 tauri-build = { version = "2.5.1", features = [] }
 
+# ============================================================================
+# DEPENDENCIES
+# ============================================================================
+
 [dependencies]
-serde_json = "1.0"
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
 log = "0.4"
-tauri = { version = "2.9.2", features = [] }
+tracing = "0.1"
+
+# Tauri framework
+tauri = { version = "2.9.2", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+
+# Shannon core (embedded mode)
+shannon-api = { path = "../../rust/shannon-api", features = ["embedded"], optional = true }
+
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
+
+# Embedded database backends
+surrealdb = { version = "2.2", features = ["kv-rocksdb"], optional = true }
+rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+
+# HTTP client for cloud mode
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
+
+# Future: Sync dependencies (P2P mesh)
+# shannon-sync = { path = "../../rust/shannon-sync", optional = true }
+# yrs = { version = "0.18", optional = true }
+# webrtc = { version = "0.10", optional = true }
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+parking_lot = "0.12"
+
+# ============================================================================
+# PLATFORM-SPECIFIC DEPENDENCIES
+# ============================================================================
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# iOS-specific dependencies will be added as needed
+
+[target.'cfg(target_os = "android")'.dependencies]
+# Android-specific dependencies will be added as needed
+
+# ============================================================================
+# RUST LINTS (Microsoft Pragmatic Rust Guidelines)
+# ============================================================================
+
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+# Restriction lints
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+empty_drop = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+undocumented_unsafe_blocks = "warn"
+# Allow some pedantic lints that are too noisy
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

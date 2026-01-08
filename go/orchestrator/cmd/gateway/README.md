@@ -1,5 +1,22 @@
 # Shannon Gateway API
 
+> ⚠️ **DEPRECATION NOTICE**
+> 
+> This Go gateway is **deprecated** and will be removed in a future version.
+> 
+> Please use the new unified **Shannon API** (`rust/shannon-api/`) instead:
+> - 10x faster performance
+> - Single binary deployment
+> - Same API endpoints
+> - Can be embedded in desktop/mobile apps
+> 
+> **Migration**: No code changes required. The Shannon API provides the same endpoints.
+> See [docs/rust-architecture.md](../../../../docs/rust-architecture.md) for details.
+>
+> To use this legacy service: `docker compose --profile legacy up gateway`
+
+---
+
 A unified HTTP gateway for the Shannon multi-agent AI platform, providing REST API access to the orchestrator's gRPC services.
 
 ## Features

@@ -1,5 +1,22 @@
 # Shannon LLM Service (Python)
 
+> ⚠️ **DEPRECATION NOTICE**
+> 
+> This Python LLM service is **deprecated** and will be removed in a future version.
+> 
+> Please use the new unified **Shannon API** (`rust/shannon-api/`) instead:
+> - 10x faster performance
+> - Single binary deployment
+> - Same API endpoints
+> - Can be embedded in desktop/mobile apps
+> 
+> **Migration**: No code changes required. The Shannon API provides the same endpoints.
+> See [docs/rust-architecture.md](../../docs/rust-architecture.md) for details.
+>
+> To use this legacy service: `docker compose --profile legacy up llm-service`
+
+---
+
 The LLM Service is Shannon's AI provider gateway, managing LLM interactions, tool execution, and MCP integration with support for multiple providers and intelligent tool selection.
 
 ## ⚠️ Important Setup Note

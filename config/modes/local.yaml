@@ -1,0 +1,44 @@
+# ============================================================================
+# Shannon Local Mode YAML Overlay
+# ============================================================================
+# Override file for local-only mode with minimal dependencies.
+# Apply with: --config config/modes/local.yaml
+# ============================================================================
+
+# Deployment configuration
+deployment:
+  mode: embedded
+
+# Workflow engine (Durable for local)
+workflow:
+  engine: durable
+  durable:
+    wasm_dir: ./wasm/patterns
+    max_concurrent: 10
+    event_log_retention_days: 30
+
+# Database (SurrealDB embedded)
+database:
+  driver: surrealdb
+  surrealdb:
+    path: ./data/shannon.db
+    namespace: shannon
+    database: main
+
+# Sync disabled for local-only
+sync:
+  mode: disabled
+
+# Server configuration
+server:
+  host: 127.0.0.1
+  port: 8765
+  admin_port: 8766
+  timeout_secs: 300
+  max_connections: 100
+
+# Logging
+logging:
+  level: info
+  json: false
+  otlp_enabled: false

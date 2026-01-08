@@ -344,3 +344,7 @@ chrome-extension/
 # antigravity
 .agent/
 .gomodcache/
+
+# Secret files that should not be committed
+.env.updated
+plans/.env-updated-content.md

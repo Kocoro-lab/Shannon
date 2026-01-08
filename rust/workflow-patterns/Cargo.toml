@@ -1,0 +1,78 @@
+[package]
+name = "workflow-patterns"
+version = "0.1.0"
+edition = "2024"
+description = "Cognitive workflow patterns for Shannon AI platform"
+authors = ["Shannon Team"]
+repository = "https://github.com/Prometheus-AGS/Shannon"
+license = "MIT"
+keywords = ["workflow", "cognitive", "ai", "patterns"]
+categories = ["algorithms", "wasm"]
+
+[lib]
+name = "workflow_patterns"
+path = "src/lib.rs"
+# WASM component library
+# crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Build as WASM component for Durable execution
+wasm = []
+
+[dependencies]
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Async (optional, for native builds)
+tokio = { version = "1", features = ["sync"], optional = true }
+async-trait = "0.1"
+
+# Logging
+tracing = "0.1"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Durable Shannon for workflow primitives
+durable-shannon = { path = "../durable-shannon", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-test = "0.4"
+
+# Rust compiler lints (Microsoft Pragmatic Rust Guidelines)
+[lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+# Clippy lints (Microsoft Pragmatic Rust Guidelines)
+[lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+allow_attributes_without_reason = "warn"
+clone_on_ref_ptr = "warn"
+empty_drop = "warn"
+map_err_ignore = "warn"
+redundant_type_annotations = "warn"
+undocumented_unsafe_blocks = "warn"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

@@ -1,0 +1,66 @@
+# ============================================================================
+# Shannon Cloud Mode YAML Overlay
+# ============================================================================
+# Override file for multi-tenant cloud deployment.
+# Apply with: --config config/modes/cloud.yaml
+# ============================================================================
+
+# Deployment configuration
+deployment:
+  mode: cloud
+
+# Workflow engine (Temporal for distributed)
+workflow:
+  engine: temporal
+  temporal:
+    endpoint: ${TEMPORAL_ENDPOINT:-temporal:7233}
+    namespace: ${TEMPORAL_NAMESPACE:-shannon}
+    task_queue: ${TEMPORAL_TASK_QUEUE:-research-tasks}
+
+# Database (PostgreSQL for production)
+database:
+  driver: postgresql
+  postgresql:
+    url: ${DATABASE_URL}
+    max_connections: ${DATABASE_MAX_CONNECTIONS:-20}
+
+# Redis for sessions and caching
+redis:
+  url: ${REDIS_URL:-redis://redis:6379}
+  pool_size: 10
+
+# Orchestrator connection
+orchestrator:
+  grpc_address: ${ORCHESTRATOR_GRPC:-http://orchestrator:50052}
+  tls_enabled: false
+  timeout_secs: 300
+
+# Sync disabled for centralized cloud
+sync:
+  mode: disabled
+
+# Server configuration
+server:
+  host: 0.0.0.0
+  port: 8080
+  admin_port: 8081
+  timeout_secs: 300
+  max_connections: 10000
+
+# Gateway configuration
+gateway:
+  jwt_secret: ${JWT_SECRET}
+  jwt_expiry_secs: 86400
+  api_key_auth_enabled: true
+  jwt_auth_enabled: true
+  rate_limit_per_minute: 60
+  rate_limit_burst: 10
+  idempotency_enabled: true
+  idempotency_ttl_secs: 86400
+
+# Logging
+logging:
+  level: info
+  json: true
+  otlp_enabled: true
+  otlp_endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}

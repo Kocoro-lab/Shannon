@@ -29,11 +29,51 @@ Battle-tested infrastructure for AI agents that solves the problems you hit at s
 | _Security concerns?_                | WASI sandbox for code execution, OPA policies, multi-tenant isolation |
 | _Vendor lock-in?_                   | Works with OpenAI, Anthropic, Google, DeepSeek, local models |
 
+## Deployment Modes
+
+Shannon supports multiple deployment modes to fit your needs:
+
+| Mode | Description | Database | Workflow Engine | Use Case |
+|------|-------------|----------|-----------------|----------|
+| **Embedded** | Self-contained desktop/mobile app | SurrealDB | Durable (Rust) | Offline-first, privacy-focused |
+| **Cloud** | Multi-tenant SaaS deployment | PostgreSQL | Temporal (Go) | Production, team collaboration |
+| **Hybrid** | Local-first with cloud sync | SurrealDB | Durable | Best of both worlds |
+| **Mesh** | P2P sync between devices | SurrealDB | Durable | Decentralized, multi-device |
+
+### Desktop App (Embedded Mode)
+
+Download the native desktop app for your platform:
+
+```bash
+# macOS
+cd desktop && npm install && npm run tauri:build
+
+# Or run in development
+npm run tauri:dev
+```
+
+The desktop app runs entirely locally with no external dependencies. Your data stays on your device.
+
+### Cloud Deployment (Docker)
+
+For production deployments with Temporal workflows:
+
+```bash
+# Clone and setup
+git clone https://github.com/Kocoro-lab/Shannon.git
+cd Shannon
+make setup  # Creates .env and generates protos
+
+# Start all services
+docker compose --profile cloud up -d
+```
+
 ## Quick Start
 
 ### Prerequisites
 
-- Docker and Docker Compose
+- Docker and Docker Compose (for cloud mode)
+- Node.js 20+ and Rust 1.75+ (for desktop mode)
 - An API key for at least one LLM provider (OpenAI, Anthropic, etc.)
 
 ### Installation
@@ -192,37 +232,50 @@ FIRECRAWL_API_KEY=your-firecrawl-key    # firecrawl.dev (recommended for product
 
 | Service | Port | Endpoint | Purpose |
 |---------|------|----------|---------|
-| **Gateway** | 8080 | `http://localhost:8080` | REST API, OpenAI-compatible `/v1` |
-| **Admin/Events** | 8081 | `http://localhost:8081` | SSE/WebSocket streaming, health |
+| **Shannon API** | 8080 | `http://localhost:8080` | REST API, OpenAI-compatible `/v1` |
+| **Admin/Metrics** | 8082 | `http://localhost:8082` | Health, metrics, SSE streaming |
 | **Orchestrator** | 50052 | `localhost:50052` | gRPC (internal) |
+| **Orchestrator Events** | 8081 | `http://localhost:8081` | Workflow events |
 | **Temporal UI** | 8088 | `http://localhost:8088` | Workflow debugging |
 | **Grafana** | 3030 | `http://localhost:3030` | Metrics dashboard |
+| **Embedded API** | 8765 | `http://127.0.0.1:8765` | Local-only (Tauri embedded) |
 
 ## Architecture
 
+Shannon is transitioning to a unified Rust architecture for improved performance and cross-platform support.
+
+### Current Architecture (Unified Rust API)
+
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Client    │────▶│ Orchestrator │────▶│ Agent Core  │
-│  (SDK/API)  │     │     (Go)     │     │   (Rust)    │
+│   Client    │────▶│ Shannon API  │────▶│ Agent Core  │
+│  (SDK/API)  │     │    (Rust)    │     │   (Rust)    │
+│  Desktop    │     │ Gateway+LLM  │     │   WASI      │
 └─────────────┘     └──────────────┘     └─────────────┘
                            │                    │
                     ┌──────┴──────┐      ┌──────┴──────┐
-                    │  Temporal   │      │    WASI     │
-                    │  Workflows  │      │   Sandbox   │
+                    │ Orchestrator│      │    WASI     │
+                    │    (Go)     │      │   Sandbox   │
+                    │  Temporal   │      │ microsandbox│
                     └─────────────┘      └─────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │ LLM Service │
-                    │  (Python)   │
-                    └─────────────┘
 ```
 
 **Components:**
 
-- **Orchestrator (Go)** — Task routing, budget enforcement, session management, OPA policies
-- **Agent Core (Rust)** — WASI sandbox, policy enforcement, agent-to-agent communication
-- **LLM Service (Python)** — Provider abstraction (15+ LLMs), MCP tools, prompt optimization
+- **Shannon API (Rust)** — Unified Gateway and LLM service. High-performance HTTP/gRPC API, JWT/API key auth, rate limiting, SSE/WebSocket streaming, multi-provider LLM support. Can be embedded in Tauri for desktop/mobile apps.
+- **Orchestrator (Go)** — Temporal workflow orchestration, task routing, budget enforcement, OPA policies
+- **Agent Core (Rust)** — WASI sandbox, policy enforcement, agent-to-agent communication, microsandbox integration
 - **Data Layer** — PostgreSQL (state), Redis (sessions), Qdrant (vector memory)
+
+### Deployment Options
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Cloud** | `shannon-api` as Docker container | Production deployments |
+| **Embedded** | Built into Tauri desktop app | Local-first operation |
+| **Hybrid** | Desktop connects to cloud API | Team collaboration |
+
+See [Rust Architecture](docs/rust-architecture.md) for the full migration roadmap.
 
 ## Core Capabilities
 
@@ -379,16 +432,49 @@ deny_tool["database_write"] {
 
 ## Configuration
 
-Shannon uses layered configuration:
+Shannon uses layered configuration with environment variables taking precedence:
 
-1. **Environment Variables** (`.env`) — API keys, secrets
+1. **Environment Variables** (`.env`) — Deployment mode, API keys, secrets
 2. **YAML Files** (`config/`) — Feature flags, model pricing, policies
 
-Key files:
+### Deployment Mode Configuration
 
+```bash
+# Deployment mode: embedded | cloud | hybrid | mesh | mesh-cloud
+SHANNON_MODE=embedded
+
+# Workflow engine: durable (embedded) | temporal (cloud)
+WORKFLOW_ENGINE=durable
+
+# Database driver: surrealdb (desktop) | postgresql (cloud) | sqlite (mobile)
+DATABASE_DRIVER=surrealdb
+
+# LLM Configuration
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...
+LLM_DEFAULT_PROVIDER=anthropic
+LLM_DEFAULT_MODEL=claude-sonnet-4-20250514
+```
+
+### Key Configuration Files
+
+- `config/shannon.yaml` — Unified configuration with environment overrides
 - `config/models.yaml` — LLM providers, pricing, tier configuration
 - `config/features.yaml` — Feature toggles, workflow settings
 - `config/opa/policies/` — Access control rules
+
+### Docker Compose Profiles
+
+```bash
+# Cloud mode (default): Temporal + PostgreSQL + Redis
+docker compose up -d
+
+# Full cloud stack with monitoring
+docker compose --profile cloud up -d
+
+# Embedded development with SurrealDB
+docker compose --profile embedded-dev up shannon-api surrealdb
+```
 
 See [Configuration Guide](config/README.md) for details.
 

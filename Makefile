@@ -1,4 +1,4 @@
-.PHONY: dev down logs ps proto fmt lint seed smoke clean replay replay-export ci-replay coverage coverage-go coverage-python coverage-gate integration-tests integration-single integration-session integration-qdrant seed-api-key
+.PHONY: dev down logs ps proto fmt lint seed smoke clean replay replay-export ci-replay coverage coverage-go coverage-python coverage-gate integration-tests integration-single integration-session integration-qdrant seed-api-key build-api run-api test-api check-api fmt-api lint-api
 
 COMPOSE_BASE=deploy/compose
 
@@ -83,11 +83,13 @@ proto-local:
 # Formatting & linting (best-effort; tools must be installed locally)
 fmt:
 	@cargo fmt --manifest-path rust/agent-core/Cargo.toml || true
+	@cargo fmt --manifest-path rust/shannon-api/Cargo.toml || true
 	@gofmt -s -w go || true
 	@ruff format python/llm-service || true
 
 lint:
 	@cargo clippy --manifest-path rust/agent-core/Cargo.toml -- -D warnings || true
+	@cargo clippy --manifest-path rust/shannon-api/Cargo.toml -- -D warnings || true
 	@golangci-lint run ./go/... || true
 	@ruff check python/llm-service || true
 
@@ -97,8 +99,11 @@ ci:
 	@cd go/orchestrator && GO111MODULE=on go build ./...
 	@echo "[CI] Building Rust agent-core..."
 	@cargo build --manifest-path rust/agent-core/Cargo.toml
+	@echo "[CI] Building Rust shannon-api..."
+	@cargo build --manifest-path rust/shannon-api/Cargo.toml
 	@echo "[CI] Compiling Rust tests..."
 	@cargo test --manifest-path rust/agent-core/Cargo.toml --no-run
+	@cargo test --manifest-path rust/shannon-api/Cargo.toml --no-run
 	@echo "[CI] Linting Python..."
 	@ruff check python/llm-service || true
 	@echo "[CI] Done."
@@ -111,7 +116,152 @@ ci-with-coverage: ci coverage-gate
 test:
 	@echo "Go unit tests" && cd go/orchestrator && go test ./...
 	@echo "Rust tests" && cargo test --manifest-path rust/agent-core/Cargo.toml
+	@echo "Rust API tests" && cargo test --manifest-path rust/shannon-api/Cargo.toml
 	@echo "Python tests" && cd python/llm-service && python3 -m pytest -q
+
+# --- Shannon API (Unified Rust Gateway + LLM Service) ---
+# Build the unified Rust API
+.PHONY: build-api
+build-api:
+	@echo "[Shannon API] Building..."
+	@cargo build -p shannon-api --release
+	@echo "✅ Shannon API built: target/release/shannon-api"
+
+# Run the unified Rust API
+.PHONY: run-api
+run-api:
+	@echo "[Shannon API] Starting..."
+	@cargo run -p shannon-api
+
+# Test the unified Rust API
+.PHONY: test-api
+test-api:
+	@echo "[Shannon API] Running tests..."
+	@cargo test -p shannon-api
+	@echo "✅ Shannon API tests passed"
+
+# Check the unified Rust API (compile only)
+.PHONY: check-api
+check-api:
+	@echo "[Shannon API] Checking..."
+	@cargo check -p shannon-api
+	@echo "✅ Shannon API check passed"
+
+# Format the unified Rust API
+.PHONY: fmt-api
+fmt-api:
+	@echo "[Shannon API] Formatting..."
+	@cargo fmt -p shannon-api
+	@echo "✅ Shannon API formatted"
+
+# Lint the unified Rust API
+.PHONY: lint-api
+lint-api:
+	@echo "[Shannon API] Linting..."
+	@cargo clippy -p shannon-api -- -D warnings
+	@echo "✅ Shannon API linting passed"
+
+# ============================================================================
+# MODE-SPECIFIC DEVELOPMENT TARGETS
+# ============================================================================
+# Use these to run Shannon in different deployment modes
+
+.PHONY: dev-local dev-cloud dev-hybrid dev-docker-local
+
+# Local-only mode (no external services required)
+dev-local:
+	@echo "============================================"
+	@echo "Starting Shannon in LOCAL mode"
+	@echo "============================================"
+	@echo "No external services required (no Docker, Redis, PostgreSQL, Temporal)"
+	@echo ""
+	@if [ -z "$$ANTHROPIC_API_KEY" ] && [ -z "$$OPENAI_API_KEY" ]; then \
+		echo "ERROR: No LLM API key found"; \
+		echo ""; \
+		echo "Please set at least one of:"; \
+		echo "  export ANTHROPIC_API_KEY=sk-ant-..."; \
+		echo "  export OPENAI_API_KEY=sk-..."; \
+		exit 1; \
+	fi
+	@mkdir -p ./data
+	@SHANNON_MODE=embedded \
+	 WORKFLOW_ENGINE=durable \
+	 DATABASE_DRIVER=surrealdb \
+	 SURREALDB_PATH=./data/shannon.db \
+	 cargo run -p shannon-api --no-default-features --features "embedded,gateway"
+
+# Cloud mode (full infrastructure via Docker)
+dev-cloud: check-env check-protos
+	@echo "============================================"
+	@echo "Starting Shannon in CLOUD mode"
+	@echo "============================================"
+	@echo "Starting Temporal, PostgreSQL, Redis, Orchestrator..."
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml up -d
+	@echo ""
+	@echo "Services:"
+	@echo "  Shannon API:  http://localhost:8080"
+	@echo "  Temporal UI:  http://localhost:8088"
+	@echo "  Grafana:      http://localhost:3000"
+
+# Hybrid mode (local-first with cloud sync)
+dev-hybrid:
+	@echo "============================================"
+	@echo "Starting Shannon in HYBRID mode"
+	@echo "============================================"
+	@echo "Local-first operation with cloud sync capability"
+	@echo ""
+	@if [ -z "$$ANTHROPIC_API_KEY" ] && [ -z "$$OPENAI_API_KEY" ]; then \
+		echo "ERROR: No LLM API key found"; \
+		exit 1; \
+	fi
+	@mkdir -p ./data
+	@SHANNON_MODE=hybrid \
+	 WORKFLOW_ENGINE=durable \
+	 DATABASE_DRIVER=surrealdb \
+	 SURREALDB_PATH=./data/shannon.db \
+	 cargo run -p shannon-api --no-default-features --features "embedded,gateway"
+
+# Docker-based local mode (for testing embedded mode in containers)
+dev-docker-local:
+	@echo "============================================"
+	@echo "Starting Shannon in DOCKER LOCAL mode"
+	@echo "============================================"
+	@echo "Self-contained embedded mode in Docker"
+	@docker compose -f $(COMPOSE_BASE)/docker-compose.yml --profile local up -d shannon-api-local
+	@echo ""
+	@echo "Shannon API: http://localhost:8080"
+
+# ============================================================================
+# CONFIGURATION TESTING
+# ============================================================================
+
+.PHONY: test-config test-config-unit test-config-integration test-config-modes
+
+# Run all configuration tests
+test-config: test-config-unit test-config-modes
+	@echo "✅ All configuration tests passed"
+
+# Unit tests for configuration validation
+test-config-unit:
+	@echo "[Config] Running configuration unit tests..."
+	@cargo test -p shannon-api config:: --features embedded
+	@echo "✅ Configuration unit tests passed"
+
+# Shell-based configuration mode tests
+test-config-modes:
+	@echo "[Config] Running configuration mode validation tests..."
+	@chmod +x tests/integration/config_modes.sh 2>/dev/null || true
+	@if [ -f tests/integration/config_modes.sh ]; then \
+		./tests/integration/config_modes.sh; \
+	else \
+		echo "⚠️  tests/integration/config_modes.sh not found, skipping"; \
+	fi
+
+# Build embedded mode for testing
+build-embedded:
+	@echo "[Shannon API] Building embedded mode..."
+	@cargo build -p shannon-api --no-default-features --features "embedded,gateway" --release
+	@echo "✅ Embedded mode built: target/release/shannon-api"
 
 # Seed fixtures (scripts are placeholders)
 seed:

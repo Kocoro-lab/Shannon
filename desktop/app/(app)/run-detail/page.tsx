@@ -9,6 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RunTimeline } from "@/components/run-timeline";
 import { RunConversation } from "@/components/run-conversation";
+import { SourcesPanel } from "@/components/sources-panel";
 import { ChatInput, AgentSelection } from "@/components/chat-input";
 import { ArrowLeft, Loader2, Sparkles, Microscope, Eye, EyeOff, PanelRight, PanelRightClose } from "lucide-react";
 import { RadarCanvas, RadarBridge } from "@/components/radar";
@@ -1511,6 +1512,9 @@ function RunDetailContent() {
                                 <TabsTrigger value="summary">
                                     Summary
                                 </TabsTrigger>
+                                <TabsTrigger value="sources">
+                                    Sources
+                                </TabsTrigger>
                             </TabsList>
                             <div className="flex items-center gap-2">
                                 {(runEvents.length > 0 || runStatus === "running") && (
@@ -1576,6 +1580,12 @@ function RunDetailContent() {
                                     onCancel={handleCancel}
                                 />
                             )}
+                        </TabsContent>
+
+                        <TabsContent value="sources" className="flex-1 p-4 sm:p-6 m-0 overflow-auto min-h-0">
+                            <div className="max-w-5xl mx-auto">
+                                <SourcesPanel messages={messages as any} />
+                            </div>
                         </TabsContent>
 
                         <TabsContent value="summary" className="flex-1 p-4 sm:p-6 m-0 overflow-auto min-h-0">

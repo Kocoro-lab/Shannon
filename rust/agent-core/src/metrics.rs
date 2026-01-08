@@ -51,20 +51,23 @@ impl TaskTimer {
 
     pub fn complete(self, status: &str, tokens: Option<i32>) {
         let duration = self.start.elapsed().as_secs_f64();
+        let mode_string = self.mode.to_string();
+        let status_string = status.to_string();
 
         if let Some(tasks_total) = TASKS_TOTAL.get() {
-            tasks_total.with_label_values(&[&self.mode, status]).inc();
+            tasks_total.with_label_values(&[&mode_string, &status_string]).inc();
         }
         if let Some(task_duration) = TASK_DURATION.get() {
             task_duration
-                .with_label_values(&[&self.mode])
+                .with_label_values(&[&mode_string])
                 .observe(duration);
         }
 
         if let Some(token_count) = tokens {
             if let Some(task_tokens) = TASK_TOKENS.get() {
+                let default_string = "default".to_string();
                 task_tokens
-                    .with_label_values(&[&self.mode, "default"])
+                    .with_label_values(&[&mode_string, &default_string])
                     .observe(token_count as f64);
             }
         }

@@ -1,0 +1,59 @@
+# ============================================================================
+# Shannon Mesh Mode YAML Overlay
+# ============================================================================
+# Override file for P2P sync between devices.
+# Apply with: --config config/modes/mesh.yaml
+# ============================================================================
+
+# Deployment configuration
+deployment:
+  mode: mesh
+
+# Workflow engine (Durable for local)
+workflow:
+  engine: durable
+  durable:
+    wasm_dir: ./wasm/patterns
+    max_concurrent: 10
+    event_log_retention_days: 90
+
+# Database (SurrealDB embedded)
+database:
+  driver: surrealdb
+  surrealdb:
+    path: ./data/shannon.db
+    namespace: shannon
+    database: main
+
+# Mesh sync configuration
+sync:
+  mode: mesh
+  mesh:
+    device_id: ${SYNC_DEVICE_ID}
+    signaling_server: ${SYNC_SIGNALING_SERVER:-wss://signal.shannon.io}
+    ice_servers:
+      - stun:stun.l.google.com:19302
+    # Optional TURN server for relay
+    # turn_server:
+    #   url: ${SYNC_TURN_SERVER}
+    #   username: ${SYNC_TURN_USERNAME}
+    #   credential: ${SYNC_TURN_CREDENTIAL}
+    scope:
+      runs: true
+      memories: true
+      settings: true
+      workflows: false
+
+# Server configuration
+server:
+  host: 0.0.0.0
+  port: 8765
+  admin_port: 8766
+  timeout_secs: 300
+  max_connections: 100
+
+# Logging
+logging:
+  level: info
+  json: false
+  otlp_enabled: false

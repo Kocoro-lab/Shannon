@@ -1,5 +1,108 @@
-# Shannon Orchestrator Configuration
-# This file demonstrates the configuration system with hot-reload capability
+# Shannon Unified Configuration
+# This file provides configuration for all deployment modes:
+# - embedded: Self-contained desktop/mobile with Durable + SurrealDB
+# - cloud: Multi-tenant with Temporal + PostgreSQL
+# - hybrid: Local-first with optional cloud sync
+# - mesh: P2P sync between devices
+# - mesh-cloud: P2P sync with cloud relay
+#
+# Environment variables override these values using the SHANNON__ prefix.
+# Example: SHANNON__DEPLOYMENT__MODE=cloud overrides deployment.mode
+
+# ============================================================================
+# DEPLOYMENT CONFIGURATION
+# ============================================================================
+
+deployment:
+  # Mode: embedded | cloud | hybrid | mesh | mesh-cloud
+  mode: ${SHANNON_MODE:-embedded}
+
+# Server configuration
+server:
+  host: ${SHANNON_HOST:-0.0.0.0}
+  port: ${SHANNON_PORT:-8080}
+
+# Workflow engine configuration
+workflow:
+  # Engine: durable | temporal
+  engine: ${WORKFLOW_ENGINE:-durable}
+
+  bypass_single_result: true  # Skip synthesis for single successful results
+  
+  # Durable configuration (embedded/mobile)
+  durable:
+    wasm_dir: ${DURABLE_WASM_DIR:-./wasm/patterns}
+    max_concurrent: ${DURABLE_MAX_CONCURRENT:-10}
+    event_retention_days: ${DURABLE_EVENT_RETENTION_DAYS:-30}
+  
+  # Temporal configuration (cloud)
+  temporal:
+    endpoint: ${TEMPORAL_ENDPOINT:-temporal:7233}
+    namespace: ${TEMPORAL_NAMESPACE:-shannon}
+    task_queue: ${TEMPORAL_TASK_QUEUE:-research-tasks}
+
+# Database configuration
+database:
+  # Driver: surrealdb | postgresql | sqlite
+  driver: ${DATABASE_DRIVER:-surrealdb}
+  
+  # SurrealDB configuration (desktop embedded)
+  surrealdb:
+    path: ${SURREALDB_PATH:-./data/shannon.db}
+    namespace: ${SURREALDB_NAMESPACE:-shannon}
+    database: ${SURREALDB_DATABASE:-main}
+  
+  # PostgreSQL configuration (cloud)
+  postgresql:
+    url: ${DATABASE_URL:-postgres://localhost:5432/shannon}
+    max_connections: ${DATABASE_MAX_CONNECTIONS:-20}
+  
+  # SQLite configuration (mobile)
+  sqlite:
+    path: ${SQLITE_PATH:-./data/shannon.sqlite}
+
+# Redis configuration (cloud mode)
+redis:
+  url: ${REDIS_URL:-redis://localhost:6379}
+
+# LLM provider configuration
+llm:
+  default_provider: ${LLM_DEFAULT_PROVIDER:-anthropic}
+  default_model: ${LLM_DEFAULT_MODEL:-claude-sonnet-4-20250514}
+  
+  anthropic:
+    api_key: ${ANTHROPIC_API_KEY:-}
+  
+  openai:
+    api_key: ${OPENAI_API_KEY:-}
+
+# Sync configuration (for hybrid/mesh modes)
+sync:
+  # Mode: disabled | mesh | mesh-cloud | cloud-only
+  mode: ${SYNC_MODE:-disabled}
+  
+  # WebRTC/Mesh sync
+  webrtc:
+    signaling_server: ${SYNC_SIGNALING_SERVER:-wss://signal.shannon.io}
+    ice_servers:
+      - ${SYNC_ICE_SERVER:-stun:stun.l.google.com:19302}
+  
+  # Cloud sync
+  cloud:
+    api_endpoint: ${SYNC_API_ENDPOINT:-https://api.shannon.io/sync}
+    api_key: ${SYNC_API_KEY:-}
+    interval_secs: ${SYNC_INTERVAL_SECS:-30}
+  
+  # Sync scope
+  scope:
+    runs: ${SYNC_SCOPE_RUNS:-true}
+    memories: ${SYNC_SCOPE_MEMORIES:-true}
+    settings: ${SYNC_SCOPE_SETTINGS:-true}
+    workflows: ${SYNC_SCOPE_WORKFLOWS:-false}
+
+# ============================================================================
+# ORCHESTRATOR CONFIGURATION (Legacy - for Go orchestrator)
+# ============================================================================
 
 service:
   port: 50052
@@ -324,10 +427,6 @@ tracing:
 # Streaming configuration
 streaming:
   ring_capacity: 512  # Number of recent events to retain per workflow for replay
-
-# Workflow orchestration behavior
-workflow:
-  bypass_single_result: true  # Skip synthesis for single successful results
 
 # Workflow configurations
 workflows:

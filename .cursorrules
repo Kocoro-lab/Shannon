@@ -1,0 +1,182 @@
+# Shannon (Prometheus) AI Platform - Cursor Rules
+
+You are working on Shannon, a production-ready AI agent platform that solves real-world problems: runaway costs, non-deterministic failures, and security issues.
+
+## MANDATORY: Rust Coding Standards
+
+ALL Rust code generation MUST follow the comprehensive guidelines in:
+docs/coding-standards/RUST.md
+
+Key standards to always apply:
+- Use strong types and avoid primitive obsession (M-STRONG-TYPES)
+- Implement comprehensive documentation with canonical sections (M-CANONICAL-DOCS)
+- Use #[expect] for lint overrides instead of #[allow] (M-LINT-OVERRIDE-EXPECT)
+- Implement proper error handling with canonical error structs (M-ERRORS-CANONICAL-STRUCTS)
+- Ensure all public types implement Debug and Display where appropriate
+- Use structured logging with message templates (M-LOG-STRUCTURED)
+- Design APIs to be mockable for testing (M-MOCKABLE-SYSCALLS)
+- Prefer smaller crates over large monoliths (M-SMALLER-CRATES)
+- Use mimalloc as global allocator for applications (M-MIMALLOC-APPS)
+
+IMPORTANT: When generating any Rust code, always reference and apply the full coding standards document.
+
+## Architecture Overview
+
+Shannon is transitioning to a unified Rust architecture:
+
+**Core Services:**
+- Shannon API (Rust) - rust/shannon-api/ ⭐ PRIMARY API (unified Gateway + LLM service)
+- Orchestrator (Go) - go/orchestrator/ (workflow management, Temporal)
+- Agent Core (Rust) - rust/agent-core/ (WASI sandbox, agent execution)
+
+**Legacy Services (DEPRECATED):**
+- Gateway (Go) - go/orchestrator/cmd/gateway/ ⚠️ Use Shannon API instead
+- LLM Service (Python) - python/llm-service/ ⚠️ Use Shannon API instead
+
+**Data Layer:**
+- PostgreSQL (persistent storage with pgvector)
+- Redis (session management, caching)
+- Qdrant (vector similarity search)
+- Temporal (workflow orchestration)
+
+## Development Commands
+
+### Initial Setup
+```bash
+make setup                              # Complete first-time setup
+echo "OPENAI_API_KEY=sk-..." >> .env    # Add API keys
+./scripts/setup_python_wasi.sh          # Setup Python WASI interpreter
+make check-env                          # Validate environment
+```
+
+### Building and Running
+```bash
+make dev                # Start all services (builds locally)
+make down              # Stop all services
+make logs              # View logs from all services
+make ps                # Check service status
+make smoke             # Run end-to-end smoke tests
+```
+
+### Development Workflow
+```bash
+make fmt lint          # Format code (Go, Rust, Python) and run linters
+make test             # Run all unit tests
+make proto            # Generate protobuf files (uses buf with BSR)
+make proto-local      # Local proto generation fallback
+make ci               # CI build (compiles everything, runs basic checks)
+```
+
+### Shannon API Development (Preferred)
+```bash
+make build-api        # Build unified Rust API
+make run-api          # Run Rust API standalone
+make test-api         # Run Shannon API tests
+make fmt-api          # Format Shannon API code
+make lint-api         # Lint Shannon API code
+make check-api        # Check compilation without building
+```
+
+### Testing
+```bash
+make coverage         # Generate coverage reports
+make coverage-gate    # Enforce coverage thresholds
+make integration-tests # All integration tests
+make replay HISTORY=path # Replay specific workflow history
+make replay-export WORKFLOW_ID=task-123 # Export workflow for replay
+```
+
+## Development Best Practices
+
+### Shannon vs Legacy Services
+- **PREFER Shannon API (Rust)** over legacy Go Gateway + Python LLM service
+- Shannon API is the unified replacement and future direction
+- Only use legacy services if features not yet ported to Shannon API
+- Start legacy with: docker compose --profile legacy up
+
+### Working with Multiple Services
+1. Always use `make dev` to start the full stack
+2. Check logs with `make logs` rather than individual docker commands
+3. Use `make ps` to verify all services running correctly
+4. Run `make smoke` after significant changes for end-to-end testing
+
+### Configuration Management
+- Configuration files support hot-reload (changes detected within ~30s)
+- Always validate with `make check-env` after changes
+- Use feature flags in config/features.yaml for experimental features
+- Model routing and pricing configured in config/models.yaml
+
+### Testing Workflow
+```bash
+# Development cycle
+make fmt lint          # Format and check code
+make test             # Run unit tests
+make smoke            # Run end-to-end tests
+make coverage         # Check test coverage
+
+# Before committing
+make ci               # Full build and basic checks
+make coverage-gate    # Enforce coverage thresholds
+```
+
+## Important File Locations
+
+### Configuration
+- config/shannon.yaml - Main system configuration
+- config/features.yaml - Feature flags and execution modes
+- config/models.yaml - LLM model routing and fallbacks
+- config/opa/policies/ - OPA security policies
+- .env - Environment variables and API keys
+
+### Coding Standards
+- docs/coding-standards/RUST.md - MANDATORY Rust coding guidelines
+
+### Core Code
+- rust/shannon-api/ - Unified Gateway + LLM service (Rust) ⭐ PRIMARY
+- go/orchestrator/ - Workflow orchestration with Temporal
+- rust/agent-core/ - WASI sandbox and agent execution
+- desktop/ - Next.js/Tauri desktop application
+
+## Common Issues and Solutions
+
+### Protocol Buffer Changes
+Always regenerate protos after changing .proto files:
+```bash
+make proto            # Uses buf with BSR (preferred)
+make proto-local      # Local generation fallback
+make check-protos     # Verify proto files exist
+make dev              # Restart services to pick up changes
+```
+
+### Environment Setup Issues
+```bash
+make setup-env        # Creates symlink and copies .env.example
+make setup            # Full setup including proto generation
+make check-env        # Validates configuration
+```
+
+### API Key Testing
+```bash
+make seed-api-key     # Creates sk_test_123456 for development
+curl http://localhost:8080/health -H "Authorization: Bearer sk_test_123456"
+```
+
+## Default Ports
+- 8080 (Shannon API/Gateway)
+- 8081 (Orchestrator Admin/Events)
+- 8082 (Shannon API Admin/Metrics)
+- 50052 (Orchestrator gRPC)
+- 8088 (Temporal UI)
+- 8765 (Embedded API for Tauri)
+- 3030 (Grafana Dashboard)
+- 2112 (Prometheus Metrics)
+
+## Build Dependencies
+- Go 1.22+ (Orchestrator and Gateway services)
+- Rust (stable) (Agent Core and Shannon API services)
+- Python 3.9+ (LLM service and tools - legacy)
+- Node.js 18+ (Desktop application)
+- Docker & Docker Compose (local development)
+- Protocol Buffers compiler (buf preferred)
+
+When in doubt, prioritize Shannon API (Rust) development over legacy services, follow the mandatory Rust coding standards, and use the comprehensive Make targets for development workflow.

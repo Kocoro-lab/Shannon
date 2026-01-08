@@ -1,5 +1,19 @@
 name: shannon
 
+# Docker Compose for Shannon
+# 
+# Profiles:
+#   - default: Core services (orchestrator, shannon-api, postgres, redis, etc.)
+#   - cloud: Full cloud deployment with Temporal and PostgreSQL
+#   - embedded-dev: SurrealDB for embedded development testing
+#   - legacy: Deprecated Python llm-service and Go gateway
+#
+# Usage:
+#   Cloud mode:     docker compose --profile cloud up
+#   Embedded dev:   docker compose --profile embedded-dev up shannon-api surrealdb
+#   Full stack:     docker compose --profile cloud up
+#   With legacy:    docker compose --profile legacy up
+
 networks:
   shannon-net:
     driver: bridge
@@ -10,8 +24,13 @@ include:
 volumes:
   postgres_data: {}
   qdrant_data: {}
+  surrealdb_data: {}
 
 services:
+  # ============================================================================
+  # CLOUD INFRASTRUCTURE (Temporal-based workflow)
+  # ============================================================================
+
   temporal:
     image: temporalio/auto-setup:latest
     restart: unless-stopped
@@ -225,7 +244,14 @@ services:
       - ../../config:/app/config:ro
     networks: [shannon-net]
 
+  # ============================================================================
+  # LEGACY SERVICES (deprecated - use 'docker compose --profile legacy up')
+  # ============================================================================
+  # These services are kept for backwards compatibility but will be removed
+  # in a future version. Use shannon-api instead.
+
   llm-service:
+    profiles: ["legacy"]  # DEPRECATED: Use shannon-api instead. Start with --profile legacy
     build:
       context: ../../python/llm-service
       dockerfile: Dockerfile
@@ -366,7 +392,153 @@ services:
     networks: [shannon-net]
     shm_size: 2gb
 
+  shannon-api:
+    build:
+      context: ../../rust/shannon-api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      # Deployment mode: embedded | cloud | hybrid | mesh | mesh-cloud
+      - SHANNON_MODE=${SHANNON_MODE:-cloud}
+      
+      # Server configuration
+      - SHANNON_HOST=0.0.0.0
+      - SHANNON_PORT=8080
+      - RUST_LOG=${RUST_LOG:-info}
+      
+      # Workflow engine: durable | temporal
+      - WORKFLOW_ENGINE=${WORKFLOW_ENGINE:-temporal}
+      - TEMPORAL_ENDPOINT=temporal:7233
+      - TEMPORAL_NAMESPACE=shannon
+      - TEMPORAL_TASK_QUEUE=research-tasks
+      
+      # Durable configuration (for embedded mode)
+      - DURABLE_WASM_DIR=/app/wasm/patterns
+      - DURABLE_MAX_CONCURRENT=10
+      - DURABLE_EVENT_RETENTION_DAYS=30
+      
+      # Database driver: surrealdb | postgresql | sqlite
+      - DATABASE_DRIVER=${DATABASE_DRIVER:-postgresql}
+      - DATABASE_URL=postgres://shannon:shannon@postgres:5432/shannon
+      - DATABASE_MAX_CONNECTIONS=20
+      
+      # SurrealDB configuration (for embedded mode)
+      - SURREALDB_PATH=/app/data/shannon.db
+      - SURREALDB_NAMESPACE=shannon
+      - SURREALDB_DATABASE=main
+      
+      # Redis (sessions, rate limiting, caching)
+      - REDIS_URL=redis://redis:6379
+      
+      # Orchestrator gRPC (cloud mode)
+      - ORCHESTRATOR_GRPC=http://orchestrator:50052
+      
+      # JWT Authentication
+      - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
+      
+      # LLM Configuration
+      - LLM_DEFAULT_PROVIDER=${LLM_DEFAULT_PROVIDER:-anthropic}
+      - LLM_DEFAULT_MODEL=${LLM_DEFAULT_MODEL:-claude-sonnet-4-20250514}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - XAI_API_KEY=${XAI_API_KEY:-}
+      
+      # Sync configuration (disabled in cloud mode)
+      - SYNC_MODE=${SYNC_MODE:-disabled}
+    depends_on:
+      orchestrator:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"   # Main API
+      - "8082:8081"   # Admin/metrics (offset to avoid conflict with orchestrator)
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ../../config:/app/config:ro
+    networks: [shannon-net]
+
+  # ============================================================================
+  # EMBEDDED/LOCAL MODE (Self-contained with SurrealDB)
+  # ============================================================================
+  # Use 'docker compose --profile local up' for embedded mode testing
+  # No Temporal, PostgreSQL, Redis, or Orchestrator required!
+
+  shannon-api-local:
+    profiles: ["local"]
+    build:
+      context: ../../
+      dockerfile: rust/shannon-api/Dockerfile
+      args:
+        FEATURES: "embedded,gateway"
+    restart: unless-stopped
+    environment:
+      # Embedded mode configuration
+      - SHANNON_MODE=embedded
+      - WORKFLOW_ENGINE=durable
+      - DATABASE_DRIVER=surrealdb
+      - SURREALDB_PATH=/data/shannon.db
+      - SURREALDB_NAMESPACE=shannon
+      - SURREALDB_DATABASE=main
+      
+      # Server configuration
+      - SHANNON_HOST=0.0.0.0
+      - SHANNON_PORT=8080
+      - RUST_LOG=${RUST_LOG:-info,shannon_api=debug}
+      
+      # Durable workflow engine settings
+      - DURABLE_WASM_DIR=/app/wasm/patterns
+      - DURABLE_MAX_CONCURRENT=10
+      - DURABLE_EVENT_RETENTION_DAYS=30
+      
+      # LLM API keys (at least one required)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      
+      # Sync disabled in local mode
+      - SYNC_MODE=disabled
+    ports:
+      - "8080:8080"
+    volumes:
+      - surrealdb_data:/data
+      - ../../config:/app/config:ro
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [shannon-net]
+    # NO depends_on - fully self-contained!
+
+  surrealdb:
+    profiles: ["embedded-dev", "local"]
+    image: surrealdb/surrealdb:latest
+    restart: unless-stopped
+    command: start --user root --pass root file:/data/shannon.db
+    volumes:
+      - surrealdb_data:/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [shannon-net]
+
   gateway:
+    profiles: ["legacy"]  # Only starts with --profile legacy
     build:
       context: ../..
       dockerfile: go/orchestrator/cmd/gateway/Dockerfile
@@ -396,7 +568,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "8083:8080"  # Different port to avoid conflict with shannon-api
     healthcheck:
       test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:8080/health']
       interval: 10s

@@ -15,6 +15,8 @@ pub mod tool_cache;
 pub mod tool_registry;
 pub mod tools;
 pub mod tracing;
+pub mod research_pool;
+pub mod checkpoint;
 
 #[cfg(feature = "wasi")]
 pub mod wasi_sandbox;

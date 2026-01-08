@@ -1,0 +1,48 @@
+# ============================================================================
+# Shannon Hybrid Mode YAML Overlay
+# ============================================================================
+# Override file for local-first with cloud sync.
+# Apply with: --config config/modes/hybrid.yaml
+# ============================================================================
+
+# Deployment configuration
+deployment:
+  mode: hybrid
+
+# Workflow engine (Durable for local-first)
+workflow:
+  engine: durable
+  durable:
+    wasm_dir: ./wasm/patterns
+    max_concurrent: 10
+    event_log_retention_days: 90
+
+# Database (SurrealDB embedded)
+database:
+  driver: surrealdb
+  surrealdb:
+    path: ./data/shannon.db
+    namespace: shannon
+    database: main
+
+# Cloud sync configuration
+sync:
+  mode: cloud-only
+  cloud_only:
+    api_endpoint: ${SYNC_CLOUD_ENDPOINT:-https://api.shannon.io/sync}
+    api_key: ${SYNC_CLOUD_API_KEY}
+    sync_interval_secs: 30
+
+# Server configuration
+server:
+  host: 127.0.0.1
+  port: 8765
+  admin_port: 8766
+  timeout_secs: 300
+  max_connections: 100
+
+# Logging
+logging:
+  level: info
+  json: false
+  otlp_enabled: false

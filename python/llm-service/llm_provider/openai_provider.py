@@ -10,6 +10,7 @@ import openai
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 import tiktoken
+import httpx
 
 from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage
 
@@ -24,13 +25,24 @@ class OpenAIProvider(LLMProvider):
             raise ValueError("OpenAI API key not provided")
 
         self.organization = config.get("organization")
-        timeout = int(config.get("timeout", 60) or 60)
+        # Increase timeout to 120s for complex decomposition tasks
+        # This prevents timeouts on slow OpenAI API responses (observed 50-80s for complex queries)
+        timeout_seconds = int(config.get("timeout", 120) or 120)
+
+        # Use httpx.Timeout for granular control: 10s connect, 120s total
+        # This allows long-running LLM calls while preventing indefinite hangs
+        timeout_config = httpx.Timeout(
+            timeout=timeout_seconds,  # Total timeout
+            connect=10.0,  # Connection timeout
+            read=timeout_seconds,  # Read timeout (same as total for streaming)
+        )
 
         # Pass organization and timeout at construction time
         self.client = AsyncOpenAI(
             api_key=api_key,
             organization=self.organization,
-            timeout=timeout,
+            timeout=timeout_config,
+            max_retries=2,  # Add automatic retries for transient failures
         )
 
         # Token encoders for different models

@@ -8,7 +8,7 @@ interface RunState {
     events: ShannonEvent[];
     messages: any[]; // We'll transform events into messages
     status: "idle" | "running" | "completed" | "failed";
-    connectionState: "idle" | "connecting" | "connected" | "reconnecting" | "error";
+    connectionState: "idle" | "connecting" | "connected" | "reconnecting" | "polling" | "error";
     streamError: string | null;
     sessionTitle: string | null;
     selectedAgent: "normal" | "deep_research";

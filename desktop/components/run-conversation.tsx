@@ -13,16 +13,7 @@ import rehypeHighlight from "rehype-highlight";
 import "highlight.js/styles/github-dark.css";
 import { ExternalLink, Copy, Check, Sparkles, Microscope, AlertCircle, XCircle, Brain, Users, Zap, CheckCircle, Loader2, Search, Play, Pause, CircleSlash, Clock, Link, MessageSquare, FolderSync, Info, ShieldAlert, RefreshCw } from "lucide-react";
 import React, { type ReactNode, useState } from "react";
-
-export interface Citation {
-    url: string;
-    title?: string;
-    source?: string;
-    source_type?: string;
-    retrieved_at?: string;
-    published_date?: string;
-    credibility_score?: number;
-}
+import type { Citation } from "@/lib/shannon/citations";
 
 interface Message {
     id: string;
@@ -171,27 +162,28 @@ function TextWithCitations({ text, citations }: { text: string; citations?: Cita
     const citationRegex = /\[(\d+)\]/g;
     const parts: (string | ReactNode)[] = [];
     let lastIndex = 0;
-    let match;
-    let matchCount = 0;
+    const matches = Array.from(text.matchAll(citationRegex));
 
-    while ((match = citationRegex.exec(text)) !== null) {
-        matchCount++;
+    console.log("[Citations] Total matches found:", matches.length);
+
+    for (const match of matches) {
         const fullMatch = match[0];
         const citationIndex = parseInt(match[1], 10);
         const citation = citations[citationIndex - 1]; // Citations are 1-indexed
+        const matchIndex = match.index ?? 0;
 
         console.log("[Citations] Found match:", fullMatch, "Index:", citationIndex, "Has citation:", !!citation);
 
         // Add text before citation
-        if (match.index > lastIndex) {
-            parts.push(text.substring(lastIndex, match.index));
+        if (matchIndex > lastIndex) {
+            parts.push(text.substring(lastIndex, matchIndex));
         }
 
         // Add citation link with tooltip
         if (citation) {
             parts.push(
                 <CitationLink
-                    key={`citation-${match.index}-${citationIndex}`}
+                    key={`citation-${matchIndex}-${citationIndex}`}
                     index={citationIndex}
                     citation={citation}
                 />
@@ -201,10 +193,8 @@ function TextWithCitations({ text, citations }: { text: string; citations?: Cita
             parts.push(fullMatch);
         }
 
-        lastIndex = match.index + fullMatch.length;
+        lastIndex = matchIndex + fullMatch.length;
     }
-
-    console.log("[Citations] Total matches found:", matchCount);
 
     // Add remaining text
     if (lastIndex < text.length) {
@@ -243,33 +233,37 @@ export function MarkdownWithCitations({ content, citations }: { content: string;
     
     console.log("[MarkdownWithCitations] Rendering with citations:", citations.length);
     
+    // Helper to create stable key from string content
+    const getTextKey = (text: string, index: number) => 
+        `text-${index}-${text.slice(0, 20).replace(/\s/g, '_')}`;
+
     // Custom component to handle text nodes with citations
     const components = {
         ...getMarkdownComponents(),
         // Override paragraph to process citations inline
-        p: ({ children, ...props }: any) => {
+        p: ({ children, ...props }: React.ComponentProps<'p'>) => {
             const processedChildren = React.Children.map(children, (child, index) => {
                 if (typeof child === 'string') {
-                    return <TextWithCitations key={index} text={child} citations={citations} />;
+                    return <TextWithCitations key={getTextKey(child, index)} text={child} citations={citations} />;
                 }
                 return child;
             });
             return <p className="leading-relaxed break-words" {...props}>{processedChildren}</p>;
         },
         // Also handle other text containers
-        li: ({ children, ...props }: any) => {
+        li: ({ children, ...props }: React.ComponentProps<'li'>) => {
             const processedChildren = React.Children.map(children, (child, index) => {
                 if (typeof child === 'string') {
-                    return <TextWithCitations key={index} text={child} citations={citations} />;
+                    return <TextWithCitations key={getTextKey(child, index)} text={child} citations={citations} />;
                 }
                 return child;
             });
             return <li {...props}>{processedChildren}</li>;
         },
-        td: ({ children, ...props }: any) => {
+        td: ({ children, ...props }: React.ComponentProps<'td'>) => {
             const processedChildren = React.Children.map(children, (child, index) => {
                 if (typeof child === 'string') {
-                    return <TextWithCitations key={index} text={child} citations={citations} />;
+                    return <TextWithCitations key={getTextKey(child, index)} text={child} citations={citations} />;
                 }
                 return child;
             });
