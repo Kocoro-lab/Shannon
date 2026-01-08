@@ -15,11 +15,48 @@ use crate::AppState;
 /// Session routes.
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions", post(create_session))
         .route("/api/v1/sessions/{id}", get(get_session))
         .route("/api/v1/sessions/{id}", delete(delete_session))
         .route("/api/v1/sessions/{id}/messages", get(get_session_messages))
         .route("/api/v1/sessions/{id}/messages", post(add_session_message))
+}
+
+/// List sessions query parameters.
+#[derive(Debug, Deserialize)]
+pub struct ListSessionsQuery {
+    #[serde(default = "default_limit")]
+    pub limit: u32,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+fn default_limit() -> u32 {
+    20
+}
+
+/// List sessions response.
+#[derive(Debug, Serialize)]
+pub struct ListSessionsResponse {
+    pub sessions: Vec<SessionResponse>,
+    pub total_count: u32,
+}
+
+/// List all sessions.
+pub async fn list_sessions(
+    State(_state): State<AppState>,
+    axum::extract::Query(_query): axum::extract::Query<ListSessionsQuery>,
+) -> impl IntoResponse {
+    // In embedded mode without Redis, return empty list
+    // Sessions are ephemeral and only exist in-memory during the app lifecycle
+    // For now, return an empty list - in the future, we could use SurrealDB
+    let response = ListSessionsResponse {
+        sessions: vec![],
+        total_count: 0,
+    };
+
+    (StatusCode::OK, Json(response))
 }
 
 /// Create session request.

@@ -265,6 +265,33 @@ pub async fn get_task_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // First check in-memory run manager (works in embedded mode)
+    if let Some(run) = state.run_manager.get_run(&id) {
+        use crate::domain::RunStatus;
+        let status = match run.status {
+            RunStatus::Pending => TaskStatus::Pending,
+            RunStatus::Running => TaskStatus::Running,
+            RunStatus::Completed => TaskStatus::Completed,
+            RunStatus::Failed => TaskStatus::Failed,
+            RunStatus::Cancelled => TaskStatus::Cancelled,
+        };
+
+        let response = TaskResponse {
+            id: run.id.clone(),
+            status,
+            task_type: "chat".to_string(),
+            created_at: run.created_at.to_rfc3339(),
+            updated_at: run.updated_at.to_rfc3339(),
+            started_at: Some(run.created_at.to_rfc3339()),
+            completed_at: run.completed_at.map(|t| t.to_rfc3339()),
+            session_id: run.session_id.clone(),
+            error: run.error.clone(),
+        };
+
+        return (StatusCode::OK, Json(serde_json::to_value(response).unwrap()));
+    }
+
+    // Fall back to Redis if available
     if let Some(ref redis) = state.redis {
         let mut redis = redis.clone();
         let key = format!("task:{}", id);
