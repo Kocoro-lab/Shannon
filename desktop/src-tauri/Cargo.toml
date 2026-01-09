@@ -77,6 +77,8 @@ tracing = "0.1"
 tauri = { version = "2.9.2", features = ["devtools"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-store = "2"
 
 # Shannon core (embedded mode - no grpc/orchestrator needed)
 shannon-api = { path = "../../rust/shannon-api", default-features = false, features = ["embedded", "gateway"], optional = true }

@@ -71,6 +71,7 @@ pub enum TaskStatus {
 /// Task response.
 #[derive(Debug, Serialize)]
 pub struct TaskResponse {
+    #[serde(rename = "task_id")]
     pub id: String,
     pub status: TaskStatus,
     pub task_type: String,
@@ -89,6 +90,7 @@ pub struct TaskResponse {
 /// Task progress response.
 #[derive(Debug, Serialize)]
 pub struct TaskProgressResponse {
+    #[serde(rename = "task_id")]
     pub id: String,
     pub status: TaskStatus,
     pub progress_percent: u8,

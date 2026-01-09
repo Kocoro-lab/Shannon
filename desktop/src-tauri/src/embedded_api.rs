@@ -282,7 +282,6 @@ pub async fn start_embedded_api(_port: Option<u16>) -> Result<EmbeddedApiHandle,
 pub mod commands {
     use super::*;
     use std::sync::Mutex;
-    use std::sync::Arc;
     use tauri::State;
 
     /// State wrapper for the embedded API handle.
@@ -399,5 +398,79 @@ pub mod commands {
             .map_err(|e| e.to_string())?;
 
         response.json().await.map_err(|e| e.to_string())
+    }
+
+    /// Save an API key to the settings store.
+    /// 
+    /// # Arguments
+    /// * `provider` - Either "openai" or "anthropic"
+    /// * `api_key` - The API key to save
+    #[tauri::command]
+    pub async fn save_api_key(
+        app_handle: tauri::AppHandle,
+        provider: String,
+        api_key: String,
+    ) -> Result<(), String> {
+        use tauri_plugin_store::StoreExt;
+        
+        let store_key = match provider.to_lowercase().as_str() {
+            "openai" => "openai_api_key",
+            "anthropic" => "anthropic_api_key",
+            _ => return Err(format!("Unknown provider: {}", provider)),
+        };
+        
+        let env_key = match provider.to_lowercase().as_str() {
+            "openai" => "OPENAI_API_KEY",
+            "anthropic" => "ANTHROPIC_API_KEY",
+            _ => return Err(format!("Unknown provider: {}", provider)),
+        };
+        
+        // Save to store for persistence
+        let store = app_handle
+            .store("settings.json")
+            .map_err(|e| format!("Failed to open store: {}", e))?;
+        
+        store
+            .set(store_key, serde_json::Value::String(api_key.clone()));
+        
+        store
+            .save()
+            .map_err(|e| format!("Failed to save store: {}", e))?;
+        
+        // Also set in environment for immediate use
+        std::env::set_var(env_key, &api_key);
+        
+        log::info!("Saved {} API key to settings", provider);
+        
+        Ok(())
+    }
+
+    /// Get stored API key (returns masked version for display).
+    #[tauri::command]
+    pub async fn get_api_key_status(
+        app_handle: tauri::AppHandle,
+    ) -> Result<serde_json::Value, String> {
+        use tauri_plugin_store::StoreExt;
+        
+        let store = app_handle
+            .store("settings.json")
+            .map_err(|e| format!("Failed to open store: {}", e))?;
+        
+        let openai_configured = store
+            .get("openai_api_key")
+            .and_then(|v| v.as_str().map(|s| !s.is_empty() && s.starts_with("sk-")))
+            .unwrap_or(false)
+            || std::env::var("OPENAI_API_KEY").map(|k| k.starts_with("sk-")).unwrap_or(false);
+        
+        let anthropic_configured = store
+            .get("anthropic_api_key")
+            .and_then(|v| v.as_str().map(|s| !s.is_empty() && s.starts_with("sk-ant-")))
+            .unwrap_or(false)
+            || std::env::var("ANTHROPIC_API_KEY").map(|k| k.starts_with("sk-ant-")).unwrap_or(false);
+        
+        Ok(serde_json::json!({
+            "openai_configured": openai_configured,
+            "anthropic_configured": anthropic_configured,
+        }))
     }
 }
