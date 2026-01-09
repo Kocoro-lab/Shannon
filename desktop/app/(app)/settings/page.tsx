@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
 import {
     Key,
     Copy,
@@ -20,9 +21,21 @@ import {
     Zap,
     Crown,
     AlertCircle,
+    Bot,
+    Save,
+    Eye,
+    EyeOff,
 } from "lucide-react";
 
 type Tier = "free" | "pro" | "enterprise" | "";
+
+// Check if running in Tauri
+const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+interface LlmKeyStatus {
+    openai_configured: boolean;
+    anthropic_configured: boolean;
+}
 
 export default function SettingsPage() {
     const router = useRouter();
@@ -31,6 +44,63 @@ export default function SettingsPage() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [copiedKey, setCopiedKey] = useState(false);
+    
+    // LLM Provider API Keys state
+    const [openaiKey, setOpenaiKey] = useState("");
+    const [anthropicKey, setAnthropicKey] = useState("");
+    const [showOpenaiKey, setShowOpenaiKey] = useState(false);
+    const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+    const [savingOpenai, setSavingOpenai] = useState(false);
+    const [savingAnthropic, setSavingAnthropic] = useState(false);
+    const [llmKeyStatus, setLlmKeyStatus] = useState<LlmKeyStatus>({ openai_configured: false, anthropic_configured: false });
+    const [saveSuccess, setSaveSuccess] = useState<string | null>(null);
+
+    // Load LLM key status from Tauri
+    const loadLlmKeyStatus = async () => {
+        if (!isTauri) return;
+        
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const status = await invoke<LlmKeyStatus>('get_api_key_status');
+            setLlmKeyStatus(status);
+        } catch (err) {
+            console.error("Failed to load LLM key status:", err);
+        }
+    };
+
+    // Save LLM API key via Tauri
+    const saveLlmKey = async (provider: 'openai' | 'anthropic', apiKey: string) => {
+        if (!isTauri) {
+            console.warn("Not running in Tauri - API key saving not available");
+            return;
+        }
+        
+        const setSaving = provider === 'openai' ? setSavingOpenai : setSavingAnthropic;
+        setSaving(true);
+        
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invoke('save_api_key', { provider, apiKey });
+            
+            // Refresh status
+            await loadLlmKeyStatus();
+            
+            // Clear input and show success
+            if (provider === 'openai') {
+                setOpenaiKey("");
+            } else {
+                setAnthropicKey("");
+            }
+            
+            setSaveSuccess(`${provider === 'openai' ? 'OpenAI' : 'Anthropic'} API key saved successfully!`);
+            setTimeout(() => setSaveSuccess(null), 3000);
+        } catch (err) {
+            console.error(`Failed to save ${provider} API key:`, err);
+            setError(`Failed to save API key: ${err}`);
+        } finally {
+            setSaving(false);
+        }
+    };
 
     useEffect(() => {
         async function loadUserData() {
@@ -50,6 +120,9 @@ export default function SettingsPage() {
                         // Continue with stored user info
                     }
                 }
+                
+                // Load LLM key status if in Tauri
+                await loadLlmKeyStatus();
             } catch (err) {
                 console.error("Failed to load user data:", err);
                 setError("Failed to load settings");
@@ -180,6 +253,175 @@ export default function SettingsPage() {
                         </div>
                     </CardHeader>
                 </Card>
+
+                {/* LLM Provider API Keys Card - Only show in Tauri/embedded mode */}
+                {isTauri && (
+                    <Card>
+                        <CardHeader>
+                            <CardTitle className="text-lg flex items-center gap-2">
+                                <Bot className="h-4 w-4" />
+                                LLM Provider API Keys
+                            </CardTitle>
+                            <CardDescription>
+                                Configure API keys for AI providers. At least one is required for the app to function.
+                            </CardDescription>
+                        </CardHeader>
+                        <CardContent className="space-y-6">
+                            {/* Success message */}
+                            {saveSuccess && (
+                                <div className="flex items-center gap-2 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-green-600 text-sm">
+                                    <Check className="h-4 w-4" />
+                                    {saveSuccess}
+                                </div>
+                            )}
+                            
+                            {/* OpenAI */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <Label htmlFor="openai-key" className="text-sm font-medium">
+                                        OpenAI API Key
+                                    </Label>
+                                    {llmKeyStatus.openai_configured && (
+                                        <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/20">
+                                            <Check className="h-3 w-3 mr-1" />
+                                            Configured
+                                        </Badge>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="relative flex-1">
+                                        <Input
+                                            id="openai-key"
+                                            type={showOpenaiKey ? "text" : "password"}
+                                            value={openaiKey}
+                                            onChange={(e) => setOpenaiKey(e.target.value)}
+                                            placeholder={llmKeyStatus.openai_configured ? "Enter new key to update..." : "sk-..."}
+                                            className="font-mono text-sm pr-10"
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="absolute right-0 top-0 h-full px-3"
+                                            onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                                        >
+                                            {showOpenaiKey ? (
+                                                <EyeOff className="h-4 w-4 text-muted-foreground" />
+                                            ) : (
+                                                <Eye className="h-4 w-4 text-muted-foreground" />
+                                            )}
+                                        </Button>
+                                    </div>
+                                    <Button
+                                        onClick={() => saveLlmKey('openai', openaiKey)}
+                                        disabled={!openaiKey || savingOpenai}
+                                        size="sm"
+                                    >
+                                        {savingOpenai ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <>
+                                                <Save className="h-4 w-4 mr-1" />
+                                                Save
+                                            </>
+                                        )}
+                                    </Button>
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                    Get your API key from{" "}
+                                    <a
+                                        href="https://platform.openai.com/api-keys"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary hover:underline"
+                                    >
+                                        platform.openai.com
+                                    </a>
+                                </p>
+                            </div>
+
+                            <div className="border-t" />
+
+                            {/* Anthropic */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <Label htmlFor="anthropic-key" className="text-sm font-medium">
+                                        Anthropic API Key
+                                    </Label>
+                                    {llmKeyStatus.anthropic_configured && (
+                                        <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/20">
+                                            <Check className="h-3 w-3 mr-1" />
+                                            Configured
+                                        </Badge>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="relative flex-1">
+                                        <Input
+                                            id="anthropic-key"
+                                            type={showAnthropicKey ? "text" : "password"}
+                                            value={anthropicKey}
+                                            onChange={(e) => setAnthropicKey(e.target.value)}
+                                            placeholder={llmKeyStatus.anthropic_configured ? "Enter new key to update..." : "sk-ant-..."}
+                                            className="font-mono text-sm pr-10"
+                                        />
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="icon"
+                                            className="absolute right-0 top-0 h-full px-3"
+                                            onClick={() => setShowAnthropicKey(!showAnthropicKey)}
+                                        >
+                                            {showAnthropicKey ? (
+                                                <EyeOff className="h-4 w-4 text-muted-foreground" />
+                                            ) : (
+                                                <Eye className="h-4 w-4 text-muted-foreground" />
+                                            )}
+                                        </Button>
+                                    </div>
+                                    <Button
+                                        onClick={() => saveLlmKey('anthropic', anthropicKey)}
+                                        disabled={!anthropicKey || savingAnthropic}
+                                        size="sm"
+                                    >
+                                        {savingAnthropic ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <>
+                                                <Save className="h-4 w-4 mr-1" />
+                                                Save
+                                            </>
+                                        )}
+                                    </Button>
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                    Get your API key from{" "}
+                                    <a
+                                        href="https://console.anthropic.com/settings/keys"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-primary hover:underline"
+                                    >
+                                        console.anthropic.com
+                                    </a>
+                                </p>
+                            </div>
+
+                            {/* Warning if no keys configured */}
+                            {!llmKeyStatus.openai_configured && !llmKeyStatus.anthropic_configured && (
+                                <div className="flex items-start gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-sm">
+                                    <AlertCircle className="h-4 w-4 mt-0.5 flex-shrink-0" />
+                                    <div>
+                                        <p className="font-medium">No API keys configured</p>
+                                        <p className="text-xs mt-1">
+                                            Please add at least one API key above to use the AI features.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                )}
 
                 {/* API Key Card */}
                 <Card>
