@@ -128,6 +128,32 @@ export function ServerProvider({ children }: { children: ReactNode }) {
           }
         };
 
+        // STEP 1: Proactive health check on likely ports (1906-1915)
+        // This eliminates race conditions where IPC events are sent before listeners are ready
+        console.log('[ServerContext] 🔍 Checking for existing server on ports 1906-1915...');
+
+        for (let port = 1906; port <= 1915; port++) {
+          try {
+            const url = `http://localhost:${port}`;
+            const response = await fetch(`${url}/health`, {
+              method: 'GET',
+              cache: 'no-store',
+              signal: AbortSignal.timeout(1000), // 1 second timeout per port
+            });
+
+            if (response.ok) {
+              console.log(`[ServerContext] ✅ Found running server on port ${port}`);
+              handleServerReady(url, port);
+              return; // Server found, no need to set up IPC listeners
+            }
+          } catch (e) {
+            // Port not available or server not running, continue to next port
+            console.debug(`[ServerContext] Port ${port} not available:`, e);
+          }
+        }
+
+        console.log('[ServerContext] 🔄 No existing server found, setting up IPC listeners...');
+
         // Listen for server-ready event
         const unlistenReady = await listen<{ url: string; port: number }>('server-ready', (event) => {
           const { url, port } = event.payload;

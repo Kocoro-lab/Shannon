@@ -131,10 +131,25 @@ pub async fn create_app(
         } else {
             let db_path =
                 std::env::var("SURREALDB_PATH").unwrap_or_else(|_| "./data/shannon.db".to_string());
-            // Create a client instance
-            match surrealdb::Surreal::new::<surrealdb::engine::local::RocksDb>(db_path.clone())
-                .await
-            {
+
+            // Select SurrealDB backend based on SURREALDB_BACKEND environment variable
+            let backend = std::env::var("SURREALDB_BACKEND")
+                .unwrap_or_else(|_| "rocksdb".to_string())
+                .to_lowercase();
+
+            // Create a client instance with the specified backend
+            let db_result = match backend.as_str() {
+                "surrealkv" | "kv" => {
+                    // Try SurrealKv backend for better Tauri compatibility
+                    surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(db_path.clone()).await
+                }
+                "rocksdb" | "rocks" | _ => {
+                    // Default to RocksDb backend
+                    surrealdb::Surreal::new::<surrealdb::engine::local::RocksDb>(db_path.clone()).await
+                }
+            };
+
+            match db_result {
                 Ok(db) => {
                     // Select default namespace/database
                     if let Err(e) = db.use_ns("shannon").use_db("main").await {

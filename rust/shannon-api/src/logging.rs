@@ -237,13 +237,13 @@ mod tests {
     fn test_op_timer_finish_with_result_ok() {
         let timer = OpTimer::new("test", "operation");
         let result: Result<i32, String> = Ok(42);
-        timer.finish_with_result(result.as_ref().map(|_| ()));
+        timer.finish_with_result(result.as_ref());
     }
 
     #[test]
     fn test_op_timer_finish_with_result_err() {
         let timer = OpTimer::new("test", "operation");
         let result: Result<i32, String> = Err("test error".to_string());
-        timer.finish_with_result(result.as_ref().map(|_| ()));
+        timer.finish_with_result(result.as_ref());
     }
 }

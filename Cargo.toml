@@ -37,7 +37,7 @@ async-trait = "0.1"
 
 # Database backends (unified versions to prevent conflicts)
 # SurrealDB for embedded desktop mode
-surrealdb = { version = "2.2", features = ["kv-rocksdb"] }
+surrealdb = { version = "2.2", features = ["kv-rocksdb", "kv-surrealkv", "kv-mem"] }
 
 # SQLite for embedded mobile mode - UNIFIED VERSION
 rusqlite = { version = "0.38.0", features = ["bundled"] }
