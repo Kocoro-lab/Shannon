@@ -303,3 +303,27 @@ class TestWebFetchToolMetadata:
 
         assert "batch" in metadata.description.lower() or "urls" in metadata.description.lower()
         assert "BATCH MODE" in metadata.description or "urls=" in metadata.description
+
+
+class TestWebFetchSSRFProtection:
+    """SSRF protection should apply to both single and batch modes."""
+
+    @pytest.fixture
+    def tool(self):
+        return WebFetchTool()
+
+    @pytest.mark.asyncio
+    async def test_single_url_blocks_private_ip(self, tool):
+        result = await tool.execute(url="http://127.0.0.1/")
+        assert result.success is False
+        assert result.error is not None
+        assert "not allowed" in result.error.lower() or "private" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_batch_mode_blocks_private_ip(self, tool):
+        result = await tool.execute(urls=["http://127.0.0.1/"])
+        assert result.success is False
+        assert result.output is not None
+        assert result.output["succeeded"] == 0
+        assert result.output["failed"] == 1
+        assert "private" in result.output["pages"][0]["error"].lower() or "not allowed" in result.output["pages"][0]["error"].lower()

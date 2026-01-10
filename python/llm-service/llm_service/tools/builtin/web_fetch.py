@@ -426,17 +426,22 @@ class FirecrawlFetchProvider(WebFetchProvider):
         """Sanitize URL by removing common error patterns"""
         if not url:
             return ""
-        
-        # Remove known error patterns
-        url = url.replace('</parameter', '')
-        url = url.replace('%3C/parameter', '')
-        url = url.replace('%3E', '')
-        url = url.replace('<', '')
-        url = url.replace('>', '')
-        
-        # Remove trailing/leading whitespace
+
         url = url.strip()
-        
+        lower = url.lower()
+
+        # Occasionally Firecrawl/LLM tool-call markup leaks into a URL string.
+        # Strip anything starting from a parameter tag (raw or URL-encoded).
+        cut_markers = ("</parameter", "<parameter", "%3c/parameter", "%3cparameter")
+        cut_idx = -1
+        for marker in cut_markers:
+            idx = lower.find(marker)
+            if idx != -1 and (cut_idx == -1 or idx < cut_idx):
+                cut_idx = idx
+
+        if cut_idx != -1:
+            url = url[:cut_idx].strip()
+
         return url
     
     def _merge_crawl_results(
@@ -1769,6 +1774,27 @@ class WebFetchTool(Tool):
         - Redirect loop protection
         - Resource leak prevention with proper session cleanup
         """
+        # SSRF protection (batch mode calls this directly, so enforce here too).
+        try:
+            parsed = urlparse(url)
+            if not parsed.scheme or not parsed.netloc:
+                return ToolResult(success=False, output=None, error=f"Invalid URL: {url}")
+            if parsed.scheme not in ("http", "https"):
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Only HTTP/HTTPS protocols allowed, got: {parsed.scheme}",
+                )
+            host = parsed.hostname or parsed.netloc.split(":")[0]
+            if host and _is_private_ip(host):
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Access to private/internal IP addresses is not allowed: {host}",
+                )
+        except Exception as e:
+            return ToolResult(success=False, output=None, error=f"Invalid URL format: {str(e)}")
+
         # Configure session with security limits
         timeout = aiohttp.ClientTimeout(total=self.timeout)
         connector = aiohttp.TCPConnector(limit=10)
@@ -1793,6 +1819,15 @@ class WebFetchTool(Tool):
                             success=False,
                             output=None,
                             error=f"HTTP {response.status}: Failed to fetch page",
+                        )
+
+                    # SSRF protection: block redirects to private/internal hosts.
+                    final_host = getattr(response.url, "host", None)
+                    if final_host and _is_private_ip(final_host):
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"Access to private/internal IP addresses is not allowed: {final_host}",
                         )
 
                     # Check content length before reading (if provided)

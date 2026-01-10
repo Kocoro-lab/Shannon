@@ -185,6 +185,8 @@ class CorpusStats:
 
         if stats.total_docs > 0:
             stats.avg_doc_len = total_tokens / stats.total_docs
+            if stats.avg_doc_len <= 0:
+                stats.avg_doc_len = 200.0
 
         return stats
 
@@ -225,6 +227,8 @@ def bm25_score(
         N = corpus_stats.total_docs
     else:
         N = 0  # No IDF if no corpus stats
+    if avg_doc_len <= 0:
+        avg_doc_len = 200.0
 
     score = 0.0
     for term in set(query_tokens):
