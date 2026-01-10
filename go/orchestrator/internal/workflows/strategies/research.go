@@ -152,15 +152,41 @@ func FilterCitationsByEntity(citations []metadata.Citation, canonicalName string
 		// Also check if URL contains any alias (broader domain matching)
 		// For URLs, we use substring matching since domains often contain the brand
 		// e.g., "acme.com" contains "acme"
+		hostLabels := []string{}
+		if parsedURL, err := url.Parse(c.URL); err == nil {
+			host := strings.ToLower(parsedURL.Hostname())
+			host = strings.TrimPrefix(host, "www.")
+			if host != "" {
+				hostLabels = strings.Split(host, ".")
+			}
+		}
 		if !isOfficial {
 			for alias := range aliasSet {
 				// Remove quotes from aliases for URL matching
 				cleanAlias := strings.Trim(alias, "\"")
-				// For URLs, require at least 5 char aliases to avoid false positives
-				// like "mind" matching "minders.io"
-				if cleanAlias != "" && len(cleanAlias) >= 5 && strings.Contains(urlLower, cleanAlias) {
-					score += 0.4 // Partial credit for alias in URL
-					matchedDomain = "alias-in-url:" + cleanAlias
+				if cleanAlias == "" {
+					continue
+				}
+				if len(cleanAlias) >= 5 {
+					// For long aliases, allow substring match (brand in domain/path).
+					if strings.Contains(urlLower, cleanAlias) {
+						score += 0.4 // Partial credit for alias in URL
+						matchedDomain = "alias-in-url:" + cleanAlias
+						break
+					}
+					continue
+				}
+
+				// For short aliases, only match whole hostname labels to avoid false positives
+				// like "mind" matching "minders.io".
+				for _, label := range hostLabels {
+					if label == cleanAlias {
+						score += 0.4
+						matchedDomain = "alias-in-host:" + cleanAlias
+						break
+					}
+				}
+				if matchedDomain != "" {
 					break
 				}
 			}
