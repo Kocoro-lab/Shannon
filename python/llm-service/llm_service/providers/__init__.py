@@ -4,12 +4,12 @@ from enum import Enum
 
 from llm_provider.manager import get_llm_manager, LLMManager
 from llm_provider.base import (
-    ModelTier as CoreModelTier,
+    ModelTier,
     CompletionResponse,
     TokenUsage as CoreTokenUsage,
 )
 
-from .base import ModelInfo, ModelTier as LegacyModelTier
+from .base import ModelInfo
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +66,10 @@ class ProviderManager:
         self._manager: LLMManager = get_llm_manager()
         self.providers: Dict[ProviderType, _ProviderAdapter] = {}
         self.model_registry: Dict[str, ModelInfo] = {}
-        self.tier_models: Dict[LegacyModelTier, List[str]] = {
-            LegacyModelTier.SMALL: [],
-            LegacyModelTier.MEDIUM: [],
-            LegacyModelTier.LARGE: [],
+        self.tier_models: Dict[ModelTier, List[str]] = {
+            ModelTier.SMALL: [],
+            ModelTier.MEDIUM: [],
+            ModelTier.LARGE: [],
         }
         self.session_tokens: Dict[str, int] = {}
         self.max_tokens_per_session = 100000
@@ -121,7 +121,7 @@ class ProviderManager:
     def _build_model_info(
         provider_type: Optional[ProviderType], alias: str, config: Any
     ) -> ModelInfo:
-        legacy_tier = LegacyModelTier(config.tier.value)
+        # config.tier is already ModelTier from llm_provider.base (same enum now)
         provider_value: Any = (
             provider_type if provider_type else (config.provider or "unknown")
         )
@@ -130,7 +130,7 @@ class ProviderManager:
             id=alias,
             name=alias,
             provider=provider_value,
-            tier=legacy_tier,
+            tier=config.tier,
             context_window=config.context_window,
             cost_per_1k_prompt_tokens=config.input_price_per_1k,
             cost_per_1k_completion_tokens=config.output_price_per_1k,
@@ -150,12 +150,12 @@ class ProviderManager:
         self._emitter = emitter
 
     def select_model(
-        self, tier: LegacyModelTier = None, specific_model: str = None
+        self, tier: ModelTier = None, specific_model: str = None
     ) -> Optional[str]:
         if specific_model and specific_model in self.model_registry:
             return specific_model
 
-        tier = tier or LegacyModelTier.SMALL
+        tier = tier or ModelTier.SMALL
 
         preferred = self.tier_models.get(tier, [])
         if preferred:
@@ -163,9 +163,9 @@ class ProviderManager:
 
         # Fallback to any available tier in order
         for fallback_tier in (
-            LegacyModelTier.SMALL,
-            LegacyModelTier.MEDIUM,
-            LegacyModelTier.LARGE,
+            ModelTier.SMALL,
+            ModelTier.MEDIUM,
+            ModelTier.LARGE,
         ):
             candidates = self.tier_models.get(fallback_tier, [])
             if candidates:
@@ -176,7 +176,7 @@ class ProviderManager:
     async def generate_completion(
         self,
         messages: List[dict],
-        tier: LegacyModelTier = None,
+        tier: ModelTier = None,
         specific_model: str = None,
         provider_override: Optional[str] = None,
         **kwargs,
@@ -195,11 +195,8 @@ class ProviderManager:
             or params.pop("AGENT_ID", None)
         )
 
-        tier = tier or LegacyModelTier.SMALL
-        try:
-            core_tier = CoreModelTier(tier.value)
-        except ValueError:
-            core_tier = CoreModelTier.SMALL
+        # ModelTier is now unified - no conversion needed
+        tier = tier or ModelTier.SMALL
 
         manager_kwargs: Dict[str, Any] = {}
 
@@ -265,7 +262,7 @@ class ProviderManager:
 
         response: CompletionResponse = await self._manager.complete(
             messages=messages,
-            model_tier=core_tier,
+            model_tier=tier,
             **manager_kwargs,
         )
 
@@ -296,18 +293,15 @@ class ProviderManager:
     async def stream_completion(
         self,
         messages: List[dict],
-        tier: LegacyModelTier = None,
+        tier: ModelTier = None,
         specific_model: str = None,
         provider_override: Optional[str] = None,
         **kwargs,
     ):
         params = dict(kwargs)
 
-        tier = tier or LegacyModelTier.SMALL
-        try:
-            core_tier = CoreModelTier(tier.value)
-        except ValueError:
-            core_tier = CoreModelTier.SMALL
+        # ModelTier is now unified - no conversion needed
+        tier = tier or ModelTier.SMALL
 
         manager_kwargs: Dict[str, Any] = {}
 
@@ -365,7 +359,7 @@ class ProviderManager:
 
         async for chunk in self._manager.stream_complete(
             messages=messages,
-            model_tier=core_tier,
+            model_tier=tier,
             **manager_kwargs,
         ):
             if chunk:
@@ -527,7 +521,7 @@ class ProviderManager:
     def get_model_info(self, model_id: str) -> Optional[ModelInfo]:
         return self.model_registry.get(model_id)
 
-    def list_available_models(self, tier: LegacyModelTier = None) -> List[ModelInfo]:
+    def list_available_models(self, tier: ModelTier = None) -> List[ModelInfo]:
         if tier:
             ids = self.tier_models.get(tier, [])
             return [self.model_registry[mid] for mid in ids]
