@@ -255,12 +255,30 @@ impl WasiSandbox {
                     }
                 };
 
-                // Verify the canonical path is still within allowed boundaries
+                // Verify the canonical path matches expected canonical form
                 // This prevents symlink attacks that could escape the sandbox
-                if !canonical_path.starts_with(allowed_path) && !allowed_path.starts_with("/tmp") {
+                // On macOS, /tmp is a symlink to /private/tmp, so we handle that case
+                let expected_canonical = {
+                    #[cfg(target_os = "macos")]
+                    {
+                        // macOS: /tmp is a symlink to /private/tmp
+                        // Rewrite /tmp/foo → /private/tmp/foo for comparison
+                        if let Ok(suffix) = allowed_path.strip_prefix("/tmp") {
+                            std::path::PathBuf::from("/private/tmp").join(suffix)
+                        } else {
+                            allowed_path.clone()
+                        }
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        allowed_path.clone()
+                    }
+                };
+
+                if canonical_path != expected_canonical {
                     warn!(
-                        "WASI: Path {:?} resolves outside allowed directory",
-                        allowed_path
+                        "WASI: Path {:?} resolves to {:?}, expected {:?}. Rejecting non-canonical allowed_path.",
+                        allowed_path, canonical_path, expected_canonical
                     );
                     continue;
                 }

@@ -1,16 +1,12 @@
-"""Legacy provider base definitions for backward compatibility."""
+"""Legacy provider base definitions - re-exports from core for backward compatibility."""
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
+# Re-export ModelTier from canonical source to eliminate duplicate enum
+from llm_provider.base import ModelTier
 
-class ModelTier(Enum):
-    """Model tier enumeration for legacy API."""
-
-    SMALL = "small"
-    MEDIUM = "medium"
-    LARGE = "large"
+__all__ = ["ModelTier", "ModelInfo"]
 
 
 @dataclass
