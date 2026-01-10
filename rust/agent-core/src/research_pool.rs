@@ -132,6 +132,18 @@ struct JobState {
     result_sender: Option<oneshot::Sender<ResearchResult>>,
 }
 
+impl std::fmt::Debug for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobState")
+            .field("job", &self.job)
+            .field("status", &self.status)
+            .field("submitted_at", &self.submitted_at)
+            .field("started_at", &self.started_at)
+            .field("result_sender", &"<oneshot::Sender<ResearchResult>>")
+            .finish()
+    }
+}
+
 /// Trait for executing research jobs.
 #[async_trait]
 pub trait JobExecutor: Send + Sync {
@@ -158,6 +170,15 @@ pub trait JobExecutor: Send + Sync {
 pub struct LlmExecutor {
     llm_service_url: String,
     client: reqwest::Client,
+}
+
+impl std::fmt::Debug for LlmExecutor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmExecutor")
+            .field("llm_service_url", &self.llm_service_url)
+            .field("client", &"<reqwest::Client>")
+            .finish()
+    }
 }
 
 impl LlmExecutor {
@@ -247,6 +268,19 @@ pub struct ResearchPool {
     job_sender: Sender<ResearchJob>,
     /// Shutdown signal.
     shutdown: Arc<RwLock<bool>>,
+}
+
+impl std::fmt::Debug for ResearchPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResearchPool")
+            .field("config", &self.config)
+            .field("executor", &"<Arc<dyn JobExecutor>>")
+            .field("jobs", &self.jobs)
+            .field("results", &self.results)
+            .field("job_sender", &"<Sender<ResearchJob>>")
+            .field("shutdown", &self.shutdown)
+            .finish()
+    }
 }
 
 impl ResearchPool {

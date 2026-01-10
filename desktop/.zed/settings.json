@@ -1,0 +1,243 @@
+{
+  "languages": {
+    "Rust": {
+      "format_on_save": "on",
+      "formatter": "language_server",
+      "code_actions_on_format": {
+        "source.organizeImports": true
+      },
+      "show_inline_completions": true,
+      "tab_size": 4
+    },
+    "TypeScript": {
+      "format_on_save": "on",
+      "formatter": "prettier",
+      "code_actions_on_format": {
+        "source.organizeImports": false,
+        "source.fixAll.eslint": true
+      },
+      "tab_size": 2
+    },
+    "TSX": {
+      "format_on_save": "on",
+      "formatter": "prettier",
+      "code_actions_on_format": {
+        "source.organizeImports": false,
+        "source.fixAll.eslint": true
+      },
+      "tab_size": 2
+    },
+    "JavaScript": {
+      "format_on_save": "on",
+      "formatter": "prettier",
+      "tab_size": 2
+    },
+    "JSON": {
+      "format_on_save": "on",
+      "formatter": "prettier",
+      "tab_size": 2
+    },
+    "TOML": {
+      "format_on_save": "on",
+      "tab_size": 4
+    },
+    "Markdown": {
+      "format_on_save": "off",
+      "soft_wrap": "editor_width",
+      "tab_size": 2
+    }
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "initialization_options": {
+        "check": {
+          "command": "clippy",
+          "allTargets": true
+        },
+        "cargo": {
+          "features": ["desktop"],
+          "allFeatures": false,
+          "loadOutDirsFromCheck": true
+        },
+        "procMacro": {
+          "enable": true,
+          "attributes": {
+            "enable": true
+          }
+        },
+        "diagnostics": {
+          "enable": true,
+          "experimental": {
+            "enable": true
+          }
+        },
+        "lens": {
+          "enable": true,
+          "run": {
+            "enable": true
+          },
+          "debug": {
+            "enable": true
+          }
+        },
+        "inlayHints": {
+          "enable": true,
+          "chainingHints": {
+            "enable": true
+          },
+          "parameterHints": {
+            "enable": true
+          },
+          "typeHints": {
+            "enable": true
+          }
+        },
+        "hover": {
+          "actions": {
+            "enable": true,
+            "run": {
+              "enable": true
+            },
+            "debug": {
+              "enable": true
+            }
+          }
+        },
+        "linkedProjects": ["./src-tauri/Cargo.toml"],
+        "rustfmt": {
+          "extraArgs": ["+nightly"]
+        }
+      }
+    },
+    "typescript-language-server": {
+      "initialization_options": {
+        "preferences": {
+          "importModuleSpecifier": "relative"
+        }
+      }
+    },
+    "eslint": {
+      "settings": {
+        "validate": [
+          "javascript",
+          "javascriptreact",
+          "typescript",
+          "typescriptreact"
+        ],
+        "codeAction": {
+          "disableRuleComment": {
+            "enable": true,
+            "location": "separateLine"
+          },
+          "showDocumentation": {
+            "enable": true
+          }
+        },
+        "format": {
+          "enable": false
+        },
+        "run": "onType"
+      }
+    }
+  },
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/node_modules",
+    "**/.next",
+    "**/out",
+    "**/target",
+    "**/.tauri",
+    "**/dist",
+    "**/build",
+    "**/.cache",
+    "**/Cargo.lock",
+    "**/package-lock.json"
+  ],
+  "file_types": {
+    "Cargo.toml": ["Cargo.toml"],
+    "Cargo.lock": ["Cargo.lock"],
+    "Rust": ["rs"],
+    "TOML": ["toml"]
+  },
+  "terminal": {
+    "env": {
+      "RUST_BACKTRACE": "1",
+      "RUST_LOG": "debug"
+    },
+    "shell": {
+      "program": "sh"
+    },
+    "working_directory": "current_project_directory"
+  },
+  "tab_size": 2,
+  "hard_tabs": false,
+  "show_whitespaces": "selection",
+  "remove_trailing_whitespace_on_save": true,
+  "ensure_final_newline_on_save": true,
+  "format_on_save": "on",
+  "formatter": "auto",
+  "code_actions_on_format": {},
+  "preferred_line_length": 100,
+  "soft_wrap": "none",
+  "show_inline_completions": true,
+  "inlay_hints": {
+    "enabled": true,
+    "show_type_hints": true,
+    "show_parameter_hints": true,
+    "show_other_hints": true
+  },
+  "git": {
+    "git_gutter": "tracked_files",
+    "inline_blame": {
+      "enabled": true
+    }
+  },
+  "show_wrap_guides": true,
+  "wrap_guides": [80, 100],
+  "indent_guides": {
+    "enabled": true,
+    "coloring": "indent_aware"
+  },
+  "scrollbar": {
+    "show": "always",
+    "diagnostics": true,
+    "git_diff": true,
+    "search_results": true,
+    "selected_symbol": true
+  },
+  "diagnostics": {
+    "include_warnings": true
+  },
+  "project_panel": {
+    "dock": "left",
+    "default_width": 240
+  },
+  "outline_panel": {
+    "dock": "right",
+    "default_width": 240
+  },
+  "collaboration_panel": {
+    "dock": "left"
+  },
+  "assistant": {
+    "version": "2",
+    "enabled": true,
+    "button": true
+  },
+  "features": {
+    "inline_completion_provider": "supermaven"
+  },
+  "vim_mode": false,
+  "ui_font_size": 14,
+  "buffer_font_size": 13,
+  "buffer_font_family": "JetBrains Mono",
+  "theme": {
+    "mode": "system",
+    "light": "One Light",
+    "dark": "One Dark"
+  },
+  "telemetry": {
+    "diagnostics": false,
+    "metrics": false
+  }
+}

@@ -21,6 +21,10 @@ use crate::config::deployment::WorkflowConfig;
 /// # Errors
 ///
 /// Returns an error if the engine cannot be initialized.
-pub async fn create_engine(config: &WorkflowConfig) -> anyhow::Result<WorkflowEngine> {
-    WorkflowEngine::from_config(config).await
+pub async fn create_engine(
+    config: &WorkflowConfig,
+    #[cfg(feature = "embedded")]
+    surreal_conn: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+) -> anyhow::Result<WorkflowEngine> {
+    WorkflowEngine::from_config(config, #[cfg(feature = "embedded")] surreal_conn).await
 }

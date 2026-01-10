@@ -54,7 +54,10 @@ async fn test_multi_tool_sequence_mixed_success() {
     }
 
     // Set the LLM service URL for the test
-    std::env::set_var("LLM_SERVICE_URL", "http://localhost:8000");
+    // SAFETY: This is a test environment variable
+    unsafe {
+        std::env::set_var("LLM_SERVICE_URL", "http://localhost:8000");
+    }
 
     let svc = AgentServiceImpl::new().expect("failed to create AgentServiceImpl");
 

@@ -53,6 +53,7 @@ pub struct ToolDiscoveryResponse {
 }
 
 /// Tool registry for capability management
+#[derive(Debug)]
 pub struct ToolRegistry {
     tools: Arc<RwLock<HashMap<String, ToolCapability>>>,
 }

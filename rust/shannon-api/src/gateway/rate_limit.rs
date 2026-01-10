@@ -25,6 +25,7 @@ use crate::AppState;
 pub type GlobalRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
 /// Per-user rate limiter using a simple in-memory map.
+#[derive(Debug)]
 pub struct UserRateLimiters {
     limiters: Mutex<std::collections::HashMap<String, Arc<GlobalRateLimiter>>>,
     quota: Quota,

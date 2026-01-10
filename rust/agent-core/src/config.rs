@@ -676,14 +676,20 @@ mod tests {
     #[serial]
     fn test_env_overrides() {
         // Clean up first to ensure no interference from other tests
-        env::remove_var("WASI_MEMORY_LIMIT_MB");
-        env::remove_var("LLM_SERVICE_URL");
-        env::remove_var("METRICS_PORT");
+        // SAFETY: These are test environment variables and we're in a controlled test environment
+        unsafe {
+            env::remove_var("WASI_MEMORY_LIMIT_MB");
+            env::remove_var("LLM_SERVICE_URL");
+            env::remove_var("METRICS_PORT");
+        }
 
         // Set test values
-        env::set_var("WASI_MEMORY_LIMIT_MB", "512");
-        env::set_var("LLM_SERVICE_URL", "http://custom:9000");
-        env::set_var("METRICS_PORT", "3000");
+        // SAFETY: These are test environment variables and we're in a controlled test environment
+        unsafe {
+            env::set_var("WASI_MEMORY_LIMIT_MB", "512");
+            env::set_var("LLM_SERVICE_URL", "http://custom:9000");
+            env::set_var("METRICS_PORT", "3000");
+        }
 
         let config = Config::from_env(Config::default());
 
@@ -692,9 +698,12 @@ mod tests {
         assert_eq!(config.metrics.port, 3000);
 
         // Clean up
-        env::remove_var("WASI_MEMORY_LIMIT_MB");
-        env::remove_var("LLM_SERVICE_URL");
-        env::remove_var("METRICS_PORT");
+        // SAFETY: These are test environment variables and we're in a controlled test environment
+        unsafe {
+            env::remove_var("WASI_MEMORY_LIMIT_MB");
+            env::remove_var("LLM_SERVICE_URL");
+            env::remove_var("METRICS_PORT");
+        }
     }
 
     #[test]
@@ -711,9 +720,12 @@ mod tests {
     #[serial]
     fn test_global_config() {
         // Clear any existing environment variables that might interfere
-        env::remove_var("AGENT_CORE_METRICS_PORT");
-        env::remove_var("METRICS_PORT");
-        env::remove_var("AGENT_CONFIG_PATH");
+        // SAFETY: These are test environment variables and we're in a controlled test environment
+        unsafe {
+            env::remove_var("AGENT_CORE_METRICS_PORT");
+            env::remove_var("METRICS_PORT");
+            env::remove_var("AGENT_CONFIG_PATH");
+        }
 
         let config = Config::global().expect("Should load global config");
         assert!(config.wasi.memory_limit_bytes > 0);

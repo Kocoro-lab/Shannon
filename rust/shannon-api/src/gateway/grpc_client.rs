@@ -205,12 +205,14 @@ pub struct OrchestratorClient {
     #[cfg(feature = "grpc")]
     client: Option<OrchestratorServiceClient<Channel>>,
     // HTTP client for fallback (when gRPC feature is disabled or connection fails)
+    #[cfg(not(feature = "grpc"))]
     http_client: reqwest::Client,
 }
 
 impl OrchestratorClient {
     /// Create a new Orchestrator client.
     pub async fn new(config: OrchestratorClientConfig) -> anyhow::Result<Self> {
+        #[cfg(not(feature = "grpc"))]
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs))
             .build()
@@ -232,6 +234,7 @@ impl OrchestratorClient {
                     return Ok(Self {
                         config,
                         client: Some(client),
+                        #[cfg(not(feature = "grpc"))]
                         http_client,
                     });
                 }
@@ -248,6 +251,7 @@ impl OrchestratorClient {
             config,
             #[cfg(feature = "grpc")]
             client: None,
+            #[cfg(not(feature = "grpc"))]
             http_client,
         })
     }
@@ -283,6 +287,7 @@ impl OrchestratorClient {
     }
 
     /// Submit a task to the orchestrator via gRPC.
+    #[allow(unused_variables)]
     pub async fn submit_task(
         &self,
         request: SubmitTaskRequest,
@@ -317,8 +322,8 @@ impl OrchestratorClient {
 
             let inner = response.into_inner();
             return Ok(SubmitTaskResponse {
-                workflow_id: inner.workflow_id,
-                task_id: inner.task_id,
+                workflow_id: inner.workflow_id.clone(),
+                task_id: inner.task_id.clone(),
                 status: format!("{:?}", inner.status()),
                 message: if inner.message.is_empty() {
                     None
@@ -335,6 +340,7 @@ impl OrchestratorClient {
     }
 
     /// Get the status of a task via gRPC.
+    #[allow(unused_variables)]
     pub async fn get_task_status(
         &self,
         request: GetTaskStatusRequest,
@@ -354,7 +360,7 @@ impl OrchestratorClient {
 
             let inner = response.into_inner();
             return Ok(GetTaskStatusResponse {
-                task_id: inner.task_id,
+                task_id: inner.task_id.clone(),
                 status: proto_status_to_local(inner.status()),
                 progress: inner.progress,
                 result: if inner.result.is_empty() {
@@ -383,6 +389,7 @@ impl OrchestratorClient {
     }
 
     /// Cancel a task via gRPC.
+    #[allow(unused_variables)]
     pub async fn cancel_task(
         &self,
         request: CancelTaskRequest,
@@ -418,6 +425,7 @@ impl OrchestratorClient {
     }
 
     /// Pause a task via gRPC.
+    #[allow(unused_variables)]
     pub async fn pause_task(&self, task_id: &str, reason: Option<&str>) -> anyhow::Result<bool> {
         #[cfg(feature = "grpc")]
         {
@@ -442,6 +450,7 @@ impl OrchestratorClient {
     }
 
     /// Resume a paused task via gRPC.
+    #[allow(unused_variables)]
     pub async fn resume_task(&self, task_id: &str, reason: Option<&str>) -> anyhow::Result<bool> {
         #[cfg(feature = "grpc")]
         {
@@ -564,6 +573,13 @@ fn proto_status_to_local(status: proto::orchestrator::TaskStatus) -> TaskStatus 
 
 #[cfg(feature = "grpc")]
 fn proto_metrics_to_local(metrics: proto::common::ExecutionMetrics) -> ExecutionMetrics {
+    let mode = Some(match proto::common::ExecutionMode::try_from(metrics.mode).unwrap_or(proto::common::ExecutionMode::Unspecified) {
+        proto::common::ExecutionMode::Simple => ExecutionMode::Simple,
+        proto::common::ExecutionMode::Standard => ExecutionMode::Standard,
+        proto::common::ExecutionMode::Complex => ExecutionMode::Complex,
+        proto::common::ExecutionMode::Unspecified => ExecutionMode::Unspecified,
+    });
+
     ExecutionMetrics {
         latency_ms: metrics.latency_ms,
         token_usage: metrics.token_usage.map(|u| TokenUsage {
@@ -576,20 +592,15 @@ fn proto_metrics_to_local(metrics: proto::common::ExecutionMetrics) -> Execution
         cache_hit: metrics.cache_hit,
         cache_score: metrics.cache_score,
         agents_used: metrics.agents_used,
-        mode: Some(match metrics.mode() {
-            proto::common::ExecutionMode::Unspecified => ExecutionMode::Unspecified,
-            proto::common::ExecutionMode::Simple => ExecutionMode::Simple,
-            proto::common::ExecutionMode::Standard => ExecutionMode::Standard,
-            proto::common::ExecutionMode::Complex => ExecutionMode::Complex,
-        }),
+        mode,
     }
 }
 
 #[cfg(feature = "grpc")]
 fn proto_agent_status_to_local(status: proto::orchestrator::AgentTaskStatus) -> AgentTaskStatus {
     AgentTaskStatus {
-        agent_id: status.agent_id,
-        task_id: status.task_id,
+        agent_id: status.agent_id.clone(),
+        task_id: status.task_id.clone(),
         status: proto_status_to_local(status.status()),
         result: if status.result.is_empty() {
             None

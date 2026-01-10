@@ -9,128 +9,100 @@ path = "src/lib.rs"
 
 [features]
 default = ["wasi"]
-wasi = ["dep:wasmtime", "dep:wasmtime-wasi"]
+wasi = ["dep:wasmtime", "dep:wasmtime-wasi", "dep:wasi-common"]
 microvm = []
 default-no-wasi = []
 
 [dependencies]
 # Async runtime
-tokio = { version = "1.49.0", features = ["full"] }
-tokio-stream = { version = "0.1.18", features = ["sync", "io-util"] }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
 
 # gRPC
-tonic = { version = "0.14.2" }
-tonic-reflection = "0.14.2"
-tonic-prost = "0.14.2"
-prost = "0.14.1"
-prost-types = "0.14.1"
+tonic = { workspace = true }
+tonic-reflection = { workspace = true }
+tonic-prost = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 
 # WASM runtime (optional, gated behind wasi feature)
-wasmtime = { version = "28.0", optional = true }
-wasmtime-wasi = { version = "28.0", optional = true }
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
+wasi-common = { workspace = true, optional = true }
 
 # Serialization
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-serde_yaml = "0.9.34"
-regex = "1.12.2"
-base64 = "0.22.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+regex = { workspace = true }
+base64 = { workspace = true }
 
 # Math evaluation
-meval = "0.2"
+meval = { workspace = true }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
-http = "1.4.0"
+reqwest = { workspace = true }
+http = { workspace = true }
 
 # Error handling
-anyhow = "1.0.100"
-thiserror = "2.0.17"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Logging and Tracing
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
-opentelemetry = { version = "0.27", features = ["trace"] }
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["tonic", "trace"] }
-opentelemetry-semantic-conventions = "0.27"
-tracing-opentelemetry = "0.28"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
 # Metrics
-prometheus = "0.14.0"
-hyper = { version = "1.8.1", features = ["server", "http1"] }
-tokio-util = { version = "0.7.18", features = ["codec", "io"] }
-http-body-util = "0.1"
+prometheus = { workspace = true }
+hyper = { workspace = true }
+tokio-util = { workspace = true }
+http-body-util = { workspace = true }
 
 # Redis (optional distributed rate limiting)
-redis = { version = "1.0.2", features = ["aio", "tokio-comp", "connection-manager"] }
-
+redis = { workspace = true }
 
 # Memory management
-bytes = "1.11.0"
+bytes = { workspace = true }
 
 # Policy engine (OPA)
-opa-wasm = "0.1.9"
+opa-wasm = { workspace = true }
 
 # Utilities
-uuid = { version = "1.19.0", features = ["v4", "serde"] }
-chrono = { version = "0.4.42", features = ["serde"] }
-futures = "0.3.31"
-tempfile = "3.24.0"
+uuid = { workspace = true }
+chrono = { workspace = true }
+futures = { workspace = true }
+tempfile = { workspace = true }
 
 # System integration (for resource limits)
-libc = "0.2.180"
+libc = { workspace = true }
 
 # Async traits
-async-trait = "0.1"
+async-trait = { workspace = true }
 
 # Parking lot scheduler for worker pools
 # prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-parking-lot-rs", features = ["tokio-runtime", "config"] }
 
 # Channel for mailbox pattern
-crossbeam-channel = "0.5"
-parking_lot = "0.12.5"
+crossbeam-channel = { workspace = true }
+parking_lot = { workspace = true }
 
 # Serialization for checkpoints
-bincode = "1.3"
+bincode = { workspace = true }
 
 [build-dependencies]
-tonic-prost-build = "0.14.2"
-protoc-bin-vendored = "3"
+tonic-prost-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
-criterion = "0.8.1"
-proptest = "1.9.0"
-serial_test = "3.3.1"
+criterion = { workspace = true }
+proptest = { workspace = true }
+serial_test = { workspace = true }
 
-# Rust compiler lints (Microsoft Pragmatic Rust Guidelines)
-[lints.rust]
-ambiguous_negative_literals = "warn"
-missing_debug_implementations = "warn"
-redundant_imports = "warn"
-redundant_lifetimes = "warn"
-trivial_numeric_casts = "warn"
-unsafe_op_in_unsafe_fn = "warn"
-unused_lifetimes = "warn"
-
-# Clippy lints (Microsoft Pragmatic Rust Guidelines)
-[lints.clippy]
-cargo = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-# Restriction lints for consistency and quality
-allow_attributes_without_reason = "warn"
-clone_on_ref_ptr = "warn"
-empty_drop = "warn"
-map_err_ignore = "warn"
-redundant_type_annotations = "warn"
-undocumented_unsafe_blocks = "warn"
-# Allow some pedantic lints that are too noisy
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
+# Use workspace lints
+[lints]
+workspace = true

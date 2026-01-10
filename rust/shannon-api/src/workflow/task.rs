@@ -67,6 +67,22 @@ impl Default for Strategy {
     }
 }
 
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Simple => "simple",
+            Self::Standard => "standard",
+            Self::Complex => "complex",
+            Self::ChainOfThought => "chain_of_thought",
+            Self::React => "react",
+            Self::TreeOfThoughts => "tree_of_thoughts",
+            Self::Research => "research",
+            Self::Scientific => "scientific",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 impl std::str::FromStr for Strategy {
     type Err = String;
 
@@ -113,7 +129,11 @@ pub struct Task {
 impl Task {
     /// Create a new task with the given query.
     #[must_use]
-    pub fn new(id: impl Into<String>, user_id: impl Into<String>, query: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        user_id: impl Into<String>,
+        query: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             user_id: user_id.into(),

@@ -55,6 +55,7 @@ pub struct ToolResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct ToolExecutor {
     llm_service_url: String,
     #[cfg(feature = "wasi")]

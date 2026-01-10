@@ -63,7 +63,12 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Configuration loaded");
 
     // Create the application
-    let app = create_app(config).await?;
+    let app = create_app(
+        config,
+        #[cfg(feature = "embedded")]
+        None, // No existing database connection in standalone mode
+    )
+    .await?;
     tracing::info!("Application initialized");
 
     // Determine bind address based on mode
@@ -91,8 +96,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// Initialize tracing/logging.
 fn init_tracing(log_level: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(log_level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level));
 
     tracing_subscriber::registry()
         .with(filter)

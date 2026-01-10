@@ -51,6 +51,7 @@ impl ReAct {
     }
 
     /// Build the system prompt for ReAct.
+    #[allow(dead_code)]
     fn system_prompt(&self) -> String {
         let tools_list = self.available_tools.join(", ");
         format!(

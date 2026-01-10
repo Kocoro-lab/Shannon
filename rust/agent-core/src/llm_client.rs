@@ -98,12 +98,14 @@ pub struct TokenUsage {
     pub provider: String,
 }
 
+#[derive(Debug)]
 pub struct AgentQueryResult {
     pub response: String,
     pub usage: TokenUsage,
     pub metadata: Option<serde_json::Value>,
 }
 
+#[derive(Debug)]
 pub struct LLMClient {
     client: Client,
     base_url: String,

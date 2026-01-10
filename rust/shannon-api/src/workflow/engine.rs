@@ -22,9 +22,13 @@ use tokio::sync::{broadcast, RwLock};
 
 use super::task::{Task, TaskHandle, TaskResult, TaskState};
 use crate::config::deployment::WorkflowConfig;
+use crate::logging::OpTimer;
 
 #[cfg(feature = "grpc")]
 use crate::gateway::grpc_client::{OrchestratorClient, OrchestratorClientConfig};
+
+#[cfg(feature = "embedded")]
+use durable_shannon::{EmbeddedWorker, SurrealDBEventLog};
 
 /// Workflow engine type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,14 +124,23 @@ impl std::fmt::Debug for WorkflowEngine {
 
 impl WorkflowEngine {
     /// Create a workflow engine from configuration.
-    pub async fn from_config(config: &WorkflowConfig) -> anyhow::Result<Self> {
+    pub async fn from_config(
+        config: &WorkflowConfig,
+        #[cfg(feature = "embedded")]
+        surreal_conn: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    ) -> anyhow::Result<Self> {
         match config {
             WorkflowConfig::Durable {
                 wasm_dir,
                 max_concurrent,
                 ..
             } => {
-                let engine = DurableEngine::new(wasm_dir.clone(), *max_concurrent).await?;
+                let engine = DurableEngine::new(
+                    wasm_dir.clone(), 
+                    *max_concurrent,
+                    #[cfg(feature = "embedded")]
+                    surreal_conn
+                ).await?;
                 Ok(Self::Durable(Arc::new(engine)))
             }
             WorkflowConfig::Temporal {
@@ -200,18 +213,23 @@ impl WorkflowEngine {
 ///
 /// When the `embedded` feature is enabled, this integrates with `durable-shannon`
 /// for WASM-based workflow execution with durable state.
+#[derive(Debug)]
 pub struct DurableEngine {
     /// Directory containing WASM workflow patterns.
-    wasm_dir: PathBuf,
+    _wasm_dir: PathBuf,
     /// Maximum concurrent workflows.
     max_concurrent: usize,
-    /// Active tasks registry (wrapped in Arc for spawned tasks).
+    /// Active tasks registry.
     tasks: Arc<RwLock<HashMap<String, DurableTask>>>,
-    /// Event channels for task updates (wrapped in Arc for spawned tasks).
+    /// Event channels for task updates.
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<TaskEvent>>>>,
+    /// The actual embedded worker (only available when embedded feature is on).
+    #[cfg(feature = "embedded")]
+    worker: Arc<EmbeddedWorker<SurrealDBEventLog>>,
 }
 
 /// Internal task representation for the Durable engine.
+#[derive(Debug)]
 struct DurableTask {
     /// Task ID.
     id: String,
@@ -228,7 +246,7 @@ struct DurableTask {
     /// Error message (when failed).
     error: Option<String>,
     /// Original task data.
-    task: Task,
+    _task: Task,
     /// Start time.
     started_at: chrono::DateTime<chrono::Utc>,
 }
@@ -241,33 +259,87 @@ impl DurableEngine {
     pub async fn new(
         wasm_dir: PathBuf,
         max_concurrent: usize,
+        #[cfg(feature = "embedded")]
+        surreal_conn: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
     ) -> anyhow::Result<Self> {
+        let timer = OpTimer::new("durable_engine", "initialization");
+        
         tracing::info!(
-            "Initializing Durable engine (embedded mode) with WASM dir: {:?}, max_concurrent: {}",
+            "🎬 Initializing Durable engine (embedded mode) - wasm_dir={:?}, max_concurrent={}",
             wasm_dir,
             max_concurrent
         );
 
         // Ensure WASM directory exists
         if !wasm_dir.exists() {
+            tracing::debug!("📁 Creating WASM directory: {:?}", wasm_dir);
             std::fs::create_dir_all(&wasm_dir)?;
-            tracing::info!("Created WASM directory: {:?}", wasm_dir);
+            tracing::info!("✅ Created WASM directory: {:?}", wasm_dir);
+        } else {
+            tracing::debug!("📁 WASM directory exists: {:?}", wasm_dir);
         }
 
-        Ok(Self {
-            wasm_dir,
-            max_concurrent,
-            tasks: Arc::new(RwLock::new(HashMap::new())),
-            channels: Arc::new(RwLock::new(HashMap::new())),
-        })
+        #[cfg(feature = "embedded")]
+        {
+            let result: anyhow::Result<Self> = async {
+                // Initialize SurrealDB event log
+                let event_log_timer = OpTimer::new("event_log", "initialization");
+                let event_log = if let Some(conn) = surreal_conn {
+                    tracing::debug!("📦 Using shared SurrealDB connection for event log");
+                    SurrealDBEventLog::from_db(Arc::new(conn))
+                } else {
+                    // Fallback to creating a new connection
+                    let db_path = std::env::var("SURREALDB_PATH")
+                        .unwrap_or_else(|_| "./data/shannon.db".to_string());
+                    tracing::warn!("⚠️  No shared SurrealDB connection provided. Using path: {}", db_path);
+                    SurrealDBEventLog::new(std::path::Path::new(&db_path)).await?
+                };
+                event_log_timer.finish();
+                tracing::info!("✅ SurrealDB event log initialized");
+                
+                // Initialize embedded worker
+                let worker_timer = OpTimer::new("embedded_worker", "initialization");
+                let worker = EmbeddedWorker::new(
+                    Arc::new(event_log),
+                    wasm_dir.clone(),
+                    max_concurrent
+                ).await?;
+                worker_timer.finish();
+                tracing::info!("✅ Embedded worker created (max_concurrent={})", max_concurrent);
+                
+                Ok(Self {
+                    _wasm_dir: wasm_dir,
+                    max_concurrent,
+                    tasks: Arc::new(RwLock::new(HashMap::new())),
+                    channels: Arc::new(RwLock::new(HashMap::new())),
+                    worker: Arc::new(worker),
+                })
+            }.await;
+            
+            timer.finish_with_result(result.as_ref());
+            result
+        }
+
+        #[cfg(not(feature = "embedded"))]
+        {
+            tracing::warn!("⚠️  Embedded feature not enabled, DurableEngine will be non-functional stub");
+            timer.finish();
+            Ok(Self {
+                _wasm_dir: wasm_dir,
+                max_concurrent,
+                tasks: Arc::new(RwLock::new(HashMap::new())),
+                channels: Arc::new(RwLock::new(HashMap::new())),
+            })
+        }
     }
 
     /// Execute a task in the background.
     ///
     /// This spawns a tokio task that executes the workflow locally.
+    #[allow(dead_code)]
     async fn execute_task(&self, task: Task, tx: broadcast::Sender<TaskEvent>) {
         let task_id = task.id.clone();
-        let workflow_id = format!("durable-{}", task.id);
+        let _workflow_id = format!("durable-{}", task.id);
 
         // Update task state to running
         {
@@ -340,6 +412,7 @@ impl DurableEngine {
     /// This is the core execution logic for embedded mode.
     /// Currently implements a basic execution loop; will be replaced
     /// with durable-shannon integration for full WASM workflow support.
+    #[allow(dead_code)]
     async fn run_local_workflow(
         &self,
         task: &Task,
@@ -396,146 +469,161 @@ impl WorkflowEngineImpl for DurableEngine {
     }
 
     async fn submit(&self, task: Task) -> anyhow::Result<TaskHandle> {
+        let timer = OpTimer::new("durable_engine", "submit_task");
+        let task_id = task.id.clone();
+        let strategy = format!("{:?}", task.strategy);
+        let query_preview = if task.query.len() > 100 {
+            format!("{}...", &task.query[..100])
+        } else {
+            task.query.clone()
+        };
+        
+        tracing::info!(
+            "📥 Submitting task to Durable engine - task_id={}, strategy={}, query_len={}",
+            task_id,
+            strategy,
+            task.query.len()
+        );
+        tracing::debug!("📝 Task query preview: {}", query_preview);
+
         // Check concurrency limit
-        {
+        let active_count = {
             let tasks = self.tasks.read().await;
             let active = tasks.values().filter(|t| t.state == TaskState::Running).count();
+            tracing::debug!(
+                "⚡ Concurrency check - active={}, max={}",
+                active,
+                self.max_concurrent
+            );
             if active >= self.max_concurrent {
+                tracing::warn!(
+                    "❌ Maximum concurrent workflows reached - active={}, max={}",
+                    active,
+                    self.max_concurrent
+                );
                 anyhow::bail!(
                     "Maximum concurrent workflows ({}) reached",
                     self.max_concurrent
                 );
             }
-        }
+            active
+        };
 
-        let task_id = task.id.clone();
-        let workflow_id = format!("durable-{}", task.id);
-
-        // Create event channel
+        tracing::debug!("✅ Concurrency check passed - {}/{} slots used", active_count, self.max_concurrent);
+        
+        // Setup channels and registry first
         let (tx, _rx) = broadcast::channel(64);
-
-        // Register task
+        {
+            let mut channels = self.channels.write().await;
+            channels.insert(task_id.clone(), tx.clone());
+            tracing::trace!("📡 Event channel created for task {}", task_id);
+        }
+        
         {
             let mut tasks = self.tasks.write().await;
             tasks.insert(
                 task_id.clone(),
                 DurableTask {
                     id: task_id.clone(),
-                    workflow_id: workflow_id.clone(),
+                    workflow_id: format!("durable-{}", task_id),
                     state: TaskState::Pending,
                     progress: 0,
                     message: Some("Task submitted".to_string()),
+                    _task: task.clone(),
                     result: None,
                     error: None,
-                    task: task.clone(),
                     started_at: chrono::Utc::now(),
                 },
             );
+            tracing::trace!("📦 Task registered in local state - task_id={}", task_id);
         }
 
-        // Store channel
+        #[cfg(feature = "embedded")]
         {
-            let mut channels = self.channels.write().await;
-            channels.insert(task_id.clone(), tx.clone());
+            let result: anyhow::Result<TaskHandle> = async {
+                // Submit to actual durable worker
+                tracing::debug!("📤 Submitting to embedded worker - task_id={}", task_id);
+                let input = serde_json::to_value(&task)?;
+                let mut handle = self.worker.submit(&task.strategy.to_string(), input).await?;
+                let workflow_id = handle.workflow_id.clone();
+                
+                tracing::info!(
+                    "✅ Task submitted to embedded worker - task_id={}, workflow_id={}",
+                    task_id,
+                    workflow_id
+                );
+                
+                let _worker_ref = self.worker.clone();
+                let task_id_clone = task_id.clone();
+                let tx_clone = tx.clone();
+                let tasks_ref = self.tasks.clone();
+                
+                // Spawn monitoring task to pipe events from worker to our channel
+                tokio::spawn(async move {
+                    tracing::debug!("👀 Monitoring task execution - task_id={}", task_id_clone);
+                    
+                    // Wait for result
+                    match handle.result().await {
+                        Ok(output) => {
+                            tracing::info!("✅ Task completed successfully - task_id={}", task_id_clone);
+                            
+                            // Update state
+                            let mut tasks = tasks_ref.write().await;
+                            if let Some(t) = tasks.get_mut(&task_id_clone) {
+                                t.state = TaskState::Completed;
+                                t.result = Some(output.to_string());
+                            }
+                            
+                            let _ = tx_clone.send(TaskEvent::Completed {
+                                task_id: task_id_clone,
+                                result: TaskResult {
+                                    task_id: "TODO".to_string(),
+                                    state: TaskState::Completed,
+                                    content: Some(output.to_string()),
+                                    data: None,
+                                    error: None,
+                                    token_usage: None,
+                                    duration_ms: 0,
+                                    sources: vec![]
+                                }
+                            });
+                        },
+                        Err(e) => {
+                            tracing::error!("❌ Task failed - task_id={}, error={}", task_id_clone, e);
+                            
+                            let mut tasks = tasks_ref.write().await;
+                            if let Some(t) = tasks.get_mut(&task_id_clone) {
+                                t.state = TaskState::Failed;
+                                t.error = Some(e.to_string());
+                            }
+                            
+                            let _ = tx_clone.send(TaskEvent::Failed {
+                                task_id: task_id_clone,
+                                error: e.to_string()
+                            });
+                        }
+                    }
+                });
+                
+                Ok(TaskHandle {
+                    task_id,
+                    workflow_id,
+                    state: TaskState::Pending,
+                    progress: 0,
+                    message: Some("Task submitted to Durable engine".to_string()),
+                })
+            }.await;
+            
+            timer.finish_with_result(result.as_ref());
+            result
         }
 
-        // Spawn execution task
-        let engine = self.wasm_dir.clone();
-        let task_clone = task.clone();
-        let tx_clone = tx.clone();
-        
-        // We need to get self reference for the spawned task
-        // Since we can't move self, we'll use a simple approach
-        let tasks_ref = self.tasks.clone();
-        let channels_ref = self.channels.clone();
-        
-        tokio::spawn(async move {
-            // Simple inline execution for now
-            // In a full implementation, this would call durable-shannon
-            let task_id = task_clone.id.clone();
-
-            // Update to running
-            {
-                let mut tasks = tasks_ref.write().await;
-                if let Some(t) = tasks.get_mut(&task_id) {
-                    t.state = TaskState::Running;
-                }
-            }
-
-            let _ = tx_clone.send(TaskEvent::StateChanged {
-                task_id: task_id.clone(),
-                old_state: TaskState::Pending,
-                new_state: TaskState::Running,
-            });
-
-            // Simulate work
-            for i in 1..=10 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                
-                {
-                    let mut tasks = tasks_ref.write().await;
-                    if let Some(t) = tasks.get_mut(&task_id) {
-                        if t.state == TaskState::Cancelled {
-                            let _ = tx_clone.send(TaskEvent::Failed {
-                                task_id: task_id.clone(),
-                                error: "Task cancelled".to_string(),
-                            });
-                            return;
-                        }
-                        t.progress = i * 10;
-                    }
-                }
-
-                let _ = tx_clone.send(TaskEvent::Progress {
-                    task_id: task_id.clone(),
-                    percent: i * 10,
-                    message: Some(format!("Step {i}/10")),
-                });
-            }
-
-            // Complete
-            let result = format!(
-                "Completed local workflow for: '{}'. Strategy: {:?}.",
-                task_clone.query,
-                task_clone.strategy
-            );
-
-            {
-                let mut tasks = tasks_ref.write().await;
-                if let Some(t) = tasks.get_mut(&task_id) {
-                    t.state = TaskState::Completed;
-                    t.progress = 100;
-                    t.result = Some(result.clone());
-                }
-            }
-
-            let _ = tx_clone.send(TaskEvent::Completed {
-                task_id: task_id.clone(),
-                result: TaskResult {
-                    task_id,
-                    state: TaskState::Completed,
-                    content: Some(result),
-                    data: None,
-                    error: None,
-                    token_usage: None,
-                    duration_ms: 1000,
-                    sources: Vec::new(),
-                },
-            });
-        });
-
-        tracing::info!(
-            "Submitted task {} to Durable engine (embedded mode)",
-            task_id
-        );
-
-        Ok(TaskHandle {
-            task_id,
-            workflow_id,
-            state: TaskState::Pending,
-            progress: 0,
-            message: Some("Task submitted to local workflow engine".to_string()),
-        })
+        #[cfg(not(feature = "embedded"))]
+        {
+            tracing::error!("❌ Embedded feature not enabled");
+            timer.finish();
+            anyhow::bail!("Embedded feature not enabled")
+        }
     }
 
     async fn status(&self, task_id: &str) -> anyhow::Result<TaskHandle> {
@@ -639,6 +727,7 @@ impl WorkflowEngineImpl for DurableEngine {
 /// This engine is only available when the `grpc` feature is enabled.
 /// It connects to the Go orchestrator service which coordinates with Temporal.
 #[cfg(feature = "grpc")]
+#[derive(Debug)]
 pub struct TemporalEngine {
     client: OrchestratorClient,
     _namespace: String,
@@ -655,26 +744,37 @@ impl TemporalEngine {
         namespace: String,
         task_queue: String,
     ) -> anyhow::Result<Self> {
+        let timer = OpTimer::new("temporal_engine", "initialization");
+        
         tracing::info!(
-            "Initializing Temporal engine (cloud mode) at {}, namespace: {}, queue: {}",
+            "🎬 Initializing Temporal engine (cloud mode) - endpoint={}, namespace={}, task_queue={}",
             endpoint,
             namespace,
             task_queue
         );
 
-        let client = OrchestratorClient::new(OrchestratorClientConfig {
-            endpoint,
-            timeout_secs: 300,
-            tls_enabled: false,
-            connect_timeout_secs: 10,
-        })
-        .await?;
+        let result: anyhow::Result<Self> = async {
+            tracing::debug!("📞 Connecting to orchestrator gRPC service - endpoint={}", endpoint);
+            
+            let client = OrchestratorClient::new(OrchestratorClientConfig {
+                endpoint: endpoint.clone(),
+                timeout_secs: 300,
+                tls_enabled: false,
+                connect_timeout_secs: 10,
+            })
+            .await?;
+            
+            tracing::info!("✅ Connected to orchestrator gRPC service - endpoint={}", endpoint);
 
-        Ok(Self {
-            client,
-            _namespace: namespace,
-            _task_queue: task_queue,
-        })
+            Ok(Self {
+                client,
+                _namespace: namespace,
+                _task_queue: task_queue,
+            })
+        }.await;
+        
+        timer.finish_with_result(result.as_ref());
+        result
     }
 }
 
@@ -688,34 +788,72 @@ impl WorkflowEngineImpl for TemporalEngine {
     async fn submit(&self, task: Task) -> anyhow::Result<TaskHandle> {
         use crate::gateway::grpc_client::{SubmitTaskRequest, TaskMetadata};
 
-        let request = SubmitTaskRequest {
-            metadata: TaskMetadata {
-                task_id: task.id.clone(),
-                user_id: task.user_id.clone(),
-                session_id: task.session_id.clone(),
-                tenant_id: None,
-                labels: task.labels.clone(),
-                max_agents: task.max_agents.map(|v| v as i32),
-                token_budget: task.token_budget,
-            },
-            query: task.query.clone(),
-            context: task.context.clone(),
-            auto_decompose: matches!(
+        let timer = OpTimer::new("temporal_engine", "submit_task");
+        let task_id = task.id.clone();
+        let strategy = format!("{:?}", task.strategy);
+        let query_preview = if task.query.len() > 100 {
+            format!("{}...", &task.query[..100])
+        } else {
+            task.query.clone()
+        };
+        
+        tracing::info!(
+            "📥 Submitting task to Temporal engine - task_id={}, strategy={}, query_len={}",
+            task_id,
+            strategy,
+            task.query.len()
+        );
+        tracing::debug!("📝 Task query preview: {}", query_preview);
+
+        let result: anyhow::Result<TaskHandle> = async {
+            let auto_decompose = matches!(
                 task.strategy,
                 super::task::Strategy::Complex | super::task::Strategy::Research
-            ),
-            require_approval: task.require_approval,
-        };
+            );
+            
+            tracing::debug!(
+                "🔧 Building gRPC request - task_id={}, auto_decompose={}, require_approval={}",
+                task_id,
+                auto_decompose,
+                task.require_approval
+            );
 
-        let response = self.client.submit_task(request).await?;
+            let request = SubmitTaskRequest {
+                metadata: TaskMetadata {
+                    task_id: task.id.clone(),
+                    user_id: task.user_id.clone(),
+                    session_id: task.session_id.clone(),
+                    tenant_id: None,
+                    labels: task.labels.clone(),
+                    max_agents: task.max_agents.map(|v| v as i32),
+                    token_budget: task.token_budget,
+                },
+                query: task.query.clone(),
+                context: task.context.clone(),
+                auto_decompose,
+                require_approval: task.require_approval,
+            };
 
-        Ok(TaskHandle {
-            task_id: response.task_id,
-            workflow_id: response.workflow_id,
-            state: TaskState::Pending,
-            progress: 0,
-            message: response.message,
-        })
+            tracing::debug!("📤 Sending task to orchestrator - task_id={}", task_id);
+            let response = self.client.submit_task(request).await?;
+            
+            tracing::info!(
+                "✅ Task submitted to orchestrator - task_id={}, workflow_id={}",
+                response.task_id,
+                response.workflow_id
+            );
+
+            Ok(TaskHandle {
+                task_id: response.task_id,
+                workflow_id: response.workflow_id,
+                state: TaskState::Pending,
+                progress: 0,
+                message: response.message,
+            })
+        }.await;
+        
+        timer.finish_with_result(result.as_ref());
+        result
     }
 
     async fn status(&self, task_id: &str) -> anyhow::Result<TaskHandle> {
@@ -770,7 +908,7 @@ impl WorkflowEngineImpl for TemporalEngine {
             content: response.result,
             data: None,
             error: response.error_message,
-            token_usage: response.metrics.map(|m| super::task::TokenUsage {
+            token_usage: response.metrics.as_ref().map(|m| super::task::TokenUsage {
                 prompt_tokens: m.token_usage.as_ref().map_or(0, |u| u.prompt_tokens as u32),
                 completion_tokens: m.token_usage.as_ref().map_or(0, |u| u.completion_tokens as u32),
                 total_tokens: m.token_usage.as_ref().map_or(0, |u| u.total_tokens as u32),
@@ -815,6 +953,7 @@ impl WorkflowEngineImpl for TemporalEngine {
 
 // Stub for when grpc feature is not enabled
 #[cfg(not(feature = "grpc"))]
+#[derive(Debug)]
 pub struct TemporalEngine;
 
 #[cfg(not(feature = "grpc"))]

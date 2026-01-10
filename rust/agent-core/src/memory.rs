@@ -83,6 +83,7 @@ fn init_memory_metrics_internal() -> Result<()> {
 ///   attempts to free space by evicting least‑recently‑used (LRU) entries. When two entries
 ///   share the same `last_accessed` timestamp, eviction falls back to `created_at` to
 ///   deterministically remove the older entry.
+#[derive(Debug)]
 pub struct MemoryPool {
     pools: Arc<RwLock<HashMap<String, MemorySlot>>>,
     max_total_size: usize,
@@ -96,7 +97,7 @@ pub struct MemoryPool {
     critical_threshold: f64, // Default 90%
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct MemorySlot {
     data: Bytes,
     created_at: std::time::Instant,
@@ -561,6 +562,7 @@ pub struct MemoryEntry {
     pub timestamp: DateTime<Utc>,
 }
 
+#[derive(Debug)]
 pub struct MemoryManager {
     pool: MemoryPool,
     entries: Arc<RwLock<Vec<MemoryEntry>>>,

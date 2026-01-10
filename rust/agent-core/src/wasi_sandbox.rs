@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 use wasmtime::*;
-use wasmtime_wasi::pipe::{MemoryInputPipe, MemoryOutputPipe};
+use wasmtime_wasi::p2::pipe::{MemoryInputPipe, MemoryOutputPipe};
 use wasmtime_wasi::{DirPerms, FilePerms, WasiCtxBuilder};
 
 use crate::config::Config;
@@ -26,6 +26,24 @@ pub struct WasiSandbox {
     instances_limit: usize,
     tables_limit: usize,
     memories_limit: usize,
+}
+
+impl std::fmt::Debug for WasiSandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasiSandbox")
+            .field("allowed_paths", &self.allowed_paths)
+            .field("allow_env_access", &self.allow_env_access)
+            .field("env_vars", &self.env_vars)
+            .field("memory_limit", &self.memory_limit)
+            .field("fuel_limit", &self.fuel_limit)
+            .field("execution_timeout", &self.execution_timeout)
+            .field("table_elements_limit", &self.table_elements_limit)
+            .field("instances_limit", &self.instances_limit)
+            .field("tables_limit", &self.tables_limit)
+            .field("memories_limit", &self.memories_limit)
+            .field("engine", &"<wasmtime::Engine>")
+            .finish()
+    }
 }
 
 impl WasiSandbox {
@@ -308,7 +326,7 @@ impl WasiSandbox {
 
             // Host context containing WASI and limits for the store
             struct HostCtx {
-                wasi: wasmtime_wasi::preview1::WasiP1Ctx,
+                wasi: wasmtime_wasi::p1::WasiP1Ctx,
                 limits: wasmtime::StoreLimits,
             }
 
@@ -347,7 +365,7 @@ impl WasiSandbox {
 
             // Create linker and add WASI so modules with WASI imports run correctly
             let mut linker: Linker<HostCtx> = Linker::new(&engine);
-            wasmtime_wasi::preview1::add_to_linker_sync(&mut linker, |t: &mut HostCtx| &mut t.wasi)
+            wasmtime_wasi::p1::add_to_linker_sync(&mut linker, |t: &mut HostCtx| &mut t.wasi)
                 .context("Failed to add WASI to linker")?;
 
             // Execute the module

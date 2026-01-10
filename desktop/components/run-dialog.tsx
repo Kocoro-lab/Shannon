@@ -16,6 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Play, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { submitTask } from "@/lib/shannon/api";
+import { useServer } from "@/lib/server-context";
 
 interface RunDialogProps {
     scenarioName: string;
@@ -28,6 +29,7 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const router = useRouter();
+    const { isReady: isServerReady } = useServer();
 
     const handleRun = async () => {
         if (!query.trim()) {
@@ -76,7 +78,7 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
                         <Label htmlFor="query">Query</Label>
                         <Input
                             id="query"
-                            placeholder="What do you want to know?"
+                            placeholder={isServerReady ? "What do you want to know?" : "Server not ready..."}
                             value={query}
                             onChange={(e) => setQuery(e.target.value)}
                             onKeyDown={(e) => {
@@ -85,15 +87,18 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
                                     handleRun();
                                 }
                             }}
-                            disabled={isSubmitting}
+                            disabled={!isServerReady || isSubmitting}
                         />
+                        {!isServerReady && (
+                            <p className="text-sm text-yellow-600">Waiting for server to be ready...</p>
+                        )}
                         {error && (
                             <p className="text-sm text-red-500">{error}</p>
                         )}
                     </div>
                 </div>
                 <DialogFooter>
-                    <Button onClick={handleRun} disabled={isSubmitting || !query.trim()}>
+                    <Button onClick={handleRun} disabled={!isServerReady || isSubmitting || !query.trim()}>
                         {isSubmitting ? (
                             <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />

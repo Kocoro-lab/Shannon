@@ -98,6 +98,7 @@ impl ToolRegistry {
 }
 
 /// Calculator tool for basic math operations.
+#[derive(Debug)]
 pub struct CalculatorTool;
 
 #[async_trait]
@@ -133,6 +134,7 @@ impl Tool for CalculatorTool {
 }
 
 /// Current time tool.
+#[derive(Debug)]
 pub struct CurrentTimeTool;
 
 #[async_trait]

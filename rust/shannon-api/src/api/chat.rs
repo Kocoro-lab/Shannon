@@ -64,11 +64,31 @@ impl From<ChatMessage> for Message {
             _ => crate::llm::MessageRole::User,
         };
 
+        let tool_calls = msg.tool_calls.map(|calls| {
+            calls
+                .into_iter()
+                .filter_map(|call| {
+                    // Extract fields from raw JSON
+                    let id = call.get("id")?.as_str()?.to_string();
+                    let call_type = call.get("type")?.as_str()?.to_string();
+                    let function = call.get("function")?;
+                    let name = function.get("name")?.as_str()?.to_string();
+                    let arguments = function.get("arguments")?.as_str()?.to_string();
+
+                    Some(crate::llm::ToolCall {
+                        id,
+                        call_type,
+                        function: crate::llm::ToolCallFunction { name, arguments },
+                    })
+                })
+                .collect()
+        });
+
         Message {
             role,
             content: crate::llm::MessageContent::Text(msg.content.unwrap_or_default()),
             tool_call_id: msg.tool_call_id,
-            tool_calls: None, // TODO: Convert tool calls
+            tool_calls,
         }
     }
 }

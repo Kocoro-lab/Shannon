@@ -115,9 +115,9 @@ pub struct EmbeddedWorker<E: EventLog> {
 
 /// Information about an active workflow.
 struct WorkflowInfo {
-    workflow_type: String,
+    _workflow_type: String,
     state: WorkflowState,
-    started_at: chrono::DateTime<chrono::Utc>,
+    _started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl<E: EventLog + 'static> EmbeddedWorker<E> {
@@ -167,7 +167,7 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
         }
 
         // Create event channel
-        let (tx, rx) = broadcast::channel(64);
+        let (tx, _rx) = broadcast::channel(64);
         {
             let mut channels = self.channels.lock().await;
             channels.insert(workflow_id.clone(), tx.clone());
@@ -192,9 +192,9 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
             workflows.insert(
                 workflow_id.clone(),
                 WorkflowInfo {
-                    workflow_type: workflow_type.to_string(),
+                    _workflow_type: workflow_type.to_string(),
                     state: WorkflowState::Running,
-                    started_at: chrono::Utc::now(),
+                    _started_at: chrono::Utc::now(),
                 },
             );
         }
@@ -247,50 +247,96 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
     }
 
     /// Execute a workflow (placeholder implementation).
+    /// Execute a workflow using MicroSandbox.
     async fn execute_workflow(
         event_log: Arc<E>,
-        _wasm_dir: PathBuf,
+        wasm_dir: PathBuf,
         workflow_id: &str,
         workflow_type: &str,
         input: serde_json::Value,
         tx: broadcast::Sender<WorkflowEvent>,
     ) -> anyhow::Result<serde_json::Value> {
-        // TODO: Implement actual WASM workflow execution
-        // For now, this is a placeholder that simulates workflow execution
+        use crate::microsandbox::{WasmSandbox, SandboxCapabilities};
 
-        tracing::info!(
-            "Executing workflow {} of type {} with input: {:?}",
-            workflow_id,
-            workflow_type,
-            input
-        );
+        let wasm_path = wasm_dir.join(format!("{}.wasm", workflow_type));
+        
+        let wasm_bytes = if wasm_path.exists() {
+             tracing::info!("Loading WASM workflow from {:?}", wasm_path);
+             tokio::fs::read(&wasm_path).await?
+        } else {
+             tracing::warn!("WASM module not found at {:?}. Falling back to simulation for testing.", wasm_path);
+             // TODO: Remove fallback once we have real WASM modules
+             // Simulate progress
+            for i in 1..=10 {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                let _ = tx.send(WorkflowEvent::Progress {
+                    workflow_id: workflow_id.to_string(),
+                    percent: i * 10,
+                    message: Some(format!("Step {i}/10")),
+                });
+            }
 
-        // Simulate progress
-        for i in 1..=10 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            let _ = tx.send(WorkflowEvent::Progress {
-                workflow_id: workflow_id.to_string(),
-                percent: i * 10,
-                message: Some(format!("Step {i}/10")),
+            // Record completion
+            let output = serde_json::json!({
+                "status": "completed", 
+                "workflow_type": workflow_type,
+                "message": "Workflow simulation (WASM not found)" 
             });
-        }
 
-        // Record completion
-        let output = serde_json::json!({
-            "status": "completed",
-            "workflow_type": workflow_type,
-            "message": "Workflow execution placeholder - WASM integration pending"
-        });
-
-        event_log
-            .append(
+            event_log.append(
                 workflow_id,
                 Event::WorkflowCompleted {
                     output: output.clone(),
                     timestamp: chrono::Utc::now(),
                 },
-            )
-            .await?;
+            ).await?;
+
+            return Ok(output);
+        };
+
+        // Initialize Sandbox
+        let sandbox = WasmSandbox::load(&wasm_bytes)?;
+        
+        // Define Capabilities (TODO: make configurable per workflow)
+        let caps = SandboxCapabilities {
+            timeout_ms: 30_000, // 30s timeout
+            max_memory_mb: 512,
+            ..Default::default()
+        };
+
+        let mut process = sandbox.instantiate(caps).await?;
+
+        // Execute Entrypoint
+        // We assume the WASM module exports a function `run_workflow(input: String) -> String`
+        // or uses the component model. For this MVP, we use the JSON interface pattern.
+        tracing::info!("Starting WASM workflow {} (PID: {})", workflow_id, process.pid());
+        
+        let output = match process.call_json("run_workflow", &input).await {
+            Ok(res) => res,
+            Err(e) => {
+                 tracing::error!("WASM execution failed: {}", e);
+                 // Record failure
+                 event_log.append(
+                    workflow_id,
+                    Event::WorkflowFailed {
+                        error: e.to_string(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                 ).await?;
+                 return Err(anyhow::anyhow!(e));
+            }
+        };
+        
+        process.kill();
+
+        // Record completion
+        event_log.append(
+            workflow_id,
+            Event::WorkflowCompleted {
+                output: output.clone(),
+                timestamp: chrono::Utc::now(),
+            },
+        ).await?;
 
         Ok(output)
     }

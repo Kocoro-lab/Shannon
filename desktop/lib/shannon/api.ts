@@ -3,14 +3,34 @@
 
 import { getAccessToken, getAPIKey } from "@/lib/auth";
 
-// Runtime detection of Tauri environment
-// This must be a function called at runtime, not a constant evaluated at build time
-function getApiBaseUrl(): string {
-    // Check if running in browser and Tauri is available
-    if (typeof window !== 'undefined' && '__TAURI__' in window) {
-        return "http://127.0.0.1:8765";
+// Global variable to cache the API URL once determined
+declare global {
+    interface Window {
+        __SHANNON_API_URL?: string;
     }
-    // Fall back to environment variable or default
+}
+
+/**
+ * Get the API base URL synchronously.
+ * This relies on the ServerProvider to set window.__SHANNON_API_URL when the server is ready.
+ *
+ * For Tauri: Returns the embedded server URL set by the server-ready event
+ * For Web: Returns the environment variable or default
+ *
+ * IMPORTANT: In Tauri mode, if the server is not ready yet, this will return an empty string
+ * to prevent API calls before the server is available.
+ */
+function getApiBaseUrl(): string {
+    // Check if running in Tauri
+    const isTauri = typeof window !== 'undefined' && '__TAURI__' in window;
+
+    if (isTauri) {
+        // In Tauri, ONLY use the URL from ServerProvider (set by server-ready event)
+        // If not set, return empty string to prevent premature API calls
+        return (typeof window !== 'undefined' && window.__SHANNON_API_URL) || "";
+    }
+
+    // Web mode: use environment variable or default
     return process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 }
 

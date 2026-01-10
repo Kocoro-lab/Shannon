@@ -9,6 +9,7 @@ import { Send, Loader2, Sparkles, Pause, Play, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { submitTask } from "@/lib/shannon/api";
 import { cn } from "@/lib/utils";
+import { useServer } from "@/lib/server-context";
 
 export type AgentSelection = "normal" | "deep_research";
 export type ResearchStrategy = "quick" | "standard" | "deep" | "academic";
@@ -55,6 +56,7 @@ export function ChatInput({
     const [error, setError] = useState<string | null>(null);
     const [researchStrategy, setResearchStrategy] = useState<ResearchStrategy>(initialResearchStrategy);
     const router = useRouter();
+    const { isReady: isServerReady, status: serverStatus } = useServer();
     
     // Use ref for composition state to avoid race conditions with state updates
     // This is more reliable than state for IME handling
@@ -105,7 +107,24 @@ export function ChatInput({
         }
     };
 
-    const isInputDisabled = disabled;
+    const isInputDisabled = disabled || !isServerReady;
+    
+    // Get appropriate placeholder text based on server status
+    const getPlaceholderText = () => {
+        if (!isServerReady) {
+            if (serverStatus === 'starting' || serverStatus === 'initializing') {
+                return "Server starting...";
+            }
+            if (serverStatus === 'failed') {
+                return "Server unavailable";
+            }
+            return "Waiting for server...";
+        }
+        if (disabled) {
+            return "Waiting for task to complete...";
+        }
+        return "Ask a question...";
+    };
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
         const nativeEvent = e.nativeEvent as { isComposing?: boolean; keyCode?: number } | undefined;
@@ -184,7 +203,7 @@ export function ChatInput({
                         
                         <div className="relative">
                             <Textarea
-                                placeholder="Ask a question..."
+                                placeholder={getPlaceholderText()}
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
                                 disabled={isInputDisabled || isSubmitting}
@@ -267,7 +286,7 @@ export function ChatInput({
             )}
             <div className="flex gap-2 items-end">
                 <Textarea
-                    placeholder={isInputDisabled ? "Waiting for task to complete..." : "Ask a question..."}
+                    placeholder={getPlaceholderText()}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     disabled={isInputDisabled || isSubmitting}

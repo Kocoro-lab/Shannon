@@ -59,7 +59,7 @@ impl CognitivePattern for Reflection {
 
         let mut reasoning_steps: Vec<ReasoningStep> = Vec::new();
         let mut total_tokens = TokenUsage::default();
-        let mut current_response = String::new();
+        let mut current_response: String;
         let mut current_score = 0.0;
         let mut step_count = 0;
 

@@ -6,9 +6,6 @@
 #[cfg(feature = "surrealdb-backend")]
 pub mod surrealdb;
 
-#[cfg(feature = "postgresql-backend")]
-pub mod postgresql;
-
 use async_trait::async_trait;
 
 use crate::Event;

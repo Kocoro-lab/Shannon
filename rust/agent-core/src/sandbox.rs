@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::metrics::{TOOL_DURATION, TOOL_EXECUTIONS};
-use anyhow::{Context, Result};
+use anyhow::Context;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -106,6 +106,17 @@ pub struct WasmSandbox {
     env_vars: HashMap<String, String>,
     allowed_paths: Vec<String>,
     engine: Arc<Engine>, // Thread-safe shared engine
+}
+
+impl std::fmt::Debug for WasmSandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmSandbox")
+            .field("limits", &self.limits)
+            .field("env_vars", &self.env_vars)
+            .field("allowed_paths", &self.allowed_paths)
+            .field("engine", &"<wasmtime::Engine>")
+            .finish()
+    }
 }
 
 impl WasmSandbox {
@@ -552,6 +563,7 @@ fn apply_rlimits(limits: &ResourceLimits) -> Result<()> {
 }
 
 /// Sandboxed filesystem view
+#[derive(Debug)]
 pub struct SandboxedFs {
     root: std::path::PathBuf,
     work_dir: std::path::PathBuf,

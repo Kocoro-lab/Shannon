@@ -5,6 +5,9 @@ import { Provider } from 'react-redux';
 import { PersistGate } from 'redux-persist/integration/react';
 import { ThemeProvider as NextThemesProvider } from 'next-themes';
 import { store, persistor } from '@/lib/store';
+import { ServerProvider } from '@/lib/server-context';
+import { ServerStatusBanner } from '@/components/server-status-banner';
+import { DebugConsoleWrapper } from '@/components/debug-console-wrapper';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   return (
@@ -16,7 +19,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
           enableSystem
           disableTransitionOnChange
         >
-          {children}
+          <ServerProvider>
+            <ServerStatusBanner />
+            {children}
+            <DebugConsoleWrapper />
+          </ServerProvider>
         </NextThemesProvider>
       </PersistGate>
     </Provider>

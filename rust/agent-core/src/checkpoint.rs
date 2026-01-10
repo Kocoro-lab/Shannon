@@ -126,6 +126,7 @@ pub trait CheckpointStore: Send + Sync {
 }
 
 /// Filesystem-based checkpoint store.
+#[derive(Debug)]
 pub struct FilesystemCheckpointStore {
     /// Base directory for checkpoints.
     base_dir: PathBuf,
@@ -214,6 +215,14 @@ pub struct CheckpointManager {
     store: Box<dyn CheckpointStore>,
 }
 
+impl std::fmt::Debug for CheckpointManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckpointManager")
+            .field("store", &"<Box<dyn CheckpointStore>>")
+            .finish()
+    }
+}
+
 impl CheckpointManager {
     /// Create a new checkpoint manager with the given store.
     pub fn new(store: impl CheckpointStore + 'static) -> Self {
@@ -285,7 +294,7 @@ mod tests {
         let manager = CheckpointManager::with_filesystem(temp_dir.path());
 
         // Create a checkpoint
-        let checkpoint_id = manager
+        let _checkpoint_id = manager
             .checkpoint("test-job", "step-1", 1, b"test state".to_vec())
             .await
             .unwrap();

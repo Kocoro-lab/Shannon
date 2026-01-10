@@ -11,7 +11,7 @@ use crate::metrics::{ENFORCEMENT_ALLOWED, ENFORCEMENT_DROPS};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RequestEnforcer {
     cfg: EnforcementConfig,
     // Simple per-key token bucket for rate limiting
@@ -139,7 +139,7 @@ impl RequestEnforcer {
 
 // --- helpers ---
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct RedisLimiter {
     client: redis::Client,
     script: Script,

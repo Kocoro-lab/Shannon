@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::logging::OpTimer;
 
 /// Task routes.
 pub fn router() -> Router<AppState> {
@@ -116,8 +117,24 @@ pub async fn submit_task(
     State(state): State<AppState>,
     Json(req): Json<SubmitTaskRequest>,
 ) -> impl IntoResponse {
+    let timer = OpTimer::new("gateway", "submit_task");
     let task_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
+    
+    let prompt_preview = if req.prompt.len() > 100 {
+        format!("{}...", &req.prompt[..100])
+    } else {
+        req.prompt.clone()
+    };
+    
+    tracing::info!(
+        "📥 New task submission - task_id={}, type={}, prompt_len={}, session_id={:?}",
+        task_id,
+        req.task_type,
+        req.prompt.len(),
+        req.session_id
+    );
+    tracing::debug!("📝 Task prompt preview: {}", prompt_preview);
 
     // Create task record
     let task = serde_json::json!({
@@ -141,10 +158,38 @@ pub async fn submit_task(
         }
     });
 
+    // In embedded mode (no Redis), register with run_manager for tracking
+    if state.redis.is_none() {
+        tracing::debug!("🏠 Embedded mode detected - registering with run_manager");
+        
+        let registration_timer = OpTimer::new("run_manager", "registration");
+        match state.run_manager.start_run_with_id(
+            task_id.clone(),
+            req.prompt.clone(),
+            req.session_id.clone(),
+            None, // user_id
+        ).await {
+            Ok(_) => {
+                registration_timer.finish();
+                tracing::info!("✅ Task registered with run_manager - task_id={}", task_id);
+            }
+            Err(e) => {
+                tracing::error!(
+                    "❌ Failed to register task with run_manager - task_id={}, error={}",
+                    task_id,
+                    e
+                );
+            }
+        }
+    }
+
     // Store task in Redis if available
     if let Some(ref redis) = state.redis {
+        let redis_timer = OpTimer::new("redis", "store_task");
         let mut redis = redis.clone();
         let key = format!("task:{}", task_id);
+        
+        tracing::debug!("💾 Storing task in Redis - key={}", key);
         
         match redis::AsyncCommands::set_ex::<_, _, ()>(
             &mut redis,
@@ -155,40 +200,54 @@ pub async fn submit_task(
         .await
         {
             Ok(_) => {
-                tracing::info!("Task {} stored in Redis", task_id);
+                redis_timer.finish();
+                tracing::info!("✅ Task stored in Redis - task_id={}, ttl=24h", task_id);
             }
             Err(e) => {
-                tracing::error!("Failed to store task in Redis: {}", e);
+                tracing::error!("❌ Failed to store task in Redis - task_id={}, error={}", task_id, e);
             }
         }
 
         // Also add to task queue for processing
         let queue_key = "task_queue";
+        tracing::trace!("📋 Adding task to queue - queue={}, task_id={}", queue_key, task_id);
         let _ = redis::AsyncCommands::lpush::<_, _, ()>(&mut redis, queue_key, &task_id).await;
     }
 
     // Submit to workflow engine (local Durable or remote Temporal based on mode)
+    let strategy = if req.task_type == "research" {
+        crate::workflow::task::Strategy::Research
+    } else {
+        crate::workflow::task::Strategy::Simple
+    };
+    
+    tracing::debug!(
+        "🎬 Preparing workflow submission - task_id={}, strategy={:?}, engine={}",
+        task_id,
+        strategy,
+        state.workflow_engine.engine_type()
+    );
+    
     let workflow_task = crate::workflow::Task {
         id: task_id.clone(),
         query: req.prompt.clone(),
         user_id: "default".to_string(), // TODO: Get from auth context
         session_id: req.session_id.clone(),
         context: req.metadata.clone().unwrap_or(serde_json::json!({})),
-        strategy: if req.task_type == "research" {
-            crate::workflow::task::Strategy::Research
-        } else {
-            crate::workflow::task::Strategy::Simple
-        },
+        strategy,
         labels: std::collections::HashMap::new(),
         max_agents: None,
         token_budget: None,
         require_approval: false,
     };
 
+    let workflow_timer = OpTimer::new("workflow_engine", "submit");
     match state.workflow_engine.submit(workflow_task).await {
         Ok(handle) => {
+            workflow_timer.finish();
+            
             tracing::info!(
-                "Task {} submitted to workflow engine ({}), workflow_id: {}",
+                "✅ Task submitted to workflow engine - task_id={}, engine={}, workflow_id={}",
                 task_id,
                 state.workflow_engine.engine_type(),
                 handle.workflow_id
@@ -198,10 +257,14 @@ pub async fn submit_task(
             if let Some(ref redis) = state.redis {
                 let mut redis = redis.clone();
                 let key = format!("task:{}", task_id);
+                
+                tracing::debug!("💾 Updating task status in Redis - task_id={}, status=running", task_id);
+                
                 let mut task_with_workflow = task.clone();
                 task_with_workflow["workflow_id"] = serde_json::Value::String(handle.workflow_id);
                 task_with_workflow["status"] = serde_json::Value::String("running".to_string());
                 task_with_workflow["started_at"] = serde_json::Value::String(chrono::Utc::now().to_rfc3339());
+                
                 let _ = redis::AsyncCommands::set_ex::<_, _, ()>(
                     &mut redis,
                     &key,
@@ -212,15 +275,24 @@ pub async fn submit_task(
             }
         }
         Err(e) => {
-            tracing::error!("Failed to submit task {} to workflow engine: {}", task_id, e);
+            tracing::error!(
+                "❌ Failed to submit task to workflow engine - task_id={}, engine={}, error={}",
+                task_id,
+                state.workflow_engine.engine_type(),
+                e
+            );
             
             // Update task status to failed in Redis
             if let Some(ref redis) = state.redis {
                 let mut redis = redis.clone();
                 let key = format!("task:{}", task_id);
+                
+                tracing::debug!("💾 Updating task status in Redis - task_id={}, status=failed", task_id);
+                
                 let mut failed_task = task.clone();
                 failed_task["status"] = serde_json::Value::String("failed".to_string());
                 failed_task["error"] = serde_json::Value::String(format!("Failed to submit to workflow engine: {}", e));
+                
                 let _ = redis::AsyncCommands::set_ex::<_, _, ()>(
                     &mut redis,
                     &key,
@@ -229,6 +301,8 @@ pub async fn submit_task(
                 )
                 .await;
             }
+            
+            timer.finish();
             
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -247,6 +321,8 @@ pub async fn submit_task(
         }
     }
 
+    timer.finish();
+
     let response = TaskResponse {
         id: task_id,
         status: TaskStatus::Pending,
@@ -259,6 +335,8 @@ pub async fn submit_task(
         error: None,
     };
 
+    tracing::info!("✅ Task submission complete - task_id={}, status=pending", response.id);
+
     (StatusCode::ACCEPTED, Json(response))
 }
 
@@ -267,9 +345,18 @@ pub async fn get_task_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    tracing::debug!("🔍 Looking up task status - task_id={}", id);
+
     // First check in-memory run manager (works in embedded mode)
     if let Some(run) = state.run_manager.get_run(&id) {
         use crate::domain::RunStatus;
+        
+        tracing::debug!(
+            "✅ Found task in run_manager - task_id={}, status={:?}",
+            id,
+            run.status
+        );
+        
         let status = match run.status {
             RunStatus::Pending => TaskStatus::Pending,
             RunStatus::Running => TaskStatus::Running,
@@ -290,13 +377,23 @@ pub async fn get_task_status(
             error: run.error.clone(),
         };
 
+        tracing::info!(
+            "✅ Task status retrieved (run_manager) - task_id={}, status={:?}",
+            id,
+            status
+        );
+
         return (StatusCode::OK, Json(serde_json::to_value(response).unwrap()));
     }
+
+    tracing::debug!("Task not in run_manager, checking Redis - task_id={}", id);
 
     // Fall back to Redis if available
     if let Some(ref redis) = state.redis {
         let mut redis = redis.clone();
         let key = format!("task:{}", id);
+        
+        tracing::trace!("💾 Querying Redis - key={}", key);
         
         match redis::AsyncCommands::get::<_, Option<String>>(&mut redis, &key).await {
             Ok(Some(data)) => {
@@ -322,12 +419,25 @@ pub async fn get_task_status(
                         error: task["error"].as_str().map(String::from),
                     };
 
+                    tracing::info!(
+                        "✅ Task status retrieved (Redis) - task_id={}, status={:?}",
+                        id,
+                        status
+                    );
+
                     return (StatusCode::OK, Json(serde_json::to_value(response).unwrap()));
                 }
             }
-            _ => {}
+            Ok(None) => {
+                tracing::debug!("Task not found in Redis - task_id={}", id);
+            }
+            Err(e) => {
+                tracing::error!("❌ Redis error - task_id={}, error={}", id, e);
+            }
         }
     }
+
+    tracing::warn!("❌ Task not found - task_id={}", id);
 
     (
         StatusCode::NOT_FOUND,
@@ -343,9 +453,15 @@ pub async fn cancel_task(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    let timer = OpTimer::new("gateway", "cancel_task");
+    
+    tracing::info!("🛑 Task cancellation request - task_id={}", id);
+
     if let Some(ref redis) = state.redis {
         let mut redis = redis.clone();
         let key = format!("task:{}", id);
+        
+        tracing::debug!("💾 Fetching task from Redis - key={}", key);
         
         // Get existing task
         match redis::AsyncCommands::get::<_, Option<String>>(&mut redis, &key).await {
@@ -353,7 +469,18 @@ pub async fn cancel_task(
                 if let Ok(mut task) = serde_json::from_str::<serde_json::Value>(&data) {
                     // Check if task can be cancelled
                     let current_status = task["status"].as_str().unwrap_or("pending");
+                    
+                    tracing::debug!("Current task status - task_id={}, status={}", id, current_status);
+                    
                     if current_status == "completed" || current_status == "failed" || current_status == "cancelled" {
+                        tracing::warn!(
+                            "❌ Cannot cancel task - task_id={}, status={}",
+                            id,
+                            current_status
+                        );
+                        
+                        timer.finish();
+                        
                         return (
                             StatusCode::CONFLICT,
                             Json(serde_json::json!({
@@ -362,6 +489,8 @@ pub async fn cancel_task(
                             })),
                         );
                     }
+
+                    tracing::debug!("💾 Updating task status in Redis - task_id={}, new_status=cancelled", id);
 
                     // Update task status
                     task["status"] = serde_json::Value::String("cancelled".to_string());
@@ -378,9 +507,30 @@ pub async fn cancel_task(
                     .await;
 
                     // Send cancel signal to workflow engine
-                    if let Err(e) = state.workflow_engine.cancel(&id, Some("User requested cancellation")).await {
-                        tracing::warn!("Failed to cancel task {} in workflow engine: {}", id, e);
+                    tracing::debug!("📞 Sending cancellation to workflow engine - task_id={}", id);
+                    
+                    let cancel_timer = OpTimer::new("workflow_engine", "cancel");
+                    match state.workflow_engine.cancel(&id, Some("User requested cancellation")).await {
+                        Ok(cancelled) => {
+                            cancel_timer.finish();
+                            tracing::info!(
+                                "✅ Workflow engine cancellation - task_id={}, success={}",
+                                id,
+                                cancelled
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "⚠️  Failed to cancel task in workflow engine - task_id={}, error={}",
+                                id,
+                                e
+                            );
+                        }
                     }
+
+                    timer.finish();
+                    
+                    tracing::info!("✅ Task cancelled successfully - task_id={}", id);
 
                     return (
                         StatusCode::OK,
@@ -391,9 +541,18 @@ pub async fn cancel_task(
                     );
                 }
             }
-            _ => {}
+            Ok(None) => {
+                tracing::debug!("Task not found in Redis - task_id={}", id);
+            }
+            Err(e) => {
+                tracing::error!("❌ Redis error - task_id={}, error={}", id, e);
+            }
         }
     }
+
+    timer.finish();
+    
+    tracing::warn!("❌ Task not found for cancellation - task_id={}", id);
 
     (
         StatusCode::NOT_FOUND,
@@ -409,6 +568,40 @@ pub async fn get_task_progress(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // First check in-memory run manager (works in embedded mode)
+    if let Some(run) = state.run_manager.get_run(&id) {
+        use crate::domain::RunStatus;
+        let status = match run.status {
+            RunStatus::Pending => TaskStatus::Pending,
+            RunStatus::Running => TaskStatus::Running,
+            RunStatus::Completed => TaskStatus::Completed,
+            RunStatus::Failed => TaskStatus::Failed,
+            RunStatus::Cancelled => TaskStatus::Cancelled,
+        };
+
+        // Calculate progress based on status
+        let progress_percent = match run.status {
+            RunStatus::Completed => 100,
+            RunStatus::Running => 50, // In progress
+            RunStatus::Failed | RunStatus::Cancelled => 100,
+            RunStatus::Pending => 0,
+        };
+
+        let response = TaskProgressResponse {
+            id: id.clone(),
+            status,
+            progress_percent,
+            current_step: Some(format!("{:?}", run.status)),
+            total_steps: Some(1),
+            completed_steps: Some(if run.status == RunStatus::Completed { 1 } else { 0 }),
+            estimated_remaining_secs: None,
+            subtasks: vec![],
+        };
+
+        return (StatusCode::OK, Json(serde_json::to_value(response).unwrap()));
+    }
+
+    // Fall back to Redis if available
     if let Some(ref redis) = state.redis {
         let mut redis = redis.clone();
         let key = format!("task:{}", id);

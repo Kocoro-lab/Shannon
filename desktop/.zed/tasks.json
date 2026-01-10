@@ -1,0 +1,176 @@
+{
+  "tasks": [
+    {
+      "label": "tauri: dev",
+      "command": "npm",
+      "args": ["run", "tauri:dev"],
+      "tags": ["tauri", "dev"],
+      "reveal": "always",
+      "hide": "never"
+    },
+    {
+      "label": "tauri: build",
+      "command": "npm",
+      "args": ["run", "tauri:build"],
+      "tags": ["tauri", "build"],
+      "reveal": "always"
+    },
+    {
+      "label": "tauri: build (desktop features)",
+      "command": "npm",
+      "args": ["run", "tauri:build", "--", "--features", "desktop"],
+      "tags": ["tauri", "build"],
+      "reveal": "always"
+    },
+    {
+      "label": "next: dev",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "tags": ["next", "dev"],
+      "reveal": "always"
+    },
+    {
+      "label": "next: build",
+      "command": "npm",
+      "args": ["run", "build"],
+      "tags": ["next", "build"],
+      "reveal": "always"
+    },
+    {
+      "label": "cargo: build (debug)",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--manifest-path=src-tauri/Cargo.toml",
+        "--features=desktop"
+      ],
+      "tags": ["rust", "build"],
+      "reveal": "always"
+    },
+    {
+      "label": "cargo: build (release)",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--release",
+        "--manifest-path=src-tauri/Cargo.toml",
+        "--features=desktop"
+      ],
+      "tags": ["rust", "build"],
+      "reveal": "always"
+    },
+    {
+      "label": "cargo: check",
+      "command": "cargo",
+      "args": ["check", "--manifest-path=src-tauri/Cargo.toml"],
+      "tags": ["rust", "check"],
+      "reveal": "silent"
+    },
+    {
+      "label": "cargo: test",
+      "command": "cargo",
+      "args": ["test", "--manifest-path=src-tauri/Cargo.toml"],
+      "tags": ["rust", "test"],
+      "reveal": "always"
+    },
+    {
+      "label": "cargo: clippy",
+      "command": "cargo",
+      "args": [
+        "clippy",
+        "--manifest-path=src-tauri/Cargo.toml",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "tags": ["rust", "lint"],
+      "reveal": "always"
+    },
+    {
+      "label": "cargo: fmt",
+      "command": "cargo",
+      "args": ["fmt", "--manifest-path=src-tauri/Cargo.toml"],
+      "tags": ["rust", "format"],
+      "reveal": "silent"
+    },
+    {
+      "label": "cargo: clean",
+      "command": "cargo",
+      "args": ["clean", "--manifest-path=src-tauri/Cargo.toml"],
+      "tags": ["rust", "clean"],
+      "reveal": "always"
+    },
+    {
+      "label": "cargo: run",
+      "command": "cargo",
+      "args": [
+        "run",
+        "--manifest-path=src-tauri/Cargo.toml",
+        "--features=desktop"
+      ],
+      "tags": ["rust", "run"],
+      "reveal": "always",
+      "env": {
+        "RUST_LOG": "debug",
+        "RUST_BACKTRACE": "1"
+      }
+    },
+    {
+      "label": "clean: all",
+      "command": "sh",
+      "args": ["-c", "rm -rf .next out src-tauri/target"],
+      "tags": ["clean"],
+      "reveal": "always"
+    },
+    {
+      "label": "install: dependencies",
+      "command": "npm",
+      "args": ["install"],
+      "tags": ["install"],
+      "reveal": "always"
+    },
+    {
+      "label": "backend: start (docker)",
+      "command": "make",
+      "args": ["dev"],
+      "cwd": "..",
+      "tags": ["backend", "docker"],
+      "reveal": "always"
+    },
+    {
+      "label": "backend: stop (docker)",
+      "command": "make",
+      "args": ["down"],
+      "cwd": "..",
+      "tags": ["backend", "docker"],
+      "reveal": "always"
+    },
+    {
+      "label": "backend: logs (docker)",
+      "command": "make",
+      "args": ["logs"],
+      "cwd": "..",
+      "tags": ["backend", "docker"],
+      "reveal": "always"
+    },
+    {
+      "label": "backend: status (docker)",
+      "command": "make",
+      "args": ["ps"],
+      "cwd": "..",
+      "tags": ["backend", "docker"],
+      "reveal": "always"
+    },
+    {
+      "label": "tauri: dev (with logging)",
+      "command": "npm",
+      "args": ["run", "tauri:dev"],
+      "tags": ["tauri", "dev", "debug"],
+      "reveal": "always",
+      "env": {
+        "RUST_LOG": "debug",
+        "RUST_BACKTRACE": "full"
+      }
+    }
+  ]
+}

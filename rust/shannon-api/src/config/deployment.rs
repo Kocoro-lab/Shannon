@@ -227,6 +227,15 @@ impl WorkflowConfig {
     pub fn is_temporal(&self) -> bool {
         matches!(self, Self::Temporal { .. })
     }
+
+    /// Returns the workflow engine name.
+    #[must_use]
+    pub fn engine_name(&self) -> &'static str {
+        match self {
+            Self::Durable { .. } => "durable",
+            Self::Temporal { .. } => "temporal",
+        }
+    }
 }
 
 /// Database configuration for deployment.

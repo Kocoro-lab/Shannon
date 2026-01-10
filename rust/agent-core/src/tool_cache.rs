@@ -68,6 +68,7 @@ impl CacheStats {
 }
 
 /// Tool execution result cache
+#[derive(Debug)]
 pub struct ToolCache {
     cache: Arc<RwLock<HashMap<CacheKey, CachedResult>>>,
     stats: Arc<RwLock<CacheStats>>,

@@ -8,6 +8,7 @@ repository = "https://github.com/Prometheus-AGS/Shannon"
 license = "MIT"
 keywords = ["ai", "llm", "gateway", "api"]
 categories = ["api-bindings", "web-programming"]
+resolver = "2"
 
 [lib]
 name = "shannon_api"
@@ -20,31 +21,34 @@ path = "src/main.rs"
 [features]
 default = ["gateway", "grpc"]
 gateway = ["dep:jsonwebtoken", "dep:argon2"]
-grpc = ["dep:tonic", "dep:prost", "dep:prost-types"]
-database = ["dep:sqlx", "dep:pgvector"]
-# Embedded mode for Tauri desktop/mobile - uses local Durable workflow engine
-# No orchestrator or Temporal required in this mode
+grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:prost-types"]
+# Cloud database mode - DISABLED due to SQLite conflict with embedded modes
+# database = ["dep:sqlx", "dep:pgvector"]
+# Embedded mode for Tauri desktop - uses SurrealDB with RocksDB backend
+# No orchestrator, Temporal, or external database required
 embedded = ["dep:surrealdb", "dep:durable-shannon"]
-# Mobile embedded mode with SQLite
+# Mobile embedded mode with SQLite - completely separate from cloud database
+# IMPORTANT: Never enable this with 'database' feature due to SQLite conflict
 embedded-mobile = ["dep:rusqlite", "dep:durable-shannon"]
 # Cloud mode with full infrastructure - uses Temporal via orchestrator
-cloud = ["grpc", "database"]
+# Temporarily uses grpc only until database conflict is resolved
+cloud = ["grpc"]
 
 [dependencies]
 # Web framework
-axum = { version = "0.8.8", features = ["multipart", "macros", "ws"] }
-axum-extra = { version = "0.12.5", features = ["typed-header"] }
-tower = { version = "0.5", features = ["util", "timeout"] }
-tower-http = { version = "0.6", features = ["fs", "cors", "trace", "timeout", "compression-gzip"] }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
 
 # Async runtime
-tokio = { version = "1", features = ["full", "process"] }
-tokio-stream = { version = "0.1", features = ["net", "sync"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tokio-tungstenite = "0.28.0"
 
 # HTTP client for LLM APIs
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "multipart"] }
+reqwest = { workspace = true }
 
 # MCP client (official Rust SDK)
 rmcp = { version = "0.12.0", features = [
@@ -53,114 +57,91 @@ rmcp = { version = "0.12.0", features = [
 ], optional = true }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
 
 # Async utilities
-futures = "0.3"
-async-stream = "0.3"
-async-trait = "0.1"
+futures = { workspace = true }
+async-stream = { workspace = true }
+async-trait = { workspace = true }
 
 # Performance allocator
-mimalloc = "0.1"
+mimalloc = { workspace = true }
 
 # Observability
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-opentelemetry = { version = "0.31.0", features = ["trace"] }
-opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31.0", features = ["tonic", "trace"] }
-tracing-opentelemetry = "0.32.0"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
-# Database (PostgreSQL - matches Shannon's existing infra)
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "uuid", "chrono", "json"], optional = true }
-pgvector = { version = "0.4", features = ["sqlx"], optional = true }
+# Cloud database (PostgreSQL) - only for non-embedded deployments
+# REMOVED due to SQLite native library conflict with rusqlite in embedded modes
+# For cloud deployments, use a separate cloud-specific configuration or workspace member
+# sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "chrono", "json", "macros", "migrate"], optional = true }
+# pgvector = { version = "0.4", features = ["sqlx"], optional = true }
 
 # Redis (sessions, rate limiting, idempotency)
-redis = { version = "1.0.2", features = ["tokio-comp", "connection-manager"] }
+redis = { workspace = true }
 
 # gRPC (for orchestrator communication)
-tonic = { version = "0.14.2", optional = true }
-prost = { version = "0.14.1", optional = true }
-prost-types = { version = "0.14.1", optional = true }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+prost = { workspace = true, optional = true }
+prost-types = { workspace = true, optional = true }
 
 # Authentication (Gateway)
-jsonwebtoken = { version = "10.2.0", features = ["rust_crypto"], optional = true }
-argon2 = { version = "0.5", optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+argon2 = { workspace = true, optional = true }
 
 # OpenAPI documentation
-utoipa = { version = "5", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "9.0.2", features = ["axum"] }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
 
 # Error handling
-anyhow = "1.0"
-thiserror = "2.0"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-url = "2.5"
-bytes = "1.9"
-pin-project-lite = "0.2"
-parking_lot = "0.12"
-base64 = "0.22"
-rand = "0.9.2"
+uuid = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+pin-project-lite = { workspace = true }
+parking_lot = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
 
 # Configuration
-config = "0.15.19"
-dotenvy = "0.15"
-clap = { version = "4", features = ["derive", "env"] }
+config = { workspace = true }
+dotenvy = { workspace = true }
+clap = { workspace = true }
 
 # Rate limiting
-governor = { version = "0.10", features = ["std", "jitter", "quanta"] }
+governor = { workspace = true }
 
 # Embedded database (for desktop/mobile mode)
-surrealdb = { version = "2.2", features = ["kv-rocksdb"], optional = true }
+surrealdb = { workspace = true, optional = true }
 
 # SQLite for mobile (lighter weight)
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+rusqlite = { workspace = true, optional = true }
 
 # Durable workflow engine (for embedded mode - no orchestrator needed)
-durable-shannon = { path = "../durable-shannon", optional = true }
+durable-shannon = { workspace = true, optional = true }
 
 [build-dependencies]
-tonic-build = { version = "0.14.2" }
-protoc-bin-vendored = "3"
+tonic-prost-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
-axum-test = "18"
-tokio-test = "0.4"
-tempfile = "3"
-serial_test = "3"
+axum-test = { workspace = true }
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+serial_test = { workspace = true }
 
-# Rust compiler lints (Microsoft Pragmatic Rust Guidelines)
-[lints.rust]
-ambiguous_negative_literals = "warn"
-missing_debug_implementations = "warn"
-redundant_imports = "warn"
-redundant_lifetimes = "warn"
-trivial_numeric_casts = "warn"
-unsafe_op_in_unsafe_fn = "warn"
-unused_lifetimes = "warn"
 
-# Clippy lints (Microsoft Pragmatic Rust Guidelines)
-[lints.clippy]
-cargo = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-# Restriction lints for consistency and quality
-allow_attributes_without_reason = "warn"
-clone_on_ref_ptr = "warn"
-empty_drop = "warn"
-map_err_ignore = "warn"
-redundant_type_annotations = "warn"
-undocumented_unsafe_blocks = "warn"
-# Allow some pedantic lints that are too noisy
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
+# Use workspace lints
+[lints]
+workspace = true

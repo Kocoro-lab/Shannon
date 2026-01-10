@@ -41,6 +41,7 @@ impl ChainOfThought {
     }
 
     /// Build the system prompt for CoT reasoning.
+    #[allow(dead_code)]
     fn system_prompt(&self) -> String {
         r#"You are a reasoning assistant that thinks step by step.
 
@@ -96,7 +97,7 @@ impl CognitivePattern for ChainOfThought {
 
         for step in 0..max_iterations {
             // Build the prompt for this step
-            let prompt = self.step_prompt(&input.query, &thoughts);
+            let _prompt = self.step_prompt(&input.query, &thoughts);
 
             tracing::debug!("CoT step {}: generating thought", step + 1);
 

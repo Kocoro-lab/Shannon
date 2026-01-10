@@ -221,10 +221,15 @@ mod tests {
 
     #[test]
     fn test_init_basic_tracing() {
-        env::set_var("OTEL_ENABLED", "false");
+        // SAFETY: This is a test environment variable
+        unsafe {
+            env::set_var("OTEL_ENABLED", "false");
+        }
         let result = init_tracing();
         assert!(result.is_ok());
-        env::remove_var("OTEL_ENABLED");
+        unsafe {
+            env::remove_var("OTEL_ENABLED");
+        }
     }
 
     #[test]

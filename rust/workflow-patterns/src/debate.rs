@@ -80,7 +80,7 @@ impl CognitivePattern for Debate {
         for round in 0..rounds {
             tracing::debug!("Debate round {}", round + 1);
 
-            for (i, perspective) in perspectives.iter().take(self.perspectives).enumerate() {
+            for (_i, perspective) in perspectives.iter().take(self.perspectives).enumerate() {
                 step_count += 1;
 
                 // Generate argument for this perspective

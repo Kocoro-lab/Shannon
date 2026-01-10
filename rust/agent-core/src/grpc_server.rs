@@ -34,6 +34,7 @@ use proto::agent::*;
 const MAX_STREAM_BUFFER_SIZE: usize = 1_000_000; // 1MB max buffer size
 const STREAM_TIMEOUT_SECS: u64 = 300; // 5 minutes timeout
 
+#[derive(Debug)]
 pub struct AgentServiceImpl {
     memory_pool: MemoryPool,
     #[cfg(feature = "wasi")]

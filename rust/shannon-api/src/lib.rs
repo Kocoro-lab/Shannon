@@ -66,6 +66,7 @@ pub mod domain;
 pub mod events;
 pub mod gateway;
 pub mod llm;
+pub mod logging;
 pub mod runtime;
 pub mod server;
 pub mod tools;
@@ -95,6 +96,10 @@ pub struct AppState {
     /// In embedded mode, this uses the local Durable engine.
     /// In cloud mode, this uses Temporal via the Go orchestrator.
     pub workflow_engine: WorkflowEngine,
+    /// Embedded SurrealDB connection (only available in embedded mode).
+    /// Used for authentication, rate limiting, and direct DB access.
+    #[cfg(feature = "embedded")]
+    pub surreal: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
 }
 
 impl std::fmt::Debug for AppState {

@@ -36,6 +36,7 @@ pub static ENFORCEMENT_ALLOWED: OnceLock<CounterVec> = OnceLock::new(); // label
 // Thread-safe initialization result
 static INIT_RESULT: OnceLock<Result<()>> = OnceLock::new();
 
+#[derive(Debug)]
 pub struct TaskTimer {
     start: Instant,
     mode: String,

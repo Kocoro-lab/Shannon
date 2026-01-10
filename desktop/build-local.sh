@@ -21,8 +21,7 @@ if [ ! -f ".env.production" ]; then
         echo "✅ Created .env.production"
     else
         echo "❌ Error: Neither .env.production nor .env.local found"
-        echo "Please create .env.production with:"
-        echo "  NEXT_PUBLIC_API_URL=http://localhost:8080"
+        echo "Please create .env.production with your configuration."
         exit 1
     fi
 fi
@@ -33,21 +32,6 @@ echo "----------------------"
 grep "NEXT_PUBLIC_API_URL" .env.production || echo "  NEXT_PUBLIC_API_URL not set"
 grep "NEXT_PUBLIC_USER_ID" .env.production || echo "  NEXT_PUBLIC_USER_ID not set"
 echo ""
-
-# Check if backend is running
-echo "🔍 Checking if backend is running..."
-if curl -s http://localhost:8080/health > /dev/null 2>&1; then
-    echo "✅ Backend is running on http://localhost:8080"
-else
-    echo "⚠️  Warning: Backend doesn't seem to be running"
-    echo "   Start it with: cd .. && make dev"
-    echo ""
-    read -p "Continue anyway? (y/N) " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        exit 1
-    fi
-fi
 
 # Check Rust installation
 echo ""
@@ -84,7 +68,7 @@ echo "✅ Clean complete"
 
 # Build the app
 echo ""
-echo "🏗️  Building Tauri app..."
+echo "🏗️  Building Tauri app (Embedded Mode)..."
 echo "This may take several minutes..."
 echo ""
 
@@ -124,7 +108,6 @@ echo "🎉 Success!"
 echo ""
 echo "📝 Next steps:"
 echo "1. Install the app from the build artifacts above"
-echo "2. Make sure backend is running: cd .. && make dev"
-echo "3. Launch the Planet app"
+echo "2. Launch the Planet app"
 echo ""
-echo "💡 The app will connect to: http://localhost:8080"
+echo "💡 The app will start its own embedded backend on a dynamic port."

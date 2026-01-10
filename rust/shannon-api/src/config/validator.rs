@@ -24,6 +24,7 @@ use super::AppConfig;
 /// | hybrid   | temporal       | any        | NO    |
 /// | mesh     | durable        | surrealdb  | YES   |
 /// | mesh-cloud | durable      | surrealdb  | YES   |
+#[derive(Debug)]
 pub struct ConfigValidator;
 
 impl ConfigValidator {

@@ -11,6 +11,7 @@ use chrono::Utc;
 use crate::{CognitivePattern, PatternInput, PatternOutput, ReasoningStep, TokenUsage};
 
 /// A thought node in the tree.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct ThoughtNode {
     id: String,
@@ -61,6 +62,7 @@ impl TreeOfThoughts {
     }
 
     /// Build the system prompt for ToT.
+    #[allow(dead_code)]
     fn system_prompt(&self) -> String {
         format!(
             r#"You are an expert problem solver using Tree of Thoughts exploration.

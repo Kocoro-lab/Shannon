@@ -3,10 +3,9 @@
 //! Provides trait-based abstractions for data access that work across
 //! different database backends (SurrealDB, PostgreSQL, SQLite).
 
-use std::path::Path;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 use crate::config::deployment::DeploymentDatabaseConfig;
 use crate::workflow::task::TokenUsage;
@@ -110,9 +109,6 @@ pub enum Database {
     /// SurrealDB for desktop embedded mode.
     #[cfg(feature = "embedded")]
     SurrealDB(SurrealDBClient),
-    /// PostgreSQL for cloud mode.
-    #[cfg(feature = "database")]
-    PostgreSQL(PostgreSQLClient),
     /// SQLite for mobile mode.
     #[cfg(feature = "embedded-mobile")]
     SQLite(SQLiteClient),
@@ -125,8 +121,6 @@ impl std::fmt::Debug for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(_) => write!(f, "Database::SurrealDB"),
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(_) => write!(f, "Database::PostgreSQL"),
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(_) => write!(f, "Database::SQLite"),
             Self::InMemory(_) => write!(f, "Database::InMemory"),
@@ -146,14 +140,6 @@ impl Database {
             } => {
                 let client = SurrealDBClient::new(path, namespace, database).await?;
                 Ok(Self::SurrealDB(client))
-            }
-            #[cfg(feature = "database")]
-            DeploymentDatabaseConfig::PostgreSQL {
-                url,
-                max_connections,
-            } => {
-                let client = PostgreSQLClient::new(url, *max_connections).await?;
-                Ok(Self::PostgreSQL(client))
             }
             #[cfg(feature = "embedded-mobile")]
             DeploymentDatabaseConfig::SQLite { path } => {
@@ -185,8 +171,6 @@ impl RunRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.create_run(run).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.create_run(run).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.create_run(run).await,
             Self::InMemory(store) => store.create_run(run).await,
@@ -197,8 +181,6 @@ impl RunRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.get_run(id).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.get_run(id).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.get_run(id).await,
             Self::InMemory(store) => store.get_run(id).await,
@@ -209,8 +191,6 @@ impl RunRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.update_run(run).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.update_run(run).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.update_run(run).await,
             Self::InMemory(store) => store.update_run(run).await,
@@ -226,8 +206,6 @@ impl RunRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.list_runs(user_id, limit, offset).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.list_runs(user_id, limit, offset).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.list_runs(user_id, limit, offset).await,
             Self::InMemory(store) => store.list_runs(user_id, limit, offset).await,
@@ -238,8 +216,6 @@ impl RunRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.delete_run(id).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.delete_run(id).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.delete_run(id).await,
             Self::InMemory(store) => store.delete_run(id).await,
@@ -253,8 +229,6 @@ impl MemoryRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.store_memory(memory).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.store_memory(memory).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.store_memory(memory).await,
             Self::InMemory(store) => store.store_memory(memory).await,
@@ -269,8 +243,6 @@ impl MemoryRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.get_conversation(conversation_id, limit).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.get_conversation(conversation_id, limit).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.get_conversation(conversation_id, limit).await,
             Self::InMemory(store) => store.get_conversation(conversation_id, limit).await,
@@ -286,8 +258,6 @@ impl MemoryRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.search_memories(embedding, limit, threshold).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.search_memories(embedding, limit, threshold).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.search_memories(embedding, limit, threshold).await,
             Self::InMemory(store) => store.search_memories(embedding, limit, threshold).await,
@@ -298,8 +268,6 @@ impl MemoryRepository for Database {
         match self {
             #[cfg(feature = "embedded")]
             Self::SurrealDB(client) => client.delete_conversation(conversation_id).await,
-            #[cfg(feature = "database")]
-            Self::PostgreSQL(client) => client.delete_conversation(conversation_id).await,
             #[cfg(feature = "embedded-mobile")]
             Self::SQLite(client) => client.delete_conversation(conversation_id).await,
             Self::InMemory(store) => store.delete_conversation(conversation_id).await,
@@ -312,7 +280,7 @@ impl MemoryRepository for Database {
 // ============================================================================
 
 #[cfg(feature = "embedded")]
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct SurrealDBClient {
     // db: surrealdb::Surreal<surrealdb::engine::local::Db>,
     _placeholder: std::marker::PhantomData<()>,
@@ -369,63 +337,6 @@ impl MemoryRepository for SurrealDBClient {
     }
 }
 
-// ============================================================================
-// PostgreSQL Client (placeholder - requires database feature)
-// ============================================================================
-
-#[cfg(feature = "database")]
-#[derive(Clone)]
-pub struct PostgreSQLClient {
-    // pool: sqlx::PgPool,
-    _placeholder: std::marker::PhantomData<()>,
-}
-
-#[cfg(feature = "database")]
-impl PostgreSQLClient {
-    pub async fn new(_url: &str, _max_connections: u32) -> anyhow::Result<Self> {
-        // TODO: Implement actual PostgreSQL connection
-        Ok(Self {
-            _placeholder: std::marker::PhantomData,
-        })
-    }
-}
-
-#[cfg(feature = "database")]
-#[async_trait]
-impl RunRepository for PostgreSQLClient {
-    async fn create_run(&self, run: &Run) -> anyhow::Result<String> {
-        Ok(run.id.clone())
-    }
-    async fn get_run(&self, _id: &str) -> anyhow::Result<Option<Run>> {
-        Ok(None)
-    }
-    async fn update_run(&self, _run: &Run) -> anyhow::Result<()> {
-        Ok(())
-    }
-    async fn list_runs(&self, _user_id: &str, _limit: usize, _offset: usize) -> anyhow::Result<Vec<Run>> {
-        Ok(Vec::new())
-    }
-    async fn delete_run(&self, _id: &str) -> anyhow::Result<bool> {
-        Ok(false)
-    }
-}
-
-#[cfg(feature = "database")]
-#[async_trait]
-impl MemoryRepository for PostgreSQLClient {
-    async fn store_memory(&self, memory: &Memory) -> anyhow::Result<String> {
-        Ok(memory.id.clone())
-    }
-    async fn get_conversation(&self, _conversation_id: &str, _limit: usize) -> anyhow::Result<Vec<Memory>> {
-        Ok(Vec::new())
-    }
-    async fn search_memories(&self, _embedding: &[f32], _limit: usize, _threshold: f32) -> anyhow::Result<Vec<Memory>> {
-        Ok(Vec::new())
-    }
-    async fn delete_conversation(&self, _conversation_id: &str) -> anyhow::Result<u64> {
-        Ok(0)
-    }
-}
 
 // ============================================================================
 // SQLite Client (placeholder - requires embedded-mobile feature)
@@ -488,7 +399,7 @@ impl MemoryRepository for SQLiteClient {
 // ============================================================================
 
 /// In-memory store for testing.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct InMemoryStore {
     runs: std::sync::Arc<parking_lot::RwLock<std::collections::HashMap<String, Run>>>,
     memories: std::sync::Arc<parking_lot::RwLock<Vec<Memory>>>,

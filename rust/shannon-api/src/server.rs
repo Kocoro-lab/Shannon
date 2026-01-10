@@ -15,55 +15,170 @@ use crate::config::AppConfig;
 use crate::gateway;
 use crate::llm::orchestrator::Orchestrator;
 use crate::llm::{LlmSettings, Provider};
+use crate::logging::OpTimer;
 use crate::runtime::RunManager;
 use crate::tools::ToolRegistry;
 use crate::workflow::WorkflowEngine;
-use crate::AppState;
+use crate::{log_banner, log_init_step, log_init_warning, log_success, AppState};
+
+/// Shannon API version (from Cargo.toml).
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Create the application with all routes and middleware.
-pub async fn create_app(config: AppConfig) -> anyhow::Result<Router> {
-    // Create LLM settings from config
+pub async fn create_app(
+    config: AppConfig,
+    #[cfg(feature = "embedded")] existing_db: Option<
+        std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    >,
+) -> anyhow::Result<Router> {
+    // Start overall timer
+    let overall_timer = OpTimer::new("server", "create_app");
+
+    // Log startup banner
+    log_banner!(
+        format!("🚀 Shannon API v{}", VERSION),
+        format!(
+            "Mode: {} | Engine: {}",
+            config.deployment.mode,
+            config.deployment.workflow.engine_name()
+        )
+    );
+
+    // [1/8] Create LLM settings from config
+    let step_timer = OpTimer::new("server", "llm_settings");
     let llm_settings = create_llm_settings(&config);
+    let provider_info = format!(
+        "{} ({}) {}",
+        match llm_settings.provider {
+            Provider::OpenAi => "⚙️ OpenAI",
+            Provider::Anthropic => "⚙️ Anthropic",
+            Provider::Google => "⚙️ Google",
+            Provider::Groq => "⚙️ Groq",
+            Provider::Xai => "⚙️ xAI",
+            Provider::Custom => "⚙️ Custom",
+        },
+        llm_settings.model,
+        if llm_settings.api_key.is_some() {
+            "✓"
+        } else {
+            "✗ No API key"
+        }
+    );
+    log_init_step!(1, 8, "LLM Settings", provider_info);
 
-    // Create tool registry
+    // Warn if no API key is configured
+    if llm_settings.api_key.is_none() {
+        log_init_warning!(
+            "No API key configured for provider: {:?}. LLM requests will fail.",
+            llm_settings.provider
+        );
+    }
+    step_timer.finish();
+
+    // [2/8] Create tool registry
+    let step_timer = OpTimer::new("server", "tool_registry");
     let tools = Arc::new(ToolRegistry::with_defaults());
+    let tool_count = tools.list_tools().len();
+    log_init_step!(2, 8, "Tool Registry", format!("🔧 {} tools", tool_count));
+    step_timer.finish();
 
-    // Create orchestrator
+    // [3/8] Create orchestrator
+    let step_timer = OpTimer::new("server", "orchestrator");
     let orchestrator = Arc::new(Orchestrator::new(llm_settings, tools));
+    log_init_step!(3, 8, "Orchestrator", "🎭 LLM coordination ready");
+    step_timer.finish();
 
-    // Create run manager
+    // [4/8] Create run manager
+    let step_timer = OpTimer::new("server", "run_manager");
     let run_manager = Arc::new(RunManager::new(orchestrator.clone()));
+    log_init_step!(4, 8, "Run Manager", "🏃 Task lifecycle manager ready");
+    step_timer.finish();
 
-    // Initialize Redis connection if configured (only for cloud mode)
+    // [5/8] Initialize Redis connection if configured (only for cloud mode)
+    let step_timer = OpTimer::new("server", "redis");
     let redis = if config.deployment.is_embedded() {
-        tracing::info!("Running in embedded mode - Redis not required");
+        log_init_step!(5, 8, "Redis", "💾 Skipped (embedded mode)");
         None
     } else if let Some(ref redis_url) = config.redis.url {
         match init_redis(redis_url).await {
             Ok(conn) => {
-                tracing::info!("Redis connection established");
+                log_init_step!(5, 8, "Redis", format!("💾 Connected to {}", redis_url));
                 Some(conn)
             }
             Err(e) => {
-                tracing::warn!("Failed to connect to Redis: {}. Rate limiting and sessions will be limited.", e);
+                log_init_warning!(
+                    "Failed to connect to Redis: {}. Using in-memory fallback.",
+                    e
+                );
+                log_init_step!(5, 8, "Redis", "💾 In-memory fallback");
                 None
             }
         }
     } else {
-        tracing::info!("Redis not configured. Rate limiting and sessions will use in-memory fallback.");
+        log_init_step!(5, 8, "Redis", "💾 Not configured (in-memory fallback)");
         None
     };
+    step_timer.finish();
 
-    // Create workflow engine based on deployment mode
-    // In embedded mode: uses Durable engine (local, no network)
-    // In cloud mode: uses Temporal engine (via gRPC to orchestrator)
-    let workflow_engine = create_workflow_engine(&config).await?;
+    // [6/8] Initialize embedded DB for direct use (Auth, etc.) if enabled
+    let step_timer = OpTimer::new("server", "surrealdb");
+    #[cfg(feature = "embedded")]
+    let surreal = if config.deployment.is_embedded() {
+        // Use existing database connection if provided, otherwise create new one
+        if let Some(existing_conn) = existing_db {
+            log_init_step!(6, 8, "SurrealDB", "🗄️  Using shared connection");
+            Some((*existing_conn).clone())
+        } else {
+            let db_path =
+                std::env::var("SURREALDB_PATH").unwrap_or_else(|_| "./data/shannon.db".to_string());
+            // Create a client instance
+            match surrealdb::Surreal::new::<surrealdb::engine::local::RocksDb>(db_path.clone())
+                .await
+            {
+                Ok(db) => {
+                    // Select default namespace/database
+                    if let Err(e) = db.use_ns("shannon").use_db("main").await {
+                        log_init_warning!("Failed to select SurrealDB ns/db: {}", e);
+                        log_init_step!(6, 8, "SurrealDB", "🗄️  Failed to initialize");
+                        None
+                    } else {
+                        log_init_step!(6, 8, "SurrealDB", format!("🗄️  Embedded at {}", db_path));
+                        Some(db)
+                    }
+                }
+                Err(e) => {
+                    log_init_warning!("Failed to connect to embedded SurrealDB: {}", e);
+                    log_init_step!(6, 8, "SurrealDB", "🗄️  Connection failed");
+                    None
+                }
+            }
+        }
+    } else {
+        log_init_step!(6, 8, "SurrealDB", "🗄️  Skipped (cloud mode)");
+        None
+    };
+    #[cfg(not(feature = "embedded"))]
+    let _surreal: Option<()> = {
+        log_init_step!(6, 8, "SurrealDB", "🗄️  Not available (feature not enabled)");
+        None
+    };
+    step_timer.finish();
 
-    tracing::info!(
-        "Workflow engine initialized: {} (mode: {})",
+    // [7/8] Create workflow engine based on deployment mode
+    let step_timer = OpTimer::new("server", "workflow_engine");
+    let workflow_engine = create_workflow_engine(
+        &config,
+        #[cfg(feature = "embedded")]
+        surreal.clone(),
+    )
+    .await?;
+    let engine_info = format!(
+        "⚡ {} ({})",
         workflow_engine.engine_type(),
         config.deployment.mode
     );
+    log_init_step!(7, 8, "Workflow Engine", engine_info);
+    step_timer.finish();
 
     // Create app state
     let state = AppState {
@@ -72,9 +187,12 @@ pub async fn create_app(config: AppConfig) -> anyhow::Result<Router> {
         run_manager,
         redis,
         workflow_engine,
+        #[cfg(feature = "embedded")]
+        surreal,
     };
 
-    // Build main API router
+    // [8/8] Build main API router with middleware
+    let step_timer = OpTimer::new("server", "router");
     let api_router = Router::new()
         .merge(api::create_router())
         .merge(gateway::create_router());
@@ -92,7 +210,19 @@ pub async fn create_app(config: AppConfig) -> anyhow::Result<Router> {
             Duration::from_secs(config.server.timeout_secs),
         ))
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            gateway::auth::auth_middleware,
+        ))
         .with_state(state);
+
+    log_init_step!(8, 8, "Router", "🌐 Routes + middleware configured");
+    step_timer.finish();
+
+    // Log success banner
+    overall_timer.finish();
+    log_success!("Shannon API server created successfully");
+    tracing::info!("");
 
     Ok(app)
 }
@@ -111,8 +241,18 @@ async fn init_redis(url: &str) -> anyhow::Result<redis::aio::ConnectionManager> 
 ///
 /// In cloud mode, this creates a Temporal engine that connects to the Go
 /// orchestrator via gRPC for workflow coordination.
-async fn create_workflow_engine(config: &AppConfig) -> anyhow::Result<WorkflowEngine> {
-    WorkflowEngine::from_config(&config.deployment.workflow).await
+async fn create_workflow_engine(
+    config: &AppConfig,
+    #[cfg(feature = "embedded")] surreal_conn: Option<
+        surrealdb::Surreal<surrealdb::engine::local::Db>,
+    >,
+) -> anyhow::Result<WorkflowEngine> {
+    WorkflowEngine::from_config(
+        &config.deployment.workflow,
+        #[cfg(feature = "embedded")]
+        surreal_conn,
+    )
+    .await
 }
 
 /// Create LLM settings from app config.

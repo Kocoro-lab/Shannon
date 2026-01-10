@@ -37,6 +37,7 @@
 
 pub mod activities;
 pub mod backends;
+pub mod microsandbox;
 pub mod worker;
 
 // Re-exports

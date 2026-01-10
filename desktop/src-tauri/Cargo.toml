@@ -1,8 +1,8 @@
 [package]
 name = "shannon-desktop"
 version = "0.1.0"
-description = "Shannon Desktop - AI Platform Client with Embedded Mode Support"
-authors = ["Shannon Team"]
+description = "Planet Desktop - AI Platform Client with Embedded Mode Support"
+authors = ["Travis James"]
 license = "MIT"
 repository = "https://github.com/Prometheus-AGS/Shannon"
 edition = "2021"
@@ -26,6 +26,9 @@ desktop = [
     "dep:surrealdb",
     "dep:reqwest",
     "dep:axum",
+    "dep:thiserror",
+    "dep:futures",
+    "dep:tracing-subscriber",
     # Future: "sync",
 ]
 
@@ -58,7 +61,7 @@ devtools = ["tauri/devtools"]
 # ============================================================================
 
 [build-dependencies]
-tauri-build = { version = "2.5.1", features = [] }
+tauri-build = { workspace = true }
 
 # ============================================================================
 # DEPENDENCIES
@@ -66,35 +69,36 @@ tauri-build = { version = "2.5.1", features = [] }
 
 [dependencies]
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Logging
 log = "0.4"
-tracing = "0.1"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 # Tauri framework
-tauri = { version = "2.9.2", features = ["devtools"] }
-tauri-plugin-log = "2"
-tauri-plugin-shell = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-store = "2"
+tauri = { workspace = true }
+tauri-plugin-log = { workspace = true }
+tauri-plugin-shell = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-store = { workspace = true }
 
 # Shannon core (embedded mode - no grpc/orchestrator needed)
-shannon-api = { path = "../../rust/shannon-api", default-features = false, features = ["embedded", "gateway"], optional = true }
+shannon-api = { workspace = true, default-features = false, features = ["embedded", "gateway"], optional = true }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net"], optional = true }
+tokio = { workspace = true, features = ["net", "time", "rt-multi-thread", "macros"], optional = true }
 
 # Web server for embedded API
-axum = { version = "0.8", optional = true }
+axum = { workspace = true, optional = true }
 
 # Embedded database backends
-surrealdb = { version = "2.2", features = ["kv-rocksdb"], optional = true }
-rusqlite = { version = "0.31", features = ["bundled"], optional = true }
+surrealdb = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 
 # HTTP client for cloud mode
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true }
+reqwest = { workspace = true, optional = true }
 
 # Future: Sync dependencies (P2P mesh)
 # shannon-sync = { path = "../../rust/shannon-sync", optional = true }
@@ -102,10 +106,14 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], optional = true
 # webrtc = { version = "0.10", optional = true }
 
 # Utilities
-uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
-anyhow = "1.0"
-parking_lot = "0.12"
+uuid = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+parking_lot = { workspace = true }
+once_cell = "1.19"
+async-trait = "0.1"
 
 # ============================================================================
 # PLATFORM-SPECIFIC DEPENDENCIES
@@ -121,32 +129,6 @@ parking_lot = "0.12"
 # RUST LINTS (Microsoft Pragmatic Rust Guidelines)
 # ============================================================================
 
-[lints.rust]
-ambiguous_negative_literals = "warn"
-missing_debug_implementations = "warn"
-redundant_imports = "warn"
-redundant_lifetimes = "warn"
-trivial_numeric_casts = "warn"
-unsafe_op_in_unsafe_fn = "warn"
-unused_lifetimes = "warn"
-
-[lints.clippy]
-cargo = { level = "warn", priority = -1 }
-complexity = { level = "warn", priority = -1 }
-correctness = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-perf = { level = "warn", priority = -1 }
-style = { level = "warn", priority = -1 }
-suspicious = { level = "warn", priority = -1 }
-# Restriction lints
-allow_attributes_without_reason = "warn"
-clone_on_ref_ptr = "warn"
-empty_drop = "warn"
-map_err_ignore = "warn"
-redundant_type_annotations = "warn"
-undocumented_unsafe_blocks = "warn"
-# Allow some pedantic lints that are too noisy
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
+# Use workspace lints
+[lints]
+workspace = true

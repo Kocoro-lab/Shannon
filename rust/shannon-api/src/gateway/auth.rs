@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "gateway")]
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 
+#[cfg(feature = "embedded")]
+use surrealdb::engine::local::Db;
+
 use crate::config::AppConfig;
 
 /// Authentication error response.
@@ -134,11 +137,51 @@ pub async fn validate_api_key(
     api_key: &str,
     _config: &AppConfig,
     redis: Option<&redis::aio::ConnectionManager>,
+    #[cfg(feature = "embedded")]
+    surreal: Option<&surrealdb::Surreal<Db>>,
 ) -> Result<AuthenticatedUser, AuthError> {
     // First check Redis cache if available
     if let Some(_redis) = redis {
         // TODO: Implement Redis-based API key validation
         // For now, fall through to direct validation
+    }
+
+    #[cfg(feature = "embedded")]
+    if let Some(db) = surreal {
+         // Query user by API key and active status
+         // We select specific fields to construct the AuthenticatedUser
+         // Assuming table 'users' with fields: id, tenant_id, roles (array), api_key
+         let sql = "SELECT id, tenant_id, roles FROM users WHERE api_key = $key LIMIT 1";
+         
+         let mut response = db.query(sql)
+            .bind(("key", api_key.to_string()))
+            .await
+            .map_err(|e| AuthError {
+                error: "db_error".to_string(),
+                message: format!("Database error: {}", e),
+            })?;
+            
+         // Define a struct for deserialization
+         #[derive(Deserialize)]
+         struct UserRecord {
+             id: surrealdb::sql::Thing,
+             tenant_id: Option<String>,
+             roles: Option<Vec<String>>,
+         }
+         
+         let users: Vec<UserRecord> = response.take(0).map_err(|e| AuthError {
+             error: "db_error".to_string(),
+             message: format!("Failed to parse user record: {}", e),
+         })?;
+         
+         if let Some(user) = users.into_iter().next() {
+             return Ok(AuthenticatedUser {
+                 user_id: user.id.to_string(),
+                 auth_method: AuthMethod::ApiKey,
+                 tenant_id: user.tenant_id,
+                 roles: user.roles.unwrap_or_else(|| vec!["user".to_string()]),
+             });
+         }
     }
 
     // For development, accept any key that starts with "sk-"
@@ -193,7 +236,14 @@ pub async fn auth_middleware(
             // Check if it's an API key (starts with sk-) or JWT
             if token.starts_with("sk-") || token.starts_with("test-") {
                 // API key authentication
-                validate_api_key(token, &state.config, state.redis.as_ref()).await?
+                #[cfg(feature = "embedded")]
+                {
+                    validate_api_key(token, &state.config, state.redis.as_ref(), state.surreal.as_ref()).await?
+                }
+                #[cfg(not(feature = "embedded"))]
+                {
+                    validate_api_key(token, &state.config, state.redis.as_ref()).await?
+                }
             } else {
                 // JWT authentication
                 #[cfg(feature = "gateway")]
