@@ -160,16 +160,16 @@ impl ConfigValidator {
                     "SHANNON_MODE=embedded",
                     "DATABASE_DRIVER=postgresql",
                     "Embedded mode with PostgreSQL requires cloud infrastructure. \
-                    Use DATABASE_DRIVER=surrealdb for local embedded storage, or switch to \
+                    Use DATABASE_DRIVER=embedded or DATABASE_DRIVER=sqlite for local embedded storage, or switch to \
                     SHANNON_MODE=cloud for full cloud deployment.",
                 ))
             }
 
             // Cloud mode MUST use PostgreSQL
-            (DeploymentMode::Cloud, DeploymentDatabaseConfig::SurrealDB { .. }) => {
+            (DeploymentMode::Cloud, DeploymentDatabaseConfig::Embedded { .. }) => {
                 Err(ConfigurationError::incompatible(
                     "SHANNON_MODE=cloud",
-                    "DATABASE_DRIVER=surrealdb",
+                    "DATABASE_DRIVER=embedded",
                     "Cloud mode requires PostgreSQL for production-grade storage. \
                     Set DATABASE_DRIVER=postgresql and provide DATABASE_URL.",
                 ))
@@ -192,7 +192,7 @@ impl ConfigValidator {
                     format!("SHANNON_MODE={}", mode),
                     "DATABASE_DRIVER=postgresql",
                     "Local-first modes (hybrid, mesh) require local embedded storage. \
-                    Use DATABASE_DRIVER=surrealdb or DATABASE_DRIVER=sqlite.",
+                    Use DATABASE_DRIVER=embedded or DATABASE_DRIVER=sqlite.",
                 ))
             }
 

@@ -27,8 +27,8 @@ pub mod error;
 pub mod validator;
 
 pub use deployment::{
-    DeploymentConfig, DeploymentDatabaseConfig, DeploymentMode, SyncConfig, SyncScope,
-    TurnServer, WorkflowConfig,
+    DeploymentConfig, DeploymentDatabaseConfig, DeploymentMode, SyncConfig, SyncScope, TurnServer,
+    WorkflowConfig,
 };
 pub use error::{ConfigResult, ConfigurationError};
 pub use validator::ConfigValidator;
@@ -48,6 +48,9 @@ pub struct AppConfig {
     /// Gateway configuration (auth, rate limiting).
     #[serde(default)]
     pub gateway: GatewayConfig,
+    /// Security configuration (encryption, JWT).
+    #[serde(default)]
+    pub security: SecurityConfig,
     /// Database configuration (legacy - use deployment.database).
     #[serde(default)]
     pub database: DatabaseConfig,
@@ -74,6 +77,7 @@ impl Default for AppConfig {
             deployment: DeploymentConfig::default(),
             server: ServerConfig::default(),
             gateway: GatewayConfig::default(),
+            security: SecurityConfig::default(),
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
             orchestrator: OrchestratorConfig::default(),
@@ -96,12 +100,11 @@ impl AppConfig {
     /// to skip validation.
     pub fn load() -> anyhow::Result<Self> {
         let config = Self::load_unchecked()?;
-        
+
         // Validate configuration
-        ConfigValidator::validate(&config).map_err(|e| {
-            anyhow::anyhow!("Configuration validation failed:\n\n{}", e)
-        })?;
-        
+        ConfigValidator::validate(&config)
+            .map_err(|e| anyhow::anyhow!("Configuration validation failed:\n\n{}", e))?;
+
         Ok(config)
     }
 
@@ -121,14 +124,8 @@ impl AppConfig {
             .set_default("llm.max_tokens", 4096)?
             .set_default("llm.temperature", 0.7)?
             // Add config file if it exists
-            .add_source(
-                config::File::with_name("config/shannon-api")
-                    .required(false),
-            )
-            .add_source(
-                config::File::with_name("config/shannon")
-                    .required(false),
-            )
+            .add_source(config::File::with_name("config/shannon-api").required(false))
+            .add_source(config::File::with_name("config/shannon").required(false))
             // Override with environment variables
             .add_source(
                 config::Environment::with_prefix("SHANNON")
@@ -138,13 +135,13 @@ impl AppConfig {
             .build()?;
 
         let app_config: AppConfig = config.try_deserialize().unwrap_or_default();
-        
+
         // Override with specific environment variables
         let mut app_config = app_config;
-        
+
         // Load deployment configuration from environment
         app_config.deployment = DeploymentConfig::from_env();
-        
+
         // Provider API keys
         if let Ok(key) = std::env::var("OPENAI_API_KEY") {
             app_config.providers.openai.api_key = Some(key);
@@ -164,7 +161,8 @@ impl AppConfig {
 
         // Gateway secrets
         if let Ok(secret) = std::env::var("JWT_SECRET") {
-            app_config.gateway.jwt_secret = Some(secret);
+            app_config.gateway.jwt_secret = Some(secret.clone());
+            app_config.security.jwt_secret = Some(secret); // Also set in security config
         }
         if let Ok(url) = std::env::var("POSTGRES_URL") {
             app_config.database.url = Some(url);
@@ -174,6 +172,16 @@ impl AppConfig {
         }
         if let Ok(addr) = std::env::var("ORCHESTRATOR_GRPC") {
             app_config.orchestrator.grpc_address = addr;
+        }
+
+        // Security configuration
+        if let Ok(path) = std::env::var("ENCRYPTION_KEY_PATH") {
+            app_config.security.encryption_key_path = Some(path);
+        }
+        if let Ok(days) = std::env::var("JWT_EXPIRY_DAYS") {
+            if let Ok(days_int) = days.parse::<i64>() {
+                app_config.security.jwt_expiry_days = days_int;
+            }
         }
 
         Ok(app_config)
@@ -291,6 +299,41 @@ impl Default for GatewayConfig {
             rate_limit_burst: default_rate_burst(),
             idempotency_enabled: true,
             idempotency_ttl_secs: default_idempotency_ttl(),
+        }
+    }
+}
+
+/// Security configuration for encryption and JWT.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    /// JWT secret for token signing/validation in embedded mode.
+    /// Falls back to gateway.jwt_secret if not set.
+    pub jwt_secret: Option<String>,
+    /// JWT token expiry in days for embedded mode.
+    #[serde(default = "default_jwt_expiry_days")]
+    pub jwt_expiry_days: i64,
+    /// Path to encryption key file for API keys.
+    pub encryption_key_path: Option<String>,
+    /// Number of characters to show in masked API keys.
+    #[serde(default = "default_mask_length")]
+    pub api_key_mask_length: usize,
+}
+
+fn default_jwt_expiry_days() -> i64 {
+    7 // 7 days for embedded mode
+}
+
+fn default_mask_length() -> usize {
+    3
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            jwt_secret: None,
+            jwt_expiry_days: default_jwt_expiry_days(),
+            encryption_key_path: None,
+            api_key_mask_length: default_mask_length(),
         }
     }
 }

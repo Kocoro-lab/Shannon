@@ -16,8 +16,15 @@ import {
 } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import type { LogLevel, Component } from '@/lib/ipc-events';
-import { useServerLogs } from '@/lib/use-server-logs';
+import { useServerLogs, type LogEntry } from '@/lib/use-server-logs';
 import { LogEntryComponent } from '@/components/log-entry';
 import { cn } from '@/lib/utils';
 
@@ -56,6 +63,7 @@ export function DebugConsole({ open, onOpenChange }: DebugConsoleProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
+  const [selectedLog, setSelectedLog] = useState<LogEntry | null>(null);
 
   // Refs
   const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -159,6 +167,7 @@ export function DebugConsole({ open, onOpenChange }: DebugConsoleProps) {
   }, []);
 
   return (
+    <>
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-4xl p-0 flex flex-col">
         <SheetHeader className="px-6 py-4 border-b">
@@ -282,43 +291,52 @@ export function DebugConsole({ open, onOpenChange }: DebugConsoleProps) {
         </div>
 
         {/* Log Display Area */}
-        <ScrollArea className="flex-1 px-6" ref={scrollAreaRef}>
-          <div className="py-4 space-y-2">
-            {filteredLogs.length === 0 ? (
-              <Card className="p-8 text-center">
-                <div className="text-muted-foreground">
-                  {hasLogs ? (
-                    <>
-                      <Filter className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                      <p>No logs match the current filters</p>
-                      <Button
-                        variant="link"
-                        size="sm"
-                        onClick={handleResetFilters}
-                        className="mt-2"
-                      >
-                        Reset filters
-                      </Button>
-                    </>
-                  ) : (
-                    <>
-                      <Activity className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                      <p>No logs yet</p>
-                      <p className="text-xs mt-1">Logs will appear here as the server operates</p>
-                    </>
-                  )}
-                </div>
-              </Card>
-            ) : (
-              <>
-                {filteredLogs.map((log) => (
-                  <LogEntryComponent key={log.id} log={log} />
-                ))}
-                <div ref={scrollEndRef} />
-              </>
-            )}
-          </div>
-        </ScrollArea>
+        <div className="flex-1 min-h-0 px-6">
+          <ScrollArea className="h-full">
+            <div className="py-4 space-y-2">
+              {filteredLogs.length === 0 ? (
+                <Card className="p-8 text-center">
+                  <div className="text-muted-foreground">
+                    {hasLogs ? (
+                      <>
+                        <Filter className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                        <p>No logs match the current filters</p>
+                        <Button
+                          variant="link"
+                          size="sm"
+                          onClick={handleResetFilters}
+                          className="mt-2"
+                        >
+                          Reset filters
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Activity className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                        <p>No logs yet</p>
+                        <p className="text-xs mt-1">Logs will appear here as the server operates</p>
+                      </>
+                    )}
+                  </div>
+                </Card>
+              ) : (
+                <>
+                  {filteredLogs.map((log) => (
+                    <button
+                      type="button"
+                      key={log.id}
+                      onClick={() => setSelectedLog(log)}
+                      className="w-full text-left cursor-pointer focus:outline-none focus:ring-2 focus:ring-primary rounded"
+                    >
+                      <LogEntryComponent log={log} />
+                    </button>
+                  ))}
+                  <div ref={scrollEndRef} />
+                </>
+              )}
+            </div>
+          </ScrollArea>
+        </div>
 
         {/* Statistics Footer */}
         <div className="px-6 py-3 border-t bg-muted/30">
@@ -382,5 +400,68 @@ export function DebugConsole({ open, onOpenChange }: DebugConsoleProps) {
         </div>
       </SheetContent>
     </Sheet>
+
+    {/* Detail Dialog */}
+    <Dialog open={selectedLog !== null} onOpenChange={(open) => !open && setSelectedLog(null)}>
+      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Log Entry Details</DialogTitle>
+          <DialogDescription>
+            Full details and context for this log entry
+          </DialogDescription>
+        </DialogHeader>
+
+        {selectedLog && (
+          <div className="space-y-4">
+            {/* Basic Info */}
+            <div className="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <div className="font-medium text-muted-foreground mb-1">Timestamp</div>
+                <div className="font-mono">{selectedLog.timestamp.toISOString()}</div>
+              </div>
+              <div>
+                <div className="font-medium text-muted-foreground mb-1">Level</div>
+                <Badge variant={selectedLog.level === 'error' || selectedLog.level === 'critical' ? 'destructive' : 'secondary'}>
+                  {selectedLog.level}
+                </Badge>
+              </div>
+              {selectedLog.component && (
+                <div>
+                  <div className="font-medium text-muted-foreground mb-1">Component</div>
+                  <div className="font-mono">{selectedLog.component}</div>
+                </div>
+              )}
+              <div>
+                <div className="font-medium text-muted-foreground mb-1">Type</div>
+                <div className="font-mono">{selectedLog.type}</div>
+              </div>
+            </div>
+
+            <Separator />
+
+            {/* Message */}
+            <div>
+              <div className="font-medium text-muted-foreground mb-2">Message</div>
+              <Card className="p-4">
+                <pre className="text-sm whitespace-pre-wrap break-words">{selectedLog.message}</pre>
+              </Card>
+            </div>
+
+            {/* Full Data */}
+            <div>
+              <div className="font-medium text-muted-foreground mb-2">Raw Data</div>
+              <Card className="p-4 bg-muted/50">
+                <ScrollArea className="h-[300px]">
+                  <pre className="text-xs font-mono whitespace-pre-wrap break-words">
+                    {JSON.stringify(selectedLog.data, null, 2)}
+                  </pre>
+                </ScrollArea>
+              </Card>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  </>
   );
 }

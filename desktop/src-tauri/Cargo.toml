@@ -19,11 +19,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 default = ["desktop"]
 
-# Desktop mode: RocksDB-backed SurrealDB + full sync capabilities
+# Desktop mode: SQLite + sqlite-vec for embedded database + full sync capabilities
 desktop = [
     "dep:shannon-api",
     "dep:tokio",
-    "dep:surrealdb",
+    "dep:rusqlite",
+    "dep:usearch",
     "dep:reqwest",
     "dep:axum",
     "dep:thiserror",
@@ -33,10 +34,11 @@ desktop = [
 ]
 
 # Mobile mode: SQLite + sync capabilities (lighter weight)
+# Mobile mode: LanceDB (if supported on mobile) or fallback
 mobile = [
     "dep:shannon-api",
     "dep:tokio",
-    "dep:rusqlite",
+    # "dep:rusqlite",
     # Future: "sync",
 ]
 
@@ -94,8 +96,9 @@ tokio = { workspace = true, features = ["net", "time", "rt-multi-thread", "macro
 axum = { workspace = true, optional = true }
 
 # Embedded database backends
-surrealdb = { workspace = true, optional = true }
 rusqlite = { workspace = true, optional = true }
+usearch = { version = "2.14", optional = true }
+# sqlite-vec is replaced by usearch
 
 # HTTP client for cloud mode
 reqwest = { workspace = true, optional = true }
@@ -132,3 +135,6 @@ async-trait = "0.1"
 # Use workspace lints
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

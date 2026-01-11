@@ -9,10 +9,16 @@
 //! The abstraction allows Shannon to run in both embedded (Tauri) and cloud
 //! (Docker/K8s) environments with the same application logic.
 
+pub mod encryption;
+pub mod hybrid;
 pub mod repository;
 pub mod schema;
+pub mod settings;
 
+pub use encryption::KeyManager;
+pub use hybrid::ControlState;
 pub use repository::{Database, MemoryRepository, RunRepository};
+pub use settings::{ApiKey, ApiKeyInfo, ApiKeyRepository, SettingsRepository, UserSetting};
 
 use crate::config::deployment::DeploymentDatabaseConfig;
 

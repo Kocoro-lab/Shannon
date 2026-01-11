@@ -1,0 +1,1 @@
+prefix_rule(pattern=["cargo", "test", "--test", "embedded_startup", "--test", "embedded_port_fallback", "--test", "log_buffering"], decision="allow")

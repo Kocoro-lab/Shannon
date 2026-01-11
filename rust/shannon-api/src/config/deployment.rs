@@ -188,8 +188,7 @@ impl Default for WorkflowConfig {
 impl WorkflowConfig {
     /// Load workflow configuration from environment variables.
     pub fn from_env() -> Self {
-        let engine = std::env::var("WORKFLOW_ENGINE")
-            .unwrap_or_else(|_| "durable".to_string());
+        let engine = std::env::var("WORKFLOW_ENGINE").unwrap_or_else(|_| "durable".to_string());
 
         match engine.to_lowercase().as_str() {
             "temporal" => Self::Temporal {
@@ -243,16 +242,11 @@ impl WorkflowConfig {
 #[serde(tag = "driver", rename_all = "lowercase")]
 pub enum DeploymentDatabaseConfig {
     /// SurrealDB for embedded/desktop deployments.
-    SurrealDB {
+    /// Embedded database (SQLite + USearch) for desktop.
+    Embedded {
         /// Path to the database file.
-        #[serde(default = "default_surrealdb_path")]
+        #[serde(default = "default_embedded_path")]
         path: PathBuf,
-        /// SurrealDB namespace.
-        #[serde(default = "default_surrealdb_namespace")]
-        namespace: String,
-        /// SurrealDB database name.
-        #[serde(default = "default_surrealdb_database")]
-        database: String,
     },
     /// PostgreSQL for cloud deployments.
     PostgreSQL {
@@ -270,16 +264,8 @@ pub enum DeploymentDatabaseConfig {
     },
 }
 
-fn default_surrealdb_path() -> PathBuf {
-    PathBuf::from("./data/shannon.db")
-}
-
-fn default_surrealdb_namespace() -> String {
-    "shannon".to_string()
-}
-
-fn default_surrealdb_database() -> String {
-    "main".to_string()
+fn default_embedded_path() -> PathBuf {
+    PathBuf::from("./data/shannon.sqlite")
 }
 
 fn default_pg_max_connections() -> u32 {
@@ -292,10 +278,8 @@ fn default_sqlite_path() -> PathBuf {
 
 impl Default for DeploymentDatabaseConfig {
     fn default() -> Self {
-        Self::SurrealDB {
-            path: default_surrealdb_path(),
-            namespace: default_surrealdb_namespace(),
-            database: default_surrealdb_database(),
+        Self::Embedded {
+            path: default_embedded_path(),
         }
     }
 }
@@ -303,8 +287,7 @@ impl Default for DeploymentDatabaseConfig {
 impl DeploymentDatabaseConfig {
     /// Load database configuration from environment variables.
     pub fn from_env() -> Self {
-        let driver = std::env::var("DATABASE_DRIVER")
-            .unwrap_or_else(|_| "surrealdb".to_string());
+        let driver = std::env::var("DATABASE_DRIVER").unwrap_or_else(|_| "embedded".to_string());
 
         match driver.to_lowercase().as_str() {
             "postgresql" | "postgres" => {
@@ -314,7 +297,10 @@ impl DeploymentDatabaseConfig {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or_else(default_pg_max_connections);
-                Self::PostgreSQL { url, max_connections }
+                Self::PostgreSQL {
+                    url,
+                    max_connections,
+                }
             }
             "sqlite" => {
                 let path = std::env::var("SQLITE_PATH")
@@ -323,14 +309,10 @@ impl DeploymentDatabaseConfig {
                 Self::SQLite { path }
             }
             _ => {
-                let path = std::env::var("SURREALDB_PATH")
+                let path = std::env::var("SHANNON_DB_PATH")
                     .map(PathBuf::from)
-                    .unwrap_or_else(|_| default_surrealdb_path());
-                let namespace = std::env::var("SURREALDB_NAMESPACE")
-                    .unwrap_or_else(|_| default_surrealdb_namespace());
-                let database = std::env::var("SURREALDB_DATABASE")
-                    .unwrap_or_else(|_| default_surrealdb_database());
-                Self::SurrealDB { path, namespace, database }
+                    .unwrap_or_else(|_| default_embedded_path());
+                Self::Embedded { path }
             }
         }
     }
@@ -442,8 +424,7 @@ impl SyncConfig {
                 scope: SyncScope::from_env(),
                 cloud_endpoint: std::env::var("SYNC_CLOUD_ENDPOINT")
                     .unwrap_or_else(|_| "https://api.shannon.io/sync".to_string()),
-                cloud_api_key: std::env::var("SYNC_CLOUD_API_KEY")
-                    .unwrap_or_default(),
+                cloud_api_key: std::env::var("SYNC_CLOUD_API_KEY").unwrap_or_default(),
                 backup_interval_secs: std::env::var("SYNC_CLOUD_BACKUP_INTERVAL_SECS")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -452,8 +433,7 @@ impl SyncConfig {
             "cloud-only" | "cloudonly" | "cloud_only" => Self::CloudOnly {
                 api_endpoint: std::env::var("SYNC_CLOUD_ENDPOINT")
                     .unwrap_or_else(|_| "https://api.shannon.io/sync".to_string()),
-                api_key: std::env::var("SYNC_CLOUD_API_KEY")
-                    .unwrap_or_default(),
+                api_key: std::env::var("SYNC_CLOUD_API_KEY").unwrap_or_default(),
                 sync_interval_secs: std::env::var("SYNC_INTERVAL_SECS")
                     .ok()
                     .and_then(|s| s.parse().ok())
@@ -534,11 +514,26 @@ mod tests {
 
     #[test]
     fn test_deployment_mode_parsing() {
-        assert_eq!("embedded".parse::<DeploymentMode>().unwrap(), DeploymentMode::Embedded);
-        assert_eq!("cloud".parse::<DeploymentMode>().unwrap(), DeploymentMode::Cloud);
-        assert_eq!("hybrid".parse::<DeploymentMode>().unwrap(), DeploymentMode::Hybrid);
-        assert_eq!("mesh".parse::<DeploymentMode>().unwrap(), DeploymentMode::Mesh);
-        assert_eq!("mesh-cloud".parse::<DeploymentMode>().unwrap(), DeploymentMode::MeshCloud);
+        assert_eq!(
+            "embedded".parse::<DeploymentMode>().unwrap(),
+            DeploymentMode::Embedded
+        );
+        assert_eq!(
+            "cloud".parse::<DeploymentMode>().unwrap(),
+            DeploymentMode::Cloud
+        );
+        assert_eq!(
+            "hybrid".parse::<DeploymentMode>().unwrap(),
+            DeploymentMode::Hybrid
+        );
+        assert_eq!(
+            "mesh".parse::<DeploymentMode>().unwrap(),
+            DeploymentMode::Mesh
+        );
+        assert_eq!(
+            "mesh-cloud".parse::<DeploymentMode>().unwrap(),
+            DeploymentMode::MeshCloud
+        );
     }
 
     #[test]

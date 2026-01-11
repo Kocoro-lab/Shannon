@@ -39,6 +39,44 @@ function getApiUrl(path: string): string {
     return `${getApiBaseUrl()}${path}`;
 }
 
+export async function pollReadiness(baseUrl: string, timeoutMs = 1000): Promise<boolean> {
+    try {
+        const response = await fetch(`${baseUrl}/ready`, {
+            method: "GET",
+            cache: "no-store",
+            signal: AbortSignal.timeout(timeoutMs),
+        });
+
+        if (!response.ok) {
+            return false;
+        }
+
+        const payload = await response.json().catch(() => null);
+        if (payload && typeof payload.status === "string") {
+            return payload.status === "ready" || payload.status === "ok";
+        }
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+export async function findEmbeddedApiUrl(
+    startPort = 1906,
+    endPort = 1915,
+    timeoutMs = 1000,
+): Promise<string | null> {
+    for (let port = startPort; port <= endPort; port += 1) {
+        const url = `http://localhost:${port}`;
+        if (await pollReadiness(url, timeoutMs)) {
+            return url;
+        }
+    }
+
+    return null;
+}
+
 // =============================================================================
 // Auth Headers Helper
 // =============================================================================

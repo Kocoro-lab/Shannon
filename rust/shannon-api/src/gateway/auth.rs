@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 
 #[cfg(feature = "embedded")]
-use surrealdb::engine::local::Db;
-
 use crate::config::AppConfig;
+
+use crate::gateway::embedded_auth;
 
 /// Authentication error response.
 #[derive(Debug, Serialize)]
@@ -137,8 +137,7 @@ pub async fn validate_api_key(
     api_key: &str,
     _config: &AppConfig,
     redis: Option<&redis::aio::ConnectionManager>,
-    #[cfg(feature = "embedded")]
-    surreal: Option<&surrealdb::Surreal<Db>>,
+    #[cfg(feature = "embedded")] database: Option<&crate::database::Database>,
 ) -> Result<AuthenticatedUser, AuthError> {
     // First check Redis cache if available
     if let Some(_redis) = redis {
@@ -147,41 +146,9 @@ pub async fn validate_api_key(
     }
 
     #[cfg(feature = "embedded")]
-    if let Some(db) = surreal {
-         // Query user by API key and active status
-         // We select specific fields to construct the AuthenticatedUser
-         // Assuming table 'users' with fields: id, tenant_id, roles (array), api_key
-         let sql = "SELECT id, tenant_id, roles FROM users WHERE api_key = $key LIMIT 1";
-         
-         let mut response = db.query(sql)
-            .bind(("key", api_key.to_string()))
-            .await
-            .map_err(|e| AuthError {
-                error: "db_error".to_string(),
-                message: format!("Database error: {}", e),
-            })?;
-            
-         // Define a struct for deserialization
-         #[derive(Deserialize)]
-         struct UserRecord {
-             id: surrealdb::sql::Thing,
-             tenant_id: Option<String>,
-             roles: Option<Vec<String>>,
-         }
-         
-         let users: Vec<UserRecord> = response.take(0).map_err(|e| AuthError {
-             error: "db_error".to_string(),
-             message: format!("Failed to parse user record: {}", e),
-         })?;
-         
-         if let Some(user) = users.into_iter().next() {
-             return Ok(AuthenticatedUser {
-                 user_id: user.id.to_string(),
-                 auth_method: AuthMethod::ApiKey,
-                 tenant_id: user.tenant_id,
-                 roles: user.roles.unwrap_or_else(|| vec!["user".to_string()]),
-             });
-         }
+    if let Some(_db_enum) = database {
+        // TODO: Implement user lookup for Hybrid backend
+        // For now, fall through to static checks
     }
 
     // For development, accept any key that starts with "sk-"
@@ -212,6 +179,14 @@ pub async fn validate_api_key(
 }
 
 /// Authentication middleware that validates JWT or API key.
+///
+/// Supports three authentication modes:
+/// 1. **Embedded mode** (no token): Defaults to "embedded_user" with admin role
+/// 2. **JWT authentication**: Validates JWT token and extracts user info
+/// 3. **API key authentication**: Validates API key (starts with "sk-" or "test-")
+///
+/// For embedded mode, if a JWT token is provided, it will be validated.
+/// Otherwise, it falls back to the default embedded user for backward compatibility.
 pub async fn auth_middleware(
     State(state): State<crate::AppState>,
     mut req: Request<Body>,
@@ -219,7 +194,7 @@ pub async fn auth_middleware(
 ) -> Result<Response, AuthError> {
     // Skip auth for health endpoints
     let path = req.uri().path();
-    if path == "/health" || path == "/ready" || path == "/metrics" {
+    if path == "/health" || path == "/ready" || path == "/startup" || path == "/metrics" {
         return Ok(next.run(req).await);
     }
 
@@ -229,16 +204,98 @@ pub async fn auth_middleware(
         .get(AUTHORIZATION)
         .and_then(|h| h.to_str().ok());
 
+    // In embedded mode, support both JWT and no-auth (fallback to embedded_user)
+    if state.config.deployment.is_embedded() {
+        let user =
+            match auth_header {
+                Some(header) if header.starts_with("Bearer ") => {
+                    let token = &header[7..];
+
+                    // Check if it's an API key or JWT
+                    if token.starts_with("sk-") || token.starts_with("test-") {
+                        // API key authentication
+                        #[cfg(feature = "embedded")]
+                        {
+                            validate_api_key(
+                                token,
+                                &state.config,
+                                state.redis.as_ref(),
+                                state.database.as_ref(),
+                            )
+                            .await?
+                        }
+                        #[cfg(not(feature = "embedded"))]
+                        {
+                            validate_api_key(token, &state.config, state.redis.as_ref()).await?
+                        }
+                    } else {
+                        // JWT authentication for embedded mode
+                        #[cfg(feature = "gateway")]
+                        {
+                            let secret =
+                                state.config.gateway.jwt_secret.as_ref().ok_or_else(|| {
+                                    AuthError {
+                                        error: "configuration_error".to_string(),
+                                        message: "JWT secret not configured".to_string(),
+                                    }
+                                })?;
+
+                            // Use embedded_auth module for validation
+                            let claims = embedded_auth::validate_embedded_jwt(token, secret)
+                                .map_err(|e| AuthError {
+                                    error: "invalid_token".to_string(),
+                                    message: format!("JWT validation failed: {}", e),
+                                })?;
+
+                            AuthenticatedUser {
+                                user_id: claims.sub,
+                                auth_method: AuthMethod::Jwt,
+                                tenant_id: None,
+                                roles: vec!["user".to_string()],
+                            }
+                        }
+                        #[cfg(not(feature = "gateway"))]
+                        {
+                            return Err(AuthError {
+                                error: "not_supported".to_string(),
+                                message: "JWT authentication requires 'gateway' feature"
+                                    .to_string(),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    // No auth header - fall back to embedded_user for backward compatibility
+                    AuthenticatedUser {
+                        user_id: "embedded_user".to_string(),
+                        auth_method: AuthMethod::None,
+                        tenant_id: None,
+                        roles: vec!["admin".to_string()],
+                    }
+                }
+            };
+
+        req.extensions_mut().insert(user);
+        return Ok(next.run(req).await);
+    }
+
+    // Cloud mode - require authentication
     let user = match auth_header {
         Some(header) if header.starts_with("Bearer ") => {
             let token = &header[7..];
-            
+
             // Check if it's an API key (starts with sk-) or JWT
             if token.starts_with("sk-") || token.starts_with("test-") {
                 // API key authentication
                 #[cfg(feature = "embedded")]
                 {
-                    validate_api_key(token, &state.config, state.redis.as_ref(), state.surreal.as_ref()).await?
+                    validate_api_key(
+                        token,
+                        &state.config,
+                        state.redis.as_ref(),
+                        state.database.as_ref(),
+                    )
+                    .await?
                 }
                 #[cfg(not(feature = "embedded"))]
                 {
@@ -248,10 +305,16 @@ pub async fn auth_middleware(
                 // JWT authentication
                 #[cfg(feature = "gateway")]
                 {
-                    let secret = state.config.gateway.jwt_secret.as_ref().ok_or_else(|| AuthError {
-                        error: "configuration_error".to_string(),
-                        message: "JWT secret not configured".to_string(),
-                    })?;
+                    let secret =
+                        state
+                            .config
+                            .gateway
+                            .jwt_secret
+                            .as_ref()
+                            .ok_or_else(|| AuthError {
+                                error: "configuration_error".to_string(),
+                                message: "JWT secret not configured".to_string(),
+                            })?;
 
                     let claims = validate_jwt(token, secret).map_err(|e| AuthError {
                         error: "invalid_token".to_string(),

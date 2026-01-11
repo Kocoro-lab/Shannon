@@ -40,6 +40,17 @@ pub struct ServerStateChangePayload {
     pub next_retry_delay_ms: Option<u64>,
 }
 
+/// Server port selected event payload
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerPortSelectedPayload {
+    /// Selected port number
+    pub port: u16,
+    /// Base URL derived from the selected port
+    pub base_url: String,
+    /// ISO 8601 timestamp of selection
+    pub timestamp: String,
+}
+
 /// Real-time log event payload
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerLogPayload {
@@ -60,6 +71,12 @@ pub struct ServerLogPayload {
     /// Operation duration in milliseconds for performance tracking
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Unique ID for deduplication
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Target module/logger name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// Health check result payload
@@ -241,6 +258,9 @@ pub mod events {
     pub const SERVER_LOG: &str = "server-log";
     pub const SERVER_HEALTH: &str = "server-health";
     pub const SERVER_RESTART_ATTEMPT: &str = "server-restart-attempt";
+    pub const SERVER_PORT_SELECTED: &str = "server-port-selected";
+    pub const SERVER_READY: &str = "server-ready";
+    pub const RENDERER_READY: &str = "renderer-ready";
 }
 
 /// IPC command names as constants
@@ -530,6 +550,8 @@ pub fn create_log_payload(
         context,
         error,
         duration_ms,
+        id: Some(uuid::Uuid::new_v4().to_string()),
+        target: None,
     }
 }
 

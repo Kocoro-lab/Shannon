@@ -14,8 +14,8 @@ name = "durable_shannon"
 path = "src/lib.rs"
 
 [features]
-default = ["surrealdb-backend"]
-surrealdb-backend = ["dep:surrealdb"]
+default = ["embedded-worker"]
+# surrealdb-backend = ["dep:surrealdb"]
 # postgresql-backend = ["dep:sqlx"]  # DISABLED due to SQLite conflict
 embedded-worker = []
 
@@ -50,7 +50,8 @@ reqwest = { workspace = true }
 parking_lot = { workspace = true }
 
 # SurrealDB backend (optional)
-surrealdb = { workspace = true, optional = true }
+# SurrealDB backend (optional) - REMOVED
+# surrealdb = { workspace = true, optional = true }
 
 # PostgreSQL backend (optional) - COMMENTED OUT due to SQLite conflict
 # sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"], optional = true }

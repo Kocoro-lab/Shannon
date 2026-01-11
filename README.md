@@ -35,14 +35,25 @@ Shannon supports multiple deployment modes to fit your needs:
 
 | Mode | Description | Database | Workflow Engine | Use Case |
 |------|-------------|----------|-----------------|----------|
-| **Embedded** | Self-contained desktop/mobile app | SurrealDB | Durable (Rust) | Offline-first, privacy-focused |
+| **Embedded** | Self-contained desktop/mobile app | SQLite | Durable (Rust) | Offline-first, privacy-focused |
 | **Cloud** | Multi-tenant SaaS deployment | PostgreSQL | Temporal (Go) | Production, team collaboration |
-| **Hybrid** | Local-first with cloud sync | SurrealDB | Durable | Best of both worlds |
-| **Mesh** | P2P sync between devices | SurrealDB | Durable | Decentralized, multi-device |
+| **Hybrid** | Local-first with cloud sync | SQLite + Cloud | Durable | Best of both worlds |
+| **Mesh** | P2P sync between devices | SQLite | Durable | Decentralized, multi-device |
 
-### Desktop App (Embedded Mode)
+### Desktop App (Embedded Mode) ✨
 
-Download the native desktop app for your platform:
+**NEW**: Full-featured embedded API with complete feature parity!
+
+Shannon's embedded mode provides a complete AI agent platform that runs entirely locally:
+
+- ✅ **Zero External Dependencies** — Works offline, no cloud required
+- ✅ **Encrypted API Keys** — AES-256-GCM encryption for provider credentials
+- ✅ **Full Event Streaming** — SSE and WebSocket with 26+ event types
+- ✅ **Local SQLite Storage** — All data stays on your device
+- ✅ **Native Performance** — Rust-powered API with <100ms cold start
+- ✅ **Multi-Provider Support** — OpenAI, Anthropic, Google, Groq, xAI
+
+**Quick Start:**
 
 ```bash
 # macOS
@@ -52,7 +63,25 @@ cd desktop && npm install && npm run tauri:build
 npm run tauri:dev
 ```
 
-The desktop app runs entirely locally with no external dependencies. Your data stays on your device.
+**Embedded API Endpoints** (localhost:8765):
+
+```bash
+# Health check
+curl http://localhost:8765/health
+
+# Submit task
+curl -X POST http://localhost:8765/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello world", "context": {"model_tier": "premium"}}'
+
+# Stream events (SSE)
+curl -N http://localhost:8765/api/v1/tasks/{id}/stream
+```
+
+**Documentation:**
+- 📘 [**Embedded API Reference**](docs/embedded-api-reference.md) — Complete API documentation
+- 🔄 [**Migration Guide**](docs/cloud-to-embedded-migration.md) — Migrate from cloud to embedded
+- 🏗️ [**Feature Parity Status**](specs/embedded-feature-parity-spec.md) — What's supported
 
 ### Cloud Deployment (Docker)
 
@@ -527,6 +556,11 @@ docker compose -f deploy/compose/docker-compose.release.yml logs -f llm-service
 | Resource                                                  | Description                 |
 | --------------------------------------------------------- | --------------------------- |
 | [Official Docs](https://docs.shannon.run)                 | Full documentation site     |
+| **Embedded API** | |
+| [Embedded API Reference](docs/embedded-api-reference.md) | Complete embedded API documentation |
+| [Cloud to Embedded Migration](docs/cloud-to-embedded-migration.md) | Migration guide from cloud to embedded |
+| [Feature Parity Spec](specs/embedded-feature-parity-spec.md) | Embedded feature parity status |
+| **Architecture & APIs** | |
 | [Architecture](docs/multi-agent-workflow-architecture.md) | System design deep-dive     |
 | [API Reference](docs/agent-core-api.md)                   | Agent Core API              |
 | [Streaming APIs](docs/streaming-api.md)                   | SSE and WebSocket streaming |

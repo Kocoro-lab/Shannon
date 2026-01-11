@@ -8,11 +8,16 @@
 //! The abstraction allows Shannon to run in both embedded (Tauri) and cloud
 //! (Docker/K8s) environments with the same application logic.
 
+pub mod advanced;
+pub mod control;
 pub mod engine;
+pub mod multiagent;
 pub mod task;
+pub mod tracking;
 
 pub use engine::{WorkflowEngine, WorkflowEngineType};
 pub use task::{Task, TaskHandle, TaskResult, TaskState};
+pub use tracking::{ModelUsageBreakdown, TaskResultWithMetadata, UsageTracker};
 
 use crate::config::deployment::WorkflowConfig;
 
@@ -24,7 +29,13 @@ use crate::config::deployment::WorkflowConfig;
 pub async fn create_engine(
     config: &WorkflowConfig,
     #[cfg(feature = "embedded")]
-    surreal_conn: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+    #[cfg(feature = "embedded")]
+    event_log: Option<Box<dyn durable_shannon::EventLog>>,
 ) -> anyhow::Result<WorkflowEngine> {
-    WorkflowEngine::from_config(config, #[cfg(feature = "embedded")] surreal_conn).await
+    WorkflowEngine::from_config(
+        config,
+        #[cfg(feature = "embedded")]
+        event_log,
+    )
+    .await
 }

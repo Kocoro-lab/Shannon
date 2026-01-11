@@ -4,7 +4,7 @@
 //! It supports multiple deployment modes:
 //!
 //! 1. **Desktop Mode** (`--features desktop`): Full embedded stack with:
-//!    - SurrealDB (RocksDB backend) for local storage
+//!    - Hybrid Backend (SQLite + USearch) for local storage
 //!    - Durable workflow engine for task execution
 //!    - Local-first operation with optional P2P sync
 //!
@@ -29,14 +29,15 @@
 //! │  ┌───────────────────────────────────────┐  │
 //! │  │      Embedded Shannon API             │  │
 //! │  │  ┌─────────────┬─────────────────┐    │  │
-//! │  │  │ Durable     │ SurrealDB/      │    │  │
-//! │  │  │ Workflows   │ SQLite          │    │  │
+//! │  │  │ Durable     │ SQLite/         │    │  │
+//! │  │  │ Workflows   │ USearch         │    │  │
 //! │  │  └─────────────┴─────────────────┘    │  │
 //! │  └───────────────────────────────────────┘  │
 //! └─────────────────────────────────────────────┘
 //! ```
 
 pub mod embedded_api;
+pub mod embedded_port;
 pub mod ipc_events;
 pub mod ipc_logger;
 
@@ -47,7 +48,7 @@ use ipc_logger::IpcLogLayer;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
-    App, Manager, State,
+    App, Listener, Manager, State,
 };
 
 /// Store key for persisted API keys
@@ -106,7 +107,10 @@ fn create_app_menu(app: &App) -> Result<Menu<tauri::Wry>, tauri::Error> {
 /// Returns an error if the IPC logger state is not found.
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn get_recent_logs(count: usize, logger: State<'_, IpcLogLayer>) -> Result<Vec<ipc_events::ServerLogPayload>, String> {
+async fn get_recent_logs(
+    count: usize,
+    logger: State<'_, IpcLogLayer>,
+) -> Result<Vec<ipc_events::ServerLogPayload>, String> {
     Ok(logger.get_recent_logs(Some(count), None).await)
 }
 
@@ -114,19 +118,24 @@ async fn get_recent_logs(count: usize, logger: State<'_, IpcLogLayer>) -> Result
 #[cfg(feature = "desktop")]
 #[tauri::command]
 async fn clear_server_logs(_logger: State<'_, IpcLogLayer>) -> Result<(), String> {
-    // IpcLogLayer doesn't have a clear method, so we'll use the log buffer
-    // The clear functionality should be implemented on the layer itself
+    _logger.drain_buffer();
     Ok(())
 }
 
+/// Flush buffered logs once the renderer is ready.
+#[cfg(feature = "desktop")]
+#[tauri::command]
+async fn flush_server_logs(logger: State<'_, IpcLogLayer>) -> Result<(), String> {
+    logger.emit_buffered_logs();
+    Ok(())
+}
 /// Get current embedded server status.
 #[cfg(feature = "desktop")]
 #[tauri::command]
-async fn get_server_status(state: State<'_, TauriEmbeddedState>) -> Result<ipc_events::ServerStatusResponse, String> {
-    state
-        .get_server_status()
-        .await
-        .map_err(|e| e.to_string())
+async fn get_server_status(
+    state: State<'_, TauriEmbeddedState>,
+) -> Result<ipc_events::ServerStatusResponse, String> {
+    state.get_server_status().await.map_err(|e| e.to_string())
 }
 
 /// Get recent log entries with optional filtering.
@@ -135,17 +144,16 @@ async fn get_server_status(state: State<'_, TauriEmbeddedState>) -> Result<ipc_e
 async fn get_recent_server_logs(
     count: Option<usize>,
     level_filter: Option<String>,
-    state: State<'_, TauriEmbeddedState>
+    state: State<'_, TauriEmbeddedState>,
 ) -> Result<Vec<ipc_events::ServerLogPayload>, String> {
-    let level = level_filter
-        .and_then(|l| match l.to_lowercase().as_str() {
-            "error" => Some(ipc_events::LogLevel::Error),
-            "warn" => Some(ipc_events::LogLevel::Warn),
-            "info" => Some(ipc_events::LogLevel::Info),
-            "debug" => Some(ipc_events::LogLevel::Debug),
-            "trace" => Some(ipc_events::LogLevel::Trace),
-            _ => None,
-        });
+    let level = level_filter.and_then(|l| match l.to_lowercase().as_str() {
+        "error" => Some(ipc_events::LogLevel::Error),
+        "warn" => Some(ipc_events::LogLevel::Warn),
+        "info" => Some(ipc_events::LogLevel::Info),
+        "debug" => Some(ipc_events::LogLevel::Debug),
+        "trace" => Some(ipc_events::LogLevel::Trace),
+        _ => None,
+    });
 
     state
         .get_recent_logs(count, level)
@@ -158,7 +166,7 @@ async fn get_recent_server_logs(
 #[tauri::command]
 async fn restart_embedded_server(
     force: Option<bool>,
-    state: State<'_, TauriEmbeddedState>
+    state: State<'_, TauriEmbeddedState>,
 ) -> Result<ipc_events::RestartServerResponse, String> {
     state
         .restart_server(force.unwrap_or(false))
@@ -193,15 +201,19 @@ pub fn run() {
 
         // Initialize IPC logger for desktop mode
         #[cfg(feature = "desktop")]
-        let ipc_event_emitter = std::sync::Arc::new(ipc_events::TauriEventEmitter::new(app.handle().clone()));
-
         #[cfg(feature = "desktop")]
-        let ipc_logger = IpcLogLayer::new(ipc_event_emitter.clone());
+        let ipc_logger = IpcLogLayer::new(app.handle().clone());
 
         #[cfg(feature = "desktop")]
         {
             // Store IPC logger in app state
             app.manage(ipc_logger.clone());
+
+            let logger_for_ready = ipc_logger.clone();
+            let ready_handler = app.listen(ipc_events::events::RENDERER_READY, move |_| {
+                logger_for_ready.emit_buffered_logs();
+            });
+            let _ = ready_handler;
         }
 
         // Desktop mode: Start embedded API with SurrealDB
@@ -227,30 +239,25 @@ pub fn run() {
             let app_handle_for_thread = app.handle().clone();
             let ipc_logger_for_thread = ipc_logger.clone();
 
-            // Start the server in a background thread - don't wait for it
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+            tauri::async_runtime::spawn(async move {
+                log::info!("🚀 Starting embedded Shannon API with dynamic port...");
 
-                rt.block_on(async move {
-                    log::info!("🚀 Starting embedded Shannon API with dynamic port...");
-
-                    // Use port 1906 as the preferred starting port
-                    match embedded_api::start_embedded_api(
-                        Some(1906),
-                        app_handle_for_thread,
-                        ipc_logger_for_thread,
-                    )
-                    .await
-                    {
-                        Ok(handle) => {
-                            log::info!("✅ Embedded API started on port {:?}", handle.port());
-                            state_clone.set_handle(handle);
-                        }
-                        Err(e) => {
-                            log::error!("❌ Failed to start embedded API: {}", e);
-                        }
+                // Use port 1906 as the preferred starting port
+                match embedded_api::start_embedded_api(
+                    Some(1906),
+                    app_handle_for_thread,
+                    ipc_logger_for_thread,
+                )
+                .await
+                {
+                    Ok(handle) => {
+                        log::info!("✅ Embedded API started successfully");
+                        state_clone.set_handle(handle);
                     }
-                });
+                    Err(e) => {
+                        log::error!("❌ Failed to start embedded API: {}", e);
+                    }
+                }
             });
 
             log::info!("Embedded API startup initiated in background thread");
@@ -306,6 +313,7 @@ pub fn run() {
                 embedded_api::commands::get_api_key_status,
                 get_recent_logs,
                 clear_server_logs,
+                flush_server_logs,
                 get_server_status,
                 get_recent_server_logs,
                 restart_embedded_server,

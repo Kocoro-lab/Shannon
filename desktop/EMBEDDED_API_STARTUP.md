@@ -19,22 +19,22 @@ This document explains how the Axum web server starts within the Shannon Tauri d
 
 The Shannon desktop application embeds a full Axum-based HTTP server that provides the Shannon API locally. This enables:
 
-- **Local-first operation** - Works offline with SurrealDB
+- **Local-first operation** - Works offline with SQLite in embedded mode
 - **Zero external dependencies** - No remote API required
 - **Native performance** - Rust-powered API server
-- **Dynamic port allocation** - OS assigns available port automatically
+- **Deterministic port fallback** - Scans ports 1906-1915 in order
 - **Graceful lifecycle** - Proper startup, ready signaling, and shutdown
 
 **Architecture:**
 ```
 Tauri Desktop App
 ├── Frontend (Next.js)
-│   └── Connects to http://127.0.0.1:{dynamic_port}
+│   └── Connects to http://127.0.0.1:{selected_port}
 └── Backend (Rust)
     ├── Tauri Window Manager
     └── Embedded Axum Server
         ├── Shannon API (routes, handlers)
-        ├── SurrealDB (local database)
+        ├── SQLite (local database)
         └── IPC Communication
 ```
 
@@ -861,33 +861,27 @@ cargo build --no-default-features
 
 ## Port Management
 
-### Dynamic Port Allocation
+### Deterministic Port Fallback
 
-**Why port 0?**
-- Avoids port conflicts
-- OS guarantees available port
-- Multiple app instances can run simultaneously
-- No need for configuration
+**Why a fixed range?**
+- Predictable local discovery for the renderer
+- Clear fallback behavior when the default port is busy
+- Avoids missed IPC events by enabling proactive polling
 
 **How it works:**
-1. Request port `0` in `TcpListener::bind("0.0.0.0:0")`
-2. OS assigns first available port (typically > 1024)
-3. Read assigned port with `listener.local_addr()?.port()`
-4. Share port with frontend via IPC event
+1. Attempt port `1906`
+2. If unavailable, try `1907` through `1915` in order
+3. Emit `server-port-selected` once a port is chosen
+4. Emit `server-ready` after readiness checks pass
 
 **Example:**
 ```rust
-// Request dynamic port
-let listener = TcpListener::bind("0.0.0.0:0").await?;
+let port = select_available_port(1906..=1915, Some(1906)).await?;
+let base_url = format!("http://127.0.0.1:{}", port);
 
-// Get actual assigned port
-let bound_port = listener.local_addr()?.port();
-// bound_port might be: 53471, 54892, etc.
-
-// Notify frontend
-app_handle.emit("server-ready", json!({
-    "url": format!("http://127.0.0.1:{}", bound_port),
-    "port": bound_port
+app_handle.emit("server-port-selected", json!({
+    "url": base_url,
+    "port": port
 }));
 ```
 

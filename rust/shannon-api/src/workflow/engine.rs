@@ -28,7 +28,7 @@ use crate::logging::OpTimer;
 use crate::gateway::grpc_client::{OrchestratorClient, OrchestratorClientConfig};
 
 #[cfg(feature = "embedded")]
-use durable_shannon::{EmbeddedWorker, SurrealDBEventLog};
+use durable_shannon::EmbeddedWorker;
 
 /// Workflow engine type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,10 +114,14 @@ pub enum WorkflowEngine {
 impl std::fmt::Debug for WorkflowEngine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Durable(engine) => f.debug_tuple("Durable").field(&engine.engine_type()).finish(),
-            Self::Temporal(engine) => {
-                f.debug_tuple("Temporal").field(&engine.engine_type()).finish()
-            }
+            Self::Durable(engine) => f
+                .debug_tuple("Durable")
+                .field(&engine.engine_type())
+                .finish(),
+            Self::Temporal(engine) => f
+                .debug_tuple("Temporal")
+                .field(&engine.engine_type())
+                .finish(),
         }
     }
 }
@@ -127,7 +131,8 @@ impl WorkflowEngine {
     pub async fn from_config(
         config: &WorkflowConfig,
         #[cfg(feature = "embedded")]
-        surreal_conn: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+        #[cfg(feature = "embedded")]
+        event_log: Option<Box<dyn durable_shannon::EventLog>>,
     ) -> anyhow::Result<Self> {
         match config {
             WorkflowConfig::Durable {
@@ -136,11 +141,12 @@ impl WorkflowEngine {
                 ..
             } => {
                 let engine = DurableEngine::new(
-                    wasm_dir.clone(), 
+                    wasm_dir.clone(),
                     *max_concurrent,
                     #[cfg(feature = "embedded")]
-                    surreal_conn
-                ).await?;
+                    event_log,
+                )
+                .await?;
                 Ok(Self::Durable(Arc::new(engine)))
             }
             WorkflowConfig::Temporal {
@@ -225,7 +231,7 @@ pub struct DurableEngine {
     channels: Arc<RwLock<HashMap<String, broadcast::Sender<TaskEvent>>>>,
     /// The actual embedded worker (only available when embedded feature is on).
     #[cfg(feature = "embedded")]
-    worker: Arc<EmbeddedWorker<SurrealDBEventLog>>,
+    worker: Arc<EmbeddedWorker<Box<dyn durable_shannon::EventLog>>>,
 }
 
 /// Internal task representation for the Durable engine.
@@ -259,11 +265,10 @@ impl DurableEngine {
     pub async fn new(
         wasm_dir: PathBuf,
         max_concurrent: usize,
-        #[cfg(feature = "embedded")]
-        surreal_conn: Option<surrealdb::Surreal<surrealdb::engine::local::Db>>,
+        #[cfg(feature = "embedded")] event_log: Option<Box<dyn durable_shannon::EventLog>>,
     ) -> anyhow::Result<Self> {
         let timer = OpTimer::new("durable_engine", "initialization");
-        
+
         tracing::info!(
             "🎬 Initializing Durable engine (embedded mode) - wasm_dir={:?}, max_concurrent={}",
             wasm_dir,
@@ -282,31 +287,20 @@ impl DurableEngine {
         #[cfg(feature = "embedded")]
         {
             let result: anyhow::Result<Self> = async {
-                // Initialize SurrealDB event log
-                let event_log_timer = OpTimer::new("event_log", "initialization");
-                let event_log = if let Some(conn) = surreal_conn {
-                    tracing::debug!("📦 Using shared SurrealDB connection for event log");
-                    SurrealDBEventLog::from_db(Arc::new(conn))
-                } else {
-                    // Fallback to creating a new connection
-                    let db_path = std::env::var("SURREALDB_PATH")
-                        .unwrap_or_else(|_| "./data/shannon.db".to_string());
-                    tracing::warn!("⚠️  No shared SurrealDB connection provided. Using path: {}", db_path);
-                    SurrealDBEventLog::new(std::path::Path::new(&db_path)).await?
-                };
-                event_log_timer.finish();
-                tracing::info!("✅ SurrealDB event log initialized");
-                
                 // Initialize embedded worker
                 let worker_timer = OpTimer::new("embedded_worker", "initialization");
-                let worker = EmbeddedWorker::new(
-                    Arc::new(event_log),
-                    wasm_dir.clone(),
-                    max_concurrent
-                ).await?;
+
+                let log = event_log
+                    .ok_or_else(|| anyhow::anyhow!("Event log required for embedded engine"))?;
+
+                let worker =
+                    EmbeddedWorker::new(Arc::new(log), wasm_dir.clone(), max_concurrent).await?;
                 worker_timer.finish();
-                tracing::info!("✅ Embedded worker created (max_concurrent={})", max_concurrent);
-                
+                tracing::info!(
+                    "✅ Embedded worker created (max_concurrent={})",
+                    max_concurrent
+                );
+
                 Ok(Self {
                     _wasm_dir: wasm_dir,
                     max_concurrent,
@@ -314,15 +308,18 @@ impl DurableEngine {
                     channels: Arc::new(RwLock::new(HashMap::new())),
                     worker: Arc::new(worker),
                 })
-            }.await;
-            
+            }
+            .await;
+
             timer.finish_with_result(result.as_ref());
             result
         }
 
         #[cfg(not(feature = "embedded"))]
         {
-            tracing::warn!("⚠️  Embedded feature not enabled, DurableEngine will be non-functional stub");
+            tracing::warn!(
+                "⚠️  Embedded feature not enabled, DurableEngine will be non-functional stub"
+            );
             timer.finish();
             Ok(Self {
                 _wasm_dir: wasm_dir,
@@ -429,7 +426,7 @@ impl DurableEngine {
         // Simulate progress updates
         for i in 1..=10 {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            
+
             // Update progress
             {
                 let mut tasks = self.tasks.write().await;
@@ -456,8 +453,7 @@ impl DurableEngine {
             "Local workflow completed for query: '{}'. \
             Strategy: {:?}. \
             Note: Full WASM workflow integration pending.",
-            task.query,
-            task.strategy
+            task.query, task.strategy
         ))
     }
 }
@@ -477,7 +473,7 @@ impl WorkflowEngineImpl for DurableEngine {
         } else {
             task.query.clone()
         };
-        
+
         tracing::info!(
             "📥 Submitting task to Durable engine - task_id={}, strategy={}, query_len={}",
             task_id,
@@ -489,7 +485,10 @@ impl WorkflowEngineImpl for DurableEngine {
         // Check concurrency limit
         let active_count = {
             let tasks = self.tasks.read().await;
-            let active = tasks.values().filter(|t| t.state == TaskState::Running).count();
+            let active = tasks
+                .values()
+                .filter(|t| t.state == TaskState::Running)
+                .count();
             tracing::debug!(
                 "⚡ Concurrency check - active={}, max={}",
                 active,
@@ -509,8 +508,12 @@ impl WorkflowEngineImpl for DurableEngine {
             active
         };
 
-        tracing::debug!("✅ Concurrency check passed - {}/{} slots used", active_count, self.max_concurrent);
-        
+        tracing::debug!(
+            "✅ Concurrency check passed - {}/{} slots used",
+            active_count,
+            self.max_concurrent
+        );
+
         // Setup channels and registry first
         let (tx, _rx) = broadcast::channel(64);
         {
@@ -518,7 +521,7 @@ impl WorkflowEngineImpl for DurableEngine {
             channels.insert(task_id.clone(), tx.clone());
             tracing::trace!("📡 Event channel created for task {}", task_id);
         }
-        
+
         {
             let mut tasks = self.tasks.write().await;
             tasks.insert(
@@ -544,36 +547,42 @@ impl WorkflowEngineImpl for DurableEngine {
                 // Submit to actual durable worker
                 tracing::debug!("📤 Submitting to embedded worker - task_id={}", task_id);
                 let input = serde_json::to_value(&task)?;
-                let mut handle = self.worker.submit(&task.strategy.to_string(), input).await?;
+                let mut handle = self
+                    .worker
+                    .submit(&task.strategy.to_string(), input)
+                    .await?;
                 let workflow_id = handle.workflow_id.clone();
-                
+
                 tracing::info!(
                     "✅ Task submitted to embedded worker - task_id={}, workflow_id={}",
                     task_id,
                     workflow_id
                 );
-                
+
                 let _worker_ref = self.worker.clone();
                 let task_id_clone = task_id.clone();
                 let tx_clone = tx.clone();
                 let tasks_ref = self.tasks.clone();
-                
+
                 // Spawn monitoring task to pipe events from worker to our channel
                 tokio::spawn(async move {
                     tracing::debug!("👀 Monitoring task execution - task_id={}", task_id_clone);
-                    
+
                     // Wait for result
                     match handle.result().await {
                         Ok(output) => {
-                            tracing::info!("✅ Task completed successfully - task_id={}", task_id_clone);
-                            
+                            tracing::info!(
+                                "✅ Task completed successfully - task_id={}",
+                                task_id_clone
+                            );
+
                             // Update state
                             let mut tasks = tasks_ref.write().await;
                             if let Some(t) = tasks.get_mut(&task_id_clone) {
                                 t.state = TaskState::Completed;
                                 t.result = Some(output.to_string());
                             }
-                            
+
                             let _ = tx_clone.send(TaskEvent::Completed {
                                 task_id: task_id_clone,
                                 result: TaskResult {
@@ -584,27 +593,31 @@ impl WorkflowEngineImpl for DurableEngine {
                                     error: None,
                                     token_usage: None,
                                     duration_ms: 0,
-                                    sources: vec![]
-                                }
+                                    sources: vec![],
+                                },
                             });
-                        },
+                        }
                         Err(e) => {
-                            tracing::error!("❌ Task failed - task_id={}, error={}", task_id_clone, e);
-                            
+                            tracing::error!(
+                                "❌ Task failed - task_id={}, error={}",
+                                task_id_clone,
+                                e
+                            );
+
                             let mut tasks = tasks_ref.write().await;
                             if let Some(t) = tasks.get_mut(&task_id_clone) {
                                 t.state = TaskState::Failed;
                                 t.error = Some(e.to_string());
                             }
-                            
+
                             let _ = tx_clone.send(TaskEvent::Failed {
                                 task_id: task_id_clone,
-                                error: e.to_string()
+                                error: e.to_string(),
                             });
                         }
                     }
                 });
-                
+
                 Ok(TaskHandle {
                     task_id,
                     workflow_id,
@@ -612,8 +625,9 @@ impl WorkflowEngineImpl for DurableEngine {
                     progress: 0,
                     message: Some("Task submitted to Durable engine".to_string()),
                 })
-            }.await;
-            
+            }
+            .await;
+
             timer.finish_with_result(result.as_ref());
             result
         }
@@ -648,7 +662,11 @@ impl WorkflowEngineImpl for DurableEngine {
             .ok_or_else(|| anyhow::anyhow!("Task not found: {}", task_id))?;
 
         if task.state != TaskState::Completed && task.state != TaskState::Failed {
-            anyhow::bail!("Task {} is not yet complete (state: {:?})", task_id, task.state);
+            anyhow::bail!(
+                "Task {} is not yet complete (state: {:?})",
+                task_id,
+                task.state
+            );
         }
 
         Ok(TaskResult {
@@ -672,6 +690,10 @@ impl WorkflowEngineImpl for DurableEngine {
                 task.state = TaskState::Cancelled;
                 task.message = reason.map(String::from);
                 tracing::info!("Cancelled task {}: {:?}", task_id, reason);
+
+                // TODO: Emit WORKFLOW_CANCELLING and WORKFLOW_CANCELLED events (T123-T124)
+                // These should be emitted at the gateway/API level with proper NormalizedEvent channels
+
                 return Ok(true);
             }
         }
@@ -685,6 +707,10 @@ impl WorkflowEngineImpl for DurableEngine {
                 task.state = TaskState::Paused;
                 task.message = reason.map(String::from);
                 tracing::info!("Paused task {}: {:?}", task_id, reason);
+
+                // TODO: Emit WORKFLOW_PAUSING and WORKFLOW_PAUSED events (T120-T121)
+                // These should be emitted at the gateway/API level with proper NormalizedEvent channels
+
                 return Ok(true);
             }
         }
@@ -698,6 +724,10 @@ impl WorkflowEngineImpl for DurableEngine {
                 task.state = TaskState::Running;
                 task.message = reason.map(String::from);
                 tracing::info!("Resumed task {}: {:?}", task_id, reason);
+
+                // TODO: Emit WORKFLOW_RESUMED event (T122)
+                // This should be emitted at the gateway/API level with proper NormalizedEvent channels
+
                 return Ok(true);
             }
         }
@@ -745,7 +775,7 @@ impl TemporalEngine {
         task_queue: String,
     ) -> anyhow::Result<Self> {
         let timer = OpTimer::new("temporal_engine", "initialization");
-        
+
         tracing::info!(
             "🎬 Initializing Temporal engine (cloud mode) - endpoint={}, namespace={}, task_queue={}",
             endpoint,
@@ -754,8 +784,11 @@ impl TemporalEngine {
         );
 
         let result: anyhow::Result<Self> = async {
-            tracing::debug!("📞 Connecting to orchestrator gRPC service - endpoint={}", endpoint);
-            
+            tracing::debug!(
+                "📞 Connecting to orchestrator gRPC service - endpoint={}",
+                endpoint
+            );
+
             let client = OrchestratorClient::new(OrchestratorClientConfig {
                 endpoint: endpoint.clone(),
                 timeout_secs: 300,
@@ -763,16 +796,20 @@ impl TemporalEngine {
                 connect_timeout_secs: 10,
             })
             .await?;
-            
-            tracing::info!("✅ Connected to orchestrator gRPC service - endpoint={}", endpoint);
+
+            tracing::info!(
+                "✅ Connected to orchestrator gRPC service - endpoint={}",
+                endpoint
+            );
 
             Ok(Self {
                 client,
                 _namespace: namespace,
                 _task_queue: task_queue,
             })
-        }.await;
-        
+        }
+        .await;
+
         timer.finish_with_result(result.as_ref());
         result
     }
@@ -796,7 +833,7 @@ impl WorkflowEngineImpl for TemporalEngine {
         } else {
             task.query.clone()
         };
-        
+
         tracing::info!(
             "📥 Submitting task to Temporal engine - task_id={}, strategy={}, query_len={}",
             task_id,
@@ -810,7 +847,7 @@ impl WorkflowEngineImpl for TemporalEngine {
                 task.strategy,
                 super::task::Strategy::Complex | super::task::Strategy::Research
             );
-            
+
             tracing::debug!(
                 "🔧 Building gRPC request - task_id={}, auto_decompose={}, require_approval={}",
                 task_id,
@@ -836,7 +873,7 @@ impl WorkflowEngineImpl for TemporalEngine {
 
             tracing::debug!("📤 Sending task to orchestrator - task_id={}", task_id);
             let response = self.client.submit_task(request).await?;
-            
+
             tracing::info!(
                 "✅ Task submitted to orchestrator - task_id={}, workflow_id={}",
                 response.task_id,
@@ -850,8 +887,9 @@ impl WorkflowEngineImpl for TemporalEngine {
                 progress: 0,
                 message: response.message,
             })
-        }.await;
-        
+        }
+        .await;
+
         timer.finish_with_result(result.as_ref());
         result
     }
@@ -910,7 +948,10 @@ impl WorkflowEngineImpl for TemporalEngine {
             error: response.error_message,
             token_usage: response.metrics.as_ref().map(|m| super::task::TokenUsage {
                 prompt_tokens: m.token_usage.as_ref().map_or(0, |u| u.prompt_tokens as u32),
-                completion_tokens: m.token_usage.as_ref().map_or(0, |u| u.completion_tokens as u32),
+                completion_tokens: m
+                    .token_usage
+                    .as_ref()
+                    .map_or(0, |u| u.completion_tokens as u32),
                 total_tokens: m.token_usage.as_ref().map_or(0, |u| u.total_tokens as u32),
                 cost_usd: m.token_usage.as_ref().map_or(0.0, |u| u.cost_usd),
             }),

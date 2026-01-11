@@ -18,7 +18,8 @@
 //! - Real-time state change emissions via IPC
 //! - Comprehensive error handling and logging
 
-use crate::ipc_events::ServerStateChangePayload;
+use crate::ipc_events::{events, ServerPortSelectedPayload, ServerStateChangePayload};
+use crate::embedded_port;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
@@ -28,6 +29,12 @@ use tauri::{Emitter, Manager};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
+
+// Database imports
+// Database imports
+use shannon_api::database::hybrid::HybridBackend;
+
+
 
 /// Port range for embedded API server
 const PORT_RANGE: std::ops::RangeInclusive<u16> = 1906..=1915;
@@ -241,6 +248,26 @@ struct ServerStateInner {
     retry_manager: RetryManager,
 }
 
+/// Shared startup state container for readers outside the server loop.
+#[derive(Debug, Clone)]
+pub struct SharedStartupState {
+    inner: Arc<RwLock<ServerStateInner>>,
+}
+
+impl SharedStartupState {
+    fn new(inner: Arc<RwLock<ServerStateInner>>) -> Self {
+        Self { inner }
+    }
+
+    pub fn snapshot(&self) -> ServerStatus {
+        build_status(&self.inner.read())
+    }
+
+    pub fn port(&self) -> Option<u16> {
+        self.inner.read().port
+    }
+}
+
 impl Default for ServerStateInner {
     fn default() -> Self {
         Self {
@@ -303,6 +330,7 @@ where
     pub fn handle(&self) -> EmbeddedApiServerHandle {
         EmbeddedApiServerHandle {
             command_tx: self.command_tx.clone(),
+            startup_state: SharedStartupState::new(Arc::clone(&self.state)),
         }
     }
 
@@ -400,6 +428,15 @@ where
         let port = self.discover_available_port().await?;
         debug!(port = port, "Discovered available port");
 
+        let port_payload = ServerPortSelectedPayload {
+            port,
+            base_url: format!("http://127.0.0.1:{}", port),
+            timestamp: Utc::now().to_rfc3339(),
+        };
+        let _ = self
+            .app_handle
+            .emit(events::SERVER_PORT_SELECTED, &port_payload);
+
         // Port binding phase
         self.transition_state(
             ServerState::Binding,
@@ -455,9 +492,8 @@ where
         std::env::set_var("SHANNON_PORT", port.to_string());
         std::env::set_var("SHANNON_MODE", "embedded");
 
-        // Use SurrealDB with RocksDB backend for embedded mode (Tauri-compatible)
-        std::env::set_var("DATABASE_DRIVER", "surrealdb");
-        std::env::set_var("SURREALDB_BACKEND", "rocksdb");
+        // Use SQLite + sqlite-vec for embedded mode (Tauri-compatible)
+        std::env::set_var("DATABASE_DRIVER", "sqlite");
 
         // Use Tauri's app data directory for database storage
         let app_data_dir = match self.app_handle.path().app_data_dir() {
@@ -473,13 +509,9 @@ where
             warn!(error = %e, path = ?data_dir, "Failed to create Shannon data directory");
         }
 
-        let db_path = data_dir.join("shannon.db");
-        info!(path = ?db_path, "Using SurrealDB with RocksDB backend at path");
-        std::env::set_var("SURREALDB_PATH", db_path.to_string_lossy().to_string());
-
-        // Set SurrealDB namespace and database
-        std::env::set_var("SURREALDB_NAMESPACE", "shannon");
-        std::env::set_var("SURREALDB_DATABASE", "main");
+        let db_path = data_dir.join("shannon.sqlite");
+        info!(path = ?db_path, "Using SQLite + sqlite-vec for embedded database");
+        std::env::set_var("SQLITE_PATH", db_path.to_string_lossy().to_string());
 
         // Load Shannon API configuration with our overrides
         info!("Loading Shannon API configuration...");
@@ -490,49 +522,26 @@ where
 
         info!(config = ?config.server, "Shannon API configuration loaded");
 
-        // PRE-INITIALIZE SurrealDB with RocksDB backend using spawn_blocking
-        // CRITICAL: RocksDB initialization is blocking and must run in spawn_blocking
-        // See: https://surrealdb.com/docs/surrealdb/reference-guide/performance-best-practices
-        info!("Pre-initializing SurrealDB with RocksDB backend (Tauri-compatible)...");
-        let db = {
-            use surrealdb::Surreal;
-            use surrealdb::engine::local::{Db, RocksDb};
+        // Initialize Hybrid Backend (SQLite + USearch)
+        info!("Initializing Hybrid Backend (SQLite + USearch)...");
+        info!("Running embedded database migrations...");
+        let hybrid_backend = HybridBackend::new(data_dir.clone());
 
-            let db_path_clone = db_path.clone();
+        // Asynchronously initialize the database
+        if let Err(e) = hybrid_backend.init().await {
+            error!(error = %e, "Failed to initialize Hybrid Backend");
+            return Err(EmbeddedApiError::Configuration {
+                message: format!("Failed to initialize Hybrid Backend: {}", e)
+            });
+        }
+        info!("✅ Hybrid Backend initialized successfully (migrations complete)");
 
-            // Initialize RocksDB in blocking context to avoid async channel issues
-            let db: Surreal<Db> = tokio::task::spawn_blocking(move || {
-                // Create a new Tokio runtime for this blocking operation
-                tokio::runtime::Handle::current().block_on(async {
-                    Surreal::new::<RocksDb>(db_path_clone).await
-                })
-            })
-            .await
-            .map_err(|e| EmbeddedApiError::Configuration {
-                message: format!("Failed to spawn RocksDB initialization task: {}", e)
-            })?
-            .map_err(|e| EmbeddedApiError::Configuration {
-                message: format!("Failed to initialize SurrealDB with RocksDB: {}", e)
-            })?;
-
-            // Set namespace and database
-            db.use_ns("shannon")
-                .use_db("main")
-                .await
-                .map_err(|e| EmbeddedApiError::Configuration {
-                    message: format!("Failed to set namespace/database: {}", e)
-                })?;
-
-            info!("✅ SurrealDB initialized successfully with RocksDB backend");
-            std::sync::Arc::new(db)
-        };
-
-        // Create the Shannon API application in embedded mode with pre-initialized DB
-        info!("Creating Shannon API application...");
+        // Create the Shannon API application in embedded mode
+        info!("Creating Shannon API application with Hybrid integration...");
         #[cfg(feature = "desktop")]
         let app = shannon_api::server::create_app(
             config,
-            Some(db), // Pass the pre-initialized database connection
+            Some(shannon_api::database::Database::Hybrid(hybrid_backend)),
         )
         .await
         .map_err(|e| EmbeddedApiError::Configuration {
@@ -579,21 +588,13 @@ where
         Ok(())
     }
 
+
+
     /// Discover an available port in the specified range
     async fn discover_available_port(&self) -> Result<u16, EmbeddedApiError> {
-        for port in PORT_RANGE {
-            debug!(port = port, "Checking port availability");
-
-            match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
-                Ok(_) => {
-                    info!(port = port, "Found available port");
-                    return Ok(port);
-                }
-                Err(e) => {
-                    debug!(port = port, error = %e, "Port unavailable");
-                    continue;
-                }
-            }
+        if let Some(port) = embedded_port::select_available_port(PORT_RANGE, None).await {
+            info!(port = port, "Found available port");
+            return Ok(port);
         }
 
         Err(EmbeddedApiError::AllPortsUnavailable {
@@ -708,21 +709,7 @@ where
 
     /// Get current server status
     fn get_status(&self) -> ServerStatus {
-        let state = self.state.read();
-
-        let uptime_seconds = state.started_at
-            .map(|started| (Utc::now() - started).num_seconds().max(0) as u64)
-            .unwrap_or(0);
-
-        ServerStatus {
-            state: state.state,
-            port: state.port,
-            base_url: state.base_url.clone(),
-            uptime_seconds,
-            restart_count: state.restart_count,
-            last_error: state.last_error.clone(),
-            started_at: state.started_at,
-        }
+        build_status(&self.state.read())
     }
 }
 
@@ -730,6 +717,7 @@ where
 #[derive(Debug, Clone)]
 pub struct EmbeddedApiServerHandle {
     command_tx: mpsc::UnboundedSender<ServerCommand>,
+    startup_state: SharedStartupState,
 }
 
 impl EmbeddedApiServerHandle {
@@ -768,10 +756,33 @@ impl EmbeddedApiServerHandle {
         rx.await.context("Failed to receive status response")
     }
 
-    /// Get the port number if the server is running
+    /// Get the port number if the server is running.
+    ///
+    /// Returns the actual port from the server state, or `None` if the server
+    /// is not yet bound to a port.
     pub fn port(&self) -> Option<u16> {
-        // This would be implemented to return the actual port from the server state
-        None // Placeholder - should be implemented based on server state
+        self.startup_state.port()
+    }
+
+    pub fn startup_state(&self) -> SharedStartupState {
+        self.startup_state.clone()
+    }
+}
+
+fn build_status(state: &ServerStateInner) -> ServerStatus {
+    let uptime_seconds = state
+        .started_at
+        .map(|started| (Utc::now() - started).num_seconds().max(0) as u64)
+        .unwrap_or(0);
+
+    ServerStatus {
+        state: state.state,
+        port: state.port,
+        base_url: state.base_url.clone(),
+        uptime_seconds,
+        restart_count: state.restart_count,
+        last_error: state.last_error.clone(),
+        started_at: state.started_at,
     }
 }
 
@@ -793,7 +804,7 @@ impl IpcEventEmitter for TauriIpcEventEmitter {
     async fn emit_server_state_change(&self, payload: ServerStateChangePayload) -> Result<()> {
         // Emit state change event
         self.app_handle
-            .emit("server-state-change", &payload)
+            .emit(events::SERVER_STATE_CHANGE, &payload)
             .context("Failed to emit server-state-change event")?;
 
         // If server is ready, also emit server-ready event
@@ -805,7 +816,7 @@ impl IpcEventEmitter for TauriIpcEventEmitter {
                 });
 
                 self.app_handle
-                    .emit("server-ready", &ready_payload)
+                    .emit(events::SERVER_READY, &ready_payload)
                     .context("Failed to emit server-ready event")?;
 
                 info!(port = port, url = %base_url, "🎉 Emitted server-ready event");
@@ -968,8 +979,8 @@ pub async fn start_embedded_api(
     let event_emitter = Arc::new(TauriIpcEventEmitter::new(app_handle.clone()));
 
     // Create event emitter for IPC logging that uses the ipc_events trait
-    let ipc_event_emitter: Arc<dyn crate::ipc_events::IpcEventEmitter> = Arc::new(crate::ipc_events::TauriEventEmitter::new(app_handle.clone()));
-    match crate::ipc_logger::setup_ipc_logging(ipc_event_emitter).await {
+
+    match crate::ipc_logger::setup_ipc_logging(app_handle.clone()).await {
         Ok(_ipc_layer) => {
             info!("✅ IPC logging system initialized successfully");
             // The setup_ipc_logging function already registers the layer with tracing subscriber

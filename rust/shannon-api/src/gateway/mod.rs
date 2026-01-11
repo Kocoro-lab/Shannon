@@ -9,11 +9,13 @@
 //! - gRPC client for Orchestrator communication
 
 pub mod auth;
+pub mod embedded_auth;
 pub mod grpc_client;
 pub mod idempotency;
 pub mod rate_limit;
 pub mod routes;
 pub mod sessions;
+pub mod settings;
 pub mod streaming;
 pub mod tasks;
 
@@ -27,5 +29,6 @@ pub fn create_router() -> Router<AppState> {
         .merge(routes::router())
         .merge(sessions::router())
         .merge(tasks::router())
+        .merge(settings::router())
         .merge(streaming::router())
 }

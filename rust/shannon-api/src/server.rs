@@ -27,9 +27,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Create the application with all routes and middleware.
 pub async fn create_app(
     config: AppConfig,
-    #[cfg(feature = "embedded")] existing_db: Option<
-        std::sync::Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>,
-    >,
+    #[cfg(feature = "embedded")] existing_db: Option<crate::database::Database>,
 ) -> anyhow::Result<Router> {
     // Start overall timer
     let overall_timer = OpTimer::new("server", "create_app");
@@ -120,63 +118,47 @@ pub async fn create_app(
     };
     step_timer.finish();
 
-    // [6/8] Initialize embedded DB for direct use (Auth, etc.) if enabled
-    let step_timer = OpTimer::new("server", "surrealdb");
+    // [6/8] Initialize Database (SurrealDB or Hybrid)
+    let step_timer = OpTimer::new("server", "database");
+    
+    // Prepare EventLog for WorkflowEngine later (only relevant if embedded)
     #[cfg(feature = "embedded")]
-    let surreal = if config.deployment.is_embedded() {
-        // Use existing database connection if provided, otherwise create new one
-        if let Some(existing_conn) = existing_db {
-            log_init_step!(6, 8, "SurrealDB", "🗄️  Using shared connection");
-            Some((*existing_conn).clone())
+    let (database, event_log): (Option<crate::database::Database>, Option<Box<dyn durable_shannon::EventLog>>) = if config.deployment.is_embedded() {
+        // If passed existing, use it
+        if let Some(db) = existing_db {
+             log_init_step!(6, 8, "Database", "🗄️  Using shared connection");
+             
+             // If db is Hybrid, we can clone it as HybridBackend and box it as EventLog
+             let log: Option<Box<dyn durable_shannon::EventLog>> = match &db {
+                 #[cfg(feature = "usearch")]
+                 crate::database::Database::Hybrid(backend) => Some(Box::new(backend.clone())),
+                 _ => None,
+             };
+             (Some(db), log)
         } else {
-            let db_path =
-                std::env::var("SURREALDB_PATH").unwrap_or_else(|_| "./data/shannon.db".to_string());
+             // Init defaults based on features
+             #[cfg(feature = "usearch")]
+             {
+                 let data_dir = std::path::PathBuf::from(std::env::var("SHANNON_DATA_DIR").unwrap_or_else(|_| "./data".to_string()));
+                 let backend = crate::database::hybrid::HybridBackend::new(data_dir);
+                 if let Err(e) = backend.init().await {
+                     log_init_warning!("Failed to init HybridBackend: {}", e);
+                     (None, None)
+                 } else {
+                     log_init_step!(6, 8, "Database", "🗄️  Hybrid Backend (SQLite + USearch)");
+                     (Some(crate::database::Database::Hybrid(backend.clone())), Some(Box::new(backend)))
+                 }
+             }
+         }
 
-            // Select SurrealDB backend based on SURREALDB_BACKEND environment variable
-            let backend = std::env::var("SURREALDB_BACKEND")
-                .unwrap_or_else(|_| "rocksdb".to_string())
-                .to_lowercase();
-
-            // Create a client instance with the specified backend
-            let db_result = match backend.as_str() {
-                "surrealkv" | "kv" => {
-                    // Try SurrealKv backend for better Tauri compatibility
-                    surrealdb::Surreal::new::<surrealdb::engine::local::SurrealKv>(db_path.clone()).await
-                }
-                "rocksdb" | "rocks" | _ => {
-                    // Default to RocksDb backend
-                    surrealdb::Surreal::new::<surrealdb::engine::local::RocksDb>(db_path.clone()).await
-                }
-            };
-
-            match db_result {
-                Ok(db) => {
-                    // Select default namespace/database
-                    if let Err(e) = db.use_ns("shannon").use_db("main").await {
-                        log_init_warning!("Failed to select SurrealDB ns/db: {}", e);
-                        log_init_step!(6, 8, "SurrealDB", "🗄️  Failed to initialize");
-                        None
-                    } else {
-                        log_init_step!(6, 8, "SurrealDB", format!("🗄️  Embedded at {}", db_path));
-                        Some(db)
-                    }
-                }
-                Err(e) => {
-                    log_init_warning!("Failed to connect to embedded SurrealDB: {}", e);
-                    log_init_step!(6, 8, "SurrealDB", "🗄️  Connection failed");
-                    None
-                }
-            }
-        }
     } else {
-        log_init_step!(6, 8, "SurrealDB", "🗄️  Skipped (cloud mode)");
-        None
+        log_init_step!(6, 8, "Database", "🗄️  Skipped (cloud mode)");
+        (None, None)
     };
+
     #[cfg(not(feature = "embedded"))]
-    let _surreal: Option<()> = {
-        log_init_step!(6, 8, "SurrealDB", "🗄️  Not available (feature not enabled)");
-        None
-    };
+    let (database, _event_log): (Option<crate::database::Database>, Option<()>) = (None, None);
+
     step_timer.finish();
 
     // [7/8] Create workflow engine based on deployment mode
@@ -184,7 +166,7 @@ pub async fn create_app(
     let workflow_engine = create_workflow_engine(
         &config,
         #[cfg(feature = "embedded")]
-        surreal.clone(),
+        event_log,
     )
     .await?;
     let engine_info = format!(
@@ -203,7 +185,7 @@ pub async fn create_app(
         redis,
         workflow_engine,
         #[cfg(feature = "embedded")]
-        surreal,
+        database,
     };
 
     // [8/8] Build main API router with middleware
@@ -250,22 +232,15 @@ async fn init_redis(url: &str) -> anyhow::Result<redis::aio::ConnectionManager> 
 }
 
 /// Create workflow engine based on deployment configuration.
-///
-/// In embedded mode, this creates a local Durable engine that runs workflows
-/// in-process without any network calls. The Go orchestrator is NOT required.
-///
-/// In cloud mode, this creates a Temporal engine that connects to the Go
-/// orchestrator via gRPC for workflow coordination.
 async fn create_workflow_engine(
     config: &AppConfig,
-    #[cfg(feature = "embedded")] surreal_conn: Option<
-        surrealdb::Surreal<surrealdb::engine::local::Db>,
-    >,
+    #[cfg(feature = "embedded")]
+    event_log: Option<Box<dyn durable_shannon::EventLog>>,
 ) -> anyhow::Result<WorkflowEngine> {
     WorkflowEngine::from_config(
         &config.deployment.workflow,
         #[cfg(feature = "embedded")]
-        surreal_conn,
+        event_log,
     )
     .await
 }

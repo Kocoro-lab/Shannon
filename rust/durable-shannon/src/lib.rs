@@ -20,10 +20,10 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use durable_shannon::{EmbeddedWorker, SurrealDBEventLog};
+//! use durable_shannon::EmbeddedWorker;
 //!
 //! // Initialize the event log
-//! let event_log = SurrealDBEventLog::new("./data/workflows.db").await?;
+//! // let event_log = MyEventLog::new("./data/workflows.db").await?;
 //!
 //! // Create an embedded worker
 //! let worker = EmbeddedWorker::new(event_log, "./wasm/patterns").await?;
@@ -44,17 +44,11 @@ pub mod worker;
 pub use backends::EventLog;
 pub use worker::EmbeddedWorker;
 
-#[cfg(feature = "surrealdb-backend")]
-pub use backends::surrealdb::SurrealDBEventLog;
-
 /// Prelude for convenient imports.
 pub mod prelude {
     pub use crate::activities::{Activity, ActivityContext, ActivityResult};
     pub use crate::backends::EventLog;
     pub use crate::worker::{EmbeddedWorker, WorkflowHandle};
-
-    #[cfg(feature = "surrealdb-backend")]
-    pub use crate::backends::surrealdb::SurrealDBEventLog;
 }
 
 /// Workflow event types.

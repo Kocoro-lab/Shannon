@@ -24,9 +24,10 @@ gateway = ["dep:jsonwebtoken", "dep:argon2"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:prost-types"]
 # Cloud database mode - DISABLED due to SQLite conflict with embedded modes
 # database = ["dep:sqlx", "dep:pgvector"]
+usearch = ["dep:usearch"]
 # Embedded mode for Tauri desktop - uses SurrealDB with RocksDB backend
 # No orchestrator, Temporal, or external database required
-embedded = ["dep:surrealdb", "dep:durable-shannon"]
+embedded = ["dep:durable-shannon", "dep:rusqlite", "usearch"]
 # Mobile embedded mode with SQLite - completely separate from cloud database
 # IMPORTANT: Never enable this with 'database' feature due to SQLite conflict
 embedded-mobile = ["dep:rusqlite", "dep:durable-shannon"]
@@ -114,6 +115,9 @@ parking_lot = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
 
+# Encryption for API keys
+aes-gcm = "0.10"
+
 # Configuration
 config = { workspace = true }
 dotenvy = { workspace = true }
@@ -123,10 +127,11 @@ clap = { workspace = true }
 governor = { workspace = true }
 
 # Embedded database (for desktop/mobile mode)
-surrealdb = { workspace = true, optional = true }
+# surrealdb = { workspace = true, optional = true }
 
 # SQLite for mobile (lighter weight)
 rusqlite = { workspace = true, optional = true }
+usearch = { version = "2.14", optional = true }
 
 # Durable workflow engine (for embedded mode - no orchestrator needed)
 durable-shannon = { workspace = true, optional = true }

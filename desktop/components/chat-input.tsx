@@ -8,8 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Send, Loader2, Sparkles, Pause, Play, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { submitTask } from "@/lib/shannon/api";
+import { listApiKeys } from "@/lib/shannon/settings";
 import { cn } from "@/lib/utils";
 import { useServer } from "@/lib/server-context";
+import { toast } from "sonner";
 
 export type AgentSelection = "normal" | "deep_research";
 export type ResearchStrategy = "quick" | "standard" | "deep" | "academic";
@@ -34,13 +36,13 @@ interface ChatInputProps {
     onCancel?: () => void;
 }
 
-export function ChatInput({ 
-    sessionId, 
-    disabled, 
-    isTaskComplete, 
-    selectedAgent = "normal", 
-    initialResearchStrategy = "quick", 
-    onTaskCreated, 
+export function ChatInput({
+    sessionId,
+    disabled,
+    isTaskComplete,
+    selectedAgent = "normal",
+    initialResearchStrategy = "quick",
+    onTaskCreated,
     variant = "default",
     isTaskRunning = false,
     isPaused = false,
@@ -57,7 +59,7 @@ export function ChatInput({
     const [researchStrategy, setResearchStrategy] = useState<ResearchStrategy>(initialResearchStrategy);
     const router = useRouter();
     const { isReady: isServerReady, status: serverStatus } = useServer();
-    
+
     // Use ref for composition state to avoid race conditions with state updates
     // This is more reliable than state for IME handling
     const isComposingRef = useRef(false);
@@ -70,6 +72,11 @@ export function ChatInput({
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
+        if (!isServerReady) {
+            setError("Server is not ready");
+            return;
+        }
+
         if (!query.trim()) {
             return;
         }
@@ -78,6 +85,23 @@ export function ChatInput({
         setError(null);
 
         try {
+            // Validate API keys are configured before submission
+            const apiKeys = await listApiKeys();
+            const hasAnyKey = apiKeys.some(key => key.is_configured);
+
+            if (!hasAnyKey) {
+                setIsSubmitting(false);
+                toast.error("No API keys configured", {
+                    description: "Please configure at least one LLM provider API key in Settings",
+                    action: {
+                        label: "Go to Settings",
+                        onClick: () => router.push("/settings/api-keys")
+                    },
+                    duration: 6000,
+                });
+                return;
+            }
+
             const context: Record<string, unknown> = {};
 
             if (selectedAgent === "deep_research") {
@@ -108,7 +132,7 @@ export function ChatInput({
     };
 
     const isInputDisabled = disabled || !isServerReady;
-    
+
     // Get appropriate placeholder text based on server status
     const getPlaceholderText = () => {
         if (!isServerReady) {
@@ -200,7 +224,7 @@ export function ChatInput({
                                 </Select>
                             </div>
                         )}
-                        
+
                         <div className="relative">
                             <Textarea
                                 placeholder={getPlaceholderText()}

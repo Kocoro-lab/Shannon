@@ -2,6 +2,14 @@
 //!
 //! This module provides the tool registry and built-in tool implementations.
 
+pub mod cache;
+pub mod registry;
+pub mod security;
+
+pub use cache::{CacheKey, CacheStats, CachedResult, ToolCache};
+pub use registry::ToolRegistry as AdvancedToolRegistry;
+pub use security::{SecurityPolicy, ToolSecurity};
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -46,11 +54,11 @@ impl ToolRegistry {
     /// Create a registry with default built-in tools.
     pub fn with_defaults() -> Self {
         let registry = Self::new();
-        
+
         // Register built-in tools
         registry.register(Arc::new(CalculatorTool));
         registry.register(Arc::new(CurrentTimeTool));
-        
+
         registry
     }
 
@@ -84,9 +92,10 @@ impl ToolRegistry {
 
     /// Execute a tool by name.
     pub async fn execute(&self, name: &str, arguments: &str) -> anyhow::Result<String> {
-        let tool = self.get(name)
+        let tool = self
+            .get(name)
             .ok_or_else(|| anyhow::anyhow!("Tool not found: {}", name))?;
-        
+
         tool.execute(arguments).await
     }
 
@@ -128,7 +137,10 @@ impl Tool for CalculatorTool {
 
         // Simple expression evaluation using meval would go here
         // For now, we'll return a placeholder
-        let result = format!("Evaluated: {} (calculator implementation pending)", expression);
+        let result = format!(
+            "Evaluated: {} (calculator implementation pending)",
+            expression
+        );
         Ok(result)
     }
 }
@@ -176,6 +188,7 @@ impl Tool for CurrentTimeTool {
         Ok(serde_json::json!({
             "current_time": result,
             "timezone": "UTC"
-        }).to_string())
+        })
+        .to_string())
     }
 }

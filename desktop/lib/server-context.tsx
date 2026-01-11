@@ -4,9 +4,11 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import type {
   ServerLogEvent,
   StateChangeEvent,
-  LifecyclePhase
+  LifecyclePhase,
+  ServerPortSelectedPayload
 } from './ipc-events';
 import { parseEventTimestamp } from './ipc-events';
+import { findEmbeddedApiUrl, pollReadiness } from './shannon/api';
 
 export type ServerStatus = 'initializing' | 'starting' | 'ready' | 'failed' | 'stopping' | 'stopped' | 'unknown';
 
@@ -128,28 +130,30 @@ export function ServerProvider({ children }: { children: ReactNode }) {
           }
         };
 
-        // STEP 1: Proactive health check on likely ports (1906-1915)
+        // STEP 1: Proactive readiness check on likely ports (1906-1915)
         // This eliminates race conditions where IPC events are sent before listeners are ready
         console.log('[ServerContext] 🔍 Checking for existing server on ports 1906-1915...');
 
-        for (let port = 1906; port <= 1915; port++) {
-          try {
-            const url = `http://localhost:${port}`;
-            const response = await fetch(`${url}/health`, {
-              method: 'GET',
-              cache: 'no-store',
-              signal: AbortSignal.timeout(1000), // 1 second timeout per port
-            });
+        const storedPort = typeof window !== 'undefined'
+          ? window.localStorage.getItem("shannon.embedded.port")
+          : null;
 
-            if (response.ok) {
-              console.log(`[ServerContext] ✅ Found running server on port ${port}`);
-              handleServerReady(url, port);
-              return; // Server found, no need to set up IPC listeners
-            }
-          } catch (e) {
-            // Port not available or server not running, continue to next port
-            console.debug(`[ServerContext] Port ${port} not available:`, e);
+        if (storedPort) {
+          const url = `http://localhost:${storedPort}`;
+          const isReady = await pollReadiness(url, 1000);
+          if (isReady) {
+            console.log(`[ServerContext] ✅ Found running server on stored port ${storedPort}`);
+            handleServerReady(url, Number(storedPort));
+            return;
           }
+        }
+
+        const discoveredUrl = await findEmbeddedApiUrl();
+        if (discoveredUrl) {
+          const port = Number(new URL(discoveredUrl).port);
+          console.log(`[ServerContext] ✅ Found running server on port ${port}`);
+          handleServerReady(discoveredUrl, port);
+          return;
         }
 
         console.log('[ServerContext] 🔄 No existing server found, setting up IPC listeners...');
@@ -176,6 +180,14 @@ export function ServerProvider({ children }: { children: ReactNode }) {
         });
         unlisteners.push(unlistenLog);
 
+        // Listen for server-port-selected events
+        const unlistenPort = await listen<ServerPortSelectedPayload>('server-port-selected', (event) => {
+          const { base_url, port } = event.payload;
+          window.localStorage.setItem("shannon.embedded.port", String(port));
+          updateStatus('initializing', base_url, port);
+        });
+        unlisteners.push(unlistenPort);
+
         // Listen for server-state-change events
         const unlistenState = await listen<StateChangeEvent>('server-state-change', (event) => {
           const stateEvent = event.payload;
@@ -194,13 +206,15 @@ export function ServerProvider({ children }: { children: ReactNode }) {
           const newStatus = mapLifecycleToStatus(stateEvent.to);
           console.log(`[ServerContext] State change: ${stateEvent.from || 'none'} -> ${stateEvent.to} (status: ${newStatus})`);
 
+          const nextPort = stateEvent.port || undefined;
+
           if (stateEvent.to === 'ready' && stateEvent.port) {
             const url = `http://localhost:${stateEvent.port}`;
             updateStatus(newStatus, url, stateEvent.port, stateEvent.error || undefined);
           } else if (stateEvent.to === 'failed') {
-            updateStatus(newStatus, undefined, undefined, stateEvent.error || 'Server failed');
+            updateStatus(newStatus, undefined, nextPort, stateEvent.error || 'Server failed');
           } else {
-            updateStatus(newStatus, undefined, undefined, stateEvent.error || undefined);
+            updateStatus(newStatus, undefined, nextPort, stateEvent.error || undefined);
           }
         });
         unlisteners.push(unlistenState);

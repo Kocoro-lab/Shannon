@@ -507,6 +507,11 @@ curl http://localhost:8765/health
 curl http://localhost:8765/v1/tasks -H "Content-Type: application/json"
 ```
 
+**Debug Console Logs:**
+- Open the in-app Debug Console to view embedded server logs.
+- Startup logs are buffered until the renderer is ready, then replayed.
+- Use this view to confirm readiness gating and port selection events.
+
 ### Cross-Layer Debugging Checklist
 
 - [ ] Frontend sends correct data format

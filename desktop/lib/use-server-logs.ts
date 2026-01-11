@@ -137,28 +137,7 @@ export function useServerLogs(): UseServerLogsReturn {
 
     const setupListeners = async () => {
       try {
-        const { listen } = await import('@tauri-apps/api/event');
-        const { invoke } = await import('@tauri-apps/api/core');
-
-        // Fetch recent logs first
-        try {
-          const recentLogs = await invoke<ServerLogEvent[]>('get_recent_logs');
-          console.log('[useServerLogs] Fetched recent logs:', recentLogs.length);
-
-          recentLogs.forEach(payload => {
-            addLog({
-              id: generateId(),
-              timestamp: parseEventTimestamp(payload.timestamp),
-              level: payload.level,
-              component: payload.component,
-              message: payload.message,
-              type: 'log',
-              data: payload,
-            });
-          });
-        } catch (err) {
-          console.warn('[useServerLogs] Failed to fetch recent logs:', err);
-        }
+        const { listen, emit } = await import('@tauri-apps/api/event');
 
         // Listen for server-log events
         const unlistenLog = await listen<ServerLogEvent>('server-log', (event) => {
@@ -235,6 +214,12 @@ export function useServerLogs(): UseServerLogsReturn {
           });
         });
         unlisteners.push(unlistenHealth);
+
+        try {
+          await emit('renderer-ready');
+        } catch (err) {
+          console.warn('[useServerLogs] Failed to signal renderer ready:', err);
+        }
 
         console.log('[useServerLogs] IPC listeners initialized');
       } catch (error) {

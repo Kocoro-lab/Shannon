@@ -70,6 +70,19 @@ export interface ServerStateChangePayload {
 }
 
 /**
+ * Payload for server-port-selected IPC event
+ * Emitted when the embedded server selects a port before readiness.
+ */
+export interface ServerPortSelectedPayload {
+  /** Selected port number */
+  port: number;
+  /** Base URL derived from the selected port */
+  base_url: string;
+  /** ISO 8601 timestamp of selection */
+  timestamp: string;
+}
+
+/**
  * Payload for server-log IPC event
  * Real-time log events from embedded API server for debug console
  */

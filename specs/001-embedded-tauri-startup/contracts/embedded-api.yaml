@@ -1,0 +1,79 @@
+openapi: 3.0.3
+info:
+  title: Embedded Service Health API
+  version: 1.0.0
+  description: Health and readiness endpoints for the embedded desktop service.
+servers:
+  - url: http://localhost:{port}
+    variables:
+      port:
+        default: "1906"
+paths:
+  /health:
+    get:
+      summary: Basic liveness check
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /ready:
+    get:
+      summary: Readiness check
+      responses:
+        "200":
+          description: Service is ready to accept user prompts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessStatus"
+  /startup:
+    get:
+      summary: Startup progress check
+      responses:
+        "200":
+          description: Service startup status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StartupStatus"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        timestamp:
+          type: string
+          format: date-time
+      required:
+        - status
+        - timestamp
+    ReadinessStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: ["ready", "not_ready"]
+        details:
+          type: string
+      required:
+        - status
+    StartupStatus:
+      type: object
+      properties:
+        phase:
+          type: string
+          example: "migrations"
+        status:
+          type: string
+          enum: ["pending", "in_progress", "complete", "failed"]
+        details:
+          type: string
+      required:
+        - phase
+        - status

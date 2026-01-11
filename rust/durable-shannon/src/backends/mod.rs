@@ -3,8 +3,7 @@
 //! Backends implement the `EventLog` trait to provide durable storage
 //! for workflow events, enabling replay and recovery.
 
-#[cfg(feature = "surrealdb-backend")]
-pub mod surrealdb;
+
 
 use async_trait::async_trait;
 
@@ -103,5 +102,36 @@ impl EventLog for InMemoryEventLog {
     async fn compact(&self, _workflow_id: &str) -> anyhow::Result<u64> {
         // No-op for in-memory
         Ok(0)
+    }
+}
+
+#[async_trait]
+impl<T: EventLog + ?Sized> EventLog for Box<T> {
+    async fn append(&self, workflow_id: &str, event: Event) -> anyhow::Result<u64> {
+        (**self).append(workflow_id, event).await
+    }
+
+    async fn replay(&self, workflow_id: &str) -> anyhow::Result<Vec<Event>> {
+        (**self).replay(workflow_id).await
+    }
+
+    async fn next_index(&self, workflow_id: &str) -> anyhow::Result<u64> {
+        (**self).next_index(workflow_id).await
+    }
+
+    async fn exists(&self, workflow_id: &str) -> anyhow::Result<bool> {
+        (**self).exists(workflow_id).await
+    }
+
+    async fn delete(&self, workflow_id: &str) -> anyhow::Result<u64> {
+        (**self).delete(workflow_id).await
+    }
+
+    async fn get_checkpoint(&self, workflow_id: &str) -> anyhow::Result<Option<Vec<u8>>> {
+        (**self).get_checkpoint(workflow_id).await
+    }
+
+    async fn compact(&self, workflow_id: &str) -> anyhow::Result<u64> {
+        (**self).compact(workflow_id).await
     }
 }
