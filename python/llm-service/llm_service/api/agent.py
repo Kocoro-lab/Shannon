@@ -624,6 +624,27 @@ async def agent_query(request: Request, query: AgentQuery):
                 if unknown:
                     logger.warning(f"Dropping unknown tools from allowlist: {unknown}")
                 effective_allowed_tools = [t for t in base if t in available]
+
+                # Task-type based tool filtering (limit to 5 most relevant tools)
+                # This prevents LLM choice paralysis from too many tools
+                # Enable via context: tool_filtering_enabled=true, task_type=research|coding|analysis|browser|file
+                tool_filtering_enabled = (
+                    query.context
+                    and query.context.get("tool_filtering_enabled", False)
+                )
+                if tool_filtering_enabled and len(effective_allowed_tools) > 5:
+                    task_type = query.context.get("task_type", "general") if query.context else "general"
+                    max_tools = query.context.get("max_tools", 5) if query.context else 5
+                    original_count = len(effective_allowed_tools)
+                    effective_allowed_tools = registry.filter_tools_by_task_type(
+                        task_type=task_type,
+                        allowed_tools=effective_allowed_tools,
+                        max_tools=max_tools,
+                    )
+                    logger.info(
+                        f"Tool filtering applied: task_type={task_type}, "
+                        f"reduced from {original_count} to {len(effective_allowed_tools)} tools"
+                    )
             except Exception as e:
                 logger.warning(f"Failed to compute effective allowed tools: {e}")
                 effective_allowed_tools = query.allowed_tools or []

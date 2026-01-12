@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/formatting"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metadata"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/validation"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/control"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns"
@@ -118,6 +119,24 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				Success:      false,
 				ErrorMessage: fmt.Sprintf("Failed to decompose task: %v", err),
 			}, err
+		}
+	}
+
+	// Validate DAG dependencies for cycles (prevents infinite waits)
+	if len(decomp.Subtasks) > 1 {
+		subtaskInfos := make([]validation.SubtaskInfo, len(decomp.Subtasks))
+		for i, st := range decomp.Subtasks {
+			subtaskInfos[i] = validation.SubtaskInfo{
+				ID:           st.ID,
+				Dependencies: st.Dependencies,
+			}
+		}
+		if cycleErr := validation.ValidateDAGDependencies(subtaskInfos); cycleErr != nil {
+			logger.Error("Cyclic dependency detected in task plan", "error", cycleErr)
+			return TaskResult{
+				Success:      false,
+				ErrorMessage: fmt.Sprintf("Invalid task plan: %v", cycleErr),
+			}, cycleErr
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
@@ -199,4 +200,103 @@ func TestRecordUsage_DifferentIdempotencyKeys(t *testing.T) {
 	if sessionBudget.TaskTokensUsed != 450 {
 		t.Errorf("Expected TaskTokensUsed to be 450, got %d", sessionBudget.TaskTokensUsed)
 	}
+}
+
+func TestIdempotencyKeyTTLCleanup(t *testing.T) {
+	logger := zap.NewNop()
+
+	// Create budget manager with very short TTL for testing
+	bm := NewBudgetManager(nil, logger)
+	bm.idempotencyTTL = 100 * time.Millisecond // Very short TTL for testing
+
+	// Manually add some expired and non-expired keys
+	now := time.Now()
+	bm.idempotencyMu.Lock()
+	bm.processedUsage["expired-key-1"] = now.Add(-200 * time.Millisecond) // Expired
+	bm.processedUsage["expired-key-2"] = now.Add(-300 * time.Millisecond) // Expired
+	bm.processedUsage["fresh-key-1"] = now.Add(-50 * time.Millisecond)    // Not expired
+	bm.processedUsage["fresh-key-2"] = now                                 // Just added
+	bm.idempotencyMu.Unlock()
+
+	if bm.GetIdempotencyKeyCount() != 4 {
+		t.Errorf("Expected 4 keys before cleanup, got %d", bm.GetIdempotencyKeyCount())
+	}
+
+	// Run cleanup
+	bm.cleanupExpiredIdempotencyKeys()
+
+	// Verify expired keys were removed
+	count := bm.GetIdempotencyKeyCount()
+	if count != 2 {
+		t.Errorf("Expected 2 keys after cleanup, got %d", count)
+	}
+
+	// Verify correct keys remain
+	bm.idempotencyMu.RLock()
+	_, hasFresh1 := bm.processedUsage["fresh-key-1"]
+	_, hasFresh2 := bm.processedUsage["fresh-key-2"]
+	_, hasExpired1 := bm.processedUsage["expired-key-1"]
+	_, hasExpired2 := bm.processedUsage["expired-key-2"]
+	bm.idempotencyMu.RUnlock()
+
+	if !hasFresh1 || !hasFresh2 {
+		t.Error("Fresh keys should not be removed")
+	}
+	if hasExpired1 || hasExpired2 {
+		t.Error("Expired keys should be removed")
+	}
+}
+
+func TestIdempotencyKeyExpiration(t *testing.T) {
+	// Create budget manager with very short TTL
+	logger := zap.NewNop()
+	bm := NewBudgetManager(nil, logger)
+	bm.idempotencyTTL = 50 * time.Millisecond
+
+	// Manually add a key that will expire
+	bm.idempotencyMu.Lock()
+	bm.processedUsage["will-expire"] = time.Now().Add(-100 * time.Millisecond) // Already expired
+	bm.idempotencyMu.Unlock()
+
+	// Create a usage record with the "expired" idempotency key
+	usage := &BudgetTokenUsage{
+		UserID:         "user-123",
+		SessionID:      "session-456",
+		TaskID:         "task-789",
+		InputTokens:    100,
+		OutputTokens:   50,
+		IdempotencyKey: "will-expire",
+	}
+
+	// Initialize session budget
+	bm.sessionBudgets["session-456"] = &TokenBudget{
+		TaskBudget:        10000,
+		SessionBudget:     50000,
+		TaskTokensUsed:    0,
+		SessionTokensUsed: 0,
+	}
+
+	// Record usage - since the key expired, it should be processed again
+	err := bm.RecordUsage(context.Background(), usage)
+	if err != nil {
+		t.Fatalf("RecordUsage failed: %v", err)
+	}
+
+	// Verify tokens were recorded (key was expired, so it was re-processed)
+	sessionBudget := bm.sessionBudgets["session-456"]
+	if sessionBudget.TaskTokensUsed != 150 {
+		t.Errorf("Expected TaskTokensUsed to be 150 (expired key re-processed), got %d", sessionBudget.TaskTokensUsed)
+	}
+}
+
+func TestStopIdempotencyCleanup(t *testing.T) {
+	logger := zap.NewNop()
+	bm := NewBudgetManager(nil, logger)
+
+	// Start the cleanup goroutine
+	bm.startIdempotencyCleanup()
+
+	// Stop should not panic, even when called multiple times
+	bm.StopIdempotencyCleanup()
+	bm.StopIdempotencyCleanup() // Second call should be safe
 }

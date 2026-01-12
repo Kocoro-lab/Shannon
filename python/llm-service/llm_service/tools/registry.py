@@ -213,6 +213,88 @@ class ToolRegistry:
 
         return filtered
 
+    def filter_tools_by_task_type(
+        self,
+        task_type: str,
+        allowed_tools: Optional[List[str]] = None,
+        max_tools: int = 5,
+    ) -> List[str]:
+        """
+        Filter and limit tools based on task type for better LLM tool selection.
+
+        This prevents overwhelming the LLM with too many tools, which can cause
+        choice paralysis and incorrect tool selection.
+
+        Args:
+            task_type: Type of task (research, coding, analysis, browser, general)
+            allowed_tools: Base list of allowed tools to filter from (None = all tools)
+            max_tools: Maximum number of tools to return (default 5)
+
+        Returns:
+            List of tool names most relevant to the task type, limited to max_tools
+        """
+        # Define task type to category mappings with priority order
+        TASK_CATEGORY_MAP = {
+            "research": ["search", "retrieval"],
+            "coding": ["code", "file"],
+            "analysis": ["calculation", "code"],
+            "browser": ["browser"],
+            "file": ["file"],
+            "general": ["search", "retrieval", "calculation"],
+        }
+
+        # Core tools that should be prioritized for each task type
+        TASK_CORE_TOOLS = {
+            "research": ["web_search", "web_fetch", "web_subpage_fetch"],
+            "coding": ["python_executor", "file_read", "file_write"],
+            "analysis": ["calculator", "advanced_calculator", "python_executor"],
+            "browser": ["browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_extract"],
+            "file": ["file_read", "file_write", "file_list"],
+            "general": ["web_search", "calculator"],
+        }
+
+        # Get base tools to filter from
+        base_tools = set(allowed_tools) if allowed_tools else set(self.list_tools())
+
+        # Get categories and core tools for this task type
+        categories = TASK_CATEGORY_MAP.get(task_type, TASK_CATEGORY_MAP["general"])
+        core_tools = TASK_CORE_TOOLS.get(task_type, TASK_CORE_TOOLS["general"])
+
+        result = []
+
+        # First: Add core tools that are in base_tools
+        for tool_name in core_tools:
+            if tool_name in base_tools and tool_name not in result:
+                result.append(tool_name)
+                if len(result) >= max_tools:
+                    break
+
+        # Second: Add category-matching tools
+        if len(result) < max_tools:
+            for category in categories:
+                category_tools = self.list_tools_by_category(category)
+                for tool_name in category_tools:
+                    if tool_name in base_tools and tool_name not in result:
+                        result.append(tool_name)
+                        if len(result) >= max_tools:
+                            break
+                if len(result) >= max_tools:
+                    break
+
+        # Third: Fill remaining slots with other allowed tools
+        if len(result) < max_tools:
+            for tool_name in base_tools:
+                if tool_name not in result:
+                    # Skip dangerous tools in general filling
+                    tool = self.get_tool(tool_name)
+                    if tool and not tool.metadata.dangerous:
+                        result.append(tool_name)
+                        if len(result) >= max_tools:
+                            break
+
+        logger.debug(f"Filtered tools for task_type={task_type}: {result} (from {len(base_tools)} available)")
+        return result
+
     def __repr__(self) -> str:
         return f"<ToolRegistry: {len(self._tools)} tools in {len(self._categories)} categories>"
 
