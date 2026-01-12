@@ -44,7 +44,7 @@ pub use chain_of_thought::ChainOfThought;
 pub use debate::Debate;
 pub use react::ReAct;
 pub use reflection::Reflection;
-pub use research::Research;
+pub use research::{DeepResearch, DeepResearchConfig, Research};
 pub use tree_of_thoughts::TreeOfThoughts;
 
 /// Input for cognitive patterns.

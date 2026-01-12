@@ -1,0 +1,450 @@
+openapi: 3.0.3
+info:
+  title: Embedded Workflow Engine API
+  version: 1.0.0
+  description: API contract for embedded workflow engine in Shannon desktop application
+servers:
+  - url: http://localhost:8765
+    description: Embedded API server
+
+paths:
+  /api/v1/tasks:
+    post:
+      summary: Submit workflow task
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskSubmitRequest'
+      responses:
+        '200':
+          description: Task submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskSubmitResponse'
+        '400':
+          description: Invalid request
+        '500':
+          description: Server error
+    
+    get:
+      summary: List workflow tasks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, running, paused, completed, failed, cancelled]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskListResponse'
+
+  /api/v1/tasks/{taskId}:
+    get:
+      summary: Get task status and result
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskDetail'
+        '404':
+          description: Task not found
+
+  /api/v1/tasks/{taskId}/stream:
+    get:
+      summary: Stream workflow events (SSE)
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: event_types
+          in: query
+          schema:
+            type: string
+            description: Comma-separated event types to filter
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404':
+          description: Task not found
+
+  /api/v1/tasks/{taskId}/pause:
+    post:
+      summary: Pause workflow execution
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workflow paused
+        '404':
+          description: Task not found
+        '409':
+          description: Invalid state transition
+
+  /api/v1/tasks/{taskId}/resume:
+    post:
+      summary: Resume paused workflow
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workflow resumed
+        '404':
+          description: Task not found
+        '409':
+          description: Invalid state transition
+
+  /api/v1/tasks/{taskId}/cancel:
+    post:
+      summary: Cancel workflow execution
+      parameters:
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Workflow cancelled
+        '404':
+          description: Task not found
+
+  /api/v1/sessions:
+    post:
+      summary: Create new session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreateRequest'
+      responses:
+        '200':
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+
+  /api/v1/sessions/{sessionId}:
+    get:
+      summary: Get session info
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionDetail'
+        '404':
+          description: Session not found
+
+components:
+  schemas:
+    TaskSubmitRequest:
+      type: object
+      required:
+        - query
+      properties:
+        query:
+          type: string
+          example: "Research latest AI agent frameworks"
+        session_id:
+          type: string
+        mode:
+          type: string
+          enum: [simple, supervisor, research, react]
+        model_tier:
+          type: string
+          enum: [small, medium, large, premium]
+        context:
+          $ref: '#/components/schemas/TaskContext'
+    
+    TaskContext:
+      type: object
+      properties:
+        role:
+          type: string
+        system_prompt:
+          type: string
+        prompt_params:
+          type: object
+          additionalProperties: true
+        model_override:
+          type: string
+        provider_override:
+          type: string
+        cognitive_strategy:
+          type: string
+          enum: [exploratory, scientific, react, research]
+        research_strategy:
+          type: string
+        max_concurrent_agents:
+          type: integer
+          minimum: 1
+          maximum: 10
+        enable_verification:
+          type: boolean
+        enable_citations:
+          type: boolean
+        force_research:
+          type: boolean
+        iterative_research_enabled:
+          type: boolean
+        iterative_max_iterations:
+          type: integer
+          minimum: 1
+          maximum: 10
+    
+    TaskSubmitResponse:
+      type: object
+      required:
+        - task_id
+        - workflow_id
+        - status
+      properties:
+        task_id:
+          type: string
+          example: "task-abc123"
+        workflow_id:
+          type: string
+          example: "workflow-xyz789"
+        session_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running]
+        stream_url:
+          type: string
+          example: "/api/v1/tasks/task-abc123/stream"
+    
+    TaskListResponse:
+      type: object
+      required:
+        - tasks
+        - total
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskSummary'
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    
+    TaskSummary:
+      type: object
+      properties:
+        task_id:
+          type: string
+        workflow_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, paused, completed, failed, cancelled]
+        query:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+    
+    TaskDetail:
+      type: object
+      properties:
+        task_id:
+          type: string
+        workflow_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, paused, completed, failed, cancelled]
+        input:
+          $ref: '#/components/schemas/TaskSubmitRequest'
+        output:
+          $ref: '#/components/schemas/TaskResult'
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+    
+    TaskResult:
+      type: object
+      properties:
+        answer:
+          type: string
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+        reasoning_steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReasoningStep'
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/Source'
+        token_usage:
+          $ref: '#/components/schemas/TokenUsage'
+        model_used:
+          type: string
+        provider:
+          type: string
+        duration_ms:
+          type: integer
+        metadata:
+          type: object
+          additionalProperties: true
+    
+    ReasoningStep:
+      type: object
+      properties:
+        step:
+          type: integer
+        step_type:
+          type: string
+          enum: [thought, action, observation, evaluation]
+        content:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        confidence:
+          type: number
+          format: float
+    
+    Source:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        snippet:
+          type: string
+        confidence:
+          type: number
+          format: float
+        accessed_at:
+          type: string
+          format: date-time
+    
+    TokenUsage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        model_breakdown:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ModelTokenUsage'
+    
+    ModelTokenUsage:
+      type: object
+      properties:
+        model:
+          type: string
+        provider:
+          type: string
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+        calls:
+          type: integer
+    
+    SessionCreateRequest:
+      type: object
+      properties:
+        user_id:
+          type: string
+    
+    SessionResponse:
+      type: object
+      properties:
+        session_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    
+    SessionDetail:
+      type: object
+      properties:
+        session_id:
+          type: string
+        user_id:
+          type: string
+        active_workflow_id:
+          type: string
+        context:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        last_activity:
+          type: string
+          format: date-time

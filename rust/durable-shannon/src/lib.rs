@@ -41,7 +41,7 @@ pub mod microsandbox;
 pub mod worker;
 
 // Re-exports
-pub use backends::EventLog;
+pub use backends::{sqlite::SqliteEventLog, EventLog};
 pub use worker::EmbeddedWorker;
 
 /// Prelude for convenient imports.
@@ -108,13 +108,13 @@ impl Event {
         }
     }
 
-    /// Serialize the event to bytes.
+    /// Serialize the event to bytes using JSON.
     pub fn serialize(&self) -> anyhow::Result<Vec<u8>> {
-        Ok(bincode::serialize(self)?)
+        Ok(serde_json::to_vec(self)?)
     }
 
-    /// Deserialize an event from bytes.
+    /// Deserialize an event from bytes using JSON.
     pub fn deserialize(data: &[u8]) -> anyhow::Result<Self> {
-        Ok(bincode::deserialize(data)?)
+        Ok(serde_json::from_slice(data)?)
     }
 }

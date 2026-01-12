@@ -1,12 +1,6 @@
 //! API route definitions for the gateway.
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use serde::Serialize;
 
 use crate::AppState;
@@ -16,6 +10,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/info", get(get_api_info))
         .route("/api/v1/capabilities", get(get_capabilities))
+        .route(
+            "/api/v1/auth/me",
+            get(crate::gateway::auth::get_current_user_embedded),
+        )
 }
 
 /// API info response.
@@ -87,7 +85,7 @@ pub struct Capabilities {
 /// Get API capabilities.
 pub async fn get_capabilities(State(state): State<AppState>) -> impl IntoResponse {
     let mut providers = Vec::new();
-    
+
     if state.config.providers.openai.api_key.is_some() {
         providers.push("openai".to_string());
     }

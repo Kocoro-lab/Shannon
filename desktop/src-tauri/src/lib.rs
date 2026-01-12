@@ -40,6 +40,7 @@ pub mod embedded_api;
 pub mod embedded_port;
 pub mod ipc_events;
 pub mod ipc_logger;
+pub mod workflow;
 
 #[cfg(feature = "desktop")]
 use embedded_api::commands::TauriEmbeddedState;
@@ -303,6 +304,7 @@ pub fn run() {
     {
         builder = builder
             .manage(embedded_state)
+            .manage(workflow::WorkflowEngineState::new())
             .invoke_handler(tauri::generate_handler![
                 embedded_api::commands::get_embedded_api_url,
                 embedded_api::commands::is_embedded_api_running,
@@ -317,6 +319,14 @@ pub fn run() {
                 get_server_status,
                 get_recent_server_logs,
                 restart_embedded_server,
+                workflow::submit_workflow,
+                workflow::get_workflow_status,
+                workflow::stream_workflow_events,
+                workflow::pause_workflow,
+                workflow::resume_workflow,
+                workflow::cancel_workflow,
+                workflow::get_workflow_history,
+                workflow::export_workflow,
             ]);
     }
 

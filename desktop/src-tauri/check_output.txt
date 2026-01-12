@@ -1,0 +1,256 @@
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+   --> rust/durable-shannon/src/worker/checkpoint.rs:115:1
+    |
+115 | / pub struct CheckpointManager {
+116 | |     /// Configuration.
+117 | |     config: CheckpointConfig,
+...   |
+126 | |     stats: CheckpointStats,
+127 | | }
+    | |_^
+    |
+    = note: requested on the command line with `-W missing-debug-implementations`
+
+warning: `durable-shannon` (lib) generated 1 warning
+warning: unused import: `Duration`
+ --> rust/shannon-api/src/tools/cache.rs:9:17
+  |
+9 | use std::time::{Duration, SystemTime};
+  |                 ^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `anyhow::Result`
+  --> rust/shannon-api/src/workflow/embedded/router.rs:16:5
+   |
+16 | use anyhow::Result;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `TokenUsage`
+  --> rust/shannon-api/src/workflow/patterns/debate.rs:24:77
+   |
+24 | use super::{CognitivePattern, PatternContext, PatternResult, ReasoningStep, TokenUsage};
+   |                                                                             ^^^^^^^^^^
+
+warning: unused import: `TokenUsage`
+  --> rust/shannon-api/src/workflow/patterns/react.rs:24:77
+   |
+24 | use super::{CognitivePattern, PatternContext, PatternResult, ReasoningStep, TokenUsage};
+   |                                                                             ^^^^^^^^^^
+
+warning: unused import: `TokenUsage`
+  --> rust/shannon-api/src/workflow/patterns/reflection.rs:24:77
+   |
+24 | use super::{CognitivePattern, PatternContext, PatternResult, ReasoningStep, TokenUsage};
+   |                                                                             ^^^^^^^^^^
+
+warning: unused import: `anyhow::Result`
+  --> rust/shannon-api/src/workflow/patterns/research.rs:19:5
+   |
+19 | use anyhow::Result;
+   |     ^^^^^^^^^^^^^^
+
+warning: unused import: `TokenUsage`
+  --> rust/shannon-api/src/workflow/patterns/tree_of_thoughts.rs:25:77
+   |
+25 | use super::{CognitivePattern, PatternContext, PatternResult, ReasoningStep, TokenUsage};
+   |                                                                             ^^^^^^^^^^
+
+warning: use of deprecated function `rand::thread_rng`: Renamed to `rng`
+  --> rust/shannon-api/src/database/encryption.rs:12:12
+   |
+12 | use rand::{thread_rng, RngCore};
+   |            ^^^^^^^^^^
+   |
+   = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `rand::thread_rng`: Renamed to `rng`
+  --> rust/shannon-api/src/database/encryption.rs:93:9
+   |
+93 |         thread_rng().fill_bytes(&mut nonce_bytes);
+   |         ^^^^^^^^^^
+
+warning: use of deprecated function `rand::thread_rng`: Renamed to `rng`
+   --> rust/shannon-api/src/database/encryption.rs:184:13
+    |
+184 |             thread_rng().fill_bytes(&mut key);
+    |             ^^^^^^^^^^
+
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+  --> rust/shannon-api/src/database/encryption.rs:94:28
+   |
+94 |         let nonce = Nonce::from_slice(&nonce_bytes);
+   |                            ^^^^^^^^^^
+
+warning: use of deprecated associated function `aes_gcm::aead::generic_array::GenericArray::<T, N>::from_slice`: please upgrade to generic-array 1.x
+   --> rust/shannon-api/src/database/encryption.rs:137:28
+    |
+137 |         let nonce = Nonce::from_slice(nonce_bytes);
+    |                            ^^^^^^^^^^
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> rust/shannon-api/src/scheduler/cron.rs:53:1
+   |
+53 | pub struct CronParser;
+   | ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: requested on the command line with `-W missing-debug-implementations`
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> rust/shannon-api/src/scheduler/executor.rs:37:1
+   |
+37 | / pub struct ScheduleExecutor {
+38 | |     /// Active schedules.
+39 | |     schedules: Arc<RwLock<HashMap<String, Schedule>>>,
+40 | |     /// Run history.
+41 | |     runs: Arc<RwLock<Vec<ScheduleRun>>>,
+42 | | }
+   | |_^
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> rust/shannon-api/src/tools/cache.rs:56:1
+   |
+56 | / pub struct ToolCache {
+57 | |     /// Cached results.
+58 | |     cache: Arc<RwLock<HashMap<CacheKey, CachedResult>>>,
+59 | |     /// Default TTL in seconds.
+60 | |     default_ttl: u64,
+61 | | }
+   | |_^
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> rust/shannon-api/src/tools/registry.rs:28:1
+   |
+28 | / pub struct ToolRegistry {
+29 | |     /// Registered tools.
+30 | |     tools: Arc<RwLock<HashMap<String, Tool>>>,
+31 | | }
+   | |_^
+
+warning: type does not implement `std::fmt::Debug`; consider adding `#[derive(Debug)]` or a manual implementation
+  --> rust/shannon-api/src/tools/security.rs:23:1
+   |
+23 | / pub struct ToolSecurity {
+24 | |     /// Current security policy.
+25 | |     policy: Arc<RwLock<SecurityPolicy>>,
+26 | |     /// Allowlist of tool names.
+...  |
+29 | |     blocklist: Arc<RwLock<HashSet<String>>>,
+30 | | }
+   | |_^
+
+warning: `shannon-api` (lib) generated 17 warnings (run `cargo fix --lib -p shannon-api` to apply 7 suggestions)
+    Checking shannon-desktop v0.1.0 (/Users/gqadonis/Projects/prometheus/Shannon/desktop/src-tauri)
+warning: unused import: `WorkflowEvent`
+  --> desktop/src-tauri/src/workflow.rs:19:63
+   |
+19 | use shannon_api::workflow::embedded::{EmbeddedWorkflowEngine, WorkflowEvent};
+   |                                                               ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0061]: this method takes 4 arguments but 2 arguments were supplied
+   --> desktop/src-tauri/src/workflow.rs:154:14
+    |
+154 |             .submit_task(&request.pattern_type, task_input)
+    |              ^^^^^^^^^^^----------------------------------- two arguments of type `&str` and `&str` are missing
+    |
+note: expected `Option<&str>`, found `Value`
+   --> desktop/src-tauri/src/workflow.rs:154:49
+    |
+154 |             .submit_task(&request.pattern_type, task_input)
+    |                                                 ^^^^^^^^^^
+    = note: expected enum `std::option::Option<&str>`
+               found enum `JsonValue`
+note: method defined here
+   --> /Users/gqadonis/Projects/prometheus/Shannon/rust/shannon-api/src/workflow/embedded/engine.rs:137:18
+    |
+137 |     pub async fn submit_task(
+    |                  ^^^^^^^^^^^
+help: provide the arguments
+    |
+154 -             .submit_task(&request.pattern_type, task_input)
+154 +             .submit_task(&request.pattern_type, /* std::option::Option<&str> */, /* &str */, /* &str */)
+    |
+
+error[E0599]: no method named `get_workflow_status` found for reference `&std::sync::Arc<EmbeddedWorkflowEngine>` in the current scope
+   --> desktop/src-tauri/src/workflow.rs:187:14
+    |
+186 |           let status = engine
+    |  ______________________-
+187 | |             .get_workflow_status(&workflow_id)
+    | |_____________-^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `get_workflow` with a similar name
+    |
+187 -             .get_workflow_status(&workflow_id)
+187 +             .get_workflow(&workflow_id)
+    |
+
+error[E0277]: `tokio::sync::broadcast::Receiver<WorkflowEvent>` is not a future
+   --> desktop/src-tauri/src/workflow.rs:228:14
+    |
+228 |             .await
+    |              ^^^^^ `tokio::sync::broadcast::Receiver<WorkflowEvent>` is not a future
+    |
+    = help: the trait `std::future::Future` is not implemented for `tokio::sync::broadcast::Receiver<WorkflowEvent>`
+    = note: tokio::sync::broadcast::Receiver<WorkflowEvent> must be a future or must implement `IntoFuture` to be awaited
+    = note: required for `tokio::sync::broadcast::Receiver<WorkflowEvent>` to implement `IntoFuture`
+help: remove the `.await`
+    |
+228 -             .await
+    |
+
+error[E0599]: no method named `emit` found for struct `AppHandle<R>` in the current scope
+   --> desktop/src-tauri/src/workflow.rs:235:29
+    |
+235 |                 let _ = app.emit(&event_name, &event);
+    |                             ^^^^
+    |
+   ::: /Users/gqadonis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.9.5/src/lib.rs:952:6
+    |
+952 |   fn emit<S: Serialize + Clone>(&self, event: &str, payload: S) -> Result<()> {
+    |      ---- the method is available for `AppHandle` here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: there is a method `exit` with a similar name, but with different arguments
+   --> /Users/gqadonis/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tauri-2.9.5/src/app.rs:534:3
+    |
+534 |   pub fn exit(&self, exit_code: i32) {
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: trait `Emitter` which provides `emit` is implemented but not in scope; perhaps you want to import it
+    |
+ 13 + use tauri::Emitter;
+    |
+
+error[E0599]: no method named `list_workflows` found for reference `&std::sync::Arc<EmbeddedWorkflowEngine>` in the current scope
+   --> desktop/src-tauri/src/workflow.rs:352:14
+    |
+351 |           let workflows = engine
+    |  _________________________-
+352 | |             .list_workflows(session_id, limit.unwrap_or(50))
+    | |_____________-^^^^^^^^^^^^^^
+    |
+help: there is a method `get_workflow` with a similar name, but with different arguments
+   --> /Users/gqadonis/Projects/prometheus/Shannon/rust/shannon-api/src/workflow/embedded/engine.rs:308:5
+    |
+308 |     pub async fn get_workflow(&self, workflow_id: &str) -> Result<Option<WorkflowMetadata>> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `export_workflow` found for reference `&std::sync::Arc<EmbeddedWorkflowEngine>` in the current scope
+   --> desktop/src-tauri/src/workflow.rs:396:14
+    |
+395 | /         engine
+396 | |             .export_workflow(&workflow_id)
+    | |_____________-^^^^^^^^^^^^^^^
+    |
+help: there is a method `get_workflow` with a similar name
+    |
+396 -             .export_workflow(&workflow_id)
+396 +             .get_workflow(&workflow_id)
+    |
+
+Some errors have detailed explanations: E0061, E0277, E0599.
+For more information about an error, try `rustc --explain E0061`.
+warning: `shannon-desktop` (lib) generated 1 warning
+error: could not compile `shannon-desktop` (lib) due to 6 previous errors; 1 warning emitted

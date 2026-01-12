@@ -12,13 +12,18 @@ categories = ["algorithms", "wasm"]
 [lib]
 name = "workflow_patterns"
 path = "src/lib.rs"
-# WASM component library
-# crate-type = ["cdylib", "rlib"]
+# WASM component library - enabled for wasm32-wasi target
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
 # Build as WASM component for Durable execution
-wasm = []
+wasm = ["dep:wasi"]
+
+[[bin]]
+name = "patterns"
+path = "src/bin/patterns.rs"
+required-features = ["wasm"]
 
 [dependencies]
 # Serialization
@@ -39,6 +44,9 @@ tracing = "0.1"
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+# WASI support for WASM compilation
+wasi = { version = "0.13", optional = true }
 
 # Durable Shannon for workflow primitives
 durable-shannon = { path = "../durable-shannon", optional = true }

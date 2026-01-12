@@ -19,7 +19,7 @@ name = "shannon-api"
 path = "src/main.rs"
 
 [features]
-default = ["gateway", "grpc"]
+default = ["gateway", "grpc", "embedded"]
 gateway = ["dep:jsonwebtoken", "dep:argon2"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:prost", "dep:prost-types"]
 # Cloud database mode - DISABLED due to SQLite conflict with embedded modes
@@ -114,6 +114,11 @@ pin-project-lite = { workspace = true }
 parking_lot = { workspace = true }
 base64 = { workspace = true }
 rand = { workspace = true }
+rayon = "1.10"
+num_cpus = "1.16"
+
+# Checksums for workflow checkpoints
+crc32fast = "1.4"
 
 # Encryption for API keys
 aes-gcm = "0.10"
@@ -145,6 +150,23 @@ axum-test = { workspace = true }
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "cold_start_bench"
+harness = false
+
+[[bench]]
+name = "task_latency_bench"
+harness = false
+
+[[bench]]
+name = "event_throughput_bench"
+harness = false
+
+[[bench]]
+name = "memory_bench"
+harness = false
 
 
 # Use workspace lints

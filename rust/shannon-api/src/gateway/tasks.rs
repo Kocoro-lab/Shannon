@@ -77,7 +77,7 @@ pub enum TaskStatus {
 }
 
 /// Task response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct TaskResponse {
     #[serde(rename = "task_id")]
     pub id: String,
@@ -158,8 +158,10 @@ pub async fn list_tasks(
     State(state): State<AppState>,
     Query(query): Query<ListTasksQuery>,
 ) -> impl IntoResponse {
+    let timer = OpTimer::new("gateway", "list_tasks");
+
     tracing::debug!(
-        "📋 Listing tasks - limit={}, offset={}, status={:?}, session_id={:?}",
+        "📋 Listing tasks - limit={}, offset={}, status={:?}, session={:?}",
         query.limit,
         query.offset,
         query.status,
@@ -167,19 +169,60 @@ pub async fn list_tasks(
     );
 
     let mut tasks = Vec::new();
+    let mut total_count = 0;
 
-    // First check in-memory run manager (embedded mode)
-    let all_runs = state.run_manager.list_active_runs();
-    let runs: Vec<_> = all_runs
-        .into_iter()
-        .skip(query.offset)
-        .take(query.limit)
-        .collect();
+    // Strategy: Database-first for persistence, merge with in-memory for active tasks
+    if let Some(ref database) = state.database {
+        // Get persistent tasks from database (get extra to account for merging)
+        match database
+            .list_runs_filtered(
+                "embedded_user",
+                query.limit * 2, // Fetch extra to handle deduplication
+                query.offset,
+                query.status.as_deref(),
+                query.session_id.as_deref(),
+            )
+            .await
+        {
+            Ok(db_runs) => {
+                tracing::debug!("📚 Retrieved {} runs from database", db_runs.len());
 
-    for run in runs {
+                // Get accurate total count
+                total_count = match database
+                    .count_runs(
+                        "embedded_user",
+                        query.status.as_deref(),
+                        query.session_id.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(count) => count,
+                    Err(e) => {
+                        tracing::warn!("⚠️  Failed to count runs: {}", e);
+                        db_runs.len()
+                    }
+                };
+
+                // Convert DB runs to task responses
+                for run in db_runs {
+                    tasks.push(run_to_task_response(&run));
+                }
+            }
+            Err(e) => {
+                tracing::error!("❌ Failed to list runs from database: {}", e);
+            }
+        }
+    }
+
+    // Merge with in-memory active runs (override database for active tasks)
+    let active_runs = state.run_manager.list_active_runs();
+    let active_runs_count = active_runs.len();
+    tracing::debug!("🏃 Found {} active runs in memory", active_runs_count);
+
+    for run in &active_runs {
         use crate::domain::RunStatus;
 
-        // Apply status filter if specified
+        // Apply filters (status and session)
         if let Some(ref filter_status) = query.status {
             let status_str = match run.status {
                 RunStatus::Pending => "pending",
@@ -193,51 +236,108 @@ pub async fn list_tasks(
             }
         }
 
-        // Apply session filter if specified
         if let Some(ref filter_session) = query.session_id {
             if run.session_id.as_deref() != Some(filter_session.as_str()) {
                 continue;
             }
         }
 
-        let status = match run.status {
-            RunStatus::Pending => TaskStatus::Pending,
-            RunStatus::Running => TaskStatus::Running,
-            RunStatus::Completed => TaskStatus::Completed,
-            RunStatus::Failed => TaskStatus::Failed,
-            RunStatus::Cancelled => TaskStatus::Cancelled,
-        };
-
-        tasks.push(TaskResponse {
-            id: run.id.clone(),
-            status,
-            task_type: "chat".to_string(),
-            created_at: run.created_at.to_rfc3339(),
-            updated_at: run.updated_at.to_rfc3339(),
-            started_at: Some(run.created_at.to_rfc3339()),
-            completed_at: run.completed_at.map(|t| t.to_rfc3339()),
-            session_id: run.session_id.clone(),
-            error: run.error.clone(),
-        });
+        // Check if already in list (by ID), update if so, otherwise add
+        if let Some(existing) = tasks.iter_mut().find(|t| t.id == run.id) {
+            // Update with latest active state
+            *existing = run_to_task_response_from_manager(&run);
+            tracing::trace!("🔄 Updated task from active run - id={}", run.id);
+        } else {
+            // New active task not in DB yet
+            tasks.push(run_to_task_response_from_manager(&run));
+            tracing::trace!("➕ Added new active task - id={}", run.id);
+        }
     }
 
-    let total_count = tasks.len();
+    // Sort by created_at DESC (most recent first)
+    tasks.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+    // Calculate counts before moving
+    let tasks_before_pagination = tasks.len();
+
+    // Apply pagination after merging
+    let paginated: Vec<_> = tasks
+        .into_iter()
+        .skip(query.offset)
+        .take(query.limit)
+        .collect();
+
+    // Update total count to include any active runs not yet in DB
+    total_count = total_count.max(paginated.len() + query.offset);
+
+    timer.finish();
 
     tracing::info!(
-        "✅ Task list retrieved - count={}, total={}, limit={}",
-        tasks.len(),
+        "✅ Task list retrieved - returned={}, total={}, from_db={}, active={}",
+        paginated.len(),
         total_count,
-        query.limit
+        tasks_before_pagination,
+        active_runs_count
     );
 
-    let response = TaskListResponse {
-        tasks,
-        total_count,
-        limit: query.limit,
-        offset: query.offset,
+    (
+        StatusCode::OK,
+        Json(TaskListResponse {
+            tasks: paginated,
+            total_count,
+            limit: query.limit,
+            offset: query.offset,
+        }),
+    )
+}
+
+/// Convert a Run from database to TaskResponse.
+fn run_to_task_response(run: &crate::database::repository::Run) -> TaskResponse {
+    let status = match run.status.as_str() {
+        "pending" => TaskStatus::Pending,
+        "running" => TaskStatus::Running,
+        "completed" => TaskStatus::Completed,
+        "failed" => TaskStatus::Failed,
+        "cancelled" => TaskStatus::Cancelled,
+        _ => TaskStatus::Pending,
     };
 
-    (StatusCode::OK, Json(response))
+    TaskResponse {
+        id: run.id.clone(),
+        status,
+        task_type: run.strategy.clone(),
+        created_at: run.created_at.to_rfc3339(),
+        updated_at: run.updated_at.to_rfc3339(),
+        started_at: Some(run.created_at.to_rfc3339()),
+        completed_at: run.completed_at.map(|t| t.to_rfc3339()),
+        session_id: run.session_id.clone(),
+        error: run.error.clone(),
+    }
+}
+
+/// Convert a Run from in-memory manager to TaskResponse.
+fn run_to_task_response_from_manager(run: &crate::domain::Run) -> TaskResponse {
+    use crate::domain::RunStatus;
+
+    let status = match run.status {
+        RunStatus::Pending => TaskStatus::Pending,
+        RunStatus::Running => TaskStatus::Running,
+        RunStatus::Completed => TaskStatus::Completed,
+        RunStatus::Failed => TaskStatus::Failed,
+        RunStatus::Cancelled => TaskStatus::Cancelled,
+    };
+
+    TaskResponse {
+        id: run.id.clone(),
+        status,
+        task_type: "chat".to_string(),
+        created_at: run.created_at.to_rfc3339(),
+        updated_at: run.updated_at.to_rfc3339(),
+        started_at: Some(run.created_at.to_rfc3339()),
+        completed_at: run.completed_at.map(|t| t.to_rfc3339()),
+        session_id: run.session_id.clone(),
+        error: run.error.clone(),
+    }
 }
 
 /// Submit a new task.

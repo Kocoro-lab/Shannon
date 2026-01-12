@@ -104,6 +104,9 @@ impl HybridBackend {
                             data JSON NOT NULL -- Stores the full Run object
                         );
                         CREATE INDEX IF NOT EXISTS idx_runs_user ON runs(user_id);
+                        CREATE INDEX IF NOT EXISTS idx_runs_user_status ON runs(user_id, status);
+                        CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id) WHERE session_id IS NOT NULL;
+                        CREATE INDEX IF NOT EXISTS idx_runs_created_desc ON runs(user_id, created_at DESC);
 
                         -- Workflow Events Table
                         CREATE TABLE IF NOT EXISTS workflow_events (
@@ -387,6 +390,112 @@ impl HybridBackend {
         })
         .await
         .context("Tokio spawn_blocking failed")?
+    }
+    
+    /// Count total runs matching filters (for pagination).
+    pub async fn count_runs(
+        &self,
+        user_id: &str,
+        status_filter: Option<&str>,
+        session_filter: Option<&str>,
+    ) -> Result<usize> {
+        let user_id = user_id.to_string();
+        let status_filter = status_filter.map(String::from);
+        let session_filter = session_filter.map(String::from);
+        let sqlite = self.sqlite.clone();
+        
+        tokio::task::spawn_blocking(move || -> Result<usize> {
+            let guard = sqlite.lock().unwrap();
+            let conn = guard.as_ref().ok_or_else(|| anyhow::anyhow!("SQLite not initialized"))?;
+            
+            let mut sql = "SELECT COUNT(*) FROM runs WHERE user_id = ?1".to_string();
+            let mut bind_idx = 2;
+            
+            if status_filter.is_some() {
+                sql.push_str(&format!(" AND status = ?{}", bind_idx));
+                bind_idx += 1;
+            }
+            
+            if session_filter.is_some() {
+                sql.push_str(&format!(" AND session_id = ?{}", bind_idx));
+            }
+            
+            let mut stmt = conn.prepare(&sql)?;
+            
+            // Build params dynamically
+            let count: i64 = match (status_filter.as_ref(), session_filter.as_ref()) {
+                (Some(status), Some(session)) => {
+                    stmt.query_row(params![user_id, status, session], |row| row.get(0))?
+                }
+                (Some(status), None) => {
+                    stmt.query_row(params![user_id, status], |row| row.get(0))?
+                }
+                (None, Some(session)) => {
+                    stmt.query_row(params![user_id, session], |row| row.get(0))?
+                }
+                (None, None) => {
+                    stmt.query_row(params![user_id], |row| row.get(0))?
+                }
+            };
+            
+            Ok(count as usize)
+        }).await?
+    }
+    
+    /// List runs with filtering support (enhanced version).
+    pub async fn list_runs_filtered(
+        &self,
+        user_id: &str,
+        limit: usize,
+        offset: usize,
+        status_filter: Option<&str>,
+        session_filter: Option<&str>,
+    ) -> Result<Vec<Run>> {
+        let user_id = user_id.to_string();
+        let status_filter = status_filter.map(String::from);
+        let session_filter = session_filter.map(String::from);
+        let sqlite = self.sqlite.clone();
+        
+        tokio::task::spawn_blocking(move || -> Result<Vec<Run>> {
+            let guard = sqlite.lock().unwrap();
+            let conn = guard.as_ref().ok_or_else(|| anyhow::anyhow!("SQLite not initialized"))?;
+            
+            // Build SQL with dynamic filters
+            let mut sql = "SELECT data FROM runs WHERE user_id = ?1".to_string();
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(user_id.clone())];
+            
+            if let Some(ref status) = status_filter {
+                sql.push_str(&format!(" AND status = ?{}", params_vec.len() + 1));
+                params_vec.push(Box::new(status.clone()));
+            }
+            
+            if let Some(ref session) = session_filter {
+                sql.push_str(&format!(" AND session_id = ?{}", params_vec.len() + 1));
+                params_vec.push(Box::new(session.clone()));
+            }
+            
+            sql.push_str(&format!(" ORDER BY created_at DESC LIMIT ?{} OFFSET ?{}",
+                params_vec.len() + 1, params_vec.len() + 2));
+            params_vec.push(Box::new(limit as i64));
+            params_vec.push(Box::new(offset as i64));
+            
+            // Execute query
+            let mut stmt = conn.prepare(&sql)?;
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
+            
+            let rows = stmt.query_map(&param_refs[..], |row| {
+                row.get::<_, String>(0)
+            })?;
+
+            let mut runs = Vec::new();
+            for row_result in rows {
+                let data = row_result?;
+                if let Ok(run) = serde_json::from_str::<Run>(&data) {
+                    runs.push(run);
+                }
+            }
+            Ok(runs)
+        }).await?
     }
 }
 

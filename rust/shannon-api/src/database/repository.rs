@@ -216,6 +216,66 @@ impl Database {
         Self::InMemory(InMemoryStore::new())
     }
 
+    /// Count total runs matching filters (for pagination).
+    pub async fn count_runs(
+        &self,
+        user_id: &str,
+        status_filter: Option<&str>,
+        session_filter: Option<&str>,
+    ) -> anyhow::Result<usize> {
+        match self {
+            #[cfg(feature = "usearch")]
+            Self::Hybrid(client) => {
+                client
+                    .count_runs(user_id, status_filter, session_filter)
+                    .await
+            }
+            _ => {
+                tracing::warn!(
+                    "count_runs not fully supported in this database mode, using list_runs"
+                );
+                // Fallback: count via list_runs
+                let runs = self.list_runs(user_id, usize::MAX, 0).await?;
+                Ok(runs.len())
+            }
+        }
+    }
+
+    /// List runs with filtering support.
+    pub async fn list_runs_filtered(
+        &self,
+        user_id: &str,
+        limit: usize,
+        offset: usize,
+        status_filter: Option<&str>,
+        session_filter: Option<&str>,
+    ) -> anyhow::Result<Vec<Run>> {
+        match self {
+            #[cfg(feature = "usearch")]
+            Self::Hybrid(client) => {
+                client
+                    .list_runs_filtered(user_id, limit, offset, status_filter, session_filter)
+                    .await
+            }
+            _ => {
+                tracing::warn!("list_runs_filtered not fully supported, using basic list_runs");
+                // Fallback: filter in memory
+                let mut runs = self.list_runs(user_id, limit + offset, 0).await?;
+
+                // Apply filters
+                runs.retain(|r| {
+                    let status_match = status_filter.map_or(true, |s| r.status == s);
+                    let session_match =
+                        session_filter.map_or(true, |s| r.session_id.as_deref() == Some(s));
+                    status_match && session_match
+                });
+
+                // Apply pagination
+                Ok(runs.into_iter().skip(offset).take(limit).collect())
+            }
+        }
+    }
+
     /// Get control state for a workflow (only available in Hybrid backend).
     pub async fn get_control_state(
         &self,

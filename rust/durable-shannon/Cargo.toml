@@ -49,6 +49,21 @@ reqwest = { workspace = true }
 # Synchronization
 parking_lot = { workspace = true }
 
+# LRU cache for WASM modules
+lru = "0.12"
+
+# Compression for checkpoints
+zstd = "0.13"
+
+# Checksums for checkpoint verification
+crc32fast = "1.4"
+
+# Base64 encoding
+base64 = { workspace = true }
+
+# SQLite backend for event log
+rusqlite = { workspace = true }
+
 # SurrealDB backend (optional)
 # SurrealDB backend (optional) - REMOVED
 # surrealdb = { workspace = true, optional = true }

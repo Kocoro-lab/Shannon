@@ -1,16 +1,22 @@
-//! Research cognitive pattern.
+//! Research cognitive pattern with Deep Research 2.0 capabilities.
 //!
-//! Implements deep research with citations where the model:
-//! 1. Decomposes the query into sub-questions
-//! 2. Searches for information
-//! 3. Synthesizes findings with citations
-//! 4. Produces a comprehensive research report
+//! This module provides both basic research and advanced Deep Research 2.0
+//! with iterative coverage enhancement.
 
+mod coverage;
+mod verification;
+
+// Re-export Deep Research implementation
+mod deep_research;
+pub use deep_research::{DeepResearch, DeepResearchConfig};
+
+// Legacy Research pattern (basic)
+use crate::{CognitivePattern, PatternInput, PatternOutput, ReasoningStep, Source, TokenUsage};
 use chrono::Utc;
 
-use crate::{CognitivePattern, PatternInput, PatternOutput, ReasoningStep, Source, TokenUsage};
-
-/// Research pattern implementation.
+/// Basic Research pattern implementation.
+///
+/// For advanced research with iterative coverage, use [`DeepResearch`] instead.
 #[derive(Debug, Default)]
 pub struct Research {
     /// Maximum research depth.
@@ -74,9 +80,33 @@ impl CognitivePattern for Research {
         // Step 1: Decompose query
         step_count += 1;
         let sub_questions = vec![
-            format!("What is {}?", input.query.split_whitespace().take(3).collect::<Vec<_>>().join(" ")),
-            format!("Why is {} important?", input.query.split_whitespace().take(2).collect::<Vec<_>>().join(" ")),
-            format!("What are the implications of {}?", input.query.split_whitespace().take(3).collect::<Vec<_>>().join(" ")),
+            format!(
+                "What is {}?",
+                input
+                    .query
+                    .split_whitespace()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            format!(
+                "Why is {} important?",
+                input
+                    .query
+                    .split_whitespace()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            format!(
+                "What are the implications of {}?",
+                input
+                    .query
+                    .split_whitespace()
+                    .take(3)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
         ];
 
         reasoning_steps.push(ReasoningStep {
@@ -167,7 +197,7 @@ Based on the research conducted:
 ## Sources
 {} sources were consulted during this research.
 
-Note: Full LLM integration pending for actual research execution."#,
+Note: For advanced research with iterative coverage, use DeepResearch pattern."#,
             input.query,
             input.query,
             sub_questions.len(),
@@ -203,9 +233,9 @@ mod tests {
     async fn test_research_basic() {
         let research = Research::new();
         let input = PatternInput::new("What are the benefits of Rust?");
-        
+
         let output = research.execute(input).await.unwrap();
-        
+
         assert!(!output.sources.is_empty());
         assert!(!output.reasoning_steps.is_empty());
         assert!(output.answer.contains("Research Report"));

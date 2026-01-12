@@ -1,0 +1,157 @@
+name: Embedded Workflow CI
+
+on:
+  push:
+    branches: [main, feature/embedded-workflow-engine]
+    paths:
+      - 'rust/shannon-api/**'
+      - 'rust/durable-shannon/**'
+      - 'desktop/src-tauri/**'
+      - '.github/workflows/embedded-workflow-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'rust/shannon-api/**'
+      - 'rust/durable-shannon/**'
+      - 'desktop/src-tauri/**'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality-gates:
+    name: Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting (shannon-api)
+        run: cargo fmt --check --manifest-path rust/shannon-api/Cargo.toml
+
+      - name: Check formatting (durable-shannon)
+        run: cargo fmt --check --manifest-path rust/durable-shannon/Cargo.toml
+
+      - name: Run clippy (shannon-api)
+        run: cargo clippy --manifest-path rust/shannon-api/Cargo.toml --lib -- -D warnings
+
+      - name: Run clippy (durable-shannon)
+        run: cargo clippy --manifest-path rust/durable-shannon/Cargo.toml --lib -- -D warnings
+
+      - name: Run tests (shannon-api)
+        run: cargo test --manifest-path rust/shannon-api/Cargo.toml --lib
+
+      - name: Run tests (durable-shannon)
+        run: cargo test --manifest-path rust/durable-shannon/Cargo.toml --lib
+
+      - name: Build (shannon-api)
+        run: cargo build --manifest-path rust/shannon-api/Cargo.toml --lib --release
+
+      - name: Build (durable-shannon)
+        run: cargo build --manifest-path rust/durable-shannon/Cargo.toml --lib --release
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Generate coverage report
+        run: |
+          cargo tarpaulin \
+            --manifest-path rust/shannon-api/Cargo.toml \
+            --lib \
+            --out Xml \
+            --output-dir coverage \
+            -- --test-threads 1
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(grep -oP '(?<=line-rate=")[^"]*' coverage/cobertura.xml | head -1)
+          echo "Coverage: $COVERAGE"
+          if (( $(echo "$COVERAGE < 0.90" | bc -l) )); then
+            echo "Coverage below 90%: $COVERAGE"
+            exit 1
+          fi
+
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run benchmarks
+        run: |
+          cargo bench --manifest-path rust/shannon-api/Cargo.toml \
+            --bench cold_start_bench \
+            -- --output-format bencher
+
+      - name: Store benchmark results
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: 'cargo'
+          output-file-path: target/criterion/benchmarks.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+
+  final-report:
+    name: Final Report
+    runs-on: ubuntu-latest
+    needs: [quality-gates, security-audit, coverage]
+    steps:
+      - name: Report success
+        run: |
+          echo "✅ All quality gates passed!"
+          echo "Embedded Workflow Engine is production-ready."

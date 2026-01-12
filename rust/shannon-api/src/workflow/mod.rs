@@ -10,12 +10,16 @@
 
 pub mod advanced;
 pub mod control;
+pub mod embedded;
 pub mod engine;
 pub mod multiagent;
+pub mod patterns;
 pub mod task;
 pub mod tracking;
 
+pub use embedded::{EmbeddedWorkflowEngine, EventBus, WorkflowEvent};
 pub use engine::{WorkflowEngine, WorkflowEngineType};
+pub use patterns::{CognitivePattern, PatternContext, PatternRegistry, PatternResult};
 pub use task::{Task, TaskHandle, TaskResult, TaskState};
 pub use tracking::{ModelUsageBreakdown, TaskResultWithMetadata, UsageTracker};
 

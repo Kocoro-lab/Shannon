@@ -3,7 +3,7 @@
 //! Backends implement the `EventLog` trait to provide durable storage
 //! for workflow events, enabling replay and recovery.
 
-
+pub mod sqlite;
 
 use async_trait::async_trait;
 

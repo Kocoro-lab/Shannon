@@ -14,11 +14,13 @@ pub mod hybrid;
 pub mod repository;
 pub mod schema;
 pub mod settings;
+pub mod workflow_store;
 
 pub use encryption::KeyManager;
 pub use hybrid::ControlState;
 pub use repository::{Database, MemoryRepository, RunRepository};
 pub use settings::{ApiKey, ApiKeyInfo, ApiKeyRepository, SettingsRepository, UserSetting};
+pub use workflow_store::{WorkflowCheckpoint, WorkflowMetadata, WorkflowStatus, WorkflowStore};
 
 use crate::config::deployment::DeploymentDatabaseConfig;
 

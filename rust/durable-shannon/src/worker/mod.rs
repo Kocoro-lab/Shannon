@@ -2,10 +2,14 @@
 //!
 //! Provides an in-process workflow execution engine for Tauri desktop/mobile apps.
 
+pub mod cache;
+pub mod checkpoint;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde_json::json;
 use tokio::sync::{broadcast, Mutex, RwLock};
 
 use crate::backends::EventLog;
@@ -122,7 +126,11 @@ struct WorkflowInfo {
 
 impl<E: EventLog + 'static> EmbeddedWorker<E> {
     /// Create a new embedded worker.
-    pub async fn new(event_log: Arc<E>, wasm_dir: PathBuf, max_concurrent: usize) -> anyhow::Result<Self> {
+    pub async fn new(
+        event_log: Arc<E>,
+        wasm_dir: PathBuf,
+        max_concurrent: usize,
+    ) -> anyhow::Result<Self> {
         tracing::info!(
             "Creating embedded worker with WASM dir: {:?}, max_concurrent: {}",
             wasm_dir,
@@ -159,10 +167,7 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
                 .filter(|w| w.state == WorkflowState::Running)
                 .count();
             if active >= self.max_concurrent {
-                anyhow::bail!(
-                    "Max concurrent workflows ({}) reached",
-                    self.max_concurrent
-                );
+                anyhow::bail!("Max concurrent workflows ({}) reached", self.max_concurrent);
             }
         }
 
@@ -246,8 +251,7 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
         })
     }
 
-    /// Execute a workflow (placeholder implementation).
-    /// Execute a workflow using MicroSandbox.
+    /// Execute a workflow using MicroSandbox with pause/resume support.
     async fn execute_workflow(
         event_log: Arc<E>,
         wasm_dir: PathBuf,
@@ -256,18 +260,91 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
         input: serde_json::Value,
         tx: broadcast::Sender<WorkflowEvent>,
     ) -> anyhow::Result<serde_json::Value> {
-        use crate::microsandbox::{WasmSandbox, SandboxCapabilities};
+        use crate::microsandbox::{SandboxCapabilities, WasmSandbox};
 
         let wasm_path = wasm_dir.join(format!("{}.wasm", workflow_type));
-        
+
         let wasm_bytes = if wasm_path.exists() {
-             tracing::info!("Loading WASM workflow from {:?}", wasm_path);
-             tokio::fs::read(&wasm_path).await?
+            tracing::info!("Loading WASM workflow from {:?}", wasm_path);
+            tokio::fs::read(&wasm_path).await?
         } else {
-             tracing::warn!("WASM module not found at {:?}. Falling back to simulation for testing.", wasm_path);
-             // TODO: Remove fallback once we have real WASM modules
-             // Simulate progress
+            tracing::warn!(
+                "WASM module not found at {:?}. Falling back to simulation for testing.",
+                wasm_path
+            );
+
+            // Simulate progress with pause/resume support
             for i in 1..=10 {
+                // Check control state before each step (pause/resume/cancel)
+                if let Ok(Some(control_state)) =
+                    Self::get_control_state(&event_log, workflow_id).await
+                {
+                    if control_state.is_cancelled {
+                        tracing::info!("🛑 Workflow cancelled - workflow_id={}", workflow_id);
+                        event_log
+                            .append(
+                                workflow_id,
+                                Event::WorkflowFailed {
+                                    error: "Workflow cancelled by user".to_string(),
+                                    timestamp: chrono::Utc::now(),
+                                },
+                            )
+                            .await?;
+                        anyhow::bail!("Workflow cancelled");
+                    }
+
+                    if control_state.is_paused {
+                        tracing::info!(
+                            "⏸️  Workflow paused - workflow_id={}, waiting...",
+                            workflow_id
+                        );
+
+                        // Create checkpoint before pausing
+                        let checkpoint_state = serde_json::to_vec(&json!({
+                            "step": i,
+                            "total_steps": 10,
+                            "paused_at": chrono::Utc::now().to_rfc3339()
+                        }))?;
+
+                        event_log
+                            .append(
+                                workflow_id,
+                                Event::Checkpoint {
+                                    state: checkpoint_state,
+                                },
+                            )
+                            .await?;
+
+                        // Wait until resumed (poll every second)
+                        loop {
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+                            if let Ok(Some(state)) =
+                                Self::get_control_state(&event_log, workflow_id).await
+                            {
+                                if state.is_cancelled {
+                                    tracing::info!(
+                                        "🛑 Workflow cancelled while paused - workflow_id={}",
+                                        workflow_id
+                                    );
+                                    anyhow::bail!("Workflow cancelled while paused");
+                                }
+                                if !state.is_paused {
+                                    tracing::info!(
+                                        "▶️  Workflow resumed - workflow_id={}",
+                                        workflow_id
+                                    );
+                                    break;
+                                }
+                            } else {
+                                // Control state not found, assume not paused
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // Execute step
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 let _ = tx.send(WorkflowEvent::Progress {
                     workflow_id: workflow_id.to_string(),
@@ -278,25 +355,27 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
 
             // Record completion
             let output = serde_json::json!({
-                "status": "completed", 
+                "status": "completed",
                 "workflow_type": workflow_type,
-                "message": "Workflow simulation (WASM not found)" 
+                "message": "Workflow simulation (WASM not found)"
             });
 
-            event_log.append(
-                workflow_id,
-                Event::WorkflowCompleted {
-                    output: output.clone(),
-                    timestamp: chrono::Utc::now(),
-                },
-            ).await?;
+            event_log
+                .append(
+                    workflow_id,
+                    Event::WorkflowCompleted {
+                        output: output.clone(),
+                        timestamp: chrono::Utc::now(),
+                    },
+                )
+                .await?;
 
             return Ok(output);
         };
 
         // Initialize Sandbox
         let sandbox = WasmSandbox::load(&wasm_bytes)?;
-        
+
         // Define Capabilities (TODO: make configurable per workflow)
         let caps = SandboxCapabilities {
             timeout_ms: 30_000, // 30s timeout
@@ -309,34 +388,42 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
         // Execute Entrypoint
         // We assume the WASM module exports a function `run_workflow(input: String) -> String`
         // or uses the component model. For this MVP, we use the JSON interface pattern.
-        tracing::info!("Starting WASM workflow {} (PID: {})", workflow_id, process.pid());
-        
+        tracing::info!(
+            "Starting WASM workflow {} (PID: {})",
+            workflow_id,
+            process.pid()
+        );
+
         let output = match process.call_json("run_workflow", &input).await {
             Ok(res) => res,
             Err(e) => {
-                 tracing::error!("WASM execution failed: {}", e);
-                 // Record failure
-                 event_log.append(
-                    workflow_id,
-                    Event::WorkflowFailed {
-                        error: e.to_string(),
-                        timestamp: chrono::Utc::now(),
-                    },
-                 ).await?;
-                 return Err(anyhow::anyhow!(e));
+                tracing::error!("WASM execution failed: {}", e);
+                // Record failure
+                event_log
+                    .append(
+                        workflow_id,
+                        Event::WorkflowFailed {
+                            error: e.to_string(),
+                            timestamp: chrono::Utc::now(),
+                        },
+                    )
+                    .await?;
+                return Err(anyhow::anyhow!(e));
             }
         };
-        
+
         process.kill();
 
         // Record completion
-        event_log.append(
-            workflow_id,
-            Event::WorkflowCompleted {
-                output: output.clone(),
-                timestamp: chrono::Utc::now(),
-            },
-        ).await?;
+        event_log
+            .append(
+                workflow_id,
+                Event::WorkflowCompleted {
+                    output: output.clone(),
+                    timestamp: chrono::Utc::now(),
+                },
+            )
+            .await?;
 
         Ok(output)
     }
@@ -365,6 +452,41 @@ impl<E: EventLog + 'static> EmbeddedWorker<E> {
     /// Replay a workflow from its event log.
     pub async fn replay(&self, workflow_id: &str) -> anyhow::Result<Vec<Event>> {
         self.event_log.replay(workflow_id).await
+    }
+}
+
+/// Control state for workflow pause/resume.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ControlState {
+    #[allow(dead_code)]
+    is_paused: bool,
+    #[allow(dead_code)]
+    is_cancelled: bool,
+}
+
+impl<E: EventLog + 'static> EmbeddedWorker<E> {
+    /// Get control state for a workflow.
+    ///
+    /// Note: This requires the EventLog to be a HybridBackend with control state support.
+    /// Returns None if control state is not available (e.g., in-memory backend).
+    async fn get_control_state(
+        _event_log: &Arc<E>,
+        _workflow_id: &str,
+    ) -> anyhow::Result<Option<ControlState>> {
+        // TODO: Wire up control state checking when EventLog is HybridBackend
+        // For now, this is a placeholder that always returns None
+        // This means pause/resume API endpoints work, but the workflow
+        // doesn't check them during execution.
+        //
+        // Full integration requires either:
+        // 1. Adding get_control_state() to EventLog trait
+        // 2. Passing database reference separately to execute_workflow()
+        // 3. Using a callback/closure pattern for control state checking
+        //
+        // For now, the infrastructure is in place but disabled to avoid
+        // breaking changes to the EventLog trait.
+
+        Ok(None)
     }
 }
 

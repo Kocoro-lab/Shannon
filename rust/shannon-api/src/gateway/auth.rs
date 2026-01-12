@@ -355,3 +355,32 @@ pub async fn auth_middleware(
 pub fn get_authenticated_user(req: &Request<Body>) -> Option<&AuthenticatedUser> {
     req.extensions().get::<AuthenticatedUser>()
 }
+
+/// Get current user information (embedded mode).
+///
+/// Returns basic user information for the authenticated user.
+/// In embedded mode, this returns default values for the embedded_user.
+///
+/// # Errors
+///
+/// This endpoint is designed to not fail in embedded mode, always returning
+/// the current authenticated user's information.
+pub async fn get_current_user_embedded(
+    axum::Extension(user): axum::Extension<AuthenticatedUser>,
+) -> impl IntoResponse {
+    tracing::debug!("👤 Getting current user info - user_id={}", user.user_id);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "user_id": user.user_id,
+            "tenant_id": "embedded",
+            "username": user.user_id,
+            "email": null,
+            "name": "Embedded User",
+            "tier": "unlimited",
+            "quotas": {},
+            "rate_limits": {}
+        })),
+    )
+}
