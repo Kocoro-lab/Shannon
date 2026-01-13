@@ -3546,7 +3546,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					)
 
 					// Step 3: Call AddCitationsWithVerify (Citation Agent V2)
-					// Convert to CitationWithIDForAgent
+					// Convert fetch-only citations to CitationWithIDForAgent
 					citationsForAgentV2 := make([]activities.CitationWithIDForAgent, len(fetchOnlyCitations))
 					for i, c := range fetchOnlyCitations {
 						citationsForAgentV2[i] = activities.CitationWithIDForAgent{
@@ -3560,9 +3560,25 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						}
 					}
 
+					// P1: Convert ALL collected citations for Sources section output
+					allCitationsWithID := metadata.AssignIDsToAllCitations(collectedCitations)
+					allCitationsForAgent := make([]activities.CitationWithIDForAgent, len(allCitationsWithID))
+					for i, c := range allCitationsWithID {
+						allCitationsForAgent[i] = activities.CitationWithIDForAgent{
+							ID:               c.ID,
+							URL:              c.Citation.URL,
+							Title:            c.Citation.Title,
+							Source:           c.Citation.Source,
+							Snippet:          c.Citation.Snippet,
+							CredibilityScore: c.Citation.CredibilityScore,
+							QualityScore:     c.Citation.QualityScore,
+						}
+					}
+
 					citationV2Err := workflow.ExecuteActivity(citationCtx, "AddCitationsWithVerify", activities.CitationAgentInputV2{
 						Report:           reportForCitation,
 						Citations:        citationsForAgentV2,
+						AllCitations:     allCitationsForAgent, // P1: All citations for Sources
 						ClaimMappings:    verifyBatchResult.Claims,
 						ParentWorkflowID: input.ParentWorkflowID,
 						Context:          baseContext,

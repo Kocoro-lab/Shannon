@@ -1803,6 +1803,41 @@ func FilterFetchOnlyAndAssignIDs(citations []Citation) []CitationWithID {
 	return result
 }
 
+// AssignIDsToAllCitations assigns sequential IDs to all citations (not filtered).
+// Used by P1 to output all citations in Sources section.
+// Sorts by combined score (quality * credibility) descending, then assigns 1-indexed IDs.
+func AssignIDsToAllCitations(citations []Citation) []CitationWithID {
+	if len(citations) == 0 {
+		return nil
+	}
+
+	// Make a copy to avoid modifying the original slice
+	sortedCitations := make([]Citation, len(citations))
+	copy(sortedCitations, citations)
+
+	// Sort by combined score (quality * credibility) descending
+	sort.Slice(sortedCitations, func(i, j int) bool {
+		scoreI := sortedCitations[i].QualityScore * sortedCitations[i].CredibilityScore
+		scoreJ := sortedCitations[j].QualityScore * sortedCitations[j].CredibilityScore
+		return scoreI > scoreJ
+	})
+
+	// Assign sequential IDs (1-indexed)
+	result := make([]CitationWithID, len(sortedCitations))
+	for i, c := range sortedCitations {
+		result[i] = CitationWithID{
+			ID:       i + 1, // 1-indexed
+			Citation: c,
+		}
+	}
+
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] AssignIDsToAllCitations: input=%d output=%d", len(citations), len(result))
+	}
+
+	return result
+}
+
 // FilterByIDs returns only citations matching the given ID set.
 // Used after verification to filter to only the citations that support claims.
 // Preserves original order and IDs.

@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
+from .web_fetch import detect_blocked_reason  # P0-A: Reuse blocked detection logic
 
 logger = logging.getLogger(__name__)
 
@@ -548,15 +549,20 @@ class WebSubpageFetchTool(Tool):
         """Merge multiple page results into a single output."""
         if len(results) == 1:
             r = results[0]
+            content = r.get("content", "")
+            # P0-A: Detect blocked content for Citation V2 filtering
+            blocked_reason = detect_blocked_reason(content, 200)
             return {
                 "url": r.get("url", original_url),
                 "title": r.get("title", ""),
-                "content": r.get("content", ""),
+                "content": content,
                 "method": "firecrawl",
                 "pages_fetched": 1,
-                "word_count": len(r.get("content", "").split()),
-                "char_count": len(r.get("content", "")),
+                "word_count": len(content.split()),
+                "char_count": len(content),
                 "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                "status_code": 200,  # P0-A: Firecrawl scrape success = 200
+                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
             }
 
         # Multiple pages - merge with markdown separators
@@ -581,6 +587,8 @@ class WebSubpageFetchTool(Tool):
             total_chars += len(page_content)
 
         final_content = "".join(merged_content)
+        # P0-A: Detect blocked content in merged result
+        blocked_reason = detect_blocked_reason(final_content, 200)
 
         return {
             "url": original_url,
@@ -591,6 +599,8 @@ class WebSubpageFetchTool(Tool):
             "word_count": len(final_content.split()),
             "char_count": total_chars,
             "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+            "status_code": 200,  # P0-A: Firecrawl scrape success = 200
+            "blocked_reason": blocked_reason,  # P0-A: Content-based detection
             "metadata": {
                 "urls": [r.get("url") for r in results]
             }
@@ -658,15 +668,20 @@ class WebSubpageFetchTool(Tool):
 
                 if len(content_results) == 1:
                     r = content_results[0]
+                    content = r.get("text", "")
+                    # P0-A: Detect blocked content for Citation V2 filtering
+                    blocked_reason = detect_blocked_reason(content, 200)
                     return {
                         "url": r.get("url", url),
                         "title": r.get("title", ""),
-                        "content": r.get("text", ""),
+                        "content": content,
                         "method": "exa",
                         "pages_fetched": 1,
-                        "word_count": len(r.get("text", "").split()),
-                        "char_count": len(r.get("text", "")),
+                        "word_count": len(content.split()),
+                        "char_count": len(content),
                         "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                        "status_code": 200,  # P0-A: Exa success = 200
+                        "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                     }
 
                 return self._merge_exa_results(content_results, url)
@@ -694,6 +709,8 @@ class WebSubpageFetchTool(Tool):
             total_chars += len(page_content)
 
         final_content = "\n".join(merged_content)
+        # P0-A: Detect blocked content in merged result
+        blocked_reason = detect_blocked_reason(final_content, 200)
 
         return {
             "url": original_url,
@@ -704,4 +721,6 @@ class WebSubpageFetchTool(Tool):
             "word_count": len(final_content.split()),
             "char_count": total_chars,
             "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+            "status_code": 200,  # P0-A: Exa success = 200
+            "blocked_reason": blocked_reason,  # P0-A: Content-based detection
         }

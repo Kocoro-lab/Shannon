@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
+from .web_fetch import detect_blocked_reason  # P0-A: Reuse blocked detection logic
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +312,8 @@ class WebCrawlTool(Tool):
         if len(unique_results) == 1:
             r = unique_results[0]
             content = r.get("markdown", "")[:max_length]
+            # P0-A: Detect blocked content for Citation V2 filtering
+            blocked_reason = detect_blocked_reason(content, 200)
             return {
                 "url": r.get("metadata", {}).get("url", original_url),
                 "title": r.get("metadata", {}).get("title", ""),
@@ -320,6 +323,8 @@ class WebCrawlTool(Tool):
                 "word_count": len(content.split()),
                 "char_count": len(content),
                 "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                "status_code": 200,  # P0-A: Firecrawl crawl success = 200
+                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
             }
 
         # Multiple pages - merge with markdown separators
@@ -354,6 +359,8 @@ class WebCrawlTool(Tool):
                 break
 
         final_content = "".join(merged_content)
+        # P0-A: Detect blocked content in merged result
+        blocked_reason = detect_blocked_reason(final_content, 200)
 
         return {
             "url": original_url,
@@ -364,6 +371,8 @@ class WebCrawlTool(Tool):
             "word_count": len(final_content.split()),
             "char_count": total_chars,
             "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+            "status_code": 200,  # P0-A: Firecrawl crawl success = 200
+            "blocked_reason": blocked_reason,  # P0-A: Content-based detection
             "metadata": {
                 "total_crawled": len(results),
                 "unique_pages": len(unique_results),

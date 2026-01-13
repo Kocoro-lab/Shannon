@@ -1468,8 +1468,9 @@ type CitationWithIDForAgent struct {
 // CitationAgentInputV2 is the input for Citation Agent V2 (Deep Research)
 type CitationAgentInputV2 struct {
 	Report           string                   `json:"report"`
-	Citations        []CitationWithIDForAgent `json:"citations"`        // Citations with pre-assigned IDs
-	ClaimMappings    []ClaimMappingInput      `json:"claim_mappings"`   // From Verify batch endpoint
+	Citations        []CitationWithIDForAgent `json:"citations"`         // Fetch-only citations for inline placement
+	AllCitations     []CitationWithIDForAgent `json:"all_citations"`     // P1: All citations for Sources section output
+	ClaimMappings    []ClaimMappingInput      `json:"claim_mappings"`    // From Verify batch endpoint
 	ParentWorkflowID string                   `json:"parent_workflow_id,omitempty"`
 	Context          map[string]interface{}   `json:"context,omitempty"`
 	ModelTier        string                   `json:"model_tier,omitempty"`
@@ -1679,8 +1680,13 @@ func (a *Activities) AddCitationsWithVerify(ctx context.Context, input CitationA
 		actualUsedCitations = extractUsedCitationNumbers(citedReport)
 	}
 
-	// Build Sources section with only used citations
-	sourcesSection := buildSourcesSectionV2(actualUsedCitations, citationMap)
+	// Build Sources section with used citations and additional sources (P1)
+	// Use AllCitations if provided, otherwise fall back to Citations
+	allCitationsForSources := input.AllCitations
+	if len(allCitationsForSources) == 0 {
+		allCitationsForSources = input.Citations
+	}
+	sourcesSection := buildSourcesSectionV2(actualUsedCitations, allCitationsForSources, citationMap)
 	citedReportWithSources := citedReport + "\n\n" + sourcesSection
 
 	result.Role = role
@@ -1809,25 +1815,45 @@ func buildCitationUserContentWithMappings(report string, citations []CitationWit
 	return sb.String()
 }
 
-// buildSourcesSectionV2 builds the Sources section with only used citations
-func buildSourcesSectionV2(usedIDs []int, citationMap map[int]CitationWithIDForAgent) string {
-	if len(usedIDs) == 0 {
-		return ""
-	}
-
-	// Sort IDs for consistent output
-	sortedIDs := make([]int, len(usedIDs))
-	copy(sortedIDs, usedIDs)
-	sort.Ints(sortedIDs)
-
+// buildSourcesSectionV2 builds the Sources section with all citations
+// P1: All citations shown with [n] numbering, marked as "Used inline" or "Additional source"
+// Format matches V1: [n] Title (URL) - domain - Status
+func buildSourcesSectionV2(usedIDs []int, allCitations []CitationWithIDForAgent, citationMap map[int]CitationWithIDForAgent) string {
 	var sb strings.Builder
 	sb.WriteString("## Sources\n\n")
 
-	for _, id := range sortedIDs {
-		c, ok := citationMap[id]
-		if !ok {
-			continue
-		}
+	// Build used IDs set for quick lookup
+	usedSet := make(map[int]bool)
+	for _, id := range usedIDs {
+		usedSet[id] = true
+	}
+
+	// Output all citations with [n] prefix, sorted by ID
+	// First collect all citations with their IDs
+	type citationEntry struct {
+		id     int
+		cite   CitationWithIDForAgent
+		isUsed bool
+	}
+	var entries []citationEntry
+
+	// Add all citations from allCitations list
+	for _, c := range allCitations {
+		entries = append(entries, citationEntry{
+			id:     c.ID,
+			cite:   c,
+			isUsed: usedSet[c.ID],
+		})
+	}
+
+	// Sort by ID
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].id < entries[j].id
+	})
+
+	// Output all citations
+	for _, entry := range entries {
+		c := entry.cite
 		title := c.Title
 		if title == "" {
 			title = c.Source
@@ -1835,7 +1861,14 @@ func buildSourcesSectionV2(usedIDs []int, citationMap map[int]CitationWithIDForA
 		if title == "" {
 			title = c.URL
 		}
-		sb.WriteString(fmt.Sprintf("[%d] %s - %s\n", id, title, c.URL))
+
+		status := "Additional source"
+		if entry.isUsed {
+			status = "Used inline"
+		}
+
+		// Format: [n] Title (URL) - domain - Status
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s) - %s - %s\n", entry.id, title, c.URL, c.Source, status))
 	}
 
 	return sb.String()
