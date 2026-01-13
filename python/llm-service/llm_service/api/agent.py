@@ -1090,13 +1090,19 @@ async def agent_query(request: Request, query: AgentQuery):
                 or not (response_text and str(response_text).strip())
             ):
                 # Add explicit summarization instruction to guide LLM to summarize tool results
+                # P0 Fix v3: Allow LLM to think freely, but require content summary first
                 interpretation_messages = messages + [
                     {
                         "role": "user",
                         "content": (
-                            "Now synthesize all the tool execution results above into a comprehensive answer. "
-                            "Do NOT say 'I'll execute' or mention any tools. "
-                            "Directly provide the findings and insights from the data you retrieved."
+                            "Based on the tool results above, provide a response with TWO parts:\n\n"
+                            "PART 1 - RETRIEVED INFORMATION:\n"
+                            "Summarize ALL information actually retrieved from the tools - "
+                            "titles, descriptions, key facts, data points, quotes, etc.\n\n"
+                            "PART 2 - ADDITIONAL NOTES (optional):\n"
+                            "If relevant, note what additional information might be helpful.\n\n"
+                            "IMPORTANT: Part 1 must contain the actual content retrieved, "
+                            "not just 'I searched for X' or 'The results showed Y'."
                         ),
                     }
                 ]
