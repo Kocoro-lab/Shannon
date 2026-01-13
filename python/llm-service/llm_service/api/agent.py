@@ -1080,13 +1080,28 @@ async def agent_query(request: Request, query: AgentQuery):
                     logger.warning(f"DR forced fetch failed: {e}")
 
             # Final interpretation pass if we executed any tools or budgets were hit
+            # P0 Fix: Always run interpretation pass if any tool executed successfully
+            # This ensures tool results are summarized into Response, not just "I'll execute..."
+            has_successful_tool = any(r.get("success") for r in tool_execution_records)
             if tool_execution_records and (
-                stop_reason != "no_tool_call"
+                has_successful_tool  # Any successful tool execution requires summarization
+                or stop_reason != "no_tool_call"
                 or did_forced_fetch
                 or not (response_text and str(response_text).strip())
             ):
+                # Add explicit summarization instruction to guide LLM to summarize tool results
+                interpretation_messages = messages + [
+                    {
+                        "role": "user",
+                        "content": (
+                            "Now synthesize all the tool execution results above into a comprehensive answer. "
+                            "Do NOT say 'I'll execute' or mention any tools. "
+                            "Directly provide the findings and insights from the data you retrieved."
+                        ),
+                    }
+                ]
                 interpretation_result = await request.app.state.providers.generate_completion(
-                    messages=messages,
+                    messages=interpretation_messages,
                     tier=tier,
                     specific_model=model_override,
                     provider_override=provider_override,
@@ -1099,6 +1114,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     agent_id=query.agent_id,
                 )
                 response_text = interpretation_result.get("output_text", last_tool_results)
+                logger.info(f"[interpretation_pass] executed for agent={query.agent_id}, response_len={len(str(response_text))}, preview={str(response_text)[:200]}")
                 i_usage = interpretation_result.get("usage", {}) or {}
                 try:
                     total_tokens += int(i_usage.get("total_tokens") or 0)
@@ -1110,6 +1126,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 result_data = interpretation_result
             else:
                 result_data = last_result_data or {}
+                logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, has_successful_tool={has_successful_tool}, stop_reason={stop_reason}, response_preview={str(response_text)[:100]}")
 
             # Stub Guard: Clean any pseudo tool-call stubs from final output
             # These can appear when LLM outputs XML/JSON tool calls instead of native function calling
@@ -1177,6 +1194,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     response_text = _re.sub(r"<invoke[\s\S]*?</invoke>", "", response_text)
                     response_text = response_text.strip()
 
+            logger.info(f"[final_response] agent={query.agent_id}, len={len(str(response_text))}, preview={str(response_text)[:200]}")
             result = {
                 "response": response_text,
                 "tokens_used": total_tokens,
