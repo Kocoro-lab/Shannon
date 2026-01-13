@@ -104,9 +104,13 @@ type BudgetManager struct {
 	allocationMu       sync.RWMutex // Lock order: 5
 
 	// Idempotency tracking for retry safety
-	processedUsage map[string]bool // Maps idempotency key to processed status
-	idempotencyMu  sync.RWMutex    // Lock order: 6 - Separate mutex for idempotency tracking
-	idempotencyTTL time.Duration   // How long to keep idempotency records (default 1 hour)
+	processedUsage map[string]time.Time // Maps idempotency key to timestamp when processed
+	idempotencyMu  sync.RWMutex         // Lock order: 6 - Separate mutex for idempotency tracking
+	idempotencyTTL time.Duration        // How long to keep idempotency records (default 1 hour)
+
+	// Cleanup control
+	cleanupStop chan struct{} // Channel to stop the cleanup goroutine
+	cleanupOnce sync.Once     // Ensures cleanup goroutine starts only once
 }
 
 // ErrTokenOverflow indicates a token counter would overflow the int range.
@@ -133,8 +137,9 @@ func NewBudgetManager(db *sql.DB, logger *zap.Logger) *BudgetManager {
 		sessionAllocations:    make(map[string]int),
 
 		// Idempotency tracking
-		processedUsage: make(map[string]bool),
+		processedUsage: make(map[string]time.Time),
 		idempotencyTTL: 1 * time.Hour, // Keep idempotency records for 1 hour
+		cleanupStop:    make(chan struct{}),
 	}
 
 	// Initialize database tables if needed
@@ -297,12 +302,16 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	// Check idempotency if key is provided
 	if usage.IdempotencyKey != "" {
 		bm.idempotencyMu.RLock()
-		if bm.processedUsage[usage.IdempotencyKey] {
-			bm.idempotencyMu.RUnlock()
-			bm.logger.Debug("Skipping duplicate usage record",
-				zap.String("idempotency_key", usage.IdempotencyKey),
-				zap.String("usage_id", usage.ID))
-			return nil // Already processed, skip to prevent double-counting
+		if processedAt, exists := bm.processedUsage[usage.IdempotencyKey]; exists {
+			// Check if the key is still within TTL
+			if time.Since(processedAt) < bm.idempotencyTTL {
+				bm.idempotencyMu.RUnlock()
+				bm.logger.Debug("Skipping duplicate usage record",
+					zap.String("idempotency_key", usage.IdempotencyKey),
+					zap.String("usage_id", usage.ID))
+				return nil // Already processed, skip to prevent double-counting
+			}
+			// Key has expired, will be re-processed
 		}
 		bm.idempotencyMu.RUnlock()
 	}
@@ -338,11 +347,11 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	// Mark as processed for idempotency (only after successful storage)
 	if usage.IdempotencyKey != "" {
 		bm.idempotencyMu.Lock()
-		bm.processedUsage[usage.IdempotencyKey] = true
+		bm.processedUsage[usage.IdempotencyKey] = time.Now()
 		bm.idempotencyMu.Unlock()
 
-		// TODO: Add periodic cleanup of old idempotency keys based on TTL
-		// This could be done in a background goroutine or during each call
+		// Start cleanup goroutine if not already running
+		bm.startIdempotencyCleanup()
 	}
 
 	return nil
@@ -1043,4 +1052,98 @@ func (bm *BudgetManager) emitBudgetThresholdEvent(taskID, sessionID, message str
 		zap.String("session_id", sessionID),
 		zap.String("message", message),
 	)
+}
+
+// Idempotency Key TTL Cleanup
+
+// startIdempotencyCleanup starts a background goroutine that periodically cleans up
+// expired idempotency keys. Uses sync.Once to ensure only one cleanup goroutine runs.
+func (bm *BudgetManager) startIdempotencyCleanup() {
+	bm.cleanupOnce.Do(func() {
+		go bm.idempotencyCleanupLoop()
+		bm.logger.Info("Started idempotency key cleanup goroutine",
+			zap.Duration("ttl", bm.idempotencyTTL))
+	})
+}
+
+// idempotencyCleanupLoop runs periodically to remove expired idempotency keys.
+// Cleanup interval is set to half the TTL for timely removal.
+func (bm *BudgetManager) idempotencyCleanupLoop() {
+	// Run cleanup at half the TTL interval for timely expiration
+	cleanupInterval := bm.idempotencyTTL / 2
+	if cleanupInterval < time.Minute {
+		cleanupInterval = time.Minute // Minimum 1 minute interval
+	}
+
+	ticker := time.NewTicker(cleanupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			bm.cleanupExpiredIdempotencyKeys()
+		case <-bm.cleanupStop:
+			bm.logger.Info("Stopping idempotency key cleanup goroutine")
+			return
+		}
+	}
+}
+
+// cleanupExpiredIdempotencyKeys removes idempotency keys that have exceeded their TTL.
+// This prevents unbounded memory growth from accumulated idempotency records.
+func (bm *BudgetManager) cleanupExpiredIdempotencyKeys() {
+	now := time.Now()
+	expiredKeys := make([]string, 0)
+
+	// First pass: identify expired keys under read lock
+	bm.idempotencyMu.RLock()
+	for key, processedAt := range bm.processedUsage {
+		if now.Sub(processedAt) > bm.idempotencyTTL {
+			expiredKeys = append(expiredKeys, key)
+		}
+	}
+	totalKeys := len(bm.processedUsage)
+	bm.idempotencyMu.RUnlock()
+
+	// No expired keys, skip write lock
+	if len(expiredKeys) == 0 {
+		return
+	}
+
+	// Second pass: remove expired keys under write lock
+	bm.idempotencyMu.Lock()
+	for _, key := range expiredKeys {
+		// Double-check the key still exists and is still expired
+		if processedAt, exists := bm.processedUsage[key]; exists {
+			if now.Sub(processedAt) > bm.idempotencyTTL {
+				delete(bm.processedUsage, key)
+			}
+		}
+	}
+	remainingKeys := len(bm.processedUsage)
+	bm.idempotencyMu.Unlock()
+
+	bm.logger.Debug("Cleaned up expired idempotency keys",
+		zap.Int("expired_count", len(expiredKeys)),
+		zap.Int("total_before", totalKeys),
+		zap.Int("remaining", remainingKeys))
+}
+
+// StopIdempotencyCleanup stops the background cleanup goroutine.
+// Call this during graceful shutdown.
+func (bm *BudgetManager) StopIdempotencyCleanup() {
+	select {
+	case <-bm.cleanupStop:
+		// Already closed
+	default:
+		close(bm.cleanupStop)
+	}
+}
+
+// GetIdempotencyKeyCount returns the current number of tracked idempotency keys.
+// Useful for monitoring and debugging.
+func (bm *BudgetManager) GetIdempotencyKeyCount() int {
+	bm.idempotencyMu.RLock()
+	defer bm.idempotencyMu.RUnlock()
+	return len(bm.processedUsage)
 }
