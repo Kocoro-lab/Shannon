@@ -319,6 +319,7 @@ class WebCrawlTool(Tool):
                 "pages_fetched": 1,
                 "word_count": len(content.split()),
                 "char_count": len(content),
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
 
         # Multiple pages - merge with markdown separators
@@ -362,6 +363,7 @@ class WebCrawlTool(Tool):
             "pages_fetched": len(unique_results),
             "word_count": len(final_content.split()),
             "char_count": total_chars,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             "metadata": {
                 "total_crawled": len(results),
                 "unique_pages": len(unique_results),

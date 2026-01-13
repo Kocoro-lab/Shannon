@@ -328,6 +328,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     "truncated": len(content) >= max_length,
                     "method": "firecrawl",
                     "pages_fetched": 1,
+                    "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 }
 
     async def _crawl(self, url: str, max_length: int, limit: int) -> Dict[str, Any]:
@@ -456,6 +457,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "content": "",
                 "method": "firecrawl",
                 "pages_fetched": 0,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
         
         # Step 1: Filter failed pages (statusCode != 200)
@@ -509,6 +511,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "content": "",
                 "method": "firecrawl",
                 "pages_fetched": 0,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 "metadata": {
                     "total_crawled": len(results),
                     "failed_pages": failed_count,
@@ -534,6 +537,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "truncated": len(content) >= max_length,
                 "method": "firecrawl",
                 "pages_fetched": 1,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
         
         # Step 4: Multiple pages - smart truncation
@@ -587,6 +591,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "truncated": pages_included < len(unique_pages),
             "method": "firecrawl",
             "pages_fetched": pages_included,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             "metadata": {
                 "total_crawled": len(results),
                 "valid_pages": len(valid_pages),
@@ -648,6 +653,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "content": "",
                 "method": "firecrawl",
                 "pages_fetched": 0,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
 
         max_retries = 2
@@ -1433,6 +1439,7 @@ class WebFetchTool(Tool):
             "failed": failed,
             "total_chars": total_chars,
             "partial_success": succeeded > 0 and failed > 0,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
         }
 
         # Build metadata
@@ -1705,6 +1712,7 @@ class WebFetchTool(Tool):
                     "truncated": False,
                     "method": "pure_python",
                     "pages_fetched": 1,
+                    "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 },
                 metadata={
                     "fetch_method": "pure_python_crawl",
@@ -1753,6 +1761,7 @@ class WebFetchTool(Tool):
                     "truncated": False,
                     "method": "pure_python",
                     "pages_fetched": len(pages),
+                    "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 },
                 metadata={
                     "fetch_method": "pure_python_crawl",
@@ -1939,6 +1948,7 @@ class WebFetchTool(Tool):
                         "truncated": truncated,
                         "method": "pure_python",
                         "pages_fetched": 1,
+                        "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                     },
                     metadata={
                         "fetch_method": "pure_python",
@@ -2099,6 +2109,7 @@ class WebFetchTool(Tool):
                                 "truncated": len(content) >= max_length,
                                 "method": "exa",
                                 "pages_fetched": 1,
+                                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                             },
                             metadata={
                                 "fetch_method": "exa",
@@ -2145,6 +2156,7 @@ class WebFetchTool(Tool):
                                 "truncated": False,
                                 "method": "exa",
                                 "pages_fetched": len(results),
+                                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                             },
                             metadata={
                                 "fetch_method": "exa",

@@ -556,6 +556,7 @@ class WebSubpageFetchTool(Tool):
                 "pages_fetched": 1,
                 "word_count": len(r.get("content", "").split()),
                 "char_count": len(r.get("content", "")),
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
 
         # Multiple pages - merge with markdown separators
@@ -589,6 +590,7 @@ class WebSubpageFetchTool(Tool):
             "pages_fetched": len(results),
             "word_count": len(final_content.split()),
             "char_count": total_chars,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             "metadata": {
                 "urls": [r.get("url") for r in results]
             }
@@ -664,6 +666,7 @@ class WebSubpageFetchTool(Tool):
                         "pages_fetched": 1,
                         "word_count": len(r.get("text", "").split()),
                         "char_count": len(r.get("text", "")),
+                        "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                     }
 
                 return self._merge_exa_results(content_results, url)
@@ -700,4 +703,5 @@ class WebSubpageFetchTool(Tool):
             "pages_fetched": len(results),
             "word_count": len(final_content.split()),
             "char_count": total_chars,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
         }

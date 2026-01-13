@@ -28,6 +28,7 @@ type Citation struct {
 	Title            string     `json:"title"`
 	Source           string     `json:"source"`      // domain name
 	SourceType       string     `json:"source_type"` // web|news|academic|social
+	ToolSource       string     `json:"tool_source"` // Citation V2: "search" or "fetch" (origin tool type)
 	RetrievedAt      time.Time  `json:"retrieved_at"`
 	PublishedDate    *time.Time `json:"published_date,omitempty"`
 	RelevanceScore   float64    `json:"relevance_score"`   // from search tool
@@ -420,11 +421,18 @@ func extractCitationFromSearchResult(result map[string]interface{}, agentID stri
 	qualityScore := ScoreQuality(relevanceScore, publishedDate, title != "", snippet != "", now)
 	credibilityScore := ScoreCredibility(domain)
 
+	// Citation V2: extract tool_source field
+	toolSource := "search" // default for search results
+	if ts, ok := result["tool_source"].(string); ok && ts != "" {
+		toolSource = ts
+	}
+
 	return &Citation{
 		URL:              normalizedURL,
 		Title:            title,
 		Source:           domain,
 		SourceType:       sourceType,
+		ToolSource:       toolSource,
 		RetrievedAt:      now,
 		PublishedDate:    publishedDate,
 		RelevanceScore:   relevanceScore,
@@ -484,11 +492,18 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 	qualityScore := ScoreQuality(relevanceScore, publishedDate, title != "", snippet != "", now)
 	credibilityScore := ScoreCredibility(domain)
 
+	// Citation V2: extract tool_source field
+	toolSource := "fetch" // default for fetch results
+	if ts, ok := result["tool_source"].(string); ok && ts != "" {
+		toolSource = ts
+	}
+
 	return &Citation{
 		URL:              normalizedURL,
 		Title:            title,
 		Source:           domain,
 		SourceType:       "web",
+		ToolSource:       toolSource,
 		RetrievedAt:      now,
 		PublishedDate:    publishedDate,
 		RelevanceScore:   relevanceScore,
@@ -820,6 +835,7 @@ func extractCitationsFromPlainTextResponse(response string, agentID string, now 
 			Title:            "", // Unknown in plain text; formatter will display URL/domain
 			Source:           domain,
 			SourceType:       "web",
+			ToolSource:       "", // Citation V2: unknown origin (URL scan fallback)
 			RetrievedAt:      now,
 			PublishedDate:    nil,
 			RelevanceScore:   relevance,
@@ -1455,11 +1471,18 @@ func extractCitationsFromMultiPageResult(output map[string]interface{}, agentID 
 		snippet = ensureSnippet(snippet, "", title, normalizedURL, MinSnippetLength)
 
 		// Build complete Citation with proper scoring
+		// Citation V2: extract tool_source from output
+		toolSource := "fetch" // default for multi-page fetch
+		if ts, ok := output["tool_source"].(string); ok && ts != "" {
+			toolSource = ts
+		}
+
 		citation := Citation{
 			URL:            normalizedURL,
 			Title:          title,
 			Source:         domain,
 			SourceType:     "web",
+			ToolSource:     toolSource,
 			RetrievedAt:    now,
 			RelevanceScore: 0.8, // fetch tools get fixed 0.8
 			AgentID:        agentID,
@@ -1651,4 +1674,100 @@ func shouldSkipURL(urlStr string) bool {
 	}
 
 	return false
+}
+
+// ============================================================================
+// Citation V2: Filter functions for Deep Research workflow
+// ============================================================================
+
+// CitationWithID wraps Citation with a sequential ID for verification tracking
+type CitationWithID struct {
+	ID       int      `json:"id"`       // Sequential ID (1, 2, 3...)
+	Citation Citation `json:"citation"` // Original citation data
+}
+
+// FilterFetchOnlyAndAssignIDs filters citations to fetch-only sources and assigns sequential IDs.
+// This is used by Deep Research workflow to:
+// 1. Only use citations from actual page content (web_fetch/web_subpage_fetch/web_crawl)
+// 2. Exclude search snippets which are often incomplete/unreliable for verification
+// 3. Assign stable IDs for claim-citation mapping in verification
+//
+// Returns citations sorted by quality*credibility descending, with IDs 1, 2, 3...
+func FilterFetchOnlyAndAssignIDs(citations []Citation) []CitationWithID {
+	// Filter to fetch-only citations
+	var fetchCitations []Citation
+	for _, c := range citations {
+		if c.ToolSource == "fetch" {
+			fetchCitations = append(fetchCitations, c)
+		}
+	}
+
+	// Sort by combined score (quality * credibility) descending
+	sort.Slice(fetchCitations, func(i, j int) bool {
+		scoreI := fetchCitations[i].QualityScore * fetchCitations[i].CredibilityScore
+		scoreJ := fetchCitations[j].QualityScore * fetchCitations[j].CredibilityScore
+		return scoreI > scoreJ
+	})
+
+	// Assign sequential IDs (1-indexed)
+	result := make([]CitationWithID, len(fetchCitations))
+	for i, c := range fetchCitations {
+		result[i] = CitationWithID{
+			ID:       i + 1, // 1-indexed
+			Citation: c,
+		}
+	}
+
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] FilterFetchOnlyAndAssignIDs: input=%d fetch_only=%d", len(citations), len(result))
+	}
+
+	return result
+}
+
+// FilterByIDs returns only citations matching the given ID set.
+// Used after verification to filter to only the citations that support claims.
+// Preserves original order and IDs.
+func FilterByIDs(citations []CitationWithID, ids []int) []CitationWithID {
+	if len(ids) == 0 {
+		return nil
+	}
+
+	// Build ID lookup set
+	idSet := make(map[int]bool, len(ids))
+	for _, id := range ids {
+		idSet[id] = true
+	}
+
+	// Filter to matching IDs
+	var result []CitationWithID
+	for _, c := range citations {
+		if idSet[c.ID] {
+			result = append(result, c)
+		}
+	}
+
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] FilterByIDs: input=%d ids=%d matched=%d", len(citations), len(ids), len(result))
+	}
+
+	return result
+}
+
+// GetAllCitationIDs extracts all IDs from a slice of CitationWithID
+func GetAllCitationIDs(citations []CitationWithID) []int {
+	ids := make([]int, len(citations))
+	for i, c := range citations {
+		ids[i] = c.ID
+	}
+	return ids
+}
+
+// CitationWithIDToCitation extracts Citation slice from CitationWithID slice
+func CitationWithIDToCitation(citations []CitationWithID) []Citation {
+	result := make([]Citation, len(citations))
+	for i, c := range citations {
+		result[i] = c.Citation
+	}
+	return result
 }

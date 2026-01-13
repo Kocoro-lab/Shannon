@@ -1441,3 +1441,402 @@ func appendCitationsToSentence(sentence string, citationIDs []int) string {
 
 	return trimmed + markers.String() + trailing
 }
+
+// ============================================================================
+// Citation V2: Deep Research with pre-computed ClaimMappings from Verify
+// ============================================================================
+
+// ClaimMappingInput represents a claim with its supporting citation IDs from Verify
+type ClaimMappingInput struct {
+	Claim         string `json:"claim"`
+	Verdict       string `json:"verdict"` // "supported" | "unsupported" | "insufficient_evidence"
+	SupportingIDs []int  `json:"supporting_ids"`
+	Confidence    float64 `json:"confidence"`
+}
+
+// CitationWithIDForAgent is a citation with a pre-assigned sequential ID
+type CitationWithIDForAgent struct {
+	ID               int     `json:"id"` // Sequential ID (1, 2, 3...)
+	URL              string  `json:"url"`
+	Title            string  `json:"title"`
+	Source           string  `json:"source"`
+	Snippet          string  `json:"snippet"`
+	CredibilityScore float64 `json:"credibility_score"`
+	QualityScore     float64 `json:"quality_score"`
+}
+
+// CitationAgentInputV2 is the input for Citation Agent V2 (Deep Research)
+type CitationAgentInputV2 struct {
+	Report           string                   `json:"report"`
+	Citations        []CitationWithIDForAgent `json:"citations"`        // Citations with pre-assigned IDs
+	ClaimMappings    []ClaimMappingInput      `json:"claim_mappings"`   // From Verify batch endpoint
+	ParentWorkflowID string                   `json:"parent_workflow_id,omitempty"`
+	Context          map[string]interface{}   `json:"context,omitempty"`
+	ModelTier        string                   `json:"model_tier,omitempty"`
+}
+
+// AddCitationsWithVerify adds inline citations using pre-computed ClaimMappings from Verify.
+// This is used by Deep Research workflow for efficient citation placement.
+// Unlike AddCitations (V1), this function doesn't need the LLM to find claim-citation matches -
+// it just needs to place the citations at appropriate positions.
+func (a *Activities) AddCitationsWithVerify(ctx context.Context, input CitationAgentInputV2) (*CitationAgentResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	role := "citation_agent_v2"
+	if input.Context != nil {
+		if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+			role = strings.TrimSpace(v)
+		}
+	}
+
+	logger.Info("CitationAgent V2 (with Verify): starting",
+		"report_length", len(input.Report),
+		"citations_count", len(input.Citations),
+		"claim_mappings", len(input.ClaimMappings),
+		"role", role,
+	)
+
+	// If no citations or claim mappings, return original report
+	if len(input.Citations) == 0 || len(input.ClaimMappings) == 0 {
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: true,
+		}, nil
+	}
+
+	// Filter to only supported claims with supporting IDs
+	supportedMappings := filterSupportedClaims(input.ClaimMappings)
+	if len(supportedMappings) == 0 {
+		logger.Info("CitationAgent V2: no supported claims found")
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: true,
+		}, nil
+	}
+
+	logger.Info("CitationAgent V2: filtered to supported claims",
+		"total_mappings", len(input.ClaimMappings),
+		"supported_mappings", len(supportedMappings),
+	)
+
+	// Build citation ID to citation map
+	citationMap := make(map[int]CitationWithIDForAgent)
+	for _, c := range input.Citations {
+		citationMap[c.ID] = c
+	}
+
+	// Collect all unique citation IDs that should be used
+	usedCitationIDs := collectUsedCitationIDs(supportedMappings)
+
+	// Build prompt for simple placement task
+	systemPrompt := buildCitationPlacementPromptWithMappings()
+	userContent := buildCitationUserContentWithMappings(input.Report, input.Citations, supportedMappings)
+
+	// Call LLM service
+	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
+	if llmServiceURL == "" {
+		llmServiceURL = "http://llm-service:8000"
+	}
+	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	modelTier := input.ModelTier
+	if modelTier == "" {
+		modelTier = "small" // V2 is simpler, can use small tier
+	}
+
+	reqBody := map[string]interface{}{
+		"query":       userContent,
+		"max_tokens":  8192,
+		"temperature": 0.0,
+		"agent_id":    "citation_agent_v2_verify",
+		"model_tier":  modelTier,
+		"context": map[string]interface{}{
+			"system_prompt":      systemPrompt,
+			"parent_workflow_id": input.ParentWorkflowID,
+		},
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Timeout based on report length
+	reportLen := len(input.Report)
+	timeoutSec := 120 + (reportLen/1000)*30
+	if timeoutSec > 300 {
+		timeoutSec = 300
+	}
+
+	client := &http.Client{
+		Timeout:   time.Duration(timeoutSec) * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(reqJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", "citation_agent_v2_verify")
+	if input.ParentWorkflowID != "" {
+		req.Header.Set("X-Workflow-ID", input.ParentWorkflowID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Warn("CitationAgent V2: LLM call failed, returning original report", "error", err)
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: false,
+			ValidationError:  err.Error(),
+		}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn("CitationAgent V2: HTTP error, returning original report", "status", resp.StatusCode)
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: false,
+			ValidationError:  fmt.Sprintf("HTTP %d", resp.StatusCode),
+		}, nil
+	}
+
+	// Parse response
+	var llmResp struct {
+		Success  bool   `json:"success"`
+		Response string `json:"response"`
+		Metadata struct {
+			InputTokens  int     `json:"input_tokens"`
+			OutputTokens int     `json:"output_tokens"`
+			CostUSD      float64 `json:"cost_usd"`
+		} `json:"metadata"`
+		TokensUsed int    `json:"tokens_used"`
+		ModelUsed  string `json:"model_used"`
+		Provider   string `json:"provider"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		logger.Warn("CitationAgent V2: failed to parse response, returning original", "error", err)
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: false,
+			ValidationError:  err.Error(),
+		}, nil
+	}
+
+	// Extract cited report from tags
+	citedReport := extractCitedReport(llmResp.Response)
+	if citedReport == "" {
+		citedReport = strings.ReplaceAll(llmResp.Response, "<cited_report>", "")
+		citedReport = strings.ReplaceAll(citedReport, "</cited_report>", "")
+		citedReport = strings.TrimSpace(citedReport)
+	}
+
+	result := &CitationAgentResult{
+		TokensUsed:   llmResp.TokensUsed,
+		ModelUsed:    llmResp.ModelUsed,
+		Provider:     llmResp.Provider,
+		InputTokens:  llmResp.Metadata.InputTokens,
+		OutputTokens: llmResp.Metadata.OutputTokens,
+	}
+
+	// Extract actual citations used in the report
+	actualUsedCitations := extractUsedCitationNumbers(citedReport)
+
+	if len(actualUsedCitations) == 0 {
+		logger.Info("CitationAgent V2: no citations added, using original report")
+		result.Role = role
+		result.CitedReport = input.Report
+		result.CitationsUsed = nil
+		result.ValidationPassed = true
+		result.PlacementWarnings = []string{"LLM did not add any citations - using original report"}
+		return result, nil
+	}
+
+	// Validate content immutability
+	if valid, err := validateContentImmutability(input.Report, citedReport); !valid {
+		logger.Warn("CitationAgent V2: content modified, using original report", "error", err)
+		result.Role = role
+		result.CitedReport = input.Report
+		result.CitationsUsed = nil
+		result.ValidationPassed = false
+		result.ValidationError = "content modified beyond citations"
+		return result, nil
+	}
+
+	// Validate citation numbers (only allow IDs that were in supportedMappings)
+	invalidCitations := validateCitationNumbersV2(citedReport, usedCitationIDs)
+	if len(invalidCitations) > 0 {
+		logger.Warn("CitationAgent V2: invalid citation numbers, removing", "invalid", invalidCitations)
+		citedReport = removeInvalidCitations(citedReport, invalidCitations)
+		actualUsedCitations = extractUsedCitationNumbers(citedReport)
+	}
+
+	// Build Sources section with only used citations
+	sourcesSection := buildSourcesSectionV2(actualUsedCitations, citationMap)
+	citedReportWithSources := citedReport + "\n\n" + sourcesSection
+
+	result.Role = role
+	result.CitedReport = citedReportWithSources
+	result.CitationsUsed = actualUsedCitations
+	result.ValidationPassed = true
+	result.RedundantCount = len(detectRedundantCitations(citedReport))
+
+	logger.Info("CitationAgent V2 (with Verify): complete",
+		"expected_citations", len(usedCitationIDs),
+		"actual_citations", len(actualUsedCitations),
+	)
+
+	return result, nil
+}
+
+// filterSupportedClaims returns only claims with verdict="supported" and non-empty supporting_ids
+func filterSupportedClaims(mappings []ClaimMappingInput) []ClaimMappingInput {
+	var result []ClaimMappingInput
+	for _, m := range mappings {
+		if m.Verdict == "supported" && len(m.SupportingIDs) > 0 {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// collectUsedCitationIDs extracts all unique citation IDs from supported mappings
+func collectUsedCitationIDs(mappings []ClaimMappingInput) []int {
+	idSet := make(map[int]bool)
+	for _, m := range mappings {
+		for _, id := range m.SupportingIDs {
+			idSet[id] = true
+		}
+	}
+
+	ids := make([]int, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// validateCitationNumbersV2 returns citation numbers that are not in the allowed set
+func validateCitationNumbersV2(cited string, allowedIDs []int) []int {
+	allowedSet := make(map[int]bool)
+	for _, id := range allowedIDs {
+		allowedSet[id] = true
+	}
+
+	matches := citationNumberPattern.FindAllStringSubmatch(cited, -1)
+	var invalid []int
+	seen := make(map[int]bool)
+	for _, m := range matches {
+		n, _ := strconv.Atoi(m[1])
+		if !allowedSet[n] && !seen[n] {
+			invalid = append(invalid, n)
+			seen[n] = true
+		}
+	}
+	return invalid
+}
+
+// buildCitationPlacementPromptWithMappings returns the system prompt for V2 with ClaimMappings
+func buildCitationPlacementPromptWithMappings() string {
+	return `You are a citation placement specialist.
+
+## YOUR TASK
+Add [n] citation markers to the report based on pre-verified claim-citation mappings.
+The mappings tell you which claims are supported by which citations.
+Your job is simply to place [n] markers at the END of sentences containing those claims.
+
+## ABSOLUTE RULE - DO NOT MODIFY TEXT
+The ONLY modification allowed is inserting [n] markers. NOTHING ELSE.
+Your response will be REJECTED if you change ANY character of the original text.
+
+## HOW TO USE MAPPINGS
+For each mapping:
+1. Find the sentence in the report that contains the claim
+2. Add the citation marker(s) at the END of that sentence
+3. Format: "sentence text.[1]" or "sentence text.[1][3]"
+
+## CITATION PLACEMENT RULES
+- Place citations at END of sentences, before the period/newline
+- ✓ "Revenue grew 19%.[1]"
+- ✓ "Founded in 2020[2], the company expanded rapidly.[3]"
+- ✗ "[1] Revenue grew 19%."
+
+## OUTPUT FORMAT
+<cited_report>
+[Original text with [n] markers inserted - NO OTHER CHANGES]
+</cited_report>
+
+IMPORTANT: Only use citation IDs from the provided mappings. Do NOT add any other citations.`
+}
+
+// buildCitationUserContentWithMappings builds user content for V2 with ClaimMappings
+func buildCitationUserContentWithMappings(report string, citations []CitationWithIDForAgent, mappings []ClaimMappingInput) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Verified Claim-Citation Mappings:\n")
+	sb.WriteString("(These are pre-verified - just place the citations where the claims appear)\n\n")
+	for i, m := range mappings {
+		idsStr := make([]string, len(m.SupportingIDs))
+		for j, id := range m.SupportingIDs {
+			idsStr[j] = fmt.Sprintf("[%d]", id)
+		}
+		sb.WriteString(fmt.Sprintf("%d. Claim: \"%s\"\n", i+1, m.Claim))
+		sb.WriteString(fmt.Sprintf("   Citations: %s (confidence: %.2f)\n\n", strings.Join(idsStr, " "), m.Confidence))
+	}
+
+	sb.WriteString("\n## Citation Reference (for context only):\n")
+	for _, c := range citations {
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", c.ID, title, c.URL))
+	}
+
+	sb.WriteString("\n## Report to Cite:\n")
+	sb.WriteString(report)
+	sb.WriteString("\n\nAdd citations based on the mappings above and output within <cited_report> tags:")
+
+	return sb.String()
+}
+
+// buildSourcesSectionV2 builds the Sources section with only used citations
+func buildSourcesSectionV2(usedIDs []int, citationMap map[int]CitationWithIDForAgent) string {
+	if len(usedIDs) == 0 {
+		return ""
+	}
+
+	// Sort IDs for consistent output
+	sortedIDs := make([]int, len(usedIDs))
+	copy(sortedIDs, usedIDs)
+	sort.Ints(sortedIDs)
+
+	var sb strings.Builder
+	sb.WriteString("## Sources\n\n")
+
+	for _, id := range sortedIDs {
+		c, ok := citationMap[id]
+		if !ok {
+			continue
+		}
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		if title == "" {
+			title = c.URL
+		}
+		sb.WriteString(fmt.Sprintf("[%d] %s - %s\n", id, title, c.URL))
+	}
+
+	return sb.String()
+}
