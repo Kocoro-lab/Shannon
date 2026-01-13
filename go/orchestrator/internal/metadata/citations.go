@@ -1189,6 +1189,14 @@ func deduplicateCitations(citations []Citation) []Citation {
 			if citation.RelevanceScore > deduped[idx].RelevanceScore {
 				deduped[idx].RelevanceScore = citation.RelevanceScore
 			}
+			// Citation V2: Prefer "fetch" over "search" for ToolSource
+			// Fetch provides full content for verification, search only provides snippets
+			if citation.ToolSource == "fetch" && deduped[idx].ToolSource != "fetch" {
+				deduped[idx].ToolSource = citation.ToolSource
+				deduped[idx].StatusCode = citation.StatusCode
+				deduped[idx].BlockedReason = citation.BlockedReason
+				deduped[idx].Content = citation.Content
+			}
 		} else {
 			index[key] = len(deduped)
 			deduped = append(deduped, citation)

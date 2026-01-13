@@ -2411,6 +2411,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					"source":            c.Source,
 					"credibility_score": c.CredibilityScore,
 					"quality_score":     c.QualityScore,
+					"tool_source":       c.ToolSource,
+					"status_code":       c.StatusCode,
+					"blocked_reason":    c.BlockedReason,
 				})
 			}
 			baseContext["citations"] = out
@@ -3345,6 +3348,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 											"title":             c.Title,
 											"source":            c.Source,
 											"credibility_score": c.CredibilityScore,
+											"tool_source":       c.ToolSource,
+											"status_code":       c.StatusCode,
+											"blocked_reason":    c.BlockedReason,
 											"quality_score":     c.QualityScore,
 										})
 									}
@@ -3579,45 +3585,34 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						)
 					}
 				} else if verifyErr != nil {
-					// P0-B: For deep/academic, do NOT fallback to V1 on verify error
-					logger.Warn("CitationAgent V2: Verify batch failed",
+					// V2 verify failed - allow V1 fallback (no warning to user)
+					logger.Info("CitationAgent V2: Verify batch failed, allowing V1 fallback",
 						"error", verifyErr,
 						"strategy", researchStrategy,
 					)
-					// Skip V1 fallback for deep/academic - set v2Succeeded to prevent it
-					v2Succeeded = true
-					// Append warning to report
-					finalResult = appendVerificationWarning(finalResult,
-						"⚠️ 引用验证失败，部分来源可能不可用或被拦截。")
+					// v2Succeeded stays false, will enter V1 flow
 				} else {
-					// P0-B: For deep/academic, do NOT fallback to V1 on insufficient evidence
-					logger.Warn("CitationAgent V2: no supported claims, skipping V1 fallback for deep research",
+					// V2 verify returned no supported claims - allow V1 fallback
+					logger.Info("CitationAgent V2: no supported claims, allowing V1 fallback",
 						"total_claims", verifyBatchResult.TotalClaims,
 						"insufficient", verifyBatchResult.InsufficientCount,
+						"strategy", researchStrategy,
 					)
-					// Skip V1 fallback - set v2Succeeded to prevent it
-					v2Succeeded = true
-					// Append warning to report
-					finalResult = appendVerificationWarning(finalResult,
-						"⚠️ 证据不足，无法验证引用来源。部分来源可能被拦截或内容不可用。")
-					// Note: citation_warning logged above, will be visible in workflow logs
+					// v2Succeeded stays false, will enter V1 flow
 				}
 			} else {
-				// No valid fetch-only citations available
-				logger.Warn("CitationAgent V2: no valid fetch-only citations, skipping V1 fallback",
+				// No valid fetch-only citations available - allow V1 fallback
+				logger.Info("CitationAgent V2: no valid fetch-only citations, allowing V1 fallback",
 					"original_count", len(collectedCitations),
 					"valid_count", len(validCitations),
 				)
-				v2Succeeded = true // Skip V1
-				finalResult = appendVerificationWarning(finalResult,
-					"⚠️ 无可用的引用来源，所有来源均被拦截或无效。")
+				// v2Succeeded stays false, will enter V1 flow
 			}
 		}
 
 		// Citation V1: Standard flow (all citations, LLM does matching)
-		// Only run if V2 didn't succeed AND not deep/academic strategy
-		// P0-B: deep/academic strategies should NOT use V1 fallback
-		if !v2Succeeded && researchStrategy != "deep" && researchStrategy != "academic" {
+		// Run if V2 didn't succeed - allows fallback for all strategies including deep/academic
+		if !v2Succeeded {
 			logger.Info("CitationAgent V1: using standard citation flow")
 
 			// Convert to CitationForAgent (avoids import cycle)
@@ -3834,6 +3829,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				"source":            c.Source,
 				"credibility_score": c.CredibilityScore,
 				"quality_score":     c.QualityScore,
+				"tool_source":       c.ToolSource,
+				"status_code":       c.StatusCode,
+				"blocked_reason":    c.BlockedReason,
 			})
 		}
 		meta["citations"] = out
