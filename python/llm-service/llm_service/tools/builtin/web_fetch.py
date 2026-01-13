@@ -30,6 +30,43 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_SUBPAGES = 15  # Balanced limit for comprehensive research
+
+# P0-A: Blocked content detection patterns for Citation V2
+BLOCKED_PATTERNS = [
+    "Access Denied",
+    "403 Forbidden",
+    "Robot Check",
+    "Please verify you are human",
+    "Login Required",
+    "Sign in to continue",
+    "Captcha required",
+    "Enable JavaScript",
+    "This page isn't available",
+    "Page not found",
+]
+
+
+def detect_blocked_reason(content: str, status_code: int = 200) -> Optional[str]:
+    """
+    Detect if fetched content indicates a blocked/failed fetch.
+
+    Returns blocked_reason string if blocked, None otherwise.
+    Used by Citation V2 to filter invalid sources before verification.
+    """
+    if status_code >= 400:
+        return f"http_{status_code}"
+
+    if not content or len(content.strip()) < 50:
+        return "empty_content"
+
+    content_lower = content.lower()
+    for pattern in BLOCKED_PATTERNS:
+        if pattern.lower() in content_lower:
+            return pattern.lower().replace(" ", "_")
+
+    return None
+
+
 CRAWL_DELAY_SECONDS = float(os.getenv("WEB_FETCH_CRAWL_DELAY", "0.5"))
 MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  # 150KB total
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
@@ -316,6 +353,9 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     content = content[:max_length]
 
                 title = result_data.get("metadata", {}).get("title", "")
+                # P0-A: Detect blocked content
+                blocked_reason = detect_blocked_reason(content, 200)
+
                 return {
                     "url": result_data.get("url", url),
                     "title": title,
@@ -329,6 +369,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     "method": "firecrawl",
                     "pages_fetched": 1,
                     "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                    "status_code": 200,  # P0-A: Firecrawl success = 200
+                    "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                 }
 
     async def _crawl(self, url: str, max_length: int, limit: int) -> Dict[str, Any]:
@@ -1355,12 +1397,17 @@ class WebFetchTool(Tool):
                             "title": result.output.get("title", ""),
                             "content": result.output.get("content", ""),
                             "char_count": len(result.output.get("content", "")),
+                            # P0-A: Pass through status_code and blocked_reason
+                            "status_code": result.output.get("status_code", 200),
+                            "blocked_reason": result.output.get("blocked_reason"),
                         }
                     else:
                         return {
                             "url": url,
                             "success": False,
                             "error": result.error or "Unknown error",
+                            "status_code": 0,  # P0-A: Unknown status
+                            "blocked_reason": "fetch_failed",
                         }
                 except Exception as e:
                     logger.error(f"Batch fetch error for {url}: {e}")
@@ -1368,6 +1415,8 @@ class WebFetchTool(Tool):
                         "url": url,
                         "success": False,
                         "error": str(e),
+                        "status_code": 0,  # P0-A: Unknown status
+                        "blocked_reason": "exception",
                     }
 
         # Execute all fetches concurrently
@@ -1934,6 +1983,9 @@ class WebFetchTool(Tool):
                     markdown = markdown[:max_length]
                     truncated = True
 
+                # P0-A: Detect blocked content for Citation V2 filtering
+                blocked_reason = detect_blocked_reason(markdown, response.status)
+
                 return ToolResult(
                     success=True,
                     output={
@@ -1949,6 +2001,8 @@ class WebFetchTool(Tool):
                         "method": "pure_python",
                         "pages_fetched": 1,
                         "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                        "status_code": response.status,  # P0-A: HTTP status for Go filtering
+                        "blocked_reason": blocked_reason,  # P0-A: None if valid, reason string if blocked
                     },
                     metadata={
                         "fetch_method": "pure_python",
@@ -2095,6 +2149,9 @@ class WebFetchTool(Tool):
                         content = result.get("text", "")
 
                         exa_title = result.get("title", "")
+                        # P0-A: Detect blocked content
+                        blocked_reason = detect_blocked_reason(content, 200)
+
                         return ToolResult(
                             success=True,
                             output={
@@ -2110,6 +2167,8 @@ class WebFetchTool(Tool):
                                 "method": "exa",
                                 "pages_fetched": 1,
                                 "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                                "status_code": 200,  # P0-A: Exa success = 200
+                                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                             },
                             metadata={
                                 "fetch_method": "exa",
@@ -2144,6 +2203,8 @@ class WebFetchTool(Tool):
                             total_chars += len(page_content)
 
                         final_content = "\n".join(merged_content)
+                        # P0-A: Detect blocked content in merged result
+                        blocked_reason = detect_blocked_reason(final_content, 200)
 
                         return ToolResult(
                             success=True,
@@ -2157,6 +2218,8 @@ class WebFetchTool(Tool):
                                 "method": "exa",
                                 "pages_fetched": len(results),
                                 "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                                "status_code": 200,  # P0-A: Exa success = 200
+                                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                             },
                             metadata={
                                 "fetch_method": "exa",

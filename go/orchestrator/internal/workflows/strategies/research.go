@@ -447,6 +447,16 @@ func stripCodeFences(s string) string {
 	return t
 }
 
+// appendVerificationWarning appends a warning message to the report
+// Used by P0-B to add verification warnings when V2 fails without falling back to V1
+func appendVerificationWarning(report, warning string) string {
+	if report == "" {
+		return warning
+	}
+	// Append warning as a separate section at the end
+	return report + "\n\n---\n\n" + warning
+}
+
 func registrableDomain(host string) string {
 	h := strings.ToLower(strings.TrimSpace(host))
 	h = strings.TrimPrefix(h, "www.")
@@ -3473,10 +3483,23 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			// ============================================================
 			logger.Info("CitationAgent V2: using Verify batch flow for deep research")
 
+			// P0-A: Filter out invalid/blocked citations before verification
+			validCitations, invalidCount, blockedURLs := metadata.FilterValidCitations(collectedCitations)
+			if invalidCount > 0 {
+				logger.Warn("CitationAgent V2: filtered out invalid citations",
+					"total", len(collectedCitations),
+					"valid", len(validCitations),
+					"invalid", invalidCount,
+					"blocked_urls", len(blockedURLs),
+				)
+				// Note: blocked URLs logged above, metadata added later in meta map
+			}
+
 			// Step 1: Filter citations to fetch-only and assign sequential IDs
-			fetchOnlyCitations := metadata.FilterFetchOnlyAndAssignIDs(collectedCitations)
+			fetchOnlyCitations := metadata.FilterFetchOnlyAndAssignIDs(validCitations)
 			logger.Info("CitationAgent V2: filtered to fetch-only citations",
 				"original_count", len(collectedCitations),
+				"valid_count", len(validCitations),
 				"fetch_only_count", len(fetchOnlyCitations),
 			)
 
@@ -3556,16 +3579,45 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						)
 					}
 				} else if verifyErr != nil {
-					logger.Warn("CitationAgent V2: Verify batch failed, falling back to V1", "error", verifyErr)
+					// P0-B: For deep/academic, do NOT fallback to V1 on verify error
+					logger.Warn("CitationAgent V2: Verify batch failed",
+						"error", verifyErr,
+						"strategy", researchStrategy,
+					)
+					// Skip V1 fallback for deep/academic - set v2Succeeded to prevent it
+					v2Succeeded = true
+					// Append warning to report
+					finalResult = appendVerificationWarning(finalResult,
+						"⚠️ 引用验证失败，部分来源可能不可用或被拦截。")
 				} else {
-					logger.Info("CitationAgent V2: no supported claims, falling back to V1")
+					// P0-B: For deep/academic, do NOT fallback to V1 on insufficient evidence
+					logger.Warn("CitationAgent V2: no supported claims, skipping V1 fallback for deep research",
+						"total_claims", verifyBatchResult.TotalClaims,
+						"insufficient", verifyBatchResult.InsufficientCount,
+					)
+					// Skip V1 fallback - set v2Succeeded to prevent it
+					v2Succeeded = true
+					// Append warning to report
+					finalResult = appendVerificationWarning(finalResult,
+						"⚠️ 证据不足，无法验证引用来源。部分来源可能被拦截或内容不可用。")
+					// Note: citation_warning logged above, will be visible in workflow logs
 				}
+			} else {
+				// No valid fetch-only citations available
+				logger.Warn("CitationAgent V2: no valid fetch-only citations, skipping V1 fallback",
+					"original_count", len(collectedCitations),
+					"valid_count", len(validCitations),
+				)
+				v2Succeeded = true // Skip V1
+				finalResult = appendVerificationWarning(finalResult,
+					"⚠️ 无可用的引用来源，所有来源均被拦截或无效。")
 			}
 		}
 
 		// Citation V1: Standard flow (all citations, LLM does matching)
-		// Only run if V2 didn't succeed
-		if !v2Succeeded {
+		// Only run if V2 didn't succeed AND not deep/academic strategy
+		// P0-B: deep/academic strategies should NOT use V1 fallback
+		if !v2Succeeded && researchStrategy != "deep" && researchStrategy != "academic" {
 			logger.Info("CitationAgent V1: using standard citation flow")
 
 			// Convert to CitationForAgent (avoids import cycle)

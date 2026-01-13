@@ -36,6 +36,32 @@ type Citation struct {
 	CredibilityScore float64    `json:"credibility_score"` // domain reputation
 	AgentID          string     `json:"agent_id"`
 	Snippet          string     `json:"snippet"`
+	// P0-A: Fetch failure structuring for Citation V2
+	StatusCode    int    `json:"status_code,omitempty"`    // HTTP status code (0 = unknown, 200 = success, 4xx/5xx = error)
+	BlockedReason string `json:"blocked_reason,omitempty"` // Non-empty if content was blocked/invalid
+	Content       string `json:"content,omitempty"`        // Full content for IsValid() check (not serialized to JSON)
+}
+
+// IsValid returns true if the citation has valid, usable content for verification.
+// Used by Citation V2 to filter out invalid sources before VerifyBatch.
+func (c *Citation) IsValid() bool {
+	// HTTP 4xx/5xx = invalid
+	if c.StatusCode >= 400 {
+		return false
+	}
+	// Blocked content = invalid
+	if c.BlockedReason != "" {
+		return false
+	}
+	// Content too short = invalid
+	contentLen := len(c.Content)
+	if contentLen == 0 {
+		contentLen = len(c.Snippet)
+	}
+	if contentLen < MinSnippetLength {
+		return false
+	}
+	return true
 }
 
 // CitationStats provides aggregate metrics for collected citations
@@ -498,6 +524,19 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 		toolSource = ts
 	}
 
+	// P0-A: Extract status_code and blocked_reason for validity filtering
+	statusCode := 0 // 0 = unknown/legacy (treat as valid)
+	if sc, ok := result["status_code"].(float64); ok {
+		statusCode = int(sc)
+	} else if sc, ok := result["status_code"].(int); ok {
+		statusCode = sc
+	}
+
+	blockedReason := ""
+	if br, ok := result["blocked_reason"].(string); ok {
+		blockedReason = br
+	}
+
 	return &Citation{
 		URL:              normalizedURL,
 		Title:            title,
@@ -511,6 +550,10 @@ func extractCitationFromFetchResult(result map[string]interface{}, agentID strin
 		CredibilityScore: credibilityScore,
 		AgentID:          agentID,
 		Snippet:          snippet,
+		// P0-A: Fetch failure fields
+		StatusCode:    statusCode,
+		BlockedReason: blockedReason,
+		Content:       content, // Store for IsValid() check
 	}, nil
 }
 
@@ -1679,6 +1722,33 @@ func shouldSkipURL(urlStr string) bool {
 // ============================================================================
 // Citation V2: Filter functions for Deep Research workflow
 // ============================================================================
+
+// FilterValidCitations returns only citations that pass IsValid() check.
+// Used by Citation V2 to remove blocked/empty/errored citations before VerifyBatch.
+// Returns (valid citations, invalid count, blocked URLs for metadata).
+func FilterValidCitations(citations []Citation) ([]Citation, int, []string) {
+	var valid []Citation
+	var blockedURLs []string
+	invalidCount := 0
+
+	for _, c := range citations {
+		if c.IsValid() {
+			valid = append(valid, c)
+		} else {
+			invalidCount++
+			if c.BlockedReason != "" {
+				blockedURLs = append(blockedURLs, c.URL)
+			}
+		}
+	}
+
+	if isCitationsDebugEnabled() {
+		log.Printf("[citations] FilterValidCitations: input=%d valid=%d invalid=%d blocked_urls=%d",
+			len(citations), len(valid), invalidCount, len(blockedURLs))
+	}
+
+	return valid, invalidCount, blockedURLs
+}
 
 // CitationWithID wraps Citation with a sequential ID for verification tracking
 type CitationWithID struct {

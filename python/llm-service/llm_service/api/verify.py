@@ -1227,6 +1227,9 @@ async def _batch_verify_all_claims(
     """
     Batch verify all claims in a single LLM call.
 
+    P0-C: Improved to show each claim with its own top-5 evidence (per-claim organization)
+    instead of flattening all sources together.
+
     Args:
         claims: List of extracted claims
         citations: Citations with IDs
@@ -1239,90 +1242,101 @@ async def _batch_verify_all_claims(
     if not claims or not citations:
         return [ClaimMapping(claim=c, verdict="insufficient_evidence") for c in claims]
 
-    # Build citation reference (use top 30 most relevant overall)
-    # Count which citations appear most frequently in top-5 per claim
-    citation_importance: Dict[int, float] = {}
-    for claim in claims:
-        top5 = bm25_scores.get(claim, [])[:5]
-        for cid, score in top5:
-            citation_importance[cid] = citation_importance.get(cid, 0) + score
-
-    # Select top 30 most important citations
-    sorted_citations = sorted(citation_importance.items(), key=lambda x: x[1], reverse=True)
-    selected_ids = set(cid for cid, _ in sorted_citations[:30])
-
-    # Always include at least the top-2 BM25 matches per claim
-    for claim in claims:
-        for cid, _ in bm25_scores.get(claim, [])[:2]:
-            selected_ids.add(cid)
-
     # Build citation lookup
     cid_to_citation = {c.id: c for c in citations}
-    selected_citations = [cid_to_citation[cid] for cid in sorted(selected_ids) if cid in cid_to_citation]
 
-    # Build citation context
-    citation_context_parts = []
-    for c in selected_citations:
-        text = (c.content or c.snippet or "")[:400]
-        citation_context_parts.append(f"[{c.id}] {c.title or c.url}\n{text}")
-    citation_context = "\n\n".join(citation_context_parts)
+    # P0-C: Build per-claim evidence context (each claim sees only its top-5)
+    claim_contexts = []
+    for i, claim in enumerate(claims):
+        top5 = bm25_scores.get(claim, [])[:5]
+        evidence_parts = []
+        valid_ids = []
 
-    # Build claims list
-    claims_text = "\n".join([f"{i+1}. {claim}" for i, claim in enumerate(claims)])
+        for cid, score in top5:
+            c = cid_to_citation.get(cid)
+            if c:
+                text = (c.content or c.snippet or "")[:400]
+                evidence_parts.append(f"  [{cid}] (relevance:{score:.1f}) {c.title or c.url}\n  {text}")
+                valid_ids.append(cid)
+
+        claim_contexts.append({
+            "index": i + 1,
+            "claim": claim,
+            "evidence": "\n\n".join(evidence_parts) if evidence_parts else "(无相关证据)",
+            "valid_ids": valid_ids
+        })
 
     # Language detection
     lang = detect_language(claims[0] if claims else "")
 
+    # P0-C: Build structured prompt with per-claim evidence
     if lang == "zh":
-        prompt = f"""判断以下每个陈述是否被来源支持。
+        prompt_parts = ["判断以下每个陈述是否被其对应的证据支持。\n\n每个陈述只需要看它自己的证据片段（已按相关性排序）。\n"]
 
-## 陈述列表
-{claims_text}
+        for ctx in claim_contexts:
+            prompt_parts.append(f"""
+---
+## 陈述 {ctx['index']}: {ctx['claim']}
 
-## 可用来源
-{citation_context}
+### 相关证据:
+{ctx['evidence']}
 
+### 可用 citation IDs: {ctx['valid_ids']}
+---
+""")
+
+        prompt_parts.append("""
 ## 输出要求
 对每个陈述，输出一个 JSON 对象：
 ```json
 [
-  {{"claim_index": 1, "verdict": "supported"|"unsupported"|"insufficient_evidence", "supporting_ids": [citation_ids...], "reasoning": "简短解释"}},
+  {"claim_index": 1, "verdict": "supported"|"unsupported"|"insufficient_evidence", "supporting_ids": [citation_ids...], "reasoning": "简短解释"},
   ...
 ]
 ```
 
 ## 判定标准
-- **supported**: 至少一个来源明确支持该陈述
-- **unsupported**: 有来源明确反驳该陈述
+- **supported**: 证据中明确包含支持该陈述的内容
+- **unsupported**: 证据中明确反驳该陈述
 - **insufficient_evidence**: 证据不足以判断
 
 只输出 JSON 数组，无其他内容。
-"""
+""")
+        prompt = "".join(prompt_parts)
+
     else:
-        prompt = f"""Judge whether each claim is supported by the sources.
+        prompt_parts = ["Judge whether each claim is supported by its corresponding evidence.\n\nEach claim should only be evaluated against its own evidence snippets (sorted by relevance).\n"]
 
-## Claims
-{claims_text}
+        for ctx in claim_contexts:
+            prompt_parts.append(f"""
+---
+## Claim {ctx['index']}: {ctx['claim']}
 
-## Available Sources
-{citation_context}
+### Relevant Evidence:
+{ctx['evidence']}
 
+### Available citation IDs: {ctx['valid_ids']}
+---
+""")
+
+        prompt_parts.append("""
 ## Output Format
 For each claim, output a JSON object:
 ```json
 [
-  {{"claim_index": 1, "verdict": "supported"|"unsupported"|"insufficient_evidence", "supporting_ids": [citation_ids...], "reasoning": "brief explanation"}},
+  {"claim_index": 1, "verdict": "supported"|"unsupported"|"insufficient_evidence", "supporting_ids": [citation_ids...], "reasoning": "brief explanation"},
   ...
 ]
 ```
 
 ## Judgment Criteria
-- **supported**: At least one source explicitly supports the claim
-- **unsupported**: A source explicitly contradicts the claim
+- **supported**: Evidence explicitly contains content supporting the claim
+- **unsupported**: Evidence explicitly contradicts the claim
 - **insufficient_evidence**: Evidence is inconclusive
 
 Output only the JSON array, nothing else.
-"""
+""")
+        prompt = "".join(prompt_parts)
 
     try:
         from llm_service.providers.base import ModelTier
