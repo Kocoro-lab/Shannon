@@ -315,8 +315,9 @@ func ApplyCitationFilterWithFallback(
 		Retention: retention,
 	}
 
-	// Apply filter only if results are reasonable (>=20 citations OR >=30% retention)
-	if len(filtered) >= citationFilterMinCount || retention >= citationFilterMinRetention {
+	// Apply filter only if results are reasonable (>=20 citations AND >=30% retention)
+	// Using AND ensures we don't apply aggressive filtering that removes too many citations
+	if len(filtered) >= citationFilterMinCount && retention >= citationFilterMinRetention {
 		result.Citations = filtered
 		result.Applied = true
 	} else {

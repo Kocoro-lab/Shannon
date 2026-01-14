@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -1867,8 +1868,14 @@ func buildSourcesSectionV2(usedIDs []int, allCitations []CitationWithIDForAgent,
 			status = "Used inline"
 		}
 
+		// Decode URL for better readability (e.g., %E4%B8%AD%E6%96%87 → 中文)
+		displayURL := c.URL
+		if decoded, err := url.PathUnescape(c.URL); err == nil {
+			displayURL = decoded
+		}
+
 		// Format: [n] Title (URL) - domain - Status
-		sb.WriteString(fmt.Sprintf("[%d] %s (%s) - %s - %s\n", entry.id, title, c.URL, c.Source, status))
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s) - %s - %s\n", entry.id, title, displayURL, c.Source, status))
 	}
 
 	return sb.String()
