@@ -292,6 +292,14 @@ const (
 	citationFilterMinRetention = 0.3 // Minimum retention rate (30%)
 )
 
+// P0-B: Constants for V2 + V1 Supplement logic
+const (
+	v2MinSupportRate    = 0.1 // 10% - below this, enable V1 supplement
+	v2MinCitationsUsed  = 3   // Minimum inline citations to consider V2 sufficient
+	v2MinClaimsRequired = 5   // Minimum claims to trigger supplement (avoid short answer false positives)
+	v1MaxExtraCitations = 10  // Maximum additional citations from V1 supplement
+)
+
 // ApplyCitationFilterWithFallback applies entity-based filtering with automatic
 // fallback when the filter would remove too many citations.
 // Returns a CitationFilterResult containing the filtered citations and metadata.
@@ -3590,10 +3598,42 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// V2 succeeded - update finalResult with cited report
 						finalResult = citationResult.CitedReport
 						totalTokens += citationResult.TokensUsed
+						v2CitationsUsed := len(citationResult.CitationsUsed)
 						logger.Info("CitationAgent V2: citations added successfully",
-							"citations_used", len(citationResult.CitationsUsed),
+							"citations_used", v2CitationsUsed,
 						)
 						v2Succeeded = true
+
+						// P0-B: Check if V1 supplement is needed (low support rate)
+						totalClaims := verifyBatchResult.TotalClaims
+						supportedClaims := verifyBatchResult.SupportedCount
+
+						if totalClaims >= v2MinClaimsRequired {
+							supportRate := float64(supportedClaims) / float64(totalClaims)
+							needsV1Supplement := supportRate < v2MinSupportRate || v2CitationsUsed < v2MinCitationsUsed
+
+							logger.Info("CitationAgent V2: support rate check",
+								"support_rate", supportRate,
+								"supported_claims", supportedClaims,
+								"total_claims", totalClaims,
+								"v2_citations_used", v2CitationsUsed,
+								"needs_v1_supplement", needsV1Supplement,
+							)
+
+							if needsV1Supplement {
+								logger.Info("CitationAgent V2: low support rate, enabling V1 supplement")
+								// Allow V1 to run as supplement (not replace)
+								// V1 will work on the V2-cited report and add more citations
+								v2Succeeded = false
+								// Store V2 result as base for V1 supplement
+								reportForCitation = finalResult
+							}
+						} else {
+							logger.Info("CitationAgent V2: short answer, skip V1 supplement check",
+								"total_claims", totalClaims,
+								"min_required", v2MinClaimsRequired,
+							)
+						}
 					} else if citationV2Err != nil {
 						logger.Warn("CitationAgent V2: failed, falling back to V1", "error", citationV2Err)
 					} else {
@@ -3629,8 +3669,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 		// Citation V1: Standard flow (all citations, LLM does matching)
 		// Run if V2 didn't succeed - allows fallback for all strategies including deep/academic
+		// P0-B: Also runs as supplement when V2 support rate is low
 		if !v2Succeeded {
-			logger.Info("CitationAgent V1: using standard citation flow")
+			// Detect if this is supplement mode (V2 already added some citations)
+			isSupplementMode := strings.Contains(reportForCitation, "[1]") || strings.Contains(reportForCitation, "[2]")
+			if isSupplementMode {
+				logger.Info("CitationAgent V1: running as SUPPLEMENT to V2 (low support rate)")
+			} else {
+				logger.Info("CitationAgent V1: using standard citation flow (V2 fallback)")
+			}
 
 			// Convert to CitationForAgent (avoids import cycle)
 			// Pass ALL citations - let CitationAgent decide which to use based on prompt guidance
