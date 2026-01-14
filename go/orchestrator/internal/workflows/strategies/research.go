@@ -3627,10 +3627,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						v2Succeeded = true
 
 						// P0-B: Check if V1 supplement is needed (low support rate)
+						// P1: Check for strict mode (disable V1 supplement)
+						v2StrictMode := false
+						if sm, ok := baseContext["citation_v2_strict_mode"].(bool); ok {
+							v2StrictMode = sm
+						}
+
 						totalClaims := verifyBatchResult.TotalClaims
 						supportedClaims := verifyBatchResult.SupportedCount
 
-						if totalClaims >= v2MinClaimsRequired {
+						if totalClaims >= v2MinClaimsRequired && !v2StrictMode {
 							supportRate := float64(supportedClaims) / float64(totalClaims)
 							needsV1Supplement := supportRate < v2MinSupportRate || v2CitationsUsed < v2MinCitationsUsed
 
@@ -3640,6 +3646,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								"total_claims", totalClaims,
 								"v2_citations_used", v2CitationsUsed,
 								"needs_v1_supplement", needsV1Supplement,
+								"v2_strict_mode", v2StrictMode,
 							)
 
 							if needsV1Supplement {
@@ -3652,6 +3659,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								// Store V2 result as base for V1 supplement
 								reportForCitation = finalResult
 							}
+						} else if v2StrictMode {
+							logger.Info("CitationAgent V2: strict mode enabled, skip V1 supplement",
+								"total_claims", totalClaims,
+								"v2_citations_used", v2CitationsUsed,
+							)
 						} else {
 							logger.Info("CitationAgent V2: short answer, skip V1 supplement check",
 								"total_claims", totalClaims,
