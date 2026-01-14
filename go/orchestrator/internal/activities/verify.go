@@ -89,6 +89,7 @@ type CitationWithIDInput struct {
 	Title            string  `json:"title"`
 	Snippet          string  `json:"snippet"`
 	CredibilityScore float64 `json:"credibility_score"`
+	QualityScore     float64 `json:"quality_score"` // P0-C: Added for ranking
 }
 
 // VerifyBatchInput is the input for the VerifyBatch activity

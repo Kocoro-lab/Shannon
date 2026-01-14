@@ -3555,6 +3555,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						Title:            c.Citation.Title,
 						Snippet:          c.Citation.Snippet,
 						CredibilityScore: c.Citation.CredibilityScore,
+						QualityScore:     c.Citation.QualityScore, // P0-C: Added for ranking
 					}
 				}
 

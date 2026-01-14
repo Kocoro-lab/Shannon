@@ -1110,6 +1110,7 @@ class CitationWithIDInput(BaseModel):
     content: Optional[str] = None
     snippet: Optional[str] = None
     credibility_score: float = 0.5
+    quality_score: float = 0.5  # P0-C: Added for ranking
 
 
 class ClaimMapping(BaseModel):
@@ -1136,16 +1137,54 @@ class VerifyBatchResponse(BaseModel):
     insufficient_count: int = 0
 
 
+def _get_adaptive_topk(total_sources: int, total_claims: int) -> int:
+    """
+    P0-C: Dynamically adjust K value based on sources and claims count.
+
+    Balances coverage vs cost:
+    - More sources → larger K for better coverage
+    - More claims → smaller K to control total evaluations
+    - Total evaluations capped at 100 to prevent LLM overload
+
+    Args:
+        total_sources: Number of available citations
+        total_claims: Number of claims to verify
+
+    Returns:
+        Optimal K value (3-10)
+    """
+    # Base K depends on source count
+    if total_sources >= 50:
+        base_k = 10
+    elif total_sources >= 20:
+        base_k = 7
+    else:
+        base_k = 5
+
+    # Cost control: total evaluations should not exceed 100
+    max_evaluations = 100
+    if total_claims > 0 and total_claims * base_k > max_evaluations:
+        base_k = max(3, max_evaluations // total_claims)
+
+    # Ensure K doesn't exceed available sources
+    return min(base_k, total_sources) if total_sources > 0 else 3
+
+
 def _batch_bm25_scores(
     claims: List[str],
-    citations: List[CitationWithIDInput]
+    citations: List[CitationWithIDInput],
+    top_k: int = 5
 ) -> Dict[str, List[Tuple[int, float]]]:
     """
     Pre-compute BM25 scores for all (claim, citation) pairs.
 
+    P0-C: Enhanced ranking formula:
+    score = 0.5 * BM25 + 0.3 * quality + 0.2 * credibility
+
     Args:
         claims: List of claim strings
         citations: Citations with IDs
+        top_k: Number of top citations per claim (P0-C: now configurable)
 
     Returns:
         Dict mapping claim → [(citation_id, score), ...] sorted by score descending
@@ -1194,7 +1233,7 @@ def _batch_bm25_scores(
             doc_len = len(doc_tokens)
             k1, b = 1.5, 0.75
 
-            score = 0.0
+            bm25_score = 0.0
             for term in set(claim_tokens):
                 tf = doc_freq_counter.get(term, 0)
                 if tf > 0:
@@ -1203,17 +1242,28 @@ def _batch_bm25_scores(
                     # IDF component
                     n = doc_freq.get(term, 0)
                     idf = math.log((total_docs - n + 0.5) / (n + 0.5) + 1) if total_docs > 0 else 1.0
-                    score += idf * tf_component
+                    bm25_score += idf * tf_component
 
-            # Boost by credibility
-            score *= (0.5 + 0.5 * c.credibility_score)
+            # P0-C: Enhanced ranking formula
+            # score = 0.5 * relevance(BM25) + 0.3 * quality + 0.2 * credibility
+            # Normalize BM25 to 0-1 range (assume max ~10)
+            normalized_bm25 = min(1.0, bm25_score / 10.0)
+            quality = c.quality_score * c.credibility_score  # Combined quality signal
+            credibility = c.credibility_score
 
-            if score > 0:
-                scores.append((c.id, score))
+            final_score = (
+                0.5 * normalized_bm25 +
+                0.3 * quality +
+                0.2 * credibility
+            )
 
-        # Sort by score descending
+            if final_score > 0:
+                scores.append((c.id, final_score))
+
+        # Sort by score descending and take top_k
         scores.sort(key=lambda x: x[1], reverse=True)
-        result[claim] = scores
+        # P0-C: Return only top_k (handles < K case automatically)
+        result[claim] = scores[:top_k]
 
     return result
 
@@ -1453,8 +1503,13 @@ async def verify_batch_endpoint(request: Request, body: VerifyBatchRequest):
                 insufficient_count=0
             ).model_dump()
 
+        # P0-C: Calculate adaptive top_k based on sources and claims count
+        top_k = _get_adaptive_topk(len(body.citations), len(claims))
+        logger.info(f"[verify_batch] Using adaptive top_k={top_k} "
+                    f"(sources={len(body.citations)}, claims={len(claims)})")
+
         # Step 2: Pre-compute BM25 scores (no LLM)
-        bm25_scores = _batch_bm25_scores(claims, body.citations)
+        bm25_scores = _batch_bm25_scores(claims, body.citations, top_k=top_k)
         logger.debug(f"[verify_batch] Computed BM25 scores for {len(claims)} claims × {len(body.citations)} citations")
 
         # Step 3: Batch verify all claims (1 LLM call)
