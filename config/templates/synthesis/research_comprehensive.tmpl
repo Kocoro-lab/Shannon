@@ -126,6 +126,8 @@ Do NOT skip any research areas. Generate comprehensive content for ALL sections 
 - If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
 - NEVER fabricate or hallucinate sources
 - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+- **Relevance over completeness**: If an agent's output is off-topic or provides only generic data, acknowledge "limited direct information" rather than misattribute it.
+- When agent NOTES indicate "limited information found", do NOT synthesize the accompanying generic data as if it directly answers the query.
 {{- end }}
 
 {{ template "citation_list" . }}

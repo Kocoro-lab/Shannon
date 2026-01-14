@@ -43,6 +43,20 @@ Current date: **{{.CurrentDate}}** (UTC). Use this as your reference point for "
   • NEVER silently choose one version without acknowledging the conflict
 - For time-sensitive information, include temporal context: "As of (date)..." or "Based on (year) data..."
 
+## Agent Output Relevance Classification (MANDATORY):
+Before synthesizing, classify EACH agent output snippet:
+
+- **Direct Finding**: Directly answers the query with entity-specific information
+- **Background**: Useful context but does NOT directly answer the query
+- **Irrelevant**: Off-topic or generic data with no clear connection
+
+**Routing**:
+1. Direct Finding → main sections
+2. Background → omit, OR brief note (≤3 bullets) with disclaimer if genuinely useful
+3. Irrelevant → omit entirely
+
+**Key Rule**: If agent NOTES indicate "limited information", do NOT promote accompanying generic data. Acknowledge the limitation instead.
+
 {{- end -}}
 
 {{- define "citation_list" -}}
