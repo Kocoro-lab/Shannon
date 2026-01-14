@@ -14,6 +14,7 @@ Reference values aligned with the current codebase. Defaults noted come from cod
 
 | Activity             | Default      | Env Var                   | Location                                         | Description                                              |
 | -------------------- | ------------ | ------------------------- | ------------------------------------------------ | -------------------------------------------------------- |
+| ResearchWorkflow Activities | 480s (8 min) | N/A | go/orchestrator/internal/workflows/strategies/research.go | Default Activity timeout for research workflow (SynthesizeResultsLLM can take 5+ min for deep research) |
 | DecomposeTask        | 30s          | DECOMPOSE_TIMEOUT_SECONDS | go/orchestrator/internal/activities/decompose.go | HTTP timeout for task decomposition                      |
 | Synthesis (Standard) | 180s (3 min) | N/A                       | go/orchestrator/internal/activities/synthesis.go | Non-research synthesis timeout                           |
 | Synthesis (Research) | 300s (5 min) | N/A                       | go/orchestrator/internal/activities/synthesis.go | Research synthesis timeout                               |
