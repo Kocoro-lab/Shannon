@@ -68,6 +68,234 @@ def filter_relevant_results(
     return scored_results[:5]  # Return top 5 most relevant
 
 
+# ============================================================================
+# Interpretation Pass Helper Functions (P0 Fix for content loss)
+# ============================================================================
+
+# Multi-language interpretation prompt with strong instructions
+INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION / 重要指令 / 重要な指示 ===
+
+You MUST summarize the ACTUAL CONTENT from the tool results above.
+你必须总结上面工具结果中的实际内容。
+上記のツール結果から実際の内容を要約してください。
+
+FORMAT / 格式 / フォーマット:
+# PART 1 - RETRIEVED INFORMATION
+[Detailed summary of facts, data, quotes from tool results]
+[详细总结事实、数据、引用]
+
+# PART 2 - NOTES (optional)
+[Additional observations]
+
+=== FORBIDDEN / 禁止 / 禁止事項 ===
+DO NOT say / 不要说 / 言ってはいけない:
+- 'I will fetch...' / '我将获取...' / '取得します...'
+- 'I need to search...' / '我需要搜索...' / '検索する必要が...'
+- 'Let me continue...' / '让我继续...' / '続けさせて...'
+- Any future actions / 任何下一步动作 / 将来のアクション
+
+ONLY summarize what was ALREADY retrieved.
+只总结已经获取的内容。
+既に取得した内容のみを要約してください。"""
+
+
+def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], max_chars: int = 3000) -> str:
+    """
+    Generate a human-readable digest from tool results.
+    Used as fallback when interpretation pass fails.
+
+    This is NOT raw JSON - it extracts key information in readable format.
+    """
+    import json
+    import re
+
+    lines = []
+
+    # Process tool execution records for structured extraction
+    for record in tool_records:
+        tool_name = record.get("tool", "unknown")
+        success = record.get("success", False)
+        output = record.get("output", {})
+
+        if not success:
+            continue
+
+        if tool_name == "web_search":
+            lines.append("## Search Results")
+            results = output.get("results", []) if isinstance(output, dict) else []
+            for i, r in enumerate(results[:5]):  # Top 5 results
+                title = r.get("title", "")
+                snippet = r.get("snippet", "")
+                url = r.get("url", "")
+                if title or snippet:
+                    lines.append(f"- **{title}**: {snippet[:200]}...")
+                    if url:
+                        lines.append(f"  Source: {url}")
+            lines.append("")
+
+        elif tool_name == "web_fetch":
+            lines.append("## Fetched Content")
+            pages = output.get("pages", []) if isinstance(output, dict) else []
+            for page in pages[:3]:  # Top 3 pages
+                if not page.get("success"):
+                    continue
+                title = page.get("title", "Untitled")
+                content = page.get("content", "")
+                url = page.get("url", "")
+                if content and len(content) > 50:
+                    # Extract meaningful content, skip PDF binary
+                    if content.startswith("%PDF"):
+                        lines.append(f"- **{title}** (PDF document)")
+                    else:
+                        preview = content[:500].replace("\n", " ").strip()
+                        lines.append(f"- **{title}**: {preview}...")
+                    if url:
+                        lines.append(f"  Source: {url}")
+            lines.append("")
+
+    # Fallback: parse raw tool_results if no records
+    if not lines and tool_results:
+        # Try to extract readable parts from string
+        lines.append("## Tool Output Summary")
+        # Remove JSON artifacts, keep text
+        clean = re.sub(r'[{}\[\]"\\]', ' ', tool_results)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        lines.append(clean[:max_chars])
+
+    digest = "\n".join(lines)
+    return digest[:max_chars] if len(digest) > max_chars else digest
+
+
+def build_interpretation_messages(
+    system_prompt: str,
+    original_query: str,
+    tool_results_summary: str
+) -> List[Dict[str, str]]:
+    """
+    Build clean messages for interpretation pass.
+
+    P0 Fix: Instead of reusing entire messages history (which contains
+    "I'll execute..." patterns), build fresh messages with only:
+    - System prompt
+    - Original query
+    - Aggregated tool results
+    - Strong interpretation instruction
+    """
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Original query: {original_query}\n\n"
+                f"=== TOOL RESULTS ===\n{tool_results_summary}\n\n"
+                f"=== YOUR TASK ===\n{INTERPRETATION_PROMPT}"
+            )
+        }
+    ]
+
+
+def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 15000) -> str:
+    """
+    Aggregate tool execution results into a readable summary.
+
+    This creates a clean summary of all tool outputs without the
+    back-and-forth "I'll execute..." history.
+    """
+    import json
+
+    parts = []
+    total_chars = 0
+
+    for record in tool_records:
+        tool_name = record.get("tool", "unknown")
+        success = record.get("success", False)
+        output = record.get("output", {})
+
+        if not success:
+            continue
+
+        part_header = f"\n### {tool_name} result:\n"
+
+        if tool_name == "web_search":
+            results = output.get("results", []) if isinstance(output, dict) else []
+            part_content = ""
+            for r in results[:8]:
+                title = r.get("title", "")
+                snippet = r.get("snippet", "")
+                url = r.get("url", "")
+                part_content += f"- {title}: {snippet}\n  URL: {url}\n"
+            part = part_header + part_content
+
+        elif tool_name == "web_fetch":
+            pages = output.get("pages", []) if isinstance(output, dict) else []
+            part_content = ""
+            for page in pages:
+                if not page.get("success"):
+                    continue
+                title = page.get("title", "Untitled")
+                content = page.get("content", "")
+                url = page.get("url", "")
+
+                # Skip binary content (PDFs)
+                if content and not content.startswith("%PDF"):
+                    # Limit each page content
+                    content_preview = content[:2000] if len(content) > 2000 else content
+                    part_content += f"**{title}** ({url}):\n{content_preview}\n\n"
+            part = part_header + part_content
+
+        else:
+            # Generic output
+            if isinstance(output, dict):
+                part = part_header + json.dumps(output, ensure_ascii=False, indent=2)[:1500]
+            else:
+                part = part_header + str(output)[:1500]
+
+        if total_chars + len(part) > max_chars:
+            break
+        parts.append(part)
+        total_chars += len(part)
+
+    return "\n".join(parts) if parts else "No tool results available."
+
+
+def validate_interpretation_output(
+    output: str,
+    total_tool_output_chars: int
+) -> Tuple[bool, str]:
+    """
+    Validate interpretation pass output quality.
+
+    Returns (is_valid, reason) tuple.
+    """
+    stripped = output.strip()
+
+    # Multi-language "continuation" pattern detection
+    continuation_patterns_en = ("I'll ", "I need to ", "Let me ", "I will ", "I should ")
+    continuation_patterns_zh = ("我将", "我需要", "让我", "我要", "我继续")
+    continuation_patterns_ja = ("私は", "必要が", "させて", "続けて", "取得します")
+
+    is_continuation = (
+        stripped.startswith(continuation_patterns_en) or
+        stripped.startswith(continuation_patterns_zh) or
+        stripped.startswith(continuation_patterns_ja)
+    )
+
+    if is_continuation:
+        return False, "continuation_pattern"
+
+    # Dynamic length threshold based on tool output
+    min_length = max(200, int(total_tool_output_chars * 0.1))
+    if len(stripped) < min_length:
+        return False, f"too_short (len={len(stripped)} < min={min_length})"
+
+    # Format validation
+    has_correct_format = stripped.startswith(("# PART 1", "# PART", "## PART", "PART 1"))
+    if not has_correct_format and len(stripped) < 500:
+        return False, "no_format_and_short"
+
+    return True, "valid"
+
+
 def build_task_contract_instructions(context: Dict[str, Any]) -> str:
     """
     Deep Research 2.0: Build task contract instructions for agent execution.
@@ -744,7 +972,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     messages.append(
                         {
                             "role": "assistant",
-                            "content": f"I'll execute the {forced_calls[0]['name']} tool to help with this task.",
+                            "content": f"[Executed {forced_calls[0]['name']}]",
                         }
                     )
                 messages.append(
@@ -1089,23 +1317,19 @@ async def agent_query(request: Request, query: AgentQuery):
                 or did_forced_fetch
                 or not (response_text and str(response_text).strip())
             ):
-                # Add explicit summarization instruction to guide LLM to summarize tool results
-                # P0 Fix v3: Allow LLM to think freely, but require content summary first
-                interpretation_messages = messages + [
-                    {
-                        "role": "user",
-                        "content": (
-                            "Based on the tool results above, provide a response with TWO parts:\n\n"
-                            "PART 1 - RETRIEVED INFORMATION:\n"
-                            "Summarize ALL information actually retrieved from the tools - "
-                            "titles, descriptions, key facts, data points, quotes, etc.\n\n"
-                            "PART 2 - ADDITIONAL NOTES (optional):\n"
-                            "If relevant, note what additional information might be helpful.\n\n"
-                            "IMPORTANT: Part 1 must contain the actual content retrieved, "
-                            "not just 'I searched for X' or 'The results showed Y'."
-                        ),
-                    }
-                ]
+                # P0 Fix v4: Build CLEAN interpretation messages without history noise
+                # Root cause: Reusing `messages` brings "I'll execute..." patterns that
+                # contaminate LLM output. Instead, build fresh messages with only:
+                # - System prompt (defines role)
+                # - Original query (the task)
+                # - Aggregated tool results (what was retrieved)
+                # - Strong interpretation instruction (INTERPRETATION_PROMPT)
+                tool_results_summary = aggregate_tool_results(tool_execution_records)
+                interpretation_messages = build_interpretation_messages(
+                    system_prompt=system_prompt,
+                    original_query=query.query,
+                    tool_results_summary=tool_results_summary
+                )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
                     tier=tier,
@@ -1119,8 +1343,30 @@ async def agent_query(request: Request, query: AgentQuery):
                     or request.headers.get("x-workflow-id"),
                     agent_id=query.agent_id,
                 )
-                response_text = interpretation_result.get("output_text", last_tool_results)
-                logger.info(f"[interpretation_pass] executed for agent={query.agent_id}, response_len={len(str(response_text))}, preview={str(response_text)[:200]}")
+                raw_interpretation = interpretation_result.get("output_text", "")
+
+                # P0 Fix v4: Validate interpretation output and fallback to digest if invalid
+                # Never fallback to raw JSON - use generate_tool_digest() for human-readable fallback
+                is_valid, validation_reason = validate_interpretation_output(
+                    raw_interpretation or "",
+                    total_tool_output_chars
+                )
+
+                if is_valid:
+                    response_text = raw_interpretation
+                    logger.info(f"[interpretation_pass] VALID for agent={query.agent_id}, response_len={len(str(response_text))}, preview={str(response_text)[:200]}")
+                else:
+                    # Fallback to human-readable digest (NOT raw JSON)
+                    fallback_digest = generate_tool_digest(
+                        last_tool_results or "",
+                        tool_execution_records
+                    )
+                    response_text = fallback_digest if fallback_digest else raw_interpretation
+                    logger.warning(
+                        f"[interpretation_pass] INVALID for agent={query.agent_id}, "
+                        f"reason={validation_reason}, raw_len={len(raw_interpretation or '')}, "
+                        f"fallback_len={len(response_text)}, preview={str(response_text)[:200]}"
+                    )
                 i_usage = interpretation_result.get("usage", {}) or {}
                 try:
                     total_tokens += int(i_usage.get("total_tokens") or 0)
