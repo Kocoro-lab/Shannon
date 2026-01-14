@@ -3482,6 +3482,19 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			},
 		})
 
+		// P0-D: Metrics tracking for Citation V2 observability
+		var citationMetrics struct {
+			TotalCitations      int
+			FetchOnlyCount      int
+			ValidCount          int
+			SupportedClaims     int
+			TotalClaims         int
+			V1SupplementEnabled bool
+			V1Fallback          bool
+			FinalCitationsUsed  int
+		}
+		citationMetrics.TotalCitations = len(collectedCitations)
+
 		// Determine citation approach based on research strategy
 		researchStrategy := ""
 		if sv, ok := baseContext["research_strategy"].(string); ok {
@@ -3512,6 +3525,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 			// Step 1: Filter citations to fetch-only and assign sequential IDs
 			fetchOnlyCitations := metadata.FilterFetchOnlyAndAssignIDs(validCitations)
+			// P0-D: Update metrics
+			citationMetrics.ValidCount = len(validCitations)
+			citationMetrics.FetchOnlyCount = len(fetchOnlyCitations)
 			logger.Info("CitationAgent V2: filtered to fetch-only citations",
 				"original_count", len(collectedCitations),
 				"valid_count", len(validCitations),
@@ -3549,6 +3565,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				}).Get(verifyBatchCtx, &verifyBatchResult)
 
 				if verifyErr == nil && verifyBatchResult.SupportedCount > 0 {
+					// P0-D: Update metrics after verify batch
+					citationMetrics.TotalClaims = verifyBatchResult.TotalClaims
+					citationMetrics.SupportedClaims = verifyBatchResult.SupportedCount
 					logger.Info("CitationAgent V2: Verify batch completed",
 						"total_claims", verifyBatchResult.TotalClaims,
 						"supported", verifyBatchResult.SupportedCount,
@@ -3599,6 +3618,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						finalResult = citationResult.CitedReport
 						totalTokens += citationResult.TokensUsed
 						v2CitationsUsed := len(citationResult.CitationsUsed)
+						// P0-D: Update metrics
+						citationMetrics.FinalCitationsUsed = v2CitationsUsed
 						logger.Info("CitationAgent V2: citations added successfully",
 							"citations_used", v2CitationsUsed,
 						)
@@ -3622,6 +3643,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 							if needsV1Supplement {
 								logger.Info("CitationAgent V2: low support rate, enabling V1 supplement")
+								// P0-D: Mark V1 supplement enabled
+								citationMetrics.V1SupplementEnabled = true
 								// Allow V1 to run as supplement (not replace)
 								// V1 will work on the V2-cited report and add more citations
 								v2Succeeded = false
@@ -3635,14 +3658,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							)
 						}
 					} else if citationV2Err != nil {
+						// P0-D: Mark V1 fallback
+						citationMetrics.V1Fallback = true
 						logger.Warn("CitationAgent V2: failed, falling back to V1", "error", citationV2Err)
 					} else {
+						// P0-D: Mark V1 fallback
+						citationMetrics.V1Fallback = true
 						logger.Warn("CitationAgent V2: validation failed, falling back to V1",
 							"error", citationResult.ValidationError,
 						)
 					}
 				} else if verifyErr != nil {
 					// V2 verify failed - allow V1 fallback (no warning to user)
+					// P0-D: Mark V1 fallback
+					citationMetrics.V1Fallback = true
 					logger.Info("CitationAgent V2: Verify batch failed, allowing V1 fallback",
 						"error", verifyErr,
 						"strategy", researchStrategy,
@@ -3650,6 +3679,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					// v2Succeeded stays false, will enter V1 flow
 				} else {
 					// V2 verify returned no supported claims - allow V1 fallback
+					// P0-D: Mark V1 fallback
+					citationMetrics.V1Fallback = true
 					logger.Info("CitationAgent V2: no supported claims, allowing V1 fallback",
 						"total_claims", verifyBatchResult.TotalClaims,
 						"insufficient", verifyBatchResult.InsufficientCount,
@@ -3732,6 +3763,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 				}
 				totalTokens += citationResult.TokensUsed
+				// P0-D: Update final citations count (V1 may add more to V2 base)
+				citationMetrics.FinalCitationsUsed = len(citationResult.CitationsUsed)
 				logger.Info("CitationAgent: citations added and Sources rebuilt",
 					"citations_used", len(citationResult.CitationsUsed),
 					"warnings", len(citationResult.PlacementWarnings),
@@ -3749,6 +3782,27 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				}).Get(ctx, nil)
 			}
 		}
+
+		// P0-D: Log Citation V2 metrics summary for observability
+		fetchRatio := float64(0)
+		if citationMetrics.TotalCitations > 0 {
+			fetchRatio = float64(citationMetrics.FetchOnlyCount) / float64(citationMetrics.TotalCitations)
+		}
+		supportRate := float64(0)
+		if citationMetrics.TotalClaims > 0 {
+			supportRate = float64(citationMetrics.SupportedClaims) / float64(citationMetrics.TotalClaims)
+		}
+		logger.Info("CitationV2 metrics summary",
+			"total_citations", citationMetrics.TotalCitations,
+			"fetch_only_count", citationMetrics.FetchOnlyCount,
+			"fetch_ratio", fetchRatio,
+			"supported_claims", citationMetrics.SupportedClaims,
+			"total_claims", citationMetrics.TotalClaims,
+			"support_rate", supportRate,
+			"v1_supplement", citationMetrics.V1SupplementEnabled,
+			"v1_fallback", citationMetrics.V1Fallback,
+			"final_citations_used", citationMetrics.FinalCitationsUsed,
+		)
 	}
 
 	// Check pause/cancel before verification
