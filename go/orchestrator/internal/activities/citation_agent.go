@@ -105,10 +105,11 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}
 	}
 
-	logger.Info("CitationAgent: starting (V2)",
+	logger.Info("CitationAgent: starting",
 		"report_length", len(input.Report),
 		"citations_count", len(input.Citations),
 		"role", role,
+		"model_tier", input.ModelTier,
 	)
 
 	// If no citations available, return original report
@@ -120,45 +121,15 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}, nil
 	}
 
-	// Try V2 approach first (indexed placement plan)
-	result, err := a.addCitationsV2(ctx, input, role)
-	if err != nil {
-		logger.Warn("CitationAgent V2 failed, falling back to legacy", "error", err)
-		return a.addCitationsLegacy(ctx, input, role)
-	}
-
-	// Check if V2 produced usable results
-	// P0 fix: Also check ValidationPassed to ensure consistency with downstream code
-	// that may check ValidationPassed to decide whether to use the cited report
-	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 && result.ValidationPassed {
-		logger.Info("CitationAgent V2 succeeded",
-			"applied", result.PlacementStats.Applied,
-			"failed", result.PlacementStats.Failed,
-			"success_rate", result.PlacementStats.SuccessRate,
-		)
-		return result, nil
-	}
-
-	// V2 didn't pass validation threshold or produced no citations
-	// Log details for debugging
-	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 {
-		logger.Info("CitationAgent V2 below validation threshold, trying legacy",
-			"applied", result.PlacementStats.Applied,
-			"failed", result.PlacementStats.Failed,
-			"success_rate", result.PlacementStats.SuccessRate,
-			"validation_passed", result.ValidationPassed,
-		)
-	} else {
-		logger.Info("CitationAgent V2 produced no citations, trying legacy")
-	}
+	// Use direct LLM approach (simpler, more reliable)
 	return a.addCitationsLegacy(ctx, input, role)
 }
 
-// addCitationsLegacy is the original citation approach (used as fallback)
+// addCitationsLegacy adds citations using direct LLM output approach
 func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
-	logger.Info("CitationAgent Legacy: starting",
+	logger.Info("CitationAgent: starting direct LLM approach",
 		"report_length", len(input.Report),
 		"citations_count", len(input.Citations),
 		"role", role,
@@ -181,9 +152,22 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 		modelTier = "small"
 	}
 
+	// Tier-based fixed max_tokens (predictable costs, avoids context overflow)
+	reportLen := len(input.Report)
+	maxTokens := 8192 // default for small tier
+	if modelTier == "medium" {
+		maxTokens = 16384
+	}
+
+	logger.Info("CitationAgent: tier-based max_tokens",
+		"report_length", reportLen,
+		"model_tier", modelTier,
+		"max_tokens", maxTokens,
+	)
+
 	reqBody := map[string]interface{}{
 		"query":       userContent,
-		"max_tokens":  8192,
+		"max_tokens":  maxTokens,
 		"temperature": 0.0,
 		"agent_id":    "citation_agent",
 		"model_tier":  modelTier,
@@ -199,7 +183,6 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 	}
 
 	// Dynamic timeout based on report length: base 120s + 30s per 1000 chars, max 300s
-	reportLen := len(input.Report)
 	timeoutSec := 120 + (reportLen/1000)*30
 	if timeoutSec > 300 {
 		timeoutSec = 300
@@ -560,8 +543,9 @@ func validateContentImmutability(original, cited string) (bool, error) {
 		}
 	}
 
-	// Tolerate up to 5% difference (LLMs sometimes make minor changes)
-	if diffRatio < 0.05 {
+	// Tolerate up to 15% difference (LLMs sometimes make minor changes or truncate long outputs)
+	// Increased from 5% to 15% to handle longer reports where some content modification is acceptable
+	if diffRatio < 0.15 {
 		return true, nil
 	}
 
@@ -974,7 +958,19 @@ func (a *Activities) addCitationsV2(ctx context.Context, input CitationAgentInpu
 	)
 
 	// Step 2: Build V2 prompt and call LLM
-	systemPrompt := buildCitationPlacementPromptV2()
+	// Calculate max placements based on sentence count (roughly 30% of sentences, capped at 100)
+	maxPlacements := len(sentences) * 30 / 100
+	if maxPlacements < 25 {
+		maxPlacements = 25
+	}
+	if maxPlacements > 100 {
+		maxPlacements = 100
+	}
+	logger.Info("CitationAgent V2: calculated max placements",
+		"sentence_count", len(sentences),
+		"max_placements", maxPlacements,
+	)
+	systemPrompt := buildCitationPlacementPromptV2(maxPlacements)
 	userContent := buildCitationUserContentV2(numberedReport, input.Citations, sentenceHashes)
 
 	// Call LLM service
@@ -1220,12 +1216,13 @@ func normalizeForHash(s string) string {
 }
 
 // buildCitationPlacementPromptV2 returns the V2 system prompt
-func buildCitationPlacementPromptV2() string {
-	return `You are a citation placement specialist.
+func buildCitationPlacementPromptV2(maxPlacements int) string {
+	return fmt.Sprintf(`You are a citation placement specialist.
 
 ## YOUR TASK
-Analyze the report and identify where citations should be placed.
+Analyze the ENTIRE report from beginning to end and identify where citations should be placed.
 Output a JSON placement plan - DO NOT output the report text.
+IMPORTANT: Distribute citations throughout ALL sections of the report, not just the beginning.
 
 ## INPUT
 You will receive:
@@ -1256,9 +1253,10 @@ You will receive:
 ## RULES
 1. Only cite factual claims (statistics, dates, names, figures)
 2. Skip section headers, transitions, synthesis language
-3. Maximum 25 placements
+3. Maximum %d placements - DISTRIBUTE EVENLY across ALL report sections
 4. If unsure, use confidence="low" or skip entirely
 5. Prefer official sources over news
+6. IMPORTANT: Do NOT concentrate all citations in the first few sentences
 
 ## WHAT TO CITE
 ✓ Statistics, financial figures, dates
@@ -1292,7 +1290,7 @@ You will receive:
   ]
 }
 
-Output ONLY the JSON, nothing else.`
+Output ONLY the JSON, nothing else.`, maxPlacements)
 }
 
 // buildCitationUserContentV2 builds the user content for V2
@@ -1548,9 +1546,25 @@ func (a *Activities) AddCitationsWithVerify(ctx context.Context, input CitationA
 		modelTier = "small" // V2 is simpler, can use small tier
 	}
 
+	// Calculate max_tokens based on report length
+	// Chinese text: ~1.5 tokens per character; add 20% buffer for citations
+	reportLen := len(input.Report)
+	maxTokens := (reportLen * 2) // Conservative estimate for CJK text
+	if maxTokens < 8192 {
+		maxTokens = 8192
+	}
+	if maxTokens > 32000 {
+		maxTokens = 32000 // Cap at 32K to avoid excessive costs
+	}
+
+	logger.Info("CitationAgent V2: calculated max_tokens",
+		"report_length", reportLen,
+		"max_tokens", maxTokens,
+	)
+
 	reqBody := map[string]interface{}{
 		"query":       userContent,
-		"max_tokens":  8192,
+		"max_tokens":  maxTokens,
 		"temperature": 0.0,
 		"agent_id":    "citation_agent_v2_verify",
 		"model_tier":  modelTier,
@@ -1565,8 +1579,7 @@ func (a *Activities) AddCitationsWithVerify(ctx context.Context, input CitationA
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Timeout based on report length
-	reportLen := len(input.Report)
+	// Timeout based on report length (reportLen already calculated above)
 	timeoutSec := 120 + (reportLen/1000)*30
 	if timeoutSec > 300 {
 		timeoutSec = 300

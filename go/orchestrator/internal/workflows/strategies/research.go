@@ -758,8 +758,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	)
 
 	// Configure activity options
+	// Increased timeout from 5min to 8min for SynthesizeResultsLLM which can take 5+ minutes
 	activityOptions := workflow.ActivityOptions{
-		StartToCloseTimeout: 5 * time.Minute,
+		StartToCloseTimeout: 8 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 		},
@@ -3495,326 +3496,96 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 		citationMetrics.TotalCitations = len(collectedCitations)
 
-		// Determine citation approach based on research strategy
-		researchStrategy := ""
-		if sv, ok := baseContext["research_strategy"].(string); ok {
-			researchStrategy = sv
+		// ============================================================
+		// Citation Agent: Add inline citations to report
+		// Simplified flow: LLM directly adds [n] markers to report
+		// ============================================================
+		logger.Info("CitationAgent: starting citation flow",
+			"total_citations", len(collectedCitations),
+			"report_length", len(reportForCitation),
+		)
+
+		// Convert to CitationForAgent
+		citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
+				URL:              c.URL,
+				Title:            c.Title,
+				Source:           c.Source,
+				Snippet:          c.Snippet,
+				CredibilityScore: c.CredibilityScore,
+				QualityScore:     c.QualityScore,
+			})
 		}
-		isDeepResearch := researchStrategy == "deep" || researchStrategy == "academic"
 
-		// Track whether V2 succeeded to skip V1
-		v2Succeeded := false
+		// Tier-based model selection: medium for long reports (better instruction following)
+		citationModelTier := "small"
+		if len(reportForCitation) > 20000 {
+			citationModelTier = "medium"
+		}
 
-		if isDeepResearch {
-			// ============================================================
-			// Citation V2: Deep Research with Verify batch + Citation Agent V2
-			// ============================================================
-			logger.Info("CitationAgent V2: using Verify batch flow for deep research")
+		logger.Info("CitationAgent: model tier selected",
+			"report_length", len(reportForCitation),
+			"model_tier", citationModelTier,
+		)
 
-			// P0-A: Filter out invalid/blocked citations before verification
-			validCitations, invalidCount, blockedURLs := metadata.FilterValidCitations(collectedCitations)
-			if invalidCount > 0 {
-				logger.Warn("CitationAgent V2: filtered out invalid citations",
-					"total", len(collectedCitations),
-					"valid", len(validCitations),
-					"invalid", invalidCount,
-					"blocked_urls", len(blockedURLs),
-				)
-				// Note: blocked URLs logged above, metadata added later in meta map
+		citationErr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
+			Report:           reportForCitation,
+			Citations:        citationsForAgent,
+			ParentWorkflowID: input.ParentWorkflowID,
+			Context:          baseContext,
+			ModelTier:        citationModelTier,
+		}).Get(citationCtx, &citationResult)
+
+		if citationErr != nil {
+			logger.Warn("CitationAgent: failed, using original synthesis", "error", citationErr)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to service error",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
+		} else if citationResult.ValidationPassed {
+			// Use cited report and rebuild Sources section
+			citationsList := ""
+			if v, ok := baseContext["available_citations"].(string); ok {
+				citationsList = v
 			}
-
-			// Step 1: Filter citations to fetch-only and assign sequential IDs
-			fetchOnlyCitations := metadata.FilterFetchOnlyAndAssignIDs(validCitations)
-			// P0-D: Update metrics
-			citationMetrics.ValidCount = len(validCitations)
-			citationMetrics.FetchOnlyCount = len(fetchOnlyCitations)
-			logger.Info("CitationAgent V2: filtered to fetch-only citations",
-				"original_count", len(collectedCitations),
-				"valid_count", len(validCitations),
-				"fetch_only_count", len(fetchOnlyCitations),
+			if citationsList != "" {
+				finalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
+			} else {
+				finalResult = citationResult.CitedReport
+				if extractedSources != "" {
+					finalResult = strings.TrimSpace(finalResult) + "\n\n" + extractedSources
+				}
+			}
+			totalTokens += citationResult.TokensUsed
+			citationMetrics.FinalCitationsUsed = len(citationResult.CitationsUsed)
+			logger.Info("CitationAgent: completed successfully",
+				"citations_used", len(citationResult.CitationsUsed),
+				"model_tier", citationModelTier,
+				"validation_passed", true,
 			)
-
-			if len(fetchOnlyCitations) > 0 {
-				// Step 2: Call /verify_batch endpoint (2 LLM calls: extract + batch)
-				var verifyBatchResult activities.VerifyBatchResult
-				verifyBatchCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-					StartToCloseTimeout: 180 * time.Second,
-					RetryPolicy: &temporal.RetryPolicy{
-						InitialInterval:    time.Second,
-						BackoffCoefficient: 2.0,
-						MaximumAttempts:    2,
-					},
-				})
-
-				// Convert CitationWithID to input format
-				citationsWithIDInput := make([]activities.CitationWithIDInput, len(fetchOnlyCitations))
-				for i, c := range fetchOnlyCitations {
-					citationsWithIDInput[i] = activities.CitationWithIDInput{
-						ID:               c.ID,
-						URL:              c.Citation.URL,
-						Title:            c.Citation.Title,
-						Snippet:          c.Citation.Snippet,
-						CredibilityScore: c.Citation.CredibilityScore,
-						QualityScore:     c.Citation.QualityScore, // P0-C: Added for ranking
-					}
-				}
-
-				verifyErr := workflow.ExecuteActivity(verifyBatchCtx, "VerifyBatch", activities.VerifyBatchInput{
-					Answer:           reportForCitation,
-					Citations:        citationsWithIDInput,
-					ParentWorkflowID: input.ParentWorkflowID,
-				}).Get(verifyBatchCtx, &verifyBatchResult)
-
-				if verifyErr == nil && verifyBatchResult.SupportedCount > 0 {
-					// P0-D: Update metrics after verify batch
-					citationMetrics.TotalClaims = verifyBatchResult.TotalClaims
-					citationMetrics.SupportedClaims = verifyBatchResult.SupportedCount
-					logger.Info("CitationAgent V2: Verify batch completed",
-						"total_claims", verifyBatchResult.TotalClaims,
-						"supported", verifyBatchResult.SupportedCount,
-					)
-
-					// Step 3: Call AddCitationsWithVerify (Citation Agent V2)
-					// Convert fetch-only citations to CitationWithIDForAgent
-					citationsForAgentV2 := make([]activities.CitationWithIDForAgent, len(fetchOnlyCitations))
-					for i, c := range fetchOnlyCitations {
-						citationsForAgentV2[i] = activities.CitationWithIDForAgent{
-							ID:               c.ID,
-							URL:              c.Citation.URL,
-							Title:            c.Citation.Title,
-							Source:           c.Citation.Source,
-							Snippet:          c.Citation.Snippet,
-							CredibilityScore: c.Citation.CredibilityScore,
-							QualityScore:     c.Citation.QualityScore,
-						}
-					}
-
-					// P1: Convert ALL collected citations for Sources section output
-					allCitationsWithID := metadata.AssignIDsToAllCitations(collectedCitations)
-					allCitationsForAgent := make([]activities.CitationWithIDForAgent, len(allCitationsWithID))
-					for i, c := range allCitationsWithID {
-						allCitationsForAgent[i] = activities.CitationWithIDForAgent{
-							ID:               c.ID,
-							URL:              c.Citation.URL,
-							Title:            c.Citation.Title,
-							Source:           c.Citation.Source,
-							Snippet:          c.Citation.Snippet,
-							CredibilityScore: c.Citation.CredibilityScore,
-							QualityScore:     c.Citation.QualityScore,
-						}
-					}
-
-					citationV2Err := workflow.ExecuteActivity(citationCtx, "AddCitationsWithVerify", activities.CitationAgentInputV2{
-						Report:           reportForCitation,
-						Citations:        citationsForAgentV2,
-						AllCitations:     allCitationsForAgent, // P1: All citations for Sources
-						ClaimMappings:    verifyBatchResult.Claims,
-						ParentWorkflowID: input.ParentWorkflowID,
-						Context:          baseContext,
-						ModelTier:        "small", // V2 is simpler, can use small tier
-					}).Get(citationCtx, &citationResult)
-
-					if citationV2Err == nil && citationResult.ValidationPassed {
-						// V2 succeeded - update finalResult with cited report
-						finalResult = citationResult.CitedReport
-						totalTokens += citationResult.TokensUsed
-						v2CitationsUsed := len(citationResult.CitationsUsed)
-						// P0-D: Update metrics
-						citationMetrics.FinalCitationsUsed = v2CitationsUsed
-						logger.Info("CitationAgent V2: citations added successfully",
-							"citations_used", v2CitationsUsed,
-						)
-						v2Succeeded = true
-
-						// P0-B: Check if V1 supplement is needed (low support rate)
-						// P1: Check for strict mode (disable V1 supplement)
-						v2StrictMode := false
-						if sm, ok := baseContext["citation_v2_strict_mode"].(bool); ok {
-							v2StrictMode = sm
-						}
-
-						totalClaims := verifyBatchResult.TotalClaims
-						supportedClaims := verifyBatchResult.SupportedCount
-
-						if totalClaims >= v2MinClaimsRequired && !v2StrictMode {
-							supportRate := float64(supportedClaims) / float64(totalClaims)
-							needsV1Supplement := supportRate < v2MinSupportRate || v2CitationsUsed < v2MinCitationsUsed
-
-							logger.Info("CitationAgent V2: support rate check",
-								"support_rate", supportRate,
-								"supported_claims", supportedClaims,
-								"total_claims", totalClaims,
-								"v2_citations_used", v2CitationsUsed,
-								"needs_v1_supplement", needsV1Supplement,
-								"v2_strict_mode", v2StrictMode,
-							)
-
-							if needsV1Supplement {
-								logger.Info("CitationAgent V2: low support rate, enabling V1 supplement")
-								// P0-D: Mark V1 supplement enabled
-								citationMetrics.V1SupplementEnabled = true
-								// Allow V1 to run as supplement (not replace)
-								// V1 will work on the V2-cited report and add more citations
-								v2Succeeded = false
-								// Store V2 result as base for V1 supplement
-								reportForCitation = finalResult
-							}
-						} else if v2StrictMode {
-							logger.Info("CitationAgent V2: strict mode enabled, skip V1 supplement",
-								"total_claims", totalClaims,
-								"v2_citations_used", v2CitationsUsed,
-							)
-						} else {
-							logger.Info("CitationAgent V2: short answer, skip V1 supplement check",
-								"total_claims", totalClaims,
-								"min_required", v2MinClaimsRequired,
-							)
-						}
-					} else if citationV2Err != nil {
-						// P0-D: Mark V1 fallback
-						citationMetrics.V1Fallback = true
-						logger.Warn("CitationAgent V2: failed, falling back to V1", "error", citationV2Err)
-					} else {
-						// P0-D: Mark V1 fallback
-						citationMetrics.V1Fallback = true
-						logger.Warn("CitationAgent V2: validation failed, falling back to V1",
-							"error", citationResult.ValidationError,
-						)
-					}
-				} else if verifyErr != nil {
-					// V2 verify failed - allow V1 fallback (no warning to user)
-					// P0-D: Mark V1 fallback
-					citationMetrics.V1Fallback = true
-					logger.Info("CitationAgent V2: Verify batch failed, allowing V1 fallback",
-						"error", verifyErr,
-						"strategy", researchStrategy,
-					)
-					// v2Succeeded stays false, will enter V1 flow
-				} else {
-					// V2 verify returned no supported claims - allow V1 fallback
-					// P0-D: Mark V1 fallback
-					citationMetrics.V1Fallback = true
-					logger.Info("CitationAgent V2: no supported claims, allowing V1 fallback",
-						"total_claims", verifyBatchResult.TotalClaims,
-						"insufficient", verifyBatchResult.InsufficientCount,
-						"strategy", researchStrategy,
-					)
-					// v2Succeeded stays false, will enter V1 flow
-				}
-			} else {
-				// No valid fetch-only citations available - allow V1 fallback
-				logger.Info("CitationAgent V2: no valid fetch-only citations, allowing V1 fallback",
-					"original_count", len(collectedCitations),
-					"valid_count", len(validCitations),
-				)
-				// v2Succeeded stays false, will enter V1 flow
-			}
+		} else {
+			// Validation failed - return original report unchanged
+			logger.Warn("CitationAgent: validation failed, using original synthesis",
+				"error", citationResult.ValidationError,
+			)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to validation failure",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
 		}
 
-		// Citation V1: Standard flow (all citations, LLM does matching)
-		// Run if V2 didn't succeed - allows fallback for all strategies including deep/academic
-		// P0-B: Also runs as supplement when V2 support rate is low
-		if !v2Succeeded {
-			// Detect if this is supplement mode (V2 already added some citations)
-			isSupplementMode := strings.Contains(reportForCitation, "[1]") || strings.Contains(reportForCitation, "[2]")
-			if isSupplementMode {
-				logger.Info("CitationAgent V1: running as SUPPLEMENT to V2 (low support rate)")
-			} else {
-				logger.Info("CitationAgent V1: using standard citation flow (V2 fallback)")
-			}
-
-			// Convert to CitationForAgent (avoids import cycle)
-			// Pass ALL citations - let CitationAgent decide which to use based on prompt guidance
-			citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
-			for _, c := range collectedCitations {
-				citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
-					URL:              c.URL,
-					Title:            c.Title,
-					Source:           c.Source,
-					Snippet:          c.Snippet,
-					CredibilityScore: c.CredibilityScore,
-					QualityScore:     c.QualityScore,
-				})
-			}
-
-			// Determine citation model tier based on research strategy
-			citationModelTier := "small"
-			if researchStrategy == "deep" || researchStrategy == "academic" {
-				citationModelTier = "medium" // Better instruction-following for complex reports
-			}
-
-			citationV1Err := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
-				Report:           reportForCitation,
-				Citations:        citationsForAgent,
-				ParentWorkflowID: input.ParentWorkflowID,
-				Context:          baseContext,
-				ModelTier:        citationModelTier,
-			}).Get(citationCtx, &citationResult)
-
-			if citationV1Err != nil {
-				logger.Warn("CitationAgent: failed, using original synthesis", "error", citationV1Err)
-				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-					WorkflowID: workflowID,
-					EventType:  activities.StreamEventProgress,
-					AgentID:    "citation_agent",
-					Message:    "Citation injection skipped due to service error",
-					Timestamp:  workflow.Now(ctx),
-				}).Get(ctx, nil)
-			} else if citationResult.ValidationPassed {
-				// Use cited report and rebuild Sources with correct Used inline/Additional labels
-				citationsList := ""
-				if v, ok := baseContext["available_citations"].(string); ok {
-					citationsList = v
-				}
-				if citationsList != "" {
-					finalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
-				} else {
-					// Fallback: just append the extracted sources
-					finalResult = citationResult.CitedReport
-					if extractedSources != "" {
-						finalResult = strings.TrimSpace(finalResult) + "\n\n" + extractedSources
-					}
-				}
-				totalTokens += citationResult.TokensUsed
-				// P0-D: Update final citations count (V1 may add more to V2 base)
-				citationMetrics.FinalCitationsUsed = len(citationResult.CitationsUsed)
-				logger.Info("CitationAgent: citations added and Sources rebuilt",
-					"citations_used", len(citationResult.CitationsUsed),
-					"warnings", len(citationResult.PlacementWarnings),
-				)
-			} else {
-				logger.Warn("CitationAgent: validation failed, using original synthesis",
-					"error", citationResult.ValidationError,
-				)
-				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-					WorkflowID: workflowID,
-					EventType:  activities.StreamEventProgress,
-					AgentID:    "citation_agent",
-					Message:    "Citation injection skipped due to validation failure",
-					Timestamp:  workflow.Now(ctx),
-				}).Get(ctx, nil)
-			}
-		}
-
-		// P0-D: Log Citation V2 metrics summary for observability
-		fetchRatio := float64(0)
-		if citationMetrics.TotalCitations > 0 {
-			fetchRatio = float64(citationMetrics.FetchOnlyCount) / float64(citationMetrics.TotalCitations)
-		}
-		supportRate := float64(0)
-		if citationMetrics.TotalClaims > 0 {
-			supportRate = float64(citationMetrics.SupportedClaims) / float64(citationMetrics.TotalClaims)
-		}
-		logger.Info("CitationV2 metrics summary",
+		// Log citation metrics summary
+		logger.Info("CitationAgent: metrics summary",
 			"total_citations", citationMetrics.TotalCitations,
-			"fetch_only_count", citationMetrics.FetchOnlyCount,
-			"fetch_ratio", fetchRatio,
-			"supported_claims", citationMetrics.SupportedClaims,
-			"total_claims", citationMetrics.TotalClaims,
-			"support_rate", supportRate,
-			"v1_supplement", citationMetrics.V1SupplementEnabled,
-			"v1_fallback", citationMetrics.V1Fallback,
 			"final_citations_used", citationMetrics.FinalCitationsUsed,
+			"model_tier", citationModelTier,
 		)
 	}
 

@@ -87,6 +87,7 @@ type CitationWithIDInput struct {
 	ID               int     `json:"id"`
 	URL              string  `json:"url"`
 	Title            string  `json:"title"`
+	Content          string  `json:"content,omitempty"` // P0-E: Full page content for verification
 	Snippet          string  `json:"snippet"`
 	CredibilityScore float64 `json:"credibility_score"`
 	QualityScore     float64 `json:"quality_score"` // P0-C: Added for ranking
