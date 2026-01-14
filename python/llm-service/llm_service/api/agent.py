@@ -558,13 +558,16 @@ async def agent_query(request: Request, query: AgentQuery):
                     )
                     if is_research:
                         research_instruction = (
-                            "\n\nRESEARCH MODE: Do not rely only on web_search snippets. "
-                            "For each important question, use web_search to find sources, "
-                            "then call web_fetch on the top 3-5 relevant URLs to read the full content before answering. "
-                            "This ensures you have comprehensive information, not just summaries."
+                            "\n\nRESEARCH MODE - MANDATORY FETCH POLICY:"
+                            "\n- Search snippets are LEADS, NOT verified content. You MUST fetch to verify."
+                            "\n- After EACH web_search, you MUST call web_fetch on ALL potentially relevant URLs."
+                            "\n- Only skip URLs that are CLEARLY irrelevant (e.g., wrong language, completely different topic, broken links)."
+                            "\n- Use batch fetch: web_fetch(urls=[url1, url2, ...]) for efficiency."
+                            "\n- Minimum: fetch at least 5-8 URLs per search, or ALL results if fewer."
+                            "\n- Do NOT stop fetching just because you found 'enough' - more sources = better research."
                             "\n\nTOOL USAGE (CRITICAL):"
                             "\n- Invoke tools ONLY via native function calling (no XML/JSON stubs like <web_fetch> or <function_calls>)."
-                            "\n- When you have multiple URLs, prefer web_fetch(urls=[...]) to batch fetch instead of calling web_fetch repeatedly."
+                            "\n- ALWAYS use batch fetch: web_fetch(urls=[...]) instead of single URL calls."
                             "\n- Do NOT claim in text which tools/providers you used; the system records tool usage."
                             "\n\nCOMPANY/ENTITY RESEARCH: When researching a company or organization:"
                             "\n- FIRST try web_fetch on the likely official domain (e.g., 'companyname.com', 'companyname.io')"
@@ -573,7 +576,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             "\n- For Asian companies, try Japanese/Chinese name variants"
                             "\n- If standard searches return only competitors/unrelated results, this indicates a search strategy problem - try direct URL fetches"
                             "\n\nSOURCE EVALUATION AND CONFLICT RESOLUTION:"
-                            "\n1. VERIFICATION: Search results are leads, not verified facts. Verify key claims via web_fetch."
+                            "\n1. VERIFICATION (MANDATORY): Search snippets are NOT facts. You MUST web_fetch EVERY source before citing it."
                             "\n2. SPECULATIVE LANGUAGE: Mark uncertain claims (reportedly, allegedly, may, sources suggest)."
                             "\n3. SOURCE PRIORITY (highest to lowest):"
                             "\n   - Official sources (company website, .gov, .edu, investor relations)"
@@ -1146,6 +1149,19 @@ async def agent_query(request: Request, query: AgentQuery):
             fetch_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
             loop_function_call = seed_loop_function_call or function_call
 
+            # P0 Fix: Track unique URLs for fetch ratio enforcement (Codex approved)
+            fetched_urls: set = set()  # Successfully fetched URLs
+            failed_fetch_urls: set = set()  # Failed fetch URLs (exclude from retry)
+            search_count = 0  # Count of successful web_search calls
+
+            # Strategy-specific fetch ratios (Codex recommendation)
+            strategy_ratios = {"deep": 0.7, "academic": 0.7, "standard": 0.5, "quick": 0.3}
+            research_strategy = (
+                query.context.get("research_strategy", "standard")
+                if isinstance(query.context, dict) else "standard"
+            )
+            min_fetch_ratio = strategy_ratios.get(research_strategy, 0.5)
+
             while True:
                 result_data = await request.app.state.providers.generate_completion(
                     messages=messages,
@@ -1216,8 +1232,24 @@ async def agent_query(request: Request, query: AgentQuery):
                 for rr in raw_records:
                     if rr.get("tool") == "web_search" and rr.get("success"):
                         search_urls.extend(_extract_urls_from_search_output(rr.get("output")))
-                    if rr.get("tool") in fetch_tools and rr.get("success"):
-                        fetch_success = True
+                        search_count += 1  # P0 Fix: Track search count for ratio
+
+                    # P0 Fix: Track unique fetched/failed URLs for ratio enforcement
+                    if rr.get("tool") in fetch_tools:
+                        # Extract URLs from fetch input
+                        fetch_input = rr.get("input", {})
+                        if isinstance(fetch_input, dict):
+                            input_urls = fetch_input.get("urls", [])
+                            if isinstance(input_urls, str):
+                                input_urls = [input_urls]
+                        else:
+                            input_urls = []
+
+                        if rr.get("success"):
+                            fetch_success = True
+                            fetched_urls.update(input_urls)
+                        else:
+                            failed_fetch_urls.update(input_urls)
 
                 if raw_records and not all(r.get("success") for r in raw_records):
                     consecutive_tool_failures += 1
@@ -1260,22 +1292,40 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 continue
 
-            # DR forced fetch if needed (search done but no fetch success)
+            # P0 Fix: DR forced fetch with ratio-based enforcement (Codex approved)
+            # Calculate fetch ratio and determine if more fetches needed
+            unique_fetch_count = len(fetched_urls)
+
+            # Guard: Only enforce ratio when search_count >= 3 (Codex recommendation)
+            # Guard: Division by zero protection
+            needs_more_fetch = (
+                search_count == 0 or  # Early guard per Codex
+                not fetch_success or
+                (search_count >= 3 and unique_fetch_count / search_count < min_fetch_ratio)
+            )
+
             if (
                 research_mode
                 and search_urls
-                and not fetch_success
+                and needs_more_fetch
                 and fetch_tools.intersection(set(effective_allowed_tools or []))
             ):
                 try:
+                    # Dedupe and exclude already-fetched and failed URLs
                     deduped_urls = []
                     seen = set()
                     for u in search_urls:
-                        if u and u not in seen:
+                        if u and u not in seen and u not in fetched_urls and u not in failed_fetch_urls:
                             seen.add(u)
                             deduped_urls.append(u)
-                    urls_to_fetch = deduped_urls[:max_urls_to_fetch]
-                    if urls_to_fetch:
+
+                    # Short-circuit: if all unfetched URLs have failed, exit early (Codex suggestion)
+                    if not deduped_urls:
+                        logger.info(f"DR policy: no eligible URLs to fetch (all fetched or failed)")
+                    else:
+                        urls_to_fetch = deduped_urls[:max_urls_to_fetch]
+
+                    if deduped_urls and urls_to_fetch:
                         did_forced_fetch = True
                         logger.info(f"DR policy: auto-fetching URLs={len(urls_to_fetch)} after search")
                         policy_calls = [{"name": "web_fetch", "arguments": {"urls": urls_to_fetch}}]
@@ -1302,10 +1352,33 @@ async def agent_query(request: Request, query: AgentQuery):
                                     "content": f"Tool execution result:\n{policy_results}\n\n{followup_instruction}",
                                 }
                             )
-                        if any(r.get("tool") in fetch_tools and r.get("success") for r in policy_raw):
-                            fetch_success = True
+                        # P0 Fix: Update URL tracking for forced fetch results
+                        for rr in policy_raw:
+                            if rr.get("tool") in fetch_tools:
+                                if rr.get("success"):
+                                    fetch_success = True
+                                    fetched_urls.update(urls_to_fetch)
+                                else:
+                                    failed_fetch_urls.update(urls_to_fetch)
                 except Exception as e:
                     logger.warning(f"DR forced fetch failed: {e}")
+                    failed_fetch_urls.update(urls_to_fetch if 'urls_to_fetch' in dir() else [])
+
+            # P2 Telemetry: Log fetch ratio for observability (Codex requirement)
+            import json as _json_telemetry
+            final_fetch_count = len(fetched_urls)
+            fetch_ratio = final_fetch_count / search_count if search_count > 0 else 0.0
+            logger.info(_json_telemetry.dumps({
+                "event": "fetch_ratio",
+                "agent_id": query.agent_id,
+                "search_count": search_count,
+                "fetch_count": final_fetch_count,
+                "failed_fetch_count": len(failed_fetch_urls),
+                "ratio": round(fetch_ratio, 2),
+                "min_required": min_fetch_ratio,
+                "strategy": research_strategy,
+                "ratio_met": fetch_ratio >= min_fetch_ratio if search_count >= 3 else True,
+            }, ensure_ascii=False))
 
             # Final interpretation pass if we executed any tools or budgets were hit
             # P0 Fix: Always run interpretation pass if any tool executed successfully
