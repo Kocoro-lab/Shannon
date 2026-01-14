@@ -217,31 +217,111 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
         part_header = f"\n### {tool_name} result:\n"
 
         if tool_name == "web_search":
-            results = output.get("results", []) if isinstance(output, dict) else []
+            # Handle both dict format {"results": [...]} and direct array format [...]
+            if isinstance(output, dict):
+                results = output.get("results", [])
+            elif isinstance(output, list):
+                results = output
+            else:
+                results = []
+
             part_content = ""
-            for r in results[:8]:
-                title = r.get("title", "")
-                snippet = r.get("snippet", "")
-                url = r.get("url", "")
-                part_content += f"- {title}: {snippet}\n  URL: {url}\n"
+            if not results:
+                part_content = "(No search results found)\n"
+            else:
+                for r in results[:8]:
+                    title = r.get("title", "")
+                    snippet = r.get("snippet", "")
+                    url = r.get("url", "")
+                    part_content += f"- {title}: {snippet}\n  URL: {url}\n"
             part = part_header + part_content
 
         elif tool_name == "web_fetch":
-            pages = output.get("pages", []) if isinstance(output, dict) else []
             part_content = ""
-            for page in pages:
-                if not page.get("success"):
-                    continue
-                title = page.get("title", "Untitled")
-                content = page.get("content", "")
-                url = page.get("url", "")
 
-                # Skip binary content (PDFs)
-                if content and not content.startswith("%PDF"):
-                    # Limit each page content
-                    content_preview = content[:2000] if len(content) > 2000 else content
-                    part_content += f"**{title}** ({url}):\n{content_preview}\n\n"
+            if isinstance(output, dict):
+                # Check if this is batch mode (has "pages" key) or single URL mode
+                if "pages" in output:
+                    # Batch mode: {pages: [...], succeeded, failed, ...}
+                    pages = output.get("pages", [])
+                    for page in pages:
+                        if not page.get("success", True):  # Default to True if not specified
+                            continue
+                        title = page.get("title", "Untitled")
+                        content = page.get("content", "")
+                        url = page.get("url", "")
+
+                        # Skip binary content (PDFs)
+                        if content and not content.startswith("%PDF"):
+                            content_preview = content[:2000] if len(content) > 2000 else content
+                            part_content += f"**{title}** ({url}):\n{content_preview}\n\n"
+                else:
+                    # Single URL mode: {url, title, content, ...}
+                    title = output.get("title", "Untitled")
+                    content = output.get("content", "")
+                    url = output.get("url", "")
+
+                    # Skip binary content (PDFs)
+                    if content and not content.startswith("%PDF"):
+                        content_preview = content[:3000] if len(content) > 3000 else content
+                        part_content = f"**{title}** ({url}):\n{content_preview}\n\n"
+                    elif not content:
+                        part_content = f"**{title}** ({url}): No content retrieved\n"
+
+            if not part_content:
+                part_content = "(No content fetched)\n"
             part = part_header + part_content
+
+        elif tool_name == "web_subpage_fetch":
+            # web_subpage_fetch returns merged multi-page content with separators
+            # Critical: Extract content from EACH subpage, not just truncate from start
+            # This ensures important pages like /leadership (often at end) are preserved
+            if isinstance(output, dict):
+                title = output.get("title", "")
+                content = output.get("content", "")
+                url = output.get("url", "")
+                pages_fetched = output.get("pages_fetched", 1)
+                metadata_urls = output.get("metadata", {}).get("urls", [])
+
+                if content and not content.startswith("%PDF"):
+                    import re
+                    # Parse content by subpage separators to extract each page
+                    # Format: "# Main Page: URL\n...\n---\n\n## Subpage N: URL\n..."
+                    page_sections = []
+
+                    # Split by subpage markers: "---\n\n## Subpage" or "# Main Page:"
+                    main_match = re.search(r'^# Main Page: ([^\n]+)\n(.+?)(?=\n---\n\n## Subpage|$)', content, re.DOTALL)
+                    if main_match:
+                        main_url = main_match.group(1)
+                        main_content = main_match.group(2).strip()
+                        # Limit main page to 2000 chars (usually less important)
+                        page_sections.append(f"**Main ({main_url})**: {main_content[:2000]}")
+
+                    # Extract subpages - these often contain important info
+                    subpage_pattern = re.compile(r'## Subpage \d+: ([^\n]+)\n(?:\*\*[^*]+\*\*\n)?\n(.+?)(?=\n---\n\n## Subpage|$)', re.DOTALL)
+                    for match in subpage_pattern.finditer(content):
+                        sub_url = match.group(1)
+                        sub_content = match.group(2).strip()
+                        # Prioritize key paths with more content (leadership, team, about)
+                        priority_paths = ['/leadership', '/team', '/management', '/about', '/executive']
+                        is_priority = any(p in sub_url.lower() for p in priority_paths)
+                        max_sub_chars = 2500 if is_priority else 1500
+                        page_sections.append(f"**{sub_url}**: {sub_content[:max_sub_chars]}")
+
+                    # Build final content preserving snippets from all pages
+                    if page_sections:
+                        part_content = "\n\n".join(page_sections)
+                        # Total limit for multi-page
+                        if len(part_content) > 12000:
+                            part_content = part_content[:12000] + "..."
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{part_content}\n\n"
+                    else:
+                        # Fallback if parsing fails
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{content[:6000]}\n\n"
+                else:
+                    part = part_header + f"**{title}** ({url}): No readable content\n"
+            else:
+                part = part_header + str(output)[:3000]
 
         else:
             # Generic output
@@ -284,7 +364,9 @@ def validate_interpretation_output(
         return False, "continuation_pattern"
 
     # Dynamic length threshold based on tool output
-    min_length = max(200, int(total_tool_output_chars * 0.1))
+    # Cap at 2000 to avoid invalidating good concise summaries from large tool outputs
+    # e.g., web_subpage_fetch can return 33K+ chars but a 2000 char summary is fine
+    min_length = min(2000, max(200, int(total_tool_output_chars * 0.1)))
     if len(stripped) < min_length:
         return False, f"too_short (len={len(stripped)} < min={min_length})"
 
@@ -1771,6 +1853,31 @@ async def _execute_and_format_tools(
                     )
                     args = {k: v for k, v in args.items() if k in allowed}
 
+            # Merge tool_parameters from context (orchestrator hints) with LLM-provided args
+            # This ensures critical parameters like target_paths are always included
+            if isinstance(context, dict) and isinstance(args, dict):
+                ctx_tool_params = context.get("tool_parameters", {})
+                if ctx_tool_params and ctx_tool_params.get("tool") == tool_name:
+                    # For array parameters like target_paths, merge instead of replace
+                    for key in ["target_paths", "target_keywords"]:
+                        if key in ctx_tool_params and key in allowed:
+                            ctx_value = ctx_tool_params.get(key)
+                            llm_value = args.get(key)
+                            if ctx_value:
+                                if key == "target_paths" and isinstance(ctx_value, list):
+                                    # Merge: LLM paths first, then add orchestrator paths not already present
+                                    if isinstance(llm_value, list):
+                                        merged = list(llm_value)
+                                        for p in ctx_value:
+                                            if p not in merged:
+                                                merged.append(p)
+                                        args[key] = merged
+                                    else:
+                                        args[key] = list(ctx_value)
+                                    logger.info(f"Merged {key} from orchestrator: {args[key]}")
+                                elif key == "target_keywords" and isinstance(ctx_value, str) and not llm_value:
+                                    args[key] = ctx_value
+
             # Emit TOOL_INVOKED event
             if emitter and wf_id:
                 try:
@@ -1835,6 +1942,8 @@ async def _execute_and_format_tools(
                     # GA4 OAuth credentials (per-request auth from frontend)
                     "ga4_access_token",
                     "ga4_property_id",
+                    # Orchestrator-provided tool parameters for merging
+                    "tool_parameters",
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
             else:
@@ -2026,12 +2135,16 @@ async def _execute_and_format_tools(
                     pass
 
             # Record execution for upstream observability/persistence
+            # Use higher max_str for content-rich tools (web_fetch, web_subpage_fetch)
+            # to preserve multi-page content for citation extraction and storage
+            content_rich_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
+            output_max_str = 30000 if tool_name in content_rich_tools else 2000
             tool_execution_records.append(
                 {
                     "tool": tool_name,
                     "success": bool(result and result.success),
                     "output": _sanitize_payload(
-                        result.output if result else None, max_str=2000, max_items=20
+                        result.output if result else None, max_str=output_max_str, max_items=20
                     ),
                     "error": result.error if result else None,
                     "metadata": sanitized_result_metadata,

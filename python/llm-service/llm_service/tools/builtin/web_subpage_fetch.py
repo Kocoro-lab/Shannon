@@ -374,6 +374,30 @@ class WebSubpageFetchTool(Tool):
 
         logger.info(f"Map returned {len(all_urls)} URLs for {url}")
 
+        # Step 1.5: Ensure target_paths are in the candidate list (even if Map didn't discover them)
+        # This is critical for pages like /leadership that may not be prominently linked
+        parsed_base = urlparse(url)
+        base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
+
+        # Build set of normalized URLs for deduplication
+        seen_normalized = set()
+        for u in all_urls:
+            seen_normalized.add(u.rstrip("/").lower())
+
+        # Add target_path URLs that weren't discovered by Map
+        target_urls_added = []
+        for path in target_paths:
+            path_clean = path if path.startswith("/") else f"/{path}"
+            target_url = f"{base_origin}{path_clean}"
+            normalized = target_url.rstrip("/").lower()
+            if normalized not in seen_normalized:
+                all_urls.append(target_url)
+                seen_normalized.add(normalized)
+                target_urls_added.append(target_url)
+
+        if target_urls_added:
+            logger.info(f"Added {len(target_urls_added)} target_path URLs not found by Map: {target_urls_added}")
+
         # Step 2: Score and sort URLs
         scored_urls = []
         for u in all_urls:
@@ -451,32 +475,64 @@ class WebSubpageFetchTool(Tool):
         tasks = [limited_scrape(url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Filter out failures
+        # Filter out failures and deduplicate by returned URL
+        # This prevents duplicate content when pages redirect to the same destination
         valid_results = []
         urls_succeeded: List[str] = []
         urls_failed: List[Dict] = []
+        seen_returned_urls: set = set()  # Track returned URLs to deduplicate
 
         for url, r in zip(urls, results):
-            if isinstance(r, dict) and r.get("content"):
-                valid_results.append(r)
-                urls_succeeded.append(url)
-                continue
-
-            reason = ""
+            # Detailed logging for each URL's scrape outcome (P0: Debug leadership content missing)
             if isinstance(r, Exception):
                 reason = str(r)
-            elif isinstance(r, dict):
-                reason = "empty content"
-            else:
-                reason = "scrape failed"
+                logger.warning(f"Scrape exception for {url}: {type(r).__name__}: {reason[:100]}")
+                urls_failed.append({"url": url, "reason": reason[:200]})
+                continue
 
-            urls_failed.append({"url": url, "reason": reason[:200]})
+            if not isinstance(r, dict):
+                reason = f"unexpected result type: {type(r)}"
+                logger.warning(f"Scrape unexpected result for {url}: {reason}")
+                urls_failed.append({"url": url, "reason": reason})
+                continue
+
+            content = r.get("content", "")
+            content_len = len(content) if content else 0
+            returned_url = r.get("url", url)
+
+            if not content:
+                reason = "empty content"
+                logger.warning(f"Scrape empty content for {url} (returned_url={returned_url})")
+                urls_failed.append({"url": url, "reason": reason})
+                continue
+
+            # Log successful scrape with content length (P0: Visibility into what was fetched)
+            logger.info(f"Scrape success for {url}: content_len={content_len}, returned_url={returned_url}")
+
+            # Deduplicate by the URL Firecrawl actually returned (after redirects)
+            normalized_returned_url = returned_url.rstrip("/").lower()
+            if normalized_returned_url in seen_returned_urls:
+                logger.info(f"Skipping duplicate result for {url} (redirected to {normalized_returned_url})")
+                urls_failed.append({"url": url, "reason": f"redirected to duplicate: {normalized_returned_url}"})
+                continue
+
+            seen_returned_urls.add(normalized_returned_url)
+            valid_results.append(r)
+            urls_succeeded.append(url)
 
         meta = {
             "urls_attempted": urls,
             "urls_succeeded": urls_succeeded,
             "urls_failed": urls_failed,
         }
+
+        # P0: Batch completion summary for debugging content pipeline
+        logger.info(f"Batch scrape summary: attempted={len(urls)}, succeeded={len(urls_succeeded)}, failed={len(urls_failed)}")
+        if urls_succeeded:
+            logger.info(f"Succeeded URLs: {urls_succeeded}")
+        if urls_failed:
+            failed_summary = [(f.get("url", "?"), f.get("reason", "?")[:50]) for f in urls_failed]
+            logger.info(f"Failed URLs: {failed_summary}")
 
         return valid_results, meta
 

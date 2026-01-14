@@ -394,12 +394,32 @@ func extractRegionCodeFromTargetLanguages(targetLanguages []string) string {
 	return ""
 }
 
+// containsGenericTerm checks if a term contains any generic tech words that pollute search results.
+// This fixes the bug where multi-word terms like "analytics platform" were not filtered
+// because only exact matches were checked (e.g., "analytics platform" != "analytics").
+func containsGenericTerm(term string, genericTerms map[string]bool) bool {
+	termLower := strings.ToLower(term)
+	// Split into words and check each word
+	words := strings.Fields(termLower)
+	for _, word := range words {
+		if genericTerms[word] {
+			return true
+		}
+	}
+	return false
+}
+
 func buildCompanyDomainDiscoverySearchQuery(canonicalName string, disambiguationTerms []string, regionCode string) string {
 	name := strings.TrimSpace(canonicalName)
 	if name == "" {
 		return ""
 	}
 
+	// For domain discovery, use ONLY the company name + "official website" keywords.
+	// Do NOT add disambiguation terms - they often contain LLM-generated translations
+	// or explanations that pollute search results and push official domains down.
+	// Example: "Ptmind 官网 官方网站" returns jp.ptmind.com as #1 result,
+	// but "Ptmind 官网 官方网站 web optimization..." pushes it out of top 10.
 	q := fmt.Sprintf("%s official website", name)
 	switch regionCode {
 	case "zh":
@@ -410,28 +430,9 @@ func buildCompanyDomainDiscoverySearchQuery(canonicalName string, disambiguation
 		q = fmt.Sprintf("%s 공식 사이트 official website", name)
 	}
 
-	// Filter out generic tech terms that pollute search results with competitors
-	genericTerms := map[string]bool{
-		"analytics": true, "platform": true, "marketing": true, "technology": true,
-		"software": true, "saas": true, "cloud": true, "data": true, "ai": true,
-		"tool": true, "tools": true, "solution": true, "solutions": true,
-		"service": true, "services": true, "digital": true, "automation": true,
-	}
-
-	// Add up to 2 non-generic disambiguation terms to reduce entity mix-ups.
-	var filteredTerms []string
-	for _, term := range disambiguationTerms {
-		termLower := strings.ToLower(strings.TrimSpace(term))
-		if termLower != "" && !genericTerms[termLower] {
-			filteredTerms = append(filteredTerms, term)
-		}
-	}
-	if len(filteredTerms) > 2 {
-		filteredTerms = filteredTerms[:2]
-	}
-	if len(filteredTerms) > 0 {
-		q = strings.TrimSpace(q + " " + strings.Join(filteredTerms, " "))
-	}
+	// NOTE: Removed disambiguation term addition for domain discovery.
+	// The simple query "{company} official website" is more effective
+	// at finding official domains than queries polluted with extra terms.
 
 	return q
 }
@@ -548,12 +549,14 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, ca
 		if err != nil {
 			return
 		}
-		host := registrableDomain(pu.Host)
-		if host == "" {
+
+		// Get registrable domain for filtering (e.g., ptmind.com from jp.ptmind.com)
+		registrable := registrableDomain(pu.Host)
+		if registrable == "" {
 			return
 		}
 
-		// Exclude common aggregator/social/platform domains
+		// Exclude common aggregator/social/platform domains (check against registrable)
 		disallowed := map[string]struct{}{
 			// Social & aggregator
 			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
@@ -569,14 +572,24 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, ca
 			"hiredchina.com": {}, "glassdoor.com": {}, "indeed.com": {}, "zhipin.com": {},
 			// App stores
 			"apps.shopify.com": {}, "chromewebstore.google.com": {}, "play.google.com": {},
+			// Investor info sites
+			"tracxn.com": {}, "trjcn.com": {},
 		}
-		if _, ok := disallowed[host]; ok {
+		if _, ok := disallowed[registrable]; ok {
+			return
+		}
+
+		// Preserve full host for company research (jp.ptmind.com, cn.ptmind.com are different sites)
+		// Only strip www. prefix
+		fullHost := strings.ToLower(strings.TrimSpace(pu.Host))
+		fullHost = strings.TrimPrefix(fullHost, "www.")
+		if fullHost == "" {
 			return
 		}
 
 		// Relevance check: domain should be related to canonical name
 		// This prevents profitmind.com from being included when searching for PTmind
-		hostLower := strings.ToLower(host)
+		hostLower := strings.ToLower(registrable)
 		hostBase := strings.TrimSuffix(strings.TrimSuffix(hostLower, ".com"), ".co")
 		hostBase = strings.TrimSuffix(hostBase, ".jp")
 		hostBase = strings.TrimSuffix(hostBase, ".cn")
@@ -599,9 +612,10 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, ca
 			return
 		}
 
-		if !seen[host] {
-			seen[host] = true
-			out = append(out, host)
+		// Add full host (preserving subdomains like jp.ptmind.com)
+		if !seen[fullHost] {
+			seen[fullHost] = true
+			out = append(out, fullHost)
 		}
 	}
 
@@ -1155,9 +1169,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								"Extract the official website domains for the company %q.\n\n"+
 									"Use ONLY the provided web_search results (do not guess).\n"+
 									"Return JSON ONLY with this schema:\n"+
-									"{\"domains\":[\"example.com\",\"example.co.jp\",...]}.\n"+
+									"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}.\n"+
 									"Rules:\n"+
 									"- Include corporate + major product/brand + key regional domains if they appear in results.\n"+
+									"- IMPORTANT: Include regional SUBDOMAINS like jp.company.com, cn.company.com, de.company.com (these are common patterns).\n"+
 									"- Exclude directory/social/news domains (wikipedia, linkedin, crunchbase, etc.).\n"+
 									"- Return at most 12 domains.\n",
 								refineResult.CanonicalName,
@@ -1191,16 +1206,57 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
 
 						// Prefer LLM-selected domains, but only keep domains that are grounded in search result URLs.
-						groundedSet := make(map[string]bool)
+						// Build a set of search domains for exact matching
+						searchSet := make(map[string]bool)
 						for _, d := range searchDomains {
-							groundedSet[d] = true
+							searchSet[d] = true
 						}
+
+						// Helper to check if a domain is grounded:
+						// - Exact match (llm said "jp.ptmind.com", search has "jp.ptmind.com")
+						// - LLM said root domain, search has subdomain (llm said "ptmind.com", search has "jp.ptmind.com")
+						isGrounded := func(llmDomain string) bool {
+							if searchSet[llmDomain] {
+								return true
+							}
+							// Check if any search domain is a subdomain of llmDomain
+							suffix := "." + llmDomain
+							for sd := range searchSet {
+								if strings.HasSuffix(sd, suffix) {
+									return true
+								}
+							}
+							return false
+						}
+
 						var discovered []string
+						seenDiscovered := make(map[string]bool)
+
+						// First, add LLM-selected domains that are grounded
 						for _, d := range llmDomains {
-							if groundedSet[d] {
+							if isGrounded(d) && !seenDiscovered[d] {
+								seenDiscovered[d] = true
 								discovered = append(discovered, d)
 							}
 						}
+
+						// Also add search domains that are subdomains of LLM-selected domains
+						// (e.g., if LLM said "ptmind.com", also add "jp.ptmind.com" from search)
+						for _, sd := range searchDomains {
+							if seenDiscovered[sd] {
+								continue
+							}
+							for _, llmD := range llmDomains {
+								suffix := "." + llmD
+								if strings.HasSuffix(sd, suffix) {
+									seenDiscovered[sd] = true
+									discovered = append(discovered, sd)
+									break
+								}
+							}
+						}
+
+						// Fallback: if nothing discovered, use all search domains
 						if len(discovered) == 0 {
 							discovered = searchDomains
 						}
