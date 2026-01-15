@@ -72,31 +72,50 @@ def filter_relevant_results(
 # Interpretation Pass Helper Functions (P0 Fix for content loss)
 # ============================================================================
 
-# Multi-language interpretation prompt with strong instructions
-INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION / 重要指令 / 重要な指示 ===
+# Interpretation prompt for summarizing tool results
+INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION ===
 
 You MUST summarize the ACTUAL CONTENT from the tool results above.
-你必须总结上面工具结果中的实际内容。
-上記のツール結果から実際の内容を要約してください。
 
-FORMAT / 格式 / フォーマット:
+=== STRUCTURED OUTPUT REQUIREMENT ===
+Organize your summary BY SOURCE/URL:
+
+For EACH source in tool results:
+- State the source name/URL
+- Summarize key findings from that source
+- Preserve specific data points
+
+=== MANDATORY PRESERVATION ===
+You MUST include verbatim or with minimal paraphrasing:
+- ALL specific numbers, dates, percentages, monetary amounts
+- ALL proper nouns (company names, product names, people names, locations)
+- ALL conclusions, findings, or claims made by sources
+- ALL structured data (tables, lists, rankings)
+
+=== DO NOT PRESERVE ===
+- Generic boilerplate text (navigation, footers, ads)
+- Repetitive content across sources
+- Off-topic information unrelated to the query
+
+FORMAT:
 # PART 1 - RETRIEVED INFORMATION
-[Detailed summary of facts, data, quotes from tool results]
-[详细总结事实、数据、引用]
+## Source 1: [URL/Name]
+[Key findings with preserved data points]
+
+## Source 2: [URL/Name]
+[Key findings with preserved data points]
+...
 
 # PART 2 - NOTES (optional)
-[Additional observations]
+[Conflicts between sources, data gaps, uncertainty flags]
 
-=== FORBIDDEN / 禁止 / 禁止事項 ===
-DO NOT say / 不要说 / 言ってはいけない:
-- 'I will fetch...' / '我将获取...' / '取得します...'
-- 'I need to search...' / '我需要搜索...' / '検索する必要が...'
-- 'Let me continue...' / '让我继续...' / '続けさせて...'
-- Any future actions / 任何下一步动作 / 将来のアクション
+=== FORBIDDEN ===
+DO NOT say:
+- 'I will fetch...'
+- 'I need to search...'
+- Any future actions
 
-ONLY summarize what was ALREADY retrieved.
-只总结已经获取的内容。
-既に取得した内容のみを要約してください。"""
+ONLY summarize what was ALREADY retrieved."""
 
 
 def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], max_chars: int = 3000) -> str:
@@ -106,10 +125,28 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
 
     This is NOT raw JSON - it extracts key information in readable format.
     """
-    import json
-    import re
+    lines: List[str] = []
+    failures: List[str] = []
 
-    lines = []
+    def _summarize_failure(record: Dict[str, Any]) -> str:
+        tool_name = record.get("tool", "unknown")
+        err = record.get("error") or ""
+        tool_input = record.get("tool_input") or {}
+        target = ""
+        if isinstance(tool_input, dict):
+            if tool_input.get("url"):
+                target = f"url={tool_input.get('url')}"
+            elif tool_input.get("urls"):
+                target = f"urls={tool_input.get('urls')}"
+            elif tool_input.get("query"):
+                target = f"query={tool_input.get('query')}"
+        if target and err:
+            return f"- {tool_name} FAILED ({target}): {err}"
+        if err:
+            return f"- {tool_name} FAILED: {err}"
+        if target:
+            return f"- {tool_name} FAILED ({target})"
+        return f"- {tool_name} FAILED"
 
     # Process tool execution records for structured extraction
     for record in tool_records:
@@ -118,6 +155,7 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
         output = record.get("output", {})
 
         if not success:
+            failures.append(_summarize_failure(record))
             continue
 
         if tool_name == "web_search":
@@ -135,15 +173,20 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
 
         elif tool_name == "web_fetch":
             lines.append("## Fetched Content")
-            pages = output.get("pages", []) if isinstance(output, dict) else []
-            for page in pages[:3]:  # Top 3 pages
-                if not page.get("success"):
+            pages = []
+            if isinstance(output, dict):
+                pages = output.get("pages", []) if isinstance(output.get("pages"), list) else []
+                # Single-URL mode: {url, title, content, ...}
+                if not pages and any(k in output for k in ("url", "title", "content")):
+                    pages = [output]
+
+            for page in (pages or [])[:3]:  # Top 3 pages
+                if isinstance(page, dict) and page.get("success") is False:
                     continue
-                title = page.get("title", "Untitled")
-                content = page.get("content", "")
-                url = page.get("url", "")
+                title = page.get("title", "Untitled") if isinstance(page, dict) else "Untitled"
+                content = page.get("content", "") if isinstance(page, dict) else ""
+                url = page.get("url", "") if isinstance(page, dict) else ""
                 if content and len(content) > 50:
-                    # Extract meaningful content, skip PDF binary
                     if content.startswith("%PDF"):
                         lines.append(f"- **{title}** (PDF document)")
                     else:
@@ -153,14 +196,46 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
                         lines.append(f"  Source: {url}")
             lines.append("")
 
+        elif tool_name == "web_subpage_fetch":
+            lines.append("## Subpage Fetch")
+            if isinstance(output, dict):
+                url = output.get("url", "")
+                title = output.get("title", "") or "Untitled"
+                pages_fetched = output.get("pages_fetched", None)
+                content = output.get("content", "") or ""
+                if content.startswith("%PDF"):
+                    lines.append(f"- **{title}** (PDF document)")
+                else:
+                    preview = content[:800].replace("\n", " ").strip()
+                    suffix = f" ({pages_fetched} pages)" if isinstance(pages_fetched, int) else ""
+                    lines.append(f"- **{title}**{suffix}: {preview}...")
+                if url:
+                    lines.append(f"  Source: {url}")
+            lines.append("")
+
+        elif tool_name == "web_crawl":
+            lines.append("## Crawl")
+            if isinstance(output, dict):
+                url = output.get("url") or ""
+                content = output.get("content") or ""
+                preview = str(content)[:800].replace("\n", " ").strip()
+                lines.append(f"- {preview}...")
+                if url:
+                    lines.append(f"  Source: {url}")
+            lines.append("")
+
+    if failures:
+        lines.append("## Tool Failures")
+        lines.extend(failures[:20])
+        lines.append("")
+
     # Fallback: parse raw tool_results if no records
     if not lines and tool_results:
-        # Try to extract readable parts from string
+        # Prefer preserving escaped newlines (\\n) rather than stripping backslashes (which turns \\n into 'n')
+        text = str(tool_results)
+        text = text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
         lines.append("## Tool Output Summary")
-        # Remove JSON artifacts, keep text
-        clean = re.sub(r'[{}\[\]"\\]', ' ', tool_results)
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        lines.append(clean[:max_chars])
+        lines.append(text[:max_chars])
 
     digest = "\n".join(lines)
     return digest[:max_chars] if len(digest) > max_chars else digest
@@ -210,11 +285,33 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
         tool_name = record.get("tool", "unknown")
         success = record.get("success", False)
         output = record.get("output", {})
-
-        if not success:
-            continue
+        tool_input = record.get("tool_input") or {}
+        error = record.get("error") or ""
 
         part_header = f"\n### {tool_name} result:\n"
+        if not success:
+            part_header = f"\n### {tool_name} failed:\n"
+            target = ""
+            if isinstance(tool_input, dict):
+                if tool_input.get("url"):
+                    target = f"url={tool_input.get('url')}"
+                elif tool_input.get("urls"):
+                    target = f"urls={tool_input.get('urls')}"
+                elif tool_input.get("query"):
+                    target = f"query={tool_input.get('query')}"
+            lines = []
+            if target:
+                lines.append(f"- Input: {target}")
+            if error:
+                lines.append(f"- Error: {error}")
+            else:
+                lines.append("- Error: (none)")
+            part = part_header + ("\n".join(lines) + "\n")
+            if total_chars + len(part) > max_chars:
+                break
+            parts.append(part)
+            total_chars += len(part)
+            continue
 
         if tool_name == "web_search":
             # Handle both dict format {"results": [...]} and direct array format [...]
@@ -1510,6 +1607,15 @@ async def agent_query(request: Request, query: AgentQuery):
                 if is_valid:
                     response_text = raw_interpretation
                     logger.info(f"[interpretation_pass] VALID for agent={query.agent_id}, response_len={len(str(response_text))}, preview={str(response_text)[:200]}")
+                    # Log compression metrics for analysis
+                    if total_tool_output_chars > 0:
+                        compression_ratio = 1 - (len(response_text) / total_tool_output_chars)
+                        research_strategy = query.context.get("research_strategy", "unknown") if isinstance(query.context, dict) else "unknown"
+                        logger.info(
+                            f"[interpretation_metrics] agent={query.agent_id}, "
+                            f"tool_chars={total_tool_output_chars}, output_chars={len(response_text)}, "
+                            f"compression_ratio={compression_ratio:.2f}, strategy={research_strategy}"
+                        )
                 else:
                     # Fallback to human-readable digest (NOT raw JSON)
                     fallback_digest = generate_tool_digest(
