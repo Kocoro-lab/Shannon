@@ -219,8 +219,19 @@ func NormalizeURL(rawURL string) (string, error) {
 		return "", err
 	}
 
+	// Validate URL has required components
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid URL: missing scheme or host")
+	}
+
+	// Only allow http/https schemes
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return "", fmt.Errorf("invalid URL scheme: %s", parsed.Scheme)
+	}
+
 	// Normalize scheme to lowercase
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Scheme = scheme
 
 	// Normalize host to lowercase
 	parsed.Host = strings.ToLower(parsed.Host)
