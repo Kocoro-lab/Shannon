@@ -335,55 +335,28 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 
 // buildCitationAgentPrompt returns the system prompt for the Citation Agent
 func buildCitationAgentPrompt() string {
-	return `You are a citation specialist. Add [n] markers to support factual claims.
+	return `You are a citation specialist. Insert [n] markers ONLY when the provided source Content explicitly supports the claim.
 
-## YOUR GOAL
+## RULE 0 — PRECISION FIRST
 
-Add citations that help readers verify key facts. Balance:
-- PRECISION: Only cite when source actually supports the claim
-- COVERAGE: Most verifiable facts should have citations
-
-Aim to cite 30-50% of factual claims. Not every sentence needs a citation,
-but important facts, statistics, and named entities should be cited.
+- Only cite when the source's "Content:" includes the specific fact you are citing (same number/date/name/role/quote, or a close paraphrase).
+- If "Content:" is missing, empty, too short, or too vague, DO NOT cite — even if URL/title/domain looks relevant or official.
+- NEVER cite based on inference ("this page likely contains X") or prior knowledge.
+- It is OK to add very few citations or even zero citations.
 
 ## ABSOLUTE RULE - DO NOT MODIFY TEXT
 
 The ONLY modification allowed is inserting [n] markers. NOTHING ELSE.
 Your response will be REJECTED if you change ANY character of the original text.
+Do not change whitespace, punctuation, line breaks, bullets, numbering, or language.
 
-## CLAIM CLASSIFICATION
+If you cannot guarantee exact character preservation, output the original report unchanged (no citations).
 
-Before citing, classify each claim:
+## WHAT TO CITE (ONLY WHEN EXPLICITLY SUPPORTED)
 
-### HIGH CONFIDENCE (Always Cite)
-- Exact numbers, dates, percentages that appear in source
-- Direct quotes or close paraphrases
-- Named entities with matching context
-
-Example:
-  Claim: "Revenue grew 19% in Q3 2024"
-  Source [3]: "...quarterly revenue increased 19%..."
-  → CITE [3] - exact data match
-
-### MEDIUM CONFIDENCE (Cite if URL/Title Confirms)
-- General facts where snippet is weak but URL/title clearly relevant
-- Statements about company/person where source is official site
-- Industry facts from authoritative domain
-
-Example:
-  Claim: "The company is headquartered in Tokyo"
-  Source [5]: (snippet empty, but URL: company.jp/about)
-  → CITE [5] - official source, reasonable inference
-
-### LOW CONFIDENCE (Do Not Cite)
-- Vague topic overlap without specific fact match
-- Source discusses different aspect of same entity
-- Your inference, not stated in source
-
-Example:
-  Claim: "The team is highly innovative"
-  Source [7]: "...announced new AI product..."
-  → DO NOT CITE - product announcement ≠ "innovative" judgment
+✓ Numbers, dates, percentages, financial figures
+✓ Named entities + roles/titles (ONLY if the role/title is stated in Content)
+✓ Concrete company facts (founding, HQ, funding, products/services) (ONLY if stated in Content)
 
 ## CITATION PLACEMENT
 
@@ -392,65 +365,34 @@ Insert [n] at END of sentences or clauses:
 - ✓ "Founded in 2020[2], the company expanded."
 - ✗ "[1] Revenue grew 19%."
 
-## SOURCE PRIORITY
+## WHAT TO SKIP
 
-When multiple sources support same claim, prefer:
+✗ Section headers, transitions
+✗ Opinions, analysis, recommendations
+✗ Common knowledge
+✗ Claims with NO explicit supporting evidence in Content
+✗ Claims supported only by URL/title relevance
+
+## SOURCE CHOICE
+
+If multiple sources explicitly support the same claim, prefer:
 1. Official sources (.gov, .edu, company sites)
 2. Data aggregators (Crunchbase, LinkedIn)
 3. Major news (Reuters, TechCrunch)
 4. Other sources
 
-## WHAT TO CITE
+NOTE: Source choice NEVER overrides the evidence requirement. If Content does not explicitly support the claim, do not cite it.
 
-✓ Statistics, financial figures, dates
-✓ Company facts (founding, location, size)
-✓ Named people with roles/titles
-✓ Specific claims readers would verify
-✓ Conclusions based on cited evidence
+## EXAMPLE (DO NOT CITE WITHOUT EXPLICIT EVIDENCE)
 
-## WHAT TO SKIP
-
-✗ Section headers, transitions
-✗ Common knowledge
-✗ Your synthesis language ("This shows that...")
-✗ Claims with NO matching source
+Report: "The company has offices in Beijing."
+Source [8]: (URL/title looks like a contact page, but Content does not mention Beijing)
+→ "The company has offices in Beijing." (no citation)
 
 ## AVOID REDUNDANT CITATIONS
 
 - Same source per sentence: cite at most TWICE
 - No adjacent duplicates: NEVER use [1][1]
-
-## EXAMPLES
-
-### Example 1 - High Confidence Match
-Report: "Tesla delivered 1.8 million vehicles in 2023."
-Source [3]: "Tesla Inc. reported annual deliveries of 1.81 million vehicles..."
-→ "Tesla delivered 1.8 million vehicles in 2023.[3]"
-
-### Example 2 - Medium Confidence (Official Source)
-Report: "PTMind was founded in 2010."
-Source [1]: "About Ptengine - Leading A/B Testing..." (ptengine.cn/about_us)
-→ "PTMind was founded in 2010.[1]" (official about page)
-
-### Example 3 - Medium Confidence (Empty Snippet, Clear URL)
-Report: "The company has offices in Beijing."
-Source [8]: (snippet: "", URL: cn.company.com/contact)
-→ "The company has offices in Beijing.[8]" (contact page likely has location)
-
-### Example 4 - Low Confidence (Topic Only)
-Report: "The company expanded into European markets."
-Source [5]: "TechCorp announced AI product launch..."
-→ "The company expanded into European markets." (no citation - wrong topic)
-
-### Example 5 - Correctly Uncited
-Report: "This demonstrates strong market positioning."
-→ "This demonstrates strong market positioning." (your analysis, not citable)
-
-### Example 6 - Multiple Sources
-Report: "Series B funding was led by Investor X."
-Source [10]: Crunchbase funding page
-Source [15]: News article mentioning same
-→ "Series B funding was led by Investor X.[10]" (prefer Crunchbase)
 
 ## OUTPUT FORMAT
 
@@ -753,42 +695,42 @@ func normalizeForComparison(s string) string {
 	s = strings.Join(lines, "\n")
 
 	// Step 8: Normalize ellipsis variations
-	s = strings.ReplaceAll(s, "…", "...")     // Unicode ellipsis to three dots
+	s = strings.ReplaceAll(s, "…", "...")   // Unicode ellipsis to three dots
 	s = strings.ReplaceAll(s, "。。。", "...") // Chinese periods as ellipsis
 	s = strings.ReplaceAll(s, "．．．", "...") // Fullwidth periods as ellipsis
 
 	// Step 9: Normalize common Chinese/fullwidth punctuation to ASCII
 	punctReplacements := map[string]string{
-		"：": ":",  // fullwidth colon to ASCII
-		"，": ",",  // Chinese comma to ASCII
-		"。": ".",  // Chinese period to ASCII
-		"！": "!",  // fullwidth exclamation
-		"？": "?",  // fullwidth question mark
-		"（": "(",  // fullwidth parentheses
-		"）": ")",
-		"【": "[",  // Chinese brackets
-		"】": "]",
-		"「": `"`,  // Japanese quotation marks
-		"」": `"`,
-		"『": `"`,
-		"』": `"`,
-		"\u201c": `"`, // left double quotation mark
-		"\u201d": `"`, // right double quotation mark
-		"\u2018": "'", // left single quotation mark
-		"\u2019": "'", // right single quotation mark
-		"、": ",",     // Chinese enumeration comma
-		"；": ";",     // fullwidth semicolon
-		"～": "~",     // fullwidth tilde
-		"＋": "+",     // fullwidth plus
-		"＝": "=",     // fullwidth equals
-		"＜": "<",     // fullwidth less-than
-		"＞": ">",     // fullwidth greater-than
-		"％": "%",     // fullwidth percent
-		"＃": "#",     // fullwidth hash
-		"＆": "&",     // fullwidth ampersand
-		"＊": "*",     // fullwidth asterisk
-		"／": "/",     // fullwidth slash
-		"＼": "\\",    // fullwidth backslash
+		"：":      ":", // fullwidth colon to ASCII
+		"，":      ",", // Chinese comma to ASCII
+		"。":      ".", // Chinese period to ASCII
+		"！":      "!", // fullwidth exclamation
+		"？":      "?", // fullwidth question mark
+		"（":      "(", // fullwidth parentheses
+		"）":      ")",
+		"【":      "[", // Chinese brackets
+		"】":      "]",
+		"「":      `"`, // Japanese quotation marks
+		"」":      `"`,
+		"『":      `"`,
+		"』":      `"`,
+		"\u201c": `"`,  // left double quotation mark
+		"\u201d": `"`,  // right double quotation mark
+		"\u2018": "'",  // left single quotation mark
+		"\u2019": "'",  // right single quotation mark
+		"、":      ",",  // Chinese enumeration comma
+		"；":      ";",  // fullwidth semicolon
+		"～":      "~",  // fullwidth tilde
+		"＋":      "+",  // fullwidth plus
+		"＝":      "=",  // fullwidth equals
+		"＜":      "<",  // fullwidth less-than
+		"＞":      ">",  // fullwidth greater-than
+		"％":      "%",  // fullwidth percent
+		"＃":      "#",  // fullwidth hash
+		"＆":      "&",  // fullwidth ampersand
+		"＊":      "*",  // fullwidth asterisk
+		"／":      "/",  // fullwidth slash
+		"＼":      "\\", // fullwidth backslash
 	}
 	for old, repl := range punctReplacements {
 		s = strings.ReplaceAll(s, old, repl)
@@ -1447,9 +1389,9 @@ func appendCitationsToSentence(sentence string, citationIDs []int) string {
 
 // ClaimMappingInput represents a claim with its supporting citation IDs from Verify
 type ClaimMappingInput struct {
-	Claim         string `json:"claim"`
-	Verdict       string `json:"verdict"` // "supported" | "unsupported" | "insufficient_evidence"
-	SupportingIDs []int  `json:"supporting_ids"`
+	Claim         string  `json:"claim"`
+	Verdict       string  `json:"verdict"` // "supported" | "unsupported" | "insufficient_evidence"
+	SupportingIDs []int   `json:"supporting_ids"`
 	Confidence    float64 `json:"confidence"`
 }
 
@@ -1467,9 +1409,9 @@ type CitationWithIDForAgent struct {
 // CitationAgentInputV2 is the input for Citation Agent V2 (Deep Research)
 type CitationAgentInputV2 struct {
 	Report           string                   `json:"report"`
-	Citations        []CitationWithIDForAgent `json:"citations"`         // Fetch-only citations for inline placement
-	AllCitations     []CitationWithIDForAgent `json:"all_citations"`     // P1: All citations for Sources section output
-	ClaimMappings    []ClaimMappingInput      `json:"claim_mappings"`    // From Verify batch endpoint
+	Citations        []CitationWithIDForAgent `json:"citations"`      // Fetch-only citations for inline placement
+	AllCitations     []CitationWithIDForAgent `json:"all_citations"`  // P1: All citations for Sources section output
+	ClaimMappings    []ClaimMappingInput      `json:"claim_mappings"` // From Verify batch endpoint
 	ParentWorkflowID string                   `json:"parent_workflow_id,omitempty"`
 	Context          map[string]interface{}   `json:"context,omitempty"`
 	ModelTier        string                   `json:"model_tier,omitempty"`

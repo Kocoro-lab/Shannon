@@ -1805,7 +1805,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "researcher"
+					role := "deep_research_agent"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -1939,7 +1939,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "researcher"
+					role := "deep_research_agent"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}

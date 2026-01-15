@@ -194,7 +194,7 @@ def build_interpretation_messages(
     ]
 
 
-def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 15000) -> str:
+def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 50000) -> str:
     """
     Aggregate tool execution results into a readable summary.
 
@@ -253,7 +253,7 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
 
                         # Skip binary content (PDFs)
                         if content and not content.startswith("%PDF"):
-                            content_preview = content[:2000] if len(content) > 2000 else content
+                            content_preview = content[:6000] if len(content) > 6000 else content
                             part_content += f"**{title}** ({url}):\n{content_preview}\n\n"
                 else:
                     # Single URL mode: {url, title, content, ...}
@@ -263,7 +263,7 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
 
                     # Skip binary content (PDFs)
                     if content and not content.startswith("%PDF"):
-                        content_preview = content[:3000] if len(content) > 3000 else content
+                        content_preview = content[:8000] if len(content) > 8000 else content
                         part_content = f"**{title}** ({url}):\n{content_preview}\n\n"
                     elif not content:
                         part_content = f"**{title}** ({url}): No content retrieved\n"
@@ -1514,7 +1514,8 @@ async def agent_query(request: Request, query: AgentQuery):
                     # Fallback to human-readable digest (NOT raw JSON)
                     fallback_digest = generate_tool_digest(
                         last_tool_results or "",
-                        tool_execution_records
+                        tool_execution_records,
+                        max_chars=30000  # Increased from default 3000 to avoid truncation
                     )
                     response_text = fallback_digest if fallback_digest else raw_interpretation
                     logger.warning(
