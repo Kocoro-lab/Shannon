@@ -1408,11 +1408,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					domainPrefetchResults = append(domainPrefetchResults, payload.Result)
 					domainPrefetchTokens += payload.Result.TokensUsed
 
+					// Persist agent and tool execution records
+					prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
+					persistAgentExecutionLocal(ctx, workflowID, prefetchAgentName,
+						fmt.Sprintf("Domain prefetch: %s", payload.URL), payload.Result)
+
 					if payload.Result.TokensUsed > 0 || payload.Result.InputTokens > 0 || payload.Result.OutputTokens > 0 {
 						inTok := payload.Result.InputTokens
 						outTok := payload.Result.OutputTokens
 						recCtx := opts.WithTokenRecordOptions(ctx)
-						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
 						_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 							UserID:       input.UserID,
 							SessionID:    input.SessionID,
