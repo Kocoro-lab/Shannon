@@ -597,6 +597,53 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 	return out
 }
 
+func originRegionToDiscoveryLanguageCode(originRegion string) string {
+	switch normalizePrefetchRegion(originRegion) {
+	case "cn":
+		return "zh"
+	case "jp":
+		return "ja"
+	case "kr":
+		return "ko"
+	default:
+		return ""
+	}
+}
+
+func shouldRunGlobalDomainDiscoveryFallback(discovered []string) bool {
+	if len(discovered) < 4 {
+		return true
+	}
+
+	registrables := make(map[string]bool)
+	hasSupport := false
+	for _, d := range discovered {
+		h := normalizeDomainCandidateHost(d)
+		if h == "" {
+			continue
+		}
+		if strings.HasPrefix(h, "help.") || strings.HasPrefix(h, "docs.") || strings.HasPrefix(h, "support.") {
+			hasSupport = true
+		}
+		reg := registrableDomain(h)
+		if reg != "" {
+			registrables[reg] = true
+		}
+	}
+
+	// If we only found one registrable domain, we're likely missing product/brand domains.
+	if len(registrables) < 2 {
+		return true
+	}
+
+	// Support/help sites are high-signal for company research; if missing and the set is small, try one more search.
+	if !hasSupport && len(discovered) < 6 {
+		return true
+	}
+
+	return false
+}
+
 // containsGenericTerm checks if a term contains any generic tech words that pollute search results.
 // This fixes the bug where multi-word terms like "analytics platform" were not filtered
 // because only exact matches were checked (e.g., "analytics platform" != "analytics").
@@ -2092,7 +2139,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						maxPrefetch = 12
 					}
 
+					// v3 (discover-only strict) reduces domain_discovery from 4 fixed region searches to:
+					// - primary (origin-first when available, else global)
+					// - optional global fallback (at most 2 searches total)
 					searches := buildDomainDiscoverySearches(refineResult.CanonicalName, refineResult.DisambiguationTerms, originRegion, requestedRegions)
+					globalQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, "")
+					if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 {
+						originLang := originRegionToDiscoveryLanguageCode(originRegion)
+						primaryQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, originLang)
+						if strings.TrimSpace(primaryQuery) == "" {
+							primaryQuery = globalQuery
+						}
+						if strings.TrimSpace(primaryQuery) != "" {
+							searches = []domainDiscoverySearch{{Key: "primary", Query: primaryQuery}}
+						}
+					}
 					discoveredBySearch := make(map[string][]string)
 					var allDiscovered []string
 					seenAll := make(map[string]bool)
@@ -2108,12 +2169,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						"user_id":    input.UserID,
 						"session_id": input.SessionID,
 						"model_tier": "small",
+						"response_format": map[string]interface{}{
+							"type": "json_object",
+						},
 					}
 					if input.ParentWorkflowID != "" {
 						discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
 					}
 
-					for _, s := range searches {
+					for i := 0; i < len(searches); i++ {
+						s := searches[i]
 						var discoveryResult activities.AgentExecutionResult
 						discoveryErr := workflow.ExecuteActivity(ctx,
 							"ExecuteAgent",
@@ -2121,13 +2186,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								Query: fmt.Sprintf(
 									"Extract the official website domains for the company %q.\n\n"+
 										"Use ONLY the provided web_search results (do not guess).\n"+
-										"Return JSON ONLY with this schema:\n"+
-										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}.\n"+
+										"Return JSON ONLY with this schema (no markdown, no prose):\n"+
+										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}\n"+
 										"Rules:\n"+
-										"- Include corporate + major product/brand + key regional domains if they appear in results.\n"+
-										"- IMPORTANT: Include regional SUBDOMAINS like jp.company.com, cn.company.com, de.company.com (these are common patterns).\n"+
-										"- Exclude directory/social/news domains (wikipedia, linkedin, crunchbase, etc.).\n"+
-										"- Return at most 12 domains.\n",
+										"- Output ONLY domains or site-level subdomains; no paths; strip \"www.\".\n"+
+										"- Include corporate + major product/brand + support/help domains if they appear in results.\n"+
+										"- Allow regional site-level subdomains only (jp./cn./eu./us./kr.) and regional ccTLDs (.jp/.co.jp/.cn/.com.cn).\n"+
+										"- Exclude third-party directories/social/news/blog/press/careers and platform hosts (wikipedia, linkedin, crunchbase, github.io, *.mintlify.app, etc.).\n"+
+										"- Return at most 10 domains. If none found, return {\"domains\":[]}.\n",
 									refineResult.CanonicalName,
 								),
 								AgentID:   "domain_discovery",
@@ -2236,6 +2302,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							}
 						}
 
+						// Scheme C: After the primary run, optionally add ONE global fallback search.
+						if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 && i == 0 {
+							// If primary query is already global, do not fallback.
+							if strings.TrimSpace(globalQuery) != "" && strings.TrimSpace(s.Query) != strings.TrimSpace(globalQuery) {
+								if shouldRunGlobalDomainDiscoveryFallback(allDiscovered) {
+									searches = append(searches, domainDiscoverySearch{Key: "global_fallback", Query: globalQuery})
+								}
+							}
+						}
+
 						if discoveryResult.TokensUsed > 0 || discoveryResult.InputTokens > 0 || discoveryResult.OutputTokens > 0 {
 							inTok := discoveryResult.InputTokens
 							outTok := discoveryResult.OutputTokens
@@ -2318,6 +2394,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							"user_id":    input.UserID,
 							"session_id": input.SessionID,
 							"model_tier": "small",
+							"response_format": map[string]interface{}{
+								"type": "json_object",
+							},
 						}
 						if input.ParentWorkflowID != "" {
 							discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
@@ -2330,13 +2409,14 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								Query: fmt.Sprintf(
 									"Extract the official website domains for the company %q.\n\n"+
 										"Use ONLY the provided web_search results (do not guess).\n"+
-										"Return JSON ONLY with this schema:\n"+
-										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}.\n"+
+										"Return JSON ONLY with this schema (no markdown, no prose):\n"+
+										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}\n"+
 										"Rules:\n"+
-										"- Include corporate + major product/brand + key regional domains if they appear in results.\n"+
-										"- IMPORTANT: Include regional SUBDOMAINS like jp.company.com, cn.company.com, de.company.com (these are common patterns).\n"+
-										"- Exclude directory/social/news domains (wikipedia, linkedin, crunchbase, etc.).\n"+
-										"- Return at most 12 domains.\n",
+										"- Output ONLY domains or site-level subdomains; no paths; strip \"www.\".\n"+
+										"- Include corporate + major product/brand + support/help domains if they appear in results.\n"+
+										"- Allow regional site-level subdomains only (jp./cn./eu./us./kr.) and regional ccTLDs (.jp/.co.jp/.cn/.com.cn).\n"+
+										"- Exclude third-party directories/social/news/blog/press/careers and platform hosts (wikipedia, linkedin, crunchbase, github.io, *.mintlify.app, etc.).\n"+
+										"- Return at most 10 domains. If none found, return {\"domains\":[]}.\n",
 									refineResult.CanonicalName,
 								),
 								AgentID:   "domain_discovery",
