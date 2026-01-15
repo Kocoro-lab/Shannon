@@ -39,7 +39,7 @@ type Citation struct {
 	// P0-A: Fetch failure structuring for Citation V2
 	StatusCode    int    `json:"status_code,omitempty"`    // HTTP status code (0 = unknown, 200 = success, 4xx/5xx = error)
 	BlockedReason string `json:"blocked_reason,omitempty"` // Non-empty if content was blocked/invalid
-	Content       string `json:"content,omitempty"`        // Full content for IsValid() check (not serialized to JSON)
+	Content       string `json:"content,omitempty"`        // Full content for IsValid() check
 }
 
 // IsValid returns true if the citation has valid, usable content for verification.
