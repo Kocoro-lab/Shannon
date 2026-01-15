@@ -1440,6 +1440,153 @@ func domainsFromDiscoveryResponse(resp string) []string {
 	return out
 }
 
+func extractFirstJSONObjectContainingDomains(resp string) string {
+	idx := strings.Index(resp, "\"domains\"")
+	if idx == -1 {
+		return ""
+	}
+
+	start := strings.LastIndex(resp[:idx], "{")
+	if start == -1 {
+		return ""
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(resp); i++ {
+		ch := resp[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return resp[start : i+1]
+			}
+		}
+	}
+
+	return ""
+}
+
+func normalizeDiscoveryDomainCandidate(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+
+	// Best-effort: accept both domains and URLs.
+	if strings.Contains(s, "://") {
+		if pu, err := url.Parse(s); err == nil {
+			s = pu.Hostname()
+		}
+	} else {
+		// Remove obvious schemes/prefixes without needing url.Parse.
+		s = strings.TrimPrefix(s, "https://")
+		s = strings.TrimPrefix(s, "http://")
+		if idx := strings.IndexAny(s, "/?#"); idx != -1 {
+			s = s[:idx]
+		}
+	}
+
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "www.")
+	s = strings.TrimSuffix(s, ".")
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, ":") {
+		if hh, _, err := net.SplitHostPort(s); err == nil {
+			s = hh
+		} else {
+			if i := strings.LastIndex(s, ":"); i > 0 {
+				s = s[:i]
+			}
+		}
+	}
+	if s == "" {
+		return ""
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return ""
+	}
+	if s == "localhost" {
+		return ""
+	}
+	if strings.Count(s, ".") < 1 {
+		return ""
+	}
+
+	// Hard block common non-official domains.
+	disallowedRegistrables := map[string]struct{}{
+		"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
+		"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
+		"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+		"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+		"github.com": {}, "github.io": {}, "githubusercontent.com": {},
+	}
+	if reg := registrableDomain(s); reg != "" {
+		if _, ok := disallowedRegistrables[reg]; ok {
+			return ""
+		}
+	}
+
+	return s
+}
+
+func domainsFromDiscoveryResponseV2(resp string) []string {
+	type domainDiscoveryResponse struct {
+		Domains []string `json:"domains"`
+	}
+
+	// 1) Fast path: JSON-only response (or codefenced JSON).
+	var parsed domainDiscoveryResponse
+	if err := json.Unmarshal([]byte(stripCodeFences(resp)), &parsed); err != nil {
+		// 2) Common case: response contains sections + a JSON block.
+		obj := extractFirstJSONObjectContainingDomains(resp)
+		if obj == "" {
+			// 3) Also try inside the first code-fenced block, then extract.
+			obj = extractFirstJSONObjectContainingDomains(stripCodeFences(resp))
+		}
+		if obj == "" {
+			return nil
+		}
+		if err2 := json.Unmarshal([]byte(obj), &parsed); err2 != nil {
+			return nil
+		}
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, d := range parsed.Domains {
+		host := normalizeDiscoveryDomainCandidate(d)
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
+}
+
 // buildCompanyPrefetchURLsWithLocale constructs URLs including locale-specific sources
 func buildCompanyPrefetchURLsWithLocale(canonicalName string, officialDomains []string, detectedLanguage string) []string {
 	seen := make(map[string]bool)
@@ -1908,8 +2055,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			// This ensures Chinese sources (tianyancha, etc.) are only used for Chinese companies.
 			regionCode := extractRegionCodeFromTargetLanguages(refineResult.TargetLanguages)
 
-			prefetchDiscoverOnlyVersion := workflow.GetVersion(ctx, "domain_prefetch_discover_only_v1", workflow.DefaultVersion, 2)
-			hybridPrefetchEnabled := prefetchDiscoverOnlyVersion >= 2
+			prefetchDiscoverOnlyVersion := workflow.GetVersion(ctx, "domain_prefetch_discover_only_v1", workflow.DefaultVersion, 3)
+			hybridPrefetchEnabled := prefetchDiscoverOnlyVersion == 2
 
 			var urls []string
 			if prefetchDiscoverOnlyVersion >= 1 {
@@ -1951,7 +2098,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					seenAll := make(map[string]bool)
 
 					searchDomainsFromResults := domainsFromWebSearchToolExecutionsAll
-					if hybridPrefetchEnabled {
+					if prefetchDiscoverOnlyVersion >= 2 {
 						searchDomainsFromResults = func(toolExecs []activities.ToolExecution) []string {
 							return domainsFromWebSearchToolExecutionsAllV2(toolExecs, refineResult.CanonicalName)
 						}
@@ -2013,6 +2160,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 						searchDomainsAll := searchDomainsFromResults(discoveryResult.ToolExecutions)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
+						if prefetchDiscoverOnlyVersion >= 3 {
+							llmDomains = domainsFromDiscoveryResponseV2(discoveryResult.Response)
+							if len(llmDomains) == 0 {
+								logger.Warn("Domain discovery returned no parseable JSON domains; skipping region",
+									"canonical_name", refineResult.CanonicalName,
+									"search_key", s.Key,
+									"search_query", s.Query,
+								)
+								continue
+							}
+						}
 
 						searchSet := make(map[string]bool)
 						for _, d := range searchDomainsAll {
@@ -2054,7 +2212,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								}
 							}
 						}
-						if len(discovered) == 0 {
+						if len(discovered) == 0 && prefetchDiscoverOnlyVersion >= 3 {
+							logger.Warn("Domain discovery domains not grounded in web_search results; skipping region",
+								"canonical_name", refineResult.CanonicalName,
+								"search_key", s.Key,
+								"search_query", s.Query,
+								"llm_domains", llmDomains,
+								"search_domains_count", len(searchDomainsAll),
+							)
+							continue
+						}
+						if len(discovered) == 0 && prefetchDiscoverOnlyVersion < 3 {
 							discovered = searchDomainsAll
 						}
 
@@ -2089,6 +2257,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					if len(allDiscovered) > 0 {
 						candidateDomains := allDiscovered
 						officialDomainsSource := "search_first_discovered_only_v1"
+						if prefetchDiscoverOnlyVersion >= 3 {
+							officialDomainsSource = "search_first_discovered_only_v3"
+						}
 						prefetchStrategy := "discover-only"
 						var hybridAdded []string
 						if hybridPrefetchEnabled {
@@ -2363,7 +2534,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								ToolParameters: map[string]interface{}{
 									"tool":            "web_subpage_fetch",
 									"url":             url,
-									"limit":           12,
+									"limit":           10,
 									"target_keywords": "about team leadership company founders management products services",
 									"target_paths": []string{
 										"/about", "/about-us", "/company",

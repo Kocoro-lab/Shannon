@@ -391,8 +391,8 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
                     if main_match:
                         main_url = main_match.group(1)
                         main_content = main_match.group(2).strip()
-                        # Limit main page to 2000 chars (usually less important)
-                        page_sections.append(f"**Main ({main_url})**: {main_content[:2000]}")
+                        # Limit main page to 4000 chars (increased for domain prefetch)
+                        page_sections.append(f"**Main ({main_url})**: {main_content[:4000]}")
 
                     # Extract subpages - these often contain important info
                     subpage_pattern = re.compile(r'## Subpage \d+: ([^\n]+)\n(?:\*\*[^*]+\*\*\n)?\n(.+?)(?=\n---\n\n## Subpage|$)', re.DOTALL)
@@ -402,15 +402,15 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
                         # Prioritize key paths with more content (leadership, team, about)
                         priority_paths = ['/leadership', '/team', '/management', '/about', '/executive']
                         is_priority = any(p in sub_url.lower() for p in priority_paths)
-                        max_sub_chars = 2500 if is_priority else 1500
+                        max_sub_chars = 5000 if is_priority else 3000
                         page_sections.append(f"**{sub_url}**: {sub_content[:max_sub_chars]}")
 
                     # Build final content preserving snippets from all pages
                     if page_sections:
                         part_content = "\n\n".join(page_sections)
-                        # Total limit for multi-page
-                        if len(part_content) > 12000:
-                            part_content = part_content[:12000] + "..."
+                        # Total limit for multi-page (increased for domain prefetch: 10 pages × 3K)
+                        if len(part_content) > 30000:
+                            part_content = part_content[:30000] + "..."
                         part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{part_content}\n\n"
                     else:
                         # Fallback if parsing fails
@@ -2245,7 +2245,7 @@ async def _execute_and_format_tools(
             # Use higher max_str for content-rich tools (web_fetch, web_subpage_fetch)
             # to preserve multi-page content for citation extraction and storage
             content_rich_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
-            output_max_str = 30000 if tool_name in content_rich_tools else 2000
+            output_max_str = 100000 if tool_name in content_rich_tools else 2000
             tool_execution_records.append(
                 {
                     "tool": tool_name,
