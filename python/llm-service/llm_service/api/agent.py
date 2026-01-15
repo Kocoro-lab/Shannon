@@ -92,6 +92,12 @@ You MUST include verbatim or with minimal paraphrasing:
 - ALL conclusions, findings, or claims made by sources
 - ALL structured data (tables, lists, rankings)
 
+=== COMPLETENESS REQUIREMENT ===
+For multi-page results (web_subpage_fetch):
+- Cover ALL pages, not just a few
+- Short pages may contain unique data (partnerships, metrics, awards)
+- If a page is truly empty/navigation-only, note: "Source N: [URL] - navigation only"
+
 === DO NOT PRESERVE ===
 - Generic boilerplate text (navigation, footers, ads)
 - Repetitive content across sources

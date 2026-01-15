@@ -452,6 +452,8 @@ class WebSubpageFetchTool(Tool):
             '/wp-admin/', '/wp-includes/', '/wp-content/uploads/',
             '/cart', '/checkout', '/login', '/register', '/search',
             '/tag/', '/category/', '/page/', '/attachment/',
+            '/thank-you', '/thanks', '/thankyou',  # Thank you pages
+            '/unsubscribe', '/confirm', '/subscribe',  # Action confirmation pages
         ]
         filtered_urls = []
         skipped_count = 0
