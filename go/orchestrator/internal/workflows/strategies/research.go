@@ -824,6 +824,104 @@ func domainsFromWebSearchToolExecutionsAll(toolExecs []activities.ToolExecution)
 	return out
 }
 
+func domainsFromWebSearchToolExecutionsAllV2(toolExecs []activities.ToolExecution, canonicalName string) []string {
+	canonicalLower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+
+	seen := make(map[string]bool)
+	var out []string
+
+	allowDisallowed := func(fullHost, registrable string) bool {
+		if canonicalLower == "" {
+			return false
+		}
+		// For short canonical names (e.g., "X"), only allow if it matches a full label.
+		labels := strings.Split(fullHost, ".")
+		if len(labels) > 0 && labels[0] == canonicalLower {
+			return true
+		}
+		// For normal names, allow substring match in host/registrable.
+		if len(canonicalLower) >= 3 && (strings.Contains(fullHost, canonicalLower) || strings.Contains(registrable, canonicalLower)) {
+			return true
+		}
+		return false
+	}
+
+	addURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "https://" + raw
+		}
+		pu, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+
+		fullHost := strings.ToLower(strings.TrimSpace(pu.Host))
+		fullHost = strings.TrimPrefix(fullHost, "www.")
+		fullHost = strings.TrimSuffix(fullHost, ".")
+		if fullHost == "" {
+			return
+		}
+
+		registrable := registrableDomain(fullHost)
+		if registrable == "" {
+			return
+		}
+
+		// Exclude common directory/social/news domains unless they match the canonical name.
+		disallowed := map[string]struct{}{
+			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
+			"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
+			"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+			"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+		}
+		if _, ok := disallowed[registrable]; ok && !allowDisallowed(fullHost, registrable) {
+			return
+		}
+
+		if !seen[fullHost] {
+			seen[fullHost] = true
+			out = append(out, fullHost)
+		}
+	}
+
+	for _, te := range toolExecs {
+		if te.Tool != "web_search" || !te.Success || te.Output == nil {
+			continue
+		}
+
+		switch v := te.Output.(type) {
+		case map[string]interface{}:
+			if rawResults, ok := v["results"].([]interface{}); ok {
+				for _, rr := range rawResults {
+					if m, ok2 := rr.(map[string]interface{}); ok2 {
+						if u, ok3 := m["url"].(string); ok3 {
+							addURL(u)
+						}
+					}
+				}
+			}
+		case []interface{}:
+			for _, rr := range v {
+				if m, ok2 := rr.(map[string]interface{}); ok2 {
+					if u, ok3 := m["url"].(string); ok3 {
+						addURL(u)
+					}
+				}
+			}
+		default:
+			if s, ok := te.Output.(string); ok {
+				addURL(s)
+			}
+		}
+	}
+
+	return out
+}
+
 func domainBucketForHost(host string) string {
 	h := strings.ToLower(strings.TrimSpace(host))
 	h = strings.TrimPrefix(h, "www.")
@@ -966,6 +1064,208 @@ func selectDomainsForPrefetch(discovered []string, requestedRegions []string, or
 		return selected[:max]
 	}
 	return selected
+}
+
+func normalizeDomainCandidateHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	pu, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	h := strings.ToLower(strings.TrimSpace(pu.Host))
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return ""
+	}
+	// Drop port if present.
+	if strings.Contains(h, ":") {
+		if hh, _, err := net.SplitHostPort(h); err == nil {
+			h = hh
+		} else if i := strings.LastIndex(h, ":"); i > 0 {
+			h = h[:i]
+		}
+	}
+	if h == "" {
+		return ""
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ""
+	}
+	if h == "localhost" {
+		return ""
+	}
+	return h
+}
+
+func tldLabel(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return ""
+	}
+	parts := strings.Split(h, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func vettedHybridRefinementDomains(discovered []string, refinement []string, canonicalName string) []string {
+	canonicalLower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+
+	discoveredRegistrables := make(map[string]bool)
+	discoveredTLDs := make(map[string]bool)
+	for _, d := range discovered {
+		h := normalizeDomainCandidateHost(d)
+		if h == "" {
+			continue
+		}
+		reg := registrableDomain(h)
+		if reg == "" {
+			continue
+		}
+		discoveredRegistrables[reg] = true
+		tld := tldLabel(reg)
+		if tld != "" {
+			discoveredTLDs[tld] = true
+		}
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, r := range refinement {
+		h := normalizeDomainCandidateHost(r)
+		if h == "" || seen[h] {
+			continue
+		}
+		reg := registrableDomain(h)
+		if reg == "" {
+			continue
+		}
+
+		// (1) Anchored by registrable domain already observed in discovery.
+		if discoveredRegistrables[reg] {
+			seen[h] = true
+			out = append(out, h)
+			continue
+		}
+
+		// (2) Brand-TLD expansion: allow second-level domains under a brand TLD that matches the canonical name.
+		// Example: about.google discovered -> allow blog.google when canonical is "Google".
+		tld := tldLabel(h)
+		if canonicalLower != "" && tld != "" && tld == canonicalLower && discoveredTLDs[tld] {
+			seen[h] = true
+			out = append(out, h)
+			continue
+		}
+	}
+
+	return out
+}
+
+func hostHasLabel(host, label string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	label = strings.ToLower(strings.TrimSpace(label))
+	if h == "" || label == "" {
+		return false
+	}
+	return strings.HasPrefix(h, label+".") || strings.Contains(h, "."+label+".")
+}
+
+func domainPrefetchScore(host, canonicalName string) int {
+	h := normalizeDomainCandidateHost(host)
+	if h == "" {
+		return -100000
+	}
+	score := 0
+
+	reg := registrableDomain(h)
+	if reg != "" && reg == h {
+		score += 100
+	} else {
+		score += 80
+	}
+
+	canonicalLower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+	if canonicalLower != "" && strings.Contains(h, canonicalLower) {
+		score += 10
+	}
+
+	switch {
+	case hostHasLabel(h, "about") || hostHasLabel(h, "company"):
+		score += 35
+	case hostHasLabel(h, "investor") || hostHasLabel(h, "investors") || hostHasLabel(h, "ir"):
+		score += 35
+	}
+	if hostHasLabel(h, "leadership") || hostHasLabel(h, "management") {
+		score += 20
+	}
+	if hostHasLabel(h, "press") || hostHasLabel(h, "newsroom") {
+		score += 15
+	}
+	if hostHasLabel(h, "blog") {
+		score += 20
+	}
+	if hostHasLabel(h, "cloud") {
+		score += 15
+	}
+	if hostHasLabel(h, "store") {
+		score += 10
+	}
+
+	// Down-rank functional endpoints that rarely help company overview.
+	if hostHasLabel(h, "support") || hostHasLabel(h, "accounts") {
+		score -= 80
+	}
+	if hostHasLabel(h, "login") || hostHasLabel(h, "signin") {
+		score -= 60
+	}
+	if hostHasLabel(h, "careers") || hostHasLabel(h, "jobs") {
+		score -= 30
+	}
+
+	// Prefer shorter hosts slightly (fewer labels).
+	labels := strings.Split(h, ".")
+	score -= len(labels) * 2
+
+	return score
+}
+
+func sortDomainsForHybridPrefetch(domains []string, canonicalName string) []string {
+	seen := make(map[string]bool)
+	var uniq []string
+	for _, d := range domains {
+		h := normalizeDomainCandidateHost(d)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		uniq = append(uniq, h)
+	}
+
+	scores := make(map[string]int, len(uniq))
+	for _, d := range uniq {
+		scores[d] = domainPrefetchScore(d, canonicalName)
+	}
+
+	sort.SliceStable(uniq, func(i, j int) bool {
+		si := scores[uniq[i]]
+		sj := scores[uniq[j]]
+		if si != sj {
+			return si > sj
+		}
+		return uniq[i] < uniq[j]
+	})
+
+	return uniq
 }
 
 func buildPrefetchURLsFromDomains(domains []string) []string {
@@ -1608,7 +1908,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			// This ensures Chinese sources (tianyancha, etc.) are only used for Chinese companies.
 			regionCode := extractRegionCodeFromTargetLanguages(refineResult.TargetLanguages)
 
-			prefetchDiscoverOnlyVersion := workflow.GetVersion(ctx, "domain_prefetch_discover_only_v1", workflow.DefaultVersion, 1)
+			prefetchDiscoverOnlyVersion := workflow.GetVersion(ctx, "domain_prefetch_discover_only_v1", workflow.DefaultVersion, 2)
+			hybridPrefetchEnabled := prefetchDiscoverOnlyVersion >= 2
 
 			var urls []string
 			if prefetchDiscoverOnlyVersion >= 1 {
@@ -1621,7 +1922,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						requestedRegions = prefetchRegionsFromQuery(input.Query)
 					}
 
-					// Discover-only mode: do not use refinement-guessed domains.
+					// Discover-only mode (v1) / Hybrid mode (v2): reset any refinement-provided domains.
 					delete(baseContext, "official_domains")
 					delete(baseContext, "official_domains_source")
 
@@ -1648,6 +1949,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					discoveredBySearch := make(map[string][]string)
 					var allDiscovered []string
 					seenAll := make(map[string]bool)
+
+					searchDomainsFromResults := domainsFromWebSearchToolExecutionsAll
+					if hybridPrefetchEnabled {
+						searchDomainsFromResults = func(toolExecs []activities.ToolExecution) []string {
+							return domainsFromWebSearchToolExecutionsAllV2(toolExecs, refineResult.CanonicalName)
+						}
+					}
 
 					discoveryContext := map[string]interface{}{
 						"user_id":    input.UserID,
@@ -1703,7 +2011,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							continue
 						}
 
-						searchDomainsAll := domainsFromWebSearchToolExecutionsAll(discoveryResult.ToolExecutions)
+						searchDomainsAll := searchDomainsFromResults(discoveryResult.ToolExecutions)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
 
 						searchSet := make(map[string]bool)
@@ -1779,29 +2087,44 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					}
 
 					if len(allDiscovered) > 0 {
+						candidateDomains := allDiscovered
+						officialDomainsSource := "search_first_discovered_only_v1"
+						prefetchStrategy := "discover-only"
+						var hybridAdded []string
+						if hybridPrefetchEnabled {
+							hybridAdded = vettedHybridRefinementDomains(allDiscovered, refineResult.OfficialDomains, refineResult.CanonicalName)
+							candidateDomains = append(append([]string{}, allDiscovered...), hybridAdded...)
+							candidateDomains = sortDomainsForHybridPrefetch(candidateDomains, refineResult.CanonicalName)
+							officialDomainsSource = "search_first_hybrid_v2"
+							prefetchStrategy = "hybrid"
+						}
+
 						// Scope official_domains to requested regions when user explicitly requested a region.
-						scoped := allDiscovered
+						scoped := candidateDomains
 						if len(requestedRegions) > 0 {
-							scoped = selectDomainsForPrefetch(allDiscovered, requestedRegions, originRegion, 100)
+							scoped = selectDomainsForPrefetch(candidateDomains, requestedRegions, originRegion, 100)
 							if len(scoped) == 0 {
 								scoped = nil
 							}
 						}
 						if len(scoped) > 0 {
 							baseContext["official_domains"] = scoped
-							baseContext["official_domains_source"] = "search_first_discovered_only_v1"
+							baseContext["official_domains_source"] = officialDomainsSource
 						}
 
-						prefetchDomains := selectDomainsForPrefetch(allDiscovered, requestedRegions, originRegion, maxPrefetch)
+						prefetchDomains := selectDomainsForPrefetch(candidateDomains, requestedRegions, originRegion, maxPrefetch)
 						urls = buildPrefetchURLsFromDomains(prefetchDomains)
 
-						logger.Info("Domain discovery (discover-only) completed",
+						logger.Info("Domain discovery (prefetch) completed",
 							"canonical_name", refineResult.CanonicalName,
 							"origin_region", originRegion,
 							"requested_regions", requestedRegions,
+							"prefetch_strategy", prefetchStrategy,
 							"searches", searches,
 							"discovered_by_search", discoveredBySearch,
 							"all_discovered_count", len(allDiscovered),
+							"hybrid_added_domains", hybridAdded,
+							"candidate_domains_count", len(candidateDomains),
 							"prefetch_domains", prefetchDomains,
 							"prefetch_urls", urls,
 						)
