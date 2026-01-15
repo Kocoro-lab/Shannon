@@ -68,6 +68,316 @@ def filter_relevant_results(
     return scored_results[:5]  # Return top 5 most relevant
 
 
+# ============================================================================
+# Interpretation Pass Helper Functions (P0 Fix for content loss)
+# ============================================================================
+
+# Multi-language interpretation prompt with strong instructions
+INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION / 重要指令 / 重要な指示 ===
+
+You MUST summarize the ACTUAL CONTENT from the tool results above.
+你必须总结上面工具结果中的实际内容。
+上記のツール結果から実際の内容を要約してください。
+
+FORMAT / 格式 / フォーマット:
+# PART 1 - RETRIEVED INFORMATION
+[Detailed summary of facts, data, quotes from tool results]
+[详细总结事实、数据、引用]
+
+# PART 2 - NOTES (optional)
+[Additional observations]
+
+=== FORBIDDEN / 禁止 / 禁止事項 ===
+DO NOT say / 不要说 / 言ってはいけない:
+- 'I will fetch...' / '我将获取...' / '取得します...'
+- 'I need to search...' / '我需要搜索...' / '検索する必要が...'
+- 'Let me continue...' / '让我继续...' / '続けさせて...'
+- Any future actions / 任何下一步动作 / 将来のアクション
+
+ONLY summarize what was ALREADY retrieved.
+只总结已经获取的内容。
+既に取得した内容のみを要約してください。"""
+
+
+def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], max_chars: int = 3000) -> str:
+    """
+    Generate a human-readable digest from tool results.
+    Used as fallback when interpretation pass fails.
+
+    This is NOT raw JSON - it extracts key information in readable format.
+    """
+    import json
+    import re
+
+    lines = []
+
+    # Process tool execution records for structured extraction
+    for record in tool_records:
+        tool_name = record.get("tool", "unknown")
+        success = record.get("success", False)
+        output = record.get("output", {})
+
+        if not success:
+            continue
+
+        if tool_name == "web_search":
+            lines.append("## Search Results")
+            results = output.get("results", []) if isinstance(output, dict) else []
+            for i, r in enumerate(results[:5]):  # Top 5 results
+                title = r.get("title", "")
+                snippet = r.get("snippet", "")
+                url = r.get("url", "")
+                if title or snippet:
+                    lines.append(f"- **{title}**: {snippet[:200]}...")
+                    if url:
+                        lines.append(f"  Source: {url}")
+            lines.append("")
+
+        elif tool_name == "web_fetch":
+            lines.append("## Fetched Content")
+            pages = output.get("pages", []) if isinstance(output, dict) else []
+            for page in pages[:3]:  # Top 3 pages
+                if not page.get("success"):
+                    continue
+                title = page.get("title", "Untitled")
+                content = page.get("content", "")
+                url = page.get("url", "")
+                if content and len(content) > 50:
+                    # Extract meaningful content, skip PDF binary
+                    if content.startswith("%PDF"):
+                        lines.append(f"- **{title}** (PDF document)")
+                    else:
+                        preview = content[:500].replace("\n", " ").strip()
+                        lines.append(f"- **{title}**: {preview}...")
+                    if url:
+                        lines.append(f"  Source: {url}")
+            lines.append("")
+
+    # Fallback: parse raw tool_results if no records
+    if not lines and tool_results:
+        # Try to extract readable parts from string
+        lines.append("## Tool Output Summary")
+        # Remove JSON artifacts, keep text
+        clean = re.sub(r'[{}\[\]"\\]', ' ', tool_results)
+        clean = re.sub(r'\s+', ' ', clean).strip()
+        lines.append(clean[:max_chars])
+
+    digest = "\n".join(lines)
+    return digest[:max_chars] if len(digest) > max_chars else digest
+
+
+def build_interpretation_messages(
+    system_prompt: str,
+    original_query: str,
+    tool_results_summary: str
+) -> List[Dict[str, str]]:
+    """
+    Build clean messages for interpretation pass.
+
+    P0 Fix: Instead of reusing entire messages history (which contains
+    "I'll execute..." patterns), build fresh messages with only:
+    - System prompt
+    - Original query
+    - Aggregated tool results
+    - Strong interpretation instruction
+    """
+    return [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": (
+                f"Original query: {original_query}\n\n"
+                f"=== TOOL RESULTS ===\n{tool_results_summary}\n\n"
+                f"=== YOUR TASK ===\n{INTERPRETATION_PROMPT}"
+            )
+        }
+    ]
+
+
+def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 50000) -> str:
+    """
+    Aggregate tool execution results into a readable summary.
+
+    This creates a clean summary of all tool outputs without the
+    back-and-forth "I'll execute..." history.
+    """
+    import json
+
+    parts = []
+    total_chars = 0
+
+    for record in tool_records:
+        tool_name = record.get("tool", "unknown")
+        success = record.get("success", False)
+        output = record.get("output", {})
+
+        if not success:
+            continue
+
+        part_header = f"\n### {tool_name} result:\n"
+
+        if tool_name == "web_search":
+            # Handle both dict format {"results": [...]} and direct array format [...]
+            if isinstance(output, dict):
+                results = output.get("results", [])
+            elif isinstance(output, list):
+                results = output
+            else:
+                results = []
+
+            part_content = ""
+            if not results:
+                part_content = "(No search results found)\n"
+            else:
+                for r in results[:8]:
+                    title = r.get("title", "")
+                    snippet = r.get("snippet", "")
+                    url = r.get("url", "")
+                    part_content += f"- {title}: {snippet}\n  URL: {url}\n"
+            part = part_header + part_content
+
+        elif tool_name == "web_fetch":
+            part_content = ""
+
+            if isinstance(output, dict):
+                # Check if this is batch mode (has "pages" key) or single URL mode
+                if "pages" in output:
+                    # Batch mode: {pages: [...], succeeded, failed, ...}
+                    pages = output.get("pages", [])
+                    for page in pages:
+                        if not page.get("success", True):  # Default to True if not specified
+                            continue
+                        title = page.get("title", "Untitled")
+                        content = page.get("content", "")
+                        url = page.get("url", "")
+
+                        # Skip binary content (PDFs)
+                        if content and not content.startswith("%PDF"):
+                            content_preview = content[:6000] if len(content) > 6000 else content
+                            part_content += f"**{title}** ({url}):\n{content_preview}\n\n"
+                else:
+                    # Single URL mode: {url, title, content, ...}
+                    title = output.get("title", "Untitled")
+                    content = output.get("content", "")
+                    url = output.get("url", "")
+
+                    # Skip binary content (PDFs)
+                    if content and not content.startswith("%PDF"):
+                        content_preview = content[:8000] if len(content) > 8000 else content
+                        part_content = f"**{title}** ({url}):\n{content_preview}\n\n"
+                    elif not content:
+                        part_content = f"**{title}** ({url}): No content retrieved\n"
+
+            if not part_content:
+                part_content = "(No content fetched)\n"
+            part = part_header + part_content
+
+        elif tool_name == "web_subpage_fetch":
+            # web_subpage_fetch returns merged multi-page content with separators
+            # Critical: Extract content from EACH subpage, not just truncate from start
+            # This ensures important pages like /leadership (often at end) are preserved
+            if isinstance(output, dict):
+                title = output.get("title", "")
+                content = output.get("content", "")
+                url = output.get("url", "")
+                pages_fetched = output.get("pages_fetched", 1)
+                metadata_urls = output.get("metadata", {}).get("urls", [])
+
+                if content and not content.startswith("%PDF"):
+                    import re
+                    # Parse content by subpage separators to extract each page
+                    # Format: "# Main Page: URL\n...\n---\n\n## Subpage N: URL\n..."
+                    page_sections = []
+
+                    # Split by subpage markers: "---\n\n## Subpage" or "# Main Page:"
+                    main_match = re.search(r'^# Main Page: ([^\n]+)\n(.+?)(?=\n---\n\n## Subpage|$)', content, re.DOTALL)
+                    if main_match:
+                        main_url = main_match.group(1)
+                        main_content = main_match.group(2).strip()
+                        # Limit main page to 2000 chars (usually less important)
+                        page_sections.append(f"**Main ({main_url})**: {main_content[:2000]}")
+
+                    # Extract subpages - these often contain important info
+                    subpage_pattern = re.compile(r'## Subpage \d+: ([^\n]+)\n(?:\*\*[^*]+\*\*\n)?\n(.+?)(?=\n---\n\n## Subpage|$)', re.DOTALL)
+                    for match in subpage_pattern.finditer(content):
+                        sub_url = match.group(1)
+                        sub_content = match.group(2).strip()
+                        # Prioritize key paths with more content (leadership, team, about)
+                        priority_paths = ['/leadership', '/team', '/management', '/about', '/executive']
+                        is_priority = any(p in sub_url.lower() for p in priority_paths)
+                        max_sub_chars = 2500 if is_priority else 1500
+                        page_sections.append(f"**{sub_url}**: {sub_content[:max_sub_chars]}")
+
+                    # Build final content preserving snippets from all pages
+                    if page_sections:
+                        part_content = "\n\n".join(page_sections)
+                        # Total limit for multi-page
+                        if len(part_content) > 12000:
+                            part_content = part_content[:12000] + "..."
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{part_content}\n\n"
+                    else:
+                        # Fallback if parsing fails
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{content[:6000]}\n\n"
+                else:
+                    part = part_header + f"**{title}** ({url}): No readable content\n"
+            else:
+                part = part_header + str(output)[:3000]
+
+        else:
+            # Generic output
+            if isinstance(output, dict):
+                part = part_header + json.dumps(output, ensure_ascii=False, indent=2)[:1500]
+            else:
+                part = part_header + str(output)[:1500]
+
+        if total_chars + len(part) > max_chars:
+            break
+        parts.append(part)
+        total_chars += len(part)
+
+    return "\n".join(parts) if parts else "No tool results available."
+
+
+def validate_interpretation_output(
+    output: str,
+    total_tool_output_chars: int
+) -> Tuple[bool, str]:
+    """
+    Validate interpretation pass output quality.
+
+    Returns (is_valid, reason) tuple.
+    """
+    stripped = output.strip()
+
+    # Multi-language "continuation" pattern detection
+    continuation_patterns_en = ("I'll ", "I need to ", "Let me ", "I will ", "I should ")
+    continuation_patterns_zh = ("我将", "我需要", "让我", "我要", "我继续")
+    continuation_patterns_ja = ("私は", "必要が", "させて", "続けて", "取得します")
+
+    is_continuation = (
+        stripped.startswith(continuation_patterns_en) or
+        stripped.startswith(continuation_patterns_zh) or
+        stripped.startswith(continuation_patterns_ja)
+    )
+
+    if is_continuation:
+        return False, "continuation_pattern"
+
+    # Dynamic length threshold based on tool output
+    # Cap at 2000 to avoid invalidating good concise summaries from large tool outputs
+    # e.g., web_subpage_fetch can return 33K+ chars but a 2000 char summary is fine
+    min_length = min(2000, max(200, int(total_tool_output_chars * 0.1)))
+    if len(stripped) < min_length:
+        return False, f"too_short (len={len(stripped)} < min={min_length})"
+
+    # Format validation
+    has_correct_format = stripped.startswith(("# PART 1", "# PART", "## PART", "PART 1"))
+    if not has_correct_format and len(stripped) < 500:
+        return False, "no_format_and_short"
+
+    return True, "valid"
+
+
 def build_task_contract_instructions(context: Dict[str, Any]) -> str:
     """
     Deep Research 2.0: Build task contract instructions for agent execution.
@@ -330,13 +640,16 @@ async def agent_query(request: Request, query: AgentQuery):
                     )
                     if is_research:
                         research_instruction = (
-                            "\n\nRESEARCH MODE: Do not rely only on web_search snippets. "
-                            "For each important question, use web_search to find sources, "
-                            "then call web_fetch on the top 3-5 relevant URLs to read the full content before answering. "
-                            "This ensures you have comprehensive information, not just summaries."
+                            "\n\nRESEARCH MODE - MANDATORY FETCH POLICY:"
+                            "\n- Search snippets are LEADS, NOT verified content. You MUST fetch to verify."
+                            "\n- After EACH web_search, you MUST call web_fetch on ALL potentially relevant URLs."
+                            "\n- Only skip URLs that are CLEARLY irrelevant (e.g., wrong language, completely different topic, broken links)."
+                            "\n- Use batch fetch: web_fetch(urls=[url1, url2, ...]) for efficiency."
+                            "\n- Minimum: fetch at least 5-8 URLs per search, or ALL results if fewer."
+                            "\n- Do NOT stop fetching just because you found 'enough' - more sources = better research."
                             "\n\nTOOL USAGE (CRITICAL):"
                             "\n- Invoke tools ONLY via native function calling (no XML/JSON stubs like <web_fetch> or <function_calls>)."
-                            "\n- When you have multiple URLs, prefer web_fetch(urls=[...]) to batch fetch instead of calling web_fetch repeatedly."
+                            "\n- ALWAYS use batch fetch: web_fetch(urls=[...]) instead of single URL calls."
                             "\n- Do NOT claim in text which tools/providers you used; the system records tool usage."
                             "\n\nCOMPANY/ENTITY RESEARCH: When researching a company or organization:"
                             "\n- FIRST try web_fetch on the likely official domain (e.g., 'companyname.com', 'companyname.io')"
@@ -345,7 +658,7 @@ async def agent_query(request: Request, query: AgentQuery):
                             "\n- For Asian companies, try Japanese/Chinese name variants"
                             "\n- If standard searches return only competitors/unrelated results, this indicates a search strategy problem - try direct URL fetches"
                             "\n\nSOURCE EVALUATION AND CONFLICT RESOLUTION:"
-                            "\n1. VERIFICATION: Search results are leads, not verified facts. Verify key claims via web_fetch."
+                            "\n1. VERIFICATION (MANDATORY): Search snippets are NOT facts. You MUST web_fetch EVERY source before citing it."
                             "\n2. SPECULATIVE LANGUAGE: Mark uncertain claims (reportedly, allegedly, may, sources suggest)."
                             "\n3. SOURCE PRIORITY (highest to lowest):"
                             "\n   - Official sources (company website, .gov, .edu, investor relations)"
@@ -744,7 +1057,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     messages.append(
                         {
                             "role": "assistant",
-                            "content": f"I'll execute the {forced_calls[0]['name']} tool to help with this task.",
+                            "content": f"[Executed {forced_calls[0]['name']}]",
                         }
                     )
                 messages.append(
@@ -918,6 +1231,19 @@ async def agent_query(request: Request, query: AgentQuery):
             fetch_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
             loop_function_call = seed_loop_function_call or function_call
 
+            # P0 Fix: Track unique URLs for fetch ratio enforcement (Codex approved)
+            fetched_urls: set = set()  # Successfully fetched URLs
+            failed_fetch_urls: set = set()  # Failed fetch URLs (exclude from retry)
+            search_count = 0  # Count of successful web_search calls
+
+            # Strategy-specific fetch ratios (Codex recommendation)
+            strategy_ratios = {"deep": 0.7, "academic": 0.7, "standard": 0.5, "quick": 0.3}
+            research_strategy = (
+                query.context.get("research_strategy", "standard")
+                if isinstance(query.context, dict) else "standard"
+            )
+            min_fetch_ratio = strategy_ratios.get(research_strategy, 0.5)
+
             while True:
                 result_data = await request.app.state.providers.generate_completion(
                     messages=messages,
@@ -988,8 +1314,24 @@ async def agent_query(request: Request, query: AgentQuery):
                 for rr in raw_records:
                     if rr.get("tool") == "web_search" and rr.get("success"):
                         search_urls.extend(_extract_urls_from_search_output(rr.get("output")))
-                    if rr.get("tool") in fetch_tools and rr.get("success"):
-                        fetch_success = True
+                        search_count += 1  # P0 Fix: Track search count for ratio
+
+                    # P0 Fix: Track unique fetched/failed URLs for ratio enforcement
+                    if rr.get("tool") in fetch_tools:
+                        # Extract URLs from fetch input
+                        fetch_input = rr.get("input", {})
+                        if isinstance(fetch_input, dict):
+                            input_urls = fetch_input.get("urls", [])
+                            if isinstance(input_urls, str):
+                                input_urls = [input_urls]
+                        else:
+                            input_urls = []
+
+                        if rr.get("success"):
+                            fetch_success = True
+                            fetched_urls.update(input_urls)
+                        else:
+                            failed_fetch_urls.update(input_urls)
 
                 if raw_records and not all(r.get("success") for r in raw_records):
                     consecutive_tool_failures += 1
@@ -1032,22 +1374,40 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 continue
 
-            # DR forced fetch if needed (search done but no fetch success)
+            # P0 Fix: DR forced fetch with ratio-based enforcement (Codex approved)
+            # Calculate fetch ratio and determine if more fetches needed
+            unique_fetch_count = len(fetched_urls)
+
+            # Guard: Only enforce ratio when search_count >= 3 (Codex recommendation)
+            # Guard: Division by zero protection
+            needs_more_fetch = (
+                search_count == 0 or  # Early guard per Codex
+                not fetch_success or
+                (search_count >= 3 and unique_fetch_count / search_count < min_fetch_ratio)
+            )
+
             if (
                 research_mode
                 and search_urls
-                and not fetch_success
+                and needs_more_fetch
                 and fetch_tools.intersection(set(effective_allowed_tools or []))
             ):
                 try:
+                    # Dedupe and exclude already-fetched and failed URLs
                     deduped_urls = []
                     seen = set()
                     for u in search_urls:
-                        if u and u not in seen:
+                        if u and u not in seen and u not in fetched_urls and u not in failed_fetch_urls:
                             seen.add(u)
                             deduped_urls.append(u)
-                    urls_to_fetch = deduped_urls[:max_urls_to_fetch]
-                    if urls_to_fetch:
+
+                    # Short-circuit: if all unfetched URLs have failed, exit early (Codex suggestion)
+                    if not deduped_urls:
+                        logger.info(f"DR policy: no eligible URLs to fetch (all fetched or failed)")
+                    else:
+                        urls_to_fetch = deduped_urls[:max_urls_to_fetch]
+
+                    if deduped_urls and urls_to_fetch:
                         did_forced_fetch = True
                         logger.info(f"DR policy: auto-fetching URLs={len(urls_to_fetch)} after search")
                         policy_calls = [{"name": "web_fetch", "arguments": {"urls": urls_to_fetch}}]
@@ -1074,19 +1434,59 @@ async def agent_query(request: Request, query: AgentQuery):
                                     "content": f"Tool execution result:\n{policy_results}\n\n{followup_instruction}",
                                 }
                             )
-                        if any(r.get("tool") in fetch_tools and r.get("success") for r in policy_raw):
-                            fetch_success = True
+                        # P0 Fix: Update URL tracking for forced fetch results
+                        for rr in policy_raw:
+                            if rr.get("tool") in fetch_tools:
+                                if rr.get("success"):
+                                    fetch_success = True
+                                    fetched_urls.update(urls_to_fetch)
+                                else:
+                                    failed_fetch_urls.update(urls_to_fetch)
                 except Exception as e:
                     logger.warning(f"DR forced fetch failed: {e}")
+                    failed_fetch_urls.update(urls_to_fetch if 'urls_to_fetch' in dir() else [])
+
+            # P2 Telemetry: Log fetch ratio for observability (Codex requirement)
+            import json as _json_telemetry
+            final_fetch_count = len(fetched_urls)
+            fetch_ratio = final_fetch_count / search_count if search_count > 0 else 0.0
+            logger.info(_json_telemetry.dumps({
+                "event": "fetch_ratio",
+                "agent_id": query.agent_id,
+                "search_count": search_count,
+                "fetch_count": final_fetch_count,
+                "failed_fetch_count": len(failed_fetch_urls),
+                "ratio": round(fetch_ratio, 2),
+                "min_required": min_fetch_ratio,
+                "strategy": research_strategy,
+                "ratio_met": fetch_ratio >= min_fetch_ratio if search_count >= 3 else True,
+            }, ensure_ascii=False))
 
             # Final interpretation pass if we executed any tools or budgets were hit
+            # P0 Fix: Always run interpretation pass if any tool executed successfully
+            # This ensures tool results are summarized into Response, not just "I'll execute..."
+            has_successful_tool = any(r.get("success") for r in tool_execution_records)
             if tool_execution_records and (
-                stop_reason != "no_tool_call"
+                has_successful_tool  # Any successful tool execution requires summarization
+                or stop_reason != "no_tool_call"
                 or did_forced_fetch
                 or not (response_text and str(response_text).strip())
             ):
+                # P0 Fix v4: Build CLEAN interpretation messages without history noise
+                # Root cause: Reusing `messages` brings "I'll execute..." patterns that
+                # contaminate LLM output. Instead, build fresh messages with only:
+                # - System prompt (defines role)
+                # - Original query (the task)
+                # - Aggregated tool results (what was retrieved)
+                # - Strong interpretation instruction (INTERPRETATION_PROMPT)
+                tool_results_summary = aggregate_tool_results(tool_execution_records)
+                interpretation_messages = build_interpretation_messages(
+                    system_prompt=system_prompt,
+                    original_query=query.query,
+                    tool_results_summary=tool_results_summary
+                )
                 interpretation_result = await request.app.state.providers.generate_completion(
-                    messages=messages,
+                    messages=interpretation_messages,
                     tier=tier,
                     specific_model=model_override,
                     provider_override=provider_override,
@@ -1098,7 +1498,31 @@ async def agent_query(request: Request, query: AgentQuery):
                     or request.headers.get("x-workflow-id"),
                     agent_id=query.agent_id,
                 )
-                response_text = interpretation_result.get("output_text", last_tool_results)
+                raw_interpretation = interpretation_result.get("output_text", "")
+
+                # P0 Fix v4: Validate interpretation output and fallback to digest if invalid
+                # Never fallback to raw JSON - use generate_tool_digest() for human-readable fallback
+                is_valid, validation_reason = validate_interpretation_output(
+                    raw_interpretation or "",
+                    total_tool_output_chars
+                )
+
+                if is_valid:
+                    response_text = raw_interpretation
+                    logger.info(f"[interpretation_pass] VALID for agent={query.agent_id}, response_len={len(str(response_text))}, preview={str(response_text)[:200]}")
+                else:
+                    # Fallback to human-readable digest (NOT raw JSON)
+                    fallback_digest = generate_tool_digest(
+                        last_tool_results or "",
+                        tool_execution_records,
+                        max_chars=30000  # Increased from default 3000 to avoid truncation
+                    )
+                    response_text = fallback_digest if fallback_digest else raw_interpretation
+                    logger.warning(
+                        f"[interpretation_pass] INVALID for agent={query.agent_id}, "
+                        f"reason={validation_reason}, raw_len={len(raw_interpretation or '')}, "
+                        f"fallback_len={len(response_text)}, preview={str(response_text)[:200]}"
+                    )
                 i_usage = interpretation_result.get("usage", {}) or {}
                 try:
                     total_tokens += int(i_usage.get("total_tokens") or 0)
@@ -1110,6 +1534,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 result_data = interpretation_result
             else:
                 result_data = last_result_data or {}
+                logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, has_successful_tool={has_successful_tool}, stop_reason={stop_reason}, response_preview={str(response_text)[:100]}")
 
             # Stub Guard: Clean any pseudo tool-call stubs from final output
             # These can appear when LLM outputs XML/JSON tool calls instead of native function calling
@@ -1177,6 +1602,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     response_text = _re.sub(r"<invoke[\s\S]*?</invoke>", "", response_text)
                     response_text = response_text.strip()
 
+            logger.info(f"[final_response] agent={query.agent_id}, len={len(str(response_text))}, preview={str(response_text)[:200]}")
             result = {
                 "response": response_text,
                 "tokens_used": total_tokens,
@@ -1428,6 +1854,31 @@ async def _execute_and_format_tools(
                     )
                     args = {k: v for k, v in args.items() if k in allowed}
 
+            # Merge tool_parameters from context (orchestrator hints) with LLM-provided args
+            # This ensures critical parameters like target_paths are always included
+            if isinstance(context, dict) and isinstance(args, dict):
+                ctx_tool_params = context.get("tool_parameters", {})
+                if ctx_tool_params and ctx_tool_params.get("tool") == tool_name:
+                    # For array parameters like target_paths, merge instead of replace
+                    for key in ["target_paths", "target_keywords"]:
+                        if key in ctx_tool_params and key in allowed:
+                            ctx_value = ctx_tool_params.get(key)
+                            llm_value = args.get(key)
+                            if ctx_value:
+                                if key == "target_paths" and isinstance(ctx_value, list):
+                                    # Merge: LLM paths first, then add orchestrator paths not already present
+                                    if isinstance(llm_value, list):
+                                        merged = list(llm_value)
+                                        for p in ctx_value:
+                                            if p not in merged:
+                                                merged.append(p)
+                                        args[key] = merged
+                                    else:
+                                        args[key] = list(ctx_value)
+                                    logger.info(f"Merged {key} from orchestrator: {args[key]}")
+                                elif key == "target_keywords" and isinstance(ctx_value, str) and not llm_value:
+                                    args[key] = ctx_value
+
             # Emit TOOL_INVOKED event
             if emitter and wf_id:
                 try:
@@ -1492,6 +1943,8 @@ async def _execute_and_format_tools(
                     # GA4 OAuth credentials (per-request auth from frontend)
                     "ga4_access_token",
                     "ga4_property_id",
+                    # Orchestrator-provided tool parameters for merging
+                    "tool_parameters",
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
             else:
@@ -1683,12 +2136,16 @@ async def _execute_and_format_tools(
                     pass
 
             # Record execution for upstream observability/persistence
+            # Use higher max_str for content-rich tools (web_fetch, web_subpage_fetch)
+            # to preserve multi-page content for citation extraction and storage
+            content_rich_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
+            output_max_str = 30000 if tool_name in content_rich_tools else 2000
             tool_execution_records.append(
                 {
                     "tool": tool_name,
                     "success": bool(result and result.success),
                     "output": _sanitize_payload(
-                        result.output if result else None, max_str=2000, max_items=20
+                        result.output if result else None, max_str=output_max_str, max_items=20
                     ),
                     "error": result.error if result else None,
                     "metadata": sanitized_result_metadata,

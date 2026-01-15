@@ -292,6 +292,14 @@ const (
 	citationFilterMinRetention = 0.3 // Minimum retention rate (30%)
 )
 
+// P0-B: Constants for V2 + V1 Supplement logic
+const (
+	v2MinSupportRate    = 0.1 // 10% - below this, enable V1 supplement
+	v2MinCitationsUsed  = 3   // Minimum inline citations to consider V2 sufficient
+	v2MinClaimsRequired = 5   // Minimum claims to trigger supplement (avoid short answer false positives)
+	v1MaxExtraCitations = 10  // Maximum additional citations from V1 supplement
+)
+
 // ApplyCitationFilterWithFallback applies entity-based filtering with automatic
 // fallback when the filter would remove too many citations.
 // Returns a CitationFilterResult containing the filtered citations and metadata.
@@ -315,8 +323,9 @@ func ApplyCitationFilterWithFallback(
 		Retention: retention,
 	}
 
-	// Apply filter only if results are reasonable (>=20 citations OR >=30% retention)
-	if len(filtered) >= citationFilterMinCount || retention >= citationFilterMinRetention {
+	// Apply filter only if results are reasonable (>=20 citations AND >=30% retention)
+	// Using AND ensures we don't apply aggressive filtering that removes too many citations
+	if len(filtered) >= citationFilterMinCount && retention >= citationFilterMinRetention {
 		result.Citations = filtered
 		result.Applied = true
 	} else {
@@ -385,12 +394,32 @@ func extractRegionCodeFromTargetLanguages(targetLanguages []string) string {
 	return ""
 }
 
+// containsGenericTerm checks if a term contains any generic tech words that pollute search results.
+// This fixes the bug where multi-word terms like "analytics platform" were not filtered
+// because only exact matches were checked (e.g., "analytics platform" != "analytics").
+func containsGenericTerm(term string, genericTerms map[string]bool) bool {
+	termLower := strings.ToLower(term)
+	// Split into words and check each word
+	words := strings.Fields(termLower)
+	for _, word := range words {
+		if genericTerms[word] {
+			return true
+		}
+	}
+	return false
+}
+
 func buildCompanyDomainDiscoverySearchQuery(canonicalName string, disambiguationTerms []string, regionCode string) string {
 	name := strings.TrimSpace(canonicalName)
 	if name == "" {
 		return ""
 	}
 
+	// For domain discovery, use ONLY the company name + "official website" keywords.
+	// Do NOT add disambiguation terms - they often contain LLM-generated translations
+	// or explanations that pollute search results and push official domains down.
+	// Example: "Ptmind 官网 官方网站" returns jp.ptmind.com as #1 result,
+	// but "Ptmind 官网 官方网站 web optimization..." pushes it out of top 10.
 	q := fmt.Sprintf("%s official website", name)
 	switch regionCode {
 	case "zh":
@@ -401,28 +430,9 @@ func buildCompanyDomainDiscoverySearchQuery(canonicalName string, disambiguation
 		q = fmt.Sprintf("%s 공식 사이트 official website", name)
 	}
 
-	// Filter out generic tech terms that pollute search results with competitors
-	genericTerms := map[string]bool{
-		"analytics": true, "platform": true, "marketing": true, "technology": true,
-		"software": true, "saas": true, "cloud": true, "data": true, "ai": true,
-		"tool": true, "tools": true, "solution": true, "solutions": true,
-		"service": true, "services": true, "digital": true, "automation": true,
-	}
-
-	// Add up to 2 non-generic disambiguation terms to reduce entity mix-ups.
-	var filteredTerms []string
-	for _, term := range disambiguationTerms {
-		termLower := strings.ToLower(strings.TrimSpace(term))
-		if termLower != "" && !genericTerms[termLower] {
-			filteredTerms = append(filteredTerms, term)
-		}
-	}
-	if len(filteredTerms) > 2 {
-		filteredTerms = filteredTerms[:2]
-	}
-	if len(filteredTerms) > 0 {
-		q = strings.TrimSpace(q + " " + strings.Join(filteredTerms, " "))
-	}
+	// NOTE: Removed disambiguation term addition for domain discovery.
+	// The simple query "{company} official website" is more effective
+	// at finding official domains than queries polluted with extra terms.
 
 	return q
 }
@@ -445,6 +455,16 @@ func stripCodeFences(s string) string {
 		return strings.TrimSpace(t)
 	}
 	return t
+}
+
+// appendVerificationWarning appends a warning message to the report
+// Used by P0-B to add verification warnings when V2 fails without falling back to V1
+func appendVerificationWarning(report, warning string) string {
+	if report == "" {
+		return warning
+	}
+	// Append warning as a separate section at the end
+	return report + "\n\n---\n\n" + warning
 }
 
 func registrableDomain(host string) string {
@@ -529,12 +549,14 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, ca
 		if err != nil {
 			return
 		}
-		host := registrableDomain(pu.Host)
-		if host == "" {
+
+		// Get registrable domain for filtering (e.g., ptmind.com from jp.ptmind.com)
+		registrable := registrableDomain(pu.Host)
+		if registrable == "" {
 			return
 		}
 
-		// Exclude common aggregator/social/platform domains
+		// Exclude common aggregator/social/platform domains (check against registrable)
 		disallowed := map[string]struct{}{
 			// Social & aggregator
 			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
@@ -550,14 +572,24 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, ca
 			"hiredchina.com": {}, "glassdoor.com": {}, "indeed.com": {}, "zhipin.com": {},
 			// App stores
 			"apps.shopify.com": {}, "chromewebstore.google.com": {}, "play.google.com": {},
+			// Investor info sites
+			"tracxn.com": {}, "trjcn.com": {},
 		}
-		if _, ok := disallowed[host]; ok {
+		if _, ok := disallowed[registrable]; ok {
+			return
+		}
+
+		// Preserve full host for company research (jp.ptmind.com, cn.ptmind.com are different sites)
+		// Only strip www. prefix
+		fullHost := strings.ToLower(strings.TrimSpace(pu.Host))
+		fullHost = strings.TrimPrefix(fullHost, "www.")
+		if fullHost == "" {
 			return
 		}
 
 		// Relevance check: domain should be related to canonical name
 		// This prevents profitmind.com from being included when searching for PTmind
-		hostLower := strings.ToLower(host)
+		hostLower := strings.ToLower(registrable)
 		hostBase := strings.TrimSuffix(strings.TrimSuffix(hostLower, ".com"), ".co")
 		hostBase = strings.TrimSuffix(hostBase, ".jp")
 		hostBase = strings.TrimSuffix(hostBase, ".cn")
@@ -580,9 +612,10 @@ func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, ca
 			return
 		}
 
-		if !seen[host] {
-			seen[host] = true
-			out = append(out, host)
+		// Add full host (preserving subdomains like jp.ptmind.com)
+		if !seen[fullHost] {
+			seen[fullHost] = true
+			out = append(out, fullHost)
 		}
 	}
 
@@ -739,8 +772,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	)
 
 	// Configure activity options
+	// Increased timeout from 5min to 8min for SynthesizeResultsLLM which can take 5+ minutes
 	activityOptions := workflow.ActivityOptions{
-		StartToCloseTimeout: 5 * time.Minute,
+		StartToCloseTimeout: 8 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 3,
 		},
@@ -1135,9 +1169,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								"Extract the official website domains for the company %q.\n\n"+
 									"Use ONLY the provided web_search results (do not guess).\n"+
 									"Return JSON ONLY with this schema:\n"+
-									"{\"domains\":[\"example.com\",\"example.co.jp\",...]}.\n"+
+									"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}.\n"+
 									"Rules:\n"+
 									"- Include corporate + major product/brand + key regional domains if they appear in results.\n"+
+									"- IMPORTANT: Include regional SUBDOMAINS like jp.company.com, cn.company.com, de.company.com (these are common patterns).\n"+
 									"- Exclude directory/social/news domains (wikipedia, linkedin, crunchbase, etc.).\n"+
 									"- Return at most 12 domains.\n",
 								refineResult.CanonicalName,
@@ -1171,16 +1206,57 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
 
 						// Prefer LLM-selected domains, but only keep domains that are grounded in search result URLs.
-						groundedSet := make(map[string]bool)
+						// Build a set of search domains for exact matching
+						searchSet := make(map[string]bool)
 						for _, d := range searchDomains {
-							groundedSet[d] = true
+							searchSet[d] = true
 						}
+
+						// Helper to check if a domain is grounded:
+						// - Exact match (llm said "jp.ptmind.com", search has "jp.ptmind.com")
+						// - LLM said root domain, search has subdomain (llm said "ptmind.com", search has "jp.ptmind.com")
+						isGrounded := func(llmDomain string) bool {
+							if searchSet[llmDomain] {
+								return true
+							}
+							// Check if any search domain is a subdomain of llmDomain
+							suffix := "." + llmDomain
+							for sd := range searchSet {
+								if strings.HasSuffix(sd, suffix) {
+									return true
+								}
+							}
+							return false
+						}
+
 						var discovered []string
+						seenDiscovered := make(map[string]bool)
+
+						// First, add LLM-selected domains that are grounded
 						for _, d := range llmDomains {
-							if groundedSet[d] {
+							if isGrounded(d) && !seenDiscovered[d] {
+								seenDiscovered[d] = true
 								discovered = append(discovered, d)
 							}
 						}
+
+						// Also add search domains that are subdomains of LLM-selected domains
+						// (e.g., if LLM said "ptmind.com", also add "jp.ptmind.com" from search)
+						for _, sd := range searchDomains {
+							if seenDiscovered[sd] {
+								continue
+							}
+							for _, llmD := range llmDomains {
+								suffix := "." + llmD
+								if strings.HasSuffix(sd, suffix) {
+									seenDiscovered[sd] = true
+									discovered = append(discovered, sd)
+									break
+								}
+							}
+						}
+
+						// Fallback: if nothing discovered, use all search domains
 						if len(discovered) == 0 {
 							discovered = searchDomains
 						}
@@ -1729,7 +1805,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "researcher"
+					role := "deep_research_agent"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -1863,7 +1939,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
-					role := "researcher"
+					role := "deep_research_agent"
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -2401,6 +2477,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					"source":            c.Source,
 					"credibility_score": c.CredibilityScore,
 					"quality_score":     c.QualityScore,
+					"tool_source":       c.ToolSource,
+					"status_code":       c.StatusCode,
+					"blocked_reason":    c.BlockedReason,
 				})
 			}
 			baseContext["citations"] = out
@@ -3335,6 +3414,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 											"title":             c.Title,
 											"source":            c.Source,
 											"credibility_score": c.CredibilityScore,
+											"tool_source":       c.ToolSource,
+											"status_code":       c.StatusCode,
+											"blocked_reason":    c.BlockedReason,
 											"quality_score":     c.QualityScore,
 										})
 									}
@@ -3378,119 +3460,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
-	// Citation Agent: add inline citations to synthesis result (when enabled)
-	citationAgentEnabled := true // Default: enabled
-	if v, ok := baseContext["enable_citation_agent"].(bool); ok {
-		citationAgentEnabled = v
-	}
-	if citationAgentEnabled && len(collectedCitations) > 0 {
-		logger.Info("CitationAgent: starting citation addition",
-			"total_citations", len(collectedCitations),
-		)
-
-		// Convert to CitationForAgent (avoids import cycle)
-		// Pass ALL citations - let CitationAgent decide which to use based on prompt guidance
-		citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
-		for _, c := range collectedCitations {
-			citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
-				URL:              c.URL,
-				Title:            c.Title,
-				Source:           c.Source,
-				Snippet:          c.Snippet,
-				CredibilityScore: c.CredibilityScore,
-				QualityScore:     c.QualityScore,
-			})
-		}
-
-		// Step: Remove ## Sources section before passing to Citation Agent
-		// (FormatReportWithCitations in synthesis.go may have added it already)
-		// The LLM may modify the Sources section (URL formatting, etc.), causing validation failure
-		reportForCitation := synthesis.FinalResult
-		var extractedSources string
-		if idx := strings.LastIndex(strings.ToLower(reportForCitation), "## sources"); idx != -1 {
-			extractedSources = strings.TrimSpace(reportForCitation[idx:])
-			reportForCitation = strings.TrimSpace(reportForCitation[:idx])
-			logger.Info("CitationAgent: stripped Sources section before processing",
-				"sources_length", len(extractedSources),
-				"report_length", len(reportForCitation),
-			)
-		}
-
-		var citationResult activities.CitationAgentResult
-		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-			StartToCloseTimeout: 360 * time.Second, // Extended for long reports with medium tier
-			RetryPolicy: &temporal.RetryPolicy{
-				InitialInterval:    time.Second,
-				BackoffCoefficient: 2.0,
-				MaximumAttempts:    2,
-			},
-		})
-
-		// Determine citation model tier based on research strategy
-		citationModelTier := "small"
-		if sv, ok := baseContext["research_strategy"].(string); ok {
-			if sv == "deep" || sv == "academic" {
-				citationModelTier = "medium" // Better instruction-following for complex reports
-			}
-		}
-
-		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
-			Report:           reportForCitation,
-			Citations:        citationsForAgent,
-			ParentWorkflowID: input.ParentWorkflowID,
-			Context:          baseContext,
-			ModelTier:        citationModelTier,
-		}).Get(citationCtx, &citationResult)
-
-		if cerr != nil {
-			logger.Warn("CitationAgent: failed, using original synthesis", "error", cerr)
-			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-				WorkflowID: workflowID,
-				EventType:  activities.StreamEventProgress,
-				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to service error",
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
-		} else if citationResult.ValidationPassed {
-			// Use cited report and rebuild Sources with correct Used inline/Additional labels
-			citationsList := ""
-			if v, ok := baseContext["available_citations"].(string); ok {
-				citationsList = v
-			}
-			if citationsList != "" {
-				synthesis.FinalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
-			} else {
-				// Fallback: just append the extracted sources
-				synthesis.FinalResult = citationResult.CitedReport
-				if extractedSources != "" {
-					synthesis.FinalResult = strings.TrimSpace(synthesis.FinalResult) + "\n\n" + extractedSources
-				}
-			}
-			totalTokens += citationResult.TokensUsed
-			logger.Info("CitationAgent: citations added and Sources rebuilt",
-				"citations_used", len(citationResult.CitationsUsed),
-				"warnings", len(citationResult.PlacementWarnings),
-			)
-		} else {
-			logger.Warn("CitationAgent: validation failed, using original synthesis",
-				"error", citationResult.ValidationError,
-			)
-			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-				WorkflowID: workflowID,
-				EventType:  activities.StreamEventProgress,
-				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to validation failure",
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
-		}
-	}
-
 	// Check pause/cancel before reflection
 	if err := controlHandler.CheckPausePoint(ctx, "pre_reflection"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
 	// Step 4: Apply reflection pattern for quality improvement
+	// NOTE: Reflection runs BEFORE citation agent to prevent re-synthesis from losing citations
 	reflectionConfig := patterns.ReflectionConfig{
 		Enabled:             true,
 		MaxRetries:          2,
@@ -3526,6 +3502,147 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	// Check pause/cancel after reflection - signal may have arrived during reflection
 	if err := controlHandler.CheckPausePoint(ctx, "post_reflection"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+	}
+
+	// Citation Agent: add inline citations to synthesis result (when enabled)
+	// IMPORTANT: Runs AFTER reflection to ensure citations aren't lost during re-synthesis
+	citationAgentEnabled := true // Default: enabled
+	if v, ok := baseContext["enable_citation_agent"].(bool); ok {
+		citationAgentEnabled = v
+	}
+	if citationAgentEnabled && len(collectedCitations) > 0 {
+		logger.Info("CitationAgent: starting citation addition",
+			"total_citations", len(collectedCitations),
+		)
+
+		// Step: Remove ## Sources section before passing to Citation Agent
+		// (FormatReportWithCitations in synthesis.go may have added it already)
+		// The LLM may modify the Sources section (URL formatting, etc.), causing validation failure
+		reportForCitation := finalResult // Use reflection output (was: synthesis.FinalResult)
+		var extractedSources string
+		if idx := strings.LastIndex(strings.ToLower(reportForCitation), "## sources"); idx != -1 {
+			extractedSources = strings.TrimSpace(reportForCitation[idx:])
+			reportForCitation = strings.TrimSpace(reportForCitation[:idx])
+			logger.Info("CitationAgent: stripped Sources section before processing",
+				"sources_length", len(extractedSources),
+				"report_length", len(reportForCitation),
+			)
+		}
+
+		var citationResult activities.CitationAgentResult
+		citationCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+			StartToCloseTimeout: 360 * time.Second, // Extended for long reports with medium tier
+			RetryPolicy: &temporal.RetryPolicy{
+				InitialInterval:    time.Second,
+				BackoffCoefficient: 2.0,
+				MaximumAttempts:    2,
+			},
+		})
+
+		// P0-D: Metrics tracking for Citation V2 observability
+		var citationMetrics struct {
+			TotalCitations      int
+			FetchOnlyCount      int
+			ValidCount          int
+			SupportedClaims     int
+			TotalClaims         int
+			V1SupplementEnabled bool
+			V1Fallback          bool
+			FinalCitationsUsed  int
+		}
+		citationMetrics.TotalCitations = len(collectedCitations)
+
+		// ============================================================
+		// Citation Agent: Add inline citations to report
+		// Simplified flow: LLM directly adds [n] markers to report
+		// ============================================================
+		logger.Info("CitationAgent: starting citation flow",
+			"total_citations", len(collectedCitations),
+			"report_length", len(reportForCitation),
+		)
+
+		// Convert to CitationForAgent
+		citationsForAgent := make([]activities.CitationForAgent, 0, len(collectedCitations))
+		for _, c := range collectedCitations {
+			citationsForAgent = append(citationsForAgent, activities.CitationForAgent{
+				URL:              c.URL,
+				Title:            c.Title,
+				Source:           c.Source,
+				Snippet:          c.Snippet,
+				CredibilityScore: c.CredibilityScore,
+				QualityScore:     c.QualityScore,
+			})
+		}
+
+		// Tier-based model selection: medium for long reports (better instruction following)
+		citationModelTier := "small"
+		if len(reportForCitation) > 20000 {
+			citationModelTier = "medium"
+		}
+
+		logger.Info("CitationAgent: model tier selected",
+			"report_length", len(reportForCitation),
+			"model_tier", citationModelTier,
+		)
+
+		citationErr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
+			Report:           reportForCitation,
+			Citations:        citationsForAgent,
+			ParentWorkflowID: input.ParentWorkflowID,
+			Context:          baseContext,
+			ModelTier:        citationModelTier,
+		}).Get(citationCtx, &citationResult)
+
+		if citationErr != nil {
+			logger.Warn("CitationAgent: failed, using original synthesis", "error", citationErr)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to service error",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
+		} else if citationResult.ValidationPassed {
+			// Use cited report and rebuild Sources section
+			citationsList := ""
+			if v, ok := baseContext["available_citations"].(string); ok {
+				citationsList = v
+			}
+			if citationsList != "" {
+				finalResult = formatting.FormatReportWithCitations(citationResult.CitedReport, citationsList)
+			} else {
+				finalResult = citationResult.CitedReport
+				if extractedSources != "" {
+					finalResult = strings.TrimSpace(finalResult) + "\n\n" + extractedSources
+				}
+			}
+			totalTokens += citationResult.TokensUsed
+			citationMetrics.FinalCitationsUsed = len(citationResult.CitationsUsed)
+			logger.Info("CitationAgent: completed successfully",
+				"citations_used", len(citationResult.CitationsUsed),
+				"model_tier", citationModelTier,
+				"validation_passed", true,
+			)
+		} else {
+			// Validation failed - return original report unchanged
+			logger.Warn("CitationAgent: validation failed, using original synthesis",
+				"error", citationResult.ValidationError,
+			)
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventProgress,
+				AgentID:    "citation_agent",
+				Message:    "Citation injection skipped due to validation failure",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
+		}
+
+		// Log citation metrics summary
+		logger.Info("CitationAgent: metrics summary",
+			"total_citations", citationMetrics.TotalCitations,
+			"final_citations_used", citationMetrics.FinalCitationsUsed,
+			"model_tier", citationModelTier,
+		)
 	}
 
 	// Check pause/cancel before verification
@@ -3670,6 +3787,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				"source":            c.Source,
 				"credibility_score": c.CredibilityScore,
 				"quality_score":     c.QualityScore,
+				"tool_source":       c.ToolSource,
+				"status_code":       c.StatusCode,
+				"blocked_reason":    c.BlockedReason,
 			})
 		}
 		meta["citations"] = out

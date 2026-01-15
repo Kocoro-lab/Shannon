@@ -89,6 +89,36 @@ func TestNormalizeURL(t *testing.T) {
 			expected: "https://example.com",
 			wantErr:  false,
 		},
+		{
+			name:     "reject empty URL",
+			input:    "",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "reject relative URL",
+			input:    "/path/to/page",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "reject javascript scheme",
+			input:    "javascript:alert(1)",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "reject ftp scheme",
+			input:    "ftp://files.example.com/file.txt",
+			expected: "",
+			wantErr:  true,
+		},
+		{
+			name:     "accept http scheme",
+			input:    "http://example.com/path",
+			expected: "http://example.com/path",
+			wantErr:  false,
+		},
 	}
 
 	for _, tt := range tests {
