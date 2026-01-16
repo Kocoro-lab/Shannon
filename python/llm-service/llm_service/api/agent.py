@@ -76,50 +76,73 @@ def filter_relevant_results(
 INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION ===
 
 You MUST summarize the ACTUAL CONTENT from the tool results above.
+You MUST assess each source's RELEVANCE to the original query.
 
-=== STRUCTURED OUTPUT REQUIREMENT ===
-Organize your summary BY SOURCE/URL:
+=== RELEVANCE-AWARE OUTPUT ===
 
-For EACH source in tool results:
-- State the source name/URL
-- Summarize key findings from that source
-- Preserve specific data points
+For EACH source, first determine its relevance to the query:
 
-=== MANDATORY PRESERVATION ===
-You MUST include verbatim or with minimal paraphrasing:
-- ALL specific numbers, dates, percentages, monetary amounts
-- ALL proper nouns (company names, product names, people names, locations)
-- ALL conclusions, findings, or claims made by sources
-- ALL structured data (tables, lists, rankings)
+**HIGH RELEVANCE** (source directly addresses the query topic):
+- Provide detailed summary with preserved data points
+- Use tables for comparisons/metrics (saves space, improves clarity)
+- Use bullet lists for key facts
+- Include all specific numbers, dates, names, conclusions
 
-=== COMPLETENESS REQUIREMENT ===
-For multi-page results (web_subpage_fetch):
-- Cover ALL pages, not just a few
-- Short pages may contain unique data (partnerships, metrics, awards)
-- If a page is truly empty/navigation-only, note: "Source N: [URL] - navigation only"
+**LOW RELEVANCE** (source is off-topic, tangential, or operational):
+- Write ONE concise line explaining why it's not relevant
+- Format: "## Source N: [URL] - [TYPE] page, [brief reason why not relevant to query]"
+- Examples of LOW relevance: support FAQs, API docs, login pages, navigation-only pages, error pages
+- Do NOT expand further on LOW relevance sources
 
-=== DO NOT PRESERVE ===
-- Generic boilerplate text (navigation, footers, ads)
-- Repetitive content across sources
-- Off-topic information unrelated to the query
+=== EVIDENCE-ONLY CONSTRAINT (CRITICAL) ===
 
-FORMAT:
+STRICT RULES - violation causes output rejection:
+1. Every URL you mention MUST appear in the tool results above
+2. If a tool returned an error or empty content, report it as-is: "## Source N: [URL] - FAILED: [error message]"
+3. DO NOT infer, guess, or fabricate any data not present in tool results
+4. If tool says "Site Error", "Access Denied", "404", "no content" → report the failure, nothing more
+
+CORRECT example:
+- Tool result: "web_subpage_fetch failed: Site Error Detected"
+- Your output: "## Source 2: example.com - FAILED: Site error, no content retrieved"
+
+WRONG example (causes rejection):
+- Tool result: "web_subpage_fetch failed: Site Error"
+- Your output: "## Source 2: example.com - Company founded in 2015..." ← FABRICATION, FORBIDDEN
+
+=== CONCISENESS TECHNIQUES ===
+
+For HIGH relevance sources, prefer compact formats:
+
+Table format (for metrics/comparisons):
+| Attribute | Value |
+|-----------|-------|
+| Founded | 2010 |
+| Employees | 5000+ |
+
+Bullet format (for facts):
+- Key product: Payments platform
+- Headquarters: San Francisco
+
+=== OUTPUT FORMAT ===
+
 # PART 1 - RETRIEVED INFORMATION
-## Source 1: [URL/Name]
-[Key findings with preserved data points]
 
-## Source 2: [URL/Name]
-[Key findings with preserved data points]
+## Source 1: [URL]
+[If HIGH relevance: detailed summary with tables/bullets]
+[If LOW relevance: one-line explanation]
+
+## Source 2: [URL]
 ...
 
 # PART 2 - NOTES (optional)
-[Conflicts between sources, data gaps, uncertainty flags]
+[Conflicts between sources, data gaps, failed fetches summary]
 
 === FORBIDDEN ===
-DO NOT say:
-- 'I will fetch...'
-- 'I need to search...'
-- Any future actions
+- Future action verbs ('I will fetch...', 'I need to search...')
+- URLs not present in tool results
+- Inferred/fabricated data when tool returned errors or empty content
+- Detailed summaries of LOW relevance sources
 
 ONLY summarize what was ALREADY retrieved."""
 
