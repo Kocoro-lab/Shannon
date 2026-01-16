@@ -725,11 +725,17 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			wid = workflow.GetInfo(ctx).WorkflowExecution.ID
 		}
 
+		// Dynamic model tier: use medium for longer reports (better instruction following)
+		citationModelTier := "small"
+		if len(reportForCitation) > 8000 {
+			citationModelTier = "medium"
+		}
+
 		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
 			Report:           reportForCitation, // Clean report without Sources
 			Citations:        citationsForAgent,
 			ParentWorkflowID: wid,
-			ModelTier:        "small", // Structured task - small tier sufficient
+			ModelTier:        citationModelTier,
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {

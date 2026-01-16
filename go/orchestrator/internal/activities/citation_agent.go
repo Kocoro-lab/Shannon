@@ -152,14 +152,29 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 		modelTier = "small"
 	}
 
-	// Tier-based fixed max_tokens (predictable costs, avoids context overflow)
+	// Dynamic max_tokens based on report length to prevent truncation
+	// Formula: reportLen/3 (chars to tokens ratio ~3:1) + 2000 (overhead for tags/formatting)
 	reportLen := len(input.Report)
+	minTokens := reportLen/3 + 2000
+
+	// Base max_tokens by tier
 	maxTokens := 8192 // default for small tier
 	if modelTier == "medium" {
 		maxTokens = 16384
 	}
 
-	logger.Info("CitationAgent: tier-based max_tokens",
+	// Ensure max_tokens is sufficient for the report
+	if minTokens > maxTokens {
+		maxTokens = minTokens
+	}
+	// Cap at model limits
+	if modelTier == "small" && maxTokens > 16384 {
+		maxTokens = 16384
+	} else if modelTier == "medium" && maxTokens > 32000 {
+		maxTokens = 32000
+	}
+
+	logger.Info("CitationAgent: dynamic max_tokens",
 		"report_length", reportLen,
 		"model_tier", modelTier,
 		"max_tokens", maxTokens,

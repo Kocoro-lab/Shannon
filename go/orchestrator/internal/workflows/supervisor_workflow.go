@@ -1304,11 +1304,17 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			},
 		})
 
+		// Dynamic model tier: use medium for longer reports (better instruction following)
+		citationModelTier := "small"
+		if len(reportForCitation) > 8000 {
+			citationModelTier = "medium"
+		}
+
 		cerr := workflow.ExecuteActivity(citationCtx, "AddCitations", activities.CitationAgentInput{
 			Report:           reportForCitation,
 			Citations:        citationsForAgent,
 			ParentWorkflowID: workflowID,
-			ModelTier:        "small", // Structured task - small tier sufficient
+			ModelTier:        citationModelTier,
 		}).Get(citationCtx, &citationResult)
 
 		if cerr != nil {

@@ -4824,9 +4824,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			})
 		}
 
-		// Tier-based model selection: medium for long reports (better instruction following)
+		// Dynamic model tier: use medium for longer reports (better instruction following)
+		// Lowered threshold from 20000 to 8000 to improve citation success rate
 		citationModelTier := "small"
-		if len(reportForCitation) > 20000 {
+		if len(reportForCitation) > 8000 {
 			citationModelTier = "medium"
 		}
 
