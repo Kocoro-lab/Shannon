@@ -632,7 +632,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 	if isResearch {
-		maxPerAgentChars = 8000
+		maxPerAgentChars = 10000
 	}
 
 	// Calculate target words for research synthesis
