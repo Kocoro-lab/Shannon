@@ -1374,9 +1374,24 @@ async def agent_query(request: Request, query: AgentQuery):
                     or query.context.get("role") == "deep_research_agent"
                 )
             )
-            followup_instruction = (
-                "If the information is insufficient, you may call another tool; otherwise, answer the original query."
-            )
+            # Different followup instructions based on mode
+            if research_mode:
+                # Deep Research: encourage search → fetch loop, but avoid same-query retries
+                followup_instruction = (
+                    "Continue your research: "
+                    "1) If you just searched, fetch the most relevant URLs to verify claims. "
+                    "2) If you need more info, search with DIFFERENT keywords (not the same query). "
+                    "3) Do NOT retry a query that returned empty results. "
+                    "4) When you have sufficient evidence, proceed to synthesis."
+                )
+            else:
+                # Non-DR: stricter limits to avoid long execution times
+                followup_instruction = (
+                    "If the information is insufficient, you may call another tool with a DIFFERENT strategy "
+                    "(e.g., broader/narrower terms, different keywords, alternative sources). "
+                    "Do NOT retry the same query if it returned empty or poor results. "
+                    "If 2+ attempts yield no useful data, synthesize what you have or report 'No relevant information found'."
+                )
 
             total_tokens = 0
             total_input_tokens = 0
