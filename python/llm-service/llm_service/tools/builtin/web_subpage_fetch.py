@@ -396,6 +396,8 @@ class WebSubpageFetchTool(Tool):
         content_len = len(content)
 
         # Pattern 1: Common error page indicators
+        # Note: Removed "coming soon" and "under construction" - too common in normal websites
+        # (product announcements, feature previews, etc.) causing false positives
         error_indicators = [
             ("whitelabel error", "spring/java error page"),
             ("404 not found", "404 error"),
@@ -406,8 +408,6 @@ class WebSubpageFetchTool(Tool):
             ("403 forbidden", "403 error"),
             ("site not available", "site down"),
             ("website is under maintenance", "maintenance"),
-            ("coming soon", "not launched"),
-            ("under construction", "not launched"),
         ]
 
         for pattern, reason in error_indicators:
