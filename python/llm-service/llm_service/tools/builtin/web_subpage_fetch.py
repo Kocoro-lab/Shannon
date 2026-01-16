@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
-from .web_fetch import detect_blocked_reason  # P0-A: Reuse blocked detection logic
+from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reuse blocked detection and noise cleaning logic
 
 logger = logging.getLogger(__name__)
 
@@ -730,6 +730,7 @@ class WebSubpageFetchTool(Tool):
                 "url": url,
                 "formats": ["markdown"],
                 "onlyMainContent": True,
+                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
                 "timeout": SCRAPE_TIMEOUT * 1000  # Firecrawl uses ms
             }
 
@@ -746,6 +747,7 @@ class WebSubpageFetchTool(Tool):
                 result_data = data.get("data", {})
 
                 content = result_data.get("markdown", "")
+                content = clean_markdown_noise(content)  # Clean noise before truncation
                 if len(content) > max_length:
                     content = content[:max_length]
 
