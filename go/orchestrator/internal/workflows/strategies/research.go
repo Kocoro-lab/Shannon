@@ -394,6 +394,256 @@ func extractRegionCodeFromTargetLanguages(targetLanguages []string) string {
 	return ""
 }
 
+// originPrefetchRegionFromTargetLanguages maps entity origin language codes to prefetch region buckets.
+// - zh -> cn
+// - ja -> jp
+// - ko -> kr
+func originPrefetchRegionFromTargetLanguages(targetLanguages []string) string {
+	switch extractRegionCodeFromTargetLanguages(targetLanguages) {
+	case "zh":
+		return "cn"
+	case "ja":
+		return "jp"
+	case "ko":
+		return "kr"
+	default:
+		return ""
+	}
+}
+
+func normalizePrefetchRegion(raw string) string {
+	r := strings.ToLower(strings.TrimSpace(raw))
+	switch r {
+	case "cn", "china", "zh", "zh-cn", "zh-hans", "chinese":
+		return "cn"
+	case "jp", "japan", "ja", "ja-jp", "japanese":
+		return "jp"
+	case "kr", "korea", "ko", "ko-kr", "korean":
+		return "kr"
+	case "eu", "europe", "european", "uk", "u.k.":
+		return "eu"
+	case "us", "u.s.", "usa", "united states":
+		return "us"
+	case "global", "worldwide", "intl", "international":
+		return "global"
+	default:
+		return ""
+	}
+}
+
+func prefetchRegionsFromContext(ctx map[string]interface{}) []string {
+	if ctx == nil {
+		return nil
+	}
+
+	keys := []string{"prefetch_regions", "domain_prefetch_regions"}
+	for _, key := range keys {
+		raw, ok := ctx[key]
+		if !ok || raw == nil {
+			continue
+		}
+		seen := make(map[string]bool)
+		var out []string
+		add := func(v string) {
+			r := normalizePrefetchRegion(v)
+			if r == "" || seen[r] {
+				return
+			}
+			seen[r] = true
+			out = append(out, r)
+		}
+
+		switch v := raw.(type) {
+		case []string:
+			for _, s := range v {
+				add(s)
+			}
+		case []interface{}:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					add(s)
+				}
+			}
+		case string:
+			parts := strings.FieldsFunc(v, func(r rune) bool {
+				return r == ',' || r == ';' || r == ' ' || r == '\t' || r == '\n'
+			})
+			for _, p := range parts {
+				add(p)
+			}
+		default:
+			// Ignore unknown shapes
+		}
+
+		if len(out) > 0 {
+			return out
+		}
+	}
+
+	return nil
+}
+
+func prefetchRegionsFromQuery(query string) []string {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	add := func(region string) {
+		r := normalizePrefetchRegion(region)
+		if r == "" || seen[r] {
+			return
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+
+	// Chinese keywords
+	if strings.Contains(q, "日本") {
+		add("jp")
+	}
+	if strings.Contains(q, "中国") || strings.Contains(q, "中國") {
+		add("cn")
+	}
+	if strings.Contains(q, "美国") || strings.Contains(q, "美國") {
+		add("us")
+	}
+	if strings.Contains(q, "欧洲") || strings.Contains(q, "歐洲") || strings.Contains(q, "欧盟") || strings.Contains(q, "歐盟") {
+		add("eu")
+	}
+	if strings.Contains(q, "英国") || strings.Contains(q, "英國") {
+		add("eu")
+	}
+
+	// English (case-sensitive for US/EU to avoid matching pronouns like "us")
+	qLower := strings.ToLower(q)
+	if strings.Contains(qLower, "japan") {
+		add("jp")
+	}
+	if strings.Contains(qLower, "china") {
+		add("cn")
+	}
+	if strings.Contains(q, "USA") || strings.Contains(q, "U.S.") || containsAsWord(q, "US") || strings.Contains(qLower, "united states") {
+		add("us")
+	}
+	if containsAsWord(q, "EU") || strings.Contains(qLower, "europe") || strings.Contains(qLower, "european") || containsAsWord(q, "UK") || strings.Contains(q, "U.K.") {
+		add("eu")
+	}
+
+	return out
+}
+
+type domainDiscoverySearch struct {
+	Key   string
+	Query string
+}
+
+func buildCompanyEUDomainDiscoverySearchQuery(canonicalName string) string {
+	name := strings.TrimSpace(canonicalName)
+	if name == "" {
+		return ""
+	}
+	// Keep this simple: avoid adding disambiguation terms, consistent with buildCompanyDomainDiscoverySearchQuery().
+	return fmt.Sprintf("%s official website Europe", name)
+}
+
+func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []string, originRegion string, requestedRegions []string) []domainDiscoverySearch {
+	name := strings.TrimSpace(canonicalName)
+	if name == "" {
+		return nil
+	}
+
+	seen := make(map[string]bool)
+	var out []domainDiscoverySearch
+	add := func(key, query string) {
+		query = strings.TrimSpace(query)
+		if query == "" || seen[query] {
+			return
+		}
+		seen[query] = true
+		out = append(out, domainDiscoverySearch{Key: key, Query: query})
+	}
+
+	if len(requestedRegions) > 0 {
+		for _, r := range requestedRegions {
+			switch r {
+			case "cn":
+				add("cn", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "zh"))
+			case "jp":
+				add("jp", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "ja"))
+			case "kr":
+				add("kr", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "ko"))
+			case "eu":
+				add("eu", buildCompanyEUDomainDiscoverySearchQuery(name))
+			case "us", "global":
+				add("global", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, ""))
+			default:
+				add("global", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, ""))
+			}
+		}
+		return out
+	}
+
+	// Default (multinational coverage): global + EU + CN + JP (+ KR when origin indicates Korea).
+	add("global", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, ""))
+	add("eu", buildCompanyEUDomainDiscoverySearchQuery(name))
+	add("cn", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "zh"))
+	add("jp", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "ja"))
+	if originRegion == "kr" {
+		add("kr", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "ko"))
+	}
+	return out
+}
+
+func originRegionToDiscoveryLanguageCode(originRegion string) string {
+	switch normalizePrefetchRegion(originRegion) {
+	case "cn":
+		return "zh"
+	case "jp":
+		return "ja"
+	case "kr":
+		return "ko"
+	default:
+		return ""
+	}
+}
+
+func shouldRunGlobalDomainDiscoveryFallback(discovered []string) bool {
+	if len(discovered) < 4 {
+		return true
+	}
+
+	registrables := make(map[string]bool)
+	hasSupport := false
+	for _, d := range discovered {
+		h := normalizeDomainCandidateHost(d)
+		if h == "" {
+			continue
+		}
+		if strings.HasPrefix(h, "help.") || strings.HasPrefix(h, "docs.") || strings.HasPrefix(h, "support.") {
+			hasSupport = true
+		}
+		reg := registrableDomain(h)
+		if reg != "" {
+			registrables[reg] = true
+		}
+	}
+
+	// If we only found one registrable domain, we're likely missing product/brand domains.
+	if len(registrables) < 2 {
+		return true
+	}
+
+	// Support/help sites are high-signal for company research; if missing and the set is small, try one more search.
+	if !hasSupport && len(discovered) < 6 {
+		return true
+	}
+
+	return false
+}
+
 // containsGenericTerm checks if a term contains any generic tech words that pollute search results.
 // This fixes the bug where multi-word terms like "analytics platform" were not filtered
 // because only exact matches were checked (e.g., "analytics platform" != "analytics").
@@ -528,6 +778,564 @@ func registrableDomain(host string) string {
 	}
 
 	return suffix2
+}
+
+func domainsFromWebSearchToolExecutionsAll(toolExecs []activities.ToolExecution) []string {
+	seen := make(map[string]bool)
+	var out []string
+
+	addURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "https://" + raw
+		}
+		pu, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+
+		registrable := registrableDomain(pu.Host)
+		if registrable == "" {
+			return
+		}
+
+		// Exclude common aggregator/social/platform domains (check against registrable)
+		disallowed := map[string]struct{}{
+			// Social & aggregator
+			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
+			"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
+			"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+			// Generic platforms that pollute results
+			"google.com": {}, "salesforce.com": {}, "shopify.com": {}, "optimizely.com": {},
+			"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+			// Domain registrars & info sites
+			"register.domains": {}, "porkbun.com": {}, "nominus.com": {}, "squarespace.com": {},
+			"github.io": {}, "github.com": {}, "githubusercontent.com": {},
+			// Job boards
+			"hiredchina.com": {}, "glassdoor.com": {}, "indeed.com": {}, "zhipin.com": {},
+			// App stores
+			"apps.shopify.com": {}, "chromewebstore.google.com": {}, "play.google.com": {},
+			// Investor info sites
+			"tracxn.com": {}, "trjcn.com": {},
+		}
+		if _, ok := disallowed[registrable]; ok {
+			return
+		}
+
+		fullHost := strings.ToLower(strings.TrimSpace(pu.Host))
+		fullHost = strings.TrimPrefix(fullHost, "www.")
+		if fullHost == "" {
+			return
+		}
+
+		if !seen[fullHost] {
+			seen[fullHost] = true
+			out = append(out, fullHost)
+		}
+	}
+
+	for _, te := range toolExecs {
+		if te.Tool != "web_search" || !te.Success || te.Output == nil {
+			continue
+		}
+
+		switch v := te.Output.(type) {
+		case map[string]interface{}:
+			if rawResults, ok := v["results"].([]interface{}); ok {
+				for _, rr := range rawResults {
+					if m, ok2 := rr.(map[string]interface{}); ok2 {
+						if u, ok3 := m["url"].(string); ok3 {
+							addURL(u)
+						}
+					}
+				}
+			}
+		case []interface{}:
+			for _, rr := range v {
+				if m, ok2 := rr.(map[string]interface{}); ok2 {
+					if u, ok3 := m["url"].(string); ok3 {
+						addURL(u)
+					}
+				}
+			}
+		default:
+			if s, ok := te.Output.(string); ok {
+				addURL(s)
+			}
+		}
+	}
+
+	return out
+}
+
+func domainsFromWebSearchToolExecutionsAllV2(toolExecs []activities.ToolExecution, canonicalName string) []string {
+	canonicalLower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+
+	seen := make(map[string]bool)
+	var out []string
+
+	allowDisallowed := func(fullHost, registrable string) bool {
+		if canonicalLower == "" {
+			return false
+		}
+		// For short canonical names (e.g., "X"), only allow if it matches a full label.
+		labels := strings.Split(fullHost, ".")
+		if len(labels) > 0 && labels[0] == canonicalLower {
+			return true
+		}
+		// For normal names, allow substring match in host/registrable.
+		if len(canonicalLower) >= 3 && (strings.Contains(fullHost, canonicalLower) || strings.Contains(registrable, canonicalLower)) {
+			return true
+		}
+		return false
+	}
+
+	addURL := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "https://" + raw
+		}
+		pu, err := url.Parse(raw)
+		if err != nil {
+			return
+		}
+
+		fullHost := strings.ToLower(strings.TrimSpace(pu.Host))
+		fullHost = strings.TrimPrefix(fullHost, "www.")
+		fullHost = strings.TrimSuffix(fullHost, ".")
+		if fullHost == "" {
+			return
+		}
+
+		registrable := registrableDomain(fullHost)
+		if registrable == "" {
+			return
+		}
+
+		// Exclude common directory/social/news domains unless they match the canonical name.
+		disallowed := map[string]struct{}{
+			"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
+			"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
+			"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+			"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+		}
+		if _, ok := disallowed[registrable]; ok && !allowDisallowed(fullHost, registrable) {
+			return
+		}
+
+		if !seen[fullHost] {
+			seen[fullHost] = true
+			out = append(out, fullHost)
+		}
+	}
+
+	for _, te := range toolExecs {
+		if te.Tool != "web_search" || !te.Success || te.Output == nil {
+			continue
+		}
+
+		switch v := te.Output.(type) {
+		case map[string]interface{}:
+			if rawResults, ok := v["results"].([]interface{}); ok {
+				for _, rr := range rawResults {
+					if m, ok2 := rr.(map[string]interface{}); ok2 {
+						if u, ok3 := m["url"].(string); ok3 {
+							addURL(u)
+						}
+					}
+				}
+			}
+		case []interface{}:
+			for _, rr := range v {
+				if m, ok2 := rr.(map[string]interface{}); ok2 {
+					if u, ok3 := m["url"].(string); ok3 {
+						addURL(u)
+					}
+				}
+			}
+		default:
+			if s, ok := te.Output.(string); ok {
+				addURL(s)
+			}
+		}
+	}
+
+	return out
+}
+
+func domainBucketForHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.TrimSuffix(h, ".")
+
+	// Japan
+	if strings.HasPrefix(h, "jp.") || strings.Contains(h, ".jp.") || strings.HasSuffix(h, ".jp") || strings.HasSuffix(h, ".co.jp") || strings.HasSuffix(h, ".ne.jp") || strings.HasSuffix(h, ".or.jp") {
+		return "jp"
+	}
+
+	// China
+	if strings.HasPrefix(h, "cn.") || strings.Contains(h, ".cn.") || strings.HasSuffix(h, ".cn") || strings.HasSuffix(h, ".com.cn") {
+		return "cn"
+	}
+
+	// Korea
+	if strings.HasPrefix(h, "kr.") || strings.Contains(h, ".kr.") || strings.HasSuffix(h, ".kr") || strings.HasSuffix(h, ".co.kr") {
+		return "kr"
+	}
+
+	// Europe (heuristics): EU TLD + common European ccTLDs
+	if strings.HasPrefix(h, "eu.") || strings.Contains(h, ".eu.") || strings.HasSuffix(h, ".eu") ||
+		strings.HasSuffix(h, ".co.uk") || strings.HasSuffix(h, ".org.uk") || strings.HasSuffix(h, ".ac.uk") ||
+		strings.HasSuffix(h, ".de") || strings.HasSuffix(h, ".fr") || strings.HasSuffix(h, ".it") || strings.HasSuffix(h, ".es") ||
+		strings.HasSuffix(h, ".nl") || strings.HasSuffix(h, ".se") || strings.HasSuffix(h, ".fi") || strings.HasSuffix(h, ".dk") {
+		return "eu"
+	}
+
+	return "global"
+}
+
+func selectDomainsForPrefetch(discovered []string, requestedRegions []string, originRegion string, max int) []string {
+	if max <= 0 || len(discovered) == 0 {
+		return nil
+	}
+
+	// Deduplicate while preserving order
+	seen := make(map[string]bool)
+	var uniq []string
+	for _, d := range discovered {
+		d = strings.TrimSpace(d)
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		uniq = append(uniq, d)
+	}
+
+	// User-scoped: only include requested region buckets.
+	if len(requestedRegions) > 0 {
+		allowed := make(map[string]bool)
+		for _, r := range requestedRegions {
+			rr := normalizePrefetchRegion(r)
+			if rr == "" {
+				continue
+			}
+			// Map US/global requests to the "global" bucket to match domainBucketForHost().
+			if rr == "us" || rr == "global" {
+				allowed["global"] = true
+				continue
+			}
+			allowed[rr] = true
+		}
+		if len(allowed) == 0 {
+			return nil
+		}
+		var filtered []string
+		for _, d := range uniq {
+			if allowed[domainBucketForHost(d)] {
+				filtered = append(filtered, d)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil
+		}
+		if len(filtered) > max {
+			return filtered[:max]
+		}
+		return filtered
+	}
+
+	// Default: ensure coverage across origin/us/global/eu/cn/jp when available.
+	required := []string{}
+	addReq := func(r string) {
+		r = normalizePrefetchRegion(r)
+		if r == "" {
+			return
+		}
+		for _, existing := range required {
+			if existing == r {
+				return
+			}
+		}
+		required = append(required, r)
+	}
+
+	addReq(originRegion)
+	addReq("us") // Treat global .com as US/global coverage
+	addReq("eu")
+	addReq("cn")
+	addReq("jp")
+
+	picked := make(map[string]bool)
+	var selected []string
+
+	// Pick one per required bucket first
+	for _, bucket := range required {
+		matchBucket := bucket
+		if bucket == "us" {
+			matchBucket = "global"
+		}
+		for _, d := range uniq {
+			if picked[d] {
+				continue
+			}
+			if domainBucketForHost(d) == matchBucket {
+				picked[d] = true
+				selected = append(selected, d)
+				break
+			}
+		}
+		if len(selected) >= max {
+			return selected[:max]
+		}
+	}
+
+	// Fill remaining slots in discovered order
+	for _, d := range uniq {
+		if picked[d] {
+			continue
+		}
+		picked[d] = true
+		selected = append(selected, d)
+		if len(selected) >= max {
+			break
+		}
+	}
+
+	if len(selected) > max {
+		return selected[:max]
+	}
+	return selected
+}
+
+func normalizeDomainCandidateHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	pu, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	h := strings.ToLower(strings.TrimSpace(pu.Host))
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return ""
+	}
+	// Drop port if present.
+	if strings.Contains(h, ":") {
+		if hh, _, err := net.SplitHostPort(h); err == nil {
+			h = hh
+		} else if i := strings.LastIndex(h, ":"); i > 0 {
+			h = h[:i]
+		}
+	}
+	if h == "" {
+		return ""
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ""
+	}
+	if h == "localhost" {
+		return ""
+	}
+	return h
+}
+
+func tldLabel(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	h = strings.TrimPrefix(h, "www.")
+	h = strings.TrimSuffix(h, ".")
+	if h == "" {
+		return ""
+	}
+	parts := strings.Split(h, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+func vettedHybridRefinementDomains(discovered []string, refinement []string, canonicalName string) []string {
+	canonicalLower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+
+	discoveredRegistrables := make(map[string]bool)
+	discoveredTLDs := make(map[string]bool)
+	for _, d := range discovered {
+		h := normalizeDomainCandidateHost(d)
+		if h == "" {
+			continue
+		}
+		reg := registrableDomain(h)
+		if reg == "" {
+			continue
+		}
+		discoveredRegistrables[reg] = true
+		tld := tldLabel(reg)
+		if tld != "" {
+			discoveredTLDs[tld] = true
+		}
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, r := range refinement {
+		h := normalizeDomainCandidateHost(r)
+		if h == "" || seen[h] {
+			continue
+		}
+		reg := registrableDomain(h)
+		if reg == "" {
+			continue
+		}
+
+		// (1) Anchored by registrable domain already observed in discovery.
+		if discoveredRegistrables[reg] {
+			seen[h] = true
+			out = append(out, h)
+			continue
+		}
+
+		// (2) Brand-TLD expansion: allow second-level domains under a brand TLD that matches the canonical name.
+		// Example: about.google discovered -> allow blog.google when canonical is "Google".
+		tld := tldLabel(h)
+		if canonicalLower != "" && tld != "" && tld == canonicalLower && discoveredTLDs[tld] {
+			seen[h] = true
+			out = append(out, h)
+			continue
+		}
+	}
+
+	return out
+}
+
+func hostHasLabel(host, label string) bool {
+	h := strings.ToLower(strings.TrimSpace(host))
+	label = strings.ToLower(strings.TrimSpace(label))
+	if h == "" || label == "" {
+		return false
+	}
+	return strings.HasPrefix(h, label+".") || strings.Contains(h, "."+label+".")
+}
+
+func domainPrefetchScore(host, canonicalName string) int {
+	h := normalizeDomainCandidateHost(host)
+	if h == "" {
+		return -100000
+	}
+	score := 0
+
+	reg := registrableDomain(h)
+	if reg != "" && reg == h {
+		score += 100
+	} else {
+		score += 80
+	}
+
+	canonicalLower := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+	if canonicalLower != "" && strings.Contains(h, canonicalLower) {
+		score += 10
+	}
+
+	switch {
+	case hostHasLabel(h, "about") || hostHasLabel(h, "company"):
+		score += 35
+	case hostHasLabel(h, "investor") || hostHasLabel(h, "investors") || hostHasLabel(h, "ir"):
+		score += 35
+	}
+	if hostHasLabel(h, "leadership") || hostHasLabel(h, "management") {
+		score += 20
+	}
+	if hostHasLabel(h, "press") || hostHasLabel(h, "newsroom") {
+		score += 15
+	}
+	if hostHasLabel(h, "blog") {
+		score += 20
+	}
+	if hostHasLabel(h, "cloud") {
+		score += 15
+	}
+	if hostHasLabel(h, "store") {
+		score += 10
+	}
+
+	// Down-rank functional endpoints that rarely help company overview.
+	if hostHasLabel(h, "support") || hostHasLabel(h, "accounts") {
+		score -= 80
+	}
+	if hostHasLabel(h, "login") || hostHasLabel(h, "signin") {
+		score -= 60
+	}
+	if hostHasLabel(h, "careers") || hostHasLabel(h, "jobs") {
+		score -= 30
+	}
+
+	// Prefer shorter hosts slightly (fewer labels).
+	labels := strings.Split(h, ".")
+	score -= len(labels) * 2
+
+	return score
+}
+
+func sortDomainsForHybridPrefetch(domains []string, canonicalName string) []string {
+	seen := make(map[string]bool)
+	var uniq []string
+	for _, d := range domains {
+		h := normalizeDomainCandidateHost(d)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		uniq = append(uniq, h)
+	}
+
+	scores := make(map[string]int, len(uniq))
+	for _, d := range uniq {
+		scores[d] = domainPrefetchScore(d, canonicalName)
+	}
+
+	sort.SliceStable(uniq, func(i, j int) bool {
+		si := scores[uniq[i]]
+		sj := scores[uniq[j]]
+		if si != sj {
+			return si > sj
+		}
+		return uniq[i] < uniq[j]
+	})
+
+	return uniq
+}
+
+func buildPrefetchURLsFromDomains(domains []string) []string {
+	seen := make(map[string]bool)
+	var urls []string
+	for _, d := range domains {
+		raw := strings.TrimSpace(d)
+		if raw == "" {
+			continue
+		}
+		raw = strings.TrimPrefix(raw, "https://")
+		raw = strings.TrimPrefix(raw, "http://")
+		raw = strings.TrimPrefix(raw, "www.")
+		if raw == "" {
+			continue
+		}
+		u := "https://" + raw
+		if !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
+	return urls
 }
 
 func domainsFromWebSearchToolExecutions(toolExecs []activities.ToolExecution, canonicalName string) []string {
@@ -670,6 +1478,153 @@ func domainsFromDiscoveryResponse(resp string) []string {
 	var out []string
 	for _, d := range parsed.Domains {
 		host := registrableDomain(d)
+		if host == "" || seen[host] {
+			continue
+		}
+		seen[host] = true
+		out = append(out, host)
+	}
+	return out
+}
+
+func extractFirstJSONObjectContainingDomains(resp string) string {
+	idx := strings.Index(resp, "\"domains\"")
+	if idx == -1 {
+		return ""
+	}
+
+	start := strings.LastIndex(resp[:idx], "{")
+	if start == -1 {
+		return ""
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(resp); i++ {
+		ch := resp[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return resp[start : i+1]
+			}
+		}
+	}
+
+	return ""
+}
+
+func normalizeDiscoveryDomainCandidate(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+
+	// Best-effort: accept both domains and URLs.
+	if strings.Contains(s, "://") {
+		if pu, err := url.Parse(s); err == nil {
+			s = pu.Hostname()
+		}
+	} else {
+		// Remove obvious schemes/prefixes without needing url.Parse.
+		s = strings.TrimPrefix(s, "https://")
+		s = strings.TrimPrefix(s, "http://")
+		if idx := strings.IndexAny(s, "/?#"); idx != -1 {
+			s = s[:idx]
+		}
+	}
+
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.TrimPrefix(s, "www.")
+	s = strings.TrimSuffix(s, ".")
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, ":") {
+		if hh, _, err := net.SplitHostPort(s); err == nil {
+			s = hh
+		} else {
+			if i := strings.LastIndex(s, ":"); i > 0 {
+				s = s[:i]
+			}
+		}
+	}
+	if s == "" {
+		return ""
+	}
+	if ip := net.ParseIP(s); ip != nil {
+		return ""
+	}
+	if s == "localhost" {
+		return ""
+	}
+	if strings.Count(s, ".") < 1 {
+		return ""
+	}
+
+	// Hard block common non-official domains.
+	disallowedRegistrables := map[string]struct{}{
+		"wikipedia.org": {}, "crunchbase.com": {}, "linkedin.com": {}, "facebook.com": {}, "x.com": {},
+		"twitter.com": {}, "medium.com": {}, "youtube.com": {}, "youtu.be": {}, "instagram.com": {},
+		"bloomberg.com": {}, "reuters.com": {}, "sec.gov": {}, "prtimes.jp": {},
+		"zoominfo.com": {}, "g2.com": {}, "capterra.com": {}, "trustpilot.com": {},
+		"github.com": {}, "github.io": {}, "githubusercontent.com": {},
+	}
+	if reg := registrableDomain(s); reg != "" {
+		if _, ok := disallowedRegistrables[reg]; ok {
+			return ""
+		}
+	}
+
+	return s
+}
+
+func domainsFromDiscoveryResponseV2(resp string) []string {
+	type domainDiscoveryResponse struct {
+		Domains []string `json:"domains"`
+	}
+
+	// 1) Fast path: JSON-only response (or codefenced JSON).
+	var parsed domainDiscoveryResponse
+	if err := json.Unmarshal([]byte(stripCodeFences(resp)), &parsed); err != nil {
+		// 2) Common case: response contains sections + a JSON block.
+		obj := extractFirstJSONObjectContainingDomains(resp)
+		if obj == "" {
+			// 3) Also try inside the first code-fenced block, then extract.
+			obj = extractFirstJSONObjectContainingDomains(stripCodeFences(resp))
+		}
+		if obj == "" {
+			return nil
+		}
+		if err2 := json.Unmarshal([]byte(obj), &parsed); err2 != nil {
+			return nil
+		}
+	}
+
+	seen := make(map[string]bool)
+	var out []string
+	for _, d := range parsed.Domains {
+		host := normalizeDiscoveryDomainCandidate(d)
 		if host == "" || seen[host] {
 			continue
 		}
@@ -1147,79 +2102,151 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			// This ensures Chinese sources (tianyancha, etc.) are only used for Chinese companies.
 			regionCode := extractRegionCodeFromTargetLanguages(refineResult.TargetLanguages)
 
-			officialDomainsForPrefetch := refineResult.OfficialDomains
-			domainDiscoveryVersion := workflow.GetVersion(ctx, "domain_discovery_search_first_v1", workflow.DefaultVersion, 1)
-			if domainDiscoveryVersion >= 1 && strings.TrimSpace(refineResult.CanonicalName) != "" {
-				searchQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, regionCode)
-				if searchQuery != "" {
+			prefetchDiscoverOnlyVersion := workflow.GetVersion(ctx, "domain_prefetch_discover_only_v1", workflow.DefaultVersion, 3)
+			hybridPrefetchEnabled := prefetchDiscoverOnlyVersion == 2
+
+			var urls []string
+			if prefetchDiscoverOnlyVersion >= 1 {
+				domainDiscoveryVersion := workflow.GetVersion(ctx, "domain_discovery_search_first_v1", workflow.DefaultVersion, 1)
+				if domainDiscoveryVersion >= 1 && strings.TrimSpace(refineResult.CanonicalName) != "" {
+					originRegion := originPrefetchRegionFromTargetLanguages(refineResult.TargetLanguages)
+
+					requestedRegions := prefetchRegionsFromContext(baseContext)
+					if len(requestedRegions) == 0 {
+						requestedRegions = prefetchRegionsFromQuery(input.Query)
+					}
+
+					// Discover-only mode (v1) / Hybrid mode (v2): reset any refinement-provided domains.
+					delete(baseContext, "official_domains")
+					delete(baseContext, "official_domains_source")
+
+					maxPrefetch := 8
+					if len(requestedRegions) > 0 {
+						maxPrefetch = 5
+					}
+					if v, ok := baseContext["domain_prefetch_max_urls"]; ok {
+						switch t := v.(type) {
+						case int:
+							maxPrefetch = t
+						case float64:
+							maxPrefetch = int(t)
+						}
+					}
+					if maxPrefetch < 1 {
+						maxPrefetch = 1
+					}
+					if maxPrefetch > 12 {
+						maxPrefetch = 12
+					}
+
+					// v3 (discover-only strict) reduces domain_discovery from 4 fixed region searches to:
+					// - primary (origin-first when available, else global)
+					// - optional global fallback (at most 2 searches total)
+					searches := buildDomainDiscoverySearches(refineResult.CanonicalName, refineResult.DisambiguationTerms, originRegion, requestedRegions)
+					globalQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, "")
+					if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 {
+						originLang := originRegionToDiscoveryLanguageCode(originRegion)
+						primaryQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, originLang)
+						if strings.TrimSpace(primaryQuery) == "" {
+							primaryQuery = globalQuery
+						}
+						if strings.TrimSpace(primaryQuery) != "" {
+							searches = []domainDiscoverySearch{{Key: "primary", Query: primaryQuery}}
+						}
+					}
+					discoveredBySearch := make(map[string][]string)
+					var allDiscovered []string
+					seenAll := make(map[string]bool)
+
+					searchDomainsFromResults := domainsFromWebSearchToolExecutionsAll
+					if prefetchDiscoverOnlyVersion >= 2 {
+						searchDomainsFromResults = func(toolExecs []activities.ToolExecution) []string {
+							return domainsFromWebSearchToolExecutionsAllV2(toolExecs, refineResult.CanonicalName)
+						}
+					}
+
 					discoveryContext := map[string]interface{}{
 						"user_id":    input.UserID,
 						"session_id": input.SessionID,
 						"model_tier": "small",
+						"response_format": map[string]interface{}{
+							"type": "json_object",
+						},
 					}
 					if input.ParentWorkflowID != "" {
 						discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
 					}
 
-					var discoveryResult activities.AgentExecutionResult
-					discoveryErr := workflow.ExecuteActivity(ctx,
-						"ExecuteAgent",
-						activities.AgentExecutionInput{
-							Query: fmt.Sprintf(
-								"Extract the official website domains for the company %q.\n\n"+
-									"Use ONLY the provided web_search results (do not guess).\n"+
-									"Return JSON ONLY with this schema:\n"+
-									"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}.\n"+
-									"Rules:\n"+
-									"- Include corporate + major product/brand + key regional domains if they appear in results.\n"+
-									"- IMPORTANT: Include regional SUBDOMAINS like jp.company.com, cn.company.com, de.company.com (these are common patterns).\n"+
-									"- Exclude directory/social/news domains (wikipedia, linkedin, crunchbase, etc.).\n"+
-									"- Return at most 12 domains.\n",
-								refineResult.CanonicalName,
-							),
-							AgentID:   "domain_discovery",
-							Context:   discoveryContext,
-							Mode:      "standard",
-							SessionID: input.SessionID,
-							History:   convertHistoryForAgent(input.History),
-							SuggestedTools: []string{
-								"web_search",
+					for i := 0; i < len(searches); i++ {
+						s := searches[i]
+						var discoveryResult activities.AgentExecutionResult
+						discoveryErr := workflow.ExecuteActivity(ctx,
+							"ExecuteAgent",
+							activities.AgentExecutionInput{
+								Query: fmt.Sprintf(
+									"Extract the official website domains for the company %q.\n\n"+
+										"Use ONLY the provided web_search results (do not guess).\n"+
+										"Return JSON ONLY with this schema (no markdown, no prose):\n"+
+										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}\n"+
+										"Rules:\n"+
+										"- Output ONLY domains or site-level subdomains; no paths; strip \"www.\".\n"+
+										"- Include corporate + major product/brand + support/help domains if they appear in results.\n"+
+										"- Allow regional site-level subdomains only (jp./cn./eu./us./kr.) and regional ccTLDs (.jp/.co.jp/.cn/.com.cn).\n"+
+										"- Exclude third-party directories/social/news/blog/press/careers and platform hosts (wikipedia, linkedin, crunchbase, github.io, *.mintlify.app, etc.).\n"+
+										"- Return at most 10 domains. If none found, return {\"domains\":[]}.\n",
+									refineResult.CanonicalName,
+								),
+								AgentID:   "domain_discovery",
+								Context:   discoveryContext,
+								Mode:      "standard",
+								SessionID: input.SessionID,
+								History:   convertHistoryForAgent(input.History),
+								SuggestedTools: []string{
+									"web_search",
+								},
+								ToolParameters: map[string]interface{}{
+									"tool":        "web_search",
+									"query":       s.Query,
+									"max_results": 20,
+								},
+								ParentWorkflowID: input.ParentWorkflowID,
 							},
-							ToolParameters: map[string]interface{}{
-								"tool":        "web_search",
-								"query":       searchQuery,
-								"max_results": 20,
-							},
-							ParentWorkflowID: input.ParentWorkflowID,
-						},
-					).Get(ctx, &discoveryResult)
+						).Get(ctx, &discoveryResult)
 
-					if discoveryErr != nil || !discoveryResult.Success {
-						logger.Warn("Domain discovery search-first failed; falling back to refinement domains",
-							"canonical_name", refineResult.CanonicalName,
-							"search_query", searchQuery,
-							"error", discoveryErr,
-							"agent_error", discoveryResult.Error,
-						)
-					} else {
-						searchDomains := domainsFromWebSearchToolExecutions(discoveryResult.ToolExecutions, refineResult.CanonicalName)
+						if discoveryErr != nil || !discoveryResult.Success {
+							logger.Warn("Domain discovery search-first failed",
+								"canonical_name", refineResult.CanonicalName,
+								"search_key", s.Key,
+								"search_query", s.Query,
+								"error", discoveryErr,
+								"agent_error", discoveryResult.Error,
+							)
+							continue
+						}
+
+						searchDomainsAll := searchDomainsFromResults(discoveryResult.ToolExecutions)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
+						if prefetchDiscoverOnlyVersion >= 3 {
+							llmDomains = domainsFromDiscoveryResponseV2(discoveryResult.Response)
+							if len(llmDomains) == 0 {
+								logger.Warn("Domain discovery returned no parseable JSON domains; skipping region",
+									"canonical_name", refineResult.CanonicalName,
+									"search_key", s.Key,
+									"search_query", s.Query,
+								)
+								continue
+							}
+						}
 
-						// Prefer LLM-selected domains, but only keep domains that are grounded in search result URLs.
-						// Build a set of search domains for exact matching
 						searchSet := make(map[string]bool)
-						for _, d := range searchDomains {
+						for _, d := range searchDomainsAll {
 							searchSet[d] = true
 						}
 
-						// Helper to check if a domain is grounded:
-						// - Exact match (llm said "jp.ptmind.com", search has "jp.ptmind.com")
-						// - LLM said root domain, search has subdomain (llm said "ptmind.com", search has "jp.ptmind.com")
 						isGrounded := func(llmDomain string) bool {
 							if searchSet[llmDomain] {
 								return true
 							}
-							// Check if any search domain is a subdomain of llmDomain
 							suffix := "." + llmDomain
 							for sd := range searchSet {
 								if strings.HasSuffix(sd, suffix) {
@@ -1232,17 +2259,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						var discovered []string
 						seenDiscovered := make(map[string]bool)
 
-						// First, add LLM-selected domains that are grounded
 						for _, d := range llmDomains {
 							if isGrounded(d) && !seenDiscovered[d] {
 								seenDiscovered[d] = true
 								discovered = append(discovered, d)
 							}
 						}
-
-						// Also add search domains that are subdomains of LLM-selected domains
-						// (e.g., if LLM said "ptmind.com", also add "jp.ptmind.com" from search)
-						for _, sd := range searchDomains {
+						for _, sd := range searchDomainsAll {
 							if seenDiscovered[sd] {
 								continue
 							}
@@ -1255,47 +2278,38 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								}
 							}
 						}
-
-						// Fallback: if nothing discovered, use all search domains
-						if len(discovered) == 0 {
-							discovered = searchDomains
+						if len(discovered) == 0 && prefetchDiscoverOnlyVersion >= 3 {
+							logger.Warn("Domain discovery domains not grounded in web_search results; skipping region",
+								"canonical_name", refineResult.CanonicalName,
+								"search_key", s.Key,
+								"search_query", s.Query,
+								"llm_domains", llmDomains,
+								"search_domains_count", len(searchDomainsAll),
+							)
+							continue
+						}
+						if len(discovered) == 0 && prefetchDiscoverOnlyVersion < 3 {
+							discovered = searchDomainsAll
 						}
 
 						if len(discovered) > 0 {
-							// Merge: search-discovered + refinement-guessed domains (dedup)
-							merged := discovered
-							seen := make(map[string]bool)
+							discoveredBySearch[s.Key] = discovered
 							for _, d := range discovered {
-								seen[d] = true
-							}
-							for _, d := range refineResult.OfficialDomains {
-								if !seen[d] {
-									merged = append(merged, d)
-									seen[d] = true
+								if !seenAll[d] {
+									seenAll[d] = true
+									allDiscovered = append(allDiscovered, d)
 								}
 							}
+						}
 
-							baseContext["official_domains"] = merged
-							baseContext["official_domains_source"] = "search_first_merged"
-
-							officialDomainsForPrefetch = merged
-
-							// Multinational companies need more prefetch slots
-							maxPrefetch := 5
-							if len(refineResult.TargetLanguages) > 1 {
-								maxPrefetch = 8
+						// Scheme C: After the primary run, optionally add ONE global fallback search.
+						if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 && i == 0 {
+							// If primary query is already global, do not fallback.
+							if strings.TrimSpace(globalQuery) != "" && strings.TrimSpace(s.Query) != strings.TrimSpace(globalQuery) {
+								if shouldRunGlobalDomainDiscoveryFallback(allDiscovered) {
+									searches = append(searches, domainDiscoverySearch{Key: "global_fallback", Query: globalQuery})
+								}
 							}
-							if len(officialDomainsForPrefetch) > maxPrefetch {
-								officialDomainsForPrefetch = officialDomainsForPrefetch[:maxPrefetch]
-							}
-
-							logger.Info("Domain discovery search-first succeeded",
-								"canonical_name", refineResult.CanonicalName,
-								"search_query", searchQuery,
-								"discovered", discovered,
-								"merged", merged,
-								"refinement_domains", refineResult.OfficialDomains,
-							)
 						}
 
 						if discoveryResult.TokensUsed > 0 || discoveryResult.InputTokens > 0 || discoveryResult.OutputTokens > 0 {
@@ -1311,19 +2325,251 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								Provider:     discoveryResult.Provider,
 								InputTokens:  inTok,
 								OutputTokens: outTok,
-								Metadata:     map[string]interface{}{"phase": "domain_discovery"},
+								Metadata:     map[string]interface{}{"phase": "domain_discovery", "region": s.Key},
 							}).Get(recCtx, nil)
 						}
+					}
+
+					if len(allDiscovered) > 0 {
+						candidateDomains := allDiscovered
+						officialDomainsSource := "search_first_discovered_only_v1"
+						if prefetchDiscoverOnlyVersion >= 3 {
+							officialDomainsSource = "search_first_discovered_only_v3"
+						}
+						prefetchStrategy := "discover-only"
+						var hybridAdded []string
+						if hybridPrefetchEnabled {
+							hybridAdded = vettedHybridRefinementDomains(allDiscovered, refineResult.OfficialDomains, refineResult.CanonicalName)
+							candidateDomains = append(append([]string{}, allDiscovered...), hybridAdded...)
+							candidateDomains = sortDomainsForHybridPrefetch(candidateDomains, refineResult.CanonicalName)
+							officialDomainsSource = "search_first_hybrid_v2"
+							prefetchStrategy = "hybrid"
+						}
+
+						// Scope official_domains to requested regions when user explicitly requested a region.
+						scoped := candidateDomains
+						if len(requestedRegions) > 0 {
+							scoped = selectDomainsForPrefetch(candidateDomains, requestedRegions, originRegion, 100)
+							if len(scoped) == 0 {
+								scoped = nil
+							}
+						}
+						if len(scoped) > 0 {
+							baseContext["official_domains"] = scoped
+							baseContext["official_domains_source"] = officialDomainsSource
+						}
+
+						prefetchDomains := selectDomainsForPrefetch(candidateDomains, requestedRegions, originRegion, maxPrefetch)
+						urls = buildPrefetchURLsFromDomains(prefetchDomains)
+
+						logger.Info("Domain discovery (prefetch) completed",
+							"canonical_name", refineResult.CanonicalName,
+							"origin_region", originRegion,
+							"requested_regions", requestedRegions,
+							"prefetch_strategy", prefetchStrategy,
+							"searches", searches,
+							"discovered_by_search", discoveredBySearch,
+							"all_discovered_count", len(allDiscovered),
+							"hybrid_added_domains", hybridAdded,
+							"candidate_domains_count", len(candidateDomains),
+							"prefetch_domains", prefetchDomains,
+							"prefetch_urls", urls,
+						)
+					} else {
+						logger.Info("Domain discovery returned no domains; skipping discover-only prefetch",
+							"canonical_name", refineResult.CanonicalName,
+							"origin_region", originRegion,
+							"requested_regions", requestedRegions,
+							"searches", searches,
+						)
+					}
+				}
+			} else {
+				officialDomainsForPrefetch := refineResult.OfficialDomains
+				domainDiscoveryVersion := workflow.GetVersion(ctx, "domain_discovery_search_first_v1", workflow.DefaultVersion, 1)
+				if domainDiscoveryVersion >= 1 && strings.TrimSpace(refineResult.CanonicalName) != "" {
+					searchQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, regionCode)
+					if searchQuery != "" {
+						discoveryContext := map[string]interface{}{
+							"user_id":    input.UserID,
+							"session_id": input.SessionID,
+							"model_tier": "small",
+							"response_format": map[string]interface{}{
+								"type": "json_object",
+							},
+						}
+						if input.ParentWorkflowID != "" {
+							discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
+						}
+
+						var discoveryResult activities.AgentExecutionResult
+						discoveryErr := workflow.ExecuteActivity(ctx,
+							"ExecuteAgent",
+							activities.AgentExecutionInput{
+								Query: fmt.Sprintf(
+									"Extract the official website domains for the company %q.\n\n"+
+										"Use ONLY the provided web_search results (do not guess).\n"+
+										"Return JSON ONLY with this schema (no markdown, no prose):\n"+
+										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}\n"+
+										"Rules:\n"+
+										"- Output ONLY domains or site-level subdomains; no paths; strip \"www.\".\n"+
+										"- Include corporate + major product/brand + support/help domains if they appear in results.\n"+
+										"- Allow regional site-level subdomains only (jp./cn./eu./us./kr.) and regional ccTLDs (.jp/.co.jp/.cn/.com.cn).\n"+
+										"- Exclude third-party directories/social/news/blog/press/careers and platform hosts (wikipedia, linkedin, crunchbase, github.io, *.mintlify.app, etc.).\n"+
+										"- Return at most 10 domains. If none found, return {\"domains\":[]}.\n",
+									refineResult.CanonicalName,
+								),
+								AgentID:   "domain_discovery",
+								Context:   discoveryContext,
+								Mode:      "standard",
+								SessionID: input.SessionID,
+								History:   convertHistoryForAgent(input.History),
+								SuggestedTools: []string{
+									"web_search",
+								},
+								ToolParameters: map[string]interface{}{
+									"tool":        "web_search",
+									"query":       searchQuery,
+									"max_results": 20,
+								},
+								ParentWorkflowID: input.ParentWorkflowID,
+							},
+						).Get(ctx, &discoveryResult)
+
+						if discoveryErr != nil || !discoveryResult.Success {
+							logger.Warn("Domain discovery search-first failed; falling back to refinement domains",
+								"canonical_name", refineResult.CanonicalName,
+								"search_query", searchQuery,
+								"error", discoveryErr,
+								"agent_error", discoveryResult.Error,
+							)
+						} else {
+							searchDomains := domainsFromWebSearchToolExecutions(discoveryResult.ToolExecutions, refineResult.CanonicalName)
+							llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
+
+							// Prefer LLM-selected domains, but only keep domains that are grounded in search result URLs.
+							// Build a set of search domains for exact matching
+							searchSet := make(map[string]bool)
+							for _, d := range searchDomains {
+								searchSet[d] = true
+							}
+
+							// Helper to check if a domain is grounded:
+							// - Exact match (llm said "jp.ptmind.com", search has "jp.ptmind.com")
+							// - LLM said root domain, search has subdomain (llm said "ptmind.com", search has "jp.ptmind.com")
+							isGrounded := func(llmDomain string) bool {
+								if searchSet[llmDomain] {
+									return true
+								}
+								// Check if any search domain is a subdomain of llmDomain
+								suffix := "." + llmDomain
+								for sd := range searchSet {
+									if strings.HasSuffix(sd, suffix) {
+										return true
+									}
+								}
+								return false
+							}
+
+							var discovered []string
+							seenDiscovered := make(map[string]bool)
+
+							// First, add LLM-selected domains that are grounded
+							for _, d := range llmDomains {
+								if isGrounded(d) && !seenDiscovered[d] {
+									seenDiscovered[d] = true
+									discovered = append(discovered, d)
+								}
+							}
+
+							// Also add search domains that are subdomains of LLM-selected domains
+							// (e.g., if LLM said "ptmind.com", also add "jp.ptmind.com" from search)
+							for _, sd := range searchDomains {
+								if seenDiscovered[sd] {
+									continue
+								}
+								for _, llmD := range llmDomains {
+									suffix := "." + llmD
+									if strings.HasSuffix(sd, suffix) {
+										seenDiscovered[sd] = true
+										discovered = append(discovered, sd)
+										break
+									}
+								}
+							}
+
+							// Fallback: if nothing discovered, use all search domains
+							if len(discovered) == 0 {
+								discovered = searchDomains
+							}
+
+							if len(discovered) > 0 {
+								// Merge: search-discovered + refinement-guessed domains (dedup)
+								merged := discovered
+								seen := make(map[string]bool)
+								for _, d := range discovered {
+									seen[d] = true
+								}
+								for _, d := range refineResult.OfficialDomains {
+									if !seen[d] {
+										merged = append(merged, d)
+										seen[d] = true
+									}
+								}
+
+								baseContext["official_domains"] = merged
+								baseContext["official_domains_source"] = "search_first_merged"
+
+								officialDomainsForPrefetch = merged
+
+								// Multinational companies need more prefetch slots
+								maxPrefetch := 5
+								if len(refineResult.TargetLanguages) > 1 {
+									maxPrefetch = 8
+								}
+								if len(officialDomainsForPrefetch) > maxPrefetch {
+									officialDomainsForPrefetch = officialDomainsForPrefetch[:maxPrefetch]
+								}
+
+								logger.Info("Domain discovery search-first succeeded",
+									"canonical_name", refineResult.CanonicalName,
+									"search_query", searchQuery,
+									"discovered", discovered,
+									"merged", merged,
+									"refinement_domains", refineResult.OfficialDomains,
+								)
+							}
+
+							if discoveryResult.TokensUsed > 0 || discoveryResult.InputTokens > 0 || discoveryResult.OutputTokens > 0 {
+								inTok := discoveryResult.InputTokens
+								outTok := discoveryResult.OutputTokens
+								recCtx := opts.WithTokenRecordOptions(ctx)
+								_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+									UserID:       input.UserID,
+									SessionID:    input.SessionID,
+									TaskID:       workflowID,
+									AgentID:      "domain_discovery",
+									Model:        discoveryResult.ModelUsed,
+									Provider:     discoveryResult.Provider,
+									InputTokens:  inTok,
+									OutputTokens: outTok,
+									Metadata:     map[string]interface{}{"phase": "domain_discovery"},
+								}).Get(recCtx, nil)
+							}
+						}
+					}
+				}
+
+				urls = buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, officialDomainsForPrefetch, regionCode)
+				if len(urls) > 0 {
+					// Cap prefetch attempts to avoid excessive tool usage (official + top aggregators)
+					if len(urls) > 5 {
+						urls = urls[:5]
 					}
 				}
 			}
 
-			urls := buildCompanyPrefetchURLsWithLocale(refineResult.CanonicalName, officialDomainsForPrefetch, regionCode)
 			if len(urls) > 0 {
-				// Cap prefetch attempts to avoid excessive tool usage (official + top aggregators)
-				if len(urls) > 5 {
-					urls = urls[:5]
-				}
 
 				var failedDomains []string
 
@@ -1368,7 +2614,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								ToolParameters: map[string]interface{}{
 									"tool":            "web_subpage_fetch",
 									"url":             url,
-									"limit":           12,
+									"limit":           10,
 									"target_keywords": "about team leadership company founders management products services",
 									"target_paths": []string{
 										"/about", "/about-us", "/company",
@@ -1408,11 +2654,15 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					domainPrefetchResults = append(domainPrefetchResults, payload.Result)
 					domainPrefetchTokens += payload.Result.TokensUsed
 
+					// Persist agent and tool execution records
+					prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
+					persistAgentExecutionLocal(ctx, workflowID, prefetchAgentName,
+						fmt.Sprintf("Domain prefetch: %s", payload.URL), payload.Result)
+
 					if payload.Result.TokensUsed > 0 || payload.Result.InputTokens > 0 || payload.Result.OutputTokens > 0 {
 						inTok := payload.Result.InputTokens
 						outTok := payload.Result.OutputTokens
 						recCtx := opts.WithTokenRecordOptions(ctx)
-						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
 						_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 							UserID:       input.UserID,
 							SessionID:    input.SessionID,
@@ -3574,9 +4824,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			})
 		}
 
-		// Tier-based model selection: medium for long reports (better instruction following)
+		// Dynamic model tier: use medium for longer reports (better instruction following)
+		// Lowered threshold from 20000 to 8000 to improve citation success rate
 		citationModelTier := "small"
-		if len(reportForCitation) > 20000 {
+		if len(reportForCitation) > 8000 {
 			citationModelTier = "medium"
 		}
 

@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
-from .web_fetch import detect_blocked_reason  # P0-A: Reuse blocked detection logic
+from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reuse blocked detection and noise cleaning logic
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +224,8 @@ class WebCrawlTool(Tool):
 
             logger.info(f"Crawl completed with {len(results)} pages")
 
-            # Step 3: Merge results
-            return self._merge_results(results, url, max_length)
+            # Step 3: Merge results (enforce limit)
+            return self._merge_results(results, url, max_length, limit)
 
     async def _start_crawl(self, session: aiohttp.ClientSession, url: str, limit: int) -> str:
         """Start a crawl job and return the crawl ID."""
@@ -238,7 +238,8 @@ class WebCrawlTool(Tool):
             "limit": limit,
             "scrapeOptions": {
                 "formats": ["markdown"],
-                "onlyMainContent": True
+                "onlyMainContent": True,
+                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
             }
         }
 
@@ -295,7 +296,7 @@ class WebCrawlTool(Tool):
 
         return all_results
 
-    def _merge_results(self, results: List[Dict], original_url: str, max_length: int) -> Dict:
+    def _merge_results(self, results: List[Dict], original_url: str, max_length: int, limit: int) -> Dict:
         """Merge crawl results into a single output."""
         # Filter and deduplicate
         seen_urls = set()
@@ -309,9 +310,17 @@ class WebCrawlTool(Tool):
         if not unique_results:
             raise Exception("No valid pages in crawl results")
 
+        # Enforce limit to prevent excessive data processing
+        if len(unique_results) > limit:
+            logger.info(f"Truncating {len(unique_results)} pages to limit={limit}")
+            unique_results = unique_results[:limit]
+
         if len(unique_results) == 1:
             r = unique_results[0]
-            content = r.get("markdown", "")[:max_length]
+            content = r.get("markdown", "")
+            content = clean_markdown_noise(content)  # Clean noise before truncation
+            if len(content) > max_length:
+                content = content[:max_length]
             # P0-A: Detect blocked content for Citation V2 filtering
             blocked_reason = detect_blocked_reason(content, 200)
             return {
@@ -337,6 +346,7 @@ class WebCrawlTool(Tool):
             page_url = metadata.get("url", "")
             page_title = metadata.get("title", "")
             page_content = r.get("markdown", "")
+            page_content = clean_markdown_noise(page_content)  # Clean noise
 
             # Per-page truncation
             if len(page_content) > max_length:
