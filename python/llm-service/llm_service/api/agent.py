@@ -426,6 +426,69 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
             else:
                 part = part_header + str(output)[:3000]
 
+        elif tool_name == "web_crawl":
+            # web_crawl returns comprehensive multi-page crawl results
+            # Format: "# Main Page: URL\n...\n---\n\n## Page N: URL\n..."
+            # Critical: Extract content from EACH page to preserve blog posts, articles etc.
+            if isinstance(output, dict):
+                title = output.get("title", "")
+                content = output.get("content", "")
+                url = output.get("url", "")
+                pages_fetched = output.get("pages_fetched", 1)
+                char_count = output.get("char_count", 0)
+                metadata = output.get("metadata", {})
+                crawled_urls = metadata.get("urls", [])
+
+                if content and not content.startswith("%PDF"):
+                    import re
+                    page_sections = []
+
+                    # Parse main page: "# Main Page: URL\n..."
+                    main_match = re.search(r'^# Main Page: ([^\n]+)\n(.+?)(?=\n---\n\n## Page \d+:|$)', content, re.DOTALL)
+                    if main_match:
+                        main_url = main_match.group(1)
+                        main_content = main_match.group(2).strip()
+                        # Main page gets more space (5000 chars)
+                        page_sections.append(f"**Main ({main_url})**: {main_content[:5000]}")
+
+                    # Parse subsequent pages: "## Page N: URL\n..."
+                    page_pattern = re.compile(r'## Page \d+: ([^\n]+)\n(.+?)(?=\n---\n\n## Page \d+:|$)', re.DOTALL)
+                    for match in page_pattern.finditer(content):
+                        page_url = match.group(1)
+                        page_content = match.group(2).strip()
+
+                        # Prioritize important pages with more content
+                        priority_paths = ['/blog', '/article', '/post', '/about', '/team', '/leadership']
+                        is_priority = any(p in page_url.lower() for p in priority_paths)
+
+                        # Skip sitemap.xml raw content (usually not useful for interpretation)
+                        is_sitemap = 'sitemap.xml' in page_url.lower()
+
+                        if is_sitemap:
+                            # Just note the sitemap exists, don't include raw XML
+                            page_sections.append(f"**{page_url}**: (sitemap with {len(crawled_urls)} URLs)")
+                        elif is_priority:
+                            # Priority pages get 4000 chars each
+                            page_sections.append(f"**{page_url}**: {page_content[:4000]}")
+                        else:
+                            # Other pages get 2000 chars each
+                            page_sections.append(f"**{page_url}**: {page_content[:2000]}")
+
+                    # Build final content
+                    if page_sections:
+                        part_content = "\n\n".join(page_sections)
+                        # Total limit for crawl: 40000 chars (crawl typically fetches more pages)
+                        if len(part_content) > 40000:
+                            part_content = part_content[:40000] + "\n\n[...truncated, see full crawl output]"
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages, {char_count} chars):\n{part_content}\n\n"
+                    else:
+                        # Fallback if parsing fails - still preserve substantial content
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{content[:10000]}\n\n"
+                else:
+                    part = part_header + f"**{title}** ({url}): No readable content\n"
+            else:
+                part = part_header + str(output)[:5000]
+
         else:
             # Generic output
             if isinstance(output, dict):
