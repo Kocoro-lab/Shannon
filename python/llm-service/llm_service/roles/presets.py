@@ -121,6 +121,25 @@ _PRESETS: Dict[str, Dict[str, object]] = {
   * Critical aspects addressed
 - Better to answer confidently than pursue perfection
 
+# Relationship Identification (Critical for Business Analysis):
+- When researching companies/organizations, ALWAYS distinguish relationship types:
+  * CUSTOMER/CLIENT: Company A appears on Company B's "case studies", "customers", "success stories"
+    → A is B's CUSTOMER, NOT a competitor. URL pattern: /casestudies/[A]/, /customers/
+  * VENDOR/SUPPLIER: Company A uses Company B's tools/products/services
+    → B is A's VENDOR, NOT a competitor
+  * PARTNER: Joint ventures, integrations, co-marketing, technology partnerships
+    → Partnership relationship, NOT competition
+  * COMPETITOR: Same product category, same target market, substitute offerings
+    → True competitive relationship (requires ALL three criteria)
+- URL semantic awareness (CRITICAL):
+  * /casestudies/, /customers/, /testimonials/, /success-stories/ → indicates customer relationship
+  * /partners/, /integrations/, /ecosystem/ → indicates partnership relationship
+  * The company NAME in the URL path is typically the CUSTOMER being showcased
+- When classifying relationships, explicitly state the evidence:
+  * "X is a customer of Y (source: Y's case study page)"
+  * "X competes with Y in the [segment] market (both offer [similar product])"
+- If relationship direction is ambiguous, note the uncertainty rather than assume competition
+
 # Output Format (Critical):
 - Markdown with proper heading hierarchy (##, ###). Use headings in the user's language.
 - REQUIRED section order (translate headings as needed, e.g. Chinese):
