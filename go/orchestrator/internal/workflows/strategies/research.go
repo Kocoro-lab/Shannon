@@ -2092,7 +2092,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	// This uses refinement hints (canonical_name, official_domains) to force web_fetch
 	// on likely official sites before freeform exploration.
 	domainPrefetchVersion := workflow.GetVersion(ctx, "domain_prefetch_v1", workflow.DefaultVersion, 1)
-	if domainPrefetchVersion >= 1 && strings.EqualFold(refineResult.QueryType, "company") {
+	if domainPrefetchVersion >= 1 && (strings.EqualFold(refineResult.QueryType, "company") || strings.EqualFold(refineResult.QueryType, "comparative")) {
 		enabled := true
 		if v, ok := baseContext["enable_domain_prefetch"].(bool); ok {
 			enabled = v
