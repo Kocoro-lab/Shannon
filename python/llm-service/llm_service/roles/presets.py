@@ -319,7 +319,7 @@ try:
 
     _PRESETS["data_analytics"] = _PTENGINE_DATA_ANALYTICS
 except Exception as e:
-    logger.debug("Optional role preset 'data_analytics' not loaded: %s", e)
+    logger.warning("Optional role preset 'data_analytics' not loaded: %s", e)
 
 # GA4 analytics role (graceful fallback if module not available)
 try:
@@ -327,7 +327,7 @@ try:
 
     _PRESETS["ga4_analytics"] = GA4_ANALYTICS_PRESET
 except Exception as e:
-    logger.debug("Optional role preset 'ga4_analytics' not loaded: %s", e)
+    logger.warning("Optional role preset 'ga4_analytics' not loaded: %s", e)
 
 # Angfa Store GA4 analytics role (vendor-specific, not committed)
 try:
@@ -335,7 +335,7 @@ try:
 
     _PRESETS["angfa_ga4_analytics"] = ANGFA_GA4_ANALYTICS_PRESET
 except Exception as e:
-    logger.debug("Optional role preset 'angfa_ga4_analytics' not loaded: %s", e)
+    logger.warning("Optional role preset 'angfa_ga4_analytics' not loaded: %s", e)
 
 # Trading agent roles (optional)
 try:
