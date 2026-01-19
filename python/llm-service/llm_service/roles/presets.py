@@ -6,7 +6,10 @@ conservative tool allowlist. This file intentionally avoids dynamic I/O.
 """
 
 from typing import Dict
+import logging
 import re
+
+logger = logging.getLogger(__name__)
 
 
 _PRESETS: Dict[str, Dict[str, object]] = {
@@ -315,24 +318,103 @@ try:
     from .ptengine.data_analytics import DATA_ANALYTICS_PRESET as _PTENGINE_DATA_ANALYTICS
 
     _PRESETS["data_analytics"] = _PTENGINE_DATA_ANALYTICS
-except Exception:
-    pass
+except Exception as e:
+    logger.debug("Optional role preset 'data_analytics' not loaded: %s", e)
 
 # GA4 analytics role (graceful fallback if module not available)
 try:
     from .ga4.analytics_agent import GA4_ANALYTICS_PRESET
 
     _PRESETS["ga4_analytics"] = GA4_ANALYTICS_PRESET
-except Exception:
-    pass
+except Exception as e:
+    logger.debug("Optional role preset 'ga4_analytics' not loaded: %s", e)
 
 # Angfa Store GA4 analytics role (vendor-specific, not committed)
 try:
     from .vendor.angfa_analytics import ANGFA_GA4_ANALYTICS_PRESET
 
     _PRESETS["angfa_ga4_analytics"] = ANGFA_GA4_ANALYTICS_PRESET
-except Exception:
-    pass
+except Exception as e:
+    logger.debug("Optional role preset 'angfa_ga4_analytics' not loaded: %s", e)
+
+# Trading agent roles (optional)
+try:
+    from .trading import (
+        # trading_analysis roles
+        FUNDAMENTAL_ANALYST_PRESET,
+        TECHNICAL_ANALYST_PRESET,
+        SENTIMENT_ANALYST_PRESET,
+        BULL_RESEARCHER_PRESET,
+        BEAR_RESEARCHER_PRESET,
+        RISK_ANALYST_PRESET,
+        PORTFOLIO_MANAGER_PRESET,
+        # event_catalyst roles
+        EARNINGS_ANALYST_PRESET,
+        OPTIONS_ANALYST_PRESET,
+        EVENT_HISTORIAN_PRESET,
+        CATALYST_SYNTHESIZER_PRESET,
+        # regime_detection roles
+        MACRO_ANALYST_PRESET,
+        SECTOR_ANALYST_PRESET,
+        VOLATILITY_ANALYST_PRESET,
+        REGIME_SYNTHESIZER_PRESET,
+        # famous_investors roles
+        WARREN_BUFFETT_INVESTOR_PRESET,
+        BEN_GRAHAM_INVESTOR_PRESET,
+        CHARLIE_MUNGER_INVESTOR_PRESET,
+        PETER_LYNCH_INVESTOR_PRESET,
+        PHIL_FISHER_INVESTOR_PRESET,
+        MICHAEL_BURRY_INVESTOR_PRESET,
+        BILL_ACKMAN_INVESTOR_PRESET,
+        INVESTOR_PANEL_SYNTHESIZER_PRESET,
+        # news_monitor roles
+        NEWS_SEARCHER_PRESET,
+        MARKET_NEWS_SEARCHER_PRESET,
+        SOCIAL_SEARCHER_PRESET,
+        NEWS_SENTIMENT_SYNTHESIZER_PRESET,
+    )
+
+    # trading_analysis workflow roles
+    _PRESETS["fundamental_analyst"] = FUNDAMENTAL_ANALYST_PRESET
+    _PRESETS["technical_analyst"] = TECHNICAL_ANALYST_PRESET
+    _PRESETS["sentiment_analyst"] = SENTIMENT_ANALYST_PRESET
+    _PRESETS["bull_researcher"] = BULL_RESEARCHER_PRESET
+    _PRESETS["bear_researcher"] = BEAR_RESEARCHER_PRESET
+    _PRESETS["risk_analyst"] = RISK_ANALYST_PRESET
+    _PRESETS["portfolio_manager"] = PORTFOLIO_MANAGER_PRESET
+
+    # event_catalyst workflow roles
+    _PRESETS["earnings_analyst"] = EARNINGS_ANALYST_PRESET
+    _PRESETS["options_analyst"] = OPTIONS_ANALYST_PRESET
+    _PRESETS["event_historian"] = EVENT_HISTORIAN_PRESET
+    _PRESETS["catalyst_synthesizer"] = CATALYST_SYNTHESIZER_PRESET
+
+    # regime_detection workflow roles
+    _PRESETS["macro_analyst"] = MACRO_ANALYST_PRESET
+    _PRESETS["sector_analyst"] = SECTOR_ANALYST_PRESET
+    _PRESETS["volatility_analyst"] = VOLATILITY_ANALYST_PRESET
+    _PRESETS["regime_synthesizer"] = REGIME_SYNTHESIZER_PRESET
+
+    # famous_investors workflow roles
+    _PRESETS["warren_buffett_investor"] = WARREN_BUFFETT_INVESTOR_PRESET
+    _PRESETS["ben_graham_investor"] = BEN_GRAHAM_INVESTOR_PRESET
+    _PRESETS["charlie_munger_investor"] = CHARLIE_MUNGER_INVESTOR_PRESET
+    _PRESETS["peter_lynch_investor"] = PETER_LYNCH_INVESTOR_PRESET
+    _PRESETS["phil_fisher_investor"] = PHIL_FISHER_INVESTOR_PRESET
+    _PRESETS["michael_burry_investor"] = MICHAEL_BURRY_INVESTOR_PRESET
+    _PRESETS["bill_ackman_investor"] = BILL_ACKMAN_INVESTOR_PRESET
+    _PRESETS["investor_panel_synthesizer"] = INVESTOR_PANEL_SYNTHESIZER_PRESET
+
+    # news_monitor workflow roles
+    _PRESETS["news_searcher"] = NEWS_SEARCHER_PRESET
+    _PRESETS["market_news_searcher"] = MARKET_NEWS_SEARCHER_PRESET
+    _PRESETS["social_searcher"] = SOCIAL_SEARCHER_PRESET
+    _PRESETS["news_sentiment_synthesizer"] = NEWS_SENTIMENT_SYNTHESIZER_PRESET
+except Exception as e:
+    logger.warning(
+        "Failed to import trading role presets; trading roles will be unavailable: %s",
+        e,
+    )
 
 
 def get_role_preset(name: str) -> Dict[str, object]:

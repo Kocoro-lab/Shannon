@@ -85,7 +85,7 @@ def clean_markdown_noise(content: str) -> str:
 
     from typing import List, Tuple
 
-    # Step 0: 保护代码块 (fenced 和 inline)
+    # Step 0: Protect code blocks (fenced and inline)
     code_blocks: List[Tuple[str, str]] = []
 
     def save_code(m):
@@ -98,30 +98,30 @@ def clean_markdown_noise(content: str) -> str:
     # Inline code `...`
     content = re.sub(r'`[^`]+`', save_code, content)
 
-    # Step 1: 提前移除 base64 (性能优化，减少后续正则匹配量)
+    # Step 1: Remove base64 early (performance optimization, reduces subsequent regex matching)
     content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=\s]+', '', content, flags=re.MULTILINE)
 
-    # Step 2: 嵌套图片链接 [![alt](img)](href) -> alt 或 ''
-    # 必须在普通图片处理之前
+    # Step 2: Nested image links [![alt](img)](href) -> alt or ''
+    # Must be processed before regular images
     def extract_meaningful_alt(m, group=1):
         alt = m.group(group).strip()
-        # 保留有意义的 alt (>5字符，含中文或英文)
+        # Keep meaningful alt text (>5 chars, contains Chinese or English)
         if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
-            return alt  # 返回纯文本，不加括号
+            return alt  # Return plain text without brackets
         return ''
 
     content = re.sub(r'\[!\[([^\]]*)\]\([^)]*\)\]\([^)]*\)',
                      lambda m: extract_meaningful_alt(m, 1), content)
 
-    # Step 3: 标准图片 ![alt](url) 和 ![alt](url "title")
+    # Step 3: Standard images ![alt](url) and ![alt](url "title")
     content = re.sub(r'!\[([^\]]*)\]\([^)]*(?:\s+"[^"]*")?\)',
                      lambda m: extract_meaningful_alt(m, 1), content)
 
-    # Step 4: Reference-style 图片 ![alt][ref]
+    # Step 4: Reference-style images ![alt][ref]
     content = re.sub(r'!\[([^\]]*)\]\[[^\]]*\]',
                      lambda m: extract_meaningful_alt(m, 1), content)
 
-    # Step 5: HTML img 标签 <img ... alt="...">
+    # Step 5: HTML img tags <img ... alt="...">
     def replace_html_img(m):
         alt_match = re.search(r'alt=["\']([^"\']*)["\']', m.group(0))
         if alt_match:
@@ -132,27 +132,27 @@ def clean_markdown_noise(content: str) -> str:
 
     content = re.sub(r'<img[^>]*>', replace_html_img, content, flags=re.IGNORECASE)
 
-    # Step 6: 清理孤立的 reference definitions [ref]: url
+    # Step 6: Clean up orphaned reference definitions [ref]: url
     content = re.sub(r'^\[[^\]]+\]:\s*\S+.*$', '', content, flags=re.MULTILINE)
 
-    # Step 7: tel/mailto 链接 - 保留文本，移除 URL
+    # Step 7: tel/mailto links - keep text, remove URL
     content = re.sub(r'\[([^\]]+)\]\((tel:|mailto:)[^)]+\)', r'\1', content)
 
-    # Step 8: 锚点链接 - 保留文本，移除 URL
+    # Step 8: Anchor links - keep text, remove URL
     content = re.sub(r'\[([^\]]+)\]\(#[^)]*\)', r'\1', content)
 
-    # Step 9: Autolinks - 保留地址，移除 scheme
+    # Step 9: Autolinks - keep address, remove scheme
     content = re.sub(r'<mailto:([^>]+)>', r'\1', content)
     content = re.sub(r'<tel:([^>]+)>', r'\1', content)
     content = re.sub(r'<https?://([^>]+)>', r'\1', content)
 
-    # Step 10: 空链接 []()
+    # Step 10: Empty links []()
     content = re.sub(r'\[\s*\]\([^)]*\)', '', content)
 
-    # Step 11: 清理多余空行
+    # Step 11: Clean up excessive blank lines
     content = re.sub(r'\n{3,}', '\n\n', content)
 
-    # Step 12: 恢复代码块
+    # Step 12: Restore code blocks
     for placeholder, original in code_blocks:
         content = content.replace(placeholder, original)
 

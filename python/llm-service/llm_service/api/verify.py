@@ -578,13 +578,15 @@ For each source, determine if it:
 
 Output JSON format:
 {{
-    "supporting": [{valid_nums[0]}],  // Citation numbers that support (use actual numbers shown above)
-    "conflicting": [],    // Citation numbers that conflict
-    "confidence": 0.85     // 0.0-1.0 confidence in claim
+    "supporting": [{valid_nums[0]}],
+    "conflicting": [],
+    "confidence": 0.85
 }}
 
 IMPORTANT:
 - Only use citation numbers from the sources above: {valid_nums}
+- supporting/conflicting must be arrays of citation numbers
+- confidence must be a number between 0.0 and 1.0
 - Only output the JSON, nothing else.
 """
 
@@ -744,12 +746,12 @@ async def _verify_single_claim_v2(
 {citation_context}
 
 ## 输出要求
-输出 JSON:
+只输出一个 JSON 对象（不要 Markdown/代码块），例如:
 {{
-    "verdict": "supported" | "unsupported" | "insufficient_evidence",
-    "supporting": [citation_ids...],
-    "conflicting": [citation_ids...],
-    "confidence": 0.0-1.0,
+    "verdict": "supported",
+    "supporting": [{valid_nums[0]}],
+    "conflicting": [],
+    "confidence": 0.85,
     "reasoning": "简短解释"
 }}
 
@@ -757,6 +759,11 @@ async def _verify_single_claim_v2(
 - **supported**: 至少一个来源明确支持该陈述（有直接证据）
 - **unsupported**: 有来源明确反驳该陈述（有矛盾证据）
 - **insufficient_evidence**: 来源不直接涉及该陈述，或证据不足以判断
+
+## 约束
+- verdict 必须是 "supported"、"unsupported" 或 "insufficient_evidence"
+- supporting/conflicting 只能包含以下 citation ID: {valid_nums}
+- confidence 必须是 0.0 到 1.0 的数字
 
 只使用以下 citation ID: {valid_nums}
 只输出 JSON，无其他内容。
@@ -771,10 +778,10 @@ Relevant sources (ranked by relevance):
 
 ## Output format
 {{
-    "verdict": "supported" | "unsupported" | "insufficient_evidence",
-    "supporting": [citation_ids...],
-    "conflicting": [citation_ids...],
-    "confidence": 0.0-1.0,
+    "verdict": "supported",
+    "supporting": [{valid_nums[0]}],
+    "conflicting": [],
+    "confidence": 0.85,
     "reasoning": "brief explanation"
 }}
 
@@ -782,6 +789,11 @@ Relevant sources (ranked by relevance):
 - **supported**: At least one source explicitly supports the claim (direct evidence)
 - **unsupported**: A source explicitly contradicts the claim (conflicting evidence)
 - **insufficient_evidence**: Sources don't directly address the claim, or evidence is inconclusive
+
+## Constraints
+- verdict must be one of: "supported", "unsupported", "insufficient_evidence"
+- supporting/conflicting must only include citation IDs from: {valid_nums}
+- confidence must be a number between 0.0 and 1.0
 
 Only use citation IDs: {valid_nums}
 Output JSON only.
@@ -1312,7 +1324,7 @@ async def _batch_verify_all_claims(
         claim_contexts.append({
             "index": i + 1,
             "claim": claim,
-            "evidence": "\n\n".join(evidence_parts) if evidence_parts else "(无相关证据)",
+            "evidence": "\n\n".join(evidence_parts) if evidence_parts else "(no relevant evidence)",
             "valid_ids": valid_ids
         })
 
@@ -1337,11 +1349,11 @@ async def _batch_verify_all_claims(
 
         prompt_parts.append("""
 ## 输出要求
-对每个陈述，输出一个 JSON 对象：
+只输出一个 JSON 数组，例如：
 ```json
 [
-  {"claim_index": 1, "verdict": "supported"|"unsupported"|"insufficient_evidence", "supporting_ids": [citation_ids...], "reasoning": "简短解释"},
-  ...
+  {"claim_index": 1, "verdict": "supported", "supporting_ids": [1], "reasoning": "简短解释"},
+  {"claim_index": 2, "verdict": "insufficient_evidence", "supporting_ids": [], "reasoning": "简短解释"}
 ]
 ```
 
@@ -1349,6 +1361,10 @@ async def _batch_verify_all_claims(
 - **supported**: 证据中明确包含支持该陈述的内容
 - **unsupported**: 证据中明确反驳该陈述
 - **insufficient_evidence**: 证据不足以判断
+
+## 约束
+- verdict 必须是 "supported"、"unsupported" 或 "insufficient_evidence"
+- supporting_ids 只能包含该陈述对应的可用 citation IDs（见上面每段的 "可用 citation IDs"）
 
 只输出 JSON 数组，无其他内容。
 """)
@@ -1371,11 +1387,11 @@ async def _batch_verify_all_claims(
 
         prompt_parts.append("""
 ## Output Format
-For each claim, output a JSON object:
+Output only a JSON array, for example:
 ```json
 [
-  {"claim_index": 1, "verdict": "supported"|"unsupported"|"insufficient_evidence", "supporting_ids": [citation_ids...], "reasoning": "brief explanation"},
-  ...
+  {"claim_index": 1, "verdict": "supported", "supporting_ids": [1], "reasoning": "brief explanation"},
+  {"claim_index": 2, "verdict": "insufficient_evidence", "supporting_ids": [], "reasoning": "brief explanation"}
 ]
 ```
 
@@ -1383,6 +1399,10 @@ For each claim, output a JSON object:
 - **supported**: Evidence explicitly contains content supporting the claim
 - **unsupported**: Evidence explicitly contradicts the claim
 - **insufficient_evidence**: Evidence is inconclusive
+
+## Constraints
+- verdict must be one of: "supported", "unsupported", "insufficient_evidence"
+- supporting_ids must only include citation IDs available for that claim (shown above)
 
 Output only the JSON array, nothing else.
 """)
