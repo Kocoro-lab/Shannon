@@ -99,7 +99,7 @@ bin/
 *.out
 
 # Go workspace file
-go.work
+go.work.sum
 
 # Dependency directories
 vendor/

@@ -153,7 +153,7 @@ services:
       - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/app/config/models.yaml}
       - METRICS_PORT=${ORCHESTRATOR_METRICS_PORT:-2112}
       - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-600}
-      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-30}
+      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-60}
       # Optional: Account MCP tool costs in tokens (cost*1000); default off
       - MCP_COST_TO_TOKENS=${MCP_COST_TO_TOKENS:-0}
       # Priority-based task queues: set to 'on' to enable separate workers per priority
@@ -330,7 +330,11 @@ services:
     ports:
       - "8000:8000"
     healthcheck:
-      test: ['CMD-SHELL', 'python -c "import urllib.request,sys; urllib.request.urlopen(''http://localhost:8000/health/live''); print(''ok'')"']
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request,sys; urllib.request.urlopen(''http://localhost:8000/health/live''); print(''ok'')"',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -358,7 +362,11 @@ services:
     ports:
       - "8002:8002"
     healthcheck:
-      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8002/health''); print(''ok'')"']
+      test:
+        [
+          "CMD-SHELL",
+          'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8002/health''); print(''ok'')"',
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -398,7 +406,7 @@ services:
     ports:
       - "8080:8080"
     healthcheck:
-      test: ['CMD', 'wget', '-q', '--spider', 'http://localhost:8080/health']
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
       interval: 10s
       timeout: 5s
       retries: 5
