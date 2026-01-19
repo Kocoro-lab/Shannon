@@ -1,6 +1,7 @@
 package activities
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -880,6 +881,34 @@ func TestAppendCitationsToSentence(t *testing.T) {
 					tt.sentence, tt.citationIDs, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestBuildCitationAgentPrompt_PrecisionFirst(t *testing.T) {
+	prompt := buildCitationAgentPrompt()
+
+	// Ensure we don't encourage "density targets" or URL/title-only citation behavior.
+	for _, banned := range []string{
+		"30-50%",
+		"Cite if URL/Title Confirms",
+		"reasonable inference",
+		"contact page likely has location",
+	} {
+		if strings.Contains(prompt, banned) {
+			t.Fatalf("prompt contains banned guidance %q", banned)
+		}
+	}
+
+	// Ensure strict, evidence-first guidance is present.
+	for _, required := range []string{
+		"PRECISION FIRST",
+		"Content:",
+		"DO NOT cite",
+		"NEVER cite based on inference",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing required guidance %q", required)
+		}
 	}
 }
 

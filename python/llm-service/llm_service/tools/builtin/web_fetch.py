@@ -30,6 +30,135 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_SUBPAGES = 15  # Balanced limit for comprehensive research
+
+# P0-A: Blocked content detection patterns for Citation V2
+BLOCKED_PATTERNS = [
+    "Access Denied",
+    "403 Forbidden",
+    "Robot Check",
+    "Please verify you are human",
+    "Login Required",
+    "Sign in to continue",
+    "Captcha required",
+    "Enable JavaScript",
+    "This page isn't available",
+    "Page not found",
+]
+
+
+def detect_blocked_reason(content: str, status_code: int = 200) -> Optional[str]:
+    """
+    Detect if fetched content indicates a blocked/failed fetch.
+
+    Returns blocked_reason string if blocked, None otherwise.
+    Used by Citation V2 to filter invalid sources before verification.
+    """
+    if status_code >= 400:
+        return f"http_{status_code}"
+
+    if not content or len(content.strip()) < 50:
+        return "empty_content"
+
+    content_lower = content.lower()
+    for pattern in BLOCKED_PATTERNS:
+        if pattern.lower() in content_lower:
+            return pattern.lower().replace(" ", "_")
+
+    return None
+
+
+def clean_markdown_noise(content: str) -> str:
+    """
+    清理 fetch 结果中的 markdown 噪音。
+
+    Features:
+    - 保护代码块不被误改
+    - 移除图片引用，保留有意义的 alt text
+    - 移除 base64 数据
+    - 链接保留可见文本，只移除 URL
+    - 清理 HTML img 标签
+
+    Codex Review: 3 rounds, GPT-5.2 high reasoning
+    """
+    if not content:
+        return content
+
+    from typing import List, Tuple
+
+    # Step 0: 保护代码块 (fenced 和 inline)
+    code_blocks: List[Tuple[str, str]] = []
+
+    def save_code(m):
+        placeholder = f'__CODE_BLOCK_{len(code_blocks)}__'
+        code_blocks.append((placeholder, m.group(0)))
+        return placeholder
+
+    # Fenced code blocks ```...```
+    content = re.sub(r'```[\s\S]*?```', save_code, content)
+    # Inline code `...`
+    content = re.sub(r'`[^`]+`', save_code, content)
+
+    # Step 1: 提前移除 base64 (性能优化，减少后续正则匹配量)
+    content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=\s]+', '', content, flags=re.MULTILINE)
+
+    # Step 2: 嵌套图片链接 [![alt](img)](href) -> alt 或 ''
+    # 必须在普通图片处理之前
+    def extract_meaningful_alt(m, group=1):
+        alt = m.group(group).strip()
+        # 保留有意义的 alt (>5字符，含中文或英文)
+        if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
+            return alt  # 返回纯文本，不加括号
+        return ''
+
+    content = re.sub(r'\[!\[([^\]]*)\]\([^)]*\)\]\([^)]*\)',
+                     lambda m: extract_meaningful_alt(m, 1), content)
+
+    # Step 3: 标准图片 ![alt](url) 和 ![alt](url "title")
+    content = re.sub(r'!\[([^\]]*)\]\([^)]*(?:\s+"[^"]*")?\)',
+                     lambda m: extract_meaningful_alt(m, 1), content)
+
+    # Step 4: Reference-style 图片 ![alt][ref]
+    content = re.sub(r'!\[([^\]]*)\]\[[^\]]*\]',
+                     lambda m: extract_meaningful_alt(m, 1), content)
+
+    # Step 5: HTML img 标签 <img ... alt="...">
+    def replace_html_img(m):
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', m.group(0))
+        if alt_match:
+            alt = alt_match.group(1).strip()
+            if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
+                return alt
+        return ''
+
+    content = re.sub(r'<img[^>]*>', replace_html_img, content, flags=re.IGNORECASE)
+
+    # Step 6: 清理孤立的 reference definitions [ref]: url
+    content = re.sub(r'^\[[^\]]+\]:\s*\S+.*$', '', content, flags=re.MULTILINE)
+
+    # Step 7: tel/mailto 链接 - 保留文本，移除 URL
+    content = re.sub(r'\[([^\]]+)\]\((tel:|mailto:)[^)]+\)', r'\1', content)
+
+    # Step 8: 锚点链接 - 保留文本，移除 URL
+    content = re.sub(r'\[([^\]]+)\]\(#[^)]*\)', r'\1', content)
+
+    # Step 9: Autolinks - 保留地址，移除 scheme
+    content = re.sub(r'<mailto:([^>]+)>', r'\1', content)
+    content = re.sub(r'<tel:([^>]+)>', r'\1', content)
+    content = re.sub(r'<https?://([^>]+)>', r'\1', content)
+
+    # Step 10: 空链接 []()
+    content = re.sub(r'\[\s*\]\([^)]*\)', '', content)
+
+    # Step 11: 清理多余空行
+    content = re.sub(r'\n{3,}', '\n\n', content)
+
+    # Step 12: 恢复代码块
+    for placeholder, original in code_blocks:
+        content = content.replace(placeholder, original)
+
+    return content.strip()
+
+
 CRAWL_DELAY_SECONDS = float(os.getenv("WEB_FETCH_CRAWL_DELAY", "0.5"))
 MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  # 150KB total
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
@@ -286,6 +415,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "url": url,
             "formats": ["markdown"],
             "onlyMainContent": True,
+            "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
             "timeout": self.DEFAULT_TIMEOUT * 1000,  # Firecrawl uses milliseconds
         }
 
@@ -311,11 +441,17 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 result_data = data.get("data", {})
                 content = result_data.get("markdown", "")
 
+                # Clean markdown noise before truncation
+                content = clean_markdown_noise(content)
+
                 # Truncate if needed
                 if len(content) > max_length:
                     content = content[:max_length]
 
                 title = result_data.get("metadata", {}).get("title", "")
+                # P0-A: Detect blocked content
+                blocked_reason = detect_blocked_reason(content, 200)
+
                 return {
                     "url": result_data.get("url", url),
                     "title": title,
@@ -328,6 +464,9 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     "truncated": len(content) >= max_length,
                     "method": "firecrawl",
                     "pages_fetched": 1,
+                    "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                    "status_code": 200,  # P0-A: Firecrawl success = 200
+                    "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                 }
 
     async def _crawl(self, url: str, max_length: int, limit: int) -> Dict[str, Any]:
@@ -348,6 +487,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "scrapeOptions": {
                 "formats": ["markdown"],
                 "onlyMainContent": True,
+                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
             },
         }
 
@@ -456,6 +596,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "content": "",
                 "method": "firecrawl",
                 "pages_fetched": 0,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
         
         # Step 1: Filter failed pages (statusCode != 200)
@@ -509,6 +650,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "content": "",
                 "method": "firecrawl",
                 "pages_fetched": 0,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 "metadata": {
                     "total_crawled": len(results),
                     "failed_pages": failed_count,
@@ -520,6 +662,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
         if len(unique_pages) == 1:
             result = unique_pages[0]
             content = result.get("markdown", "")
+            content = clean_markdown_noise(content)  # Clean noise before truncation
             if len(content) > max_length:
                 content = content[:max_length]
             
@@ -534,6 +677,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "truncated": len(content) >= max_length,
                 "method": "firecrawl",
                 "pages_fetched": 1,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
         
         # Step 4: Multiple pages - smart truncation
@@ -548,7 +692,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
             page_url = page_data.get("url", "")
             page_title = page_data.get("metadata", {}).get("title", "")
             page_content = page_data.get("markdown", "")
-            
+            page_content = clean_markdown_noise(page_content)  # Clean noise
+
             # Truncate individual page
             if len(page_content) > per_page_limit:
                 page_content = page_content[:per_page_limit] + "\n\n[Content truncated...]"
@@ -587,6 +732,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "truncated": pages_included < len(unique_pages),
             "method": "firecrawl",
             "pages_fetched": pages_included,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             "metadata": {
                 "total_crawled": len(results),
                 "valid_pages": len(valid_pages),
@@ -648,6 +794,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 "content": "",
                 "method": "firecrawl",
                 "pages_fetched": 0,
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
             }
 
         max_retries = 2
@@ -1349,12 +1496,17 @@ class WebFetchTool(Tool):
                             "title": result.output.get("title", ""),
                             "content": result.output.get("content", ""),
                             "char_count": len(result.output.get("content", "")),
+                            # P0-A: Pass through status_code and blocked_reason
+                            "status_code": result.output.get("status_code", 200),
+                            "blocked_reason": result.output.get("blocked_reason"),
                         }
                     else:
                         return {
                             "url": url,
                             "success": False,
                             "error": result.error or "Unknown error",
+                            "status_code": 0,  # P0-A: Unknown status
+                            "blocked_reason": "fetch_failed",
                         }
                 except Exception as e:
                     logger.error(f"Batch fetch error for {url}: {e}")
@@ -1362,6 +1514,8 @@ class WebFetchTool(Tool):
                         "url": url,
                         "success": False,
                         "error": str(e),
+                        "status_code": 0,  # P0-A: Unknown status
+                        "blocked_reason": "exception",
                     }
 
         # Execute all fetches concurrently
@@ -1433,6 +1587,7 @@ class WebFetchTool(Tool):
             "failed": failed,
             "total_chars": total_chars,
             "partial_success": succeeded > 0 and failed > 0,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
         }
 
         # Build metadata
@@ -1705,6 +1860,7 @@ class WebFetchTool(Tool):
                     "truncated": False,
                     "method": "pure_python",
                     "pages_fetched": 1,
+                    "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 },
                 metadata={
                     "fetch_method": "pure_python_crawl",
@@ -1753,6 +1909,7 @@ class WebFetchTool(Tool):
                     "truncated": False,
                     "method": "pure_python",
                     "pages_fetched": len(pages),
+                    "tool_source": "fetch",  # Citation V2: mark as fetch-origin
                 },
                 metadata={
                     "fetch_method": "pure_python_crawl",
@@ -1925,6 +2082,9 @@ class WebFetchTool(Tool):
                     markdown = markdown[:max_length]
                     truncated = True
 
+                # P0-A: Detect blocked content for Citation V2 filtering
+                blocked_reason = detect_blocked_reason(markdown, response.status)
+
                 return ToolResult(
                     success=True,
                     output={
@@ -1939,6 +2099,9 @@ class WebFetchTool(Tool):
                         "truncated": truncated,
                         "method": "pure_python",
                         "pages_fetched": 1,
+                        "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                        "status_code": response.status,  # P0-A: HTTP status for Go filtering
+                        "blocked_reason": blocked_reason,  # P0-A: None if valid, reason string if blocked
                     },
                     metadata={
                         "fetch_method": "pure_python",
@@ -2085,6 +2248,9 @@ class WebFetchTool(Tool):
                         content = result.get("text", "")
 
                         exa_title = result.get("title", "")
+                        # P0-A: Detect blocked content
+                        blocked_reason = detect_blocked_reason(content, 200)
+
                         return ToolResult(
                             success=True,
                             output={
@@ -2099,6 +2265,9 @@ class WebFetchTool(Tool):
                                 "truncated": len(content) >= max_length,
                                 "method": "exa",
                                 "pages_fetched": 1,
+                                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                                "status_code": 200,  # P0-A: Exa success = 200
+                                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                             },
                             metadata={
                                 "fetch_method": "exa",
@@ -2133,6 +2302,8 @@ class WebFetchTool(Tool):
                             total_chars += len(page_content)
 
                         final_content = "\n".join(merged_content)
+                        # P0-A: Detect blocked content in merged result
+                        blocked_reason = detect_blocked_reason(final_content, 200)
 
                         return ToolResult(
                             success=True,
@@ -2145,6 +2316,9 @@ class WebFetchTool(Tool):
                                 "truncated": False,
                                 "method": "exa",
                                 "pages_fetched": len(results),
+                                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                                "status_code": 200,  # P0-A: Exa success = 200
+                                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                             },
                             metadata={
                                 "fetch_method": "exa",

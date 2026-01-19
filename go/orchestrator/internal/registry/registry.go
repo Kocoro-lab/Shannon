@@ -104,6 +104,9 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(acts.VerifyClaimsActivity, activity.RegisterOptions{Name: "VerifyClaimsActivity"})
 	// Citation Agent activity
 	w.RegisterActivityWithOptions(acts.AddCitations, activity.RegisterOptions{Name: "AddCitations"})
+	// Citation V2 activities (Deep Research with Verify batch)
+	w.RegisterActivityWithOptions(acts.AddCitationsWithVerify, activity.RegisterOptions{Name: "AddCitationsWithVerify"})
+	w.RegisterActivityWithOptions(acts.VerifyBatch, activity.RegisterOptions{Name: "VerifyBatch"})
 	// Configuration activity
 	w.RegisterActivity(activities.GetWorkflowConfig)
 	// Context compression + store

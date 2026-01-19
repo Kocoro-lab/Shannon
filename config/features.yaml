@@ -108,6 +108,16 @@ workflows:
     enabled: false  # Set to true to enable P2P coordination between agents
     timeout_seconds: 600  # Maximum wait time for dependencies (10 minutes default)
 
+# Citation V2 configuration (DEPRECATED - V2 abandoned, using optimized Legacy)
+citation:
+  v2_enabled: false             # V2 disabled - simplified to Legacy approach (PR #124)
+  v2_strict_mode: false         # true = disable V1 supplement, use V2 only
+  v2_min_support_rate: 0.1      # 10% - below this, enable V1 supplement
+  v2_min_citations: 3           # Minimum inline citations to consider V2 sufficient
+  v2_min_claims_required: 5     # Minimum claims to trigger supplement check
+  v2_adaptive_topk: true        # Use adaptive Top-K based on sources/claims count
+  v2_base_topk: 5               # Base Top-K when adaptive is disabled
+
 # Enforcement defaults (applies to rate limiting and circuit breaking)
 enforcement:
   timeout_seconds: 90

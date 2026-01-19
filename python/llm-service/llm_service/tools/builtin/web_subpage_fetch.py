@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
+from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reuse blocked detection and noise cleaning logic
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ DEFAULT_LIMIT = 5
 DEFAULT_MAX_LENGTH = 10000
 BATCH_CONCURRENCY = int(os.getenv("WEB_FETCH_BATCH_CONCURRENCY", "3"))  
 SCRAPE_TIMEOUT = int(os.getenv("WEB_FETCH_SCRAPE_TIMEOUT", "30"))
-MAP_TIMEOUT = int(os.getenv("WEB_FETCH_MAP_TIMEOUT", "15"))
+MAP_TIMEOUT = int(os.getenv("WEB_FETCH_MAP_TIMEOUT", "45"))
 
 # Retry configuration
 RETRY_CONFIG = {
@@ -45,25 +46,33 @@ RETRY_CONFIG = {
     503: {"max_retries": 2, "delays": [3, 6]},         # Service unavailable
 }
 
-# Important keywords for relevance scoring
-IMPORTANT_KEYWORDS = [
+# Base keywords for relevance scoring (always applied)
+BASE_KEYWORDS = [
     "about", "team", "company", "product", "pricing", "docs", "api",
-    "contact", "careers", "blog", "news", "ir", "investors", "leadership",
-    "services", "features", "solutions", "press", "overview"
+    "contact", "careers", "leadership", "services", "features", "solutions", "overview"
 ]
 
-# Keyword to path mappings for target inference
-KEYWORD_PATH_MAP = {
-    "api": ["/api", "/api-reference", "/reference", "/api-docs"],
-    "doc": ["/docs", "/documentation", "/guide", "/guides", "/manual"],
-    "about": ["/about", "/about-us", "/company", "/who-we-are"],
-    "team": ["/team", "/people", "/leadership", "/management", "/our-team"],
-    "product": ["/products", "/product", "/features", "/solutions", "/offerings"],
-    "pricing": ["/pricing", "/plans", "/price", "/packages"],
-    "contact": ["/contact", "/contact-us", "/reach-us", "/get-in-touch"],
-    "career": ["/careers", "/jobs", "/join-us", "/opportunities", "/hiring"],
-    "blog": ["/blog", "/news", "/articles", "/insights", "/posts"],
-    "investor": ["/ir", "/investors", "/investor-relations", "/stockholders"],
+# High-value content paths - these often contain important announcements/updates
+# Boosted because they may have deeper depth but high information value
+HIGH_VALUE_PATHS = [
+    "blog", "news", "press", "ir", "investors", "investor-relations",
+    "announcements", "updates", "releases", "articles", "insights"
+]
+
+# Keyword to path mappings for semantic expansion
+# When user provides a keyword, we also match related path patterns
+KEYWORD_SYNONYMS = {
+    "api": ["api", "api-reference", "reference", "api-docs", "developer"],
+    "doc": ["docs", "documentation", "guide", "guides", "manual", "help"],
+    "about": ["about", "about-us", "company", "who-we-are", "overview"],
+    "team": ["team", "people", "leadership", "management", "our-team", "founders", "executives"],
+    "product": ["products", "product", "features", "solutions", "offerings", "platform"],
+    "pricing": ["pricing", "plans", "price", "packages", "cost"],
+    "contact": ["contact", "contact-us", "reach-us", "get-in-touch"],
+    "career": ["careers", "jobs", "join-us", "opportunities", "hiring"],
+    "news": ["blog", "news", "articles", "insights", "posts", "press", "announcements"],
+    "investor": ["ir", "investors", "investor-relations", "stockholders", "financials"],
+    "funding": ["funding", "investment", "series", "raise", "investors"],
 }
 
 
@@ -150,21 +159,13 @@ class WebSubpageFetchTool(Tool):
                 max_value=MAX_LIMIT,
             ),
             ToolParameter(
-                name="target_paths",
-                type=ToolParameterType.ARRAY,
-                description=(
-                    "Specific URL paths to prioritize (e.g., ['/about', '/team', '/ir']). "
-                    "Pages matching these paths get highest scores."
-                ),
-                required=False,
-            ),
-            ToolParameter(
                 name="target_keywords",
                 type=ToolParameterType.STRING,
                 description=(
-                    "Keywords to infer target paths (e.g., 'API documentation'). "
-                    "Auto-converts to paths like /api, /docs. "
-                    "Use target_paths for precise control."
+                    "Space-separated keywords describing what content to prioritize. "
+                    "Examples: 'about team funding news products'. "
+                    "URLs containing these keywords (or synonyms) get higher scores. "
+                    "High-value paths like /blog, /news, /press are automatically boosted."
                 ),
                 required=False,
             ),
@@ -185,8 +186,7 @@ class WebSubpageFetchTool(Tool):
         """Execute multi-page fetch using Map + Scrape strategy."""
         url = kwargs.get("url")
         limit = kwargs.get("limit", DEFAULT_LIMIT)
-        target_paths = kwargs.get("target_paths", [])
-        target_keywords = kwargs.get("target_keywords")
+        target_keywords = kwargs.get("target_keywords", "")
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
 
         if not url:
@@ -221,18 +221,12 @@ class WebSubpageFetchTool(Tool):
         except Exception as e:
             return ToolResult(success=False, output=None, error=f"Invalid URL: {e}")
 
-        # Infer paths from keywords if provided
-        effective_paths = list(target_paths) if target_paths else []
-        if target_keywords and not effective_paths:
-            effective_paths = self._infer_paths_from_keywords(target_keywords)
-            logger.info(f"Inferred paths from keywords '{target_keywords}': {effective_paths}")
-
         last_error = ""
 
         # Execute with Firecrawl (primary) or fallback
         if self.firecrawl_available:
             try:
-                result, scrape_meta = await self._map_and_scrape(url, limit, effective_paths, max_length)
+                result, scrape_meta = await self._map_and_scrape(url, limit, target_keywords, max_length)
                 return ToolResult(
                     success=True,
                     output=result,
@@ -250,7 +244,7 @@ class WebSubpageFetchTool(Tool):
         # Fallback: Exa with subpages (if available)
         if self.exa_api_key:
             try:
-                result = await self._fetch_with_exa(url, limit, effective_paths, max_length)
+                result = await self._fetch_with_exa(url, limit, target_keywords, max_length)
                 return ToolResult(
                     success=True,
                     output=result,
@@ -301,71 +295,149 @@ class WebSubpageFetchTool(Tool):
                 paths.extend(keyword_paths)
         return list(dict.fromkeys(paths))  # Deduplicate while preserving order
 
+    def _expand_keywords(self, target_keywords: str) -> set:
+        """Expand target keywords using synonym mappings."""
+        if not target_keywords:
+            return set()
+
+        expanded = set()
+        words = target_keywords.lower().split()
+
+        for word in words:
+            expanded.add(word)
+            # Add synonyms if this word is a key in KEYWORD_SYNONYMS
+            if word in KEYWORD_SYNONYMS:
+                expanded.update(KEYWORD_SYNONYMS[word])
+            # Also check if word matches any synonym values
+            for key, synonyms in KEYWORD_SYNONYMS.items():
+                if word in synonyms:
+                    expanded.add(key)
+                    expanded.update(synonyms)
+
+        return expanded
+
     def _calculate_relevance_score(
         self,
         url: str,
-        target_paths: List[str],
+        target_keywords: str,
         total_pages: int
     ) -> float:
         """
         Calculate relevance score for a URL (0.0-1.0).
 
         Scoring factors:
-        - Path matching: 0.5 weight
-        - URL depth: 0.2 weight (shallow = better)
-        - URL length: 0.1 weight (shorter = better)
-        - Keywords: 0.2 weight
+        - Target keywords match: 0.4 weight (user-specified priority)
+        - High-value paths (blog/news/press): 0.25 weight (content-rich pages)
+        - Base keywords match: 0.15 weight (common important pages)
+        - URL depth: 0.15 weight (shallow = better, but less important now)
+        - URL length: 0.05 weight (shorter = slightly better)
         """
         score = 0.0
         parsed = urlparse(url)
         path = parsed.path.lower().rstrip("/")
+        path_segments = path.split("/")
 
-        # 1. Path matching (0.5 weight)
-        if target_paths:
-            for target in target_paths:
-                target_clean = target.lower().rstrip("/")
-                if path == target_clean or path.startswith(target_clean + "/"):
-                    score += 0.5
-                    break
-                elif target_clean.strip("/") in path:
-                    score += 0.3
-                    break
+        # 1. Target keywords match (0.4 weight) - highest priority
+        if target_keywords:
+            expanded_keywords = self._expand_keywords(target_keywords)
+            matched_keywords = []
+            for keyword in expanded_keywords:
+                if keyword in path:
+                    matched_keywords.append(keyword)
+            if matched_keywords:
+                # More matches = higher score, up to 0.4
+                score += min(0.4, 0.15 * len(matched_keywords))
 
-        # 2. URL depth (0.2 weight) - fewer slashes = better
-        depth = path.count("/") if path else 0
-        if depth <= 1:
-            score += 0.2
-        elif depth == 2:
-            score += 0.1
-        # depth > 2: no bonus
+        # 2. High-value paths (0.25 weight) - blog/news/press are content-rich
+        for hv_path in HIGH_VALUE_PATHS:
+            if hv_path in path:
+                score += 0.25
+                break
 
-        # 3. URL length (0.1 weight) - shorter = better
-        if len(url) < 50:
-            score += 0.1
-        elif len(url) < 80:
-            score += 0.05
-
-        # 4. Keywords (0.2 weight)
-        for keyword in IMPORTANT_KEYWORDS:
+        # 3. Base keywords match (0.15 weight)
+        for keyword in BASE_KEYWORDS:
             if keyword in path:
                 score += 0.05
                 if score >= 1.0:
                     break
 
-        # Size adjustment: boost top-level pages on large sites
+        # 4. URL depth (0.15 weight) - shallow pages often important
+        depth = path.count("/") if path else 0
+        if depth <= 1:
+            score += 0.15
+        elif depth == 2:
+            score += 0.08
+        elif depth == 3:
+            score += 0.03
+        # depth > 3: no bonus, but not penalized (may have good content)
+
+        # 5. URL length (0.05 weight) - minor factor
+        if len(url) < 60:
+            score += 0.05
+        elif len(url) < 100:
+            score += 0.02
+
+        # Boost for large sites: top-level pages are more likely important
         if total_pages > 50 and depth <= 1:
-            score *= 1.2
+            score *= 1.1
 
         return min(score, 1.0)
+
+    def _is_error_page(self, content: str) -> Tuple[bool, str]:
+        """Detect if page content indicates an error page.
+
+        Returns:
+            (is_error, reason): True if error page, with reason string
+        """
+        if not content:
+            return True, "empty content"
+
+        content_lower = content.lower()
+        content_len = len(content)
+
+        # Pattern 1: Common error page indicators
+        # Note: Removed "coming soon" and "under construction" - too common in normal websites
+        # (product announcements, feature previews, etc.) causing false positives
+        error_indicators = [
+            ("whitelabel error", "spring/java error page"),
+            ("404 not found", "404 error"),
+            ("page not found", "404 error"),
+            ("500 internal server error", "500 error"),
+            ("502 bad gateway", "502 error"),
+            ("503 service unavailable", "503 error"),
+            ("403 forbidden", "403 error"),
+            ("site not available", "site down"),
+            ("website is under maintenance", "maintenance"),
+        ]
+
+        for pattern, reason in error_indicators:
+            if pattern in content_lower:
+                # For short pages, any error indicator is enough
+                if content_len < 3000:
+                    return True, reason
+                # For longer pages, be more strict (might be docs about errors)
+
+        # Pattern 2: Very short content with error keywords
+        if content_len < 1000:
+            error_keywords = ["error", "404", "not found", "forbidden", "unavailable"]
+            if any(kw in content_lower for kw in error_keywords):
+                return True, f"short page ({content_len} chars) with error keywords"
+
+        return False, ""
 
     async def _map_and_scrape(
         self,
         url: str,
         limit: int,
-        target_paths: List[str],
+        target_keywords: str,
         max_length: int
     ) -> Tuple[Dict[str, Any], Dict]:
-        """Map website URLs, score by relevance, and scrape top pages."""
+        """Map website URLs, score by relevance, and scrape top pages.
+
+        Hybrid selection strategy:
+        1. Keyword-matched URLs get priority (up to 60% of limit)
+        2. Remaining quota filled by score-ranked URLs
+        """
         # Step 1: Map to get all URLs
         all_urls = await self._map(url)
         if not all_urls:
@@ -373,19 +445,74 @@ class WebSubpageFetchTool(Tool):
 
         logger.info(f"Map returned {len(all_urls)} URLs for {url}")
 
-        # Step 2: Score and sort URLs
-        scored_urls = []
+        # Step 1.5: Filter out technical/low-value URLs
+        skip_patterns = [
+            'sitemap.xml', 'sitemap-', 'robots.txt', 'feed.xml', 'rss.xml',
+            '.xml', '.json', '.css', '.js', '.png', '.jpg', '.gif', '.svg',
+            '/wp-admin/', '/wp-includes/', '/wp-content/uploads/',
+            '/cart', '/checkout', '/login', '/register', '/search',
+            '/tag/', '/category/', '/page/', '/attachment/',
+            '/thank-you', '/thanks', '/thankyou',  # Thank you pages
+            '/unsubscribe', '/confirm', '/subscribe',  # Action confirmation pages
+        ]
+        filtered_urls = []
+        skipped_count = 0
         for u in all_urls:
-            score = self._calculate_relevance_score(u, target_paths, len(all_urls))
-            if score >= 0.1:  # Minimum threshold
-                scored_urls.append((u, score))
+            path_lower = urlparse(u).path.lower()
+            if any(skip in path_lower for skip in skip_patterns):
+                skipped_count += 1
+                continue
+            filtered_urls.append(u)
 
-        scored_urls.sort(key=lambda x: x[1], reverse=True)
+        if skipped_count > 0:
+            logger.info(f"Filtered out {skipped_count} technical/low-value URLs")
+        all_urls = filtered_urls
 
-        # Step 3: Select top N
-        selected_urls = [u for u, _ in scored_urls[:limit]]
+        # Step 1.6: Expand keywords for matching
+        expanded_keywords = self._expand_keywords(target_keywords) if target_keywords else set()
+        if expanded_keywords:
+            logger.info(f"target_keywords: '{target_keywords}' -> expanded to {len(expanded_keywords)} terms: {list(expanded_keywords)[:10]}...")
 
-        # Always include the base URL if not already present (with normalization to avoid duplicates)
+        # Step 2: Hybrid selection - separate keyword-matched vs others
+        keyword_matched = []  # URLs directly matching keywords
+        other_urls = []       # All other URLs
+
+        for u in all_urls:
+            path_lower = urlparse(u).path.lower()
+            score = self._calculate_relevance_score(u, target_keywords, len(all_urls))
+
+            if score < 0.05:
+                continue
+
+            # Check if URL path contains any expanded keyword
+            is_keyword_match = any(kw in path_lower for kw in expanded_keywords)
+
+            if is_keyword_match:
+                keyword_matched.append((u, score))
+            else:
+                other_urls.append((u, score))
+
+        # Sort both groups by score
+        keyword_matched.sort(key=lambda x: x[1], reverse=True)
+        other_urls.sort(key=lambda x: x[1], reverse=True)
+
+        # Step 3: Hybrid quota allocation (60% keyword, 40% others)
+        keyword_quota = int(limit * 0.6)  # Max 60% for keyword matches
+        other_quota = limit - keyword_quota
+
+        # Select from keyword-matched first (up to quota)
+        selected_from_keywords = [u for u, _ in keyword_matched[:keyword_quota]]
+        remaining_quota = limit - len(selected_from_keywords)
+
+        # Fill remaining with other URLs
+        selected_from_others = [u for u, _ in other_urls[:remaining_quota]]
+
+        # Combine: keywords first, then others
+        selected_urls = selected_from_keywords + selected_from_others
+
+        logger.info(f"Hybrid selection: {len(selected_from_keywords)} keyword-matched + {len(selected_from_others)} others = {len(selected_urls)} total")
+
+        # Always include the base URL if not already present
         base_url = url.rstrip("/")
         normalized_selected = [u.rstrip("/") for u in selected_urls]
         if base_url not in normalized_selected:
@@ -395,8 +522,60 @@ class WebSubpageFetchTool(Tool):
 
         logger.info(f"Selected {len(selected_urls)} URLs for scraping: {selected_urls}")
 
-        # Step 4: Batch scrape
+        # Step 3.5: Pre-check main page - fast fail if site is error/down
+        main_result = await self._scrape_with_retry(base_url, max_length)
+        if main_result:
+            main_content = main_result.get("content", "")
+            is_error, error_reason = self._is_error_page(main_content)
+
+            if is_error:
+                logger.warning(f"Main page is error page ({error_reason}), skipping subpage fetch: {base_url}")
+                # Return early with error info - don't waste quota on subpages
+                return {
+                    "url": base_url,
+                    "title": main_result.get("title", ""),
+                    "content": f"# Main Page: {base_url}\n\n**Site Error Detected**: {error_reason}\n\nThe main page returned an error. Skipped fetching subpages to save quota.\n\n---\n\n{main_content[:2000]}",
+                    "method": "firecrawl",
+                    "pages_fetched": 1,
+                    "word_count": len(main_content.split()),
+                    "char_count": len(main_content),
+                }, {
+                    "urls_attempted": [base_url],
+                    "urls_succeeded": [base_url],
+                    "urls_failed": [],
+                    "early_exit": True,
+                    "early_exit_reason": f"main page error: {error_reason}",
+                }
+
+            # Main page OK, remove from selected_urls (already fetched)
+            selected_urls = [u for u in selected_urls if u.rstrip("/") != base_url]
+            if not selected_urls:
+                # Only main page needed
+                return {
+                    "url": base_url,
+                    "title": main_result.get("title", ""),
+                    "content": f"# Main Page: {base_url}\n\n{main_content}",
+                    "method": "firecrawl",
+                    "pages_fetched": 1,
+                    "word_count": len(main_content.split()),
+                    "char_count": len(main_content),
+                }, {
+                    "urls_attempted": [base_url],
+                    "urls_succeeded": [base_url],
+                    "urls_failed": [],
+                }
+        else:
+            logger.warning(f"Main page fetch failed: {base_url}")
+
+        # Step 4: Batch scrape remaining subpages
         results, scrape_meta = await self._batch_scrape(selected_urls, max_length)
+
+        # Prepend main page result if we have it
+        if main_result:
+            results = [main_result] + (results if results else [])
+            scrape_meta["urls_succeeded"] = [base_url] + scrape_meta.get("urls_succeeded", [])
+            scrape_meta["urls_attempted"] = [base_url] + scrape_meta.get("urls_attempted", [])
+
         if not results:
             raise Exception("Batch scrape returned no results")
 
@@ -450,32 +629,64 @@ class WebSubpageFetchTool(Tool):
         tasks = [limited_scrape(url) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Filter out failures
+        # Filter out failures and deduplicate by returned URL
+        # This prevents duplicate content when pages redirect to the same destination
         valid_results = []
         urls_succeeded: List[str] = []
         urls_failed: List[Dict] = []
+        seen_returned_urls: set = set()  # Track returned URLs to deduplicate
 
         for url, r in zip(urls, results):
-            if isinstance(r, dict) and r.get("content"):
-                valid_results.append(r)
-                urls_succeeded.append(url)
-                continue
-
-            reason = ""
+            # Detailed logging for each URL's scrape outcome (P0: Debug leadership content missing)
             if isinstance(r, Exception):
                 reason = str(r)
-            elif isinstance(r, dict):
-                reason = "empty content"
-            else:
-                reason = "scrape failed"
+                logger.warning(f"Scrape exception for {url}: {type(r).__name__}: {reason[:100]}")
+                urls_failed.append({"url": url, "reason": reason[:200]})
+                continue
 
-            urls_failed.append({"url": url, "reason": reason[:200]})
+            if not isinstance(r, dict):
+                reason = f"unexpected result type: {type(r)}"
+                logger.warning(f"Scrape unexpected result for {url}: {reason}")
+                urls_failed.append({"url": url, "reason": reason})
+                continue
+
+            content = r.get("content", "")
+            content_len = len(content) if content else 0
+            returned_url = r.get("url", url)
+
+            if not content:
+                reason = "empty content"
+                logger.warning(f"Scrape empty content for {url} (returned_url={returned_url})")
+                urls_failed.append({"url": url, "reason": reason})
+                continue
+
+            # Log successful scrape with content length (P0: Visibility into what was fetched)
+            logger.info(f"Scrape success for {url}: content_len={content_len}, returned_url={returned_url}")
+
+            # Deduplicate by the URL Firecrawl actually returned (after redirects)
+            normalized_returned_url = returned_url.rstrip("/").lower()
+            if normalized_returned_url in seen_returned_urls:
+                logger.info(f"Skipping duplicate result for {url} (redirected to {normalized_returned_url})")
+                urls_failed.append({"url": url, "reason": f"redirected to duplicate: {normalized_returned_url}"})
+                continue
+
+            seen_returned_urls.add(normalized_returned_url)
+            valid_results.append(r)
+            urls_succeeded.append(url)
 
         meta = {
             "urls_attempted": urls,
             "urls_succeeded": urls_succeeded,
             "urls_failed": urls_failed,
         }
+
+        # P0: Batch completion summary for debugging content pipeline
+        logger.info(f"Batch scrape summary: attempted={len(urls)}, succeeded={len(urls_succeeded)}, failed={len(urls_failed)}")
+        if urls_succeeded:
+            logger.info(f"Succeeded URLs: {urls_succeeded}")
+        if urls_failed:
+            failed_summary = [(f.get("url", "?"), f.get("reason", "?")[:50]) for f in urls_failed]
+            logger.info(f"Failed URLs: {failed_summary}")
 
         return valid_results, meta
 
@@ -519,6 +730,7 @@ class WebSubpageFetchTool(Tool):
                 "url": url,
                 "formats": ["markdown"],
                 "onlyMainContent": True,
+                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
                 "timeout": SCRAPE_TIMEOUT * 1000  # Firecrawl uses ms
             }
 
@@ -535,6 +747,7 @@ class WebSubpageFetchTool(Tool):
                 result_data = data.get("data", {})
 
                 content = result_data.get("markdown", "")
+                content = clean_markdown_noise(content)  # Clean noise before truncation
                 if len(content) > max_length:
                     content = content[:max_length]
 
@@ -548,14 +761,20 @@ class WebSubpageFetchTool(Tool):
         """Merge multiple page results into a single output."""
         if len(results) == 1:
             r = results[0]
+            content = r.get("content", "")
+            # P0-A: Detect blocked content for Citation V2 filtering
+            blocked_reason = detect_blocked_reason(content, 200)
             return {
                 "url": r.get("url", original_url),
                 "title": r.get("title", ""),
-                "content": r.get("content", ""),
+                "content": content,
                 "method": "firecrawl",
                 "pages_fetched": 1,
-                "word_count": len(r.get("content", "").split()),
-                "char_count": len(r.get("content", "")),
+                "word_count": len(content.split()),
+                "char_count": len(content),
+                "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                "status_code": 200,  # P0-A: Firecrawl scrape success = 200
+                "blocked_reason": blocked_reason,  # P0-A: Content-based detection
             }
 
         # Multiple pages - merge with markdown separators
@@ -580,6 +799,8 @@ class WebSubpageFetchTool(Tool):
             total_chars += len(page_content)
 
         final_content = "".join(merged_content)
+        # P0-A: Detect blocked content in merged result
+        blocked_reason = detect_blocked_reason(final_content, 200)
 
         return {
             "url": original_url,
@@ -589,6 +810,9 @@ class WebSubpageFetchTool(Tool):
             "pages_fetched": len(results),
             "word_count": len(final_content.split()),
             "char_count": total_chars,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+            "status_code": 200,  # P0-A: Firecrawl scrape success = 200
+            "blocked_reason": blocked_reason,  # P0-A: Content-based detection
             "metadata": {
                 "urls": [r.get("url") for r in results]
             }
@@ -598,7 +822,7 @@ class WebSubpageFetchTool(Tool):
         self,
         url: str,
         limit: int,
-        target_paths: List[str],
+        target_keywords: str,
         max_length: int
     ) -> Dict[str, Any]:
         """Fallback: Use Exa with subpages feature."""
@@ -609,8 +833,8 @@ class WebSubpageFetchTool(Tool):
                 "Content-Type": "application/json"
             }
 
-            # Convert target_paths to subpage_target keywords
-            subpage_target = " ".join([p.strip("/") for p in target_paths]) if target_paths else None
+            # Use target_keywords directly as subpage_target
+            subpage_target = target_keywords if target_keywords else None
 
             search_payload = {
                 "query": url,
@@ -656,14 +880,20 @@ class WebSubpageFetchTool(Tool):
 
                 if len(content_results) == 1:
                     r = content_results[0]
+                    content = r.get("text", "")
+                    # P0-A: Detect blocked content for Citation V2 filtering
+                    blocked_reason = detect_blocked_reason(content, 200)
                     return {
                         "url": r.get("url", url),
                         "title": r.get("title", ""),
-                        "content": r.get("text", ""),
+                        "content": content,
                         "method": "exa",
                         "pages_fetched": 1,
-                        "word_count": len(r.get("text", "").split()),
-                        "char_count": len(r.get("text", "")),
+                        "word_count": len(content.split()),
+                        "char_count": len(content),
+                        "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+                        "status_code": 200,  # P0-A: Exa success = 200
+                        "blocked_reason": blocked_reason,  # P0-A: Content-based detection
                     }
 
                 return self._merge_exa_results(content_results, url)
@@ -691,6 +921,8 @@ class WebSubpageFetchTool(Tool):
             total_chars += len(page_content)
 
         final_content = "\n".join(merged_content)
+        # P0-A: Detect blocked content in merged result
+        blocked_reason = detect_blocked_reason(final_content, 200)
 
         return {
             "url": original_url,
@@ -700,4 +932,7 @@ class WebSubpageFetchTool(Tool):
             "pages_fetched": len(results),
             "word_count": len(final_content.split()),
             "char_count": total_chars,
+            "tool_source": "fetch",  # Citation V2: mark as fetch-origin
+            "status_code": 200,  # P0-A: Exa success = 200
+            "blocked_reason": blocked_reason,  # P0-A: Content-based detection
         }

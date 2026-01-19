@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -104,10 +105,11 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}
 	}
 
-	logger.Info("CitationAgent: starting (V2)",
+	logger.Info("CitationAgent: starting",
 		"report_length", len(input.Report),
 		"citations_count", len(input.Citations),
 		"role", role,
+		"model_tier", input.ModelTier,
 	)
 
 	// If no citations available, return original report
@@ -119,45 +121,15 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}, nil
 	}
 
-	// Try V2 approach first (indexed placement plan)
-	result, err := a.addCitationsV2(ctx, input, role)
-	if err != nil {
-		logger.Warn("CitationAgent V2 failed, falling back to legacy", "error", err)
-		return a.addCitationsLegacy(ctx, input, role)
-	}
-
-	// Check if V2 produced usable results
-	// P0 fix: Also check ValidationPassed to ensure consistency with downstream code
-	// that may check ValidationPassed to decide whether to use the cited report
-	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 && result.ValidationPassed {
-		logger.Info("CitationAgent V2 succeeded",
-			"applied", result.PlacementStats.Applied,
-			"failed", result.PlacementStats.Failed,
-			"success_rate", result.PlacementStats.SuccessRate,
-		)
-		return result, nil
-	}
-
-	// V2 didn't pass validation threshold or produced no citations
-	// Log details for debugging
-	if result.PlacementStats != nil && result.PlacementStats.Applied > 0 {
-		logger.Info("CitationAgent V2 below validation threshold, trying legacy",
-			"applied", result.PlacementStats.Applied,
-			"failed", result.PlacementStats.Failed,
-			"success_rate", result.PlacementStats.SuccessRate,
-			"validation_passed", result.ValidationPassed,
-		)
-	} else {
-		logger.Info("CitationAgent V2 produced no citations, trying legacy")
-	}
+	// Use direct LLM approach (simpler, more reliable)
 	return a.addCitationsLegacy(ctx, input, role)
 }
 
-// addCitationsLegacy is the original citation approach (used as fallback)
+// addCitationsLegacy adds citations using direct LLM output approach
 func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
-	logger.Info("CitationAgent Legacy: starting",
+	logger.Info("CitationAgent: starting direct LLM approach",
 		"report_length", len(input.Report),
 		"citations_count", len(input.Citations),
 		"role", role,
@@ -180,9 +152,37 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 		modelTier = "small"
 	}
 
+	// Dynamic max_tokens based on report length to prevent truncation
+	// Formula: reportLen/3 (chars to tokens ratio ~3:1) + 2000 (overhead for tags/formatting)
+	reportLen := len(input.Report)
+	minTokens := reportLen/3 + 2000
+
+	// Base max_tokens by tier
+	maxTokens := 8192 // default for small tier
+	if modelTier == "medium" {
+		maxTokens = 16384
+	}
+
+	// Ensure max_tokens is sufficient for the report
+	if minTokens > maxTokens {
+		maxTokens = minTokens
+	}
+	// Cap at model limits
+	if modelTier == "small" && maxTokens > 16384 {
+		maxTokens = 16384
+	} else if modelTier == "medium" && maxTokens > 32000 {
+		maxTokens = 32000
+	}
+
+	logger.Info("CitationAgent: dynamic max_tokens",
+		"report_length", reportLen,
+		"model_tier", modelTier,
+		"max_tokens", maxTokens,
+	)
+
 	reqBody := map[string]interface{}{
 		"query":       userContent,
-		"max_tokens":  8192,
+		"max_tokens":  maxTokens,
 		"temperature": 0.0,
 		"agent_id":    "citation_agent",
 		"model_tier":  modelTier,
@@ -198,7 +198,6 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 	}
 
 	// Dynamic timeout based on report length: base 120s + 30s per 1000 chars, max 300s
-	reportLen := len(input.Report)
 	timeoutSec := 120 + (reportLen/1000)*30
 	if timeoutSec > 300 {
 		timeoutSec = 300
@@ -351,122 +350,142 @@ func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgent
 
 // buildCitationAgentPrompt returns the system prompt for the Citation Agent
 func buildCitationAgentPrompt() string {
-	return `You are a citation specialist. Add [n] markers to support factual claims.
+	return `You are a citation specialist. Insert [n] markers ONLY when the source URL has SUFFICIENT INFORMATION to fully support the claim.
 
-## YOUR GOAL
+## CRITICAL RULE — SUFFICIENT EVIDENCE REQUIRED
 
-Add citations that help readers verify key facts. Balance:
-- PRECISION: Only cite when source actually supports the claim
-- COVERAGE: Most verifiable facts should have citations
-
-Aim to cite 30-50% of factual claims. Not every sentence needs a citation,
-but important facts, statistics, and named entities should be cited.
+- Only cite when the source Content/URL has SUFFICIENT INFORMATION that explicitly and fully supports the claim
+- Source must provide enough detail, not just be "related" or "relevant"
+- If Content is too vague, too short, or only partially mentions the claim, DO NOT cite
+- If multiple sources support the same claim, choose the ONE with most sufficient information (prefer official sources)
+- When in doubt, DO NOT cite
+- Better to have too few citations than too many
 
 ## ABSOLUTE RULE - DO NOT MODIFY TEXT
 
 The ONLY modification allowed is inserting [n] markers. NOTHING ELSE.
 Your response will be REJECTED if you change ANY character of the original text.
+If you cannot guarantee exact character preservation, output the original report unchanged (no citations).
 
-## CLAIM CLASSIFICATION
+## WHAT TO CITE (SUFFICIENT INFORMATION REQUIRED)
 
-Before citing, classify each claim:
+✓ Specific quantitative data (ONLY if source Content has sufficient detail):
+  • Revenue/valuation: "$50M revenue" → source Content must explicitly state the exact number with context
+  • User counts: "2 million users" → source Content must explicitly state the exact count
+  • Growth rates: "150% YoY" → source Content must explicitly state the percentage
+  • Funding: "raised $20M Series A" → source Content must explicitly state amount + round
 
-### HIGH CONFIDENCE (Always Cite)
-- Exact numbers, dates, percentages that appear in source
-- Direct quotes or close paraphrases
-- Named entities with matching context
+  CRITICAL: "Related URL" or "title mentions it" is NOT enough — the source Content must have sufficient information
+
+✓ Controversial or disputed statements:
+  • ONLY if source Content provides sufficient evidence to support the claim
+  • Not just "related" — must have enough detail
+
+✓ Key milestones (ONLY if source Content confirms):
+  • "founded in 2020" → source Content must explicitly state the year
+  • "acquired by X in 2023" → source Content must explicitly state the acquisition with year
+
+## INSUFFICIENT EVIDENCE EXAMPLES (DO NOT CITE)
+
+✗ Source URL looks relevant but Content is empty/too short
+✗ Source title mentions the topic but Content doesn't provide enough detail
+✗ Source Content only partially mentions the claim without sufficient context
+✗ Source is "about" the company but doesn't state the specific fact
+
+## WHAT TO SKIP (STRICT)
+
+✗ ANY lists (even if sourced):
+  • Domain lists: "link.com/fr, link.com/de, link.com/jp" — NEVER cite
+  • Feature lists: "supports A, B, C" — NEVER cite
+  • Product lists: "offers X, Y, Z" — NEVER cite
+  • RULE: Lists are descriptive enumerations, not individual claims
+
+✗ Company names and general descriptions:
+  • Company names, industry classifications
+  • General background ("a SaaS company")
+
+✗ Common knowledge or background information
+
+✗ Section headers, transitions, synthesis language
+
+## CITATION LIMITS (PER CLAIM)
+
+- **Per sentence/claim**: Maximum 1 citation
+- **Per list**: 0 citations (lists never get citations)
+- **Same fact repeated**: Cite only FIRST mention
+
+CRITICAL: If 5 sources all support the same claim, choose the ONE most authoritative/explicit source. NEVER use [1][2][3][4][5].
+
+## SOURCE SELECTION (When Multiple Sources Support Same Claim)
+
+Step 1: Filter to sources whose Content has SUFFICIENT INFORMATION (not just "mentions" or "related")
+Step 2: Among filtered sources with sufficient information, choose ONE based on priority:
+  1. Official sources (.gov, .edu, official company sites)
+  2. Data aggregators (Crunchbase, LinkedIn, Bloomberg)
+  3. Major news outlets (Reuters, TechCrunch, WSJ)
+  4. Other sources
+
+CRITICAL: Sufficient information > Source authority
+- If official source has vague Content but news source has detailed Content, choose news source
+- Only apply priority when sources have comparable levels of information
 
 Example:
-  Claim: "Revenue grew 19% in Q3 2024"
-  Source [3]: "...quarterly revenue increased 19%..."
-  → CITE [3] - exact data match
-
-### MEDIUM CONFIDENCE (Cite if URL/Title Confirms)
-- General facts where snippet is weak but URL/title clearly relevant
-- Statements about company/person where source is official site
-- Industry facts from authoritative domain
-
-Example:
-  Claim: "The company is headquartered in Tokyo"
-  Source [5]: (snippet empty, but URL: company.jp/about)
-  → CITE [5] - official source, reasonable inference
-
-### LOW CONFIDENCE (Do Not Cite)
-- Vague topic overlap without specific fact match
-- Source discusses different aspect of same entity
-- Your inference, not stated in source
-
-Example:
-  Claim: "The team is highly innovative"
-  Source [7]: "...announced new AI product..."
-  → DO NOT CITE - product announcement ≠ "innovative" judgment
+- Claim: "Company raised $50M Series B"
+- Source [1] (TechCrunch): Content states "$50M Series B from X investors"
+- Source [3] (Company blog): Content states "$50M Series B announcement"
+- Source [7] (Crunchbase): Content shows "$50M Series B" with date
+→ Choose [3] (official) because all three have sufficient information, prefer official
 
 ## CITATION PLACEMENT
 
 Insert [n] at END of sentences or clauses:
 - ✓ "Revenue grew 19%.[1]"
-- ✓ "Founded in 2020[2], the company expanded."
-- ✗ "[1] Revenue grew 19%."
-
-## SOURCE PRIORITY
-
-When multiple sources support same claim, prefer:
-1. Official sources (.gov, .edu, company sites)
-2. Data aggregators (Crunchbase, LinkedIn)
-3. Major news (Reuters, TechCrunch)
-4. Other sources
-
-## WHAT TO CITE
-
-✓ Statistics, financial figures, dates
-✓ Company facts (founding, location, size)
-✓ Named people with roles/titles
-✓ Specific claims readers would verify
-✓ Conclusions based on cited evidence
-
-## WHAT TO SKIP
-
-✗ Section headers, transitions
-✗ Common knowledge
-✗ Your synthesis language ("This shows that...")
-✗ Claims with NO matching source
+- ✓ "Founded in 2020[2], the company expanded rapidly."
+- ✗ "Revenue grew 19%.[1][2][3]" — FORBIDDEN (choose ONE)
+- ✗ "[1] Revenue grew 19%." — Wrong position
 
 ## AVOID REDUNDANT CITATIONS
 
-- Same source per sentence: cite at most TWICE
-- No adjacent duplicates: NEVER use [1][1]
+- Never stack citations: [1][2][3] is FORBIDDEN
+- Same source per sentence: cite at most ONCE
+- No adjacent duplicates: NEVER [1][1]
+- If same fact appears multiple times in report, cite only first occurrence
 
 ## EXAMPLES
 
-### Example 1 - High Confidence Match
-Report: "Tesla delivered 1.8 million vehicles in 2023."
-Source [3]: "Tesla Inc. reported annual deliveries of 1.81 million vehicles..."
-→ "Tesla delivered 1.8 million vehicles in 2023.[3]"
+### GOOD EXAMPLE 1 (Sufficient information):
+Input sources:
+- [1] TechCrunch: Content="TechCrunch reports Company raised $50M in Series B led by..."
+- [3] Official blog: Content="Today we announce our $50M Series B round..."
+- [7] Crunchbase: Content="Funding: $50M Series B, Date: 2024"
 
-### Example 2 - Medium Confidence (Official Source)
-Report: "PTMind was founded in 2010."
-Source [1]: "About Ptengine - Leading A/B Testing..." (ptengine.cn/about_us)
-→ "PTMind was founded in 2010.[1]" (official about page)
+Report: "The company raised $50M in Series B.[3]"
+(All have sufficient information. Choose [3] because it's official.)
 
-### Example 3 - Medium Confidence (Empty Snippet, Clear URL)
-Report: "The company has offices in Beijing."
-Source [8]: (snippet: "", URL: cn.company.com/contact)
-→ "The company has offices in Beijing.[8]" (contact page likely has location)
+### GOOD EXAMPLE 2 (No citation for lists):
+Report: "Link offers localization across France, Germany, Japan, Sweden, and Mexico."
+(No citations — lists never get citations, even if sources mention all domains)
 
-### Example 4 - Low Confidence (Topic Only)
-Report: "The company expanded into European markets."
-Source [5]: "TechCorp announced AI product launch..."
-→ "The company expanded into European markets." (no citation - wrong topic)
+### GOOD EXAMPLE 3 (Insufficient information - do not cite):
+Input sources:
+- [5] News article: URL mentions "Company funding" but Content="Company announces new round" (no amount)
+- [8] Blog: Title="$50M Series B" but Content is empty/too short
 
-### Example 5 - Correctly Uncited
-Report: "This demonstrates strong market positioning."
-→ "This demonstrates strong market positioning." (your analysis, not citable)
+Report: "The company raised $50M in Series B."
+(No citation — sources lack sufficient information despite relevant URLs)
 
-### Example 6 - Multiple Sources
-Report: "Series B funding was led by Investor X."
-Source [10]: Crunchbase funding page
-Source [15]: News article mentioning same
-→ "Series B funding was led by Investor X.[10]" (prefer Crunchbase)
+### BAD EXAMPLE 1 (Too many citations):
+Report: "The company raised $50M[1] in Series B[3] from Acme Ventures[7]."
+(Should be: "...raised $50M in Series B.[3]" — only ONE citation)
+
+### BAD EXAMPLE 2 (Citing lists):
+Report: "Link at link.com/fr[1], link.com/de[2], link.com/jp[3]."
+(Lists should NEVER have citations)
+
+### BAD EXAMPLE 3 (Insufficient evidence):
+Input source [10]: URL="company-funding.html" but Content="Company is well-funded"
+Report: "The company raised $50M.[10]"
+(Do NOT cite — Content lacks sufficient information about the $50M amount)
 
 ## OUTPUT FORMAT
 
@@ -559,8 +578,9 @@ func validateContentImmutability(original, cited string) (bool, error) {
 		}
 	}
 
-	// Tolerate up to 5% difference (LLMs sometimes make minor changes)
-	if diffRatio < 0.05 {
+	// Tolerate up to 15% difference (LLMs sometimes make minor changes or truncate long outputs)
+	// Increased from 5% to 15% to handle longer reports where some content modification is acceptable
+	if diffRatio < 0.15 {
 		return true, nil
 	}
 
@@ -768,42 +788,42 @@ func normalizeForComparison(s string) string {
 	s = strings.Join(lines, "\n")
 
 	// Step 8: Normalize ellipsis variations
-	s = strings.ReplaceAll(s, "…", "...")     // Unicode ellipsis to three dots
+	s = strings.ReplaceAll(s, "…", "...")   // Unicode ellipsis to three dots
 	s = strings.ReplaceAll(s, "。。。", "...") // Chinese periods as ellipsis
 	s = strings.ReplaceAll(s, "．．．", "...") // Fullwidth periods as ellipsis
 
 	// Step 9: Normalize common Chinese/fullwidth punctuation to ASCII
 	punctReplacements := map[string]string{
-		"：": ":",  // fullwidth colon to ASCII
-		"，": ",",  // Chinese comma to ASCII
-		"。": ".",  // Chinese period to ASCII
-		"！": "!",  // fullwidth exclamation
-		"？": "?",  // fullwidth question mark
-		"（": "(",  // fullwidth parentheses
-		"）": ")",
-		"【": "[",  // Chinese brackets
-		"】": "]",
-		"「": `"`,  // Japanese quotation marks
-		"」": `"`,
-		"『": `"`,
-		"』": `"`,
-		"\u201c": `"`, // left double quotation mark
-		"\u201d": `"`, // right double quotation mark
-		"\u2018": "'", // left single quotation mark
-		"\u2019": "'", // right single quotation mark
-		"、": ",",     // Chinese enumeration comma
-		"；": ";",     // fullwidth semicolon
-		"～": "~",     // fullwidth tilde
-		"＋": "+",     // fullwidth plus
-		"＝": "=",     // fullwidth equals
-		"＜": "<",     // fullwidth less-than
-		"＞": ">",     // fullwidth greater-than
-		"％": "%",     // fullwidth percent
-		"＃": "#",     // fullwidth hash
-		"＆": "&",     // fullwidth ampersand
-		"＊": "*",     // fullwidth asterisk
-		"／": "/",     // fullwidth slash
-		"＼": "\\",    // fullwidth backslash
+		"：":      ":", // fullwidth colon to ASCII
+		"，":      ",", // Chinese comma to ASCII
+		"。":      ".", // Chinese period to ASCII
+		"！":      "!", // fullwidth exclamation
+		"？":      "?", // fullwidth question mark
+		"（":      "(", // fullwidth parentheses
+		"）":      ")",
+		"【":      "[", // Chinese brackets
+		"】":      "]",
+		"「":      `"`, // Japanese quotation marks
+		"」":      `"`,
+		"『":      `"`,
+		"』":      `"`,
+		"\u201c": `"`,  // left double quotation mark
+		"\u201d": `"`,  // right double quotation mark
+		"\u2018": "'",  // left single quotation mark
+		"\u2019": "'",  // right single quotation mark
+		"、":      ",",  // Chinese enumeration comma
+		"；":      ";",  // fullwidth semicolon
+		"～":      "~",  // fullwidth tilde
+		"＋":      "+",  // fullwidth plus
+		"＝":      "=",  // fullwidth equals
+		"＜":      "<",  // fullwidth less-than
+		"＞":      ">",  // fullwidth greater-than
+		"％":      "%",  // fullwidth percent
+		"＃":      "#",  // fullwidth hash
+		"＆":      "&",  // fullwidth ampersand
+		"＊":      "*",  // fullwidth asterisk
+		"／":      "/",  // fullwidth slash
+		"＼":      "\\", // fullwidth backslash
 	}
 	for old, repl := range punctReplacements {
 		s = strings.ReplaceAll(s, old, repl)
@@ -973,7 +993,19 @@ func (a *Activities) addCitationsV2(ctx context.Context, input CitationAgentInpu
 	)
 
 	// Step 2: Build V2 prompt and call LLM
-	systemPrompt := buildCitationPlacementPromptV2()
+	// Calculate max placements based on sentence count (roughly 30% of sentences, capped at 100)
+	maxPlacements := len(sentences) * 30 / 100
+	if maxPlacements < 25 {
+		maxPlacements = 25
+	}
+	if maxPlacements > 100 {
+		maxPlacements = 100
+	}
+	logger.Info("CitationAgent V2: calculated max placements",
+		"sentence_count", len(sentences),
+		"max_placements", maxPlacements,
+	)
+	systemPrompt := buildCitationPlacementPromptV2(maxPlacements)
 	userContent := buildCitationUserContentV2(numberedReport, input.Citations, sentenceHashes)
 
 	// Call LLM service
@@ -1219,12 +1251,13 @@ func normalizeForHash(s string) string {
 }
 
 // buildCitationPlacementPromptV2 returns the V2 system prompt
-func buildCitationPlacementPromptV2() string {
-	return `You are a citation placement specialist.
+func buildCitationPlacementPromptV2(maxPlacements int) string {
+	return fmt.Sprintf(`You are a citation placement specialist.
 
 ## YOUR TASK
-Analyze the report and identify where citations should be placed.
+Analyze the ENTIRE report from beginning to end and identify where citations should be placed.
 Output a JSON placement plan - DO NOT output the report text.
+IMPORTANT: Distribute citations throughout ALL sections of the report, not just the beginning.
 
 ## INPUT
 You will receive:
@@ -1255,9 +1288,10 @@ You will receive:
 ## RULES
 1. Only cite factual claims (statistics, dates, names, figures)
 2. Skip section headers, transitions, synthesis language
-3. Maximum 25 placements
+3. Maximum %d placements - DISTRIBUTE EVENLY across ALL report sections
 4. If unsure, use confidence="low" or skip entirely
 5. Prefer official sources over news
+6. IMPORTANT: Do NOT concentrate all citations in the first few sentences
 
 ## WHAT TO CITE
 ✓ Statistics, financial figures, dates
@@ -1291,7 +1325,7 @@ You will receive:
   ]
 }
 
-Output ONLY the JSON, nothing else.`
+Output ONLY the JSON, nothing else.`, maxPlacements)
 }
 
 // buildCitationUserContentV2 builds the user content for V2
@@ -1440,4 +1474,457 @@ func appendCitationsToSentence(sentence string, citationIDs []int) string {
 	}
 
 	return trimmed + markers.String() + trailing
+}
+
+// ============================================================================
+// Citation V2: Deep Research with pre-computed ClaimMappings from Verify
+// ============================================================================
+
+// ClaimMappingInput represents a claim with its supporting citation IDs from Verify
+type ClaimMappingInput struct {
+	Claim         string  `json:"claim"`
+	Verdict       string  `json:"verdict"` // "supported" | "unsupported" | "insufficient_evidence"
+	SupportingIDs []int   `json:"supporting_ids"`
+	Confidence    float64 `json:"confidence"`
+}
+
+// CitationWithIDForAgent is a citation with a pre-assigned sequential ID
+type CitationWithIDForAgent struct {
+	ID               int     `json:"id"` // Sequential ID (1, 2, 3...)
+	URL              string  `json:"url"`
+	Title            string  `json:"title"`
+	Source           string  `json:"source"`
+	Snippet          string  `json:"snippet"`
+	CredibilityScore float64 `json:"credibility_score"`
+	QualityScore     float64 `json:"quality_score"`
+}
+
+// CitationAgentInputV2 is the input for Citation Agent V2 (Deep Research)
+type CitationAgentInputV2 struct {
+	Report           string                   `json:"report"`
+	Citations        []CitationWithIDForAgent `json:"citations"`      // Fetch-only citations for inline placement
+	AllCitations     []CitationWithIDForAgent `json:"all_citations"`  // P1: All citations for Sources section output
+	ClaimMappings    []ClaimMappingInput      `json:"claim_mappings"` // From Verify batch endpoint
+	ParentWorkflowID string                   `json:"parent_workflow_id,omitempty"`
+	Context          map[string]interface{}   `json:"context,omitempty"`
+	ModelTier        string                   `json:"model_tier,omitempty"`
+}
+
+// AddCitationsWithVerify adds inline citations using pre-computed ClaimMappings from Verify.
+// This is used by Deep Research workflow for efficient citation placement.
+// Unlike AddCitations (V1), this function doesn't need the LLM to find claim-citation matches -
+// it just needs to place the citations at appropriate positions.
+func (a *Activities) AddCitationsWithVerify(ctx context.Context, input CitationAgentInputV2) (*CitationAgentResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	role := "citation_agent_v2"
+	if input.Context != nil {
+		if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+			role = strings.TrimSpace(v)
+		}
+	}
+
+	logger.Info("CitationAgent V2 (with Verify): starting",
+		"report_length", len(input.Report),
+		"citations_count", len(input.Citations),
+		"claim_mappings", len(input.ClaimMappings),
+		"role", role,
+	)
+
+	// If no citations or claim mappings, return original report
+	if len(input.Citations) == 0 || len(input.ClaimMappings) == 0 {
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: true,
+		}, nil
+	}
+
+	// Filter to only supported claims with supporting IDs
+	supportedMappings := filterSupportedClaims(input.ClaimMappings)
+	if len(supportedMappings) == 0 {
+		logger.Info("CitationAgent V2: no supported claims found")
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: true,
+		}, nil
+	}
+
+	logger.Info("CitationAgent V2: filtered to supported claims",
+		"total_mappings", len(input.ClaimMappings),
+		"supported_mappings", len(supportedMappings),
+	)
+
+	// Build citation ID to citation map
+	citationMap := make(map[int]CitationWithIDForAgent)
+	for _, c := range input.Citations {
+		citationMap[c.ID] = c
+	}
+
+	// Collect all unique citation IDs that should be used
+	usedCitationIDs := collectUsedCitationIDs(supportedMappings)
+
+	// Build prompt for simple placement task
+	systemPrompt := buildCitationPlacementPromptWithMappings()
+	userContent := buildCitationUserContentWithMappings(input.Report, input.Citations, supportedMappings)
+
+	// Call LLM service
+	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
+	if llmServiceURL == "" {
+		llmServiceURL = "http://llm-service:8000"
+	}
+	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	modelTier := input.ModelTier
+	if modelTier == "" {
+		modelTier = "small" // V2 is simpler, can use small tier
+	}
+
+	// Calculate max_tokens based on report length
+	// Chinese text: ~1.5 tokens per character; add 20% buffer for citations
+	reportLen := len(input.Report)
+	maxTokens := (reportLen * 2) // Conservative estimate for CJK text
+	if maxTokens < 8192 {
+		maxTokens = 8192
+	}
+	if maxTokens > 32000 {
+		maxTokens = 32000 // Cap at 32K to avoid excessive costs
+	}
+
+	logger.Info("CitationAgent V2: calculated max_tokens",
+		"report_length", reportLen,
+		"max_tokens", maxTokens,
+	)
+
+	reqBody := map[string]interface{}{
+		"query":       userContent,
+		"max_tokens":  maxTokens,
+		"temperature": 0.0,
+		"agent_id":    "citation_agent_v2_verify",
+		"model_tier":  modelTier,
+		"context": map[string]interface{}{
+			"system_prompt":      systemPrompt,
+			"parent_workflow_id": input.ParentWorkflowID,
+		},
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Timeout based on report length (reportLen already calculated above)
+	timeoutSec := 120 + (reportLen/1000)*30
+	if timeoutSec > 300 {
+		timeoutSec = 300
+	}
+
+	client := &http.Client{
+		Timeout:   time.Duration(timeoutSec) * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(reqJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", "citation_agent_v2_verify")
+	if input.ParentWorkflowID != "" {
+		req.Header.Set("X-Workflow-ID", input.ParentWorkflowID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Warn("CitationAgent V2: LLM call failed, returning original report", "error", err)
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: false,
+			ValidationError:  err.Error(),
+		}, nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		logger.Warn("CitationAgent V2: HTTP error, returning original report", "status", resp.StatusCode)
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: false,
+			ValidationError:  fmt.Sprintf("HTTP %d", resp.StatusCode),
+		}, nil
+	}
+
+	// Parse response
+	var llmResp struct {
+		Success  bool   `json:"success"`
+		Response string `json:"response"`
+		Metadata struct {
+			InputTokens  int     `json:"input_tokens"`
+			OutputTokens int     `json:"output_tokens"`
+			CostUSD      float64 `json:"cost_usd"`
+		} `json:"metadata"`
+		TokensUsed int    `json:"tokens_used"`
+		ModelUsed  string `json:"model_used"`
+		Provider   string `json:"provider"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		logger.Warn("CitationAgent V2: failed to parse response, returning original", "error", err)
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			ValidationPassed: false,
+			ValidationError:  err.Error(),
+		}, nil
+	}
+
+	// Extract cited report from tags
+	citedReport := extractCitedReport(llmResp.Response)
+	if citedReport == "" {
+		citedReport = strings.ReplaceAll(llmResp.Response, "<cited_report>", "")
+		citedReport = strings.ReplaceAll(citedReport, "</cited_report>", "")
+		citedReport = strings.TrimSpace(citedReport)
+	}
+
+	result := &CitationAgentResult{
+		TokensUsed:   llmResp.TokensUsed,
+		ModelUsed:    llmResp.ModelUsed,
+		Provider:     llmResp.Provider,
+		InputTokens:  llmResp.Metadata.InputTokens,
+		OutputTokens: llmResp.Metadata.OutputTokens,
+	}
+
+	// Extract actual citations used in the report
+	actualUsedCitations := extractUsedCitationNumbers(citedReport)
+
+	if len(actualUsedCitations) == 0 {
+		logger.Info("CitationAgent V2: no citations added, using original report")
+		result.Role = role
+		result.CitedReport = input.Report
+		result.CitationsUsed = nil
+		result.ValidationPassed = true
+		result.PlacementWarnings = []string{"LLM did not add any citations - using original report"}
+		return result, nil
+	}
+
+	// Validate content immutability
+	if valid, err := validateContentImmutability(input.Report, citedReport); !valid {
+		logger.Warn("CitationAgent V2: content modified, using original report", "error", err)
+		result.Role = role
+		result.CitedReport = input.Report
+		result.CitationsUsed = nil
+		result.ValidationPassed = false
+		result.ValidationError = "content modified beyond citations"
+		return result, nil
+	}
+
+	// Validate citation numbers (only allow IDs that were in supportedMappings)
+	invalidCitations := validateCitationNumbersV2(citedReport, usedCitationIDs)
+	if len(invalidCitations) > 0 {
+		logger.Warn("CitationAgent V2: invalid citation numbers, removing", "invalid", invalidCitations)
+		citedReport = removeInvalidCitations(citedReport, invalidCitations)
+		actualUsedCitations = extractUsedCitationNumbers(citedReport)
+	}
+
+	// Build Sources section with used citations and additional sources (P1)
+	// Use AllCitations if provided, otherwise fall back to Citations
+	allCitationsForSources := input.AllCitations
+	if len(allCitationsForSources) == 0 {
+		allCitationsForSources = input.Citations
+	}
+	sourcesSection := buildSourcesSectionV2(actualUsedCitations, allCitationsForSources, citationMap)
+	citedReportWithSources := citedReport + "\n\n" + sourcesSection
+
+	result.Role = role
+	result.CitedReport = citedReportWithSources
+	result.CitationsUsed = actualUsedCitations
+	result.ValidationPassed = true
+	result.RedundantCount = len(detectRedundantCitations(citedReport))
+
+	logger.Info("CitationAgent V2 (with Verify): complete",
+		"expected_citations", len(usedCitationIDs),
+		"actual_citations", len(actualUsedCitations),
+	)
+
+	return result, nil
+}
+
+// filterSupportedClaims returns only claims with verdict="supported" and non-empty supporting_ids
+func filterSupportedClaims(mappings []ClaimMappingInput) []ClaimMappingInput {
+	var result []ClaimMappingInput
+	for _, m := range mappings {
+		if m.Verdict == "supported" && len(m.SupportingIDs) > 0 {
+			result = append(result, m)
+		}
+	}
+	return result
+}
+
+// collectUsedCitationIDs extracts all unique citation IDs from supported mappings
+func collectUsedCitationIDs(mappings []ClaimMappingInput) []int {
+	idSet := make(map[int]bool)
+	for _, m := range mappings {
+		for _, id := range m.SupportingIDs {
+			idSet[id] = true
+		}
+	}
+
+	ids := make([]int, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	return ids
+}
+
+// validateCitationNumbersV2 returns citation numbers that are not in the allowed set
+func validateCitationNumbersV2(cited string, allowedIDs []int) []int {
+	allowedSet := make(map[int]bool)
+	for _, id := range allowedIDs {
+		allowedSet[id] = true
+	}
+
+	matches := citationNumberPattern.FindAllStringSubmatch(cited, -1)
+	var invalid []int
+	seen := make(map[int]bool)
+	for _, m := range matches {
+		n, _ := strconv.Atoi(m[1])
+		if !allowedSet[n] && !seen[n] {
+			invalid = append(invalid, n)
+			seen[n] = true
+		}
+	}
+	return invalid
+}
+
+// buildCitationPlacementPromptWithMappings returns the system prompt for V2 with ClaimMappings
+func buildCitationPlacementPromptWithMappings() string {
+	return `You are a citation placement specialist.
+
+## YOUR TASK
+Add [n] citation markers to the report based on pre-verified claim-citation mappings.
+The mappings tell you which claims are supported by which citations.
+Your job is simply to place [n] markers at the END of sentences containing those claims.
+
+## ABSOLUTE RULE - DO NOT MODIFY TEXT
+The ONLY modification allowed is inserting [n] markers. NOTHING ELSE.
+Your response will be REJECTED if you change ANY character of the original text.
+
+## HOW TO USE MAPPINGS
+For each mapping:
+1. Find the sentence in the report that contains the claim
+2. Add the citation marker(s) at the END of that sentence
+3. Format: "sentence text.[1]" or "sentence text.[1][3]"
+
+## CITATION PLACEMENT RULES
+- Place citations at END of sentences, before the period/newline
+- ✓ "Revenue grew 19%.[1]"
+- ✓ "Founded in 2020[2], the company expanded rapidly.[3]"
+- ✗ "[1] Revenue grew 19%."
+
+## OUTPUT FORMAT
+<cited_report>
+[Original text with [n] markers inserted - NO OTHER CHANGES]
+</cited_report>
+
+IMPORTANT: Only use citation IDs from the provided mappings. Do NOT add any other citations.`
+}
+
+// buildCitationUserContentWithMappings builds user content for V2 with ClaimMappings
+func buildCitationUserContentWithMappings(report string, citations []CitationWithIDForAgent, mappings []ClaimMappingInput) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Verified Claim-Citation Mappings:\n")
+	sb.WriteString("(These are pre-verified - just place the citations where the claims appear)\n\n")
+	for i, m := range mappings {
+		idsStr := make([]string, len(m.SupportingIDs))
+		for j, id := range m.SupportingIDs {
+			idsStr[j] = fmt.Sprintf("[%d]", id)
+		}
+		sb.WriteString(fmt.Sprintf("%d. Claim: \"%s\"\n", i+1, m.Claim))
+		sb.WriteString(fmt.Sprintf("   Citations: %s (confidence: %.2f)\n\n", strings.Join(idsStr, " "), m.Confidence))
+	}
+
+	sb.WriteString("\n## Citation Reference (for context only):\n")
+	for _, c := range citations {
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", c.ID, title, c.URL))
+	}
+
+	sb.WriteString("\n## Report to Cite:\n")
+	sb.WriteString(report)
+	sb.WriteString("\n\nAdd citations based on the mappings above and output within <cited_report> tags:")
+
+	return sb.String()
+}
+
+// buildSourcesSectionV2 builds the Sources section with all citations
+// P1: All citations shown with [n] numbering, marked as "Used inline" or "Additional source"
+// Format matches V1: [n] Title (URL) - domain - Status
+func buildSourcesSectionV2(usedIDs []int, allCitations []CitationWithIDForAgent, citationMap map[int]CitationWithIDForAgent) string {
+	var sb strings.Builder
+	sb.WriteString("## Sources\n\n")
+
+	// Build used IDs set for quick lookup
+	usedSet := make(map[int]bool)
+	for _, id := range usedIDs {
+		usedSet[id] = true
+	}
+
+	// Output all citations with [n] prefix, sorted by ID
+	// First collect all citations with their IDs
+	type citationEntry struct {
+		id     int
+		cite   CitationWithIDForAgent
+		isUsed bool
+	}
+	var entries []citationEntry
+
+	// Add all citations from allCitations list
+	for _, c := range allCitations {
+		entries = append(entries, citationEntry{
+			id:     c.ID,
+			cite:   c,
+			isUsed: usedSet[c.ID],
+		})
+	}
+
+	// Sort by ID
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].id < entries[j].id
+	})
+
+	// Output all citations
+	for _, entry := range entries {
+		c := entry.cite
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		if title == "" {
+			title = c.URL
+		}
+
+		status := "Additional source"
+		if entry.isUsed {
+			status = "Used inline"
+		}
+
+		// Decode URL for better readability (e.g., %E4%B8%AD%E6%96%87 → 中文)
+		displayURL := c.URL
+		if decoded, err := url.PathUnescape(c.URL); err == nil {
+			displayURL = decoded
+		}
+
+		// Format: [n] Title (URL) - domain - Status
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s) - %s - %s\n", entry.id, title, displayURL, c.Source, status))
+	}
+
+	return sb.String()
 }

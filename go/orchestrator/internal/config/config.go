@@ -28,6 +28,7 @@ type Features struct {
 	Workflows     WorkflowsConfig     `mapstructure:"workflows"`
 	Enforcement   EnforcementConfig   `mapstructure:"enforcement"`
 	Gateway       GatewayConfig       `mapstructure:"gateway"`
+	Citation      CitationConfig      `mapstructure:"citation"` // P1: Citation V2 feature flags
 }
 
 // Load loads features.yaml from CONFIG_PATH or /app/config/features.yaml
@@ -122,6 +123,17 @@ type EnforcementConfig struct {
 // GatewayConfig represents gateway-specific toggles
 type GatewayConfig struct {
 	SkipAuth *bool `mapstructure:"skip_auth"`
+}
+
+// CitationConfig captures Citation V2 feature flags (P1)
+type CitationConfig struct {
+	V2Enabled           *bool    `mapstructure:"v2_enabled"`
+	V2StrictMode        *bool    `mapstructure:"v2_strict_mode"`
+	V2MinSupportRate    *float64 `mapstructure:"v2_min_support_rate"`
+	V2MinCitations      *int     `mapstructure:"v2_min_citations"`
+	V2MinClaimsRequired *int     `mapstructure:"v2_min_claims_required"`
+	V2AdaptiveTopK      *bool    `mapstructure:"v2_adaptive_topk"`
+	V2BaseTopK          *int     `mapstructure:"v2_base_topk"`
 }
 
 // BudgetFromEnvOrDefaults returns merged budget config using env overrides first, then config file, with sensible defaults.
@@ -297,6 +309,72 @@ func ResolveEnforcementRuntime(f *Features) EnforcementRuntime {
 
 	if v := os.Getenv("PROVIDER_RATE_CONTROL_ENABLED"); v != "" {
 		cfg.ProviderRateControlEnabled = ParseBool(v)
+	}
+
+	return cfg
+}
+
+// CitationRuntime represents resolved Citation V2 runtime settings (P1)
+type CitationRuntime struct {
+	V2Enabled           bool
+	V2StrictMode        bool
+	V2MinSupportRate    float64
+	V2MinCitations      int
+	V2MinClaimsRequired int
+	V2AdaptiveTopK      bool
+	V2BaseTopK          int
+}
+
+// ResolveCitationRuntime merges features.yaml defaults with environment overrides.
+// Defaults: V2Enabled=true, V2StrictMode=false, V2MinSupportRate=0.1, etc.
+func ResolveCitationRuntime(f *Features) CitationRuntime {
+	cfg := CitationRuntime{
+		V2Enabled:           true,
+		V2StrictMode:        false,
+		V2MinSupportRate:    0.1,
+		V2MinCitations:      3,
+		V2MinClaimsRequired: 5,
+		V2AdaptiveTopK:      true,
+		V2BaseTopK:          5,
+	}
+
+	if f != nil {
+		if f.Citation.V2Enabled != nil {
+			cfg.V2Enabled = *f.Citation.V2Enabled
+		}
+		if f.Citation.V2StrictMode != nil {
+			cfg.V2StrictMode = *f.Citation.V2StrictMode
+		}
+		if f.Citation.V2MinSupportRate != nil {
+			cfg.V2MinSupportRate = *f.Citation.V2MinSupportRate
+		}
+		if f.Citation.V2MinCitations != nil {
+			cfg.V2MinCitations = *f.Citation.V2MinCitations
+		}
+		if f.Citation.V2MinClaimsRequired != nil {
+			cfg.V2MinClaimsRequired = *f.Citation.V2MinClaimsRequired
+		}
+		if f.Citation.V2AdaptiveTopK != nil {
+			cfg.V2AdaptiveTopK = *f.Citation.V2AdaptiveTopK
+		}
+		if f.Citation.V2BaseTopK != nil {
+			cfg.V2BaseTopK = *f.Citation.V2BaseTopK
+		}
+	}
+
+	// Environment overrides
+	if v := os.Getenv("CITATION_V2_ENABLED"); v != "" {
+		cfg.V2Enabled = ParseBool(v)
+	}
+	if v := os.Getenv("CITATION_V2_STRICT_MODE"); v != "" {
+		cfg.V2StrictMode = ParseBool(v)
+	}
+	if v := os.Getenv("CITATION_V2_MIN_SUPPORT_RATE"); v != "" {
+		var x float64
+		_, _ = fmt.Sscanf(v, "%f", &x)
+		if x > 0 && x <= 1.0 {
+			cfg.V2MinSupportRate = x
+		}
 	}
 
 	return cfg

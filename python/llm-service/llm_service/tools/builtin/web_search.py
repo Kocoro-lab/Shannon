@@ -1610,6 +1610,7 @@ class WebSearchTool(Tool):
                     "query": query,
                     "results": results,
                     "result_count": len(results),
+                    "tool_source": "search",  # Citation V2: mark as search-origin
                 },
                 metadata={
                     "query": query,

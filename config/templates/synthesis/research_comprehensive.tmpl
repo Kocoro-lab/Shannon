@@ -32,6 +32,19 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 {{ template "coverage_checklist_citations" . }}
 ✓ Response written in the SAME language as the query
 
+## Relationship Verification (For Business/Company Analysis):
+When analyzing business relationships between entities, verify classification:
+✗ NOT misclassified as competitor if: Entity appears on target's "case studies", "customers", "testimonials" pages → They are a CUSTOMER
+✗ NOT misclassified as competitor if: Target company USES their products/services → They are a VENDOR/SUPPLIER
+✗ NOT misclassified as competitor if: Joint ventures, integrations, co-marketing exist → They are a PARTNER
+
+URL semantic hints for relationship direction:
+- /casestudies/[company]/ → that company is the CUSTOMER (being showcased)
+- /customers/, /testimonials/, /success-stories/ → customer relationship
+- /partners/, /integrations/, /ecosystem/ → partnership relationship
+
+Competitor criteria (ALL must apply): Same product category + Same target market + Substitute offering
+
 {{ template "language_instruction" . }}
 
 {{ template "citation_handling_research" . }}
@@ -46,14 +59,16 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 - If agent outputs already contain tables, checklists, code blocks, or JSON: PRESERVE and MERGE them rather than rewriting into prose.
 - Prioritize concrete facts (numbers, dates, proper nouns, constraints) from primary agent outputs.
 - If a concrete detail appears only in a "(Synthesis)" agent output and you cannot corroborate it elsewhere, flag it as "unverified" rather than omitting it.
+- Information from a single agent is often specialized research that others didn't access - this makes it MORE valuable, not less. Preserve with attribution rather than omit.
 
 ## Quantitative Synthesis Requirements:
-- When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES when appropriate
-- Tables should compare: size, growth rates, market share, performance metrics, costs, timelines
+- When data/numbers/metrics are available in agent results: CREATE MARKDOWN TABLES to organize comparable data
+- Tables are ideal for: comparisons, time series, specifications, pricing, performance benchmarks
+- Quantitative data from a single source is still valuable - include with clear attribution
 {{- if not .CitationAgentEnabled }}
 - Include inline citations [n] for ALL data points in tables
 {{- end }}
-- If significant quantitative data exists but isn't tabulated, briefly note limitations: "Data not directly comparable due to..."
+- If data points are not directly comparable, note the reason briefly (e.g., different time periods, methodologies)
 - Prioritize specific numbers over vague descriptors (e.g., "$5.2B revenue" not "significant revenue")
 
 ## Output Format:
@@ -124,6 +139,8 @@ Do NOT skip any research areas. Generate comprehensive content for ALL sections 
 - If ALL research areas have comprehensive citations and findings: OMIT the "Limitations and Uncertainties" section entirely
 - NEVER fabricate or hallucinate sources
 - Ensure each inline citation directly supports the specific claim; prefer primary sources (publisher/DOI) over aggregators (e.g., Crossref, Semantic Scholar)
+- **Relevance over completeness**: If an agent's output is off-topic or provides only generic data, acknowledge "limited direct information" rather than misattribute it.
+- When agent NOTES indicate "limited information found", do NOT synthesize the accompanying generic data as if it directly answers the query.
 {{- end }}
 
 {{ template "citation_list" . }}

@@ -210,8 +210,8 @@ func buildAgentResultsContent(input IntermediateSynthesisInput) string {
 		sb.WriteString(fmt.Sprintf("### Agent %d (%s):\n", i+1, result.AgentID))
 		if result.Success {
 			response := result.Response
-			if len(response) > 3000 {
-				response = response[:3000] + "...[truncated]"
+			if len(response) > 10000 {
+				response = response[:10000] + "...[truncated]"
 			}
 			sb.WriteString(response)
 		} else {
