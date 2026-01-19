@@ -14,6 +14,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def strip_markdown_json_wrapper(text: str, *, expect_json: bool) -> str:
+    """Strip markdown code fences when they wrap JSON.
+
+    Only strips wrappers for JSON-looking content (```json ... ``` or ``` ... ``` with
+    a JSON object/array body). This avoids breaking normal markdown/code outputs.
+    """
+    if not expect_json or not text or not isinstance(text, str):
+        return text
+
+    trimmed = text.strip()
+    if not trimmed.startswith("```"):
+        return text
+
+    first_newline = trimmed.find("\n")
+    if first_newline == -1:
+        return text
+
+    fence = trimmed[:first_newline].strip()
+    lang = fence[3:].strip().lower()
+    if lang not in ("", "json"):
+        return text
+
+    body = trimmed[first_newline + 1 :].strip()
+    if not body.endswith("```"):
+        return text
+
+    body = body[:-3].strip()
+    if not body or body[0] not in "{[":
+        return text
+
+    return body
+
+
+def _response_format_expects_json(response_format: Any) -> bool:
+    if not isinstance(response_format, dict):
+        return False
+    rf_type = response_format.get("type")
+    return isinstance(rf_type, str) and rf_type.startswith("json")
+
+
 def calculate_relevance_score(query: str, result: Dict[str, Any]) -> float:
     """Calculate relevance score for a search result based on query match."""
     query_lower = query.lower()
@@ -453,6 +493,52 @@ async def agent_query(request: Request, query: AgentQuery):
             # Only include fields explicitly meant for LLM consumption.
             # Session-scoped fields are minimal; task-scoped fields are included only when a workflow/task marker is present.
             if context_without_history:
+                def _truncate_text(text: str, max_chars: int) -> str:
+                    if len(text) <= max_chars:
+                        return text
+                    return text[:max_chars] + "\n...[TRUNCATED]"
+
+                def _format_template_results(value: Any) -> str:
+                    if not isinstance(value, dict):
+                        return _truncate_text(str(value), 20000)
+                    node_ids = sorted([str(k) for k in value.keys()])
+                    max_nodes = 20
+                    per_node_max_chars = 12000
+                    parts: List[str] = []
+                    for idx, node_id in enumerate(node_ids):
+                        if idx >= max_nodes:
+                            parts.append(f"... ({len(node_ids) - max_nodes} more nodes omitted)")
+                            break
+                        node_output = value.get(node_id)
+                        node_text = (
+                            node_output if isinstance(node_output, str) else str(node_output)
+                        )
+                        parts.append(f"[{node_id}]\n{_truncate_text(node_text, per_node_max_chars)}")
+                    return "\n" + "\n\n".join(parts) if parts else ""
+
+                def _format_dependency_results(value: Any) -> str:
+                    if not isinstance(value, dict):
+                        return _truncate_text(str(value), 20000)
+                    dep_ids = sorted([str(k) for k in value.keys()])
+                    max_deps = 20
+                    per_dep_max_chars = 8000
+                    parts: List[str] = []
+                    for idx, dep_id in enumerate(dep_ids):
+                        if idx >= max_deps:
+                            parts.append(f"... ({len(dep_ids) - max_deps} more deps omitted)")
+                            break
+                        dep_val = value.get(dep_id)
+                        dep_text = dep_val if isinstance(dep_val, str) else str(dep_val)
+                        parts.append(f"[{dep_id}]\n{_truncate_text(dep_text, per_dep_max_chars)}")
+                    return "\n" + "\n\n".join(parts) if parts else ""
+
+                def _format_context_value(key: str, value: Any) -> str:
+                    if key == "template_results":
+                        return _format_template_results(value)
+                    if key == "dependency_results":
+                        return _format_dependency_results(value)
+                    return _truncate_text(str(value), 20000)
+
                 session_allowed = {
                     "agent_memory",    # Conversation memory items (injected by workflows)
                     "context_summary", # Compressed context history (injected by workflows)
@@ -470,6 +556,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "official_domains",
                     "disambiguation_terms",
                     "canonical_name",
+                    # Template workflow: upstream node outputs
+                    "template_results",
+                    "dependency_results",
                 }
 
                 # Treat context as task-scoped if workflow metadata is present
@@ -482,6 +571,10 @@ async def agent_query(request: Request, query: AgentQuery):
                         "force_research",
                         "research_strategy",
                         "previous_results",
+                        # Template workflow markers
+                        "template_results",
+                        "dependency_results",
+                        "template_node_id",
                     )
                 )
 
@@ -493,7 +586,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     if k in allowed_keys and v is not None
                 ]
                 if safe_items:
-                    context_str = "\n".join([f"{k}: {v}" for k, v in safe_items])
+                    context_str = "\n".join(
+                        [f"{k}: {_format_context_value(k, v)}" for k, v in safe_items]
+                    )
                     messages[0]["content"] += f"\n\nContext:\n{context_str}"
 
             # Optional JSON enforcement passthrough: allow callers to request JSON via context
@@ -505,6 +600,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         response_format = rf
             except Exception:
                 response_format = None
+            expects_json_response = _response_format_expects_json(response_format)
 
             # Soft enforcement: if caller requests tool usage and tools are allowed, nudge the model
             force_tools = False
@@ -1189,7 +1285,9 @@ async def agent_query(request: Request, query: AgentQuery):
 
             return AgentResponse(
                 success=True,
-                response=result["response"],
+                response=strip_markdown_json_wrapper(
+                    result["response"], expect_json=expects_json_response
+                ),
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
                 provider=(result_data or {}).get("provider") or "unknown",
@@ -1233,7 +1331,14 @@ async def agent_query(request: Request, query: AgentQuery):
 
             return AgentResponse(
                 success=True,
-                response=result["response"],
+                response=strip_markdown_json_wrapper(
+                    result["response"],
+                    expect_json=_response_format_expects_json(
+                        query.context.get("response_format")
+                        if isinstance(query.context, dict)
+                        else None
+                    ),
+                ),
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
                 provider="mock",
@@ -1492,8 +1597,26 @@ async def _execute_and_format_tools(
                     # GA4 OAuth credentials (per-request auth from frontend)
                     "ga4_access_token",
                     "ga4_property_id",
+                    # Trading agents: upstream node results from TemplateWorkflow
+                    "template_results",
+                    "dependency_results",
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
+                for key in ("template_results", "dependency_results"):
+                    if key in sanitized_context and sanitized_context[key] is not None:
+                        val = sanitized_context[key]
+                        if isinstance(val, dict):
+                            trimmed: Dict[str, Any] = {}
+                            for idx, (k, v) in enumerate(val.items()):
+                                if idx >= 20:
+                                    trimmed["..."] = "[TRUNCATED]"
+                                    break
+                                text = v if isinstance(v, str) else str(v)
+                                trimmed[str(k)] = text if len(text) <= 4000 else text[:4000] + "..."
+                            sanitized_context[key] = trimmed
+                        else:
+                            text = val if isinstance(val, str) else str(val)
+                            sanitized_context[key] = text if len(text) <= 4000 else text[:4000] + "..."
             else:
                 sanitized_context = None
 

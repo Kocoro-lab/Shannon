@@ -21,6 +21,39 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
 
+// stripMarkdownJSONWrapper removes a leading markdown code fence when it wraps JSON.
+func stripMarkdownJSONWrapper(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return s
+	}
+
+	// Find end of first line (```json or ```)
+	idx := strings.Index(trimmed, "\n")
+	if idx == -1 {
+		return s
+	}
+
+	fence := strings.TrimSpace(trimmed[:idx])
+	lang := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(fence, "```")))
+	if lang != "" && lang != "json" {
+		return s
+	}
+
+	body := strings.TrimSpace(trimmed[idx+1:])
+	if !strings.HasSuffix(body, "```") {
+		return s
+	}
+	body = strings.TrimSpace(body[:len(body)-3])
+	if body == "" {
+		return s
+	}
+	if body[0] != '{' && body[0] != '[' {
+		return s
+	}
+	return body
+}
+
 // TemplateWorkflowInput carries data required to execute a compiled template.
 type TemplateWorkflowInput struct {
 	Task         TaskInput
@@ -201,7 +234,7 @@ func (rt *templateRuntime) FinalResult() string {
 	}
 	lastID := rt.Plan.Order[len(rt.Plan.Order)-1]
 	if res, ok := rt.NodeResults[lastID]; ok {
-		return res.Result
+		return stripMarkdownJSONWrapper(res.Result)
 	}
 	return ""
 }
