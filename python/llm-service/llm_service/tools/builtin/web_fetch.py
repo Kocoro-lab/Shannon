@@ -67,6 +67,98 @@ def detect_blocked_reason(content: str, status_code: int = 200) -> Optional[str]
     return None
 
 
+def clean_markdown_noise(content: str) -> str:
+    """
+    清理 fetch 结果中的 markdown 噪音。
+
+    Features:
+    - 保护代码块不被误改
+    - 移除图片引用，保留有意义的 alt text
+    - 移除 base64 数据
+    - 链接保留可见文本，只移除 URL
+    - 清理 HTML img 标签
+
+    Codex Review: 3 rounds, GPT-5.2 high reasoning
+    """
+    if not content:
+        return content
+
+    from typing import List, Tuple
+
+    # Step 0: Protect code blocks (fenced and inline)
+    code_blocks: List[Tuple[str, str]] = []
+
+    def save_code(m):
+        placeholder = f'__CODE_BLOCK_{len(code_blocks)}__'
+        code_blocks.append((placeholder, m.group(0)))
+        return placeholder
+
+    # Fenced code blocks ```...```
+    content = re.sub(r'```[\s\S]*?```', save_code, content)
+    # Inline code `...`
+    content = re.sub(r'`[^`]+`', save_code, content)
+
+    # Step 1: Remove base64 early (performance optimization, reduces subsequent regex matching)
+    content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=\s]+', '', content, flags=re.MULTILINE)
+
+    # Step 2: Nested image links [![alt](img)](href) -> alt or ''
+    # Must be processed before regular images
+    def extract_meaningful_alt(m, group=1):
+        alt = m.group(group).strip()
+        # Keep meaningful alt text (>5 chars, contains Chinese or English)
+        if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
+            return alt  # Return plain text without brackets
+        return ''
+
+    content = re.sub(r'\[!\[([^\]]*)\]\([^)]*\)\]\([^)]*\)',
+                     lambda m: extract_meaningful_alt(m, 1), content)
+
+    # Step 3: Standard images ![alt](url) and ![alt](url "title")
+    content = re.sub(r'!\[([^\]]*)\]\([^)]*(?:\s+"[^"]*")?\)',
+                     lambda m: extract_meaningful_alt(m, 1), content)
+
+    # Step 4: Reference-style images ![alt][ref]
+    content = re.sub(r'!\[([^\]]*)\]\[[^\]]*\]',
+                     lambda m: extract_meaningful_alt(m, 1), content)
+
+    # Step 5: HTML img tags <img ... alt="...">
+    def replace_html_img(m):
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', m.group(0))
+        if alt_match:
+            alt = alt_match.group(1).strip()
+            if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
+                return alt
+        return ''
+
+    content = re.sub(r'<img[^>]*>', replace_html_img, content, flags=re.IGNORECASE)
+
+    # Step 6: Clean up orphaned reference definitions [ref]: url
+    content = re.sub(r'^\[[^\]]+\]:\s*\S+.*$', '', content, flags=re.MULTILINE)
+
+    # Step 7: tel/mailto links - keep text, remove URL
+    content = re.sub(r'\[([^\]]+)\]\((tel:|mailto:)[^)]+\)', r'\1', content)
+
+    # Step 8: Anchor links - keep text, remove URL
+    content = re.sub(r'\[([^\]]+)\]\(#[^)]*\)', r'\1', content)
+
+    # Step 9: Autolinks - keep address, remove scheme
+    content = re.sub(r'<mailto:([^>]+)>', r'\1', content)
+    content = re.sub(r'<tel:([^>]+)>', r'\1', content)
+    content = re.sub(r'<https?://([^>]+)>', r'\1', content)
+
+    # Step 10: Empty links []()
+    content = re.sub(r'\[\s*\]\([^)]*\)', '', content)
+
+    # Step 11: Clean up excessive blank lines
+    content = re.sub(r'\n{3,}', '\n\n', content)
+
+    # Step 12: Restore code blocks
+    for placeholder, original in code_blocks:
+        content = content.replace(placeholder, original)
+
+    return content.strip()
+
+
 CRAWL_DELAY_SECONDS = float(os.getenv("WEB_FETCH_CRAWL_DELAY", "0.5"))
 MAX_TOTAL_CRAWL_CHARS = int(os.getenv("WEB_FETCH_MAX_CRAWL_CHARS", "150000"))  # 150KB total
 CRAWL_TIMEOUT_SECONDS = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "90"))  # 90s total crawl timeout
@@ -323,6 +415,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "url": url,
             "formats": ["markdown"],
             "onlyMainContent": True,
+            "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
             "timeout": self.DEFAULT_TIMEOUT * 1000,  # Firecrawl uses milliseconds
         }
 
@@ -347,6 +440,9 @@ class FirecrawlFetchProvider(WebFetchProvider):
 
                 result_data = data.get("data", {})
                 content = result_data.get("markdown", "")
+
+                # Clean markdown noise before truncation
+                content = clean_markdown_noise(content)
 
                 # Truncate if needed
                 if len(content) > max_length:
@@ -391,6 +487,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "scrapeOptions": {
                 "formats": ["markdown"],
                 "onlyMainContent": True,
+                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
             },
         }
 
@@ -565,6 +662,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
         if len(unique_pages) == 1:
             result = unique_pages[0]
             content = result.get("markdown", "")
+            content = clean_markdown_noise(content)  # Clean noise before truncation
             if len(content) > max_length:
                 content = content[:max_length]
             
@@ -594,7 +692,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
             page_url = page_data.get("url", "")
             page_title = page_data.get("metadata", {}).get("title", "")
             page_content = page_data.get("markdown", "")
-            
+            page_content = clean_markdown_noise(page_content)  # Clean noise
+
             # Truncate individual page
             if len(page_content) > per_page_limit:
                 page_content = page_content[:per_page_limit] + "\n\n[Content truncated...]"

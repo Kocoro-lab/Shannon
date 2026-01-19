@@ -32,6 +32,19 @@ IMPORTANT: Do NOT include any of the Synthesis Requirements, Output Format, or C
 {{ template "coverage_checklist_citations" . }}
 ✓ Response written in the SAME language as the query
 
+## Relationship Verification (For Business/Company Analysis):
+When analyzing business relationships between entities, verify classification:
+✗ NOT misclassified as competitor if: Entity appears on target's "case studies", "customers", "testimonials" pages → They are a CUSTOMER
+✗ NOT misclassified as competitor if: Target company USES their products/services → They are a VENDOR/SUPPLIER
+✗ NOT misclassified as competitor if: Joint ventures, integrations, co-marketing exist → They are a PARTNER
+
+URL semantic hints for relationship direction:
+- /casestudies/[company]/ → that company is the CUSTOMER (being showcased)
+- /customers/, /testimonials/, /success-stories/ → customer relationship
+- /partners/, /integrations/, /ecosystem/ → partnership relationship
+
+Competitor criteria (ALL must apply): Same product category + Same target market + Substitute offering
+
 {{ template "language_instruction" . }}
 
 {{ template "citation_handling_research" . }}

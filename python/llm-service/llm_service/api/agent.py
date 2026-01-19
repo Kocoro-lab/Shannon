@@ -14,6 +14,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def strip_markdown_json_wrapper(text: str, *, expect_json: bool) -> str:
+    """Strip markdown code fences when they wrap JSON.
+
+    Only strips wrappers for JSON-looking content (```json ... ``` or ``` ... ``` with
+    a JSON object/array body). This avoids breaking normal markdown/code outputs.
+    """
+    if not expect_json or not text or not isinstance(text, str):
+        return text
+
+    trimmed = text.strip()
+    if not trimmed.startswith("```"):
+        return text
+
+    first_newline = trimmed.find("\n")
+    if first_newline == -1:
+        return text
+
+    fence = trimmed[:first_newline].strip()
+    lang = fence[3:].strip().lower()
+    if lang not in ("", "json"):
+        return text
+
+    body = trimmed[first_newline + 1 :].strip()
+    if not body.endswith("```"):
+        return text
+
+    body = body[:-3].strip()
+    if not body or body[0] not in "{[":
+        return text
+
+    return body
+
+
+def _response_format_expects_json(response_format: Any) -> bool:
+    if not isinstance(response_format, dict):
+        return False
+    rf_type = response_format.get("type")
+    return isinstance(rf_type, str) and rf_type.startswith("json")
+
+
 def calculate_relevance_score(query: str, result: Dict[str, Any]) -> float:
     """Calculate relevance score for a search result based on query match."""
     query_lower = query.lower()
@@ -72,31 +112,79 @@ def filter_relevant_results(
 # Interpretation Pass Helper Functions (P0 Fix for content loss)
 # ============================================================================
 
-# Multi-language interpretation prompt with strong instructions
-INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION / 重要指令 / 重要な指示 ===
+# Interpretation prompt for summarizing tool results
+INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION ===
 
 You MUST summarize the ACTUAL CONTENT from the tool results above.
-你必须总结上面工具结果中的实际内容。
-上記のツール結果から実際の内容を要約してください。
+You MUST assess each source's RELEVANCE to the original query.
 
-FORMAT / 格式 / フォーマット:
+=== RELEVANCE-AWARE OUTPUT ===
+
+For EACH source, first determine its relevance to the query:
+
+**HIGH RELEVANCE** (source directly addresses the query topic):
+- Provide detailed summary with preserved data points
+- Use tables for comparisons/metrics (saves space, improves clarity)
+- Use bullet lists for key facts
+- Include all specific numbers, dates, names, conclusions
+
+**LOW RELEVANCE** (source is off-topic, tangential, or operational):
+- Write ONE concise line explaining why it's not relevant
+- Format: "## Source N: [URL] - [TYPE] page, [brief reason why not relevant to query]"
+- Examples of LOW relevance: support FAQs, API docs, login pages, navigation-only pages, error pages
+- Do NOT expand further on LOW relevance sources
+
+=== EVIDENCE-ONLY CONSTRAINT (CRITICAL) ===
+
+STRICT RULES - violation causes output rejection:
+1. Every URL you mention MUST appear in the tool results above
+2. If a tool returned an error or empty content, report it as-is: "## Source N: [URL] - FAILED: [error message]"
+3. DO NOT infer, guess, or fabricate any data not present in tool results
+4. If tool says "Site Error", "Access Denied", "404", "no content" → report the failure, nothing more
+
+CORRECT example:
+- Tool result: "web_subpage_fetch failed: Site Error Detected"
+- Your output: "## Source 2: example.com - FAILED: Site error, no content retrieved"
+
+WRONG example (causes rejection):
+- Tool result: "web_subpage_fetch failed: Site Error"
+- Your output: "## Source 2: example.com - Company founded in 2015..." ← FABRICATION, FORBIDDEN
+
+=== CONCISENESS TECHNIQUES ===
+
+For HIGH relevance sources, prefer compact formats:
+
+Table format (for metrics/comparisons):
+| Attribute | Value |
+|-----------|-------|
+| Founded | 2010 |
+| Employees | 5000+ |
+
+Bullet format (for facts):
+- Key product: Payments platform
+- Headquarters: San Francisco
+
+=== OUTPUT FORMAT ===
+
 # PART 1 - RETRIEVED INFORMATION
-[Detailed summary of facts, data, quotes from tool results]
-[详细总结事实、数据、引用]
+
+## Source 1: [URL]
+[If HIGH relevance: detailed summary with tables/bullets]
+[If LOW relevance: one-line explanation]
+
+## Source 2: [URL]
+...
 
 # PART 2 - NOTES (optional)
-[Additional observations]
+[Conflicts between sources, data gaps, failed fetches summary]
 
-=== FORBIDDEN / 禁止 / 禁止事項 ===
-DO NOT say / 不要说 / 言ってはいけない:
-- 'I will fetch...' / '我将获取...' / '取得します...'
-- 'I need to search...' / '我需要搜索...' / '検索する必要が...'
-- 'Let me continue...' / '让我继续...' / '続けさせて...'
-- Any future actions / 任何下一步动作 / 将来のアクション
+=== FORBIDDEN ===
+- Future action verbs ('I will fetch...', 'I need to search...')
+- URLs not present in tool results
+- Inferred/fabricated data when tool returned errors or empty content
+- Detailed summaries of LOW relevance sources
 
-ONLY summarize what was ALREADY retrieved.
-只总结已经获取的内容。
-既に取得した内容のみを要約してください。"""
+ONLY summarize what was ALREADY retrieved."""
 
 
 def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], max_chars: int = 3000) -> str:
@@ -106,10 +194,28 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
 
     This is NOT raw JSON - it extracts key information in readable format.
     """
-    import json
-    import re
+    lines: List[str] = []
+    failures: List[str] = []
 
-    lines = []
+    def _summarize_failure(record: Dict[str, Any]) -> str:
+        tool_name = record.get("tool", "unknown")
+        err = record.get("error") or ""
+        tool_input = record.get("tool_input") or {}
+        target = ""
+        if isinstance(tool_input, dict):
+            if tool_input.get("url"):
+                target = f"url={tool_input.get('url')}"
+            elif tool_input.get("urls"):
+                target = f"urls={tool_input.get('urls')}"
+            elif tool_input.get("query"):
+                target = f"query={tool_input.get('query')}"
+        if target and err:
+            return f"- {tool_name} FAILED ({target}): {err}"
+        if err:
+            return f"- {tool_name} FAILED: {err}"
+        if target:
+            return f"- {tool_name} FAILED ({target})"
+        return f"- {tool_name} FAILED"
 
     # Process tool execution records for structured extraction
     for record in tool_records:
@@ -118,6 +224,7 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
         output = record.get("output", {})
 
         if not success:
+            failures.append(_summarize_failure(record))
             continue
 
         if tool_name == "web_search":
@@ -135,15 +242,20 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
 
         elif tool_name == "web_fetch":
             lines.append("## Fetched Content")
-            pages = output.get("pages", []) if isinstance(output, dict) else []
-            for page in pages[:3]:  # Top 3 pages
-                if not page.get("success"):
+            pages = []
+            if isinstance(output, dict):
+                pages = output.get("pages", []) if isinstance(output.get("pages"), list) else []
+                # Single-URL mode: {url, title, content, ...}
+                if not pages and any(k in output for k in ("url", "title", "content")):
+                    pages = [output]
+
+            for page in (pages or [])[:3]:  # Top 3 pages
+                if isinstance(page, dict) and page.get("success") is False:
                     continue
-                title = page.get("title", "Untitled")
-                content = page.get("content", "")
-                url = page.get("url", "")
+                title = page.get("title", "Untitled") if isinstance(page, dict) else "Untitled"
+                content = page.get("content", "") if isinstance(page, dict) else ""
+                url = page.get("url", "") if isinstance(page, dict) else ""
                 if content and len(content) > 50:
-                    # Extract meaningful content, skip PDF binary
                     if content.startswith("%PDF"):
                         lines.append(f"- **{title}** (PDF document)")
                     else:
@@ -153,14 +265,46 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
                         lines.append(f"  Source: {url}")
             lines.append("")
 
+        elif tool_name == "web_subpage_fetch":
+            lines.append("## Subpage Fetch")
+            if isinstance(output, dict):
+                url = output.get("url", "")
+                title = output.get("title", "") or "Untitled"
+                pages_fetched = output.get("pages_fetched", None)
+                content = output.get("content", "") or ""
+                if content.startswith("%PDF"):
+                    lines.append(f"- **{title}** (PDF document)")
+                else:
+                    preview = content[:800].replace("\n", " ").strip()
+                    suffix = f" ({pages_fetched} pages)" if isinstance(pages_fetched, int) else ""
+                    lines.append(f"- **{title}**{suffix}: {preview}...")
+                if url:
+                    lines.append(f"  Source: {url}")
+            lines.append("")
+
+        elif tool_name == "web_crawl":
+            lines.append("## Crawl")
+            if isinstance(output, dict):
+                url = output.get("url") or ""
+                content = output.get("content") or ""
+                preview = str(content)[:800].replace("\n", " ").strip()
+                lines.append(f"- {preview}...")
+                if url:
+                    lines.append(f"  Source: {url}")
+            lines.append("")
+
+    if failures:
+        lines.append("## Tool Failures")
+        lines.extend(failures[:20])
+        lines.append("")
+
     # Fallback: parse raw tool_results if no records
     if not lines and tool_results:
-        # Try to extract readable parts from string
+        # Prefer preserving escaped newlines (\\n) rather than stripping backslashes (which turns \\n into 'n')
+        text = str(tool_results)
+        text = text.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
         lines.append("## Tool Output Summary")
-        # Remove JSON artifacts, keep text
-        clean = re.sub(r'[{}\[\]"\\]', ' ', tool_results)
-        clean = re.sub(r'\s+', ' ', clean).strip()
-        lines.append(clean[:max_chars])
+        lines.append(text[:max_chars])
 
     digest = "\n".join(lines)
     return digest[:max_chars] if len(digest) > max_chars else digest
@@ -210,11 +354,33 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
         tool_name = record.get("tool", "unknown")
         success = record.get("success", False)
         output = record.get("output", {})
-
-        if not success:
-            continue
+        tool_input = record.get("tool_input") or {}
+        error = record.get("error") or ""
 
         part_header = f"\n### {tool_name} result:\n"
+        if not success:
+            part_header = f"\n### {tool_name} failed:\n"
+            target = ""
+            if isinstance(tool_input, dict):
+                if tool_input.get("url"):
+                    target = f"url={tool_input.get('url')}"
+                elif tool_input.get("urls"):
+                    target = f"urls={tool_input.get('urls')}"
+                elif tool_input.get("query"):
+                    target = f"query={tool_input.get('query')}"
+            lines = []
+            if target:
+                lines.append(f"- Input: {target}")
+            if error:
+                lines.append(f"- Error: {error}")
+            else:
+                lines.append("- Error: (none)")
+            part = part_header + ("\n".join(lines) + "\n")
+            if total_chars + len(part) > max_chars:
+                break
+            parts.append(part)
+            total_chars += len(part)
+            continue
 
         if tool_name == "web_search":
             # Handle both dict format {"results": [...]} and direct array format [...]
@@ -294,8 +460,8 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
                     if main_match:
                         main_url = main_match.group(1)
                         main_content = main_match.group(2).strip()
-                        # Limit main page to 2000 chars (usually less important)
-                        page_sections.append(f"**Main ({main_url})**: {main_content[:2000]}")
+                        # Limit main page to 4000 chars (increased for domain prefetch)
+                        page_sections.append(f"**Main ({main_url})**: {main_content[:4000]}")
 
                     # Extract subpages - these often contain important info
                     subpage_pattern = re.compile(r'## Subpage \d+: ([^\n]+)\n(?:\*\*[^*]+\*\*\n)?\n(.+?)(?=\n---\n\n## Subpage|$)', re.DOTALL)
@@ -305,15 +471,15 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
                         # Prioritize key paths with more content (leadership, team, about)
                         priority_paths = ['/leadership', '/team', '/management', '/about', '/executive']
                         is_priority = any(p in sub_url.lower() for p in priority_paths)
-                        max_sub_chars = 2500 if is_priority else 1500
+                        max_sub_chars = 5000 if is_priority else 3000
                         page_sections.append(f"**{sub_url}**: {sub_content[:max_sub_chars]}")
 
                     # Build final content preserving snippets from all pages
                     if page_sections:
                         part_content = "\n\n".join(page_sections)
-                        # Total limit for multi-page
-                        if len(part_content) > 12000:
-                            part_content = part_content[:12000] + "..."
+                        # Total limit for multi-page (increased for domain prefetch: 10 pages × 3K)
+                        if len(part_content) > 30000:
+                            part_content = part_content[:30000] + "..."
                         part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{part_content}\n\n"
                     else:
                         # Fallback if parsing fails
@@ -322,6 +488,69 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
                     part = part_header + f"**{title}** ({url}): No readable content\n"
             else:
                 part = part_header + str(output)[:3000]
+
+        elif tool_name == "web_crawl":
+            # web_crawl returns comprehensive multi-page crawl results
+            # Format: "# Main Page: URL\n...\n---\n\n## Page N: URL\n..."
+            # Critical: Extract content from EACH page to preserve blog posts, articles etc.
+            if isinstance(output, dict):
+                title = output.get("title", "")
+                content = output.get("content", "")
+                url = output.get("url", "")
+                pages_fetched = output.get("pages_fetched", 1)
+                char_count = output.get("char_count", 0)
+                metadata = output.get("metadata", {})
+                crawled_urls = metadata.get("urls", [])
+
+                if content and not content.startswith("%PDF"):
+                    import re
+                    page_sections = []
+
+                    # Parse main page: "# Main Page: URL\n..."
+                    main_match = re.search(r'^# Main Page: ([^\n]+)\n(.+?)(?=\n---\n\n## Page \d+:|$)', content, re.DOTALL)
+                    if main_match:
+                        main_url = main_match.group(1)
+                        main_content = main_match.group(2).strip()
+                        # Main page gets more space (5000 chars)
+                        page_sections.append(f"**Main ({main_url})**: {main_content[:5000]}")
+
+                    # Parse subsequent pages: "## Page N: URL\n..."
+                    page_pattern = re.compile(r'## Page \d+: ([^\n]+)\n(.+?)(?=\n---\n\n## Page \d+:|$)', re.DOTALL)
+                    for match in page_pattern.finditer(content):
+                        page_url = match.group(1)
+                        page_content = match.group(2).strip()
+
+                        # Prioritize important pages with more content
+                        priority_paths = ['/blog', '/article', '/post', '/about', '/team', '/leadership']
+                        is_priority = any(p in page_url.lower() for p in priority_paths)
+
+                        # Skip sitemap.xml raw content (usually not useful for interpretation)
+                        is_sitemap = 'sitemap.xml' in page_url.lower()
+
+                        if is_sitemap:
+                            # Just note the sitemap exists, don't include raw XML
+                            page_sections.append(f"**{page_url}**: (sitemap with {len(crawled_urls)} URLs)")
+                        elif is_priority:
+                            # Priority pages get 4000 chars each
+                            page_sections.append(f"**{page_url}**: {page_content[:4000]}")
+                        else:
+                            # Other pages get 2000 chars each
+                            page_sections.append(f"**{page_url}**: {page_content[:2000]}")
+
+                    # Build final content
+                    if page_sections:
+                        part_content = "\n\n".join(page_sections)
+                        # Total limit for crawl: 40000 chars (crawl typically fetches more pages)
+                        if len(part_content) > 40000:
+                            part_content = part_content[:40000] + "\n\n[...truncated, see full crawl output]"
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages, {char_count} chars):\n{part_content}\n\n"
+                    else:
+                        # Fallback if parsing fails - still preserve substantial content
+                        part = part_header + f"**{title}** ({url}, {pages_fetched} pages):\n{content[:10000]}\n\n"
+                else:
+                    part = part_header + f"**{title}** ({url}): No readable content\n"
+            else:
+                part = part_header + str(output)[:5000]
 
         else:
             # Generic output
@@ -766,6 +995,52 @@ async def agent_query(request: Request, query: AgentQuery):
             # Only include fields explicitly meant for LLM consumption.
             # Session-scoped fields are minimal; task-scoped fields are included only when a workflow/task marker is present.
             if context_without_history:
+                def _truncate_text(text: str, max_chars: int) -> str:
+                    if len(text) <= max_chars:
+                        return text
+                    return text[:max_chars] + "\n...[TRUNCATED]"
+
+                def _format_template_results(value: Any) -> str:
+                    if not isinstance(value, dict):
+                        return _truncate_text(str(value), 20000)
+                    node_ids = sorted([str(k) for k in value.keys()])
+                    max_nodes = 20
+                    per_node_max_chars = 12000
+                    parts: List[str] = []
+                    for idx, node_id in enumerate(node_ids):
+                        if idx >= max_nodes:
+                            parts.append(f"... ({len(node_ids) - max_nodes} more nodes omitted)")
+                            break
+                        node_output = value.get(node_id)
+                        node_text = (
+                            node_output if isinstance(node_output, str) else str(node_output)
+                        )
+                        parts.append(f"[{node_id}]\n{_truncate_text(node_text, per_node_max_chars)}")
+                    return "\n" + "\n\n".join(parts) if parts else ""
+
+                def _format_dependency_results(value: Any) -> str:
+                    if not isinstance(value, dict):
+                        return _truncate_text(str(value), 20000)
+                    dep_ids = sorted([str(k) for k in value.keys()])
+                    max_deps = 20
+                    per_dep_max_chars = 8000
+                    parts: List[str] = []
+                    for idx, dep_id in enumerate(dep_ids):
+                        if idx >= max_deps:
+                            parts.append(f"... ({len(dep_ids) - max_deps} more deps omitted)")
+                            break
+                        dep_val = value.get(dep_id)
+                        dep_text = dep_val if isinstance(dep_val, str) else str(dep_val)
+                        parts.append(f"[{dep_id}]\n{_truncate_text(dep_text, per_dep_max_chars)}")
+                    return "\n" + "\n\n".join(parts) if parts else ""
+
+                def _format_context_value(key: str, value: Any) -> str:
+                    if key == "template_results":
+                        return _format_template_results(value)
+                    if key == "dependency_results":
+                        return _format_dependency_results(value)
+                    return _truncate_text(str(value), 20000)
+
                 session_allowed = {
                     "agent_memory",    # Conversation memory items (injected by workflows)
                     "context_summary", # Compressed context history (injected by workflows)
@@ -783,6 +1058,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     "official_domains",
                     "disambiguation_terms",
                     "canonical_name",
+                    # Template workflow: upstream node outputs
+                    "template_results",
+                    "dependency_results",
                 }
 
                 # Treat context as task-scoped if workflow metadata is present
@@ -795,6 +1073,10 @@ async def agent_query(request: Request, query: AgentQuery):
                         "force_research",
                         "research_strategy",
                         "previous_results",
+                        # Template workflow markers
+                        "template_results",
+                        "dependency_results",
+                        "template_node_id",
                     )
                 )
 
@@ -806,7 +1088,9 @@ async def agent_query(request: Request, query: AgentQuery):
                     if k in allowed_keys and v is not None
                 ]
                 if safe_items:
-                    context_str = "\n".join([f"{k}: {v}" for k, v in safe_items])
+                    context_str = "\n".join(
+                        [f"{k}: {_format_context_value(k, v)}" for k, v in safe_items]
+                    )
                     messages[0]["content"] += f"\n\nContext:\n{context_str}"
 
             # Optional JSON enforcement passthrough: allow callers to request JSON via context
@@ -818,6 +1102,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         response_format = rf
             except Exception:
                 response_format = None
+            expects_json_response = _response_format_expects_json(response_format)
 
             # Soft enforcement: if caller requests tool usage and tools are allowed, nudge the model
             force_tools = False
@@ -1208,9 +1493,24 @@ async def agent_query(request: Request, query: AgentQuery):
                     or query.context.get("role") == "deep_research_agent"
                 )
             )
-            followup_instruction = (
-                "If the information is insufficient, you may call another tool; otherwise, answer the original query."
-            )
+            # Different followup instructions based on mode
+            if research_mode:
+                # Deep Research: encourage search → fetch loop, but avoid same-query retries
+                followup_instruction = (
+                    "Continue your research: "
+                    "1) If you just searched, fetch the most relevant URLs to verify claims. "
+                    "2) If you need more info, search with DIFFERENT keywords (not the same query). "
+                    "3) Do NOT retry a query that returned empty results. "
+                    "4) When you have sufficient evidence, proceed to synthesis."
+                )
+            else:
+                # Non-DR: stricter limits to avoid long execution times
+                followup_instruction = (
+                    "If the information is insufficient, you may call another tool with a DIFFERENT strategy "
+                    "(e.g., broader/narrower terms, different keywords, alternative sources). "
+                    "Do NOT retry the same query if it returned empty or poor results. "
+                    "If 2+ attempts yield no useful data, synthesize what you have or report 'No relevant information found'."
+                )
 
             total_tokens = 0
             total_input_tokens = 0
@@ -1510,6 +1810,15 @@ async def agent_query(request: Request, query: AgentQuery):
                 if is_valid:
                     response_text = raw_interpretation
                     logger.info(f"[interpretation_pass] VALID for agent={query.agent_id}, response_len={len(str(response_text))}, preview={str(response_text)[:200]}")
+                    # Log compression metrics for analysis
+                    if total_tool_output_chars > 0:
+                        compression_ratio = 1 - (len(response_text) / total_tool_output_chars)
+                        research_strategy = query.context.get("research_strategy", "unknown") if isinstance(query.context, dict) else "unknown"
+                        logger.info(
+                            f"[interpretation_metrics] agent={query.agent_id}, "
+                            f"tool_chars={total_tool_output_chars}, output_chars={len(response_text)}, "
+                            f"compression_ratio={compression_ratio:.2f}, strategy={research_strategy}"
+                        )
                 else:
                     # Fallback to human-readable digest (NOT raw JSON)
                     fallback_digest = generate_tool_digest(
@@ -1615,7 +1924,9 @@ async def agent_query(request: Request, query: AgentQuery):
 
             return AgentResponse(
                 success=True,
-                response=result["response"],
+                response=strip_markdown_json_wrapper(
+                    result["response"], expect_json=expects_json_response
+                ),
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
                 provider=(result_data or {}).get("provider") or "unknown",
@@ -1659,7 +1970,14 @@ async def agent_query(request: Request, query: AgentQuery):
 
             return AgentResponse(
                 success=True,
-                response=result["response"],
+                response=strip_markdown_json_wrapper(
+                    result["response"],
+                    expect_json=_response_format_expects_json(
+                        query.context.get("response_format")
+                        if isinstance(query.context, dict)
+                        else None
+                    ),
+                ),
                 tokens_used=result["tokens_used"],
                 model_used=result["model_used"],
                 provider="mock",
@@ -1945,8 +2263,26 @@ async def _execute_and_format_tools(
                     "ga4_property_id",
                     # Orchestrator-provided tool parameters for merging
                     "tool_parameters",
+                    # Trading agents: upstream node results from TemplateWorkflow
+                    "template_results",
+                    "dependency_results",
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
+                for key in ("template_results", "dependency_results"):
+                    if key in sanitized_context and sanitized_context[key] is not None:
+                        val = sanitized_context[key]
+                        if isinstance(val, dict):
+                            trimmed: Dict[str, Any] = {}
+                            for idx, (k, v) in enumerate(val.items()):
+                                if idx >= 20:
+                                    trimmed["..."] = "[TRUNCATED]"
+                                    break
+                                text = v if isinstance(v, str) else str(v)
+                                trimmed[str(k)] = text if len(text) <= 4000 else text[:4000] + "..."
+                            sanitized_context[key] = trimmed
+                        else:
+                            text = val if isinstance(val, str) else str(val)
+                            sanitized_context[key] = text if len(text) <= 4000 else text[:4000] + "..."
             else:
                 sanitized_context = None
 
@@ -2139,7 +2475,7 @@ async def _execute_and_format_tools(
             # Use higher max_str for content-rich tools (web_fetch, web_subpage_fetch)
             # to preserve multi-page content for citation extraction and storage
             content_rich_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
-            output_max_str = 30000 if tool_name in content_rich_tools else 2000
+            output_max_str = 100000 if tool_name in content_rich_tools else 2000
             tool_execution_records.append(
                 {
                     "tool": tool_name,

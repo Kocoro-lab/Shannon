@@ -1220,12 +1220,12 @@ class WebSearchTool(Tool):
                 "category": None,
                 "sites": [
                     # China funding/company data sources (prioritized)
-                    "tianyancha.com",   # 天眼查 - company registry + funding
-                    "qichacha.com",     # 企查查 - company registry + funding
-                    "it-juzi.com",      # IT桔子 - startup funding database
-                    "36kr.com",         # 36氪 - tech news + funding
-                    "iyiou.com",        # 亿欧 - industry news + funding
-                    "pedaily.cn",       # 投资界 - PE/VC news
+                    "tianyancha.com",   # Tianyancha - company registry + funding
+                    "qichacha.com",     # Qichacha - company registry + funding
+                    "it-juzi.com",      # IT Juzi - startup funding database
+                    "36kr.com",         # 36Kr - tech news + funding
+                    "iyiou.com",        # EqualOcean - industry news + funding
+                    "pedaily.cn",       # PEdaily - PE/VC news
                 ],
             },
             "local_jp": {
@@ -1236,7 +1236,7 @@ class WebSearchTool(Tool):
                     "entrepedia.jp",    # Entrepedia - Japan startup encyclopedia
                     "thebridge.jp",     # The Bridge - Japan tech startup news
                     "jp.techcrunch.com",  # TechCrunch Japan
-                    "nikkei.com",       # 日経 - business news
+                    "nikkei.com",       # Nikkei - business news
                     "prtimes.jp",       # PR Times - press releases
                 ],
             },

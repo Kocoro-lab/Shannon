@@ -21,6 +21,39 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/patterns/execution"
 )
 
+// stripMarkdownJSONWrapper removes a leading markdown code fence when it wraps JSON.
+func stripMarkdownJSONWrapper(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return s
+	}
+
+	// Find end of first line (```json or ```)
+	idx := strings.Index(trimmed, "\n")
+	if idx == -1 {
+		return s
+	}
+
+	fence := strings.TrimSpace(trimmed[:idx])
+	lang := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(fence, "```")))
+	if lang != "" && lang != "json" {
+		return s
+	}
+
+	body := strings.TrimSpace(trimmed[idx+1:])
+	if !strings.HasSuffix(body, "```") {
+		return s
+	}
+	body = strings.TrimSpace(body[:len(body)-3])
+	if body == "" {
+		return s
+	}
+	if body[0] != '{' && body[0] != '[' {
+		return s
+	}
+	return body
+}
+
 // TemplateWorkflowInput carries data required to execute a compiled template.
 type TemplateWorkflowInput struct {
 	Task         TaskInput
@@ -201,7 +234,7 @@ func (rt *templateRuntime) FinalResult() string {
 	}
 	lastID := rt.Plan.Order[len(rt.Plan.Order)-1]
 	if res, ok := rt.NodeResults[lastID]; ok {
-		return res.Result
+		return stripMarkdownJSONWrapper(res.Result)
 	}
 	return ""
 }
@@ -230,7 +263,7 @@ func executeTemplateNode(ctx workflow.Context, rt *templateRuntime, node templat
 	nodeContext := mergeContext(rt.Task.Context, node.Metadata)
 	nodeContext["template_node_id"] = node.ID
 	nodeContext["template_node_type"] = string(node.Type)
-	nodeContext["template_results"] = cloneStringMap(rt.NodeOutputs)
+	nodeContext["template_results"] = cloneStringMapTruncated(rt.NodeOutputs, 12000)
 
 	history := convertHistoryForAgent(rt.Task.History)
 	query := determineNodeQuery(rt.Task.Query, node.Metadata)
@@ -551,6 +584,27 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneStringMapTruncated(in map[string]string, maxChars int) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	if maxChars <= 0 {
+		return cloneStringMap(in)
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = truncateText(v, maxChars)
+	}
+	return out
+}
+
+func truncateText(s string, maxChars int) string {
+	if maxChars <= 0 || len(s) <= maxChars {
+		return s
+	}
+	return s[:maxChars] + "\n...[TRUNCATED]"
 }
 
 func loadPatternThresholds(context map[string]interface{}) map[patterns.PatternType]int {

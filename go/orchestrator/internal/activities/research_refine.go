@@ -521,8 +521,11 @@ func detectLanguage(query string) string {
 	cjkPercent := float64(cjk) / float64(total)
 	if cjkPercent > 0.3 {
 		// Distinguish Chinese/Japanese/Korean by character patterns
-		var hiragana, katakana, hangul int
+		var hanzi, hiragana, katakana, hangul int
 		for _, r := range query {
+			if r >= 0x4E00 && r <= 0x9FFF {
+				hanzi++ // Pure CJK ideographs (shared by Chinese/Japanese)
+			}
 			if r >= 0x3040 && r <= 0x309F {
 				hiragana++
 			}
@@ -536,7 +539,12 @@ func detectLanguage(query string) string {
 		if hangul > 0 {
 			return "Korean"
 		}
-		if hiragana > 0 || katakana > 0 {
+		japaneseKana := hiragana + katakana
+		if japaneseKana > 0 {
+			// Compare hanzi vs kana ratio: Chinese text may contain Japanese company names
+			if hanzi > japaneseKana*2 {
+				return "Chinese" // Hanzi dominant, likely Chinese with Japanese terms
+			}
 			return "Japanese"
 		}
 		return "Chinese"

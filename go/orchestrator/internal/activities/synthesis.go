@@ -460,7 +460,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	}
 
 	// Build synthesis query that includes agent results
-	const maxPerAgentChars = 4000 // Increased for data-heavy responses (analytics, structured data)
+	// NOTE: This caps per-agent context included in the synthesis prompt.
+	// For deep research (research-style synthesis), we allow a higher cap to preserve more details.
+	maxPerAgentChars := 4000
 
 	var b strings.Builder
 
@@ -628,6 +630,9 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				isResearch = true
 			}
 		}
+	}
+	if isResearch {
+		maxPerAgentChars = 10000
 	}
 
 	// Calculate target words for research synthesis
