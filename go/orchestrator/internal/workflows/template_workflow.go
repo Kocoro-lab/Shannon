@@ -263,7 +263,7 @@ func executeTemplateNode(ctx workflow.Context, rt *templateRuntime, node templat
 	nodeContext := mergeContext(rt.Task.Context, node.Metadata)
 	nodeContext["template_node_id"] = node.ID
 	nodeContext["template_node_type"] = string(node.Type)
-	nodeContext["template_results"] = cloneStringMap(rt.NodeOutputs)
+	nodeContext["template_results"] = cloneStringMapTruncated(rt.NodeOutputs, 12000)
 
 	history := convertHistoryForAgent(rt.Task.History)
 	query := determineNodeQuery(rt.Task.Query, node.Metadata)
@@ -584,6 +584,27 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneStringMapTruncated(in map[string]string, maxChars int) map[string]string {
+	if len(in) == 0 {
+		return map[string]string{}
+	}
+	if maxChars <= 0 {
+		return cloneStringMap(in)
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = truncateText(v, maxChars)
+	}
+	return out
+}
+
+func truncateText(s string, maxChars int) string {
+	if maxChars <= 0 || len(s) <= maxChars {
+		return s
+	}
+	return s[:maxChars] + "\n...[TRUNCATED]"
 }
 
 func loadPatternThresholds(context map[string]interface{}) map[patterns.PatternType]int {
