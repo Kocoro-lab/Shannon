@@ -2169,6 +2169,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						"user_id":    input.UserID,
 						"session_id": input.SessionID,
 						"model_tier": "small",
+						"role":       "domain_discovery", // Use specialized preset
 						"response_format": map[string]interface{}{
 							"type": "json_object",
 						},
@@ -2223,6 +2224,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							)
 							continue
 						}
+
+						// Persist domain_discovery execution for observability
+						discoveryWfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+						persistAgentExecutionLocalWithMeta(
+							ctx,
+							discoveryWfID,
+							"domain_discovery",
+							fmt.Sprintf("Domain discovery: %s (search_key=%s)", refineResult.CanonicalName, s.Key),
+							discoveryResult,
+							map[string]interface{}{
+								"phase":      "domain_discovery",
+								"search_key": s.Key,
+								"query":      s.Query,
+							},
+						)
 
 						searchDomainsAll := searchDomainsFromResults(discoveryResult.ToolExecutions)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
@@ -2394,6 +2410,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							"user_id":    input.UserID,
 							"session_id": input.SessionID,
 							"model_tier": "small",
+							"role":       "domain_discovery", // Use specialized preset
 							"response_format": map[string]interface{}{
 								"type": "json_object",
 							},
@@ -2444,6 +2461,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								"agent_error", discoveryResult.Error,
 							)
 						} else {
+							// Persist domain_discovery (global fallback) for observability
+							globalDiscoveryWfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+							persistAgentExecutionLocalWithMeta(
+								ctx,
+								globalDiscoveryWfID,
+								"domain_discovery",
+								fmt.Sprintf("Domain discovery (global_fallback): %s", refineResult.CanonicalName),
+								discoveryResult,
+								map[string]interface{}{
+									"phase":      "domain_discovery",
+									"search_key": "global_fallback",
+									"query":      searchQuery,
+								},
+							)
+
 							searchDomains := domainsFromWebSearchToolExecutions(discoveryResult.ToolExecutions, refineResult.CanonicalName)
 							llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
 
@@ -2597,6 +2629,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						}
 						prefetchContext["research_mode"] = "prefetch"
 						prefetchContext["prefetch_url"] = url
+						prefetchContext["role"] = "domain_prefetch"   // Use specialized preset
+						prefetchContext["model_tier"] = "small"       // Downgrade from medium to save cost
 
 						// Use station names with offset for prefetch agents
 						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+idx)
@@ -2654,10 +2688,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					domainPrefetchResults = append(domainPrefetchResults, payload.Result)
 					domainPrefetchTokens += payload.Result.TokensUsed
 
-					// Persist agent and tool execution records
+					// Persist agent and tool execution records with metadata for observability
 					prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
-					persistAgentExecutionLocal(ctx, workflowID, prefetchAgentName,
-						fmt.Sprintf("Domain prefetch: %s", payload.URL), payload.Result)
+					persistAgentExecutionLocalWithMeta(
+						ctx,
+						workflowID,
+						prefetchAgentName,
+						fmt.Sprintf("Domain prefetch: %s", payload.URL),
+						payload.Result,
+						map[string]interface{}{
+							"phase": "domain_prefetch",
+							"url":   payload.URL,
+							"index": payload.Index,
+						},
+					)
 
 					if payload.Result.TokensUsed > 0 || payload.Result.InputTokens > 0 || payload.Result.OutputTokens > 0 {
 						inTok := payload.Result.InputTokens
@@ -5569,6 +5613,98 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 		"workflow_id", workflowID,
 		"agent_id", agentID,
 		"state", state,
+	)
+}
+
+// persistAgentExecutionLocalWithMeta persists agent execution results with extra metadata.
+// This extends persistAgentExecutionLocal to support phase/url/search_key tracking
+// for domain_discovery and domain_prefetch agents.
+func persistAgentExecutionLocalWithMeta(ctx workflow.Context, workflowID, agentID, input string, result activities.AgentExecutionResult, extraMeta map[string]interface{}) {
+	logger := workflow.GetLogger(ctx)
+
+	// Use detached context for fire-and-forget persistence
+	detachedCtx, _ := workflow.NewDisconnectedContext(ctx)
+	activityOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	}
+	detachedCtx = workflow.WithActivityOptions(detachedCtx, activityOpts)
+
+	// Determine state based on success
+	state := "COMPLETED"
+	if !result.Success {
+		state = "FAILED"
+	}
+
+	// Merge base metadata with extra metadata
+	metadata := map[string]interface{}{
+		"workflow": "research",
+		"strategy": "react",
+	}
+	for k, v := range extraMeta {
+		metadata[k] = v
+	}
+
+	// Persist agent execution asynchronously
+	workflow.ExecuteActivity(detachedCtx,
+		activities.PersistAgentExecutionStandalone,
+		activities.PersistAgentExecutionInput{
+			WorkflowID: workflowID,
+			AgentID:    agentID,
+			Input:      input,
+			Output:     result.Response,
+			State:      state,
+			TokensUsed: result.TokensUsed,
+			ModelUsed:  result.ModelUsed,
+			DurationMs: result.DurationMs,
+			Error:      result.Error,
+			Metadata:   metadata,
+		},
+	)
+
+	// Persist tool executions if any
+	if len(result.ToolExecutions) > 0 {
+		for _, tool := range result.ToolExecutions {
+			// Convert tool output to string
+			outputStr := ""
+			if tool.Output != nil {
+				switch v := tool.Output.(type) {
+				case string:
+					outputStr = v
+				default:
+					if jsonBytes, err := json.Marshal(v); err == nil {
+						outputStr = string(jsonBytes)
+					} else {
+						outputStr = "complex output"
+					}
+				}
+			}
+
+			workflow.ExecuteActivity(
+				detachedCtx,
+				activities.PersistToolExecutionStandalone,
+				activities.PersistToolExecutionInput{
+					WorkflowID:     workflowID,
+					AgentID:        agentID,
+					ToolName:       tool.Tool,
+					InputParams:    nil,
+					Output:         outputStr,
+					Success:        tool.Success,
+					TokensConsumed: 0,
+					DurationMs:     tool.DurationMs,
+					Error:          tool.Error,
+				},
+			)
+		}
+	}
+
+	logger.Debug("Agent execution persisted with metadata",
+		"workflow_id", workflowID,
+		"agent_id", agentID,
+		"state", state,
+		"extra_meta", extraMeta,
 	)
 }
 
