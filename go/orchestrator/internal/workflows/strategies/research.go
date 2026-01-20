@@ -2635,10 +2635,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// Use station names with offset for prefetch agents
 						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+idx)
 						var prefetchResult activities.AgentExecutionResult
+						// Build query with research focus for better RELEVANCE judgment
+						prefetchQuery := fmt.Sprintf("Use web_subpage_fetch on %s to extract company information.", url)
+						if len(refineResult.ResearchAreas) > 0 {
+							prefetchQuery += fmt.Sprintf("\n\nResearch focus: %s", strings.Join(refineResult.ResearchAreas, ", "))
+						}
+
 						err := workflow.ExecuteActivity(gctx,
 							"ExecuteAgent",
 							activities.AgentExecutionInput{
-								Query:          fmt.Sprintf("Use web_subpage_fetch on %s to extract key company information from subpages like about, team, products.", url),
+								Query:          prefetchQuery,
 								AgentID:        prefetchAgentName,
 								Context:        prefetchContext,
 								Mode:           "standard",
