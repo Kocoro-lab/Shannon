@@ -549,7 +549,7 @@ func buildCompanyEUDomainDiscoverySearchQuery(canonicalName string) string {
 	return fmt.Sprintf("%s official website Europe", name)
 }
 
-func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []string, originRegion string, requestedRegions []string, researchAreas []string) []domainDiscoverySearch {
+func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []string, originRegion string, requestedRegions []string, researchAreas []string, officialDomains []string) []domainDiscoverySearch {
 	name := strings.TrimSpace(canonicalName)
 	if name == "" {
 		return nil
@@ -564,6 +564,27 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 		}
 		seen[query] = true
 		out = append(out, domainDiscoverySearch{Key: key, Query: query})
+	}
+
+	// Helper to add topic-based and product searches
+	addTopicSearches := func() {
+		// Financial IR search
+		if containsFinancialTopic(researchAreas) {
+			add("ir", fmt.Sprintf("%s investor relations", name))
+		}
+		// Technical documentation search
+		if containsTechnicalTopic(researchAreas) {
+			add("docs", fmt.Sprintf("%s documentation", name))
+		}
+		// Culture/careers search
+		if containsCultureTopic(researchAreas) {
+			add("careers", fmt.Sprintf("%s careers", name))
+		}
+		// Product hints from refiner (search grounding)
+		productHints := extractProductHints(officialDomains, canonicalName)
+		for _, hint := range productHints {
+			add("product_"+strings.ToLower(hint), fmt.Sprintf("%s official site", hint))
+		}
 	}
 
 	if len(requestedRegions) > 0 {
@@ -583,10 +604,7 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 				add("global", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, ""))
 			}
 		}
-		// IR search: when research_areas contain financial keywords
-		if containsFinancialTopic(researchAreas) {
-			add("ir", fmt.Sprintf("%s investor relations", name))
-		}
+		addTopicSearches()
 		return out
 	}
 
@@ -598,10 +616,7 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 	if originRegion == "kr" {
 		add("kr", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "ko"))
 	}
-	// IR search: when research_areas contain financial keywords
-	if containsFinancialTopic(researchAreas) {
-		add("ir", fmt.Sprintf("%s investor relations", name))
-	}
+	addTopicSearches()
 	return out
 }
 
@@ -621,6 +636,90 @@ func containsFinancialTopic(areas []string) bool {
 		}
 	}
 	return false
+}
+
+// containsTechnicalTopic checks if research areas include technical/documentation topics.
+func containsTechnicalTopic(areas []string) bool {
+	technicalKeywords := []string{
+		"api", "sdk", "integration", "developer", "documentation",
+		"technical", "architecture", "implementation", "code", "library",
+		"programming", "endpoint", "webhook", "oauth",
+	}
+	for _, area := range areas {
+		areaLower := strings.ToLower(area)
+		for _, kw := range technicalKeywords {
+			if strings.Contains(areaLower, kw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsCultureTopic checks if research areas include culture/hiring topics.
+func containsCultureTopic(areas []string) bool {
+	cultureKeywords := []string{
+		"culture", "hiring", "career", "job", "team", "employee",
+		"workplace", "values", "diversity", "benefits", "talent",
+		"recruitment", "work environment", "company values",
+	}
+	for _, area := range areas {
+		areaLower := strings.ToLower(area)
+		for _, kw := range cultureKeywords {
+			if strings.Contains(areaLower, kw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractProductHints extracts product names from refiner domains for search hints.
+// Only returns domains that don't match the canonical company name.
+func extractProductHints(officialDomains []string, canonicalName string) []string {
+	canonical := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(canonicalName), " ", ""))
+	seen := make(map[string]bool)
+	var hints []string
+	for _, d := range officialDomains {
+		base := extractDomainBase(d)
+		if base == "" || len(base) < 3 {
+			continue
+		}
+		baseLower := strings.ToLower(base)
+		// Skip if matches canonical name or already seen
+		if strings.Contains(canonical, baseLower) || strings.Contains(baseLower, canonical) {
+			continue
+		}
+		if seen[baseLower] {
+			continue
+		}
+		seen[baseLower] = true
+		hints = append(hints, base)
+	}
+	return hints
+}
+
+// extractDomainBase extracts the base name from a domain (youtube.com → youtube)
+func extractDomainBase(domain string) string {
+	host := normalizeDomainCandidateHost(domain)
+	if host == "" {
+		return ""
+	}
+	// Remove common TLDs
+	commonTLDs := []string{".com", ".org", ".net", ".io", ".ai", ".co", ".app", ".dev", ".xyz"}
+	for _, tld := range commonTLDs {
+		if strings.HasSuffix(host, tld) {
+			host = strings.TrimSuffix(host, tld)
+			break
+		}
+	}
+	// Get first part if subdomain (docs.stripe.com → docs after TLD removal)
+	parts := strings.Split(host, ".")
+	if len(parts) > 1 {
+		// Return the last part (main domain name, not subdomain)
+		return parts[len(parts)-1]
+	}
+	return host
 }
 
 func originRegionToDiscoveryLanguageCode(originRegion string) string {
@@ -2168,7 +2267,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					// v3 (discover-only strict) reduces domain_discovery from 4 fixed region searches to:
 					// - primary (origin-first when available, else global)
 					// - optional global fallback (at most 2 searches total)
-					searches := buildDomainDiscoverySearches(refineResult.CanonicalName, refineResult.DisambiguationTerms, originRegion, requestedRegions, refineResult.ResearchAreas)
+					// - topic-based searches (ir, docs, careers, product) are preserved from buildDomainDiscoverySearches
+					searches := buildDomainDiscoverySearches(refineResult.CanonicalName, refineResult.DisambiguationTerms, originRegion, requestedRegions, refineResult.ResearchAreas, refineResult.OfficialDomains)
 					globalQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, "")
 					if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 {
 						originLang := originRegionToDiscoveryLanguageCode(originRegion)
@@ -2176,8 +2276,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						if strings.TrimSpace(primaryQuery) == "" {
 							primaryQuery = globalQuery
 						}
+						// Extract topic-based searches (ir, docs, careers, product_*) to preserve them
+						var topicSearches []domainDiscoverySearch
+						for _, s := range searches {
+							if s.Key == "ir" || s.Key == "docs" || s.Key == "careers" || strings.HasPrefix(s.Key, "product_") {
+								topicSearches = append(topicSearches, s)
+							}
+						}
 						if strings.TrimSpace(primaryQuery) != "" {
+							// Start with primary search, then append topic searches
 							searches = []domainDiscoverySearch{{Key: "primary", Query: primaryQuery}}
+							searches = append(searches, topicSearches...)
 						}
 					}
 					discoveredBySearch := make(map[string][]string)
