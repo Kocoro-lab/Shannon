@@ -549,7 +549,7 @@ func buildCompanyEUDomainDiscoverySearchQuery(canonicalName string) string {
 	return fmt.Sprintf("%s official website Europe", name)
 }
 
-func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []string, originRegion string, requestedRegions []string) []domainDiscoverySearch {
+func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []string, originRegion string, requestedRegions []string, researchAreas []string) []domainDiscoverySearch {
 	name := strings.TrimSpace(canonicalName)
 	if name == "" {
 		return nil
@@ -583,6 +583,10 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 				add("global", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, ""))
 			}
 		}
+		// IR search: when research_areas contain financial keywords
+		if containsFinancialTopic(researchAreas) {
+			add("ir", fmt.Sprintf("%s investor relations", name))
+		}
 		return out
 	}
 
@@ -594,7 +598,29 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 	if originRegion == "kr" {
 		add("kr", buildCompanyDomainDiscoverySearchQuery(name, disambiguationTerms, "ko"))
 	}
+	// IR search: when research_areas contain financial keywords
+	if containsFinancialTopic(researchAreas) {
+		add("ir", fmt.Sprintf("%s investor relations", name))
+	}
 	return out
+}
+
+// containsFinancialTopic checks if research areas include financial-related topics.
+func containsFinancialTopic(areas []string) bool {
+	financialKeywords := []string{
+		"financial", "finance", "investor", "revenue", "earnings",
+		"stock", "market cap", "quarterly", "annual report", "sec filing",
+		"profit", "loss", "fiscal", "shareholder", "dividend",
+	}
+	for _, area := range areas {
+		areaLower := strings.ToLower(area)
+		for _, kw := range financialKeywords {
+			if strings.Contains(areaLower, kw) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func originRegionToDiscoveryLanguageCode(originRegion string) string {
@@ -2142,7 +2168,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					// v3 (discover-only strict) reduces domain_discovery from 4 fixed region searches to:
 					// - primary (origin-first when available, else global)
 					// - optional global fallback (at most 2 searches total)
-					searches := buildDomainDiscoverySearches(refineResult.CanonicalName, refineResult.DisambiguationTerms, originRegion, requestedRegions)
+					searches := buildDomainDiscoverySearches(refineResult.CanonicalName, refineResult.DisambiguationTerms, originRegion, requestedRegions, refineResult.ResearchAreas)
 					globalQuery := buildCompanyDomainDiscoverySearchQuery(refineResult.CanonicalName, refineResult.DisambiguationTerms, "")
 					if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 {
 						originLang := originRegionToDiscoveryLanguageCode(originRegion)
@@ -2181,22 +2207,48 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					for i := 0; i < len(searches); i++ {
 						s := searches[i]
 						var discoveryResult activities.AgentExecutionResult
+						// Build discovery query with detailed rules and research focus
+						discoveryQuery := fmt.Sprintf(
+							"Extract the official website domains for the company %q.\n\n"+
+								"Use ONLY domains that appear in the provided web_search results (do not guess or fabricate).\n"+
+								"Return JSON ONLY with this schema (no markdown, no prose):\n"+
+								"{\"domains\":[\"example.com\",\"docs.example.com\",...]}\n\n"+
+								"=== DOMAIN SELECTION PRIORITY (highest to lowest) ===\n"+
+								"1. Corporate main site (company.com, about.company.com)\n"+
+								"2. Investor relations / IR site (ir.company.com, investors.company.com)\n"+
+								"3. Parent company site (if subsidiary, e.g., abc.xyz for Google/Alphabet)\n"+
+								"4. Documentation / Developer hub (docs.company.com, developer.company.com)\n"+
+								"5. Regional main sites ONLY if highly relevant (jp.company.com) - max 1-2\n\n"+
+								"=== MANDATORY EXCLUSIONS (never include these) ===\n"+
+								"- Login/account pages: accounts.*, login.*, signin.*, auth.*\n"+
+								"- E-commerce/store: store.*, shop.*, buy.*\n"+
+								"- News aggregators: news.* (unless it's the company's official newsroom)\n"+
+								"- Productivity tools: sites.*, drive.*, calendar.*, mail.*\n"+
+								"- Support/help pages: support.*, help.* (low information density)\n"+
+								"- Third-party: wikipedia, linkedin, crunchbase, github.io, *.mintlify.app\n\n"+
+								"=== OUTPUT RULES ===\n"+
+								"- Strip \"www.\" prefix\n"+
+								"- No paths (company.com/about → company.com)\n"+
+								"- Return at most 5 domains, prioritizing information-rich sites\n"+
+								"- If none found, return {\"domains\":[]}\n",
+							refineResult.CanonicalName,
+						)
+						// Add research focus hint if available
+						if len(refineResult.ResearchAreas) > 0 {
+							focusAreas := refineResult.ResearchAreas
+							if len(focusAreas) > 3 {
+								focusAreas = focusAreas[:3]
+							}
+							discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
+								"This research focuses on: %s\n"+
+								"Prioritize domains containing information about these topics (e.g., IR sites for financial research).\n",
+								strings.Join(focusAreas, ", "))
+						}
+
 						discoveryErr := workflow.ExecuteActivity(ctx,
 							"ExecuteAgent",
 							activities.AgentExecutionInput{
-								Query: fmt.Sprintf(
-									"Extract the official website domains for the company %q.\n\n"+
-										"Use ONLY the provided web_search results (do not guess).\n"+
-										"Return JSON ONLY with this schema (no markdown, no prose):\n"+
-										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}\n"+
-										"Rules:\n"+
-										"- Output ONLY domains or site-level subdomains; no paths; strip \"www.\".\n"+
-										"- Include corporate + major product/brand + support/help domains if they appear in results.\n"+
-										"- Allow regional site-level subdomains only (jp./cn./eu./us./kr.) and regional ccTLDs (.jp/.co.jp/.cn/.com.cn).\n"+
-										"- Exclude third-party directories/social/news/blog/press/careers and platform hosts (wikipedia, linkedin, crunchbase, github.io, *.mintlify.app, etc.).\n"+
-										"- Return at most 10 domains. If none found, return {\"domains\":[]}.\n",
-									refineResult.CanonicalName,
-								),
+								Query: discoveryQuery,
 								AgentID:   "domain_discovery",
 								Context:   discoveryContext,
 								Mode:      "standard",
@@ -2275,23 +2327,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						var discovered []string
 						seenDiscovered := make(map[string]bool)
 
+						// Only use LLM-selected domains (no subdomain expansion)
+						// Subdomain expansion was adding back unwanted domains like accounts.*, store.*
 						for _, d := range llmDomains {
 							if isGrounded(d) && !seenDiscovered[d] {
 								seenDiscovered[d] = true
 								discovered = append(discovered, d)
-							}
-						}
-						for _, sd := range searchDomainsAll {
-							if seenDiscovered[sd] {
-								continue
-							}
-							for _, llmD := range llmDomains {
-								suffix := "." + llmD
-								if strings.HasSuffix(sd, suffix) {
-									seenDiscovered[sd] = true
-									discovered = append(discovered, sd)
-									break
-								}
 							}
 						}
 						if len(discovered) == 0 && prefetchDiscoverOnlyVersion >= 3 {
@@ -2420,22 +2461,48 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						}
 
 						var discoveryResult activities.AgentExecutionResult
+						// Build discovery query with detailed rules and research focus
+						discoveryQuery2 := fmt.Sprintf(
+							"Extract the official website domains for the company %q.\n\n"+
+								"Use ONLY domains that appear in the provided web_search results (do not guess or fabricate).\n"+
+								"Return JSON ONLY with this schema (no markdown, no prose):\n"+
+								"{\"domains\":[\"example.com\",\"docs.example.com\",...]}\n\n"+
+								"=== DOMAIN SELECTION PRIORITY (highest to lowest) ===\n"+
+								"1. Corporate main site (company.com, about.company.com)\n"+
+								"2. Investor relations / IR site (ir.company.com, investors.company.com)\n"+
+								"3. Parent company site (if subsidiary, e.g., abc.xyz for Google/Alphabet)\n"+
+								"4. Documentation / Developer hub (docs.company.com, developer.company.com)\n"+
+								"5. Regional main sites ONLY if highly relevant (jp.company.com) - max 1-2\n\n"+
+								"=== MANDATORY EXCLUSIONS (never include these) ===\n"+
+								"- Login/account pages: accounts.*, login.*, signin.*, auth.*\n"+
+								"- E-commerce/store: store.*, shop.*, buy.*\n"+
+								"- News aggregators: news.* (unless it's the company's official newsroom)\n"+
+								"- Productivity tools: sites.*, drive.*, calendar.*, mail.*\n"+
+								"- Support/help pages: support.*, help.* (low information density)\n"+
+								"- Third-party: wikipedia, linkedin, crunchbase, github.io, *.mintlify.app\n\n"+
+								"=== OUTPUT RULES ===\n"+
+								"- Strip \"www.\" prefix\n"+
+								"- No paths (company.com/about → company.com)\n"+
+								"- Return at most 5 domains, prioritizing information-rich sites\n"+
+								"- If none found, return {\"domains\":[]}\n",
+							refineResult.CanonicalName,
+						)
+						// Add research focus hint if available
+						if len(refineResult.ResearchAreas) > 0 {
+							focusAreas := refineResult.ResearchAreas
+							if len(focusAreas) > 3 {
+								focusAreas = focusAreas[:3]
+							}
+							discoveryQuery2 += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
+								"This research focuses on: %s\n"+
+								"Prioritize domains containing information about these topics (e.g., IR sites for financial research).\n",
+								strings.Join(focusAreas, ", "))
+						}
+
 						discoveryErr := workflow.ExecuteActivity(ctx,
 							"ExecuteAgent",
 							activities.AgentExecutionInput{
-								Query: fmt.Sprintf(
-									"Extract the official website domains for the company %q.\n\n"+
-										"Use ONLY the provided web_search results (do not guess).\n"+
-										"Return JSON ONLY with this schema (no markdown, no prose):\n"+
-										"{\"domains\":[\"example.com\",\"jp.example.com\",\"example.co.jp\",...]}\n"+
-										"Rules:\n"+
-										"- Output ONLY domains or site-level subdomains; no paths; strip \"www.\".\n"+
-										"- Include corporate + major product/brand + support/help domains if they appear in results.\n"+
-										"- Allow regional site-level subdomains only (jp./cn./eu./us./kr.) and regional ccTLDs (.jp/.co.jp/.cn/.com.cn).\n"+
-										"- Exclude third-party directories/social/news/blog/press/careers and platform hosts (wikipedia, linkedin, crunchbase, github.io, *.mintlify.app, etc.).\n"+
-										"- Return at most 10 domains. If none found, return {\"domains\":[]}.\n",
-									refineResult.CanonicalName,
-								),
+								Query:     discoveryQuery2,
 								AgentID:   "domain_discovery",
 								Context:   discoveryContext,
 								Mode:      "standard",
@@ -2506,27 +2573,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							var discovered []string
 							seenDiscovered := make(map[string]bool)
 
-							// First, add LLM-selected domains that are grounded
+							// Only use LLM-selected domains (no subdomain expansion)
+							// Subdomain expansion was adding back unwanted domains like accounts.*, store.*
 							for _, d := range llmDomains {
 								if isGrounded(d) && !seenDiscovered[d] {
 									seenDiscovered[d] = true
 									discovered = append(discovered, d)
-								}
-							}
-
-							// Also add search domains that are subdomains of LLM-selected domains
-							// (e.g., if LLM said "ptmind.com", also add "jp.ptmind.com" from search)
-							for _, sd := range searchDomains {
-								if seenDiscovered[sd] {
-									continue
-								}
-								for _, llmD := range llmDomains {
-									suffix := "." + llmD
-									if strings.HasSuffix(sd, suffix) {
-										seenDiscovered[sd] = true
-										discovered = append(discovered, sd)
-										break
-									}
 								}
 							}
 
