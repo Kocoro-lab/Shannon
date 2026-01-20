@@ -292,6 +292,13 @@ const (
 	citationFilterMinRetention = 0.3 // Minimum retention rate (30%)
 )
 
+// Constants for domain discovery
+const (
+	maxProductHints       = 5 // Maximum product domains to extract from refiner hints
+	maxResearchFocusAreas = 3 // Maximum research areas to include in discovery query
+	minProductNameLength  = 3 // Minimum length for valid product name extraction
+)
+
 // P0-B: Constants for V2 + V1 Supplement logic
 const (
 	v2MinSupportRate    = 0.1 // 10% - below this, enable V1 supplement
@@ -582,6 +589,9 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 		}
 		// Product hints from refiner (search grounding)
 		productHints := extractProductHints(officialDomains, canonicalName)
+		if len(productHints) > maxProductHints {
+			productHints = productHints[:maxProductHints]
+		}
 		for _, hint := range productHints {
 			add("product_"+strings.ToLower(hint), fmt.Sprintf("%s official site", hint))
 		}
@@ -682,7 +692,7 @@ func extractProductHints(officialDomains []string, canonicalName string) []strin
 	var hints []string
 	for _, d := range officialDomains {
 		base := extractDomainBase(d)
-		if base == "" || len(base) < 3 {
+		if base == "" || len(base) < minProductNameLength {
 			continue
 		}
 		baseLower := strings.ToLower(base)
@@ -2344,8 +2354,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					// Add research focus hint if available
 					if len(refineResult.ResearchAreas) > 0 {
 						focusAreas := refineResult.ResearchAreas
-						if len(focusAreas) > 3 {
-							focusAreas = focusAreas[:3]
+						if len(focusAreas) > maxResearchFocusAreas {
+							focusAreas = focusAreas[:maxResearchFocusAreas]
 						}
 						discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
 							"This research focuses on: %s\n"+
@@ -2576,8 +2586,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// Add research focus hint if available
 						if len(refineResult.ResearchAreas) > 0 {
 							focusAreas := refineResult.ResearchAreas
-							if len(focusAreas) > 3 {
-								focusAreas = focusAreas[:3]
+							if len(focusAreas) > maxResearchFocusAreas {
+								focusAreas = focusAreas[:maxResearchFocusAreas]
 							}
 							discoveryQuery2 += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
 								"This research focuses on: %s\n"+
