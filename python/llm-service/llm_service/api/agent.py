@@ -859,8 +859,13 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 # Add research-mode instruction for deep content retrieval
                 # EXCEPTION: Do NOT inject for REASON steps (no tools, pure reasoning)
+                # EXCEPTION: Do NOT inject for specialized roles with strict output format
                 is_reason_step = query.query.strip().startswith("REASON (")
-                if isinstance(query.context, dict) and not is_reason_step:
+                skip_research_injection_roles = {"domain_discovery", "domain_prefetch", "citation_agent"}
+                role = query.context.get("role") if isinstance(query.context, dict) else None
+                skip_research_injection = role in skip_research_injection_roles
+
+                if isinstance(query.context, dict) and not is_reason_step and not skip_research_injection:
                     is_research = (
                         query.context.get("force_research")
                         or query.context.get("research_strategy")
@@ -910,6 +915,10 @@ async def agent_query(request: Request, query: AgentQuery):
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
+
+                # Log when research_mode injection is skipped for specialized roles
+                if skip_research_injection and role:
+                    logger.info(f"Skipped research_mode injection for specialized role: {role}")
 
                 # REASON step: Add explicit instruction to prevent stub output
                 if is_reason_step:
@@ -1765,8 +1774,14 @@ async def agent_query(request: Request, query: AgentQuery):
             # Final interpretation pass if we executed any tools or budgets were hit
             # P0 Fix: Always run interpretation pass if any tool executed successfully
             # This ensures tool results are summarized into Response, not just "I'll execute..."
+            # EXCEPTION: Skip only for roles that need JSON-only output
+            # NOTE: domain_prefetch keeps interpretation_pass for Source URL tracking
+            skip_interpretation_roles = {"domain_discovery"}
+            role = query.context.get("role") if isinstance(query.context, dict) else None
+            skip_interpretation = role in skip_interpretation_roles
+
             has_successful_tool = any(r.get("success") for r in tool_execution_records)
-            if tool_execution_records and (
+            if not skip_interpretation and tool_execution_records and (
                 has_successful_tool  # Any successful tool execution requires summarization
                 or stop_reason != "no_tool_call"
                 or did_forced_fetch
@@ -1843,7 +1858,8 @@ async def agent_query(request: Request, query: AgentQuery):
                 result_data = interpretation_result
             else:
                 result_data = last_result_data or {}
-                logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, has_successful_tool={has_successful_tool}, stop_reason={stop_reason}, response_preview={str(response_text)[:100]}")
+                skip_reason = f"role={role}" if skip_interpretation else f"has_successful_tool={has_successful_tool}, stop_reason={stop_reason}"
+                logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, {skip_reason}, response_preview={str(response_text)[:100]}")
 
             # Stub Guard: Clean any pseudo tool-call stubs from final output
             # These can appear when LLM outputs XML/JSON tool calls instead of native function calling
