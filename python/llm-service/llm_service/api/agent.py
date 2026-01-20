@@ -313,7 +313,8 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
 def build_interpretation_messages(
     system_prompt: str,
     original_query: str,
-    tool_results_summary: str
+    tool_results_summary: str,
+    interpretation_prompt: str = INTERPRETATION_PROMPT
 ) -> List[Dict[str, str]]:
     """
     Build clean messages for interpretation pass.
@@ -324,6 +325,9 @@ def build_interpretation_messages(
     - Original query
     - Aggregated tool results
     - Strong interpretation instruction
+
+    Args:
+        interpretation_prompt: Custom prompt for specific roles (e.g., domain_discovery uses JSON-only prompt)
     """
     return [
         {"role": "system", "content": system_prompt},
@@ -332,7 +336,7 @@ def build_interpretation_messages(
             "content": (
                 f"Original query: {original_query}\n\n"
                 f"=== TOOL RESULTS ===\n{tool_results_summary}\n\n"
-                f"=== YOUR TASK ===\n{INTERPRETATION_PROMPT}"
+                f"=== YOUR TASK ===\n{interpretation_prompt}"
             )
         }
     ]
@@ -1774,9 +1778,9 @@ async def agent_query(request: Request, query: AgentQuery):
             # Final interpretation pass if we executed any tools or budgets were hit
             # P0 Fix: Always run interpretation pass if any tool executed successfully
             # This ensures tool results are summarized into Response, not just "I'll execute..."
-            # EXCEPTION: Skip only for roles that need JSON-only output
-            # NOTE: domain_prefetch keeps interpretation_pass for Source URL tracking
-            skip_interpretation_roles = {"domain_discovery"}
+            # NOTE: domain_discovery now uses interpretation_pass to generate final JSON
+            # (previously skipped, causing "I'll execute..." output instead of JSON)
+            skip_interpretation_roles: set[str] = set()  # No roles skip interpretation
             role = query.context.get("role") if isinstance(query.context, dict) else None
             skip_interpretation = role in skip_interpretation_roles
 
@@ -1793,12 +1797,28 @@ async def agent_query(request: Request, query: AgentQuery):
                 # - System prompt (defines role)
                 # - Original query (the task)
                 # - Aggregated tool results (what was retrieved)
-                # - Strong interpretation instruction (INTERPRETATION_PROMPT)
+                # - Strong interpretation instruction (role-specific prompt)
                 tool_results_summary = aggregate_tool_results(tool_execution_records)
+
+                # Select interpretation prompt from role preset or use default
+                # Roles can define custom interpretation_prompt in their preset
+                interp_prompt = INTERPRETATION_PROMPT
+                role_preset_for_interp = None
+                if role:
+                    try:
+                        from ..roles.presets import get_role_preset
+                        role_preset_for_interp = get_role_preset(role)
+                        custom_interp = role_preset_for_interp.get("interpretation_prompt")
+                        if custom_interp:
+                            interp_prompt = custom_interp
+                    except Exception:
+                        pass
+
                 interpretation_messages = build_interpretation_messages(
                     system_prompt=system_prompt,
                     original_query=query.query,
-                    tool_results_summary=tool_results_summary
+                    tool_results_summary=tool_results_summary,
+                    interpretation_prompt=interp_prompt
                 )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
@@ -1817,10 +1837,21 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 # P0 Fix v4: Validate interpretation output and fallback to digest if invalid
                 # Never fallback to raw JSON - use generate_tool_digest() for human-readable fallback
-                is_valid, validation_reason = validate_interpretation_output(
-                    raw_interpretation or "",
-                    total_tool_output_chars
-                )
+                # Roles can set skip_output_validation=True in preset (e.g., domain_discovery for short JSON)
+                skip_validation = False
+                if role:
+                    try:
+                        skip_validation = role_preset_for_interp.get("skip_output_validation", False) if role_preset_for_interp else False
+                    except Exception:
+                        pass
+
+                if skip_validation:
+                    is_valid, validation_reason = True, f"{role}_preset_skip"
+                else:
+                    is_valid, validation_reason = validate_interpretation_output(
+                        raw_interpretation or "",
+                        total_tool_output_chars
+                    )
 
                 if is_valid:
                     response_text = raw_interpretation

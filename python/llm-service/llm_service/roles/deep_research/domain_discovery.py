@@ -52,4 +52,20 @@ If no official domains found:
 {"domains": []}""",
     "allowed_tools": ["web_search"],
     "caps": {"max_tokens": 2000, "temperature": 0.1},
+    # Interpretation pass: fix "I will xxx" issue by forcing JSON output after tool-loop
+    "interpretation_prompt": """Extract official website domains from the search results above.
+Return ONLY a JSON object with no explanation or commentary.
+
+Your response MUST be ONLY:
+{"domains": ["domain1.com", "domain2.com", ...]}
+
+Rules:
+- Include: corporate sites, product sites, support/help sites, regional sites
+- Exclude: third-party platforms (wikipedia, linkedin, crunchbase, github.io)
+- Strip "www." prefix, no paths
+- Maximum 10 domains
+- If none found: {"domains": []}
+
+OUTPUT ONLY THE JSON OBJECT. NO OTHER TEXT.""",
+    "skip_output_validation": True,  # JSON output is short, skip length validation
 }
