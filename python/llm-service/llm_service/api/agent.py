@@ -2212,6 +2212,14 @@ async def _execute_and_format_tools(
                                     logger.info(f"Merged {key} from orchestrator: {args[key]}")
                                 elif key == "target_keywords" and isinstance(ctx_value, str) and not llm_value:
                                     args[key] = ctx_value
+                    # Handle query parameter: use orchestrator's query if LLM didn't provide one
+                    # This ensures domain_discovery and similar agents use the intended search query
+                    if "query" in ctx_tool_params and "query" in allowed:
+                        ctx_query = ctx_tool_params.get("query")
+                        llm_query = args.get("query")
+                        if ctx_query and not llm_query:
+                            args["query"] = ctx_query
+                            logger.info(f"Using orchestrator query for {tool_name}: {ctx_query}")
 
             # Emit TOOL_INVOKED event
             if emitter and wf_id:

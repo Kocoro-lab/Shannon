@@ -2313,91 +2313,90 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
 					}
 
-					for i := 0; i < len(searches); i++ {
-						s := searches[i]
-						var discoveryResult activities.AgentExecutionResult
-						// Build discovery query with detailed rules and research focus
-						discoveryQuery := fmt.Sprintf(
-							"Extract the official website domains for the company %q.\n\n"+
-								"Use ONLY domains that appear in the provided web_search results (do not guess or fabricate).\n"+
-								"Return JSON ONLY with this schema (no markdown, no prose):\n"+
-								"{\"domains\":[\"example.com\",\"docs.example.com\",...]}\n\n"+
-								"=== DOMAIN SELECTION PRIORITY (highest to lowest) ===\n"+
-								"1. Corporate main site (company.com, about.company.com)\n"+
-								"2. Investor relations / IR site (ir.company.com, investors.company.com)\n"+
-								"3. Parent company site (if subsidiary, e.g., abc.xyz for Google/Alphabet)\n"+
-								"4. Documentation / Developer hub (docs.company.com, developer.company.com)\n"+
-								"5. Regional main sites ONLY if highly relevant (jp.company.com) - max 1-2\n\n"+
-								"=== MANDATORY EXCLUSIONS (never include these) ===\n"+
-								"- Login/account pages: accounts.*, login.*, signin.*, auth.*\n"+
-								"- E-commerce/store: store.*, shop.*, buy.*\n"+
-								"- News aggregators: news.* (unless it's the company's official newsroom)\n"+
-								"- Productivity tools: sites.*, drive.*, calendar.*, mail.*\n"+
-								"- Support/help pages: support.*, help.* (low information density)\n"+
-								"- Third-party: wikipedia, linkedin, crunchbase, github.io, *.mintlify.app\n\n"+
-								"=== OUTPUT RULES ===\n"+
-								"- Strip \"www.\" prefix\n"+
-								"- No paths (company.com/about → company.com)\n"+
-								"- Return at most 5 domains, prioritizing information-rich sites\n"+
-								"- If none found, return {\"domains\":[]}\n",
-							refineResult.CanonicalName,
-						)
-						// Add research focus hint if available
-						if len(refineResult.ResearchAreas) > 0 {
-							focusAreas := refineResult.ResearchAreas
-							if len(focusAreas) > 3 {
-								focusAreas = focusAreas[:3]
-							}
-							discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
-								"This research focuses on: %s\n"+
-								"Prioritize domains containing information about these topics (e.g., IR sites for financial research).\n",
-								strings.Join(focusAreas, ", "))
-						}
+					// === BATCH DOMAIN DISCOVERY (single LLM call) ===
+					// Collect all search queries and execute them in a single agent call
+					// This reduces N LLM calls to 1, significantly improving efficiency
+					var allQueries []string
+					for _, s := range searches {
+						allQueries = append(allQueries, s.Query)
+					}
 
-						discoveryErr := workflow.ExecuteActivity(ctx,
-							"ExecuteAgent",
-							activities.AgentExecutionInput{
-								Query: discoveryQuery,
-								AgentID:   "domain_discovery",
-								Context:   discoveryContext,
-								Mode:      "standard",
-								SessionID: input.SessionID,
-								History:   convertHistoryForAgent(input.History),
-								SuggestedTools: []string{
-									"web_search",
-								},
-								ToolParameters: map[string]interface{}{
-									"tool":        "web_search",
-									"query":       s.Query,
-									"max_results": 20,
-								},
-								ParentWorkflowID: input.ParentWorkflowID,
+					// Build batch discovery prompt with all queries
+					var discoveryResult activities.AgentExecutionResult
+					discoveryQuery := fmt.Sprintf(
+						"Find official domains for %q.\n\n"+
+							"STEP 1: Execute web_search for each query:\n",
+						refineResult.CanonicalName,
+					)
+					for _, q := range allQueries {
+						discoveryQuery += fmt.Sprintf("- %s\n", q)
+					}
+					discoveryQuery += "\n" +
+						"STEP 2: After ALL searches complete, respond with ONLY this JSON:\n" +
+						"{\"domains\":[\"domain1.com\",\"domain2.com\"]}\n\n" +
+						"RULES:\n" +
+						"- Include: corporate sites, IR sites (abc.xyz), parent company sites\n" +
+						"- Exclude: login/accounts, store, support, third-party (wikipedia, linkedin)\n" +
+						"- Strip www prefix, no paths\n" +
+						"- Max 10 domains\n\n" +
+						"CRITICAL: Your response must be ONLY the JSON object, nothing else.\n"
+
+					// Add research focus hint if available
+					if len(refineResult.ResearchAreas) > 0 {
+						focusAreas := refineResult.ResearchAreas
+						if len(focusAreas) > 3 {
+							focusAreas = focusAreas[:3]
+						}
+						discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
+							"This research focuses on: %s\n"+
+							"Prioritize domains containing information about these topics (e.g., IR sites for financial research).\n",
+							strings.Join(focusAreas, ", "))
+					}
+
+					// Single agent call with first query as tool_parameters hint
+					// Agent will execute multiple web_search calls based on the prompt
+					discoveryErr := workflow.ExecuteActivity(ctx,
+						"ExecuteAgent",
+						activities.AgentExecutionInput{
+							Query:     discoveryQuery,
+							AgentID:   "domain_discovery",
+							Context:   discoveryContext,
+							Mode:      "standard",
+							SessionID: input.SessionID,
+							History:   convertHistoryForAgent(input.History),
+							SuggestedTools: []string{
+								"web_search",
 							},
-						).Get(ctx, &discoveryResult)
+							ToolParameters: map[string]interface{}{
+								"tool":        "web_search",
+								"query":       allQueries[0], // Primary query as hint
+								"max_results": 20,
+							},
+							ParentWorkflowID: input.ParentWorkflowID,
+						},
+					).Get(ctx, &discoveryResult)
 
-						if discoveryErr != nil || !discoveryResult.Success {
-							logger.Warn("Domain discovery search-first failed",
-								"canonical_name", refineResult.CanonicalName,
-								"search_key", s.Key,
-								"search_query", s.Query,
-								"error", discoveryErr,
-								"agent_error", discoveryResult.Error,
-							)
-							continue
-						}
-
+					if discoveryErr != nil || !discoveryResult.Success {
+						logger.Warn("Domain discovery batch search failed",
+							"canonical_name", refineResult.CanonicalName,
+							"queries", allQueries,
+							"error", discoveryErr,
+							"agent_error", discoveryResult.Error,
+						)
+					} else {
 						// Persist domain_discovery execution for observability
 						discoveryWfID := workflow.GetInfo(ctx).WorkflowExecution.ID
 						persistAgentExecutionLocalWithMeta(
 							ctx,
 							discoveryWfID,
 							"domain_discovery",
-							fmt.Sprintf("Domain discovery: %s (search_key=%s)", refineResult.CanonicalName, s.Key),
+							fmt.Sprintf("Domain discovery: %s (batch, %d queries)", refineResult.CanonicalName, len(allQueries)),
 							discoveryResult,
 							map[string]interface{}{
-								"phase":      "domain_discovery",
-								"search_key": s.Key,
-								"query":      s.Query,
+								"phase":       "domain_discovery",
+								"batch_mode":  true,
+								"query_count": len(allQueries),
+								"queries":     allQueries,
 							},
 						)
 
@@ -2405,79 +2404,57 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						llmDomains := domainsFromDiscoveryResponse(discoveryResult.Response)
 						if prefetchDiscoverOnlyVersion >= 3 {
 							llmDomains = domainsFromDiscoveryResponseV2(discoveryResult.Response)
-							if len(llmDomains) == 0 {
-								logger.Warn("Domain discovery returned no parseable JSON domains; skipping region",
-									"canonical_name", refineResult.CanonicalName,
-									"search_key", s.Key,
-									"search_query", s.Query,
-								)
-								continue
-							}
 						}
 
-						searchSet := make(map[string]bool)
-						for _, d := range searchDomainsAll {
-							searchSet[d] = true
-						}
-
-						isGrounded := func(llmDomain string) bool {
-							if searchSet[llmDomain] {
-								return true
+						if len(llmDomains) == 0 && prefetchDiscoverOnlyVersion >= 3 {
+							logger.Warn("Domain discovery returned no parseable JSON domains",
+								"canonical_name", refineResult.CanonicalName,
+								"queries", allQueries,
+							)
+						} else {
+							searchSet := make(map[string]bool)
+							for _, d := range searchDomainsAll {
+								searchSet[d] = true
 							}
-							suffix := "." + llmDomain
-							for sd := range searchSet {
-								if strings.HasSuffix(sd, suffix) {
+
+							isGrounded := func(llmDomain string) bool {
+								if searchSet[llmDomain] {
 									return true
 								}
+								suffix := "." + llmDomain
+								for sd := range searchSet {
+									if strings.HasSuffix(sd, suffix) {
+										return true
+									}
+								}
+								return false
 							}
-							return false
-						}
 
-						var discovered []string
-						seenDiscovered := make(map[string]bool)
-
-						// Only use LLM-selected domains (no subdomain expansion)
-						// Subdomain expansion was adding back unwanted domains like accounts.*, store.*
-						for _, d := range llmDomains {
-							if isGrounded(d) && !seenDiscovered[d] {
-								seenDiscovered[d] = true
-								discovered = append(discovered, d)
-							}
-						}
-						if len(discovered) == 0 && prefetchDiscoverOnlyVersion >= 3 {
-							logger.Warn("Domain discovery domains not grounded in web_search results; skipping region",
-								"canonical_name", refineResult.CanonicalName,
-								"search_key", s.Key,
-								"search_query", s.Query,
-								"llm_domains", llmDomains,
-								"search_domains_count", len(searchDomainsAll),
-							)
-							continue
-						}
-						if len(discovered) == 0 && prefetchDiscoverOnlyVersion < 3 {
-							discovered = searchDomainsAll
-						}
-
-						if len(discovered) > 0 {
-							discoveredBySearch[s.Key] = discovered
-							for _, d := range discovered {
-								if !seenAll[d] {
+							// Extract grounded domains
+							for _, d := range llmDomains {
+								if isGrounded(d) && !seenAll[d] {
 									seenAll[d] = true
 									allDiscovered = append(allDiscovered, d)
 								}
 							}
-						}
 
-						// Scheme C: After the primary run, optionally add ONE global fallback search.
-						if prefetchDiscoverOnlyVersion >= 3 && len(requestedRegions) == 0 && i == 0 {
-							// If primary query is already global, do not fallback.
-							if strings.TrimSpace(globalQuery) != "" && strings.TrimSpace(s.Query) != strings.TrimSpace(globalQuery) {
-								if shouldRunGlobalDomainDiscoveryFallback(allDiscovered) {
-									searches = append(searches, domainDiscoverySearch{Key: "global_fallback", Query: globalQuery})
+							// Fallback to search domains if LLM domains not grounded (pre-v3 behavior)
+							if len(allDiscovered) == 0 && prefetchDiscoverOnlyVersion < 3 {
+								for _, d := range searchDomainsAll {
+									if !seenAll[d] {
+										seenAll[d] = true
+										allDiscovered = append(allDiscovered, d)
+									}
 								}
+							}
+
+							// Store in discoveredBySearch for compatibility
+							if len(allDiscovered) > 0 {
+								discoveredBySearch["batch"] = allDiscovered
 							}
 						}
 
+						// Record token usage
 						if discoveryResult.TokensUsed > 0 || discoveryResult.InputTokens > 0 || discoveryResult.OutputTokens > 0 {
 							inTok := discoveryResult.InputTokens
 							outTok := discoveryResult.OutputTokens
@@ -2491,7 +2468,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								Provider:     discoveryResult.Provider,
 								InputTokens:  inTok,
 								OutputTokens: outTok,
-								Metadata:     map[string]interface{}{"phase": "domain_discovery", "region": s.Key},
+								Metadata:     map[string]interface{}{"phase": "domain_discovery", "batch_mode": true, "query_count": len(allQueries)},
 							}).Get(recCtx, nil)
 						}
 					}

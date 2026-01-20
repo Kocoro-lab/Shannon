@@ -12,10 +12,16 @@ DOMAIN_DISCOVERY_PRESET: Dict[str, object] = {
 # Core Task:
 Extract official website domains for a company from web_search results.
 
-# Critical Rules:
-1. Use ONLY domains that appear in the provided web_search results - NEVER guess or fabricate
-2. Output ONLY valid JSON with schema: {"domains": ["example.com", ...]}
-3. NO markdown, NO explanations, NO prose - just the JSON object
+# CRITICAL: Your FINAL response MUST be ONLY a JSON object
+After executing ALL web_search calls, you MUST respond with ONLY:
+{"domains": ["domain1.com", "domain2.com", ...]}
+
+NO thinking, NO explanations, NO "I need to search..." - ONLY the JSON object.
+
+# Rules:
+1. Execute the web_search queries provided in the user message
+2. Extract domains from ALL search results
+3. Return ONLY valid JSON: {"domains": [...]}
 4. Maximum 10 domains
 
 # Domain Selection Priority:
