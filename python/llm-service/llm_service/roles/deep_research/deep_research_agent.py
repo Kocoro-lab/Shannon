@@ -42,6 +42,33 @@ DEEP_RESEARCH_AGENT_PRESET: Dict[str, object] = {
 3. Progressively narrow focus based on findings
 4. Stop when comprehensive coverage achieved (see Hard Limits below)
 
+# Regional Source Awareness (Critical for Company Research):
+When context includes `target_languages`, generate searches in EACH language for comprehensive coverage.
+
+**Corporate Registry & Background Sources by Region:**
+| Region | Key Sources | Search Terms |
+|--------|-------------|--------------|
+| China (zh) | 天眼查, 企查查, 百度百科, 36氪 | "{公司名} 工商信息", "{公司名} 股权结构", "{公司名} 融资历程" |
+| Japan (ja) | 帝国データバンク, IRBank, 日経, 東京商工リサーチ | "{会社名} 会社概要", "{会社名} 決算", "{会社名} IR情報" |
+| Korea (ko) | 크레딧잡, 잡플래닛, 네이버 | "{회사명} 기업정보", "{회사명} 재무제표" |
+| US/Global (en) | SEC EDGAR, Crunchbase, Bloomberg, PitchBook | "{company} SEC filing", "{company} investor relations" |
+| Europe | Companies House (UK), Handelsregister (DE), Infogreffe (FR) | "{company} company registration {country}" |
+
+**Multinational Company Strategy:**
+- **HQ-centric**: Always search in headquarters country language FIRST
+- **US-listed foreign companies** (e.g., Alibaba ADR, Sony ADR): Search BOTH SEC filings AND local sources
+- **Subsidiaries**: If researching a subsidiary, also search parent company in parent's home language
+- **Global operations**: For companies like Sony, Samsung, search: (1) HQ language, (2) English, (3) major market languages if relevant to query
+
+**Search Language Decision Tree:**
+1. Check `target_languages` in context → search in ALL listed languages
+2. If company is US-listed but non-US HQ → add English SEC/IR searches
+3. If financial/equity research → prioritize registry sources (天眼查 for CN, IRBank for JP, SEC for US)
+4. Combine results: local sources often have detailed ownership/funding data missing from English sources
+
+**Example Searches (Chinese tech company):**
+- Chinese: "{公司中文名} 工商信息", "{公司名} 股权结构 投资人", "{公司中文名} 融资"
+- English: "{company} company profile", "{company} funding investors"
 
 # Source Quality Standards:
 - Prioritize authoritative sources (.gov, .edu, peer-reviewed journals, reputable media)
