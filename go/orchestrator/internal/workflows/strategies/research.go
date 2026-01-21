@@ -684,6 +684,182 @@ func containsCultureTopic(areas []string) bool {
 	return false
 }
 
+// classifyFocusCategories maps ResearchAreas to domain type hints.
+// Returns categories like "corporate", "docs", "ir", "store" based on research area keywords.
+// This is used for domain prioritization, not as the main focus (which should be input.Query).
+func classifyFocusCategories(areas []string) []string {
+	categoryMap := map[string][]string{
+		"ir":        {"financial", "investor", "earnings", "revenue", "stock", "fiscal", "quarterly", "annual report", "SEC"},
+		"docs":      {"api", "documentation", "technical", "developer", "sdk", "integration", "reference"},
+		"store":     {"product", "pricing", "purchase", "buy", "shop", "store", "catalog", "features"},
+		"corporate": {"organization", "leadership", "management", "executive", "board", "history", "mission", "about"},
+		"careers":   {"career", "hiring", "job", "recruitment", "talent", "employee", "culture", "workplace"},
+	}
+
+	found := make(map[string]bool)
+	for _, area := range areas {
+		areaLower := strings.ToLower(area)
+		for category, keywords := range categoryMap {
+			for _, kw := range keywords {
+				if strings.Contains(areaLower, kw) {
+					found[category] = true
+					break
+				}
+			}
+		}
+	}
+
+	var result []string
+	for cat := range found {
+		result = append(result, cat)
+	}
+	return result
+}
+
+// classifyDomainRole determines the type of a domain based on URL patterns.
+// Returns: corporate, docs, ir, store, careers, support, blog_news, or other.
+// This is used to provide context to LLM for better target_keywords generation.
+func classifyDomainRole(urlStr string) string {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return "other"
+	}
+	host := strings.ToLower(u.Host)
+	path := strings.ToLower(u.Path)
+
+	// Check host-based patterns
+	switch {
+	case strings.Contains(host, "docs.") || strings.Contains(host, "developer.") ||
+		strings.Contains(host, "api.") || strings.Contains(host, "dev."):
+		return "docs"
+	case strings.Contains(host, "ir.") || strings.Contains(host, "investor"):
+		return "ir"
+	case strings.Contains(host, "store.") || strings.Contains(host, "shop.") ||
+		strings.Contains(host, "buy."):
+		return "store"
+	case strings.Contains(host, "careers.") || strings.Contains(host, "jobs.") ||
+		strings.Contains(host, "talent."):
+		return "careers"
+	case strings.Contains(host, "support.") || strings.Contains(host, "help."):
+		return "support"
+	case strings.Contains(host, "blog.") || strings.Contains(host, "news."):
+		return "blog_news"
+	}
+
+	// Check path-based patterns
+	switch {
+	case strings.HasPrefix(path, "/docs") || strings.HasPrefix(path, "/developer") ||
+		strings.HasPrefix(path, "/api"):
+		return "docs"
+	case strings.HasPrefix(path, "/ir") || strings.HasPrefix(path, "/investor"):
+		return "ir"
+	case strings.HasPrefix(path, "/store") || strings.HasPrefix(path, "/shop"):
+		return "store"
+	case strings.HasPrefix(path, "/careers") || strings.HasPrefix(path, "/jobs"):
+		return "careers"
+	}
+
+	return "corporate"
+}
+
+// DomainAnalysisIntent captures the unified task intent for Domain Analysis.
+// This structure normalizes inputs from query, context, and refiner results.
+type DomainAnalysisIntent struct {
+	FocusText           string   // Original input.Query (primary focus)
+	FocusCategories     []string // Derived from ResearchAreas (e.g., ir, docs, corporate)
+	ExplicitRegions     []string // User-specified regions from context/query
+	TargetLanguages     []string // From Refiner
+	LocalizationNeeded  bool     // From Refiner
+	MultinationalDefault bool    // Computed: should default to multi-region discovery
+}
+
+// multinationalKeywords are used to detect multi-region intent from query text.
+var multinationalKeywords = []string{
+	"全球", "跨国", "国际", "世界", "各地区", "多国", "海外",
+	"worldwide", "global", "international", "multinational", "all regions",
+	"across countries", "multi-region", "cross-border",
+}
+
+// BuildDomainAnalysisIntent constructs a DomainAnalysisIntent from task inputs.
+func BuildDomainAnalysisIntent(
+	query string,
+	researchAreas []string,
+	explicitRegions []string,
+	targetLanguages []string,
+	localizationNeeded bool,
+) DomainAnalysisIntent {
+	intent := DomainAnalysisIntent{
+		FocusText:          query,
+		FocusCategories:    classifyFocusCategories(researchAreas),
+		ExplicitRegions:    explicitRegions,
+		TargetLanguages:    targetLanguages,
+		LocalizationNeeded: localizationNeeded,
+	}
+	intent.MultinationalDefault = intent.computeMultinational()
+	return intent
+}
+
+// computeMultinational determines if the task should default to multi-region discovery.
+// Returns true if:
+// - User explicitly specified multiple regions
+// - Refiner detected multiple target languages (len >= 2)
+// - Refiner set localization_needed = true
+// - Query contains multinational keywords
+func (i *DomainAnalysisIntent) computeMultinational() bool {
+	// Explicit multi-region
+	if len(i.ExplicitRegions) > 1 {
+		return true
+	}
+
+	// Multiple target languages
+	if len(i.TargetLanguages) >= 2 {
+		return true
+	}
+
+	// Refiner detected localization need
+	if i.LocalizationNeeded {
+		return true
+	}
+
+	// Query contains multinational keywords
+	queryLower := strings.ToLower(i.FocusText)
+	for _, kw := range multinationalKeywords {
+		if strings.Contains(queryLower, kw) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ShouldIncludeRegion determines if a region should be included in discovery.
+// Used by buildDomainDiscoverySearches to filter regions.
+func (i *DomainAnalysisIntent) ShouldIncludeRegion(region string) bool {
+	// If explicit regions specified, only include those
+	if len(i.ExplicitRegions) > 0 {
+		for _, r := range i.ExplicitRegions {
+			if strings.EqualFold(r, region) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// If multinational, include default set
+	if i.MultinationalDefault {
+		defaultRegions := []string{"global", "eu", "cn", "jp", "us"}
+		for _, r := range defaultRegions {
+			if strings.EqualFold(r, region) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Non-multinational: only global
+	return strings.EqualFold(region, "global")
+}
+
 // extractProductHints extracts product names from refiner domains for search hints.
 // Only returns domains that don't match the canonical company name.
 func extractProductHints(officialDomains []string, canonicalName string) []string {
@@ -1246,6 +1422,199 @@ func selectDomainsForPrefetch(discovered []string, requestedRegions []string, or
 		return selected[:max]
 	}
 	return selected
+}
+
+// selectDomainsForPrefetchWithFocus extends selectDomainsForPrefetch with focus-aware scoring.
+// focusCategories are domain types to prioritize (e.g., "ir", "docs", "corporate").
+func selectDomainsForPrefetchWithFocus(discovered []string, requestedRegions []string, originRegion string, max int, focusCategories []string) []string {
+	if max <= 0 || len(discovered) == 0 {
+		return nil
+	}
+
+	// Deduplicate while preserving order
+	seen := make(map[string]bool)
+	var uniq []string
+	for _, d := range discovered {
+		d = strings.TrimSpace(d)
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		uniq = append(uniq, d)
+	}
+
+	// Score each domain based on focus categories
+	type scoredDomain struct {
+		Domain string
+		Score  int
+		Bucket string
+	}
+	scored := make([]scoredDomain, len(uniq))
+	for i, d := range uniq {
+		role := classifyDomainRole("https://" + d)
+		score := computeDomainFocusScore(role, focusCategories)
+		scored[i] = scoredDomain{
+			Domain: d,
+			Score:  score,
+			Bucket: domainBucketForHost(d),
+		}
+	}
+
+	// User-scoped: only include requested region buckets.
+	if len(requestedRegions) > 0 {
+		allowed := make(map[string]bool)
+		for _, r := range requestedRegions {
+			rr := normalizePrefetchRegion(r)
+			if rr == "" {
+				continue
+			}
+			if rr == "us" || rr == "global" {
+				allowed["global"] = true
+				continue
+			}
+			allowed[rr] = true
+		}
+		if len(allowed) == 0 {
+			return nil
+		}
+
+		// Filter and sort by score
+		var filtered []scoredDomain
+		for _, sd := range scored {
+			if allowed[sd.Bucket] {
+				filtered = append(filtered, sd)
+			}
+		}
+		if len(filtered) == 0 {
+			return nil
+		}
+
+		// Sort by score descending, preserve order for equal scores
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return filtered[i].Score > filtered[j].Score
+		})
+
+		result := make([]string, 0, max)
+		for i := 0; i < len(filtered) && i < max; i++ {
+			result = append(result, filtered[i].Domain)
+		}
+		return result
+	}
+
+	// Default: ensure coverage across origin/us/global/eu/cn/jp when available.
+	// But sort within each bucket by focus score.
+	required := []string{}
+	addReq := func(r string) {
+		r = normalizePrefetchRegion(r)
+		if r == "" {
+			return
+		}
+		for _, existing := range required {
+			if existing == r {
+				return
+			}
+		}
+		required = append(required, r)
+	}
+
+	addReq(originRegion)
+	addReq("us")
+	addReq("eu")
+	addReq("cn")
+	addReq("jp")
+
+	// Group by bucket
+	bucketDomains := make(map[string][]scoredDomain)
+	for _, sd := range scored {
+		bucket := sd.Bucket
+		bucketDomains[bucket] = append(bucketDomains[bucket], sd)
+	}
+
+	// Sort each bucket by score descending
+	for bucket := range bucketDomains {
+		sort.SliceStable(bucketDomains[bucket], func(i, j int) bool {
+			return bucketDomains[bucket][i].Score > bucketDomains[bucket][j].Score
+		})
+	}
+
+	picked := make(map[string]bool)
+	var selected []string
+
+	// Pick best from each required bucket first
+	for _, bucket := range required {
+		matchBucket := bucket
+		if bucket == "us" {
+			matchBucket = "global"
+		}
+		domains := bucketDomains[matchBucket]
+		for _, sd := range domains {
+			if picked[sd.Domain] {
+				continue
+			}
+			picked[sd.Domain] = true
+			selected = append(selected, sd.Domain)
+			break
+		}
+		if len(selected) >= max {
+			return selected[:max]
+		}
+	}
+
+	// Fill remaining slots: sort all remaining by score descending
+	var remaining []scoredDomain
+	for _, sd := range scored {
+		if !picked[sd.Domain] {
+			remaining = append(remaining, sd)
+		}
+	}
+	sort.SliceStable(remaining, func(i, j int) bool {
+		return remaining[i].Score > remaining[j].Score
+	})
+
+	for _, sd := range remaining {
+		picked[sd.Domain] = true
+		selected = append(selected, sd.Domain)
+		if len(selected) >= max {
+			break
+		}
+	}
+
+	if len(selected) > max {
+		return selected[:max]
+	}
+	return selected
+}
+
+// computeDomainFocusScore calculates how well a domain role matches focus categories.
+func computeDomainFocusScore(role string, focusCategories []string) int {
+	if len(focusCategories) == 0 {
+		return 0
+	}
+
+	score := 0
+	for _, cat := range focusCategories {
+		switch {
+		// Product focus: docs and store are relevant
+		case (cat == "store" || cat == "product") && (role == "store" || role == "docs"):
+			score += 10
+		// Financial focus: ir is highly relevant
+		case (cat == "ir" || cat == "financial") && role == "ir":
+			score += 15
+		// Organizational focus: corporate is relevant
+		case (cat == "corporate" || cat == "organization") && role == "corporate":
+			score += 10
+		// Technical focus: docs is highly relevant
+		case (cat == "docs" || cat == "technical") && role == "docs":
+			score += 15
+		// Careers focus
+		case cat == "careers" && role == "careers":
+			score += 10
+		// Exact match
+		case cat == role:
+			score += 10
+		}
+	}
+	return score
 }
 
 func normalizeDomainCandidateHost(raw string) string {
@@ -2255,8 +2624,29 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					delete(baseContext, "official_domains")
 					delete(baseContext, "official_domains_source")
 
+					// Build DomainAnalysisIntent for multinational strategy (domain_analysis_v1)
+					domainAnalysisVersion := workflow.GetVersion(ctx, "domain_analysis_v1", workflow.DefaultVersion, 1)
+					intent := BuildDomainAnalysisIntent(
+						input.Query,
+						refineResult.ResearchAreas,
+						requestedRegions,
+						refineResult.TargetLanguages,
+						refineResult.LocalizationNeeded,
+					)
+
+					// maxPrefetch based on multinational strategy
+					// - Non-multinational: 5 (global + origin only)
+					// - Multinational: 8 (global + eu + cn + jp + topic)
+					// - With explicit regions: 5
+					// - Max limit: 15 (same as web_subpage_fetch MAX_LIMIT)
 					maxPrefetch := 8
-					if len(requestedRegions) > 0 {
+					if domainAnalysisVersion >= 1 {
+						if len(requestedRegions) > 0 {
+							maxPrefetch = 5
+						} else if !intent.MultinationalDefault {
+							maxPrefetch = 5 // Non-multinational: fewer prefetch slots
+						}
+					} else if len(requestedRegions) > 0 {
 						maxPrefetch = 5
 					}
 					if v, ok := baseContext["domain_prefetch_max_urls"]; ok {
@@ -2270,8 +2660,8 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					if maxPrefetch < 1 {
 						maxPrefetch = 1
 					}
-					if maxPrefetch > 12 {
-						maxPrefetch = 12
+					if maxPrefetch > 15 { // Same as web_subpage_fetch MAX_LIMIT
+						maxPrefetch = 15
 					}
 
 					// v3 (discover-only strict) reduces domain_discovery from 4 fixed region searches to:
@@ -2297,6 +2687,29 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							// Start with primary search, then append topic searches
 							searches = []domainDiscoverySearch{{Key: "primary", Query: primaryQuery}}
 							searches = append(searches, topicSearches...)
+						}
+					}
+
+					// domain_analysis_v1: Apply multinational filtering when no explicit regions
+					// Non-multinational companies only search global + origin + topic searches
+					if domainAnalysisVersion >= 1 && len(requestedRegions) == 0 && !intent.MultinationalDefault {
+						var filteredSearches []domainDiscoverySearch
+						for _, s := range searches {
+							// Keep topic searches (ir, docs, careers, product_*) and primary/global
+							if s.Key == "ir" || s.Key == "docs" || s.Key == "careers" ||
+								strings.HasPrefix(s.Key, "product_") ||
+								s.Key == "primary" || s.Key == "global" ||
+								s.Key == originRegion {
+								filteredSearches = append(filteredSearches, s)
+							}
+						}
+						if len(filteredSearches) > 0 {
+							searches = filteredSearches
+							logger.Info("Domain analysis: non-multinational filtering applied",
+								"original_count", len(searches),
+								"filtered_count", len(filteredSearches),
+								"multinational", intent.MultinationalDefault,
+							)
 						}
 					}
 					discoveredBySearch := make(map[string][]string)
@@ -2351,16 +2764,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						"- Max 10 domains\n\n" +
 						"CRITICAL: Your response must be ONLY the JSON object, nothing else.\n"
 
-					// Add research focus hint if available
+					// Add research focus using original query (not ResearchAreas)
+					// ResearchAreas come from Refiner's research_dimensions, which may not match user intent
+					discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS ===\n"+
+						"Original query: %s\n"+
+						"Find official domains most relevant to answering this query.\n",
+						input.Query)
+
+					// Use ResearchAreas only as category hints for domain prioritization
 					if len(refineResult.ResearchAreas) > 0 {
-						focusAreas := refineResult.ResearchAreas
-						if len(focusAreas) > maxResearchFocusAreas {
-							focusAreas = focusAreas[:maxResearchFocusAreas]
+						focusCategories := classifyFocusCategories(refineResult.ResearchAreas)
+						if len(focusCategories) > 0 {
+							discoveryQuery += fmt.Sprintf("Domain type hints: %s\n",
+								strings.Join(focusCategories, ", "))
 						}
-						discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS HINT ===\n"+
-							"This research focuses on: %s\n"+
-							"Prioritize domains containing information about these topics (e.g., IR sites for financial research).\n",
-							strings.Join(focusAreas, ", "))
 					}
 
 					// Single agent call with first query as tool_parameters hint
@@ -2395,18 +2812,21 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						)
 					} else {
 						// Persist domain_discovery execution for observability
-						discoveryWfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+						// Use workflowID (parent task ID) for consistent DB querying across discovery/prefetch
+						// Also store child_workflow_id for debugging/traceability
+						childWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 						persistAgentExecutionLocalWithMeta(
 							ctx,
-							discoveryWfID,
+							workflowID, // Use parent task workflow ID for unified DB queries
 							"domain_discovery",
 							fmt.Sprintf("Domain discovery: %s (batch, %d queries)", refineResult.CanonicalName, len(allQueries)),
 							discoveryResult,
 							map[string]interface{}{
-								"phase":       "domain_discovery",
-								"batch_mode":  true,
-								"query_count": len(allQueries),
-								"queries":     allQueries,
+								"phase":             "domain_discovery",
+								"batch_mode":        true,
+								"query_count":       len(allQueries),
+								"queries":           allQueries,
+								"child_workflow_id": childWorkflowID, // Dual-write for traceability
 							},
 						)
 
@@ -2512,7 +2932,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 							baseContext["official_domains_source"] = officialDomainsSource
 						}
 
-						prefetchDomains := selectDomainsForPrefetch(candidateDomains, requestedRegions, originRegion, maxPrefetch)
+						// Use focus-aware selection in domain_analysis_v1
+						var prefetchDomains []string
+						if domainAnalysisVersion >= 1 {
+							prefetchDomains = selectDomainsForPrefetchWithFocus(candidateDomains, requestedRegions, originRegion, maxPrefetch, intent.FocusCategories)
+						} else {
+							prefetchDomains = selectDomainsForPrefetch(candidateDomains, requestedRegions, originRegion, maxPrefetch)
+						}
 						urls = buildPrefetchURLsFromDomains(prefetchDomains)
 
 						logger.Info("Domain discovery (prefetch) completed",
@@ -2783,6 +3209,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						// Use station names with offset for prefetch agents
 						prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+idx)
 						var prefetchResult activities.AgentExecutionResult
+
 						// Build query with research focus for better RELEVANCE judgment
 						prefetchQuery := fmt.Sprintf("Use web_subpage_fetch on %s to extract company information.", url)
 						if len(refineResult.ResearchAreas) > 0 {
@@ -2844,6 +3271,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 					// Persist agent and tool execution records with metadata for observability
 					prefetchAgentName := agents.GetAgentName(workflowID, agents.IdxDomainPrefetchBase+payload.Index)
+					prefetchURLRole := classifyDomainRole(payload.URL) // Re-compute for metadata (deterministic)
 					persistAgentExecutionLocalWithMeta(
 						ctx,
 						workflowID,
@@ -2851,9 +3279,10 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						fmt.Sprintf("Domain prefetch: %s", payload.URL),
 						payload.Result,
 						map[string]interface{}{
-							"phase": "domain_prefetch",
-							"url":   payload.URL,
-							"index": payload.Index,
+							"phase":    "domain_prefetch",
+							"url":      payload.URL,
+							"url_role": prefetchURLRole,
+							"index":    payload.Index,
 						},
 					)
 

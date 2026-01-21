@@ -199,7 +199,7 @@ RULES:
 
 ONLY use information that was ALREADY retrieved."""
 
-SOURCE_FORMAT_ROLES = {"deep_research_agent", "research"}
+SOURCE_FORMAT_ROLES = {"deep_research_agent", "research", "domain_prefetch"}
 
 
 def should_use_source_format(role: Optional[str]) -> bool:

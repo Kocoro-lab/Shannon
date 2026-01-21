@@ -26,9 +26,16 @@ NO thinking, NO explanations, NO "I need to search..." - ONLY the JSON object.
 
 # Domain Selection Priority:
 1. Corporate main site (company.com)
-2. Product/brand sites (product.company.com, product.com)
-3. Support/help sites (support.company.com, help.company.com, docs.company.com)
-4. Regional sites (jp.company.com, company.co.jp, cn.company.com)
+2. Investor Relations sites (ir.company.com) - if query mentions financial/investor topics
+3. Product/brand sites (product.company.com, product.com) - if query mentions products
+4. Documentation sites (docs.company.com, developer.company.com) - if query mentions technical/API topics
+5. Regional sites (jp.company.com, company.co.jp, cn.company.com)
+
+# Generally Exclude (unless query explicitly requests):
+- store.* / shop.* (e-commerce sites)
+- login.* / account.* / auth.* (authentication portals)
+- support.* / help.* (support portals - low information density)
+- careers.* / jobs.* (job boards - unless query is about hiring)
 
 # Domain Formatting:
 - Strip "www." prefix (www.example.com → example.com)
