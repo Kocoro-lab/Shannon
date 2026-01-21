@@ -3179,8 +3179,49 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 				var failedDomains []string
 
+				// Calculate base subpage limit from refiner recommendation (default 15, clamp 10-20)
+				baseSubpageLimit := 15
+				if refineResult.PrefetchSubpageLimit > 0 {
+					baseSubpageLimit = refineResult.PrefetchSubpageLimit
+					if baseSubpageLimit < 10 {
+						baseSubpageLimit = 10
+					}
+					if baseSubpageLimit > 20 {
+						baseSubpageLimit = 20
+					}
+				}
+
+				// Helper to check if domain is primary (matches canonical name or is official)
+				isPrimaryDomain := func(urlStr string) bool {
+					host := strings.ToLower(urlStr)
+					// Extract hostname
+					if idx := strings.Index(host, "://"); idx != -1 {
+						host = host[idx+3:]
+					}
+					if idx := strings.Index(host, "/"); idx != -1 {
+						host = host[:idx]
+					}
+					host = strings.TrimPrefix(host, "www.")
+
+					// Check against canonical name (e.g., "Ptmind" -> "ptmind")
+					canonicalLower := strings.ToLower(refineResult.CanonicalName)
+					if canonicalLower != "" && strings.Contains(host, canonicalLower) {
+						return true
+					}
+
+					// Check if in official_domains list
+					for _, od := range refineResult.OfficialDomains {
+						odLower := strings.ToLower(od)
+						if strings.Contains(host, odLower) || strings.Contains(odLower, host) {
+							return true
+						}
+					}
+					return false
+				}
+
 				logger.Info("Running domain prefetch for company research",
 					"urls", urls,
+					"base_subpage_limit", baseSubpageLimit,
 				)
 
 				type prefetchPayload struct {
@@ -3195,6 +3236,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				for i, u := range urls {
 					url := u
 					idx := i + 1
+
+					// Dynamic limit: primary domains get base limit, secondary domains get reduced
+					domainLimit := baseSubpageLimit
+					if !isPrimaryDomain(url) {
+						// Secondary/product domains: reduce by 5, minimum 8
+						domainLimit = baseSubpageLimit - 5
+						if domainLimit < 8 {
+							domainLimit = 8
+						}
+					}
 
 					workflow.Go(ctx, func(gctx workflow.Context) {
 						prefetchContext := make(map[string]interface{})
@@ -3229,7 +3280,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								ToolParameters: map[string]interface{}{
 									"tool":            "web_subpage_fetch",
 									"url":             url,
-									"limit":           10,
+									"limit":           domainLimit,
 									"target_keywords": "about team leadership company founders management products services",
 									"target_paths": []string{
 										"/about", "/about-us", "/company",

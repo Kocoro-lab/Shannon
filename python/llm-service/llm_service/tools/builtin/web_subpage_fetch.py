@@ -29,7 +29,7 @@ from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reus
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_LIMIT = 15  # Maximum pages to fetch
+MAX_LIMIT = 20  # Maximum pages to fetch
 MAP_URL_LIMIT = 200  # Max URLs from map API
 DEFAULT_LIMIT = 5
 DEFAULT_MAX_LENGTH = 10000

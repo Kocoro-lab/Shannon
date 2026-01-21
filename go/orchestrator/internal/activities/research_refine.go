@@ -58,7 +58,8 @@ type RefineResearchQueryResult struct {
 	ResearchDimensions []ResearchDimension `json:"research_dimensions,omitempty"` // Structured dimensions with source guidance
 	LocalizationNeeded bool                `json:"localization_needed,omitempty"` // Whether to search in local languages
 	TargetLanguages    []string            `json:"target_languages,omitempty"`    // Languages to search (e.g., ["en", "zh", "ja"])
-	LocalizedNames     map[string][]string `json:"localized_names,omitempty"`     // Entity names in local languages
+	LocalizedNames       map[string][]string `json:"localized_names,omitempty"`       // Entity names in local languages
+	PrefetchSubpageLimit int                 `json:"prefetch_subpage_limit,omitempty"` // Recommended subpages per domain (5-20, default 15)
 }
 
 // RefineResearchQuery expands vague queries into structured research plans
@@ -199,6 +200,16 @@ Example: A company "Acme Corp" might operate a product called "AcmeCloud" with d
 - acme.com, acmecorp.com, acme.ai (corporate)
 - acmecloud.com, acmecloud.jp, acmecloud.co.jp, acmecloud.cn, acmecloud.com.cn (product brand sites)
 
+## Step 4.5: Prefetch Depth Recommendation (ONLY for company research)
+Recommend base subpage limit based on entity's website richness:
+- Companies with many products/services/regions: 18-20 (content-rich sites)
+- Standard companies: 15 (default)
+- Small startups with simple websites: 10-12
+Note: This is a BASE limit. The system will dynamically adjust per domain:
+- Primary/official domains matching query focus: base limit or higher
+- Secondary domains (products not directly queried): base - 5 (min 8)
+Output as "prefetch_subpage_limit" (integer, range 10-20).
+
 ## Output Format (JSON only, no prose):
 {
   "refined_query": "...",
@@ -219,7 +230,8 @@ Example: A company "Acme Corp" might operate a product called "AcmeCloud" with d
   "disambiguation_terms": ["software analytics", "Japan"],
   "localization_needed": false,
   "target_languages": ["en"],
-  "localized_names": {}
+  "localized_names": {},
+  "prefetch_subpage_limit": 15
 }
 
 ## Step 5: Temporal Search Guidance
