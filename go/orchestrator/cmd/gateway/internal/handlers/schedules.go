@@ -39,14 +39,14 @@ func (h *ScheduleHandler) CreateSchedule(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		Name               string            `json:"name"`
-		Description        string            `json:"description"`
-		CronExpression     string            `json:"cron_expression"`
-		Timezone           string            `json:"timezone"`
-		TaskQuery          string            `json:"task_query"`
-		TaskContext        map[string]string `json:"task_context"`
-		MaxBudgetPerRunUSD float64           `json:"max_budget_per_run_usd"`
-		TimeoutSeconds     int32             `json:"timeout_seconds"`
+		Name               string                 `json:"name"`
+		Description        string                 `json:"description"`
+		CronExpression     string                 `json:"cron_expression"`
+		Timezone           string                 `json:"timezone"`
+		TaskQuery          string                 `json:"task_query"`
+		TaskContext        map[string]interface{} `json:"task_context"`
+		MaxBudgetPerRunUSD float64                `json:"max_budget_per_run_usd"`
+		TimeoutSeconds     int32                  `json:"timeout_seconds"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -62,7 +62,7 @@ func (h *ScheduleHandler) CreateSchedule(w http.ResponseWriter, r *http.Request)
 		CronExpression:     req.CronExpression,
 		Timezone:           req.Timezone,
 		TaskQuery:          req.TaskQuery,
-		TaskContext:        req.TaskContext,
+		TaskContext:        encodeTaskContext(req.TaskContext),
 		MaxBudgetPerRunUsd: req.MaxBudgetPerRunUSD,
 		TimeoutSeconds:     req.TimeoutSeconds,
 	}
@@ -191,15 +191,15 @@ func (h *ScheduleHandler) UpdateSchedule(w http.ResponseWriter, r *http.Request)
 	}
 
 	var req struct {
-		Name               *string           `json:"name"`
-		Description        *string           `json:"description"`
-		CronExpression     *string           `json:"cron_expression"`
-		Timezone           *string           `json:"timezone"`
-		TaskQuery          *string           `json:"task_query"`
-		TaskContext        map[string]string `json:"task_context"`
-		MaxBudgetPerRunUSD *float64          `json:"max_budget_per_run_usd"`
-		TimeoutSeconds     *int32            `json:"timeout_seconds"`
-		ClearTaskContext   bool              `json:"clear_task_context"`
+		Name               *string                `json:"name"`
+		Description        *string                `json:"description"`
+		CronExpression     *string                `json:"cron_expression"`
+		Timezone           *string                `json:"timezone"`
+		TaskQuery          *string                `json:"task_query"`
+		TaskContext        map[string]interface{} `json:"task_context"`
+		MaxBudgetPerRunUSD *float64               `json:"max_budget_per_run_usd"`
+		TimeoutSeconds     *int32                 `json:"timeout_seconds"`
+		ClearTaskContext   bool                   `json:"clear_task_context"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -216,7 +216,7 @@ func (h *ScheduleHandler) UpdateSchedule(w http.ResponseWriter, r *http.Request)
 		CronExpression:     req.CronExpression,
 		Timezone:           req.Timezone,
 		TaskQuery:          req.TaskQuery,
-		TaskContext:        req.TaskContext,
+		TaskContext:        encodeTaskContext(req.TaskContext),
 		MaxBudgetPerRunUsd: req.MaxBudgetPerRunUSD,
 		TimeoutSeconds:     req.TimeoutSeconds,
 		ClearTaskContext:   req.ClearTaskContext,
@@ -395,19 +395,19 @@ func (h *ScheduleHandler) DeleteSchedule(w http.ResponseWriter, r *http.Request)
 
 // ScheduleRunResponse represents a single schedule run in the API response
 type ScheduleRunResponse struct {
-	WorkflowID       string     `json:"workflow_id"`
-	Query            string     `json:"query"`
-	Status           string     `json:"status"`
-	Result           *string    `json:"result,omitempty"`
-	ErrorMessage     *string    `json:"error_message,omitempty"`
-	ModelUsed        *string    `json:"model_used,omitempty"`
-	Provider         *string    `json:"provider,omitempty"`
-	TotalTokens      int        `json:"total_tokens"`
-	TotalCostUSD     float64    `json:"total_cost_usd"`
-	DurationMs       *int       `json:"duration_ms,omitempty"`
-	TriggeredAt      time.Time  `json:"triggered_at"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
-	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+	WorkflowID   string     `json:"workflow_id"`
+	Query        string     `json:"query"`
+	Status       string     `json:"status"`
+	Result       *string    `json:"result,omitempty"`
+	ErrorMessage *string    `json:"error_message,omitempty"`
+	ModelUsed    *string    `json:"model_used,omitempty"`
+	Provider     *string    `json:"provider,omitempty"`
+	TotalTokens  int        `json:"total_tokens"`
+	TotalCostUSD float64    `json:"total_cost_usd"`
+	DurationMs   *int       `json:"duration_ms,omitempty"`
+	TriggeredAt  time.Time  `json:"triggered_at"`
+	StartedAt    *time.Time `json:"started_at,omitempty"`
+	CompletedAt  *time.Time `json:"completed_at,omitempty"`
 }
 
 // ListScheduleRunsResponse represents the response for listing schedule runs
@@ -555,4 +555,28 @@ func (h *ScheduleHandler) sendError(w http.ResponseWriter, msg string, code int)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// jsonEncodedPrefix marks values that were JSON-encoded during transport.
+// This prefix prevents backwards-incompatible coercion of string values like "true" or "123".
+const jsonEncodedPrefix = "\x00json:"
+
+// encodeTaskContext converts map[string]interface{} to map[string]string for proto transport.
+// Non-string values (arrays, objects, booleans, numbers) are JSON-encoded with a prefix marker.
+func encodeTaskContext(ctx map[string]interface{}) map[string]string {
+	if ctx == nil {
+		return nil
+	}
+	result := make(map[string]string, len(ctx))
+	for k, v := range ctx {
+		switch val := v.(type) {
+		case string:
+			result[k] = val
+		default:
+			if b, err := json.Marshal(val); err == nil {
+				result[k] = jsonEncodedPrefix + string(b)
+			}
+		}
+	}
+	return result
 }
