@@ -97,6 +97,8 @@ lint:
 
 # CI convenience target (build + compile tests)
 ci:
+	@echo "[CI] Building Go gateway..."
+	@cd go/orchestrator/cmd/gateway && GO111MODULE=on go build ./...
 	@echo "[CI] Building Go orchestrator..."
 	@cd go/orchestrator && GO111MODULE=on go build ./...
 	@echo "[CI] Building Rust agent-core..."

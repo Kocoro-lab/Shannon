@@ -5,20 +5,20 @@
 execution_modes:
   simple:
     enabled: true
-    max_latency_ms: 100
+    max_latency_ms: 10000
     bypass_orchestration: true
     cache_first: true
     tool_only: true
     
   standard:
     enabled: true
-    max_latency_ms: 2000
+    max_latency_ms: 20000
     single_agent: true
     llm_required: true
     
   complex:
     enabled: true
-    max_latency_ms: 10000
+    max_latency_ms: 30000
     max_agents: 5
     parallel_execution: true
     dag_orchestration: true
@@ -71,7 +71,7 @@ workflows:
       - completeness  # Is the answer complete?
       - accuracy      # Is the answer accurate?
       - relevance     # Is the answer relevant to the query?
-    timeout_ms: 5000  # Timeout for reflection evaluation
+    timeout_ms: 30000  # Timeout for reflection evaluation
 
   synthesis:
     bypass_single_result: true  # Skip extra synthesis when only one answer is produced
