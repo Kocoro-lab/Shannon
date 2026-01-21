@@ -112,8 +112,8 @@ def filter_relevant_results(
 # Interpretation Pass Helper Functions (P0 Fix for content loss)
 # ============================================================================
 
-# Interpretation prompt for summarizing tool results
-INTERPRETATION_PROMPT = """=== CRITICAL INSTRUCTION ===
+# Interpretation prompts for summarizing tool results
+INTERPRETATION_PROMPT_SOURCES = """=== CRITICAL INSTRUCTION ===
 
 You MUST summarize the ACTUAL CONTENT from the tool results above.
 You MUST assess each source's RELEVANCE to the original query.
@@ -185,6 +185,28 @@ Bullet format (for facts):
 - Detailed summaries of LOW relevance sources
 
 ONLY summarize what was ALREADY retrieved."""
+
+INTERPRETATION_PROMPT_GENERAL = """=== CRITICAL INSTRUCTION ===
+
+You MUST answer the original query using ONLY the tool results above.
+
+RULES:
+- Provide a clear, complete answer (not raw tool logs).
+- Do NOT use "Source 1/Source 2" or "PART 1 - RETRIEVED INFORMATION" format.
+- Do NOT mention tool names or the tool-calling process.
+- If the tool results are insufficient, say so explicitly.
+- Do NOT invent facts, sources, or URLs.
+
+ONLY use information that was ALREADY retrieved."""
+
+SOURCE_FORMAT_ROLES = {"deep_research_agent", "research"}
+
+
+def should_use_source_format(role: Optional[str]) -> bool:
+    """Only research roles use Source format output."""
+    if not role:
+        return False
+    return role.strip().lower() in SOURCE_FORMAT_ROLES
 
 
 def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], max_chars: int = 3000) -> str:
@@ -314,7 +336,7 @@ def build_interpretation_messages(
     system_prompt: str,
     original_query: str,
     tool_results_summary: str,
-    interpretation_prompt: str = INTERPRETATION_PROMPT
+    interpretation_prompt: str = INTERPRETATION_PROMPT_GENERAL
 ) -> List[Dict[str, str]]:
     """
     Build clean messages for interpretation pass.
@@ -573,16 +595,25 @@ def aggregate_tool_results(tool_records: List[Dict[str, Any]], max_chars: int = 
 
 def validate_interpretation_output(
     output: str,
-    total_tool_output_chars: int
+    total_tool_output_chars: int,
+    *,
+    expect_sources_format: bool
 ) -> Tuple[bool, str]:
     """
     Validate interpretation pass output quality.
 
     Returns (is_valid, reason) tuple.
+
+    For source format (research roles): strict validation with format checks.
+    For general format (other roles): lenient validation, only check basics.
     """
     stripped = output.strip()
 
-    # Multi-language "continuation" pattern detection
+    # Basic check: must have some content
+    if not stripped or len(stripped) < 50:
+        return False, "too_short"
+
+    # Multi-language "continuation" pattern detection (all formats)
     continuation_patterns_en = ("I'll ", "I need to ", "Let me ", "I will ", "I should ")
     continuation_patterns_zh = ("我将", "我需要", "让我", "我要", "我继续")
     continuation_patterns_ja = ("私は", "必要が", "させて", "続けて", "取得します")
@@ -596,17 +627,18 @@ def validate_interpretation_output(
     if is_continuation:
         return False, "continuation_pattern"
 
-    # Dynamic length threshold based on tool output
-    # Cap at 2000 to avoid invalidating good concise summaries from large tool outputs
-    # e.g., web_subpage_fetch can return 33K+ chars but a 2000 char summary is fine
-    min_length = min(2000, max(200, int(total_tool_output_chars * 0.1)))
-    if len(stripped) < min_length:
-        return False, f"too_short (len={len(stripped)} < min={min_length})"
+    # Source format: strict validation
+    if expect_sources_format:
+        min_length = min(2000, max(200, int(total_tool_output_chars * 0.1)))
+        if len(stripped) < min_length:
+            return False, f"too_short (len={len(stripped)} < min={min_length})"
+        # Check format
+        has_correct_format = stripped.startswith(("# PART 1", "# PART", "## PART", "PART 1"))
+        if not has_correct_format and len(stripped) < 500:
+            return False, "no_format_and_short"
 
-    # Format validation
-    has_correct_format = stripped.startswith(("# PART 1", "# PART", "## PART", "PART 1"))
-    if not has_correct_format and len(stripped) < 500:
-        return False, "no_format_and_short"
+    # General format: lenient validation - no format or length ratio checks
+    # Just ensure it's not a continuation pattern and has basic content
 
     return True, "valid"
 
@@ -1802,7 +1834,12 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 # Select interpretation prompt from role preset or use default
                 # Roles can define custom interpretation_prompt in their preset
-                interp_prompt = INTERPRETATION_PROMPT
+                use_source_format = should_use_source_format(role)
+                interp_prompt = (
+                    INTERPRETATION_PROMPT_SOURCES
+                    if use_source_format
+                    else INTERPRETATION_PROMPT_GENERAL
+                )
                 role_preset_for_interp = None
                 if role:
                     try:
@@ -1850,7 +1887,8 @@ async def agent_query(request: Request, query: AgentQuery):
                 else:
                     is_valid, validation_reason = validate_interpretation_output(
                         raw_interpretation or "",
-                        total_tool_output_chars
+                        total_tool_output_chars,
+                        expect_sources_format=use_source_format,
                     )
 
                 if is_valid:
