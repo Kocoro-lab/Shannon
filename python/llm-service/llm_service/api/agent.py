@@ -313,7 +313,8 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
 def build_interpretation_messages(
     system_prompt: str,
     original_query: str,
-    tool_results_summary: str
+    tool_results_summary: str,
+    interpretation_prompt: str = INTERPRETATION_PROMPT
 ) -> List[Dict[str, str]]:
     """
     Build clean messages for interpretation pass.
@@ -324,6 +325,9 @@ def build_interpretation_messages(
     - Original query
     - Aggregated tool results
     - Strong interpretation instruction
+
+    Args:
+        interpretation_prompt: Custom prompt for specific roles (e.g., domain_discovery uses JSON-only prompt)
     """
     return [
         {"role": "system", "content": system_prompt},
@@ -332,7 +336,7 @@ def build_interpretation_messages(
             "content": (
                 f"Original query: {original_query}\n\n"
                 f"=== TOOL RESULTS ===\n{tool_results_summary}\n\n"
-                f"=== YOUR TASK ===\n{INTERPRETATION_PROMPT}"
+                f"=== YOUR TASK ===\n{interpretation_prompt}"
             )
         }
     ]
@@ -859,8 +863,13 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 # Add research-mode instruction for deep content retrieval
                 # EXCEPTION: Do NOT inject for REASON steps (no tools, pure reasoning)
+                # EXCEPTION: Do NOT inject for specialized roles with strict output format
                 is_reason_step = query.query.strip().startswith("REASON (")
-                if isinstance(query.context, dict) and not is_reason_step:
+                skip_research_injection_roles = {"domain_discovery", "domain_prefetch", "citation_agent"}
+                role = query.context.get("role") if isinstance(query.context, dict) else None
+                skip_research_injection = role in skip_research_injection_roles
+
+                if isinstance(query.context, dict) and not is_reason_step and not skip_research_injection:
                     is_research = (
                         query.context.get("force_research")
                         or query.context.get("research_strategy")
@@ -910,6 +919,10 @@ async def agent_query(request: Request, query: AgentQuery):
                         )
                         system_prompt = system_prompt + research_instruction
                         logger.info("Applied RESEARCH MODE instruction to system prompt")
+
+                # Log when research_mode injection is skipped for specialized roles
+                if skip_research_injection and role:
+                    logger.info(f"Skipped research_mode injection for specialized role: {role}")
 
                 # REASON step: Add explicit instruction to prevent stub output
                 if is_reason_step:
@@ -1765,8 +1778,14 @@ async def agent_query(request: Request, query: AgentQuery):
             # Final interpretation pass if we executed any tools or budgets were hit
             # P0 Fix: Always run interpretation pass if any tool executed successfully
             # This ensures tool results are summarized into Response, not just "I'll execute..."
+            # NOTE: domain_discovery now uses interpretation_pass to generate final JSON
+            # (previously skipped, causing "I'll execute..." output instead of JSON)
+            skip_interpretation_roles: set[str] = set()  # No roles skip interpretation
+            role = query.context.get("role") if isinstance(query.context, dict) else None
+            skip_interpretation = role in skip_interpretation_roles
+
             has_successful_tool = any(r.get("success") for r in tool_execution_records)
-            if tool_execution_records and (
+            if not skip_interpretation and tool_execution_records and (
                 has_successful_tool  # Any successful tool execution requires summarization
                 or stop_reason != "no_tool_call"
                 or did_forced_fetch
@@ -1778,12 +1797,28 @@ async def agent_query(request: Request, query: AgentQuery):
                 # - System prompt (defines role)
                 # - Original query (the task)
                 # - Aggregated tool results (what was retrieved)
-                # - Strong interpretation instruction (INTERPRETATION_PROMPT)
+                # - Strong interpretation instruction (role-specific prompt)
                 tool_results_summary = aggregate_tool_results(tool_execution_records)
+
+                # Select interpretation prompt from role preset or use default
+                # Roles can define custom interpretation_prompt in their preset
+                interp_prompt = INTERPRETATION_PROMPT
+                role_preset_for_interp = None
+                if role:
+                    try:
+                        from ..roles.presets import get_role_preset
+                        role_preset_for_interp = get_role_preset(role)
+                        custom_interp = role_preset_for_interp.get("interpretation_prompt")
+                        if custom_interp:
+                            interp_prompt = custom_interp
+                    except Exception:
+                        pass
+
                 interpretation_messages = build_interpretation_messages(
                     system_prompt=system_prompt,
                     original_query=query.query,
-                    tool_results_summary=tool_results_summary
+                    tool_results_summary=tool_results_summary,
+                    interpretation_prompt=interp_prompt
                 )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
@@ -1802,10 +1837,21 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 # P0 Fix v4: Validate interpretation output and fallback to digest if invalid
                 # Never fallback to raw JSON - use generate_tool_digest() for human-readable fallback
-                is_valid, validation_reason = validate_interpretation_output(
-                    raw_interpretation or "",
-                    total_tool_output_chars
-                )
+                # Roles can set skip_output_validation=True in preset (e.g., domain_discovery for short JSON)
+                skip_validation = False
+                if role:
+                    try:
+                        skip_validation = role_preset_for_interp.get("skip_output_validation", False) if role_preset_for_interp else False
+                    except Exception:
+                        pass
+
+                if skip_validation:
+                    is_valid, validation_reason = True, f"{role}_preset_skip"
+                else:
+                    is_valid, validation_reason = validate_interpretation_output(
+                        raw_interpretation or "",
+                        total_tool_output_chars
+                    )
 
                 if is_valid:
                     response_text = raw_interpretation
@@ -1843,7 +1889,8 @@ async def agent_query(request: Request, query: AgentQuery):
                 result_data = interpretation_result
             else:
                 result_data = last_result_data or {}
-                logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, has_successful_tool={has_successful_tool}, stop_reason={stop_reason}, response_preview={str(response_text)[:100]}")
+                skip_reason = f"role={role}" if skip_interpretation else f"has_successful_tool={has_successful_tool}, stop_reason={stop_reason}"
+                logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, {skip_reason}, response_preview={str(response_text)[:100]}")
 
             # Stub Guard: Clean any pseudo tool-call stubs from final output
             # These can appear when LLM outputs XML/JSON tool calls instead of native function calling
@@ -2196,6 +2243,14 @@ async def _execute_and_format_tools(
                                     logger.info(f"Merged {key} from orchestrator: {args[key]}")
                                 elif key == "target_keywords" and isinstance(ctx_value, str) and not llm_value:
                                     args[key] = ctx_value
+                    # Handle query parameter: use orchestrator's query if LLM didn't provide one
+                    # This ensures domain_discovery and similar agents use the intended search query
+                    if "query" in ctx_tool_params and "query" in allowed:
+                        ctx_query = ctx_tool_params.get("query")
+                        llm_query = args.get("query")
+                        if ctx_query and not llm_query:
+                            args["query"] = ctx_query
+                            logger.info(f"Using orchestrator query for {tool_name}: {ctx_query}")
 
             # Emit TOOL_INVOKED event
             if emitter and wf_id:

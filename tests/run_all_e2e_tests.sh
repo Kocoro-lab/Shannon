@@ -19,6 +19,7 @@ NC='\033[0m'
 SUITES=(
     "Comprehensive System Test:e2e/comprehensive_system_test.sh"
     "UTF-8 Integration Test:integration/test_chinese_utf8.sh"
+    "Domain Discovery Optimization:e2e/45_domain_discovery_optimization_test.sh"
 )
 
 # Results tracking
