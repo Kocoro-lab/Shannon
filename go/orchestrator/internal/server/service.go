@@ -24,6 +24,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"strconv"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	auth "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
@@ -39,6 +41,59 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
 )
+
+// validateCronSchedule validates a cron expression.
+// Supports standard 5-field format and Temporal-compatible descriptors (@every, @hourly, etc).
+// Returns an error if the expression is invalid.
+func validateCronSchedule(cronExpr string) error {
+	cronExpr = strings.TrimSpace(cronExpr)
+	if cronExpr == "" {
+		return fmt.Errorf("empty cron expression")
+	}
+
+	// Support Temporal-compatible descriptors (e.g., @every 1h, @hourly, @daily)
+	if strings.HasPrefix(cronExpr, "@") {
+		// Use parser with descriptor support
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
+		_, err := parser.Parse(cronExpr)
+		return err
+	}
+
+	// Standard 5-field cron (minute, hour, day-of-month, month, day-of-week)
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	_, err := parser.Parse(cronExpr)
+	return err
+}
+
+// jsonEncodedPrefix marks values that were JSON-encoded during transport.
+// This prefix prevents backwards-incompatible coercion of string values like "true" or "123".
+const jsonEncodedPrefix = "\x00json:"
+
+// decodeTaskContext converts proto map[string]string to map[string]interface{},
+// decoding only values with the JSON prefix marker back to their original types.
+// Plain string values (including "true", "123") are preserved as strings.
+func decodeTaskContext(ctx map[string]string) map[string]interface{} {
+	if ctx == nil {
+		return nil
+	}
+	result := make(map[string]interface{}, len(ctx))
+	for k, v := range ctx {
+		if strings.HasPrefix(v, jsonEncodedPrefix) {
+			// JSON-encoded value: decode it
+			jsonStr := strings.TrimPrefix(v, jsonEncodedPrefix)
+			var decoded interface{}
+			if err := json.Unmarshal([]byte(jsonStr), &decoded); err == nil {
+				result[k] = decoded
+			} else {
+				result[k] = v // fallback to original if decode fails
+			}
+		} else {
+			// Plain string: preserve as-is
+			result[k] = v
+		}
+	}
+	return result
+}
 
 // OrchestratorService implements the Orchestrator gRPC service
 type OrchestratorService struct {
@@ -676,6 +731,29 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		ID:        workflowID,
 		TaskQueue: queue,
 		Memo:      memo,
+	}
+
+	// Check for cron schedule in metadata labels (e.g., labels["cron_schedule"] = "0 9 * * 1-5")
+	if req.Metadata != nil {
+		if labels := req.Metadata.GetLabels(); labels != nil {
+			if cronSchedule, ok := labels["cron_schedule"]; ok {
+				cronSchedule = strings.TrimSpace(cronSchedule)
+				if cronSchedule != "" {
+					// Validate cron expression before setting
+					if err := validateCronSchedule(cronSchedule); err != nil {
+						s.logger.Error("Invalid cron schedule",
+							zap.String("workflow_id", workflowID),
+							zap.String("cron_schedule", cronSchedule),
+							zap.Error(err))
+						return nil, status.Errorf(codes.InvalidArgument, "invalid cron_schedule: %v", err)
+					}
+					workflowOptions.CronSchedule = cronSchedule
+					s.logger.Info("Workflow configured with cron schedule",
+						zap.String("workflow_id", workflowID),
+						zap.String("cron_schedule", cronSchedule))
+				}
+			}
+		}
 	}
 
 	// Route based on explicit workflow override; otherwise use AgentDAGWorkflow
@@ -2798,11 +2876,8 @@ func (s *OrchestratorService) CreateSchedule(ctx context.Context, req *pb.Create
 		timeoutSecs = 3600 // 1 hour default
 	}
 
-	// 5. Convert proto map to Go map
-	taskContext := make(map[string]interface{})
-	for k, v := range req.TaskContext {
-		taskContext[k] = v
-	}
+	// 5. Convert proto map to Go map (decoding JSON-encoded complex values)
+	taskContext := decodeTaskContext(req.TaskContext)
 
 	// 6. Create via schedule manager
 	input := &schedules.CreateScheduleInput{
@@ -2963,12 +3038,8 @@ func (s *OrchestratorService) UpdateSchedule(ctx context.Context, req *pb.Update
 		// Explicit clear: set to empty map (not nil) to overwrite existing
 		updateInput.TaskContext = make(map[string]interface{})
 	} else if len(req.TaskContext) > 0 {
-		// New values provided: convert and set
-		taskContext := make(map[string]interface{})
-		for k, v := range req.TaskContext {
-			taskContext[k] = v
-		}
-		updateInput.TaskContext = taskContext
+		// New values provided: decode JSON-encoded complex values and set
+		updateInput.TaskContext = decodeTaskContext(req.TaskContext)
 	}
 	// If neither condition: TaskContext stays nil, preserving existing value
 

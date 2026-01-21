@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -266,7 +267,7 @@ func executeTemplateNode(ctx workflow.Context, rt *templateRuntime, node templat
 	nodeContext["template_results"] = cloneStringMapTruncated(rt.NodeOutputs, 12000)
 
 	history := convertHistoryForAgent(rt.Task.History)
-	query := determineNodeQuery(rt.Task.Query, node.Metadata)
+	query := determineNodeQuery(rt.Task.Query, node.Metadata, rt.NodeOutputs, nodeContext)
 
 	switch node.Type {
 	case templates.NodeTypeSimple:
@@ -400,12 +401,106 @@ func executeCognitiveTemplateNode(ctx workflow.Context, rt *templateRuntime, nod
 	}, nil
 }
 
+// expandParallelByTasks generates HybridTasks from a context array using parallel_by.
+// For example, if parallel_by="tickers" and context["tickers"]=["NVDA","AAPL"],
+// it generates one task per ticker using the prompt_template from metadata.
+// Only placeholders that exist in the template are substituted (for efficiency).
+// Task IDs include an index to prevent collisions from duplicates or sanitization.
+func expandParallelByTasks(nodeContext map[string]interface{}, metadata map[string]interface{}, parallelBy string) []execution.HybridTask {
+	if nodeContext == nil || parallelBy == "" {
+		return nil
+	}
+
+	// Get the array from context
+	rawItems := nodeContext[parallelBy]
+	if rawItems == nil {
+		return nil
+	}
+
+	var items []string
+	switch v := rawItems.(type) {
+	case []string:
+		items = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				items = append(items, s)
+			}
+		}
+	default:
+		return nil
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	// Get prompt template from metadata
+	promptTemplate := stringValue(metadata["prompt_template"])
+	if promptTemplate == "" {
+		promptTemplate = "Process {item}"
+	}
+
+	// Only compute replacements for placeholders that actually exist in the template
+	// Skip template_results to avoid non-determinism and payload bloat
+	keys := contextKeys(nodeContext)
+	relevantKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if key == "template_results" {
+			continue // Skip to avoid non-determinism on replay
+		}
+		placeholder := fmt.Sprintf("{%s}", key)
+		if strings.Contains(promptTemplate, placeholder) {
+			relevantKeys = append(relevantKeys, key)
+		}
+	}
+
+	tasks := make([]execution.HybridTask, 0, len(items))
+	for i, item := range items {
+		// Build replacements only for placeholders that exist
+		replacements := make([]string, 0, 4+2*len(relevantKeys))
+		replacements = append(replacements, "{ticker}", item, "{item}", item)
+		for _, key := range relevantKeys {
+			replacements = append(replacements, fmt.Sprintf("{%s}", key), fmt.Sprintf("%v", nodeContext[key]))
+		}
+		description := strings.NewReplacer(replacements...).Replace(promptTemplate)
+
+		// Include index to prevent ID collisions from duplicates or sanitization
+		tasks = append(tasks, execution.HybridTask{
+			ID:          fmt.Sprintf("%s_%d_%s", parallelBy, i, sanitizeID(item)),
+			Description: description,
+		})
+	}
+
+	return tasks
+}
+
 func executeDAGTemplateNode(ctx workflow.Context, rt *templateRuntime, node templates.ExecutableNode, nodeContext map[string]interface{}, history []string, query string) (TemplateNodeResult, error) {
 	nodeContext["template_node_mode"] = "dag"
 
 	tasks, err := parseHybridTasks(node.Metadata)
 	if err != nil {
 		return TemplateNodeResult{}, err
+	}
+
+	// Check for parallel_by expansion (e.g., parallel_by: "tickers" expands context["tickers"] into tasks)
+	if len(tasks) == 0 {
+		if parallelBy := stringValue(node.Metadata["parallel_by"]); parallelBy != "" {
+			tasks = expandParallelByTasks(nodeContext, node.Metadata, parallelBy)
+			if len(tasks) == 0 {
+				workflow.GetLogger(ctx).Warn("parallel_by configured but produced no tasks - check if context contains the field",
+					"node", node.ID,
+					"parallel_by", parallelBy,
+					"context_keys", contextKeys(nodeContext),
+				)
+			} else {
+				workflow.GetLogger(ctx).Info("Expanded parallel_by tasks",
+					"node", node.ID,
+					"parallel_by", parallelBy,
+					"task_count", len(tasks),
+				)
+			}
+		}
 	}
 
 	if len(tasks) == 0 {
@@ -553,15 +648,63 @@ func determineModelTierForTemplate(defaultTier string, metadata map[string]inter
 	return tier
 }
 
-func determineNodeQuery(defaultQuery string, metadata map[string]interface{}) string {
+func determineNodeQuery(defaultQuery string, metadata map[string]interface{}, nodeOutputs map[string]string, nodeContext map[string]interface{}) string {
+	var query string
+
 	if metadata != nil {
-		if v, ok := metadata["query"].(string); ok {
+		// Check prompt_template first, then query
+		if v, ok := metadata["prompt_template"].(string); ok {
 			if trimmed := strings.TrimSpace(v); trimmed != "" {
-				return trimmed
+				query = trimmed
+			}
+		}
+		if query == "" {
+			if v, ok := metadata["query"].(string); ok {
+				if trimmed := strings.TrimSpace(v); trimmed != "" {
+					query = trimmed
+				}
 			}
 		}
 	}
-	return defaultQuery
+
+	if query == "" {
+		return defaultQuery
+	}
+
+	// Substitute context field placeholders FIRST using sorted keys for determinism.
+	// This must happen before node output substitution to avoid accidentally
+	// replacing {key} patterns that appear inside node output text.
+	// Skip map/slice values to avoid non-deterministic fmt.Sprintf output on Temporal replay.
+	keys := contextKeys(nodeContext)
+	for _, key := range keys {
+		placeholder := fmt.Sprintf("{%s}", key)
+		if !strings.Contains(query, placeholder) {
+			continue
+		}
+		val := nodeContext[key]
+		// Skip map and slice types - they produce non-deterministic string representation
+		switch val.(type) {
+		case map[string]interface{}, map[string]string, []interface{}, []string:
+			continue
+		}
+		query = strings.ReplaceAll(query, placeholder, fmt.Sprintf("%v", val))
+	}
+
+	// Substitute {node_results} placeholders with actual outputs SECOND.
+	// e.g., {fetch_news_results} -> output from fetch_news node
+	// Done after context substitution so node output content won't be modified.
+	nodeIDs := make([]string, 0, len(nodeOutputs))
+	for nodeID := range nodeOutputs {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Strings(nodeIDs)
+	for _, nodeID := range nodeIDs {
+		output := nodeOutputs[nodeID]
+		placeholder := fmt.Sprintf("{%s_results}", nodeID)
+		query = strings.ReplaceAll(query, placeholder, output)
+	}
+
+	return query
 }
 
 func mergeContext(base map[string]interface{}, overlay map[string]interface{}) map[string]interface{} {
@@ -709,11 +852,27 @@ func preferValue(primary, fallback interface{}) interface{} {
 	return fallback
 }
 
+// idSanitizer replaces non-alphanumeric characters (except underscore/hyphen) with underscore
+var idSanitizer = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+func sanitizeID(s string) string {
+	return idSanitizer.ReplaceAllString(strings.ToLower(s), "_")
+}
+
 func stringValue(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return strings.TrimSpace(s)
 	}
 	return ""
+}
+
+func contextKeys(ctx map[string]interface{}) []string {
+	keys := make([]string, 0, len(ctx))
+	for k := range ctx {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func stringSlice(v interface{}) []string {

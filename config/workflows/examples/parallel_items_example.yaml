@@ -1,0 +1,93 @@
+# Example: Parallel Item Processing with parallel_by
+#
+# This template demonstrates the parallel_by feature, which expands a context
+# array into parallel subtasks. Each item in the array gets its own agent.
+#
+# Usage:
+#   POST /api/v1/tasks
+#   {
+#     "template": "parallel_items_example",
+#     "context": {
+#       "topics": ["machine learning", "quantum computing", "blockchain"],
+#       "depth": "brief"
+#     }
+#   }
+#
+# With cron scheduling (runs every weekday at 9 AM):
+#   POST /api/v1/tasks
+#   {
+#     "template": "parallel_items_example",
+#     "context": {
+#       "topics": ["AI news", "tech trends", "cybersecurity"]
+#     },
+#     "metadata": {
+#       "labels": {
+#         "cron_schedule": "0 9 * * 1-5"
+#       }
+#     }
+#   }
+
+name: parallel_items_example
+version: "1.0.0"
+description: "Example template demonstrating parallel_by for processing multiple items"
+
+defaults:
+  model_tier: small
+  budget_agent_max: 3000
+  require_approval: false
+
+metadata:
+  category: examples
+  supports_cron: true
+  input_schema:
+    topics:
+      type: array
+      description: "List of topics to research in parallel"
+      required: true
+    depth:
+      type: string
+      default: "brief"
+      description: "Research depth: brief, standard, or detailed"
+
+nodes:
+  # Step 1: Research each topic in parallel
+  # The DAG node will spawn one subtask per topic using parallel_by
+  - id: research_topics
+    type: dag
+    budget_max: 2000
+    tools_allowlist: [web_search]
+    metadata:
+      parallel_by: "topics"
+      description: "Research each topic in parallel"
+      prompt_template: |
+        Research the topic: {item}
+
+        Depth level: {depth}
+
+        Use web_search to find current information about this topic.
+        Provide a {depth} summary of the key points.
+
+  # Step 2: Synthesize results into a combined report
+  - id: synthesize_report
+    type: simple
+    strategy: chain_of_thought
+    depends_on: [research_topics]
+    budget_max: 1000
+    tools_allowlist: []
+    metadata:
+      description: "Combine research results into a summary report"
+      prompt_template: |
+        You have researched the following topics:
+
+        {research_topics_results}
+
+        Create a concise summary report that:
+        1. Lists each topic with its key findings
+        2. Identifies any connections between topics
+        3. Provides a brief overall conclusion
+
+        Keep the report clear and well-organized.
+
+edges:
+  - from: research_topics
+    to: synthesize_report
