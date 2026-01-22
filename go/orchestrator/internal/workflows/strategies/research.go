@@ -2499,6 +2499,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 		if len(refineResult.OfficialDomains) > 0 {
 			baseContext["official_domains"] = refineResult.OfficialDomains
+			baseContext["official_domains_source"] = "refiner_inferred"
 		}
 		if len(refineResult.DisambiguationTerms) > 0 {
 			baseContext["disambiguation_terms"] = refineResult.DisambiguationTerms
@@ -4236,7 +4237,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		} else {
 			domainAnalysisResult = &childResult
 			logger.Info("Domain analysis workflow completed",
-				"digest_len", len(childResult.DigestMarkdown),
+				"digest_len", len(childResult.DomainAnalysisDigest),
 				"prefetch_urls", len(childResult.PrefetchURLs),
 				"citations", len(childResult.Citations),
 				"digest_tokens", childResult.Stats.DigestTokensUsed,
@@ -4252,16 +4253,16 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 
 	// Merge domain analysis digest (v1) or legacy prefetch evidence before localized search and gap analysis.
-	if domainAnalysisResult != nil && strings.TrimSpace(domainAnalysisResult.DigestMarkdown) != "" {
+	if domainAnalysisResult != nil && strings.TrimSpace(domainAnalysisResult.DomainAnalysisDigest) != "" {
 		logger.Info("Merging domain analysis digest into agent results",
-			"digest_len", len(domainAnalysisResult.DigestMarkdown),
+			"digest_len", len(domainAnalysisResult.DomainAnalysisDigest),
 		)
 		agentResults = append([]activities.AgentExecutionResult{domainAnalysisDigestResult(domainAnalysisResult)}, agentResults...)
 		if domainAnalysisResult.Stats.DigestTokensUsed > 0 {
 			totalTokens += domainAnalysisResult.Stats.DigestTokensUsed
 		}
 	} else if domainAnalysisResult != nil {
-		logger.Warn("Domain analysis completed but DigestMarkdown is empty",
+		logger.Warn("Domain analysis completed but DomainAnalysisDigest is empty",
 			"prefetch_urls", len(domainAnalysisResult.PrefetchURLs),
 			"digest_tokens", domainAnalysisResult.Stats.DigestTokensUsed,
 		)

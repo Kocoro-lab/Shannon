@@ -55,7 +55,7 @@ type DomainAnalysisStats struct {
 }
 
 type DomainAnalysisResult struct {
-	DigestMarkdown          string
+	DomainAnalysisDigest    string
 	Citations               []metadata.Citation
 	OfficialDomainsSelected []DomainAnalysisCoverage
 	PrefetchURLs            []string
@@ -760,7 +760,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 	citations := collectDomainAnalysisCitations(prefetchResults, input.CanonicalName, input.ExactQueries, input.OfficialDomains, workflow.Now(ctx))
 
 	return DomainAnalysisResult{
-		DigestMarkdown:          digest.FinalResult,
+		DomainAnalysisDigest:    digest.FinalResult,
 		Citations:               citations,
 		OfficialDomainsSelected: coverage,
 		PrefetchURLs:            prefetchURLs,
@@ -1011,7 +1011,7 @@ func domainAnalysisDigestResult(result *DomainAnalysisResult) activities.AgentEx
 	return activities.AgentExecutionResult{
 		AgentID:  "domain_analysis_evidence", // NOT "synthesizer" to avoid (Synthesis) tag in upstream prompt
 		Role:     "domain_analysis",
-		Response: result.DigestMarkdown,
+		Response: result.DomainAnalysisDigest,
 		Success:  true,
 	}
 }

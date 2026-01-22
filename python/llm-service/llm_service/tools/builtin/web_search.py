@@ -1494,7 +1494,10 @@ class WebSearchTool(Tool):
                 official_domains = ctx.get("official_domains", [])
                 if not isinstance(official_domains, list):
                     official_domains = []
-                has_official = len(official_domains) > 0
+                # Skip auto-fetch for inferred domains (not verified by domain_analysis)
+                official_domains_source = ctx.get("official_domains_source", "")
+                is_domains_verified = official_domains_source not in ("", "refiner_inferred")
+                has_official = len(official_domains) > 0 and is_domains_verified
 
                 if (is_research and (auto_fetch_top_k > 0 or has_official)) or auto_fetch_top_k > 0:
                     should_auto_fetch = True
