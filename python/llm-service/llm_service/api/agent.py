@@ -3189,6 +3189,55 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     )
                     decompose_system_prompt = decompose_system_prompt + areas_hint
 
+        # Company queries: optionally include Domain Analysis subtask (task-1).
+        # Decompose has the authority to decide whether to include it based on query context.
+        if isinstance(query.context, dict):
+            query_type = query.context.get("query_type")
+        else:
+            query_type = None
+        if isinstance(query_type, str) and query_type.strip().lower() == "company":
+            domain_analysis_hint = (
+                "\n\n# DOMAIN ANALYSIS SUBTASK (company queries):\n"
+                "You have access to a Domain Analysis system that:\n"
+                "- Discovers official company domains (corporate, IR, docs, careers sites)\n"
+                "- Pre-fetches and indexes key pages automatically\n"
+                "- Results feed into final synthesis\n\n"
+                "## When to INCLUDE domain_analysis (default for company queries):\n"
+                "- Company research needing official sources (investor relations, product info, leadership)\n"
+                "- No specific URLs provided by user\n"
+                "- Research requires authoritative primary sources\n\n"
+                "## When to SKIP domain_analysis:\n"
+                "- User explicitly says 'no official site research needed' or similar\n"
+                "- User provides specific URLs to analyze (e.g., 'analyze this article: ...')\n"
+                "- Query focuses on public perception, news coverage, or third-party analysis only\n"
+                "- Comparative query across many companies (5+) where web_search is more efficient\n\n"
+                "## If you include it (as task-1):\n"
+                "- task_type MUST be \"domain_analysis\" (triggers system workflow, not agent)\n"
+                "- Set suggested_tools to [] and tool_parameters to {} (system handles execution)\n"
+                "- dependencies must be [] (runs in parallel, other tasks must NOT depend on it)\n"
+                "- description should specify the company and research focus\n"
+                "- All other research tasks start at task-2\n\n"
+                "Example:\n"
+                "{\n"
+                "  \"id\": \"task-1\",\n"
+                "  \"task_type\": \"domain_analysis\",\n"
+                "  \"description\": \"Discover official domains for [Company] to support [specific research focus].\",\n"
+                "  \"dependencies\": [],\n"
+                "  \"estimated_tokens\": 400,\n"
+                "  \"suggested_tools\": [],\n"
+                "  \"tool_parameters\": {},\n"
+                "  \"output_format\": {\"type\": \"narrative\", \"required_fields\": [], \"optional_fields\": []},\n"
+                "  \"source_guidance\": {\"required\": [\"official\"], \"optional\": [\"aggregator\"], \"avoid\": [\"social\"]},\n"
+                "  \"search_budget\": {\"max_queries\": 5, \"max_fetches\": 8},\n"
+                "  \"boundaries\": {\"in_scope\": [\"official domains\", \"key site sections\"], \"out_of_scope\": [\"deep analysis\"]}\n"
+                "}\n\n"
+                "## Impact on other tasks:\n"
+                "- If domain_analysis is included, other tasks should NOT repeat 'find official website' work\n"
+                "- Focus research tasks on ANALYZING content, not DISCOVERING sources\n"
+                "- Domain analysis results automatically merge into final synthesis\n"
+            )
+            decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
+
         # Inject current date for time awareness in decomposition
         current_date = None
         if query.context and isinstance(query.context, dict):
