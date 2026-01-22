@@ -1523,11 +1523,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     pass
                 return default_val
 
-            max_tool_iterations = _get_budget("max_tool_iterations", 3)
-            max_total_tool_calls = _get_budget("max_total_tool_calls", 5)
-            max_total_tool_output_chars = _get_budget("max_total_tool_output_chars", 60000)
-            max_urls_to_fetch = _get_budget("max_urls_to_fetch", 10)
-            max_consecutive_tool_failures = _get_budget("max_consecutive_tool_failures", 2)
+            # Detect research mode first to apply appropriate limits
             research_mode = (
                 isinstance(query.context, dict)
                 and (
@@ -1538,24 +1534,30 @@ async def agent_query(request: Request, query: AgentQuery):
                     or query.context.get("role") == "deep_research_agent"
                 )
             )
-            # Different followup instructions based on mode
+
+            # Base defaults for non-research mode
+            default_iterations = 3
+            default_total_calls = 5
+            default_output_chars = 60000
+
+            # Research mode: higher limits for comprehensive investigation
             if research_mode:
-                # Deep Research: encourage search → fetch loop, but avoid same-query retries
-                followup_instruction = (
-                    "Continue your research: "
-                    "1) If you just searched, fetch the most relevant URLs to verify claims. "
-                    "2) If you need more info, search with DIFFERENT keywords (not the same query). "
-                    "3) Do NOT retry a query that returned empty results. "
-                    "4) When you have sufficient evidence, proceed to synthesis."
-                )
-            else:
-                # Non-DR: stricter limits to avoid long execution times
-                followup_instruction = (
-                    "If the information is insufficient, you may call another tool with a DIFFERENT strategy "
-                    "(e.g., broader/narrower terms, different keywords, alternative sources). "
-                    "Do NOT retry the same query if it returned empty or poor results. "
-                    "If 2+ attempts yield no useful data, synthesize what you have or report 'No relevant information found'."
-                )
+                default_iterations = 6
+                default_total_calls = 10  # Keep buffer for potential parallel tool use
+                default_output_chars = 150000  # Covers 99% of actual usage (max observed: 162K)
+
+            max_tool_iterations = _get_budget("max_tool_iterations", default_iterations)
+            max_total_tool_calls = _get_budget("max_total_tool_calls", default_total_calls)
+            max_total_tool_output_chars = _get_budget("max_total_tool_output_chars", default_output_chars)
+            max_urls_to_fetch = _get_budget("max_urls_to_fetch", 10)
+            max_consecutive_tool_failures = _get_budget("max_consecutive_tool_failures", 2)
+            # Followup instruction for non-research mode (research mode builds dynamically in loop)
+            base_followup_instruction = (
+                "If the information is insufficient, you may call another tool with a DIFFERENT strategy "
+                "(e.g., broader/narrower terms, different keywords, alternative sources). "
+                "Do NOT retry the same query if it returned empty or poor results. "
+                "If 2+ attempts yield no useful data, synthesize what you have or report 'No relevant information found'."
+            )
 
             total_tokens = 0
             total_input_tokens = 0
@@ -1685,6 +1687,53 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 total_tool_output_chars += len(tool_results or "")
                 loop_iterations += 1
+
+                # Build dynamic followup instruction for research mode with iteration awareness
+                if research_mode:
+                    current_iteration = loop_iterations
+                    followup_instruction = (
+                        f"**ITERATION {current_iteration}/{max_tool_iterations}**\n\n"
+                        f"**REASON (Internal Assessment):**\n"
+                        f"- What key information did I gather from the tool result above?\n"
+                        f"- Can I answer the user's question confidently with current evidence?\n"
+                        f"- Should I search again (with DIFFERENT query) OR proceed to synthesis?\n\n"
+                        f"**ACT (Next Step):**\n"
+                    )
+
+                    if current_iteration <= max_tool_iterations - 2:
+                        # Early iterations: focus on GATHERING evidence
+                        followup_instruction += (
+                            "- Phase: **EVIDENCE GATHERING**\n"
+                            "- If you just searched, fetch the most relevant URLs to verify claims\n"
+                            "- If you need more breadth, search with DIFFERENT keywords (not the same query)\n"
+                            "- Do NOT retry a query that returned empty results\n"
+                            "- Prefer batch fetch: web_fetch(urls=[url1, url2, url3]) over multiple single fetches\n"
+                        )
+                    elif current_iteration == max_tool_iterations - 1:
+                        # Second-to-last iteration: verify key claims
+                        followup_instruction += (
+                            "- Phase: **VERIFICATION & GAP-FILLING**\n"
+                            "- Verify critical claims that need validation\n"
+                            "- Fill remaining gaps in coverage\n"
+                            "- Next iteration will be your FINAL round before synthesis\n"
+                        )
+                    else:
+                        # Final iteration: prepare for synthesis
+                        followup_instruction += (
+                            "- Phase: **FINAL ROUND - PREPARE FOR SYNTHESIS**\n"
+                            "- This is your last chance to gather evidence\n"
+                            "- Only search if there's a CRITICAL gap that blocks synthesis\n"
+                            "- After this round, you MUST synthesize your findings\n"
+                        )
+
+                    followup_instruction += (
+                        "\n**OBSERVE (After Tool Execution):**\n"
+                        "- System will provide tool results, then repeat this cycle\n"
+                        "- When sufficient evidence gathered, output your final synthesis starting with '## Key Findings'\n"
+                    )
+                else:
+                    # Non-research mode: use base instruction
+                    followup_instruction = base_followup_instruction
 
                 messages.append(
                     {
@@ -1851,11 +1900,20 @@ async def agent_query(request: Request, query: AgentQuery):
                     except Exception:
                         pass
 
+                # Add iteration context to help LLM know it's time to synthesize
+                iteration_context = ""
+                if research_mode and loop_iterations >= max_tool_iterations:
+                    iteration_context = (
+                        f"\n\n**IMPORTANT**: You have completed {loop_iterations} research iterations "
+                        f"(maximum allowed). This is your FINAL OUTPUT. "
+                        f"Generate your comprehensive synthesis now, starting with '## Key Findings'."
+                    )
+
                 interpretation_messages = build_interpretation_messages(
                     system_prompt=system_prompt,
                     original_query=query.query,
                     tool_results_summary=tool_results_summary,
-                    interpretation_prompt=interp_prompt
+                    interpretation_prompt=interp_prompt + iteration_context
                 )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
