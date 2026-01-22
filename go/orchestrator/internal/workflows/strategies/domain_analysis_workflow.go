@@ -773,7 +773,7 @@ func buildDomainAnalysisDigestQuery(query, canonicalName string, planHints []str
 	b.WriteString("- Do NOT add Key Findings, Summary, or bullet lists - go directly to sections\n")
 	b.WriteString("- Do NOT repeat facts across sections\n")
 	if len(planHints) > 0 {
-		b.WriteString("\nPlan hints:\n- ")
+		b.WriteString("\nFocus areas (topics to cover from prefetch results):\n- ")
 		b.WriteString(strings.Join(planHints, "\n- "))
 		b.WriteString("\n")
 	}
@@ -967,6 +967,13 @@ func buildDomainAnalysisPlanHints(subtasks []activities.Subtask) []string {
 	var out []string
 	for _, st := range subtasks {
 		desc := strings.TrimSpace(st.Description)
+		// Strip trailing "Tools:" clause - check both newline and space patterns
+		for _, pattern := range []string{"\nTools:", " Tools:"} {
+			if idx := strings.Index(desc, pattern); idx > 0 {
+				desc = strings.TrimSpace(desc[:idx])
+				break
+			}
+		}
 		if desc == "" || seen[desc] {
 			continue
 		}
