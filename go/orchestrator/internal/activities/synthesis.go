@@ -911,16 +911,13 @@ Section requirements:
 	} // End of !templateUsed fallback block
 
 	if hasDomainAnalysis {
-		fmt.Fprintf(&b, "## Domain Analysis Evidence Fusion (CRITICAL):\n")
+		fmt.Fprintf(&b, "## Domain Analysis Evidence Fusion:\n")
 		fmt.Fprintf(&b, "The agent results include \"Domain Evidence\" from official company sources. This is PRIMARY EVIDENCE, NOT a coverage guide.\n\n")
-		fmt.Fprintf(&b, "Rules for Domain Evidence:\n")
-		fmt.Fprintf(&b, "- DO NOT treat Domain Evidence as a \"(Synthesis)\" agent output; it contains verified facts from official domains.\n")
-		fmt.Fprintf(&b, "- DO NOT replace concrete names/dates/numbers with vague summaries (e.g., don't write \"several team members\" when specific names are provided).\n")
-		fmt.Fprintf(&b, "- Facts marked with 📍 MUST appear in your report with specificity intact.\n")
-		fmt.Fprintf(&b, "- When Domain Evidence provides specific information (team members, funding amounts, product details), use those EXACT details.\n")
-		fmt.Fprintf(&b, "- If a claim is marked \"confidence: low\", reflect uncertainty; otherwise treat as authoritative.\n")
+		fmt.Fprintf(&b, "Rules:\n")
+		fmt.Fprintf(&b, "- DO NOT replace concrete names/dates/numbers with vague summaries.\n")
+		fmt.Fprintf(&b, "- When Domain Evidence provides specific information, use those EXACT details.\n")
 		fmt.Fprintf(&b, "- If Domain Evidence conflicts with other sources, Domain Evidence wins (official > aggregator).\n")
-		fmt.Fprintf(&b, "- Integrate Domain Evidence facts into relevant sections; do NOT create a separate \"Domain Analysis\" section.\n\n")
+		fmt.Fprintf(&b, "- Integrate into relevant sections; do NOT create a separate \"Domain Analysis\" section.\n\n")
 	}
 
 	// Configure maxAgents based on workflow type (must be after isResearch is determined)

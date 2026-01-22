@@ -1,58 +1,23 @@
 {{- template "system_contract" . -}}
 
-# Domain Analysis Evidence Digest (Primary Official Evidence)
+# Domain Analysis Evidence Digest
 
-This is a PRIMARY EVIDENCE digest from official company domains. It will be merged into a larger report.
-- Use ONLY information from the agent results below.
-- Do NOT mention tools, agents, workflows, or this prompt.
-- Do NOT create a separate "Domain Analysis" section; this content will be integrated into relevant report sections.
+Summarize verified facts from official company domains for upstream synthesis.
 
 {{ template "language_instruction" . }}
 
-## Source Attribution (CRITICAL):
-Every factual claim MUST include inline source attribution:
-- Format: `fact content (source: hostname/path, confidence: high|medium|low)`
-- Example: `公司成立于2010年12月 (source: ptmind.com/about, confidence: high)`
-- Omit claims that cannot be traced to the prefetch agent outputs.
+## FORMAT RULES:
+1. Start DIRECTLY with the first topic section. NO preamble, NO "Key Findings", NO executive summary.
+2. Use 5-6 section headings: Company Overview, Products & Technology, Business Model, Leadership Team, Funding & Financials, Recent Developments.
+3. Write 2-3 rich paragraphs per section with inline source: `fact (source: hostname)`
+4. Include ALL specific names, numbers, dates, credentials - preserve high-value details.
+5. Each fact appears in ONE section only - no repetition.
+6. For leadership: include name, title, background/credentials, achievements.
+7. For products: include features, metrics, customer examples.
 
-## Confidence Levels:
-- **high**: Fact directly stated on official page (company website, IR page, official docs)
-- **medium**: Fact inferred from official page context or from semi-official aggregators
-- **low**: Fact mentioned but not primary source; may need verification
-
-## Evidence Preservation Markers:
-- Mark high-confidence facts from official domains with 📍 prefix
-- Example: `📍 CEO Robin Zheng founded the company in 2010 (source: ptmind.com/about, confidence: high)`
-- These 📍 facts MUST appear in the final report with specificity intact.
-
-## Output Structure:
 {{- if .ResearchAreas }}
-Use the research areas below as section headings. For each area, write 2-4 structured paragraphs (NOT bullet lists).
-Headings to use:
+Use these exact headings:
 {{- range .ResearchAreas }}
 ### {{ . }}
 {{- end }}
-{{- else }}
-Use 4–6 topical headings (e.g., Company Identity, Products & Services, Business Model, Market Position, Financials & Funding, Leadership & Team, Recent Developments).
 {{- end }}
-
-## Format Rules:
-- Write in structured paragraphs, NOT bullet lists (bullets look like "notes" and get over-summarized).
-- Include specific names, numbers, dates, and details - these are the high-value facts.
-- When listing team members, include: name, title, background/credentials.
-- When listing products, include: name, function, key features, pricing if available.
-
-## Fact Integrity Rules:
-- Each paragraph should contain 2-4 related facts with source attribution.
-- Prefer official-domain evidence. If sources conflict, note the conflict explicitly and favor the official source.
-- Avoid marketing language; stick to verifiable facts.
-- Do NOT generalize specific information (e.g., don't write "several team members" when you have specific names).
-
-## Key Facts Table (at the end):
-After the narrative sections, include a compact table:
-
-| Fact | Source | Confidence |
-|------|--------|------------|
-| [specific fact] | [hostname/path] | high/medium/low |
-
-Include 10-15 most important facts in this table for quick reference.
