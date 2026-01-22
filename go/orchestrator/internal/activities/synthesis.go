@@ -393,6 +393,18 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
 	}
+	hasDomainAnalysis := false
+	for _, r := range input.AgentResults {
+		if strings.EqualFold(strings.TrimSpace(r.Role), "domain_analysis") {
+			hasDomainAnalysis = true
+			break
+		}
+		agentID := strings.ToLower(strings.TrimSpace(r.AgentID))
+		if strings.HasPrefix(agentID, "domain_analysis") {
+			hasDomainAnalysis = true
+			break
+		}
+	}
 
 	// LLM-first; fallback to simple synthesis on any failure
 
@@ -898,6 +910,19 @@ Section requirements:
 		}
 	} // End of !templateUsed fallback block
 
+	if hasDomainAnalysis {
+		fmt.Fprintf(&b, "## Domain Analysis Evidence Fusion (CRITICAL):\n")
+		fmt.Fprintf(&b, "The agent results include \"Domain Evidence\" from official company sources. This is PRIMARY EVIDENCE, NOT a coverage guide.\n\n")
+		fmt.Fprintf(&b, "Rules for Domain Evidence:\n")
+		fmt.Fprintf(&b, "- DO NOT treat Domain Evidence as a \"(Synthesis)\" agent output; it contains verified facts from official domains.\n")
+		fmt.Fprintf(&b, "- DO NOT replace concrete names/dates/numbers with vague summaries (e.g., don't write \"several team members\" when specific names are provided).\n")
+		fmt.Fprintf(&b, "- Facts marked with 📍 MUST appear in your report with specificity intact.\n")
+		fmt.Fprintf(&b, "- When Domain Evidence provides specific information (team members, funding amounts, product details), use those EXACT details.\n")
+		fmt.Fprintf(&b, "- If a claim is marked \"confidence: low\", reflect uncertainty; otherwise treat as authoritative.\n")
+		fmt.Fprintf(&b, "- If Domain Evidence conflicts with other sources, Domain Evidence wins (official > aggregator).\n")
+		fmt.Fprintf(&b, "- Integrate Domain Evidence facts into relevant sections; do NOT create a separate \"Domain Analysis\" section.\n\n")
+	}
+
 	// Configure maxAgents based on workflow type (must be after isResearch is determined)
 	maxAgents := 6
 	if isResearch || len(input.AgentResults) > 10 {
@@ -912,8 +937,11 @@ Section requirements:
 
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
 
-	// Prioritize intermediate synthesis results (react-synthesizer, synthesizer agents)
-	// by including them first, then individual agent outputs
+	// Categorize agent results into three buckets:
+	// 1. Domain Evidence (role=domain_analysis) - treated as primary official evidence, NOT synthesis
+	// 2. Synthesis results (agent_id contains synthesis/synthesizer) - coverage guides
+	// 3. Other individual agent outputs
+	var domainEvidenceResults []AgentExecutionResult
 	var synthesisResults []AgentExecutionResult
 	var otherResults []AgentExecutionResult
 
@@ -921,8 +949,10 @@ Section requirements:
 		if !r.Success || r.Response == "" {
 			continue
 		}
-		// Prioritize synthesis/aggregation agents
-		if strings.Contains(strings.ToLower(r.AgentID), "synthesis") ||
+		// Domain Analysis evidence gets special treatment - NOT marked as (Synthesis)
+		if strings.EqualFold(strings.TrimSpace(r.Role), "domain_analysis") {
+			domainEvidenceResults = append(domainEvidenceResults, r)
+		} else if strings.Contains(strings.ToLower(r.AgentID), "synthesis") ||
 			strings.Contains(strings.ToLower(r.AgentID), "synthesizer") {
 			synthesisResults = append(synthesisResults, r)
 		} else {
@@ -930,9 +960,28 @@ Section requirements:
 		}
 	}
 
-	// Include synthesis results first (these contain aggregated insights)
+	// Include Domain Evidence results FIRST (primary official evidence, NOT a coverage guide)
 	count := 0
+	for _, r := range domainEvidenceResults {
+		sanitized := sanitizeAgentOutput(r.Response)
+		// Domain evidence gets triple space (high-value official content)
+		maxDomainEvidenceChars := maxPerAgentChars * 3
+		if len([]rune(sanitized)) > maxDomainEvidenceChars {
+			sanitized = string([]rune(sanitized)[:maxDomainEvidenceChars]) + "..."
+		}
+		// Use "Domain Evidence" header - explicitly NOT "(Synthesis)" to avoid research_comprehensive.tmpl downweighting
+		fmt.Fprintf(&b, "=== Domain Evidence: %s (Official Sources) ===\n%s\n\n", r.AgentID, sanitized)
+		count++
+		if count >= maxAgents {
+			break
+		}
+	}
+
+	// Include synthesis results second (these contain aggregated insights as coverage guides)
 	for _, r := range synthesisResults {
+		if count >= maxAgents {
+			break
+		}
 		// Sanitize agent output to remove duplicate sources/citations
 		sanitized := sanitizeAgentOutput(r.Response)
 		// Apply length cap after sanitization (synthesis results get more space)
@@ -942,9 +991,6 @@ Section requirements:
 		}
 		fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
 		count++
-		if count >= maxAgents {
-			break
-		}
 	}
 
 	// Then include individual agent outputs

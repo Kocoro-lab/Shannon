@@ -16,6 +16,7 @@ import (
 
 type DomainAnalysisInput struct {
 	ParentWorkflowID     string
+	CallerWorkflowID     string
 	Query                string
 	CanonicalName        string
 	DisambiguationTerms  []string
@@ -84,11 +85,20 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 	if workflowID == "" {
 		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	}
+	childWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	rootWorkflowID := input.ParentWorkflowID
+	if rootWorkflowID == "" {
+		rootWorkflowID = workflowID
+	}
 
 	baseContext := cloneContextMap(input.Context)
 	if input.ParentWorkflowID != "" {
 		baseContext["parent_workflow_id"] = input.ParentWorkflowID
 	}
+	if input.CallerWorkflowID != "" {
+		baseContext["caller_workflow_id"] = input.CallerWorkflowID
+	}
+	baseContext["domain_analysis_workflow_id"] = childWorkflowID
 	baseContext["query_type"] = "company"
 	if input.CanonicalName != "" {
 		baseContext["canonical_name"] = input.CanonicalName
@@ -113,6 +123,12 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 	}
 	if len(input.DisambiguationTerms) > 0 {
 		baseContext["disambiguation_terms"] = input.DisambiguationTerms
+	}
+
+	metaBase := map[string]interface{}{
+		"root_workflow_id":            rootWorkflowID,
+		"caller_workflow_id":          input.CallerWorkflowID,
+		"domain_analysis_workflow_id": childWorkflowID,
 	}
 
 	requestedRegions := input.RequestedRegions
@@ -234,6 +250,9 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 		if input.ParentWorkflowID != "" {
 			discoveryContext["parent_workflow_id"] = input.ParentWorkflowID
 		}
+		if input.CallerWorkflowID != "" {
+			discoveryContext["caller_workflow_id"] = input.CallerWorkflowID
+		}
 
 		var allQueries []string
 		for _, s := range searches {
@@ -309,29 +328,28 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				"domain_discovery",
 				fmt.Sprintf("Domain discovery: %s (batch, %d queries)", input.CanonicalName, len(allQueries)),
 				discoveryResult,
-				map[string]interface{}{
+				mergeDomainAnalysisMeta(metaBase, map[string]interface{}{
 					"phase":       "domain_discovery",
 					"batch_mode":  true,
 					"query_count": len(allQueries),
 					"queries":     allQueries,
 					"status":      "failed",
-				},
+				}),
 			)
 		} else {
-			childWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 			persistAgentExecutionLocalWithMeta(
 				ctx,
 				workflowID,
 				"domain_discovery",
 				fmt.Sprintf("Domain discovery: %s (batch, %d queries)", input.CanonicalName, len(allQueries)),
 				discoveryResult,
-				map[string]interface{}{
+				mergeDomainAnalysisMeta(metaBase, map[string]interface{}{
 					"phase":             "domain_discovery",
 					"batch_mode":        true,
 					"query_count":       len(allQueries),
 					"queries":           allQueries,
 					"child_workflow_id": childWorkflowID,
-				},
+				}),
 			)
 
 			searchDomainsAll := searchDomainsFromResults(discoveryResult.ToolExecutions)
@@ -571,13 +589,13 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 					prefetchAgentName,
 					fmt.Sprintf("Domain prefetch: %s", payload.URL),
 					payload.Result,
-					map[string]interface{}{
+					mergeDomainAnalysisMeta(metaBase, map[string]interface{}{
 						"phase":    "domain_prefetch",
 						"url":      payload.URL,
 						"url_role": prefetchURLRole,
 						"index":    payload.Index,
 						"status":   "failed",
-					},
+					}),
 				)
 				continue
 			}
@@ -591,13 +609,13 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 					prefetchAgentName,
 					fmt.Sprintf("Domain prefetch: %s", payload.URL),
 					payload.Result,
-					map[string]interface{}{
+					mergeDomainAnalysisMeta(metaBase, map[string]interface{}{
 						"phase":    "domain_prefetch",
 						"url":      payload.URL,
 						"url_role": prefetchURLRole,
 						"index":    payload.Index,
 						"status":   "failed",
-					},
+					}),
 				)
 				continue
 			}
@@ -613,13 +631,13 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				prefetchAgentName,
 				fmt.Sprintf("Domain prefetch: %s", payload.URL),
 				payload.Result,
-				map[string]interface{}{
+				mergeDomainAnalysisMeta(metaBase, map[string]interface{}{
 					"phase":    "domain_prefetch",
 					"url":      payload.URL,
 					"url_role": prefetchURLRole,
 					"index":    payload.Index,
 					"status":   "ok",
-				},
+				}),
 			)
 
 			if payload.Result.TokensUsed > 0 || payload.Result.InputTokens > 0 || payload.Result.OutputTokens > 0 {
@@ -658,6 +676,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 
 	digestQuery := buildDomainAnalysisDigestQuery(input.Query, input.CanonicalName, input.PlanHints)
 	digestContext := buildDomainAnalysisSynthesisContext(baseContext)
+	digestContext["synthesis_template"] = "domain_analysis_digest"
 
 	var digest activities.SynthesisResult
 	if len(digestAgentResults) > 0 {
@@ -696,7 +715,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				}).Get(recCtx, nil)
 			}
 
-			persistAgentExecutionLocalWithMeta(
+			persistAgentExecutionSyncWithMeta(
 				ctx,
 				workflowID,
 				"domain_analysis_digest",
@@ -709,10 +728,10 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 					Provider:   digest.Provider,
 					Success:    true,
 				},
-				map[string]interface{}{
+				mergeDomainAnalysisMeta(metaBase, map[string]interface{}{
 					"phase":  "domain_analysis_digest",
 					"status": "ok",
-				},
+				}),
 			)
 		}
 	}
@@ -961,7 +980,7 @@ func domainAnalysisDigestResult(result *DomainAnalysisResult) activities.AgentEx
 		return activities.AgentExecutionResult{}
 	}
 	return activities.AgentExecutionResult{
-		AgentID:  "domain_analysis_digest",
+		AgentID:  "domain_analysis_evidence", // NOT "synthesizer" to avoid (Synthesis) tag in upstream prompt
 		Role:     "domain_analysis",
 		Response: result.DigestMarkdown,
 		Success:  true,
@@ -980,4 +999,60 @@ func extractDomainsFromCoverage(coverage []DomainAnalysisCoverage) []string {
 		out = append(out, d)
 	}
 	return out
+}
+
+func mergeDomainAnalysisMeta(base, extra map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{}, len(base)+len(extra))
+	for k, v := range base {
+		if v != nil && v != "" {
+			out[k] = v
+		}
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func persistAgentExecutionSyncWithMeta(ctx workflow.Context, workflowID, agentID, input string, result activities.AgentExecutionResult, extraMeta map[string]interface{}) {
+	logger := workflow.GetLogger(ctx)
+	activityOpts := workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts: 3,
+		},
+	}
+	actCtx := workflow.WithActivityOptions(ctx, activityOpts)
+
+	state := "COMPLETED"
+	if !result.Success {
+		state = "FAILED"
+	}
+
+	metadata := map[string]interface{}{
+		"workflow": "research",
+		"strategy": "react",
+	}
+	for k, v := range extraMeta {
+		metadata[k] = v
+	}
+
+	err := workflow.ExecuteActivity(actCtx,
+		activities.PersistAgentExecutionStandalone,
+		activities.PersistAgentExecutionInput{
+			WorkflowID: workflowID,
+			AgentID:    agentID,
+			Input:      input,
+			Output:     result.Response,
+			State:      state,
+			TokensUsed: result.TokensUsed,
+			ModelUsed:  result.ModelUsed,
+			DurationMs: result.DurationMs,
+			Error:      result.Error,
+			Metadata:   metadata,
+		},
+	).Get(actCtx, nil)
+	if err != nil {
+		logger.Warn("Failed to persist agent execution", "agent_id", agentID, "error", err)
+	}
 }
