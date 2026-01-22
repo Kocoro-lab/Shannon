@@ -4538,10 +4538,24 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	// Set synthesis style to comprehensive for research workflows
 	baseContext["synthesis_style"] = "comprehensive"
 	baseContext["research_areas_count"] = len(refineResult.ResearchAreas)
-	// Synthesis tier: allow override via synthesis_model_tier; fallback to medium (gpt-5-mini)
+
+	// Synthesis tier: use large for deep/academic strategies, medium otherwise
+	// This ensures higher quality synthesis output for intensive research modes
 	synthTier := "medium"
 	if v, ok := baseContext["synthesis_model_tier"].(string); ok && strings.TrimSpace(v) != "" {
+		// Explicit override takes precedence
 		synthTier = strings.ToLower(strings.TrimSpace(v))
+	} else {
+		// Auto-select large tier for standard/deep/academic research strategies
+		if strategy, ok := baseContext["research_strategy"].(string); ok {
+			switch strings.ToLower(strategy) {
+			case "standard", "deep", "academic":
+				synthTier = "large"
+				logger.Info("Using large model tier for synthesis",
+					"strategy", strategy,
+				)
+			}
+		}
 	}
 	baseContext["model_tier"] = synthTier
 

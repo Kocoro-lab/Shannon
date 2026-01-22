@@ -1060,7 +1060,7 @@ Section requirements:
 	// Timeout based on research mode: deep research needs more time for large context
 	timeout := 180 * time.Second // Default: 3 minutes (non-research)
 	if isResearch {
-		timeout = 300 * time.Second // 5 minutes for all research syntheses (temporarily increased for testing)
+		timeout = 420 * time.Second // 7 minutes for research syntheses (increased from 5 to reduce fallback rate)
 	}
 
 	httpClient := &http.Client{
@@ -1728,8 +1728,10 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 		return SynthesisResult{}, fmt.Errorf("no successful agent results")
 	}
 
-	// Combine results without exposing internal details
+	// Combine results and sanitize internal format markers
+	// This prevents exposing internal design patterns to end users
 	finalResult := strings.Join(resultParts, "\n\n")
+	finalResult = sanitizeInternalFormat(finalResult)
 
 	// Estimate cost if not already calculated
 	if totalInputTokens > 0 && totalOutputTokens > 0 && modelUsed != "" {
@@ -1840,4 +1842,109 @@ func countInlineCitations(text string) int {
 		seen[m] = true
 	}
 	return len(seen)
+}
+
+// sanitizeInternalFormat removes internal format markers from fallback synthesis output.
+// This prevents exposing internal design patterns (like "# PART 1 - RETRIEVED INFORMATION")
+// to end users when LLM synthesis fails and falls back to simple concatenation.
+func sanitizeInternalFormat(text string) string {
+	if text == "" {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	var result []string
+	var currentSection []string
+	sectionCount := 0
+
+	// Patterns to detect and transform
+	partPattern := regexp.MustCompile(`(?i)^#\s*PART\s*\d+\s*[-–—]\s*(RETRIEVED INFORMATION|NOTES|ANALYSIS|FINDINGS)`)
+	sourcePattern := regexp.MustCompile(`(?i)^##\s*Source\s*\d+:\s*(https?://\S+)\s*[-–—]\s*(HIGH|MEDIUM|LOW)\s*RELEVANCE`)
+	sourceSimplePattern := regexp.MustCompile(`(?i)^##\s*Source\s*\d+:\s*`)
+	relevanceTagPattern := regexp.MustCompile(`\s*[-–—]\s*(HIGH|MEDIUM|LOW)\s*RELEVANCE\s*$`)
+
+	flushSection := func() {
+		if len(currentSection) > 0 {
+			// Add section header for non-first sections
+			if sectionCount > 0 {
+				result = append(result, "---")
+				result = append(result, "")
+			}
+			result = append(result, currentSection...)
+			currentSection = nil
+			sectionCount++
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip internal PART headers entirely
+		if partPattern.MatchString(trimmed) {
+			flushSection()
+			continue
+		}
+
+		// Transform "## Source N: URL - RELEVANCE" to cleaner format
+		if sourcePattern.MatchString(trimmed) || sourceSimplePattern.MatchString(trimmed) {
+			// Remove relevance tags and simplify
+			cleaned := relevanceTagPattern.ReplaceAllString(trimmed, "")
+			// Keep the source header but cleaner
+			if cleaned != trimmed {
+				currentSection = append(currentSection, cleaned)
+			} else {
+				currentSection = append(currentSection, line)
+			}
+			continue
+		}
+
+		// Keep other lines as-is
+		currentSection = append(currentSection, line)
+	}
+
+	// Flush remaining section
+	flushSection()
+
+	// Join and clean up excessive blank lines
+	output := strings.Join(result, "\n")
+
+	// Remove more than 2 consecutive newlines
+	multiNewline := regexp.MustCompile(`\n{3,}`)
+	output = multiNewline.ReplaceAllString(output, "\n\n")
+
+	// Add a user-friendly header if the output doesn't start with a heading
+	output = strings.TrimSpace(output)
+	if output != "" && !strings.HasPrefix(output, "#") {
+		// Detect language from content
+		header := "## Research Findings"
+		if containsChinese(output) {
+			header = "## 研究发现"
+		} else if containsJapanese(output) {
+			header = "## 調査結果"
+		}
+		output = header + "\n\n" + output
+	}
+
+	return output
+}
+
+// containsChinese checks if text contains Chinese characters
+func containsChinese(text string) bool {
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
+// containsJapanese checks if text contains Japanese-specific characters (hiragana/katakana)
+func containsJapanese(text string) bool {
+	for _, r := range text {
+		// Hiragana: 0x3040-0x309F, Katakana: 0x30A0-0x30FF
+		if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
+			return true
+		}
+	}
+	return false
 }
