@@ -26,6 +26,7 @@ func NewPersistenceActivities(dbClient *db.Client, logger *zap.Logger) *Persiste
 
 // PersistAgentExecutionInput contains data to persist for an agent execution
 type PersistAgentExecutionInput struct {
+	ID         string                 `json:"id,omitempty"` // Optional pre-generated ID for correlation with tool executions
 	WorkflowID string                 `json:"workflow_id"`
 	AgentID    string                 `json:"agent_id"`
 	Input      string                 `json:"input"`
@@ -112,8 +113,14 @@ func (p *PersistenceActivities) PersistAgentExecution(ctx context.Context, input
 		}
 	}
 
+	// Use pre-generated ID if provided, otherwise generate new one
+	agentID := input.ID
+	if agentID == "" {
+		agentID = uuid.New().String()
+	}
+
 	agentExec := &db.AgentExecution{
-		ID:           uuid.New().String(),
+		ID:           agentID,
 		WorkflowID:   input.WorkflowID,
 		TaskID:       input.WorkflowID, // Use workflow ID as task ID
 		AgentID:      input.AgentID,
@@ -159,16 +166,17 @@ func (p *PersistenceActivities) PersistAgentExecution(ctx context.Context, input
 
 // PersistToolExecutionInput contains data to persist for a tool execution
 type PersistToolExecutionInput struct {
-	WorkflowID     string                 `json:"workflow_id"`
-	AgentID        string                 `json:"agent_id"`
-	ToolName       string                 `json:"tool_name"`
-	InputParams    map[string]interface{} `json:"input_params"`
-	Output         string                 `json:"output"`
-	Success        bool                   `json:"success"`
-	TokensConsumed int                    `json:"tokens_consumed"`
-	DurationMs     int64                  `json:"duration_ms"`
-	Error          string                 `json:"error,omitempty"`
-	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	WorkflowID       string                 `json:"workflow_id"`
+	AgentID          string                 `json:"agent_id"`
+	AgentExecutionID string                 `json:"agent_execution_id,omitempty"` // Links to agent_executions.id
+	ToolName         string                 `json:"tool_name"`
+	InputParams      map[string]interface{} `json:"input_params"`
+	Output           string                 `json:"output"`
+	Success          bool                   `json:"success"`
+	TokensConsumed   int                    `json:"tokens_consumed"`
+	DurationMs       int64                  `json:"duration_ms"`
+	Error            string                 `json:"error,omitempty"`
+	Metadata         map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // PersistToolExecution persists a tool execution to the database
@@ -184,19 +192,26 @@ func (p *PersistenceActivities) PersistToolExecution(ctx context.Context, input 
 		zap.String("tool_name", input.ToolName),
 	)
 
+	// Set AgentExecutionID if provided
+	var agentExecID *string
+	if input.AgentExecutionID != "" {
+		agentExecID = &input.AgentExecutionID
+	}
+
 	toolExec := &db.ToolExecution{
-		ID:             uuid.New().String(),
-		WorkflowID:     input.WorkflowID,
-		AgentID:        input.AgentID,
-		ToolName:       input.ToolName,
-		InputParams:    input.InputParams,
-		Output:         input.Output,
-		Success:        input.Success,
-		TokensConsumed: input.TokensConsumed,
-		DurationMs:     input.DurationMs,
-		Error:          input.Error,
-		Metadata:       input.Metadata,
-		CreatedAt:      time.Now(),
+		ID:               uuid.New().String(),
+		WorkflowID:       input.WorkflowID,
+		AgentID:          input.AgentID,
+		AgentExecutionID: agentExecID,
+		ToolName:         input.ToolName,
+		InputParams:      input.InputParams,
+		Output:           input.Output,
+		Success:          input.Success,
+		TokensConsumed:   input.TokensConsumed,
+		DurationMs:       input.DurationMs,
+		Error:            input.Error,
+		Metadata:         input.Metadata,
+		CreatedAt:        time.Now(),
 	}
 
 	// Queue the write

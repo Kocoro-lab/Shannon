@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -324,10 +325,17 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 		persistCtx := workflow.WithActivityOptions(ctx, persistOpts)
 
+		// Pre-generate agent execution ID using SideEffect for replay safety
+		var agentExecutionID string
+		workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+			return uuid.New().String()
+		}).Get(&agentExecutionID)
+
 		// Persist agent execution
 		_ = workflow.ExecuteActivity(persistCtx,
 			activities.PersistAgentExecutionStandalone,
 			activities.PersistAgentExecutionInput{
+				ID:         agentExecutionID,
 				WorkflowID: workflowID,
 				AgentID:    agentName,
 				Input:      input.Query,
@@ -360,15 +368,21 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				}
 			}
 
+			// Extract input params from tool execution
+			inputParamsMap, _ := tool.InputParams.(map[string]interface{})
+
 			_ = workflow.ExecuteActivity(persistCtx,
 				activities.PersistToolExecutionStandalone,
 				activities.PersistToolExecutionInput{
-					WorkflowID: workflowID,
-					AgentID:    agentName,
-					ToolName:   tool.Tool,
-					Output:     outputStr,
-					Success:    tool.Success,
-					Error:      tool.Error,
+					WorkflowID:       workflowID,
+					AgentID:          agentName,
+					AgentExecutionID: agentExecutionID,
+					ToolName:         tool.Tool,
+					InputParams:      inputParamsMap,
+					Output:           outputStr,
+					Success:          tool.Success,
+					DurationMs:       tool.DurationMs,
+					Error:            tool.Error,
 				}).Get(ctx, nil)
 		}
 	}

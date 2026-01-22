@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -6452,6 +6453,12 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 	}
 	detachedCtx = workflow.WithActivityOptions(detachedCtx, activityOpts)
 
+	// Pre-generate agent execution ID using SideEffect for replay safety
+	var agentExecutionID string
+	workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+		return uuid.New().String()
+	}).Get(&agentExecutionID)
+
 	// Determine state based on success
 	state := "COMPLETED"
 	if !result.Success {
@@ -6462,6 +6469,7 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 	workflow.ExecuteActivity(detachedCtx,
 		activities.PersistAgentExecutionStandalone,
 		activities.PersistAgentExecutionInput{
+			ID:         agentExecutionID,
 			WorkflowID: workflowID,
 			AgentID:    agentID,
 			Input:      input,
@@ -6496,19 +6504,23 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 				}
 			}
 
+			// Extract input params from tool execution
+			inputParamsMap, _ := tool.InputParams.(map[string]interface{})
+
 			workflow.ExecuteActivity(
 				detachedCtx,
 				activities.PersistToolExecutionStandalone,
 				activities.PersistToolExecutionInput{
-					WorkflowID:     workflowID,
-					AgentID:        agentID,
-					ToolName:       tool.Tool,
-					InputParams:    nil, // Tool execution from agent doesn't provide input params
-					Output:         outputStr,
-					Success:        tool.Success,
-					TokensConsumed: 0,               // Not provided by agent
-					DurationMs:     tool.DurationMs, // From agent-core proto
-					Error:          tool.Error,
+					WorkflowID:       workflowID,
+					AgentID:          agentID,
+					AgentExecutionID: agentExecutionID,
+					ToolName:         tool.Tool,
+					InputParams:      inputParamsMap,
+					Output:           outputStr,
+					Success:          tool.Success,
+					TokensConsumed:   0,               // Not provided by agent
+					DurationMs:       tool.DurationMs, // From agent-core proto
+					Error:            tool.Error,
 				},
 			)
 		}
@@ -6537,6 +6549,12 @@ func persistAgentExecutionLocalWithMeta(ctx workflow.Context, workflowID, agentI
 	}
 	detachedCtx = workflow.WithActivityOptions(detachedCtx, activityOpts)
 
+	// Pre-generate agent execution ID using SideEffect for replay safety
+	var agentExecutionID string
+	workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+		return uuid.New().String()
+	}).Get(&agentExecutionID)
+
 	// Determine state based on success
 	state := "COMPLETED"
 	if !result.Success {
@@ -6556,6 +6574,7 @@ func persistAgentExecutionLocalWithMeta(ctx workflow.Context, workflowID, agentI
 	workflow.ExecuteActivity(detachedCtx,
 		activities.PersistAgentExecutionStandalone,
 		activities.PersistAgentExecutionInput{
+			ID:         agentExecutionID,
 			WorkflowID: workflowID,
 			AgentID:    agentID,
 			Input:      input,
@@ -6587,19 +6606,23 @@ func persistAgentExecutionLocalWithMeta(ctx workflow.Context, workflowID, agentI
 				}
 			}
 
+			// Extract input params from tool execution
+			inputParamsMap, _ := tool.InputParams.(map[string]interface{})
+
 			workflow.ExecuteActivity(
 				detachedCtx,
 				activities.PersistToolExecutionStandalone,
 				activities.PersistToolExecutionInput{
-					WorkflowID:     workflowID,
-					AgentID:        agentID,
-					ToolName:       tool.Tool,
-					InputParams:    nil,
-					Output:         outputStr,
-					Success:        tool.Success,
-					TokensConsumed: 0,
-					DurationMs:     tool.DurationMs,
-					Error:          tool.Error,
+					WorkflowID:       workflowID,
+					AgentID:          agentID,
+					AgentExecutionID: agentExecutionID,
+					ToolName:         tool.Tool,
+					InputParams:      inputParamsMap,
+					Output:           outputStr,
+					Success:          tool.Success,
+					TokensConsumed:   0,
+					DurationMs:       tool.DurationMs,
+					Error:            tool.Error,
 				},
 			)
 		}

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -883,6 +884,12 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					}).Get(ctx, nil)
 				}
 				// Persist agent execution (fire-and-forget)
+				// Pre-generate agent execution ID using SideEffect for replay safety
+				var agentExecutionID string
+				workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+					return uuid.New().String()
+				}).Get(&agentExecutionID)
+
 				state := "COMPLETED"
 				if !res.Success {
 					state = "FAILED"
@@ -892,6 +899,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					persistCtx,
 					activities.PersistAgentExecutionStandalone,
 					activities.PersistAgentExecutionInput{
+						ID:         agentExecutionID,
 						WorkflowID: workflowID,
 						AgentID:    agentName,
 						Input:      st.Description,
@@ -921,19 +929,23 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 								outputStr = string(b)
 							}
 						}
+						// Extract input params from tool execution
+						inputParamsMap, _ := texec.InputParams.(map[string]interface{})
+
 						workflow.ExecuteActivity(
 							persistCtx,
 							activities.PersistToolExecutionStandalone,
 							activities.PersistToolExecutionInput{
-								WorkflowID:     workflowID,
-								AgentID:        agentName,
-								ToolName:       texec.Tool,
-								InputParams:    st.ToolParameters,
-								Output:         outputStr,
-								Success:        texec.Success,
-								TokensConsumed: 0,
-								DurationMs:     texec.DurationMs,
-								Error:          texec.Error,
+								WorkflowID:       workflowID,
+								AgentID:          agentName,
+								AgentExecutionID: agentExecutionID,
+								ToolName:         texec.Tool,
+								InputParams:      inputParamsMap,
+								Output:           outputStr,
+								Success:          texec.Success,
+								TokensConsumed:   0,
+								DurationMs:       texec.DurationMs,
+								Error:            texec.Error,
 								Metadata: map[string]interface{}{
 									"workflow": "supervisor",
 									"task_id":  st.ID,

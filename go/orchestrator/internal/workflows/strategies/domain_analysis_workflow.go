@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/agents"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
@@ -1032,6 +1034,12 @@ func persistAgentExecutionSyncWithMeta(ctx workflow.Context, workflowID, agentID
 	}
 	actCtx := workflow.WithActivityOptions(ctx, activityOpts)
 
+	// Pre-generate agent execution ID using SideEffect for replay safety
+	var agentExecutionID string
+	workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+		return uuid.New().String()
+	}).Get(&agentExecutionID)
+
 	state := "COMPLETED"
 	if !result.Success {
 		state = "FAILED"
@@ -1048,6 +1056,7 @@ func persistAgentExecutionSyncWithMeta(ctx workflow.Context, workflowID, agentID
 	err := workflow.ExecuteActivity(actCtx,
 		activities.PersistAgentExecutionStandalone,
 		activities.PersistAgentExecutionInput{
+			ID:         agentExecutionID,
 			WorkflowID: workflowID,
 			AgentID:    agentID,
 			Input:      input,
