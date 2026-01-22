@@ -2293,6 +2293,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	if workflowID == "" {
 		workflowID = workflow.GetInfo(ctx).WorkflowExecution.ID
 	}
+	callerWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
@@ -2640,9 +2641,37 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	var domainPrefetchResults []activities.AgentExecutionResult
 	domainPrefetchTokens := 0
 	var domainAnalysisResult *DomainAnalysisResult
+	var domainAnalysisFuture workflow.ChildWorkflowFuture
+	domainAnalysisStarted := false
+	var domainAnalysisSubtasks []activities.Subtask
+	var executionSubtasks []activities.Subtask
 
-	domainAnalysisWorkflowVersion := workflow.GetVersion(ctx, "domain_analysis_workflow_v1", workflow.DefaultVersion, 1)
-	if domainAnalysisWorkflowVersion >= 1 && strings.EqualFold(refineResult.QueryType, "company") {
+	domainAnalysisWorkflowVersion := workflow.GetVersion(ctx, "domain_analysis_workflow_v1", workflow.DefaultVersion, 2)
+	if domainAnalysisWorkflowVersion >= 2 {
+		for _, subtask := range decomp.Subtasks {
+			if strings.EqualFold(strings.TrimSpace(subtask.TaskType), "domain_analysis") {
+				domainAnalysisSubtasks = append(domainAnalysisSubtasks, subtask)
+			} else {
+				executionSubtasks = append(executionSubtasks, subtask)
+			}
+		}
+		if len(domainAnalysisSubtasks) > 0 {
+			ids := make([]string, 0, len(domainAnalysisSubtasks))
+			for _, st := range domainAnalysisSubtasks {
+				if st.ID != "" {
+					ids = append(ids, st.ID)
+				}
+			}
+			logger.Info("Detected domain analysis system subtask(s)",
+				"count", len(domainAnalysisSubtasks),
+				"ids", ids,
+			)
+		}
+		if len(executionSubtasks) != len(decomp.Subtasks) {
+			decomp.Subtasks = executionSubtasks
+		}
+	}
+	if domainAnalysisWorkflowVersion >= 1 && domainAnalysisWorkflowVersion < 2 && strings.EqualFold(refineResult.QueryType, "company") {
 		enabled := true
 		if v, ok := baseContext["enable_domain_analysis"].(bool); ok {
 			enabled = v
@@ -2664,6 +2693,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 			var childResult DomainAnalysisResult
 			err := workflow.ExecuteChildWorkflow(ctx, DomainAnalysisWorkflow, DomainAnalysisInput{
 				ParentWorkflowID:     workflowID,
+				CallerWorkflowID:     callerWorkflowID,
 				Query:                input.Query,
 				CanonicalName:        refineResult.CanonicalName,
 				DisambiguationTerms:  refineResult.DisambiguationTerms,
@@ -3481,6 +3511,80 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
+	if domainAnalysisWorkflowVersion >= 2 && strings.EqualFold(refineResult.QueryType, "company") {
+		enabled := true
+		if v, ok := baseContext["enable_domain_analysis"].(bool); ok {
+			enabled = v
+		} else if v, ok := baseContext["enable_domain_prefetch"].(bool); ok {
+			enabled = v
+		}
+		if mode, ok := baseContext["domain_analysis_mode"].(string); ok && strings.EqualFold(strings.TrimSpace(mode), "off") {
+			enabled = false
+		}
+
+		if enabled {
+			if len(domainAnalysisSubtasks) == 0 {
+				logger.Warn("Domain analysis subtask missing; skipping domain analysis")
+			} else {
+				if len(domainAnalysisSubtasks) > 1 {
+					logger.Warn("Multiple domain analysis subtasks found; only the first will run",
+						"count", len(domainAnalysisSubtasks),
+					)
+				}
+
+				requestedRegions := prefetchRegionsFromContext(baseContext)
+				if len(requestedRegions) == 0 {
+					requestedRegions = prefetchRegionsFromQuery(input.Query)
+				}
+				planHints := buildDomainAnalysisPlanHints(executionSubtasks)
+				domainAnalysisMode, _ := baseContext["domain_analysis_mode"].(string)
+
+				childCtx := ctx
+				domainAnalysisWorkflowID := ""
+				if stID := strings.TrimSpace(domainAnalysisSubtasks[0].ID); stID != "" {
+					domainAnalysisWorkflowID = fmt.Sprintf("%s-domain-analysis-%s", callerWorkflowID, stID)
+					childCtx = workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+						WorkflowID: domainAnalysisWorkflowID,
+					})
+				}
+
+				domainAnalysisFuture = workflow.ExecuteChildWorkflow(childCtx, DomainAnalysisWorkflow, DomainAnalysisInput{
+					ParentWorkflowID:     workflowID,
+					CallerWorkflowID:     callerWorkflowID,
+					Query:                input.Query,
+					CanonicalName:        refineResult.CanonicalName,
+					DisambiguationTerms:  refineResult.DisambiguationTerms,
+					ResearchAreas:        refineResult.ResearchAreas,
+					ResearchDimensions:   refineResult.ResearchDimensions,
+					OfficialDomains:      refineResult.OfficialDomains,
+					ExactQueries:         refineResult.ExactQueries,
+					TargetLanguages:      refineResult.TargetLanguages,
+					LocalizationNeeded:   refineResult.LocalizationNeeded,
+					PrefetchSubpageLimit: refineResult.PrefetchSubpageLimit,
+					RequestedRegions:     requestedRegions,
+					PlanHints:            planHints,
+					Context:              baseContext,
+					UserID:               input.UserID,
+					SessionID:            input.SessionID,
+					History:              input.History,
+					DomainAnalysisMode:   domainAnalysisMode,
+				})
+				domainAnalysisStarted = true
+				if domainAnalysisWorkflowID != "" {
+					logger.Info("Domain analysis child workflow scheduled",
+						"domain_analysis_workflow_id", domainAnalysisWorkflowID,
+					)
+					emitTaskUpdatePayload(ctx, input, activities.StreamEventProgress, "domain_analysis",
+						"Domain analysis started",
+						map[string]interface{}{
+							"domain_analysis_workflow_id": domainAnalysisWorkflowID,
+						},
+					)
+				}
+			}
+		}
+	}
+
 	// Step 2: Execute based on complexity
 	if decomp.ComplexityScore < 0.5 || len(decomp.Subtasks) <= 1 {
 		// Simple research - use React pattern for step-by-step exploration
@@ -4099,13 +4203,45 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
+	if domainAnalysisStarted {
+		var childResult DomainAnalysisResult
+		err := domainAnalysisFuture.Get(ctx, &childResult)
+		if err != nil {
+			logger.Warn("Domain analysis workflow failed", "error", err)
+		} else {
+			domainAnalysisResult = &childResult
+			logger.Info("Domain analysis workflow completed",
+				"digest_len", len(childResult.DigestMarkdown),
+				"prefetch_urls", len(childResult.PrefetchURLs),
+				"citations", len(childResult.Citations),
+				"digest_tokens", childResult.Stats.DigestTokensUsed,
+			)
+			if len(childResult.OfficialDomainsSelected) > 0 {
+				domains := extractDomainsFromCoverage(childResult.OfficialDomainsSelected)
+				if len(domains) > 0 {
+					baseContext["official_domains"] = domains
+					baseContext["official_domains_source"] = "domain_analysis"
+				}
+			}
+		}
+	}
+
 	// Merge domain analysis digest (v1) or legacy prefetch evidence before localized search and gap analysis.
 	if domainAnalysisResult != nil && strings.TrimSpace(domainAnalysisResult.DigestMarkdown) != "" {
+		logger.Info("Merging domain analysis digest into agent results",
+			"digest_len", len(domainAnalysisResult.DigestMarkdown),
+		)
 		agentResults = append([]activities.AgentExecutionResult{domainAnalysisDigestResult(domainAnalysisResult)}, agentResults...)
 		if domainAnalysisResult.Stats.DigestTokensUsed > 0 {
 			totalTokens += domainAnalysisResult.Stats.DigestTokensUsed
 		}
-	} else if len(domainPrefetchResults) > 0 {
+	} else if domainAnalysisResult != nil {
+		logger.Warn("Domain analysis completed but DigestMarkdown is empty",
+			"prefetch_urls", len(domainAnalysisResult.PrefetchURLs),
+			"digest_tokens", domainAnalysisResult.Stats.DigestTokensUsed,
+		)
+	}
+	if domainAnalysisResult == nil && len(domainPrefetchResults) > 0 {
 		agentResults = append(domainPrefetchResults, agentResults...)
 		totalTokens += domainPrefetchTokens
 	}
