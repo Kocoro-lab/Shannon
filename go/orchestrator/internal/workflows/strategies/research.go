@@ -636,6 +636,10 @@ func buildDomainDiscoverySearches(canonicalName string, disambiguationTerms []st
 		if containsCultureTopic(researchAreas) {
 			add("careers", fmt.Sprintf("%s careers", name))
 		}
+		// Sub-entity (products/subsidiaries) search
+		if containsSubEntityTopic(researchAreas) {
+			add("subentities", fmt.Sprintf("%s products subsidiaries brands official", name))
+		}
 		// Product hints from refiner (search grounding)
 		productHints := extractProductHints(officialDomains, canonicalName)
 		if len(productHints) > maxProductHints {
@@ -725,6 +729,24 @@ func containsCultureTopic(areas []string) bool {
 	for _, area := range areas {
 		areaLower := strings.ToLower(area)
 		for _, kw := range cultureKeywords {
+			if strings.Contains(areaLower, kw) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// containsSubEntityTopic checks if research areas include product/subsidiary/brand topics.
+func containsSubEntityTopic(areas []string) bool {
+	subEntityKeywords := []string{
+		"product", "products", "subsidiary", "subsidiaries", "brand", "brands",
+		"portfolio", "offerings", "service", "services", "division", "divisions",
+		"business unit", "affiliate", "affiliates", "owned", "acquisition",
+	}
+	for _, area := range areas {
+		areaLower := strings.ToLower(area)
+		for _, kw := range subEntityKeywords {
 			if strings.Contains(areaLower, kw) {
 				return true
 			}
@@ -2707,6 +2729,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				PrefetchSubpageLimit: refineResult.PrefetchSubpageLimit,
 				RequestedRegions:     requestedRegions,
 				PlanHints:            planHints,
+				SubtaskDescription:   "", // v1 path has no decompose subtask
 				Context:              baseContext,
 				UserID:               input.UserID,
 				SessionID:            input.SessionID,
@@ -3564,6 +3587,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					PrefetchSubpageLimit: refineResult.PrefetchSubpageLimit,
 					RequestedRegions:     requestedRegions,
 					PlanHints:            planHints,
+					SubtaskDescription:   strings.TrimSpace(domainAnalysisSubtasks[0].Description),
 					Context:              baseContext,
 					UserID:               input.UserID,
 					SessionID:            input.SessionID,

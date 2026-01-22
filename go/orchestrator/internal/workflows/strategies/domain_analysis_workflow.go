@@ -31,6 +31,7 @@ type DomainAnalysisInput struct {
 	PrefetchSubpageLimit int
 	RequestedRegions     []string
 	PlanHints            []string
+	SubtaskDescription   string // Description from domain_analysis decompose subtask
 	Context              map[string]interface{}
 	UserID               string
 	SessionID            string
@@ -203,7 +204,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 			}
 			var topicSearches []domainDiscoverySearch
 			for _, s := range searches {
-				if s.Key == "ir" || s.Key == "docs" || s.Key == "careers" || strings.HasPrefix(s.Key, "product_") {
+				if s.Key == "ir" || s.Key == "docs" || s.Key == "careers" || s.Key == "subentities" || strings.HasPrefix(s.Key, "product_") {
 					topicSearches = append(topicSearches, s)
 				}
 			}
@@ -216,7 +217,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 		if domainAnalysisVersion >= 1 && len(requestedRegions) == 0 && !intent.MultinationalDefault {
 			var filteredSearches []domainDiscoverySearch
 			for _, s := range searches {
-				if s.Key == "ir" || s.Key == "docs" || s.Key == "careers" ||
+				if s.Key == "ir" || s.Key == "docs" || s.Key == "careers" || s.Key == "subentities" ||
 					strings.HasPrefix(s.Key, "product_") ||
 					s.Key == "primary" || s.Key == "global" ||
 					s.Key == originRegion {
@@ -283,6 +284,10 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 			"Original query: %s\n"+
 			"Find official domains most relevant to answering this query.\n",
 			input.Query)
+
+		if desc := strings.TrimSpace(input.SubtaskDescription); desc != "" {
+			discoveryQuery += fmt.Sprintf("Subtask focus: %s\n", desc)
+		}
 
 		if len(input.ResearchAreas) > 0 {
 			focusCategories := classifyFocusCategories(input.ResearchAreas)
