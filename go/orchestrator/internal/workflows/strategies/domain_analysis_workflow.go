@@ -387,11 +387,25 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				}
 
 				seenAll := make(map[string]bool)
+				var filteredOut []string
 				for _, d := range llmDomains {
 					if isGrounded(d) && !seenAll[d] {
 						seenAll[d] = true
 						allDiscovered = append(allDiscovered, d)
+					} else if !seenAll[d] {
+						filteredOut = append(filteredOut, d)
 					}
+				}
+
+				// Log grounding results for debugging
+				if len(filteredOut) > 0 {
+					logger.Warn("Domain grounding filtered out LLM domains",
+						"canonical_name", input.CanonicalName,
+						"llm_domains", llmDomains,
+						"grounded_domains", allDiscovered,
+						"filtered_out", filteredOut,
+						"search_result_domains", searchDomainsAll,
+					)
 				}
 			}
 
