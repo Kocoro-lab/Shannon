@@ -170,6 +170,16 @@ class WebSubpageFetchTool(Tool):
                 required=False,
             ),
             ToolParameter(
+                name="target_paths",
+                type=ToolParameterType.ARRAY,
+                description=(
+                    "List of URL paths to prioritize. Examples: "
+                    "[\"/about\", \"/team\", \"/investors\", \"/docs\"]. "
+                    "Matches exact paths or subpaths; can include full URLs (path will be extracted)."
+                ),
+                required=False,
+            ),
+            ToolParameter(
                 name="max_length",
                 type=ToolParameterType.INTEGER,
                 description="Maximum content length per page in characters",
@@ -187,6 +197,14 @@ class WebSubpageFetchTool(Tool):
         url = kwargs.get("url")
         limit = kwargs.get("limit", DEFAULT_LIMIT)
         target_keywords = kwargs.get("target_keywords", "")
+        raw_target_paths = kwargs.get("target_paths") or []
+        if isinstance(raw_target_paths, str):
+            target_paths = [raw_target_paths]
+        elif isinstance(raw_target_paths, list):
+            target_paths = raw_target_paths
+        else:
+            target_paths = []
+        target_paths = [p for p in target_paths if isinstance(p, str)]
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
 
         if not url:
@@ -226,7 +244,9 @@ class WebSubpageFetchTool(Tool):
         # Execute with Firecrawl (primary) or fallback
         if self.firecrawl_available:
             try:
-                result, scrape_meta = await self._map_and_scrape(url, limit, target_keywords, max_length)
+                result, scrape_meta = await self._map_and_scrape(
+                    url, limit, target_keywords, target_paths, max_length
+                )
                 return ToolResult(
                     success=True,
                     output=result,
@@ -244,7 +264,9 @@ class WebSubpageFetchTool(Tool):
         # Fallback: Exa with subpages (if available)
         if self.exa_api_key:
             try:
-                result = await self._fetch_with_exa(url, limit, target_keywords, max_length)
+                result = await self._fetch_with_exa(
+                    url, limit, target_keywords, target_paths, max_length
+                )
                 return ToolResult(
                     success=True,
                     output=result,
@@ -316,16 +338,64 @@ class WebSubpageFetchTool(Tool):
 
         return expanded
 
+    def _normalize_target_paths(self, target_paths: List[str]) -> List[str]:
+        """Normalize target paths for matching."""
+        if not target_paths:
+            return []
+
+        normalized: List[str] = []
+        seen: set = set()
+
+        for raw in target_paths:
+            if not raw:
+                continue
+            path = raw.strip()
+            if not path:
+                continue
+            if "://" in path:
+                parsed = urlparse(path)
+                path = parsed.path or ""
+            else:
+                path = path.split("?", 1)[0].split("#", 1)[0]
+
+            if not path.startswith("/"):
+                path = "/" + path
+            if path != "/":
+                path = path.rstrip("/")
+            path = path.lower()
+
+            if path and path not in seen:
+                seen.add(path)
+                normalized.append(path)
+
+        return normalized
+
+    def _matches_target_paths(self, path: str, target_paths: List[str]) -> bool:
+        if not target_paths:
+            return False
+        if not path:
+            path = "/"
+        for target in target_paths:
+            if target == "/":
+                if path in ("", "/"):
+                    return True
+                continue
+            if path == target or path.startswith(target + "/"):
+                return True
+        return False
+
     def _calculate_relevance_score(
         self,
         url: str,
         target_keywords: str,
-        total_pages: int
+        total_pages: int,
+        target_paths: Optional[List[str]] = None
     ) -> float:
         """
         Calculate relevance score for a URL (0.0-1.0).
 
         Scoring factors:
+        - Target paths match: 0.5 weight (explicit path priority)
         - Target keywords match: 0.4 weight (user-specified priority)
         - High-value paths (blog/news/press): 0.25 weight (content-rich pages)
         - Base keywords match: 0.15 weight (common important pages)
@@ -335,7 +405,13 @@ class WebSubpageFetchTool(Tool):
         score = 0.0
         parsed = urlparse(url)
         path = parsed.path.lower().rstrip("/")
+        if not path:
+            path = "/"
         path_segments = path.split("/")
+        target_paths = target_paths or []
+
+        if target_paths and self._matches_target_paths(path, target_paths):
+            score += 0.5
 
         # 1. Target keywords match (0.4 weight) - highest priority
         if target_keywords:
@@ -430,6 +506,7 @@ class WebSubpageFetchTool(Tool):
         url: str,
         limit: int,
         target_keywords: str,
+        target_paths: List[str],
         max_length: int
     ) -> Tuple[Dict[str, Any], Dict]:
         """Map website URLs, score by relevance, and scrape top pages.
@@ -468,49 +545,77 @@ class WebSubpageFetchTool(Tool):
             logger.info(f"Filtered out {skipped_count} technical/low-value URLs")
         all_urls = filtered_urls
 
-        # Step 1.6: Expand keywords for matching
+        # Step 1.6: Expand keywords and normalize target paths for matching
         expanded_keywords = self._expand_keywords(target_keywords) if target_keywords else set()
         if expanded_keywords:
             logger.info(f"target_keywords: '{target_keywords}' -> expanded to {len(expanded_keywords)} terms: {list(expanded_keywords)[:10]}...")
 
-        # Step 2: Hybrid selection - separate keyword-matched vs others
+        normalized_target_paths = self._normalize_target_paths(target_paths) if target_paths else []
+        if normalized_target_paths:
+            logger.info(f"target_paths normalized: {normalized_target_paths}")
+
+        # Step 2: Hybrid selection - separate path matches, keyword matches, and others
+        path_matched = []     # URLs matching explicit target paths
         keyword_matched = []  # URLs directly matching keywords
         other_urls = []       # All other URLs
 
         for u in all_urls:
-            path_lower = urlparse(u).path.lower()
-            score = self._calculate_relevance_score(u, target_keywords, len(all_urls))
+            path_lower = urlparse(u).path.lower().rstrip("/")
+            if not path_lower:
+                path_lower = "/"
+
+            score = self._calculate_relevance_score(
+                u, target_keywords, len(all_urls), normalized_target_paths
+            )
 
             if score < 0.05:
                 continue
 
-            # Check if URL path contains any expanded keyword
+            is_path_match = self._matches_target_paths(path_lower, normalized_target_paths)
             is_keyword_match = any(kw in path_lower for kw in expanded_keywords)
 
-            if is_keyword_match:
+            if is_path_match:
+                path_matched.append((u, score))
+            elif is_keyword_match:
                 keyword_matched.append((u, score))
             else:
                 other_urls.append((u, score))
 
-        # Sort both groups by score
+        # Sort groups by score
+        path_matched.sort(key=lambda x: x[1], reverse=True)
         keyword_matched.sort(key=lambda x: x[1], reverse=True)
         other_urls.sort(key=lambda x: x[1], reverse=True)
 
-        # Step 3: Hybrid quota allocation (60% keyword, 40% others)
-        keyword_quota = int(limit * 0.6)  # Max 60% for keyword matches
-        other_quota = limit - keyword_quota
+        # Step 3: Hybrid quota allocation (paths first; then 60/40 keyword/other)
+        selected_from_paths = [u for u, _ in path_matched]
+        selected_from_keywords = []
+        selected_from_others = []
 
-        # Select from keyword-matched first (up to quota)
-        selected_from_keywords = [u for u, _ in keyword_matched[:keyword_quota]]
-        remaining_quota = limit - len(selected_from_keywords)
+        if len(selected_from_paths) >= limit:
+            selected_urls = selected_from_paths[:limit]
+        else:
+            remaining_quota = limit - len(selected_from_paths)
+            keyword_quota = int(remaining_quota * 0.6)
+            selected_from_keywords = [u for u, _ in keyword_matched[:keyword_quota]]
+            remaining_quota = limit - len(selected_from_paths) - len(selected_from_keywords)
+            selected_from_others = [u for u, _ in other_urls[:remaining_quota]]
+            selected_urls = selected_from_paths + selected_from_keywords + selected_from_others
 
-        # Fill remaining with other URLs
-        selected_from_others = [u for u, _ in other_urls[:remaining_quota]]
-
-        # Combine: keywords first, then others
-        selected_urls = selected_from_keywords + selected_from_others
-
-        logger.info(f"Hybrid selection: {len(selected_from_keywords)} keyword-matched + {len(selected_from_others)} others = {len(selected_urls)} total")
+        if normalized_target_paths:
+            logger.info(
+                "Path selection: %d path-matched + %d keyword-matched + %d others = %d total",
+                len(selected_from_paths),
+                len(selected_from_keywords),
+                len(selected_from_others),
+                len(selected_urls),
+            )
+        else:
+            logger.info(
+                "Hybrid selection: %d keyword-matched + %d others = %d total",
+                len(selected_from_keywords),
+                len(selected_from_others),
+                len(selected_urls),
+            )
 
         # Always include the base URL if not already present
         base_url = url.rstrip("/")
@@ -823,6 +928,7 @@ class WebSubpageFetchTool(Tool):
         url: str,
         limit: int,
         target_keywords: str,
+        target_paths: List[str],
         max_length: int
     ) -> Dict[str, Any]:
         """Fallback: Use Exa with subpages feature."""
@@ -833,8 +939,23 @@ class WebSubpageFetchTool(Tool):
                 "Content-Type": "application/json"
             }
 
-            # Use target_keywords directly as subpage_target
-            subpage_target = target_keywords if target_keywords else None
+            # Use target keywords and target paths as subpage_target
+            subpage_target = target_keywords.strip() if target_keywords else ""
+            if target_paths:
+                normalized_paths = self._normalize_target_paths(target_paths)
+                path_tokens = []
+                for p in normalized_paths:
+                    token = p.strip("/").replace("-", " ").replace("_", " ")
+                    if token:
+                        path_tokens.append(token)
+                if path_tokens:
+                    path_hint = " ".join(path_tokens)
+                    if subpage_target:
+                        subpage_target = f"{subpage_target} {path_hint}"
+                    else:
+                        subpage_target = path_hint
+            if not subpage_target:
+                subpage_target = None
 
             search_payload = {
                 "query": url,

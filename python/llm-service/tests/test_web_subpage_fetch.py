@@ -84,6 +84,17 @@ class TestRelevanceScoring:
 
         assert with_keyword > without_keyword
 
+    def test_target_path_matching(self, tool):
+        """Target paths should boost relevance scores."""
+        with_path = tool._calculate_relevance_score(
+            "https://example.com/about/team", "", 50, ["/about"]
+        )
+        without_path = tool._calculate_relevance_score(
+            "https://example.com/about/team", "", 50
+        )
+
+        assert with_path > without_path
+
     def test_depth_scoring(self, tool):
         """Shallow URLs should score higher than deep ones."""
         shallow = tool._calculate_relevance_score(
@@ -232,6 +243,17 @@ class TestEdgeCases:
             50
         )
         assert score > 0
+
+    def test_normalize_target_paths(self, tool):
+        normalized = tool._normalize_target_paths([
+            "/About",
+            "https://example.com/team/",
+            "careers",
+            "/",
+        ])
+        assert "/about" in normalized
+        assert "/team" in normalized
+        assert "/careers" in normalized
 
     def test_case_insensitive_matching(self, tool):
         """Matching should be case insensitive."""
