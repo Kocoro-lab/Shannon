@@ -327,8 +327,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
         if not self.validate_api_key(api_key):
             raise ValueError("Invalid or missing Firecrawl API key")
         self.api_key = api_key
-        self.scrape_url = "https://api.firecrawl.dev/v1/scrape"
-        self.crawl_url = "https://api.firecrawl.dev/v1/crawl"
+        self.scrape_url = "https://api.firecrawl.dev/v2/scrape"
+        self.crawl_url = "https://api.firecrawl.dev/v2/crawl"
 
     def _infer_paths_from_target(self, subpage_target: str) -> List[str]:
         """
@@ -458,9 +458,13 @@ class FirecrawlFetchProvider(WebFetchProvider):
         payload = {
             "url": url,
             "formats": ["markdown"],
+            "parsers": ["pdf"],
             "onlyMainContent": True,
+            # Note: 'form' removed - some sites wrap main content in form tags
             "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
-            "timeout": self.DEFAULT_TIMEOUT * 1000,  # Firecrawl uses milliseconds
+            "removeBase64Images": True,
+            "blockAds": True,
+            "timeout": self.DEFAULT_TIMEOUT * 1000,
         }
 
         timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
@@ -530,8 +534,12 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "limit": min(limit + 1, MAX_SUBPAGES + 1),  # +1 for main page
             "scrapeOptions": {
                 "formats": ["markdown"],
+                "parsers": ["pdf"],
                 "onlyMainContent": True,
-                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
+                # Note: 'form' removed - some sites wrap main content in form tags
+            "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
+                "removeBase64Images": True,
+                "blockAds": True,
             },
         }
 
@@ -808,7 +816,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
         timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                "https://api.firecrawl.dev/v1/map",
+                "https://api.firecrawl.dev/v2/map",
                 json=payload,
                 headers=headers
             ) as response:
@@ -1433,31 +1441,20 @@ class WebFetchTool(Tool):
         Resolve which provider to use based on request and availability.
 
         Auto-selection logic:
-        - For multi-page (subpages > 0): prefer Firecrawl > Exa > Python
-        - For single page: prefer Exa > Firecrawl > Python
+        - Always prefer Firecrawl > Exa > Python (Firecrawl has better PDF parsing and content extraction)
         """
         # Handle explicit provider request
         if provider_name in ["exa", "firecrawl", "python"]:
             return provider_name
 
-        # Auto-select based on task and availability
+        # Auto-select: always prefer Firecrawl for better PDF parsing and content extraction
         if provider_name == "auto" or provider_name == self.default_provider:
-            if subpages > 0:
-                # Multi-page: prefer Firecrawl for its crawl capabilities
-                if self.firecrawl_provider:
-                    return "firecrawl"
-                elif self.exa_api_key:
-                    return "exa"
-                else:
-                    return "python"
+            if self.firecrawl_provider:
+                return "firecrawl"
+            elif self.exa_api_key:
+                return "exa"
             else:
-                # Single page: prefer Exa for semantic extraction
-                if self.exa_api_key:
-                    return "exa"
-                elif self.firecrawl_provider:
-                    return "firecrawl"
-                else:
-                    return "python"
+                return "python"
 
         # Default fallback
         return self.default_provider if self.default_provider != "auto" else "python"
@@ -1528,10 +1525,27 @@ class WebFetchTool(Tool):
         semaphore = asyncio.Semaphore(concurrency)
 
         async def fetch_one(url: str) -> Dict[str, Any]:
-            """Fetch a single URL with semaphore control."""
+            """Fetch a single URL with semaphore control. Prefer Firecrawl > pure_python."""
             async with semaphore:
+                # Try Firecrawl first if available
+                if self.firecrawl_provider:
+                    try:
+                        result_data = await self.firecrawl_provider._scrape(url, per_url_budget)
+                        return {
+                            "url": result_data.get("url", url),
+                            "success": True,
+                            "title": result_data.get("title", ""),
+                            "content": result_data.get("content", ""),
+                            "char_count": result_data.get("char_count", 0),
+                            "method": "firecrawl",
+                            "status_code": result_data.get("status_code", 200),
+                            "blocked_reason": result_data.get("blocked_reason"),
+                        }
+                    except Exception as e:
+                        logger.warning(f"Firecrawl batch fetch failed for {url}: {e}, falling back to pure_python")
+
+                # Fallback to pure_python
                 try:
-                    # Call the existing single-URL fetch logic
                     result = await self._fetch_pure_python(url, per_url_budget, subpages=0)
                     if result.success and result.output:
                         return {
@@ -1540,7 +1554,7 @@ class WebFetchTool(Tool):
                             "title": result.output.get("title", ""),
                             "content": result.output.get("content", ""),
                             "char_count": len(result.output.get("content", "")),
-                            # P0-A: Pass through status_code and blocked_reason
+                            "method": result.output.get("method", "pure_python"),
                             "status_code": result.output.get("status_code", 200),
                             "blocked_reason": result.output.get("blocked_reason"),
                         }
@@ -1549,7 +1563,8 @@ class WebFetchTool(Tool):
                             "url": url,
                             "success": False,
                             "error": result.error or "Unknown error",
-                            "status_code": 0,  # P0-A: Unknown status
+                            "method": "pure_python",
+                            "status_code": 0,
                             "blocked_reason": "fetch_failed",
                         }
                 except Exception as e:
@@ -1558,7 +1573,8 @@ class WebFetchTool(Tool):
                         "url": url,
                         "success": False,
                         "error": str(e),
-                        "status_code": 0,  # P0-A: Unknown status
+                        "method": "pure_python",
+                        "status_code": 0,
                         "blocked_reason": "exception",
                     }
 

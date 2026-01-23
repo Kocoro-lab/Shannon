@@ -238,13 +238,17 @@ class WebCrawlTool(Tool):
             "limit": limit,
             "scrapeOptions": {
                 "formats": ["markdown"],
+                "parsers": ["pdf"],
                 "onlyMainContent": True,
+                # Note: 'form' removed - some sites wrap main content in form tags
                 "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
-            }
+                "removeBase64Images": True,
+                "blockAds": True,
+            },
         }
 
         async with session.post(
-            "https://api.firecrawl.dev/v1/crawl",
+            "https://api.firecrawl.dev/v2/crawl",
             json=payload,
             headers=headers
         ) as response:
@@ -269,7 +273,7 @@ class WebCrawlTool(Tool):
 
         for attempt in range(MAX_POLL_ATTEMPTS):
             async with session.get(
-                f"https://api.firecrawl.dev/v1/crawl/{crawl_id}",
+                f"https://api.firecrawl.dev/v2/crawl/{crawl_id}",
                 headers=headers
             ) as response:
                 if response.status != 200:

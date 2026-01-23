@@ -705,7 +705,7 @@ class WebSubpageFetchTool(Tool):
             payload = {"url": url, "limit": MAP_URL_LIMIT}
 
             async with session.post(
-                "https://api.firecrawl.dev/v1/map",
+                "https://api.firecrawl.dev/v2/map",
                 json=payload,
                 headers=headers
             ) as response:
@@ -714,7 +714,14 @@ class WebSubpageFetchTool(Tool):
                     raise Exception(f"Map API failed ({response.status}): {error[:200]}")
 
                 data = await response.json()
-                return data.get("links", [])
+                links = data.get("links", [])
+                # V2 Map API returns list of dicts with 'url' and 'title' keys
+                # Extract URL strings for compatibility
+                return [
+                    link.get("url") if isinstance(link, dict) else link
+                    for link in links
+                    if link
+                ]
 
     async def _batch_scrape(self, urls: List[str], max_length: int) -> Tuple[List[Dict], Dict]:
         """
@@ -834,13 +841,17 @@ class WebSubpageFetchTool(Tool):
             payload = {
                 "url": url,
                 "formats": ["markdown"],
+                "parsers": ["pdf"],
                 "onlyMainContent": True,
+                # Note: 'form' removed - some sites wrap main content in form tags
                 "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
-                "timeout": SCRAPE_TIMEOUT * 1000  # Firecrawl uses ms
+                "removeBase64Images": True,
+                "blockAds": True,
+                "timeout": SCRAPE_TIMEOUT * 1000,
             }
 
             async with session.post(
-                "https://api.firecrawl.dev/v1/scrape",
+                "https://api.firecrawl.dev/v2/scrape",
                 json=payload,
                 headers=headers
             ) as response:
