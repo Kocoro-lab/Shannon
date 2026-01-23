@@ -63,6 +63,16 @@ Before synthesizing, classify EACH agent output snippet:
 
 **Key Rule**: If agent NOTES indicate "limited information", do NOT promote accompanying generic data. Acknowledge the limitation instead.
 
+**Priority Exceptions**:
+1. **Domain Evidence**: Agent outputs labeled "Domain Evidence" or "(Official Sources)" are from verified official company sources. Default to "Direct Finding" unless content is clearly generic boilerplate (legal disclaimers, cookie notices). Do NOT classify entity-specific official facts as "Background".
+2. **Quantitative Data**: ALL specific numbers, dates, percentages, amounts, and metrics MUST be preserved regardless of classification. Never omit concrete data points.
+3. **Named Entities**: Names, titles, credentials, company names, product names from official sources MUST be preserved verbatim.
+
+**Classification Guideline**:
+- "Background" means truly generic context (industry overview, general trends) with NO entity-specific data
+- If unsure between "Direct Finding" and "Background", choose "Direct Finding"
+- Err on the side of inclusion rather than omission for research workflows
+
 {{- end -}}
 
 {{- define "citation_list" -}}
