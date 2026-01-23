@@ -67,18 +67,54 @@ def detect_blocked_reason(content: str, status_code: int = 200) -> Optional[str]
     return None
 
 
+# Blacklist for meaningless alt text patterns
+ALT_BLACKLIST = {
+    'preload', 'loading', 'placeholder', 'lazy',
+    'customer logo', 'logo', 'icon', 'image', 'img',
+    'thumbnail', 'avatar', 'banner', 'hero',
+    'background', 'bg', 'spacer', 'pixel',
+    'video thumbnail', 'play button',
+    'arrow', 'chevron', 'caret',
+    'close', 'menu', 'hamburger',
+    'facebook', 'twitter', 'linkedin', 'instagram', 'youtube',
+    'social', 'share', 'like', 'follow',
+}
+
+
+def _is_meaningless_alt(alt: str) -> bool:
+    """Check if alt text is meaningless and should be removed."""
+    alt_lower = alt.lower().strip()
+
+    # Check blacklist
+    if alt_lower in ALT_BLACKLIST:
+        return True
+
+    # Check if it's a filename (e.g., image.png, photo-123.jpg)
+    if re.match(r'^[\w.-]+\.(png|jpg|jpeg|gif|svg|webp|ico|bmp)$', alt_lower):
+        return True
+
+    # Check if it's just a number or ID-like string
+    if re.match(r'^[\d_-]+$', alt_lower):
+        return True
+
+    # Check for UUID-like patterns
+    if re.match(r'^[a-f0-9-]{20,}$', alt_lower):
+        return True
+
+    return False
+
+
 def clean_markdown_noise(content: str) -> str:
     """
-    清理 fetch 结果中的 markdown 噪音。
+    Clean markdown noise from fetched content.
 
     Features:
-    - 保护代码块不被误改
-    - 移除图片引用，保留有意义的 alt text
-    - 移除 base64 数据
-    - 链接保留可见文本，只移除 URL
-    - 清理 HTML img 标签
-
-    Codex Review: 3 rounds, GPT-5.2 high reasoning
+    - Protect code blocks
+    - Remove images with meaningless alt text (blacklist + filename patterns)
+    - Remove base64 data
+    - Keep link text, remove URLs
+    - Clean HTML img tags
+    - Remove consecutive repetitions
     """
     if not content:
         return content
@@ -98,16 +134,18 @@ def clean_markdown_noise(content: str) -> str:
     # Inline code `...`
     content = re.sub(r'`[^`]+`', save_code, content)
 
-    # Step 1: Remove base64 early (performance optimization, reduces subsequent regex matching)
+    # Step 1: Remove base64 early (performance optimization)
     content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=\s]+', '', content, flags=re.MULTILINE)
 
     # Step 2: Nested image links [![alt](img)](href) -> alt or ''
-    # Must be processed before regular images
     def extract_meaningful_alt(m, group=1):
         alt = m.group(group).strip()
+        # Filter meaningless alt text
+        if _is_meaningless_alt(alt):
+            return ''
         # Keep meaningful alt text (>5 chars, contains Chinese or English)
         if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
-            return alt  # Return plain text without brackets
+            return alt
         return ''
 
     content = re.sub(r'\[!\[([^\]]*)\]\([^)]*\)\]\([^)]*\)',
@@ -126,6 +164,8 @@ def clean_markdown_noise(content: str) -> str:
         alt_match = re.search(r'alt=["\']([^"\']*)["\']', m.group(0))
         if alt_match:
             alt = alt_match.group(1).strip()
+            if _is_meaningless_alt(alt):
+                return ''
             if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
                 return alt
         return ''
@@ -149,10 +189,14 @@ def clean_markdown_noise(content: str) -> str:
     # Step 10: Empty links []()
     content = re.sub(r'\[\s*\]\([^)]*\)', '', content)
 
-    # Step 11: Clean up excessive blank lines
+    # Step 11: Remove consecutive repetitions (e.g., "logo logo logo" -> "logo")
+    # Match 2+ consecutive occurrences of the same word/phrase
+    content = re.sub(r'\b(\w+(?:\s+\w+)?)\s*(?:\1\s*){2,}', r'\1', content)
+
+    # Step 12: Clean up excessive blank lines
     content = re.sub(r'\n{3,}', '\n\n', content)
 
-    # Step 12: Restore code blocks
+    # Step 13: Restore code blocks
     for placeholder, original in code_blocks:
         content = content.replace(placeholder, original)
 
