@@ -3107,6 +3107,13 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n"
             "- NEVER create more than 10 subtasks unless strictly necessary (more subtasks = more overhead = slower results)\n"
             "- If task seems to require many subtasks, RESTRUCTURE to consolidate similar topics\n\n"
+            "# Company/Brand Name Handling in Search Queries:\n"
+            "- NEVER phonetically transliterate brand names into katakana/pinyin\n"
+            "  BAD: 'Notion' → 'ノーション', 'Stripe' → '斯特莱普' (phonetic nonsense)\n"
+            "- Keep brand names AS-IS, combine with local keywords:\n"
+            "  GOOD: 'Notion 料金' (Japanese), 'Stripe 定价' (Chinese)\n"
+            "- If official local company name exists (e.g., 株式会社メルカリ), use that exact form\n"
+            "- When uncertain, default to '{brand_name} {topic}' pattern in target language\n\n"
             "NOTE: You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n\n"
         )
 
