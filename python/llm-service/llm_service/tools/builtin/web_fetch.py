@@ -419,6 +419,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             logger.info(f"Using map+scrape with depth/keywords scoring for {url}")
         
         # Level 1: Map+scrape (UNIVERSAL INTELLIGENT SELECTION)
+        is_rate_limited = False
         try:
             result = await self._map_and_scrape(url, max_length, subpages, effective_paths)
             if result.get("pages_fetched", 0) > 0:
@@ -430,10 +431,17 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 logger.warning(f"Map+scrape timeout for {url}: {e}")
             elif "429" in error_msg or "rate limit" in error_msg.lower():
                 logger.warning(f"Map+scrape rate limited for {url}: {e}")
+                # Mark as rate limited - crawl fallback will also fail with 429
+                is_rate_limited = True
             else:
                 logger.warning(f"Map+scrape failed for {url}: {e}")
-        
+
         # Level 2: Crawl (UNIVERSAL FALLBACK)
+        # Skip crawl if rate limited - API-wide limit means crawl will also fail
+        if is_rate_limited:
+            logger.warning(f"Skipping crawl fallback for {url} due to rate limit (429)")
+            raise Exception(f"Firecrawl rate limit exceeded (429) for {url}")
+
         try:
             logger.info(f"Fallback to crawl for {url}")
             result = await self._crawl(url, max_length, subpages)
@@ -442,7 +450,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             logger.warning(f"Crawl returned 0 pages for {url}")
         except Exception as e:
             logger.warning(f"Crawl also failed for {url}: {e}")
-        
+
         # All Firecrawl methods failed - raise to trigger provider fallback
         logger.error(f"All Firecrawl methods failed for {url}, raising to trigger fallback")
         raise Exception(f"Firecrawl: all methods failed for {url}")

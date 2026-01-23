@@ -36,6 +36,7 @@ const (
 	StreamEventDataProcessing StreamEventType = "DATA_PROCESSING" // Processing/analyzing data
 	StreamEventWaiting        StreamEventType = "WAITING"         // Waiting for resources/responses
 	StreamEventErrorRecovery  StreamEventType = "ERROR_RECOVERY"  // Handling and recovering from errors
+	StreamEventWarning        StreamEventType = "WARNING"         // Non-fatal warnings that user should be aware of
 
 	// LLM events (uniform across workflows)
 	StreamEventLLMPrompt  StreamEventType = "LLM_PROMPT"  // Sanitized prompt

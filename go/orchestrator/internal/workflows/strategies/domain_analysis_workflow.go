@@ -52,6 +52,9 @@ type DomainAnalysisStats struct {
 	PrefetchFailed    int
 	FailureReasons    map[string]int
 	DigestTokensUsed  int
+	// Discovery phase status
+	DiscoveryFailed bool   `json:"discovery_failed,omitempty"`
+	DiscoveryError  string `json:"discovery_error,omitempty"`
 }
 
 type DomainAnalysisResult struct {
@@ -180,6 +183,9 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 	var prefetchDomains []string
 	var prefetchURLs []string
 	discoveredBySearch := make(map[string][]string)
+	// Track discovery phase failures for stats
+	var discoveryFailed bool
+	var discoveryError string
 
 	if prefetchDiscoverOnlyVersion >= 1 && domainDiscoveryVersion >= 1 {
 		// Discover-only mode: reset any refinement-provided domains.
@@ -329,6 +335,15 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				discoveryResult.Error = discoveryErr.Error()
 			}
 			discoveryResult.Success = false
+			// Track failure for stats reporting
+			discoveryFailed = true
+			if discoveryErr != nil {
+				discoveryError = discoveryErr.Error()
+			} else if discoveryResult.Error != "" {
+				discoveryError = discoveryResult.Error
+			} else {
+				discoveryError = "discovery returned unsuccessful result"
+			}
 			persistAgentExecutionLocalWithMeta(
 				ctx,
 				workflowID,
@@ -472,6 +487,8 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 	stats := DomainAnalysisStats{
 		PrefetchAttempted: len(prefetchURLs),
 		FailureReasons:    map[string]int{},
+		DiscoveryFailed:   discoveryFailed,
+		DiscoveryError:    discoveryError,
 	}
 	var prefetchResults []activities.AgentExecutionResult
 	var coverage []DomainAnalysisCoverage

@@ -4076,29 +4076,148 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					ClearDependentToolParams: true,
 				}
 
-				hybridResult, err := execution.ExecuteHybrid(
-					ctx,
-					hybridTasks,
-					input.SessionID,
-					convertHistoryForAgent(input.History),
-					hybridConfig,
-					agentMaxTokens,
-					input.UserID,
-					modelTier,
-				)
+				// Check if domain_analysis is running and some tasks depend on it
+				// If so, split tasks: run independent tasks first (in parallel with domain_analysis),
+				// wait for domain_analysis, then run dependent tasks with injected official_domains
+				if domainAnalysisStarted && len(domainAnalysisSubtasks) > 0 {
+					domainAnalysisTaskID := domainAnalysisSubtasks[0].ID
 
-				if err != nil {
-					return TaskResult{
-						Success:      false,
-						ErrorMessage: fmt.Sprintf("Hybrid execution failed: %v", err),
-					}, err
-				}
+					// Split tasks into independent and task1-dependent
+					var independentTasks []execution.HybridTask
+					var task1DependentTasks []execution.HybridTask
 
-				// Convert results to agent results
-				for _, result := range hybridResult.Results {
-					agentResults = append(agentResults, result)
+					for _, task := range hybridTasks {
+						dependsOnTask1 := false
+						for _, dep := range task.Dependencies {
+							if dep == domainAnalysisTaskID {
+								dependsOnTask1 = true
+								break
+							}
+						}
+						if dependsOnTask1 {
+							task1DependentTasks = append(task1DependentTasks, task)
+						} else {
+							independentTasks = append(independentTasks, task)
+						}
+					}
+
+					logger.Info("Split tasks for domain_analysis dependency",
+						"independent_count", len(independentTasks),
+						"dependent_count", len(task1DependentTasks),
+						"domain_analysis_task_id", domainAnalysisTaskID,
+					)
+
+					// Phase 1: Execute independent tasks (runs in parallel with DomainAnalysis which is already started)
+					if len(independentTasks) > 0 {
+						indepResult, err := execution.ExecuteHybrid(
+							ctx,
+							independentTasks,
+							input.SessionID,
+							convertHistoryForAgent(input.History),
+							hybridConfig,
+							agentMaxTokens,
+							input.UserID,
+							modelTier,
+						)
+						if err != nil {
+							logger.Warn("Independent tasks execution failed", "error", err)
+						} else {
+							for _, result := range indepResult.Results {
+								agentResults = append(agentResults, result)
+							}
+							totalTokens += indepResult.TotalTokens
+						}
+					}
+
+					// Phase 2: Wait for DomainAnalysis to complete
+					var childResult DomainAnalysisResult
+					err := domainAnalysisFuture.Get(ctx, &childResult)
+					if err != nil {
+						logger.Warn("Domain analysis workflow failed during split execution", "error", err)
+					} else {
+						domainAnalysisResult = &childResult
+						logger.Info("Domain analysis completed for dependent tasks",
+							"digest_len", len(childResult.DomainAnalysisDigest),
+							"official_domains", len(childResult.OfficialDomainsSelected),
+						)
+
+						// Inject official_domains into dependent tasks and remove task-1 dependency
+						if len(childResult.OfficialDomainsSelected) > 0 {
+							domains := extractDomainsFromCoverage(childResult.OfficialDomainsSelected)
+							for i := range task1DependentTasks {
+								if task1DependentTasks[i].ContextOverrides == nil {
+									task1DependentTasks[i].ContextOverrides = make(map[string]interface{})
+								}
+								task1DependentTasks[i].ContextOverrides["official_domains"] = domains
+								task1DependentTasks[i].ContextOverrides["official_domains_source"] = "domain_analysis"
+
+								// Remove dependency on task-1
+								var newDeps []string
+								for _, dep := range task1DependentTasks[i].Dependencies {
+									if dep != domainAnalysisTaskID {
+										newDeps = append(newDeps, dep)
+									}
+								}
+								task1DependentTasks[i].Dependencies = newDeps
+							}
+							logger.Info("Injected official_domains into dependent tasks",
+								"domains", domains,
+								"task_count", len(task1DependentTasks),
+							)
+						}
+					}
+
+					// Phase 3: Execute dependent tasks (now with official_domains injected)
+					if len(task1DependentTasks) > 0 {
+						depResult, err := execution.ExecuteHybrid(
+							ctx,
+							task1DependentTasks,
+							input.SessionID,
+							convertHistoryForAgent(input.History),
+							hybridConfig,
+							agentMaxTokens,
+							input.UserID,
+							modelTier,
+						)
+						if err != nil {
+							logger.Warn("Dependent tasks execution failed", "error", err)
+						} else {
+							for _, result := range depResult.Results {
+								agentResults = append(agentResults, result)
+							}
+							totalTokens += depResult.TotalTokens
+						}
+					}
+
+					// Mark that we've already processed domainAnalysisFuture
+					domainAnalysisStarted = false
+
+				} else {
+					// Original code path: no domain_analysis running or no dependent tasks
+					hybridResult, err := execution.ExecuteHybrid(
+						ctx,
+						hybridTasks,
+						input.SessionID,
+						convertHistoryForAgent(input.History),
+						hybridConfig,
+						agentMaxTokens,
+						input.UserID,
+						modelTier,
+					)
+
+					if err != nil {
+						return TaskResult{
+							Success:      false,
+							ErrorMessage: fmt.Sprintf("Hybrid execution failed: %v", err),
+						}, err
+					}
+
+					// Convert results to agent results
+					for _, result := range hybridResult.Results {
+						agentResults = append(agentResults, result)
+					}
+					totalTokens = hybridResult.TotalTokens
 				}
-				totalTokens = hybridResult.TotalTokens
 
 			} else {
 				// Use pure parallel execution
@@ -4234,6 +4353,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		err := domainAnalysisFuture.Get(ctx, &childResult)
 		if err != nil {
 			logger.Warn("Domain analysis workflow failed", "error", err)
+			// Emit warning event for user visibility
+			emitTaskUpdatePayload(ctx, input, activities.StreamEventWarning, "domain_analysis",
+				fmt.Sprintf("Domain analysis failed: %v", err),
+				nil,
+			)
 		} else {
 			domainAnalysisResult = &childResult
 			logger.Info("Domain analysis workflow completed",
@@ -4241,7 +4365,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				"prefetch_urls", len(childResult.PrefetchURLs),
 				"citations", len(childResult.Citations),
 				"digest_tokens", childResult.Stats.DigestTokensUsed,
+				"discovery_failed", childResult.Stats.DiscoveryFailed,
 			)
+			// Check for discovery phase failure and emit warning
+			if childResult.Stats.DiscoveryFailed {
+				logger.Warn("Domain discovery phase failed",
+					"error", childResult.Stats.DiscoveryError,
+				)
+				emitTaskUpdatePayload(ctx, input, activities.StreamEventWarning, "domain_analysis",
+					fmt.Sprintf("Domain discovery failed: %s", childResult.Stats.DiscoveryError),
+					map[string]interface{}{
+						"discovery_error": childResult.Stats.DiscoveryError,
+					},
+				)
+			}
 			if len(childResult.OfficialDomainsSelected) > 0 {
 				domains := extractDomainsFromCoverage(childResult.OfficialDomainsSelected)
 				if len(domains) > 0 {
