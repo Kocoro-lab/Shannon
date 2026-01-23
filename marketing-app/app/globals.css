@@ -1,0 +1,161 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Kocoro Primary Colors */
+    --primary: #fe2f5c;
+    --primary-coral: #fe6c4b;
+    --primary-foreground: #ffffff;
+
+    /* Background Colors */
+    --background: #ffffff;
+    --background-dark: #0f0f26;
+
+    /* Neutral Backgrounds */
+    --neutral-1: #faf9f9;
+    --neutral-2: #f5f5f5;
+    --neutral-3: #f4f2f1;
+
+    /* Accent Colors */
+    --accent: #f3eced;
+    --accent-light: #f3eced;
+    --accent-gray: #ececec;
+    --accent-foreground: #0f0f26;
+
+    /* Semantic Colors */
+    --foreground: #0f0f26;
+    --muted: #f5f5f5;
+    --muted-foreground: #71717a;
+    --border: #e4e4e7;
+    --input: #e4e4e7;
+    --ring: #fe2f5c;
+
+    /* Card */
+    --card: #ffffff;
+    --card-foreground: #0f0f26;
+
+    /* Destructive */
+    --destructive: #ef4444;
+    --destructive-foreground: #ffffff;
+
+    /* Success */
+    --success: #22c55e;
+    --success-foreground: #ffffff;
+
+    /* Warning */
+    --warning: #f59e0b;
+    --warning-foreground: #ffffff;
+
+    /* Border Radius */
+    --radius: 12px;
+  }
+
+  .dark {
+    --background: #0f0f26;
+    --foreground: #fafafa;
+    --card: #1a1a3e;
+    --card-foreground: #fafafa;
+    --muted: #1a1a3e;
+    --muted-foreground: #a1a1aa;
+    --border: #2a2a5e;
+    --input: #2a2a5e;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif;
+  }
+}
+
+@layer components {
+  /* Kocoro-style Button */
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg px-6 py-3 font-medium text-white transition-all duration-200;
+    background: linear-gradient(135deg, var(--primary) 0%, var(--primary-coral) 100%);
+  }
+
+  .btn-primary:hover {
+    background: linear-gradient(135deg, var(--primary-coral) 0%, var(--primary) 100%);
+    @apply shadow-lg;
+  }
+
+  /* Kocoro-style Card */
+  .card-kocoro {
+    @apply bg-white rounded-lg shadow-card transition-shadow duration-200;
+  }
+
+  .card-kocoro:hover {
+    @apply shadow-card-hover;
+  }
+
+  /* Kocoro-style Input */
+  .input-kocoro {
+    @apply w-full rounded-lg border border-input bg-neutral-2 px-4 py-3 text-foreground transition-all duration-200;
+  }
+
+  .input-kocoro:focus {
+    @apply border-primary ring-2 ring-primary/20 outline-none;
+  }
+
+  /* Gradient Text */
+  .gradient-text {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, var(--primary) 0%, var(--primary-coral) 100%);
+  }
+
+  /* Progress bar */
+  .progress-kocoro {
+    @apply h-2 rounded-full bg-neutral-2 overflow-hidden;
+  }
+
+  .progress-kocoro-fill {
+    @apply h-full rounded-full transition-all duration-500;
+    background: linear-gradient(90deg, var(--primary) 0%, var(--primary-coral) 100%);
+  }
+}
+
+@layer utilities {
+  /* Custom scrollbar */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-track {
+    @apply bg-neutral-2 rounded-full;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    @apply bg-accent-gray rounded-full;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground;
+  }
+
+  /* Animation utilities */
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out forwards;
+  }
+
+  .animate-slide-in {
+    animation: slide-in 0.3s ease-out forwards;
+  }
+
+  /* Responsive container */
+  .container-kocoro {
+    @apply mx-auto px-4 sm:px-6 lg:px-8;
+    max-width: 1400px;
+  }
+}
