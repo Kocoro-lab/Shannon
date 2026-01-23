@@ -3010,7 +3010,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "description": "Search for Apple stock trend analysis forecast",\n'
             '      "dependencies": [],\n'
             '      "estimated_tokens": 800,\n'
-            '      "suggested_tools": ["web_search"],\n'
+            '      "suggested_tools": ["web_search", "web_fetch"],\n'
             '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
             '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
             '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
@@ -3160,6 +3160,52 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         # Combine identity with common decomposition suffix
         decompose_system_prompt = identity_prompt + COMMON_DECOMPOSITION_SUFFIX
 
+        # FIRST DECISION: Domain Analysis (for company queries)
+        # This comes before tool hints because it's the first planning decision (task-1)
+        if isinstance(query.context, dict):
+            query_type = query.context.get("query_type")
+        else:
+            query_type = None
+        if isinstance(query_type, str) and query_type.strip().lower() == "company":
+            domain_analysis_hint = (
+                "\n\n# FIRST DECISION: Domain Analysis (task-1)\n"
+                "Before planning other tasks, decide: does this query need official company sources?\n\n"
+                "## Include domain_analysis when:\n"
+                "- Research needs official sources (IR, product docs, leadership, careers)\n"
+                "- No specific URLs provided by user\n"
+                "- Authoritative primary sources would strengthen the research\n\n"
+                "## Skip domain_analysis when:\n"
+                "- User provides specific URLs to analyze\n"
+                "- Query focuses on external perspectives (news, reviews, public perception)\n"
+                "- Comparing 5+ companies (web_search more efficient)\n\n"
+                "## If included:\n"
+                "Write a description that tells the system WHAT to look for, derived from the user's query.\n\n"
+                "GOOD descriptions (specific, query-driven):\n"
+                "- \"Find TSMC's official IR pages focusing on 3nm capacity and Arizona fab timeline\"\n"
+                "- \"Discover Stripe's developer docs and API pricing pages\"\n"
+                "- \"Locate Tesla's investor relations for Q3 2024 delivery numbers\"\n\n"
+                "BAD descriptions (generic, template-like):\n"
+                "- \"Discover official domains for Company X\" (too vague)\n"
+                "- \"Find company website\" (no research focus)\n\n"
+                "## Structure:\n"
+                "```json\n"
+                "{\"id\": \"task-1\", \"task_type\": \"domain_analysis\",\n"
+                " \"description\": \"<specific focus derived from query>\",\n"
+                " \"dependencies\": [], \"estimated_tokens\": 400,\n"
+                " \"suggested_tools\": [], \"tool_parameters\": {}}\n"
+                "```\n"
+                "Note: Other contract fields (source_guidance, etc.) are ignored for domain_analysis.\n\n"
+                "## Impact on other tasks:\n"
+                "When domain_analysis IS included:\n"
+                "- Domain_analysis already covers official sources, so other tasks should prioritize exploratory discovery\n"
+                "- Focus on external perspectives: news, aggregator, reviews, analyst reports, community discussions\n"
+                "- Seek information that official sources typically don't provide\n\n"
+                "When domain_analysis is SKIPPED:\n"
+                "- Other tasks should include official sources in their research\n"
+                "- Balance official sources with external perspectives\n"
+            )
+            decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
+
         # If tools are available, add a generic tool-aware hint
         if available_tools:
             tool_hint = (
@@ -3236,55 +3282,6 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                         "- ✅ 'Compare market share vs. top 3 competitors (Competitive Landscape)'.\n"
                     )
                     decompose_system_prompt = decompose_system_prompt + areas_hint
-
-        # Company queries: optionally include Domain Analysis subtask (task-1).
-        # Decompose has the authority to decide whether to include it based on query context.
-        if isinstance(query.context, dict):
-            query_type = query.context.get("query_type")
-        else:
-            query_type = None
-        if isinstance(query_type, str) and query_type.strip().lower() == "company":
-            domain_analysis_hint = (
-                "\n\n# DOMAIN ANALYSIS SUBTASK (company queries):\n"
-                "You have access to a Domain Analysis system that:\n"
-                "- Discovers official company domains (corporate, IR, docs, careers sites)\n"
-                "- Pre-fetches and indexes key pages automatically\n"
-                "- Results feed into final synthesis\n\n"
-                "## When to INCLUDE domain_analysis (default for company queries):\n"
-                "- Company research needing official sources (investor relations, product info, leadership)\n"
-                "- No specific URLs provided by user\n"
-                "- Research requires authoritative primary sources\n\n"
-                "## When to SKIP domain_analysis:\n"
-                "- User explicitly says 'no official site research needed' or similar\n"
-                "- User provides specific URLs to analyze (e.g., 'analyze this article: ...')\n"
-                "- Query focuses on public perception, news coverage, or third-party analysis only\n"
-                "- Comparative query across many companies (5+) where web_search is more efficient\n\n"
-                "## If you include it (as task-1):\n"
-                "- task_type MUST be \"domain_analysis\" (triggers system workflow, not agent)\n"
-                "- Set suggested_tools to [] and tool_parameters to {} (system handles execution)\n"
-                "- dependencies must be [] (runs in parallel, other tasks must NOT depend on it)\n"
-                "- description should specify the company and research focus\n"
-                "- All other research tasks start at task-2\n\n"
-                "Example:\n"
-                "{\n"
-                "  \"id\": \"task-1\",\n"
-                "  \"task_type\": \"domain_analysis\",\n"
-                "  \"description\": \"Discover official domains for [Company] to support [specific research focus].\",\n"
-                "  \"dependencies\": [],\n"
-                "  \"estimated_tokens\": 400,\n"
-                "  \"suggested_tools\": [],\n"
-                "  \"tool_parameters\": {},\n"
-                "  \"output_format\": {\"type\": \"narrative\", \"required_fields\": [], \"optional_fields\": []},\n"
-                "  \"source_guidance\": {\"required\": [\"official\"], \"optional\": [\"aggregator\"], \"avoid\": [\"social\"]},\n"
-                "  \"search_budget\": {\"max_queries\": 5, \"max_fetches\": 8},\n"
-                "  \"boundaries\": {\"in_scope\": [\"official domains\", \"key site sections\"], \"out_of_scope\": [\"deep analysis\"]}\n"
-                "}\n\n"
-                "## Impact on other tasks:\n"
-                "- If domain_analysis is included, other tasks should NOT repeat 'find official website' work\n"
-                "- Subsequent tasks should seek perspectives that complement (not duplicate) official sources\n"
-                "- Domain analysis results automatically merge into final synthesis\n"
-            )
-            decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
 
         # Inject current date for time awareness in decomposition
         current_date = None
