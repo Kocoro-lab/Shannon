@@ -1106,6 +1106,10 @@ async def agent_query(request: Request, query: AgentQuery):
                     # Template workflow: upstream node outputs
                     "template_results",
                     "dependency_results",
+                    # Research planning context (from Refiner)
+                    "research_areas",
+                    "research_dimensions",
+                    "target_languages",
                 }
 
                 # Treat context as task-scoped if workflow metadata is present
@@ -1540,11 +1544,12 @@ async def agent_query(request: Request, query: AgentQuery):
             default_total_calls = 5
             default_output_chars = 60000
 
-            # Research mode: higher limits for comprehensive investigation
+            # Research mode: high limits to avoid premature truncation
+            # LLM controls actual usage via research budget in prompt
             if research_mode:
-                default_iterations = 6
-                default_total_calls = 10  # Keep buffer for potential parallel tool use
-                default_output_chars = 150000  # Covers 99% of actual usage (max observed: 162K)
+                default_iterations = 20  # Sufficient headroom for OODA loop
+                default_total_calls = 25  # Support parallel tool calls
+                default_output_chars = 300000  # Rich tool outputs
 
             max_tool_iterations = _get_budget("max_tool_iterations", default_iterations)
             max_total_tool_calls = _get_budget("max_total_tool_calls", default_total_calls)
@@ -1640,6 +1645,25 @@ async def agent_query(request: Request, query: AgentQuery):
                     else:
                         logger.warning(f"Skipping malformed tool call without name: {fc}")
 
+                # Fallback: try to parse XML-style tool calls from output_text
+                # Some LLMs output <web_search> XML instead of native function calling
+                if not tool_calls_from_output and response_text:
+                    import re as _re
+                    xml_tool_patterns = [
+                        (r'<web_search[^>]*>.*?query["\s:=]+([^"<]+)', 'web_search'),
+                        (r'<web_fetch[^>]*>.*?url[s]?["\s:=]+([^"<\]]+)', 'web_fetch'),
+                    ]
+                    for pattern, tool_name in xml_tool_patterns:
+                        match = _re.search(pattern, str(response_text), _re.IGNORECASE | _re.DOTALL)
+                        if match and tool_name in (effective_allowed_tools or []):
+                            extracted_arg = match.group(1).strip().strip('"\'')
+                            if tool_name == 'web_search':
+                                tool_calls_from_output.append({"name": tool_name, "arguments": {"query": extracted_arg}})
+                            elif tool_name == 'web_fetch':
+                                tool_calls_from_output.append({"name": tool_name, "arguments": {"urls": [extracted_arg]}})
+                            logger.info(f"🔧 Recovered XML tool call: {tool_name} from output_text")
+                            break  # Only recover one tool call per iteration
+
                 if not tool_calls_from_output or not effective_allowed_tools:
                     stop_reason = "no_tool_call"
                     break
@@ -1688,48 +1712,14 @@ async def agent_query(request: Request, query: AgentQuery):
                 total_tool_output_chars += len(tool_results or "")
                 loop_iterations += 1
 
-                # Build dynamic followup instruction for research mode with iteration awareness
+                # Build dynamic followup instruction for research mode
                 if research_mode:
                     current_iteration = loop_iterations
+                    # Simple, non-repetitive followup - system prompt has full OODA guidance
                     followup_instruction = (
-                        f"**ITERATION {current_iteration}/{max_tool_iterations}**\n\n"
-                        f"**REASON (Internal Assessment):**\n"
-                        f"- What key information did I gather from the tool result above?\n"
-                        f"- Can I answer the user's question confidently with current evidence?\n"
-                        f"- Should I search again (with DIFFERENT query) OR proceed to synthesis?\n\n"
-                        f"**ACT (Next Step):**\n"
-                    )
-
-                    if current_iteration <= max_tool_iterations - 2:
-                        # Early iterations: focus on GATHERING evidence
-                        followup_instruction += (
-                            "- Phase: **EVIDENCE GATHERING**\n"
-                            "- If you just searched, fetch the most relevant URLs to verify claims\n"
-                            "- If you need more breadth, search with DIFFERENT keywords (not the same query)\n"
-                            "- Do NOT retry a query that returned empty results\n"
-                            "- Prefer batch fetch: web_fetch(urls=[url1, url2, url3]) over multiple single fetches\n"
-                        )
-                    elif current_iteration == max_tool_iterations - 1:
-                        # Second-to-last iteration: verify key claims
-                        followup_instruction += (
-                            "- Phase: **VERIFICATION & GAP-FILLING**\n"
-                            "- Verify critical claims that need validation\n"
-                            "- Fill remaining gaps in coverage\n"
-                            "- Next iteration will be your FINAL round before synthesis\n"
-                        )
-                    else:
-                        # Final iteration: prepare for synthesis
-                        followup_instruction += (
-                            "- Phase: **FINAL ROUND - PREPARE FOR SYNTHESIS**\n"
-                            "- This is your last chance to gather evidence\n"
-                            "- Only search if there's a CRITICAL gap that blocks synthesis\n"
-                            "- After this round, you MUST synthesize your findings\n"
-                        )
-
-                    followup_instruction += (
-                        "\n**OBSERVE (After Tool Execution):**\n"
-                        "- System will provide tool results, then repeat this cycle\n"
-                        "- When sufficient evidence gathered, output your final synthesis starting with '## Key Findings'\n"
+                        f"**[ITERATION {current_iteration}/{max_tool_iterations}]**\n\n"
+                        f"OODA: Observe results → Orient (check research_areas gaps) → Decide → Act\n"
+                        f"When ready, output final synthesis starting with '## Key Findings'.\n"
                     )
                 else:
                     # Non-research mode: use base instruction
@@ -3291,7 +3281,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 "}\n\n"
                 "## Impact on other tasks:\n"
                 "- If domain_analysis is included, other tasks should NOT repeat 'find official website' work\n"
-                "- Focus research tasks on ANALYZING content, not DISCOVERING sources\n"
+                "- Subsequent tasks should seek perspectives that complement (not duplicate) official sources\n"
                 "- Domain analysis results automatically merge into final synthesis\n"
             )
             decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
