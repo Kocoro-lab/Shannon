@@ -1,3 +1,17 @@
+// DomainAnalysisWorkflow performs company/entity research as a child workflow.
+//
+// It executes in three phases:
+//  1. Discovery: Find official domains via web search
+//  2. Prefetch: Parallel fetch of relevant subpages (5-15 URLs)
+//  3. Digest: LLM synthesis into structured evidence
+//
+// The workflow runs as a child of ResearchWorkflow and supports pause/resume/cancel
+// signals from the parent via RegisterChildWorkflow/UnregisterChildWorkflow.
+//
+// Configuration:
+//   - domain_prefetch_max_urls: Maximum domains to prefetch (default: 8)
+//   - enable_domain_prefetch: Enable/disable domain analysis (default: true)
+//   - domain_analysis_mode: off/auto/force (default: auto)
 package strategies
 
 import (
