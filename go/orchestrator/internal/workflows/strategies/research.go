@@ -6627,6 +6627,20 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 		state = "FAILED"
 	}
 
+	// Truncate output for storage to avoid Temporal deadlock detection during JSON serialization.
+	// Large payloads (>50KB) can cause serialization to exceed 1 second, triggering TMPRL1101.
+	// This only affects database storage; in-memory data for LLM processing remains complete.
+	const maxOutputLen = 50000
+	outputForStorage := result.Response
+	if len(outputForStorage) > maxOutputLen {
+		outputForStorage = outputForStorage[:maxOutputLen] + "\n\n[TRUNCATED for storage - original length: " + fmt.Sprintf("%d", len(result.Response)) + "]"
+		logger.Debug("Truncated agent output for storage",
+			"agent_id", agentID,
+			"original_len", len(result.Response),
+			"truncated_len", len(outputForStorage),
+		)
+	}
+
 	// Persist agent execution asynchronously
 	workflow.ExecuteActivity(detachedCtx,
 		activities.PersistAgentExecutionStandalone,
@@ -6635,7 +6649,7 @@ func persistAgentExecutionLocal(ctx workflow.Context, workflowID, agentID, input
 			WorkflowID: workflowID,
 			AgentID:    agentID,
 			Input:      input,
-			Output:     result.Response,
+			Output:     outputForStorage,
 			State:      state,
 			TokensUsed: result.TokensUsed,
 			ModelUsed:  result.ModelUsed,

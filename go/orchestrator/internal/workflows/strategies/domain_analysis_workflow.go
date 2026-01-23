@@ -283,7 +283,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 			"- Include: corporate sites, IR sites (abc.xyz), parent company sites\n" +
 			"- Exclude: login/accounts, store, support, third-party (wikipedia, linkedin)\n" +
 			"- Strip www prefix, no paths\n" +
-			"- Max 10 domains\n\n" +
+			fmt.Sprintf("- Max %d domains\n\n", maxPrefetch) +
 			"CRITICAL: Your response must be ONLY the JSON object, nothing else.\n"
 
 		discoveryQuery += fmt.Sprintf("\n=== RESEARCH FOCUS ===\n"+
