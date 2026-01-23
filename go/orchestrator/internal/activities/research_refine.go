@@ -531,7 +531,7 @@ func detectLanguage(query string) string {
 
 	// Determine language based on character composition
 	cjkPercent := float64(cjk) / float64(total)
-	if cjkPercent > 0.3 {
+	if cjkPercent > 0.15 {
 		// Distinguish Chinese/Japanese/Korean by character patterns
 		var hanzi, hiragana, katakana, hangul int
 		for _, r := range query {

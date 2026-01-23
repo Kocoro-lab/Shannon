@@ -129,9 +129,17 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
+	// Debug: count citations with snippets
+	withSnippet := 0
+	for _, c := range input.Citations {
+		if c.Snippet != "" {
+			withSnippet++
+		}
+	}
 	logger.Info("CitationAgent: starting direct LLM approach",
 		"report_length", len(input.Report),
 		"citations_count", len(input.Citations),
+		"citations_with_snippet", withSnippet,
 		"role", role,
 	)
 
