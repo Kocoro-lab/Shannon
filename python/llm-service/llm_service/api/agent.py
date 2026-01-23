@@ -178,6 +178,16 @@ Bullet format (for facts):
 # PART 2 - NOTES (optional)
 [Conflicts between sources, data gaps, failed fetches summary]
 
+=== HANDLING INFORMATION SCARCITY ===
+
+When search results lack specific information about the query topic:
+1. Explicitly state: "关于[主题]的公开信息有限" or "Limited public information available about [topic]"
+2. Still provide comprehensive analysis of what WAS found, even if tangentially related
+3. Explain what types of information were NOT found (e.g., "No funding rounds disclosed", "Leadership details not publicly available")
+4. Suggest what additional sources might help (e.g., "Company registry filings may contain more details")
+
+This ensures the output remains informative even when target information is scarce.
+
 === FORBIDDEN ===
 - Future action verbs ('I will fetch...', 'I need to search...')
 - URLs not present in tool results
@@ -629,7 +639,9 @@ def validate_interpretation_output(
 
     # Source format: strict validation
     if expect_sources_format:
-        min_length = min(2000, max(200, int(total_tool_output_chars * 0.1)))
+        # Lowered from 2000 to 500: when public info is scarce, LLM may honestly
+        # produce shorter summaries. Previous threshold caused excessive fallbacks.
+        min_length = min(500, max(200, int(total_tool_output_chars * 0.1)))
         if len(stripped) < min_length:
             return False, f"too_short (len={len(stripped)} < min={min_length})"
         # Check format

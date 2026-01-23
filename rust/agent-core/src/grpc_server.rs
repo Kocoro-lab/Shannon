@@ -32,7 +32,7 @@ use proto::agent::*;
 
 // Streaming limits to prevent resource exhaustion
 const MAX_STREAM_BUFFER_SIZE: usize = 1_000_000; // 1MB max buffer size
-const STREAM_TIMEOUT_SECS: u64 = 300; // 5 minutes timeout
+const DEFAULT_STREAM_TIMEOUT_SECS: u64 = 600; // 10 minutes default timeout
 
 pub struct AgentServiceImpl {
     memory_pool: MemoryPool,
@@ -1186,6 +1186,19 @@ impl AgentService for AgentServiceImpl {
             _ => "standard",
         };
 
+        // Extract stream timeout from request config; fall back to default
+        let stream_timeout_secs = req
+            .config
+            .as_ref()
+            .and_then(|cfg| {
+                if cfg.timeout_seconds > 0 {
+                    Some(cfg.timeout_seconds as u64)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(DEFAULT_STREAM_TIMEOUT_SECS);
+
         tokio::spawn(async move {
             let _ = tx
                 .send(Ok(TaskUpdate {
@@ -1219,7 +1232,7 @@ impl AgentService for AgentServiceImpl {
                     let mut buffer = String::new();
                     // Wrap stream consumption in timeout to prevent hanging
                     let stream_result = tokio::time::timeout(
-                        std::time::Duration::from_secs(STREAM_TIMEOUT_SECS),
+                        std::time::Duration::from_secs(stream_timeout_secs),
                         async {
                             while let Some(item) = stream.next().await {
                                 match item {
@@ -1337,7 +1350,7 @@ impl AgentService for AgentServiceImpl {
                         }
                         Err(_) => {
                             let _ = tx.send(Err(Status::deadline_exceeded(
-                                format!("Stream timeout after {} seconds", STREAM_TIMEOUT_SECS)
+                                format!("Stream timeout after {} seconds", stream_timeout_secs)
                             ))).await;
                         }
                     }
