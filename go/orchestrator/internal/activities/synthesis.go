@@ -393,6 +393,18 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 	if len(input.AgentResults) == 0 {
 		return SynthesisResult{}, fmt.Errorf("no agent results to synthesize")
 	}
+	hasDomainAnalysis := false
+	for _, r := range input.AgentResults {
+		if strings.EqualFold(strings.TrimSpace(r.Role), "domain_analysis") {
+			hasDomainAnalysis = true
+			break
+		}
+		agentID := strings.ToLower(strings.TrimSpace(r.AgentID))
+		if strings.HasPrefix(agentID, "domain_analysis") {
+			hasDomainAnalysis = true
+			break
+		}
+	}
 
 	// LLM-first; fallback to simple synthesis on any failure
 
@@ -632,18 +644,19 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 		}
 	}
 	if isResearch {
-		maxPerAgentChars = 10000
+		maxPerAgentChars = 30000
 	}
 
 	// Calculate target words for research synthesis
 	// Deep Research 2.0: Increased multiplier to capture more intermediate findings
-	targetWords := 1200
+	// v2.1: Further increased to preserve more details from agent outputs
+	targetWords := 2000
 	if len(areas) > 0 {
-		targetWords = len(areas) * 400 // 400 words per area for comprehensive coverage
+		targetWords = len(areas) * 800 // 800 words per area for comprehensive coverage
 	}
 	// Ensure minimum for comprehensive reports
-	if targetWords < 1800 {
-		targetWords = 1800
+	if targetWords < 3000 {
+		targetWords = 3000
 	}
 
 	// Get available citations string
@@ -898,6 +911,16 @@ Section requirements:
 		}
 	} // End of !templateUsed fallback block
 
+	if hasDomainAnalysis {
+		fmt.Fprintf(&b, "## Domain Analysis Evidence Fusion:\n")
+		fmt.Fprintf(&b, "The agent results include \"Domain Evidence\" from official company sources. This is PRIMARY EVIDENCE, NOT a coverage guide.\n\n")
+		fmt.Fprintf(&b, "Rules:\n")
+		fmt.Fprintf(&b, "- DO NOT replace concrete names/dates/numbers with vague summaries.\n")
+		fmt.Fprintf(&b, "- When Domain Evidence provides specific information, use those EXACT details.\n")
+		fmt.Fprintf(&b, "- If Domain Evidence conflicts with other sources, Domain Evidence wins (official > aggregator).\n")
+		fmt.Fprintf(&b, "- Integrate into relevant sections; do NOT create a separate \"Domain Analysis\" section.\n\n")
+	}
+
 	// Configure maxAgents based on workflow type (must be after isResearch is determined)
 	maxAgents := 6
 	if isResearch || len(input.AgentResults) > 10 {
@@ -912,8 +935,11 @@ Section requirements:
 
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
 
-	// Prioritize intermediate synthesis results (react-synthesizer, synthesizer agents)
-	// by including them first, then individual agent outputs
+	// Categorize agent results into three buckets:
+	// 1. Domain Evidence (role=domain_analysis) - treated as primary official evidence, NOT synthesis
+	// 2. Synthesis results (agent_id contains synthesis/synthesizer) - coverage guides
+	// 3. Other individual agent outputs
+	var domainEvidenceResults []AgentExecutionResult
 	var synthesisResults []AgentExecutionResult
 	var otherResults []AgentExecutionResult
 
@@ -921,8 +947,10 @@ Section requirements:
 		if !r.Success || r.Response == "" {
 			continue
 		}
-		// Prioritize synthesis/aggregation agents
-		if strings.Contains(strings.ToLower(r.AgentID), "synthesis") ||
+		// Domain Analysis evidence gets special treatment - NOT marked as (Synthesis)
+		if strings.EqualFold(strings.TrimSpace(r.Role), "domain_analysis") {
+			domainEvidenceResults = append(domainEvidenceResults, r)
+		} else if strings.Contains(strings.ToLower(r.AgentID), "synthesis") ||
 			strings.Contains(strings.ToLower(r.AgentID), "synthesizer") {
 			synthesisResults = append(synthesisResults, r)
 		} else {
@@ -930,9 +958,28 @@ Section requirements:
 		}
 	}
 
-	// Include synthesis results first (these contain aggregated insights)
+	// Include Domain Evidence results FIRST (primary official evidence, NOT a coverage guide)
 	count := 0
+	for _, r := range domainEvidenceResults {
+		sanitized := sanitizeAgentOutput(r.Response)
+		// Domain evidence gets triple space (high-value official content)
+		maxDomainEvidenceChars := maxPerAgentChars * 3
+		if len([]rune(sanitized)) > maxDomainEvidenceChars {
+			sanitized = string([]rune(sanitized)[:maxDomainEvidenceChars]) + "..."
+		}
+		// Use "Domain Evidence" header - explicitly NOT "(Synthesis)" to avoid research_comprehensive.tmpl downweighting
+		fmt.Fprintf(&b, "=== Domain Evidence: %s (Official Sources) ===\n%s\n\n", r.AgentID, sanitized)
+		count++
+		if count >= maxAgents {
+			break
+		}
+	}
+
+	// Include synthesis results second (these contain aggregated insights as coverage guides)
 	for _, r := range synthesisResults {
+		if count >= maxAgents {
+			break
+		}
 		// Sanitize agent output to remove duplicate sources/citations
 		sanitized := sanitizeAgentOutput(r.Response)
 		// Apply length cap after sanitization (synthesis results get more space)
@@ -942,9 +989,6 @@ Section requirements:
 		}
 		fmt.Fprintf(&b, "=== Agent %s (Synthesis) ===\n%s\n\n", r.AgentID, sanitized)
 		count++
-		if count >= maxAgents {
-			break
-		}
 	}
 
 	// Then include individual agent outputs
@@ -1060,7 +1104,7 @@ Section requirements:
 	// Timeout based on research mode: deep research needs more time for large context
 	timeout := 180 * time.Second // Default: 3 minutes (non-research)
 	if isResearch {
-		timeout = 300 * time.Second // 5 minutes for all research syntheses (temporarily increased for testing)
+		timeout = 420 * time.Second // 7 minutes for research syntheses (increased from 5 to reduce fallback rate)
 	}
 
 	httpClient := &http.Client{
@@ -1728,8 +1772,10 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 		return SynthesisResult{}, fmt.Errorf("no successful agent results")
 	}
 
-	// Combine results without exposing internal details
+	// Combine results and sanitize internal format markers
+	// This prevents exposing internal design patterns to end users
 	finalResult := strings.Join(resultParts, "\n\n")
+	finalResult = sanitizeInternalFormat(finalResult)
 
 	// Estimate cost if not already calculated
 	if totalInputTokens > 0 && totalOutputTokens > 0 && modelUsed != "" {
@@ -1840,4 +1886,109 @@ func countInlineCitations(text string) int {
 		seen[m] = true
 	}
 	return len(seen)
+}
+
+// sanitizeInternalFormat removes internal format markers from fallback synthesis output.
+// This prevents exposing internal design patterns (like "# PART 1 - RETRIEVED INFORMATION")
+// to end users when LLM synthesis fails and falls back to simple concatenation.
+func sanitizeInternalFormat(text string) string {
+	if text == "" {
+		return text
+	}
+
+	lines := strings.Split(text, "\n")
+	var result []string
+	var currentSection []string
+	sectionCount := 0
+
+	// Patterns to detect and transform
+	partPattern := regexp.MustCompile(`(?i)^#\s*PART\s*\d+\s*[-–—]\s*(RETRIEVED INFORMATION|NOTES|ANALYSIS|FINDINGS)`)
+	sourcePattern := regexp.MustCompile(`(?i)^##\s*Source\s*\d+:\s*(https?://\S+)\s*[-–—]\s*(HIGH|MEDIUM|LOW)\s*RELEVANCE`)
+	sourceSimplePattern := regexp.MustCompile(`(?i)^##\s*Source\s*\d+:\s*`)
+	relevanceTagPattern := regexp.MustCompile(`\s*[-–—]\s*(HIGH|MEDIUM|LOW)\s*RELEVANCE\s*$`)
+
+	flushSection := func() {
+		if len(currentSection) > 0 {
+			// Add section header for non-first sections
+			if sectionCount > 0 {
+				result = append(result, "---")
+				result = append(result, "")
+			}
+			result = append(result, currentSection...)
+			currentSection = nil
+			sectionCount++
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Skip internal PART headers entirely
+		if partPattern.MatchString(trimmed) {
+			flushSection()
+			continue
+		}
+
+		// Transform "## Source N: URL - RELEVANCE" to cleaner format
+		if sourcePattern.MatchString(trimmed) || sourceSimplePattern.MatchString(trimmed) {
+			// Remove relevance tags and simplify
+			cleaned := relevanceTagPattern.ReplaceAllString(trimmed, "")
+			// Keep the source header but cleaner
+			if cleaned != trimmed {
+				currentSection = append(currentSection, cleaned)
+			} else {
+				currentSection = append(currentSection, line)
+			}
+			continue
+		}
+
+		// Keep other lines as-is
+		currentSection = append(currentSection, line)
+	}
+
+	// Flush remaining section
+	flushSection()
+
+	// Join and clean up excessive blank lines
+	output := strings.Join(result, "\n")
+
+	// Remove more than 2 consecutive newlines
+	multiNewline := regexp.MustCompile(`\n{3,}`)
+	output = multiNewline.ReplaceAllString(output, "\n\n")
+
+	// Add a user-friendly header if the output doesn't start with a heading
+	output = strings.TrimSpace(output)
+	if output != "" && !strings.HasPrefix(output, "#") {
+		// Detect language from content
+		header := "## Research Findings"
+		if containsChinese(output) {
+			header = "## 研究发现"
+		} else if containsJapanese(output) {
+			header = "## 調査結果"
+		}
+		output = header + "\n\n" + output
+	}
+
+	return output
+}
+
+// containsChinese checks if text contains Chinese characters
+func containsChinese(text string) bool {
+	for _, r := range text {
+		if r >= 0x4E00 && r <= 0x9FFF {
+			return true
+		}
+	}
+	return false
+}
+
+// containsJapanese checks if text contains Japanese-specific characters (hiragana/katakana)
+func containsJapanese(text string) bool {
+	for _, r := range text {
+		// Hiragana: 0x3040-0x309F, Katakana: 0x30A0-0x30FF
+		if (r >= 0x3040 && r <= 0x309F) || (r >= 0x30A0 && r <= 0x30FF) {
+			return true
+		}
+	}
+	return false
 }

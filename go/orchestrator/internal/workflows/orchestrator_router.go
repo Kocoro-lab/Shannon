@@ -214,6 +214,52 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 	}
 
+	// Early route: Force ResearchWorkflow bypasses decomposition entirely
+	// ResearchWorkflow has its own query refinement + decompose pipeline, so orchestrator-level
+	// decomposition is redundant and wastes LLM tokens.
+	if GetContextBool(input.Context, "force_research") {
+		logger.Info("Force research detected - bypassing orchestrator decomposition")
+
+		// Set parent workflow ID for unified event streaming (must be set before routing)
+		parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
+		input.ParentWorkflowID = parentWorkflowID
+
+		// Emit delegation event
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: parentWorkflowID,
+			EventType:  activities.StreamEventDelegation,
+			AgentID:    "orchestrator",
+			Message:    activities.MsgWorkflowRouting("ResearchWorkflow", "force_research"),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+
+		ometrics.WorkflowsStarted.WithLabelValues("ResearchWorkflow", "force_research").Inc()
+
+		strategiesInput := convertToStrategiesInput(input)
+		var strategiesResult strategies.TaskResult
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		researchFuture := workflow.ExecuteChildWorkflow(childCtx, strategies.ResearchWorkflow, strategiesInput)
+		var researchExec workflow.Execution
+		if err := researchFuture.GetChildWorkflowExecution().Get(childCtx, &researchExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(researchExec.ID)
+		execErr := researchFuture.Get(childCtx, &strategiesResult)
+		controlHandler.UnregisterChildWorkflow(researchExec.ID)
+
+		scheduleStreamEnd(ctx)
+
+		if execErr != nil {
+			controlHandler.EmitCancelledIfNeeded(ctx, execErr.Error())
+			return AddTaskContextToMetadata(TaskResult{}, input.Context), execErr
+		}
+		result := convertFromStrategiesResult(strategiesResult)
+		result = AddTaskContextToMetadata(result, input.Context)
+		return result, nil
+	}
+
 	// 1) Decompose the task (planning + complexity)
 	// Add history to context for decomposition to be context-aware
 	decompContext := make(map[string]interface{})
@@ -512,14 +558,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
 	}
 
-	// Force ResearchWorkflow via context flag (user-facing via CLI and scheduled tasks)
-	// Uses GetContextBool to handle both bool and string "true" (proto map<string,string> converts to string)
-	if GetContextBool(input.Context, "force_research") {
-		logger.Info("Forcing ResearchWorkflow via context flag")
-		if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx, controlHandler); handled {
-			return result, err
-		}
-	}
+	// NOTE: force_research is handled in early routing (before decomposition) to avoid
+	// redundant LLM calls. See "Early route: Force ResearchWorkflow" block above.
 
 	// Route to BrowserUseWorkflow if browser_use role is present (unified agent loop)
 	browserUseVersion := workflow.GetVersion(ctx, "browser_use_routing_v1", workflow.DefaultVersion, 2)

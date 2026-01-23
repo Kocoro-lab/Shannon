@@ -201,6 +201,131 @@ All workflows respect token budgets through:
 4. Add routing logic in `orchestrator_router.go`
 5. Create wrapper in `cognitive_wrappers.go` for test compatibility
 
+## Child Workflows
+
+### Overview
+
+Child workflows are independent Temporal workflows invoked from within a parent workflow. They enable modular, reusable workflow components that can run with their own lifecycle while maintaining connection to the parent.
+
+### When to Use Child Workflows
+
+| Use Case | Rationale |
+|----------|-----------|
+| **Reusable domain logic** | Extract domain-specific logic (e.g., company research) that can be invoked from multiple parent workflows |
+| **Independent retry policies** | Child workflows can have their own retry and timeout settings |
+| **Parallel execution** | Launch multiple child workflows concurrently for parallel data gathering |
+| **Workflow isolation** | Failures in child workflows don't crash the parent |
+| **Large result handling** | Child workflows can aggregate and return summarized results |
+
+### Invoking Child Workflows
+
+Use `workflow.ExecuteChildWorkflow()` to invoke a child workflow:
+
+```go
+// 1. Define child workflow input
+type DomainAnalysisInput struct {
+    ParentWorkflowID    string              // For event propagation
+    CanonicalName       string              // Company/entity name
+    ResearchAreas       []string            // Areas to investigate
+    TargetLanguages     []string            // Languages for search
+    MaxPrefetchURLs     int                 // URL limit
+    Context             map[string]interface{}
+}
+
+// 2. Define child workflow output
+type DomainAnalysisResult struct {
+    DomainAnalysisDigest string             // Structured markdown digest
+    PrefetchURLs         []string           // URLs fetched for citations
+    Stats                DomainAnalysisStats // Metrics (discovered, fetched, errors)
+}
+
+// 3. Invoke from parent workflow
+func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
+    // Configure child workflow options
+    childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+        WorkflowID:                   fmt.Sprintf("domain-analysis-%s", workflowID),
+        TaskQueue:                    input.TaskQueue,
+        WorkflowExecutionTimeout:     15 * time.Minute,
+        WorkflowTaskTimeout:          time.Minute,
+        ParentClosePolicy:            enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+        WaitForCancellation:          true,
+    })
+
+    // Execute child workflow
+    var domainResult DomainAnalysisResult
+    err := workflow.ExecuteChildWorkflow(childCtx, DomainAnalysisWorkflow, DomainAnalysisInput{
+        ParentWorkflowID: workflowID,
+        CanonicalName:    refineResult.CanonicalName,
+        ResearchAreas:    refineResult.ResearchAreas,
+        TargetLanguages:  refineResult.TargetLanguages,
+        MaxPrefetchURLs:  maxPrefetch,
+        Context:          input.Context,
+    }).Get(ctx, &domainResult)
+
+    if err != nil {
+        // Handle child workflow failure gracefully
+        logger.Warn("Child workflow failed, continuing without domain data", "error", err)
+    }
+
+    // Use domainResult.DomainAnalysisDigest in synthesis...
+}
+```
+
+### Control Signal Propagation
+
+Child workflows should support pause/resume/cancel signals from the parent. Use a control handler pattern:
+
+```go
+// In parent workflow - register child for signal propagation
+controlHandler.RegisterChildWorkflow(childWorkflowID)
+defer controlHandler.UnregisterChildWorkflow(childWorkflowID)
+
+// In child workflow - handle signals
+func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (DomainAnalysisResult, error) {
+    // Set up signal channels
+    pauseCh := workflow.GetSignalChannel(ctx, "pause")
+    resumeCh := workflow.GetSignalChannel(ctx, "resume")
+
+    // Check for pause signals during long operations
+    selector := workflow.NewSelector(ctx)
+    selector.AddReceive(pauseCh, func(c workflow.ReceiveChannel, more bool) {
+        // Handle pause
+    })
+    // ...
+}
+```
+
+### Example: DomainAnalysisWorkflow
+
+The `DomainAnalysisWorkflow` is a concrete example of a child workflow pattern:
+
+```
+Parent: ResearchWorkflow
+    │
+    └─► Child: DomainAnalysisWorkflow
+            │
+            ├─► Phase 1: Discovery (web_search for official domains)
+            │
+            ├─► Phase 2: Prefetch (parallel web_subpage_fetch, max 5-15 URLs)
+            │
+            └─► Phase 3: Digest (LLM synthesis into structured evidence)
+```
+
+**Input/Output Flow:**
+- **Input**: Company name, research areas, language preferences
+- **Output**: Structured digest (markdown), fetched URLs (for citations), statistics
+
+**Source**: `go/orchestrator/internal/workflows/strategies/domain_analysis_workflow.go`
+
+### Best Practices
+
+1. **Always pass ParentWorkflowID**: Enables SSE event streaming to parent's clients
+2. **Set appropriate timeouts**: Child workflows should have bounded execution time
+3. **Handle failures gracefully**: Parent should continue even if child fails
+4. **Use ParentClosePolicy**: `REQUEST_CANCEL` ensures cleanup on parent termination
+5. **Limit child workflow nesting**: Avoid deep nesting (max 2 levels recommended)
+6. **Return summarized data**: Avoid returning large raw data; summarize in child
+
 ## Reflection Gating
 
 ### Overview

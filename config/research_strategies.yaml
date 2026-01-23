@@ -3,7 +3,7 @@
 # Model Tier Architecture (Cost Optimization):
 # - Utility activities (coverage_eval, fact_extraction, subquery_gen): always "small"
 # - Agent execution: varies by strategy (see agent_model_tier below)
-# - Final synthesis: always "large" (hardcoded in synthesis.go)
+# - Final synthesis: "large" for standard/deep/academic strategies, "medium" for quick
 #
 # This tiered approach reduces costs by 50-70% while maintaining quality.
 # Industry research shows agentic workflows with smaller models + iteration
@@ -26,6 +26,7 @@ strategies:
     gap_filling_max_iterations: 1
     gap_filling_check_citations: false
     iterative_max_iterations: 1
+    # Standard uses medium for agents; final synthesis auto-upgrades to large
     agent_model_tier: medium
   deep:
     verification_enabled: true
@@ -36,7 +37,7 @@ strategies:
     gap_filling_max_iterations: 2
     gap_filling_check_citations: false
     iterative_max_iterations: 2
-    # Deep uses medium for agents; final synthesis uses large automatically
+    # Deep uses medium for agents; final synthesis auto-upgrades to large
     agent_model_tier: medium
   academic:
     verification_enabled: true
@@ -48,5 +49,5 @@ strategies:
     gap_filling_max_iterations: 3
     gap_filling_check_citations: false
     iterative_max_iterations: 2
-    # Academic uses medium for agents; only final synthesis uses large
+    # Academic uses medium for agents; final synthesis auto-upgrades to large
     agent_model_tier: medium

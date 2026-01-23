@@ -67,18 +67,54 @@ def detect_blocked_reason(content: str, status_code: int = 200) -> Optional[str]
     return None
 
 
+# Blacklist for meaningless alt text patterns
+ALT_BLACKLIST = {
+    'preload', 'loading', 'placeholder', 'lazy',
+    'customer logo', 'logo', 'icon', 'image', 'img',
+    'thumbnail', 'avatar', 'banner', 'hero',
+    'background', 'bg', 'spacer', 'pixel',
+    'video thumbnail', 'play button',
+    'arrow', 'chevron', 'caret',
+    'close', 'menu', 'hamburger',
+    'facebook', 'twitter', 'linkedin', 'instagram', 'youtube',
+    'social', 'share', 'like', 'follow',
+}
+
+
+def _is_meaningless_alt(alt: str) -> bool:
+    """Check if alt text is meaningless and should be removed."""
+    alt_lower = alt.lower().strip()
+
+    # Check blacklist
+    if alt_lower in ALT_BLACKLIST:
+        return True
+
+    # Check if it's a filename (e.g., image.png, photo-123.jpg)
+    if re.match(r'^[\w.-]+\.(png|jpg|jpeg|gif|svg|webp|ico|bmp)$', alt_lower):
+        return True
+
+    # Check if it's just a number or ID-like string
+    if re.match(r'^[\d_-]+$', alt_lower):
+        return True
+
+    # Check for UUID-like patterns
+    if re.match(r'^[a-f0-9-]{20,}$', alt_lower):
+        return True
+
+    return False
+
+
 def clean_markdown_noise(content: str) -> str:
     """
-    清理 fetch 结果中的 markdown 噪音。
+    Clean markdown noise from fetched content.
 
     Features:
-    - 保护代码块不被误改
-    - 移除图片引用，保留有意义的 alt text
-    - 移除 base64 数据
-    - 链接保留可见文本，只移除 URL
-    - 清理 HTML img 标签
-
-    Codex Review: 3 rounds, GPT-5.2 high reasoning
+    - Protect code blocks
+    - Remove images with meaningless alt text (blacklist + filename patterns)
+    - Remove base64 data
+    - Keep link text, remove URLs
+    - Clean HTML img tags
+    - Remove consecutive repetitions
     """
     if not content:
         return content
@@ -98,16 +134,18 @@ def clean_markdown_noise(content: str) -> str:
     # Inline code `...`
     content = re.sub(r'`[^`]+`', save_code, content)
 
-    # Step 1: Remove base64 early (performance optimization, reduces subsequent regex matching)
+    # Step 1: Remove base64 early (performance optimization)
     content = re.sub(r'data:image/[^;]+;base64,[a-zA-Z0-9+/=\s]+', '', content, flags=re.MULTILINE)
 
     # Step 2: Nested image links [![alt](img)](href) -> alt or ''
-    # Must be processed before regular images
     def extract_meaningful_alt(m, group=1):
         alt = m.group(group).strip()
+        # Filter meaningless alt text
+        if _is_meaningless_alt(alt):
+            return ''
         # Keep meaningful alt text (>5 chars, contains Chinese or English)
         if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
-            return alt  # Return plain text without brackets
+            return alt
         return ''
 
     content = re.sub(r'\[!\[([^\]]*)\]\([^)]*\)\]\([^)]*\)',
@@ -126,6 +164,8 @@ def clean_markdown_noise(content: str) -> str:
         alt_match = re.search(r'alt=["\']([^"\']*)["\']', m.group(0))
         if alt_match:
             alt = alt_match.group(1).strip()
+            if _is_meaningless_alt(alt):
+                return ''
             if len(alt) > 5 and re.search(r'[\u4e00-\u9fa5a-zA-Z]{3,}', alt):
                 return alt
         return ''
@@ -149,10 +189,14 @@ def clean_markdown_noise(content: str) -> str:
     # Step 10: Empty links []()
     content = re.sub(r'\[\s*\]\([^)]*\)', '', content)
 
-    # Step 11: Clean up excessive blank lines
+    # Step 11: Remove consecutive repetitions (e.g., "logo logo logo" -> "logo")
+    # Match 2+ consecutive occurrences of the same word/phrase
+    content = re.sub(r'\b(\w+(?:\s+\w+)?)\s*(?:\1\s*){2,}', r'\1', content)
+
+    # Step 12: Clean up excessive blank lines
     content = re.sub(r'\n{3,}', '\n\n', content)
 
-    # Step 12: Restore code blocks
+    # Step 13: Restore code blocks
     for placeholder, original in code_blocks:
         content = content.replace(placeholder, original)
 
@@ -283,8 +327,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
         if not self.validate_api_key(api_key):
             raise ValueError("Invalid or missing Firecrawl API key")
         self.api_key = api_key
-        self.scrape_url = "https://api.firecrawl.dev/v1/scrape"
-        self.crawl_url = "https://api.firecrawl.dev/v1/crawl"
+        self.scrape_url = "https://api.firecrawl.dev/v2/scrape"
+        self.crawl_url = "https://api.firecrawl.dev/v2/crawl"
 
     def _infer_paths_from_target(self, subpage_target: str) -> List[str]:
         """
@@ -375,6 +419,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             logger.info(f"Using map+scrape with depth/keywords scoring for {url}")
         
         # Level 1: Map+scrape (UNIVERSAL INTELLIGENT SELECTION)
+        is_rate_limited = False
         try:
             result = await self._map_and_scrape(url, max_length, subpages, effective_paths)
             if result.get("pages_fetched", 0) > 0:
@@ -386,10 +431,17 @@ class FirecrawlFetchProvider(WebFetchProvider):
                 logger.warning(f"Map+scrape timeout for {url}: {e}")
             elif "429" in error_msg or "rate limit" in error_msg.lower():
                 logger.warning(f"Map+scrape rate limited for {url}: {e}")
+                # Mark as rate limited - crawl fallback will also fail with 429
+                is_rate_limited = True
             else:
                 logger.warning(f"Map+scrape failed for {url}: {e}")
-        
+
         # Level 2: Crawl (UNIVERSAL FALLBACK)
+        # Skip crawl if rate limited - API-wide limit means crawl will also fail
+        if is_rate_limited:
+            logger.warning(f"Skipping crawl fallback for {url} due to rate limit (429)")
+            raise Exception(f"Firecrawl rate limit exceeded (429) for {url}")
+
         try:
             logger.info(f"Fallback to crawl for {url}")
             result = await self._crawl(url, max_length, subpages)
@@ -398,7 +450,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             logger.warning(f"Crawl returned 0 pages for {url}")
         except Exception as e:
             logger.warning(f"Crawl also failed for {url}: {e}")
-        
+
         # All Firecrawl methods failed - raise to trigger provider fallback
         logger.error(f"All Firecrawl methods failed for {url}, raising to trigger fallback")
         raise Exception(f"Firecrawl: all methods failed for {url}")
@@ -414,9 +466,13 @@ class FirecrawlFetchProvider(WebFetchProvider):
         payload = {
             "url": url,
             "formats": ["markdown"],
+            "parsers": ["pdf"],
             "onlyMainContent": True,
+            # Note: 'form' removed - some sites wrap main content in form tags
             "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
-            "timeout": self.DEFAULT_TIMEOUT * 1000,  # Firecrawl uses milliseconds
+            "removeBase64Images": True,
+            "blockAds": True,
+            "timeout": self.DEFAULT_TIMEOUT * 1000,
         }
 
         timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
@@ -486,8 +542,12 @@ class FirecrawlFetchProvider(WebFetchProvider):
             "limit": min(limit + 1, MAX_SUBPAGES + 1),  # +1 for main page
             "scrapeOptions": {
                 "formats": ["markdown"],
+                "parsers": ["pdf"],
                 "onlyMainContent": True,
-                "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
+                # Note: 'form' removed - some sites wrap main content in form tags
+            "excludeTags": ["nav", "footer", "aside", "svg", "script", "style", "noscript"],
+                "removeBase64Images": True,
+                "blockAds": True,
             },
         }
 
@@ -764,7 +824,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
         timeout = aiohttp.ClientTimeout(total=self.AIOHTTP_TIMEOUT)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.post(
-                "https://api.firecrawl.dev/v1/map",
+                "https://api.firecrawl.dev/v2/map",
                 json=payload,
                 headers=headers
             ) as response:
@@ -1389,31 +1449,20 @@ class WebFetchTool(Tool):
         Resolve which provider to use based on request and availability.
 
         Auto-selection logic:
-        - For multi-page (subpages > 0): prefer Firecrawl > Exa > Python
-        - For single page: prefer Exa > Firecrawl > Python
+        - Always prefer Firecrawl > Exa > Python (Firecrawl has better PDF parsing and content extraction)
         """
         # Handle explicit provider request
         if provider_name in ["exa", "firecrawl", "python"]:
             return provider_name
 
-        # Auto-select based on task and availability
+        # Auto-select: always prefer Firecrawl for better PDF parsing and content extraction
         if provider_name == "auto" or provider_name == self.default_provider:
-            if subpages > 0:
-                # Multi-page: prefer Firecrawl for its crawl capabilities
-                if self.firecrawl_provider:
-                    return "firecrawl"
-                elif self.exa_api_key:
-                    return "exa"
-                else:
-                    return "python"
+            if self.firecrawl_provider:
+                return "firecrawl"
+            elif self.exa_api_key:
+                return "exa"
             else:
-                # Single page: prefer Exa for semantic extraction
-                if self.exa_api_key:
-                    return "exa"
-                elif self.firecrawl_provider:
-                    return "firecrawl"
-                else:
-                    return "python"
+                return "python"
 
         # Default fallback
         return self.default_provider if self.default_provider != "auto" else "python"
@@ -1484,10 +1533,27 @@ class WebFetchTool(Tool):
         semaphore = asyncio.Semaphore(concurrency)
 
         async def fetch_one(url: str) -> Dict[str, Any]:
-            """Fetch a single URL with semaphore control."""
+            """Fetch a single URL with semaphore control. Prefer Firecrawl > pure_python."""
             async with semaphore:
+                # Try Firecrawl first if available
+                if self.firecrawl_provider:
+                    try:
+                        result_data = await self.firecrawl_provider._scrape(url, per_url_budget)
+                        return {
+                            "url": result_data.get("url", url),
+                            "success": True,
+                            "title": result_data.get("title", ""),
+                            "content": result_data.get("content", ""),
+                            "char_count": result_data.get("char_count", 0),
+                            "method": "firecrawl",
+                            "status_code": result_data.get("status_code", 200),
+                            "blocked_reason": result_data.get("blocked_reason"),
+                        }
+                    except Exception as e:
+                        logger.warning(f"Firecrawl batch fetch failed for {url}: {e}, falling back to pure_python")
+
+                # Fallback to pure_python
                 try:
-                    # Call the existing single-URL fetch logic
                     result = await self._fetch_pure_python(url, per_url_budget, subpages=0)
                     if result.success and result.output:
                         return {
@@ -1496,7 +1562,7 @@ class WebFetchTool(Tool):
                             "title": result.output.get("title", ""),
                             "content": result.output.get("content", ""),
                             "char_count": len(result.output.get("content", "")),
-                            # P0-A: Pass through status_code and blocked_reason
+                            "method": result.output.get("method", "pure_python"),
                             "status_code": result.output.get("status_code", 200),
                             "blocked_reason": result.output.get("blocked_reason"),
                         }
@@ -1505,7 +1571,8 @@ class WebFetchTool(Tool):
                             "url": url,
                             "success": False,
                             "error": result.error or "Unknown error",
-                            "status_code": 0,  # P0-A: Unknown status
+                            "method": "pure_python",
+                            "status_code": 0,
                             "blocked_reason": "fetch_failed",
                         }
                 except Exception as e:
@@ -1514,7 +1581,8 @@ class WebFetchTool(Tool):
                         "url": url,
                         "success": False,
                         "error": str(e),
-                        "status_code": 0,  # P0-A: Unknown status
+                        "method": "pure_python",
+                        "status_code": 0,
                         "blocked_reason": "exception",
                     }
 

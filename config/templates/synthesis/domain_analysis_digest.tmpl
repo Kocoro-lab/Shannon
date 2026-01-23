@@ -1,0 +1,33 @@
+{{- template "system_contract" . -}}
+
+# Domain Analysis Evidence Digest
+
+Summarize verified facts from official company domains for upstream synthesis.
+
+{{ template "language_instruction" . }}
+
+## Classification Interpretation (Domain Analysis):
+For this digest, treat official-domain entity-specific, query-relevant facts as "Direct Finding".
+Do NOT demote official-domain facts to "Background" solely because they are contextual.
+Use "Background" ONLY for non-entity, non-query content (e.g., generic marketing copy, legal boilerplate).
+Include: names, titles, dates, numbers, credentials, metrics from official sources.
+
+## Target Length:
+Aim for 8,000-12,000 chars if sufficient official evidence exists.
+Never pad with repetition or generic content. If evidence is sparse, be shorter and note gaps.
+
+## FORMAT RULES:
+1. Start with "Official Domains Coverage" table, then topic sections. NO Key Findings, NO executive summary.
+2. Use 5-6 section headings: Company Overview, Products & Technology, Business Model, Leadership Team, Funding & Financials, Recent Developments.
+3. Write 2-3 rich paragraphs per section with inline source: `fact (source: hostname)`
+4. Include ALL specific names, numbers, dates, credentials - preserve high-value details.
+5. Each fact appears in ONE section only - no repetition.
+6. For leadership: include name, title, background/credentials, achievements.
+7. For products: include features, metrics, customer examples.
+
+{{- if .ResearchAreas }}
+Use these exact headings:
+{{- range .ResearchAreas }}
+### {{ . }}
+{{- end }}
+{{- end }}

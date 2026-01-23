@@ -67,6 +67,7 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 	w.RegisterWorkflow(strategies.DAGWorkflow)
 	w.RegisterWorkflow(strategies.ReactWorkflow)
 	w.RegisterWorkflow(strategies.ResearchWorkflow)
+	w.RegisterWorkflow(strategies.DomainAnalysisWorkflow)
 	w.RegisterWorkflow(strategies.BrowserUseWorkflow)
 	r.logger.Info("Registered strategy workflows")
 

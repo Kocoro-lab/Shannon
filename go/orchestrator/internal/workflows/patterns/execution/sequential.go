@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -402,6 +403,12 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 
+	// Pre-generate agent execution ID using SideEffect for replay safety
+	var agentExecutionID string
+	workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+		return uuid.New().String()
+	}).Get(&agentExecutionID)
+
 	// Determine state based on success
 	state := "COMPLETED"
 	if !result.Success {
@@ -413,6 +420,7 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 		persistCtx,
 		activities.PersistAgentExecutionStandalone,
 		activities.PersistAgentExecutionInput{
+			ID:         agentExecutionID,
 			WorkflowID: workflowID,
 			AgentID:    agentID,
 			Input:      input,
@@ -455,15 +463,16 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 				persistCtx,
 				activities.PersistToolExecutionStandalone,
 				activities.PersistToolExecutionInput{
-					WorkflowID:     workflowID,
-					AgentID:        agentID,
-					ToolName:       tool.Tool,
-					InputParams:    inputParamsMap,
-					Output:         outputStr,
-					Success:        tool.Success,
-					TokensConsumed: 0,
-					DurationMs:     tool.DurationMs,
-					Error:          tool.Error,
+					WorkflowID:       workflowID,
+					AgentID:          agentID,
+					AgentExecutionID: agentExecutionID,
+					ToolName:         tool.Tool,
+					InputParams:      inputParamsMap,
+					Output:           outputStr,
+					Success:          tool.Success,
+					TokensConsumed:   0,
+					DurationMs:       tool.DurationMs,
+					Error:            tool.Error,
 				},
 			)
 		}

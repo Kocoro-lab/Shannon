@@ -178,6 +178,16 @@ Bullet format (for facts):
 # PART 2 - NOTES (optional)
 [Conflicts between sources, data gaps, failed fetches summary]
 
+=== HANDLING INFORMATION SCARCITY ===
+
+When search results lack specific information about the query topic:
+1. Explicitly state: "关于[主题]的公开信息有限" or "Limited public information available about [topic]"
+2. Still provide comprehensive analysis of what WAS found, even if tangentially related
+3. Explain what types of information were NOT found (e.g., "No funding rounds disclosed", "Leadership details not publicly available")
+4. Suggest what additional sources might help (e.g., "Company registry filings may contain more details")
+
+This ensures the output remains informative even when target information is scarce.
+
 === FORBIDDEN ===
 - Future action verbs ('I will fetch...', 'I need to search...')
 - URLs not present in tool results
@@ -199,7 +209,7 @@ RULES:
 
 ONLY use information that was ALREADY retrieved."""
 
-SOURCE_FORMAT_ROLES = {"deep_research_agent", "research"}
+SOURCE_FORMAT_ROLES = {"deep_research_agent", "research", "domain_prefetch"}
 
 
 def should_use_source_format(role: Optional[str]) -> bool:
@@ -629,7 +639,9 @@ def validate_interpretation_output(
 
     # Source format: strict validation
     if expect_sources_format:
-        min_length = min(2000, max(200, int(total_tool_output_chars * 0.1)))
+        # Lowered from 2000 to 500: when public info is scarce, LLM may honestly
+        # produce shorter summaries. Previous threshold caused excessive fallbacks.
+        min_length = min(500, max(200, int(total_tool_output_chars * 0.1)))
         if len(stripped) < min_length:
             return False, f"too_short (len={len(stripped)} < min={min_length})"
         # Check format
@@ -1106,6 +1118,10 @@ async def agent_query(request: Request, query: AgentQuery):
                     # Template workflow: upstream node outputs
                     "template_results",
                     "dependency_results",
+                    # Research planning context (from Refiner)
+                    "research_areas",
+                    "research_dimensions",
+                    "target_languages",
                 }
 
                 # Treat context as task-scoped if workflow metadata is present
@@ -1523,11 +1539,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     pass
                 return default_val
 
-            max_tool_iterations = _get_budget("max_tool_iterations", 3)
-            max_total_tool_calls = _get_budget("max_total_tool_calls", 5)
-            max_total_tool_output_chars = _get_budget("max_total_tool_output_chars", 60000)
-            max_urls_to_fetch = _get_budget("max_urls_to_fetch", 10)
-            max_consecutive_tool_failures = _get_budget("max_consecutive_tool_failures", 2)
+            # Detect research mode first to apply appropriate limits
             research_mode = (
                 isinstance(query.context, dict)
                 and (
@@ -1538,24 +1550,31 @@ async def agent_query(request: Request, query: AgentQuery):
                     or query.context.get("role") == "deep_research_agent"
                 )
             )
-            # Different followup instructions based on mode
+
+            # Base defaults for non-research mode
+            default_iterations = 3
+            default_total_calls = 5
+            default_output_chars = 60000
+
+            # Research mode: high limits to avoid premature truncation
+            # LLM controls actual usage via research budget in prompt
             if research_mode:
-                # Deep Research: encourage search → fetch loop, but avoid same-query retries
-                followup_instruction = (
-                    "Continue your research: "
-                    "1) If you just searched, fetch the most relevant URLs to verify claims. "
-                    "2) If you need more info, search with DIFFERENT keywords (not the same query). "
-                    "3) Do NOT retry a query that returned empty results. "
-                    "4) When you have sufficient evidence, proceed to synthesis."
-                )
-            else:
-                # Non-DR: stricter limits to avoid long execution times
-                followup_instruction = (
-                    "If the information is insufficient, you may call another tool with a DIFFERENT strategy "
-                    "(e.g., broader/narrower terms, different keywords, alternative sources). "
-                    "Do NOT retry the same query if it returned empty or poor results. "
-                    "If 2+ attempts yield no useful data, synthesize what you have or report 'No relevant information found'."
-                )
+                default_iterations = 20  # Sufficient headroom for OODA loop
+                default_total_calls = 25  # Support parallel tool calls
+                default_output_chars = 300000  # Rich tool outputs
+
+            max_tool_iterations = _get_budget("max_tool_iterations", default_iterations)
+            max_total_tool_calls = _get_budget("max_total_tool_calls", default_total_calls)
+            max_total_tool_output_chars = _get_budget("max_total_tool_output_chars", default_output_chars)
+            max_urls_to_fetch = _get_budget("max_urls_to_fetch", 10)
+            max_consecutive_tool_failures = _get_budget("max_consecutive_tool_failures", 2)
+            # Followup instruction for non-research mode (research mode builds dynamically in loop)
+            base_followup_instruction = (
+                "If the information is insufficient, you may call another tool with a DIFFERENT strategy "
+                "(e.g., broader/narrower terms, different keywords, alternative sources). "
+                "Do NOT retry the same query if it returned empty or poor results. "
+                "If 2+ attempts yield no useful data, synthesize what you have or report 'No relevant information found'."
+            )
 
             total_tokens = 0
             total_input_tokens = 0
@@ -1638,6 +1657,25 @@ async def agent_query(request: Request, query: AgentQuery):
                     else:
                         logger.warning(f"Skipping malformed tool call without name: {fc}")
 
+                # Fallback: try to parse XML-style tool calls from output_text
+                # Some LLMs output <web_search> XML instead of native function calling
+                if not tool_calls_from_output and response_text:
+                    import re as _re
+                    xml_tool_patterns = [
+                        (r'<web_search[^>]*>.*?query["\s:=]+([^"<]+)', 'web_search'),
+                        (r'<web_fetch[^>]*>.*?url[s]?["\s:=]+([^"<\]]+)', 'web_fetch'),
+                    ]
+                    for pattern, tool_name in xml_tool_patterns:
+                        match = _re.search(pattern, str(response_text), _re.IGNORECASE | _re.DOTALL)
+                        if match and tool_name in (effective_allowed_tools or []):
+                            extracted_arg = match.group(1).strip().strip('"\'')
+                            if tool_name == 'web_search':
+                                tool_calls_from_output.append({"name": tool_name, "arguments": {"query": extracted_arg}})
+                            elif tool_name == 'web_fetch':
+                                tool_calls_from_output.append({"name": tool_name, "arguments": {"urls": [extracted_arg]}})
+                            logger.info(f"🔧 Recovered XML tool call: {tool_name} from output_text")
+                            break  # Only recover one tool call per iteration
+
                 if not tool_calls_from_output or not effective_allowed_tools:
                     stop_reason = "no_tool_call"
                     break
@@ -1685,6 +1723,19 @@ async def agent_query(request: Request, query: AgentQuery):
 
                 total_tool_output_chars += len(tool_results or "")
                 loop_iterations += 1
+
+                # Build dynamic followup instruction for research mode
+                if research_mode:
+                    current_iteration = loop_iterations
+                    # Simple, non-repetitive followup - system prompt has full OODA guidance
+                    followup_instruction = (
+                        f"**[ITERATION {current_iteration}/{max_tool_iterations}]**\n\n"
+                        f"OODA: Observe results → Orient (check research_areas gaps) → Decide → Act\n"
+                        f"When ready, output final synthesis starting with '## Key Findings'.\n"
+                    )
+                else:
+                    # Non-research mode: use base instruction
+                    followup_instruction = base_followup_instruction
 
                 messages.append(
                     {
@@ -1851,11 +1902,20 @@ async def agent_query(request: Request, query: AgentQuery):
                     except Exception:
                         pass
 
+                # Add iteration context to help LLM know it's time to synthesize
+                iteration_context = ""
+                if research_mode and loop_iterations >= max_tool_iterations:
+                    iteration_context = (
+                        f"\n\n**IMPORTANT**: You have completed {loop_iterations} research iterations "
+                        f"(maximum allowed). This is your FINAL OUTPUT. "
+                        f"Generate your comprehensive synthesis now, starting with '## Key Findings'."
+                    )
+
                 interpretation_messages = build_interpretation_messages(
                     system_prompt=system_prompt,
                     original_query=query.query,
                     tool_results_summary=tool_results_summary,
-                    interpretation_prompt=interp_prompt
+                    interpretation_prompt=interp_prompt + iteration_context
                 )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
@@ -2962,7 +3022,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "description": "Search for Apple stock trend analysis forecast",\n'
             '      "dependencies": [],\n'
             '      "estimated_tokens": 800,\n'
-            '      "suggested_tools": ["web_search"],\n'
+            '      "suggested_tools": ["web_search", "web_fetch"],\n'
             '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
             '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
             '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
@@ -3059,6 +3119,13 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n"
             "- NEVER create more than 10 subtasks unless strictly necessary (more subtasks = more overhead = slower results)\n"
             "- If task seems to require many subtasks, RESTRUCTURE to consolidate similar topics\n\n"
+            "# Company/Brand Name Handling in Search Queries:\n"
+            "- NEVER phonetically transliterate brand names into katakana/pinyin\n"
+            "  BAD: 'Notion' → 'ノーション', 'Stripe' → '斯特莱普' (phonetic nonsense)\n"
+            "- Keep brand names AS-IS, combine with local keywords:\n"
+            "  GOOD: 'Notion 料金' (Japanese), 'Stripe 定价' (Chinese)\n"
+            "- If official local company name exists (e.g., 株式会社メルカリ), use that exact form\n"
+            "- When uncertain, default to '{brand_name} {topic}' pattern in target language\n\n"
             "NOTE: You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n\n"
         )
 
@@ -3111,6 +3178,52 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # Combine identity with common decomposition suffix
         decompose_system_prompt = identity_prompt + COMMON_DECOMPOSITION_SUFFIX
+
+        # FIRST DECISION: Domain Analysis (for company queries)
+        # This comes before tool hints because it's the first planning decision (task-1)
+        if isinstance(query.context, dict):
+            query_type = query.context.get("query_type")
+        else:
+            query_type = None
+        if isinstance(query_type, str) and query_type.strip().lower() == "company":
+            domain_analysis_hint = (
+                "\n\n# FIRST DECISION: Domain Analysis (task-1)\n"
+                "Before planning other tasks, decide: does this query need official company sources?\n\n"
+                "## Include domain_analysis when:\n"
+                "- Research needs official sources (IR, product docs, leadership, careers)\n"
+                "- No specific URLs provided by user\n"
+                "- Authoritative primary sources would strengthen the research\n\n"
+                "## Skip domain_analysis when:\n"
+                "- User provides specific URLs to analyze\n"
+                "- Query focuses on external perspectives (news, reviews, public perception)\n"
+                "- Comparing 5+ companies (web_search more efficient)\n\n"
+                "## If included:\n"
+                "Write a description that tells the system WHAT to look for, derived from the user's query.\n\n"
+                "GOOD descriptions (specific, query-driven):\n"
+                "- \"Find TSMC's official IR pages focusing on 3nm capacity and Arizona fab timeline\"\n"
+                "- \"Discover Stripe's developer docs and API pricing pages\"\n"
+                "- \"Locate Tesla's investor relations for Q3 2024 delivery numbers\"\n\n"
+                "BAD descriptions (generic, template-like):\n"
+                "- \"Discover official domains for Company X\" (too vague)\n"
+                "- \"Find company website\" (no research focus)\n\n"
+                "## Structure:\n"
+                "```json\n"
+                "{\"id\": \"task-1\", \"task_type\": \"domain_analysis\",\n"
+                " \"description\": \"<specific focus derived from query>\",\n"
+                " \"dependencies\": [], \"estimated_tokens\": 400,\n"
+                " \"suggested_tools\": [], \"tool_parameters\": {}}\n"
+                "```\n"
+                "Note: Other contract fields (source_guidance, etc.) are ignored for domain_analysis.\n\n"
+                "## Impact on other tasks:\n"
+                "When domain_analysis IS included:\n"
+                "- Domain_analysis already covers official sources, so other tasks should prioritize exploratory discovery\n"
+                "- Focus on external perspectives: news, aggregator, reviews, analyst reports, community discussions\n"
+                "- Seek information that official sources typically don't provide\n\n"
+                "When domain_analysis is SKIPPED:\n"
+                "- Other tasks should include official sources in their research\n"
+                "- Balance official sources with external perspectives\n"
+            )
+            decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
 
         # If tools are available, add a generic tool-aware hint
         if available_tools:
