@@ -649,13 +649,14 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 
 	// Calculate target words for research synthesis
 	// Deep Research 2.0: Increased multiplier to capture more intermediate findings
-	targetWords := 1200
+	// v2.1: Further increased to preserve more details from agent outputs
+	targetWords := 2000
 	if len(areas) > 0 {
-		targetWords = len(areas) * 400 // 400 words per area for comprehensive coverage
+		targetWords = len(areas) * 800 // 800 words per area for comprehensive coverage
 	}
 	// Ensure minimum for comprehensive reports
-	if targetWords < 1800 {
-		targetWords = 1800
+	if targetWords < 3000 {
+		targetWords = 3000
 	}
 
 	// Get available citations string
