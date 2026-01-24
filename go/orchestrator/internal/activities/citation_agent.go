@@ -1216,12 +1216,23 @@ func splitSentencesV2(text string) []string {
 		isSentenceEnd := false
 		switch r {
 		case '.':
-			// Check if this is a decimal point (digit.digit) - NOT a sentence boundary
-			// e.g., "$30.8 billion", "3.14", "v1.2.3"
+			// Check if this is NOT a sentence boundary:
+			// 1. Decimal point: digit.digit (e.g., "$30.8 billion", "3.14", "v1.2.3")
+			// 2. Domain/URL: letter.letter with no space (e.g., "example.com", "test.org")
+			// 3. Abbreviation: letter.digit (e.g., "No.1", "v1.0")
 			prevIsDigit := i > 0 && unicode.IsDigit(runes[i-1])
 			nextIsDigit := i+1 < len(runes) && unicode.IsDigit(runes[i+1])
+			prevIsLetter := i > 0 && unicode.IsLetter(runes[i-1])
+			nextIsLetter := i+1 < len(runes) && unicode.IsLetter(runes[i+1])
+
 			if prevIsDigit && nextIsDigit {
-				// This is a decimal point, not a sentence boundary
+				// Decimal point (e.g., "3.14")
+				isSentenceEnd = false
+			} else if prevIsLetter && nextIsLetter {
+				// Domain name (e.g., "example.com", "test.org")
+				isSentenceEnd = false
+			} else if prevIsLetter && nextIsDigit {
+				// Abbreviation followed by number (e.g., "No.1", "v1.0")
 				isSentenceEnd = false
 			} else {
 				isSentenceEnd = true
@@ -2282,6 +2293,13 @@ When sources have similar authority:
 1. Prefer more recent source
 2. Prefer more specific/detailed source
 3. Prefer source with clearer attribution
+
+---
+
+## SOURCE HINT AWARENESS
+
+Sentences may contain source attributions (e.g., "According to the official website...", "Industry reports show...").
+When present, use these hints to match the appropriate citation by URL/domain.
 
 ---
 
