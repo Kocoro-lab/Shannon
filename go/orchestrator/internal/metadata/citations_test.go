@@ -948,15 +948,15 @@ func TestEnsureSnippet(t *testing.T) {
 			expected: "",
 		},
 
-		// Edge case: Content truncation (MaxSnippetLength = 500)
+		// Edge case: Content truncation (MaxSnippetLength = 4000)
 		{
 			name:    "truncates long content to max length",
 			snippet: "Short",
-			content: strings.Repeat("A", 600), // 600 char content
+			content: strings.Repeat("A", MaxSnippetLength+500), // content longer than max
 			title:   "Title",
 			url:     "https://example.com",
 			minLen:  minLen,
-			// truncateRunes returns first 500 chars + "..."
+			// truncateRunes returns first MaxSnippetLength chars + "..."
 			expected: strings.Repeat("A", MaxSnippetLength) + "...",
 		},
 

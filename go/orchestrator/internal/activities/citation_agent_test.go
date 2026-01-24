@@ -901,10 +901,10 @@ func TestBuildCitationAgentPrompt_PrecisionFirst(t *testing.T) {
 
 	// Ensure strict, evidence-first guidance is present.
 	for _, required := range []string{
-		"PRECISION FIRST",
-		"Content:",
-		"DO NOT cite",
-		"NEVER cite based on inference",
+		"SUFFICIENT EVIDENCE REQUIRED",
+		"Content",
+		"When in doubt",
+		"DO NOT MODIFY TEXT",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("prompt missing required guidance %q", required)

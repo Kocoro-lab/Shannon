@@ -93,8 +93,8 @@ type PlacementResult struct {
 	FailedIdxs []int // Sentence indices that failed
 }
 
-// CitationPlacementV3 represents a single citation placement (V3 simplified - no quote validation)
-type CitationPlacementV3 struct {
+// PlacementCitation represents a single citation placement (placement-based approach)
+type PlacementCitation struct {
 	SentenceIndex int    `json:"sentence_index"` // 0-based index of the sentence
 	SentenceHash  string `json:"sentence_hash"`  // First 6 chars of MD5(normalized_sentence), optional
 	CitationID    int    `json:"citation_id"`    // Single citation number (1-based, must be in valid range)
@@ -102,12 +102,12 @@ type CitationPlacementV3 struct {
 	// Removed: Confidence - not needed in simplified version
 }
 
-// PlacementPlanV3 is the LLM output structure for V3 citation placement
-type PlacementPlanV3 struct {
-	Placements []CitationPlacementV3 `json:"placements"`
+// PlacementPlan2 is the LLM output structure for placement-based citation
+type PlacementPlan2 struct {
+	Placements []PlacementCitation `json:"placements"`
 }
 
-// AddCitations adds inline citations to a report using LLM (V3 simplified with fallback to legacy)
+// AddCitations adds inline citations to a report using LLM (placement-based with fallback to inline)
 func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
@@ -135,38 +135,38 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}, nil
 	}
 
-	// Try V3 simplified approach first
-	result, err := a.addCitationsV3(ctx, input, role)
+	// Try placement-based approach first
+	result, err := a.addCitationsPlacement(ctx, input, role)
 
-	// Check if fallback to legacy is needed
+	// Check if fallback to inline method is needed
 	needFallback := false
 	fallbackReason := ""
 
 	if err != nil {
 		needFallback = true
-		fallbackReason = fmt.Sprintf("V3 error: %v", err)
+		fallbackReason = fmt.Sprintf("placement error: %v", err)
 	} else if result.PlacementStats != nil {
 		applied := result.PlacementStats.Applied
 		total := result.PlacementStats.Total
 		// Fallback if: applied < 3 AND (no placements OR success rate < 50%)
 		if applied < 3 && (total == 0 || float64(applied)/float64(total) < 0.5) {
 			needFallback = true
-			fallbackReason = fmt.Sprintf("V3 low success: applied=%d, total=%d", applied, total)
+			fallbackReason = fmt.Sprintf("placement low success: applied=%d, total=%d", applied, total)
 		}
 	}
 
 	if needFallback {
-		logger.Info("CitationAgent: falling back to legacy",
+		logger.Info("CitationAgent: falling back to inline method",
 			"reason", fallbackReason,
 		)
-		return a.addCitationsLegacy(ctx, input, role)
+		return a.addCitationsInline(ctx, input, role)
 	}
 
 	return result, nil
 }
 
-// addCitationsLegacy adds citations using direct LLM output approach
-func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+// addCitationsInline adds citations using direct LLM output approach
+func (a *Activities) addCitationsInline(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
 	// Debug: count citations with snippets
@@ -1978,25 +1978,25 @@ func buildSourcesSectionV2(usedIDs []int, allCitations []CitationWithIDForAgent,
 }
 
 // ============================================================
-// V3: Anthropic-style Citation Agent with supporting quote validation
+// Placement-based Citation Agent (Anthropic-style approach)
 // ============================================================
 
-// addCitationsV3 adds citations using Anthropic-style approach with supporting_quote validation
-func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+// addCitationsPlacement adds citations using Anthropic-style approach with supporting_quote validation
+func (a *Activities) addCitationsPlacement(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
 	// Step 1: Preprocess report - add sentence numbers
 	sentences := splitSentencesV2(input.Report)
 	numberedReport, sentenceHashes := addSentenceNumbers(sentences)
 
-	logger.Info("CitationAgent V3: preprocessed report",
+	logger.Info("CitationAgent: preprocessed report",
 		"sentence_count", len(sentences),
 		"citations_count", len(input.Citations),
 	)
 
-	// Step 2: Build V3 prompt and call LLM
-	systemPrompt := buildCitationPlacementPromptV3()
-	userContent := buildCitationUserContentV3(numberedReport, input.Citations, sentenceHashes)
+	// Step 2: Build placement prompt and call LLM
+	systemPrompt := buildPlacementPrompt()
+	userContent := buildPlacementUserContent(numberedReport, input.Citations, sentenceHashes)
 
 	// Call LLM service
 	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
@@ -2005,7 +2005,7 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 	}
 	reqURL := fmt.Sprintf("%s/agent/query", llmServiceURL)
 
-	// Use medium tier for V3 (better instruction following for quote extraction)
+	// Use medium tier for placement-based approach (better instruction following)
 	modelTier := input.ModelTier
 	if modelTier == "" {
 		modelTier = "medium"
@@ -2015,7 +2015,7 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 		"query":       userContent,
 		"max_tokens":  8192, // More tokens for supporting quotes
 		"temperature": 0.0,
-		"agent_id":    "citation_agent_v3",
+		"agent_id":    "citation_agent_placement",
 		"model_tier":  modelTier,
 		"context": map[string]interface{}{
 			"system_prompt":      systemPrompt,
@@ -2028,7 +2028,7 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	// Timeout: 120s for V3 (more output with quotes)
+	// Timeout: 120s for placement-based approach
 	client := &http.Client{
 		Timeout:   120 * time.Second,
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
@@ -2039,7 +2039,7 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Agent-ID", "citation_agent_v3")
+	req.Header.Set("X-Agent-ID", "citation_agent_placement")
 	if input.ParentWorkflowID != "" {
 		req.Header.Set("X-Workflow-ID", input.ParentWorkflowID)
 	}
@@ -2073,13 +2073,13 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 	}
 
 	// Step 3: Parse placement plan from LLM response
-	placementPlan, err := parsePlacementPlanV3(llmResp.Response)
+	placementPlan, err := parsePlacementPlan2(llmResp.Response)
 	if err != nil {
-		logger.Warn("CitationAgent V3: failed to parse placement plan", "error", err)
+		logger.Warn("CitationAgent: failed to parse placement plan", "error", err)
 		return nil, fmt.Errorf("failed to parse placement plan: %w", err)
 	}
 
-	logger.Info("CitationAgent V3: parsed placement plan",
+	logger.Info("CitationAgent: parsed placement plan",
 		"placements", len(placementPlan.Placements),
 	)
 
@@ -2099,9 +2099,9 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 	}
 
 	// Step 4: Validate supporting quotes and apply placements
-	citedReport, placementResult := applyPlacementsV3(sentences, placementPlan, sentenceHashes, input.Citations)
+	citedReport, placementResult := applyPlacements(sentences, placementPlan, sentenceHashes, input.Citations)
 
-	logger.Info("CitationAgent V3: applied placements",
+	logger.Info("CitationAgent: applied placements",
 		"applied", placementResult.Applied,
 		"failed", placementResult.Failed,
 	)
@@ -2114,7 +2114,7 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 	}
 
 	// Step 5: Determine validation status
-	// V3 is stricter: require ≥50% success rate
+	// Placement-based is stricter: require ≥50% success rate
 	validationPassed := successRate >= 0.5 || placementResult.Applied >= 3
 
 	var warnings []string
@@ -2142,8 +2142,8 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 	}, nil
 }
 
-// buildCitationPlacementPromptV3 returns the V3 Anthropic-style system prompt
-func buildCitationPlacementPromptV3() string {
+// buildPlacementPrompt returns the Anthropic-style system prompt for placement-based citation
+func buildPlacementPrompt() string {
 	return `You are a citation agent for enhancing reader trust in a research report.
 
 ## YOUR GOAL
@@ -2380,8 +2380,8 @@ Reason: When in doubt, don't cite.
 - A report with 10 accurate citations is better than 50 questionable ones`
 }
 
-// buildCitationUserContentV3 builds the user content for V3 (full snippets, no truncation)
-func buildCitationUserContentV3(numberedReport string, citations []CitationForAgent, hashes []string) string {
+// buildPlacementUserContent builds the user content for placement-based citation (full snippets)
+func buildPlacementUserContent(numberedReport string, citations []CitationForAgent, hashes []string) string {
 	var sb strings.Builder
 
 	sb.WriteString("## Available Citations:\n")
@@ -2390,7 +2390,7 @@ func buildCitationUserContentV3(numberedReport string, citations []CitationForAg
 		if title == "" {
 			title = c.Source
 		}
-		// V3: Use full snippet (up to 2000 chars from collection)
+		// Use full snippet (up to MaxSnippetLength chars from collection)
 		snippet := c.Snippet
 		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", i+1, title, c.URL))
 		if snippet != "" {
@@ -2410,8 +2410,8 @@ func buildCitationUserContentV3(numberedReport string, citations []CitationForAg
 	return sb.String()
 }
 
-// parsePlacementPlanV3 parses the V3 placement plan from LLM response
-func parsePlacementPlanV3(response string) (*PlacementPlanV3, error) {
+// parsePlacementPlan2 parses the placement plan from LLM response
+func parsePlacementPlan2(response string) (*PlacementPlan2, error) {
 	// Try to find JSON in the response
 	response = strings.TrimSpace(response)
 
@@ -2437,7 +2437,7 @@ func parsePlacementPlanV3(response string) (*PlacementPlanV3, error) {
 	}
 	jsonStr := response[startIdx : endIdx+1]
 
-	var plan PlacementPlanV3
+	var plan PlacementPlan2
 	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON: %w", err)
 	}
@@ -2448,7 +2448,7 @@ func parsePlacementPlanV3(response string) (*PlacementPlanV3, error) {
 // validateSupportingQuote checks if the quote exists in the source snippet
 func validateSupportingQuote(quote string, snippet string) bool {
 	if len(quote) < 15 {
-		return false // Quote too short to be meaningful (V3: increased from 10)
+		return false // Quote too short to be meaningful
 	}
 
 	// Normalize both strings for comparison
@@ -2474,8 +2474,8 @@ func normalizeForQuoteMatch(s string) string {
 	return s
 }
 
-// applyPlacementsV3 applies V3 placements with citation ID range validation (simplified - no quote validation)
-func applyPlacementsV3(sentences []string, plan *PlacementPlanV3, hashes []string, citations []CitationForAgent) (string, PlacementResult) {
+// applyPlacements applies citation placements with ID range validation (no quote validation)
+func applyPlacements(sentences []string, plan *PlacementPlan2, hashes []string, citations []CitationForAgent) (string, PlacementResult) {
 	result := PlacementResult{}
 
 	// Create a map of sentence index to citation ID (after validation)
@@ -2507,7 +2507,7 @@ func applyPlacementsV3(sentences []string, plan *PlacementPlanV3, hashes []strin
 			continue
 		}
 
-		// V3 Simplified: No quote validation - citation ID range check is sufficient
+		// Simplified: No quote validation - citation ID range check is sufficient
 		// Quote validation removed because:
 		// 1. Chinese report text often doesn't match English source snippets
 		// 2. The citation_id range check provides the hard constraint against hallucination
