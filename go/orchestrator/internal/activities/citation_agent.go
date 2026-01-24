@@ -93,7 +93,21 @@ type PlacementResult struct {
 	FailedIdxs []int // Sentence indices that failed
 }
 
-// AddCitations adds inline citations to a report using LLM (V2 with fallback to legacy)
+// CitationPlacementV3 represents a single citation placement with supporting quote (V3 Anthropic-style)
+type CitationPlacementV3 struct {
+	SentenceIndex   int    `json:"sentence_index"`   // 0-based index of the sentence
+	SentenceHash    string `json:"sentence_hash"`    // First 6 chars of MD5(normalized_sentence)
+	CitationID      int    `json:"citation_id"`      // Single citation number (not array)
+	SupportingQuote string `json:"supporting_quote"` // EXACT text from source that supports the claim
+	Confidence      string `json:"confidence"`       // "high" only
+}
+
+// PlacementPlanV3 is the LLM output structure for V3 citation placement
+type PlacementPlanV3 struct {
+	Placements []CitationPlacementV3 `json:"placements"`
+}
+
+// AddCitations adds inline citations to a report using LLM (V3 with supporting quote validation)
 func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
@@ -121,8 +135,8 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}, nil
 	}
 
-	// Use direct LLM approach (simpler, more reliable)
-	return a.addCitationsLegacy(ctx, input, role)
+	// Use V3 Anthropic-style approach with supporting quote validation
+	return a.addCitationsV3(ctx, input, role)
 }
 
 // addCitationsLegacy adds citations using direct LLM output approach
@@ -1935,4 +1949,401 @@ func buildSourcesSectionV2(usedIDs []int, allCitations []CitationWithIDForAgent,
 	}
 
 	return sb.String()
+}
+
+// ============================================================
+// V3: Anthropic-style Citation Agent with supporting quote validation
+// ============================================================
+
+// addCitationsV3 adds citations using Anthropic-style approach with supporting_quote validation
+func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	// Step 1: Preprocess report - add sentence numbers
+	sentences := splitSentencesV2(input.Report)
+	numberedReport, sentenceHashes := addSentenceNumbers(sentences)
+
+	logger.Info("CitationAgent V3: preprocessed report",
+		"sentence_count", len(sentences),
+		"citations_count", len(input.Citations),
+	)
+
+	// Step 2: Build V3 prompt and call LLM
+	systemPrompt := buildCitationPlacementPromptV3()
+	userContent := buildCitationUserContentV3(numberedReport, input.Citations, sentenceHashes)
+
+	// Call LLM service
+	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
+	if llmServiceURL == "" {
+		llmServiceURL = "http://llm-service:8000"
+	}
+	reqURL := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	// Use medium tier for V3 (better instruction following for quote extraction)
+	modelTier := input.ModelTier
+	if modelTier == "" {
+		modelTier = "medium"
+	}
+
+	reqBody := map[string]interface{}{
+		"query":       userContent,
+		"max_tokens":  8192, // More tokens for supporting quotes
+		"temperature": 0.0,
+		"agent_id":    "citation_agent_v3",
+		"model_tier":  modelTier,
+		"context": map[string]interface{}{
+			"system_prompt":      systemPrompt,
+			"parent_workflow_id": input.ParentWorkflowID,
+		},
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Timeout: 120s for V3 (more output with quotes)
+	client := &http.Client{
+		Timeout:   120 * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(string(reqJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", "citation_agent_v3")
+	if input.ParentWorkflowID != "" {
+		req.Header.Set("X-Workflow-ID", input.ParentWorkflowID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("LLM call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d from LLM service", resp.StatusCode)
+	}
+
+	// Parse LLM response
+	var llmResp struct {
+		Success  bool   `json:"success"`
+		Response string `json:"response"`
+		Metadata struct {
+			InputTokens  int     `json:"input_tokens"`
+			OutputTokens int     `json:"output_tokens"`
+			CostUSD      float64 `json:"cost_usd"`
+		} `json:"metadata"`
+		TokensUsed int    `json:"tokens_used"`
+		ModelUsed  string `json:"model_used"`
+		Provider   string `json:"provider"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+	}
+
+	// Step 3: Parse placement plan from LLM response
+	placementPlan, err := parsePlacementPlanV3(llmResp.Response)
+	if err != nil {
+		logger.Warn("CitationAgent V3: failed to parse placement plan", "error", err)
+		return nil, fmt.Errorf("failed to parse placement plan: %w", err)
+	}
+
+	logger.Info("CitationAgent V3: parsed placement plan",
+		"placements", len(placementPlan.Placements),
+	)
+
+	if len(placementPlan.Placements) == 0 {
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			CitationsUsed:    nil,
+			ValidationPassed: true,
+			TokensUsed:       llmResp.TokensUsed,
+			ModelUsed:        llmResp.ModelUsed,
+			Provider:         llmResp.Provider,
+			InputTokens:      llmResp.Metadata.InputTokens,
+			OutputTokens:     llmResp.Metadata.OutputTokens,
+			PlacementStats:   &PlacementStats{Total: 0, Applied: 0, Failed: 0, SuccessRate: 0},
+		}, nil
+	}
+
+	// Step 4: Validate supporting quotes and apply placements
+	citedReport, placementResult := applyPlacementsV3(sentences, placementPlan, sentenceHashes, input.Citations)
+
+	logger.Info("CitationAgent V3: applied placements",
+		"applied", placementResult.Applied,
+		"failed", placementResult.Failed,
+	)
+
+	// Calculate success rate
+	total := placementResult.Applied + placementResult.Failed
+	successRate := 0.0
+	if total > 0 {
+		successRate = float64(placementResult.Applied) / float64(total)
+	}
+
+	// Step 5: Determine validation status
+	// V3 is stricter: require ≥50% success rate
+	validationPassed := successRate >= 0.5 || placementResult.Applied >= 3
+
+	var warnings []string
+	if placementResult.Failed > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d/%d placements failed quote validation", placementResult.Failed, total))
+	}
+
+	return &CitationAgentResult{
+		Role:              role,
+		CitedReport:       citedReport,
+		CitationsUsed:     extractUsedCitationNumbers(citedReport),
+		ValidationPassed:  validationPassed,
+		PlacementWarnings: warnings,
+		TokensUsed:        llmResp.TokensUsed,
+		ModelUsed:         llmResp.ModelUsed,
+		Provider:          llmResp.Provider,
+		InputTokens:       llmResp.Metadata.InputTokens,
+		OutputTokens:      llmResp.Metadata.OutputTokens,
+		PlacementStats: &PlacementStats{
+			Total:       total,
+			Applied:     placementResult.Applied,
+			Failed:      placementResult.Failed,
+			SuccessRate: successRate,
+		},
+	}, nil
+}
+
+// buildCitationPlacementPromptV3 returns the V3 Anthropic-style system prompt
+func buildCitationPlacementPromptV3() string {
+	return `You are a citation specialist. Your task is to add correct, verifiable citations to a research report.
+
+## CORE PRINCIPLE: Cite ALL factual claims that have supporting sources
+
+You will receive:
+1. A report with numbered sentences and hashes
+2. Source documents with content snippets
+
+Output a JSON placement plan - DO NOT output the report text.
+
+## CITATION RULES
+
+### When to Cite (aim for 20-50 citations for a typical report)
+✓ ALL specific data points: numbers, dates, percentages, amounts
+✓ ALL names: people, companies, products, technologies
+✓ ALL factual claims that can be verified against source content
+✓ Key conclusions directly stated in sources
+✓ Any information readers would want to verify
+
+### When NOT to Cite
+✗ Section headers and transition sentences
+✗ Synthesis language ("This shows that...", "Overall...", "In summary...")
+✗ Common knowledge that needs no verification
+
+### Source Selection Priority (CRITICAL)
+When multiple sources contain the same information, choose in this order:
+1. **Official company sources** (company domain like ptmind.com, ptengine.com)
+2. **Primary sources** (leadership page, about page, press releases)
+3. **Specialized pages** (specific product pages, team pages)
+4. **Aggregator sources** (Crunchbase, LinkedIn)
+5. **News articles**
+
+Example: If both ptengine.com/about_us AND jp.ptmind.com/leadership mention a person's background, prefer jp.ptmind.com/leadership (more specific/primary source).
+
+### CRITICAL: Direct Support Test
+Before placing a citation, verify:
+"Can I quote the EXACT phrase from the source Content that proves this claim?"
+- If YES → include the supporting_quote and cite
+- If NO → do not cite
+
+### Citation Placement
+- Place at end of sentences (after period)
+- One citation per sentence (choose the BEST source)
+- Cite first occurrence of each fact
+
+## OUTPUT FORMAT
+
+Output ONLY valid JSON (no markdown code blocks):
+
+{
+  "placements": [
+    {
+      "sentence_index": 5,
+      "sentence_hash": "a1b2c3",
+      "citation_id": 3,
+      "supporting_quote": "exact phrase from source that proves claim"
+    }
+  ]
+}
+
+Fields:
+- sentence_index: 0-based index matching the [N] prefix in the report
+- sentence_hash: First 6 chars of the hash shown after each sentence
+- citation_id: Single number (1-based, matching the [N] in Available Citations)
+- supporting_quote: The EXACT text from source Content that supports the claim (REQUIRED, min 15 chars)
+
+## COVERAGE TARGET
+
+Aim to cite 15-30% of sentences in the report. A typical 200-sentence report should have 30-60 citations.
+Prioritize accuracy: every citation MUST have a valid supporting_quote from the source.`
+}
+
+// buildCitationUserContentV3 builds the user content for V3 (full snippets, no truncation)
+func buildCitationUserContentV3(numberedReport string, citations []CitationForAgent, hashes []string) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Available Citations:\n")
+	for i, c := range citations {
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		// V3: Use full snippet (up to 2000 chars from collection)
+		snippet := c.Snippet
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", i+1, title, c.URL))
+		if snippet != "" {
+			sb.WriteString(fmt.Sprintf("    Content: %s\n", snippet))
+		}
+	}
+
+	sb.WriteString("\n## Sentence Hashes:\n")
+	for i, h := range hashes {
+		sb.WriteString(fmt.Sprintf("[%d] hash=%s\n", i, h))
+	}
+
+	sb.WriteString("\n## Report to Analyze:\n")
+	sb.WriteString(numberedReport)
+	sb.WriteString("\n\nOutput your placement plan as JSON:")
+
+	return sb.String()
+}
+
+// parsePlacementPlanV3 parses the V3 placement plan from LLM response
+func parsePlacementPlanV3(response string) (*PlacementPlanV3, error) {
+	// Try to find JSON in the response
+	response = strings.TrimSpace(response)
+
+	// Remove markdown code blocks if present
+	if strings.HasPrefix(response, "```json") {
+		response = strings.TrimPrefix(response, "```json")
+		if idx := strings.LastIndex(response, "```"); idx != -1 {
+			response = response[:idx]
+		}
+	} else if strings.HasPrefix(response, "```") {
+		response = strings.TrimPrefix(response, "```")
+		if idx := strings.LastIndex(response, "```"); idx != -1 {
+			response = response[:idx]
+		}
+	}
+	response = strings.TrimSpace(response)
+
+	// Find JSON object boundaries
+	startIdx := strings.Index(response, "{")
+	endIdx := strings.LastIndex(response, "}")
+	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
+		return nil, fmt.Errorf("no valid JSON found in response")
+	}
+	jsonStr := response[startIdx : endIdx+1]
+
+	var plan PlacementPlanV3
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	return &plan, nil
+}
+
+// validateSupportingQuote checks if the quote exists in the source snippet
+func validateSupportingQuote(quote string, snippet string) bool {
+	if len(quote) < 15 {
+		return false // Quote too short to be meaningful (V3: increased from 10)
+	}
+
+	// Normalize both strings for comparison
+	normalizedQuote := normalizeForQuoteMatch(quote)
+	normalizedSnippet := normalizeForQuoteMatch(snippet)
+
+	return strings.Contains(normalizedSnippet, normalizedQuote)
+}
+
+// normalizeForQuoteMatch normalizes a string for quote matching
+// Removes extra whitespace and lowercases for fuzzy matching
+func normalizeForQuoteMatch(s string) string {
+	// Convert to lowercase
+	s = strings.ToLower(s)
+
+	// Replace multiple whitespace with single space
+	spacePattern := regexp.MustCompile(`\s+`)
+	s = spacePattern.ReplaceAllString(s, " ")
+
+	// Trim
+	s = strings.TrimSpace(s)
+
+	return s
+}
+
+// applyPlacementsV3 applies V3 placements with supporting quote validation
+func applyPlacementsV3(sentences []string, plan *PlacementPlanV3, hashes []string, citations []CitationForAgent) (string, PlacementResult) {
+	result := PlacementResult{}
+
+	// Create a map of sentence index to citation ID (after validation)
+	validPlacements := make(map[int]int) // sentenceIdx -> citationID
+
+	for _, p := range plan.Placements {
+		// Validate sentence index
+		if p.SentenceIndex < 0 || p.SentenceIndex >= len(sentences) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// Validate hash
+		expectedHash := ""
+		if p.SentenceIndex < len(hashes) {
+			expectedHash = hashes[p.SentenceIndex]
+		}
+		if len(p.SentenceHash) < 6 || !strings.HasPrefix(expectedHash, p.SentenceHash[:6]) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// Validate citation ID
+		if p.CitationID < 1 || p.CitationID > len(citations) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// V3 CRITICAL: Validate supporting quote exists in source
+		sourceSnippet := citations[p.CitationID-1].Snippet
+		if !validateSupportingQuote(p.SupportingQuote, sourceSnippet) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// All validations passed
+		validPlacements[p.SentenceIndex] = p.CitationID
+		result.Applied++
+	}
+
+	// Rebuild report with citations
+	var sb strings.Builder
+	for i, sentence := range sentences {
+		if citationID, ok := validPlacements[i]; ok {
+			// Insert citation before trailing newline (for proper markdown table formatting)
+			trimmed := strings.TrimRight(sentence, "\n\r")
+			trailing := sentence[len(trimmed):]
+			sb.WriteString(trimmed)
+			sb.WriteString(fmt.Sprintf("[%d]", citationID))
+			sb.WriteString(trailing)
+		} else {
+			sb.WriteString(sentence)
+		}
+	}
+
+	return sb.String(), result
 }

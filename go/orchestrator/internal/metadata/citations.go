@@ -17,7 +17,7 @@ import (
 
 // Snippet length constants for citation extraction
 const (
-	MaxSnippetLength    = 500 // Maximum characters for snippet content
+	MaxSnippetLength    = 2000 // Maximum characters for snippet content (V3: increased for better citation matching)
 	MinSnippetLength    = 30  // Minimum characters for a valid snippet
 	MinLLMSignalMatches = 2   // Required matches for weak signals and structured fields
 )
