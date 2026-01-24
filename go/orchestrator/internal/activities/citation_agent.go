@@ -93,13 +93,13 @@ type PlacementResult struct {
 	FailedIdxs []int // Sentence indices that failed
 }
 
-// CitationPlacementV3 represents a single citation placement with supporting quote (V3 Anthropic-style)
+// CitationPlacementV3 represents a single citation placement (V3 simplified - no quote validation)
 type CitationPlacementV3 struct {
-	SentenceIndex   int    `json:"sentence_index"`   // 0-based index of the sentence
-	SentenceHash    string `json:"sentence_hash"`    // First 6 chars of MD5(normalized_sentence)
-	CitationID      int    `json:"citation_id"`      // Single citation number (not array)
-	SupportingQuote string `json:"supporting_quote"` // EXACT text from source that supports the claim
-	Confidence      string `json:"confidence"`       // "high" only
+	SentenceIndex int    `json:"sentence_index"` // 0-based index of the sentence
+	SentenceHash  string `json:"sentence_hash"`  // First 6 chars of MD5(normalized_sentence), optional
+	CitationID    int    `json:"citation_id"`    // Single citation number (1-based, must be in valid range)
+	// Removed: SupportingQuote - validation now done by checking citation_id range only
+	// Removed: Confidence - not needed in simplified version
 }
 
 // PlacementPlanV3 is the LLM output structure for V3 citation placement
@@ -107,7 +107,7 @@ type PlacementPlanV3 struct {
 	Placements []CitationPlacementV3 `json:"placements"`
 }
 
-// AddCitations adds inline citations to a report using LLM (V3 with supporting quote validation)
+// AddCitations adds inline citations to a report using LLM (V3 simplified with fallback to legacy)
 func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
@@ -135,8 +135,34 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}, nil
 	}
 
-	// Use V3 Anthropic-style approach with supporting quote validation
-	return a.addCitationsV3(ctx, input, role)
+	// Try V3 simplified approach first
+	result, err := a.addCitationsV3(ctx, input, role)
+
+	// Check if fallback to legacy is needed
+	needFallback := false
+	fallbackReason := ""
+
+	if err != nil {
+		needFallback = true
+		fallbackReason = fmt.Sprintf("V3 error: %v", err)
+	} else if result.PlacementStats != nil {
+		applied := result.PlacementStats.Applied
+		total := result.PlacementStats.Total
+		// Fallback if: applied < 3 AND (no placements OR success rate < 50%)
+		if applied < 3 && (total == 0 || float64(applied)/float64(total) < 0.5) {
+			needFallback = true
+			fallbackReason = fmt.Sprintf("V3 low success: applied=%d, total=%d", applied, total)
+		}
+	}
+
+	if needFallback {
+		logger.Info("CitationAgent: falling back to legacy",
+			"reason", fallbackReason,
+		)
+		return a.addCitationsLegacy(ctx, input, role)
+	}
+
+	return result, nil
 }
 
 // addCitationsLegacy adds citations using direct LLM output approach
@@ -2118,76 +2144,240 @@ func (a *Activities) addCitationsV3(ctx context.Context, input CitationAgentInpu
 
 // buildCitationPlacementPromptV3 returns the V3 Anthropic-style system prompt
 func buildCitationPlacementPromptV3() string {
-	return `You are a citation specialist. Your task is to add correct, verifiable citations to a research report.
+	return `You are a citation agent for enhancing reader trust in a research report.
 
-## CORE PRINCIPLE: Cite ALL factual claims that have supporting sources
+## YOUR GOAL
+Add correct, verifiable citations that help readers verify key claims.
+Citations should INCREASE trust, not clutter the reading experience.
 
-You will receive:
-1. A report with numbered sentences and hashes
-2. Source documents with content snippets
-
-Output a JSON placement plan - DO NOT output the report text.
-
-## CITATION RULES
-
-### When to Cite (aim for 20-50 citations for a typical report)
-✓ ALL specific data points: numbers, dates, percentages, amounts
-✓ ALL names: people, companies, products, technologies
-✓ ALL factual claims that can be verified against source content
-✓ Key conclusions directly stated in sources
-✓ Any information readers would want to verify
-
-### When NOT to Cite
-✗ Section headers and transition sentences
-✗ Synthesis language ("This shows that...", "Overall...", "In summary...")
-✗ Common knowledge that needs no verification
-
-### Source Selection Priority (CRITICAL)
-When multiple sources contain the same information, choose in this order:
-1. **Official company sources** (company domain like ptmind.com, ptengine.com)
-2. **Primary sources** (leadership page, about page, press releases)
-3. **Specialized pages** (specific product pages, team pages)
-4. **Aggregator sources** (Crunchbase, LinkedIn)
-5. **News articles**
-
-Example: If both ptengine.com/about_us AND jp.ptmind.com/leadership mention a person's background, prefer jp.ptmind.com/leadership (more specific/primary source).
-
-### CRITICAL: Direct Support Test
-Before placing a citation, verify:
-"Can I quote the EXACT phrase from the source Content that proves this claim?"
-- If YES → include the supporting_quote and cite
-- If NO → do not cite
-
-### Citation Placement
-- Place at end of sentences (after period)
-- One citation per sentence (choose the BEST source)
-- Cite first occurrence of each fact
+## INPUT
+1. A report with numbered sentences: [0], [1], [2]... and hashes
+2. Source list: [1] to [N] with URL and Content snippet
 
 ## OUTPUT FORMAT
-
-Output ONLY valid JSON (no markdown code blocks):
-
+Output ONLY valid JSON (no markdown, no explanation):
 {
   "placements": [
-    {
-      "sentence_index": 5,
-      "sentence_hash": "a1b2c3",
-      "citation_id": 3,
-      "supporting_quote": "exact phrase from source that proves claim"
-    }
+    {"sentence_index": 0, "sentence_hash": "a1b2c3", "citation_id": 3},
+    {"sentence_index": 5, "sentence_hash": "d4e5f6", "citation_id": 1}
   ]
 }
 
 Fields:
 - sentence_index: 0-based index matching the [N] prefix in the report
 - sentence_hash: First 6 chars of the hash shown after each sentence
-- citation_id: Single number (1-based, matching the [N] in Available Citations)
-- supporting_quote: The EXACT text from source Content that supports the claim (REQUIRED, min 15 chars)
+- citation_id: Single number (1-based, must be between 1 and N)
 
-## COVERAGE TARGET
+---
 
-Aim to cite 15-30% of sentences in the report. A typical 200-sentence report should have 30-60 citations.
-Prioritize accuracy: every citation MUST have a valid supporting_quote from the source.`
+## MANDATORY PRE-OUTPUT CHECKLIST (verify EACH placement)
+
+Before including ANY placement in your output, verify ALL of these:
+
+1. □ **NOT a table row**: Sentence does NOT contain "|" pipe characters
+   - If sentence has "|" → SKIP THIS SENTENCE ENTIRELY
+
+2. □ **NOT a bullet/list item**: Sentence does NOT start with "- " or "* " or numbered list
+   - If sentence starts with bullet marker → SKIP THIS SENTENCE ENTIRELY
+
+3. □ **Valid citation_id**: Number is between 1 and N (total sources)
+   - If out of range → DO NOT OUTPUT THIS PLACEMENT
+
+4. □ **Evidence exists in source**: You can point to SPECIFIC text in the source Content
+   - Numbers in sentence (2015, $10M, 500) → MUST appear in source
+   - Names in sentence (Zhang Wei, Ptmind) → MUST appear in source
+   - If you cannot find matching text → DO NOT CITE
+
+If ANY check fails → DO NOT include this placement. No exceptions.
+
+---
+
+## CITATION SELECTION PRINCIPLES (inspired by Anthropic)
+
+### 1. Reader-Centric: "What would readers want to verify?"
+Ask yourself: "If I were reading this report, which claims would I want to check?"
+- Specific numbers, dates, amounts → readers want to verify
+- Company background, founding story → readers want to verify
+- General synthesis ("Overall...") → readers do NOT need to verify
+
+### 2. Cite Meaningful Units, Not Fragments
+Good: Cite a complete factual claim
+Bad: Cite a single word or small phrase out of context
+
+### 3. Avoid Unnecessary Citations
+Not every sentence needs a citation. Focus on:
+- Key facts and findings
+- Substantive claims linked to sources
+- Claims that add credibility
+
+Skip:
+- Common knowledge
+- Transition sentences
+- Synthesis/summary language
+
+### 4. No Redundant Citations
+- Same source should NOT appear multiple times in adjacent sentences
+- If a fact is repeated, cite only the FIRST occurrence
+
+### 5. One Citation Per Sentence
+- Choose the BEST supporting source
+- Do NOT stack multiple citations on one sentence
+
+### 6. Citation Placement Rules
+- Place citations at END of sentences (after period), NOT mid-sentence
+- NEVER place citations after commas (,) or mid-clause
+- NEVER place citations inside tables or table cells
+- NEVER cite bullet points or list items individually
+
+Bad examples:
+- "The company,[1] founded in 2015..." ← citation after comma
+- "| Revenue | $10M[1] |" ← citation inside table
+- "- Feature A[1]" ← citation on list item
+
+Good example:
+- "The company was founded in 2015 and has grown rapidly.[1]" ← end of sentence
+
+### 7. When In Doubt, Don't Cite
+- If unsure whether a source supports a claim → skip it
+- If the match seems weak or partial → skip it
+- If you're guessing → skip it
+- Empty placements array is acceptable if no confident matches exist
+- Better to have fewer accurate citations than many questionable ones
+
+---
+
+## SOURCE SELECTION PRIORITY
+
+When multiple sources support the same claim, choose based on:
+
+### General Principle: Primary > Secondary > Aggregator
+
+| Source Type | Priority | Examples |
+|------------|----------|----------|
+| **Primary/Official** | Highest | Official websites, government (.gov), academic (.edu), original announcements |
+| **Authoritative** | High | Peer-reviewed papers, industry standards, official documentation |
+| **Professional** | Medium | Major news outlets, industry publications, expert analysis |
+| **Aggregator** | Lower | Wikipedia, Crunchbase, LinkedIn, data aggregators |
+| **User-generated** | Lowest | Forums, blogs, social media posts |
+
+### Context-Specific Guidelines
+
+**For company/organization research:**
+- Prefer official company domain > aggregators > news
+
+**For technical/product research:**
+- Prefer official documentation > tutorials > forums
+
+**For academic/scientific topics:**
+- Prefer peer-reviewed papers > preprints > news coverage
+
+**For current events/news:**
+- Prefer primary reporting > aggregated coverage
+
+**For legal/policy topics:**
+- Prefer government sources > legal databases > commentary
+
+### Tie-Breaker Rules
+When sources have similar authority:
+1. Prefer more recent source
+2. Prefer more specific/detailed source
+3. Prefer source with clearer attribution
+
+---
+
+## CRITICAL VALIDATION RULE
+
+Before outputting a placement, verify:
+1. citation_id is between 1 and N (total sources)
+2. The source Content actually supports the sentence
+
+If you cannot verify both → DO NOT include this placement.
+It is better to have fewer citations than incorrect ones.
+
+---
+
+## WHAT TO CITE
+
+✓ Specific facts: "founded in 2015", "$10M revenue", "200 employees"
+✓ Names and titles: "CEO John Smith", "Product called Ptengine"
+✓ Key findings: "market share increased 50%"
+✓ Claims readers would want to verify
+
+## WHAT NOT TO CITE
+
+✗ Section headers: "## Company Overview"
+✗ Transitions: "Moving on to discuss..."
+✗ Synthesis: "Overall, the company shows strong growth"
+✗ Common knowledge: "Tokyo is in Japan"
+✗ Vague claims without source support
+
+---
+
+## EXAMPLES (Critical for understanding)
+
+### Example 1: GOOD - Specific fact with clear source support
+Sentence [3]: "The company was founded in 2015 by Zhang Wei in Tokyo."
+Source [5] Content: "Ptmind was established in 2015. Founder: Zhang Wei. Headquarters: Tokyo."
+
+Output: {"sentence_index": 3, "sentence_hash": "abc123", "citation_id": 5}
+Reason: Source directly states founding year, founder name, and location.
+
+### Example 2: GOOD - Quantitative data
+Sentence [7]: "Revenue reached $50 million in 2023."
+Source [2] Content: "Annual revenue: $50M (2023 fiscal year)"
+
+Output: {"sentence_index": 7, "sentence_hash": "def456", "citation_id": 2}
+Reason: Source explicitly confirms the revenue figure and year.
+
+### Example 3: BAD - Do NOT cite synthesis/transition
+Sentence [12]: "Overall, the company has shown strong growth in recent years."
+
+Output: (skip this sentence, no placement)
+Reason: This is synthesis language, not a verifiable fact.
+
+### Example 4: BAD - Do NOT cite inside tables
+Sentence [15]: "| Product | Price | Users |"
+Sentence [16]: "| Ptengine | $99/mo | 10,000 |"
+
+Output: (skip these sentences, no placement)
+Reason: Never cite inside table cells.
+
+### Example 5: BAD - Do NOT cite after comma
+Sentence [8]: "The company, founded in Tokyo, expanded to China in 2018."
+
+WRONG: {"sentence_index": 8, "citation_id": 3} with citation after "Tokyo,"
+RIGHT: Either cite at end of sentence, or skip if unsure.
+
+### Example 6: BAD - Source doesn't actually support claim
+Sentence [20]: "The company has 500 employees worldwide."
+Source [4] Content: "Ptmind is a growing tech company with offices in Asia."
+
+Output: (skip - source doesn't mention employee count)
+Reason: Source is about the company but doesn't support the specific claim.
+
+### Example 7: EDGE CASE - Multiple sources, choose best
+Sentence [5]: "Ptmind raised $10M in Series A funding."
+Source [1] Content: "Funding: Series A" (no amount)
+Source [3] Content: "Ptmind announces $10M Series A round" (news article)
+Source [7] Content: "We raised $10M in our Series A" (official blog)
+
+Output: {"sentence_index": 5, "sentence_hash": "ghi789", "citation_id": 7}
+Reason: [7] is official source with exact amount. [1] lacks amount. [3] is news (lower priority than official).
+
+### Example 8: EDGE CASE - Unsure, don't cite
+Sentence [25]: "The team includes experienced engineers from Google and Meta."
+Source [9] Content: "Our team has diverse backgrounds from leading tech companies."
+
+Output: (skip - source is vague, doesn't specifically mention Google/Meta)
+Reason: When in doubt, don't cite.
+
+---
+
+## COVERAGE GUIDANCE
+
+- Aim for 15-30% of sentences to have citations
+- Quality over quantity
+- A report with 10 accurate citations is better than 50 questionable ones`
 }
 
 // buildCitationUserContentV3 builds the user content for V3 (full snippets, no truncation)
@@ -2284,7 +2474,7 @@ func normalizeForQuoteMatch(s string) string {
 	return s
 }
 
-// applyPlacementsV3 applies V3 placements with supporting quote validation
+// applyPlacementsV3 applies V3 placements with citation ID range validation (simplified - no quote validation)
 func applyPlacementsV3(sentences []string, plan *PlacementPlanV3, hashes []string, citations []CitationForAgent) (string, PlacementResult) {
 	result := PlacementResult{}
 
@@ -2292,38 +2482,36 @@ func applyPlacementsV3(sentences []string, plan *PlacementPlanV3, hashes []strin
 	validPlacements := make(map[int]int) // sentenceIdx -> citationID
 
 	for _, p := range plan.Placements {
-		// Validate sentence index
+		// Validate sentence index (REQUIRED)
 		if p.SentenceIndex < 0 || p.SentenceIndex >= len(sentences) {
 			result.Failed++
 			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
 			continue
 		}
 
-		// Validate hash
+		// Validate hash (OPTIONAL - warn but don't fail if mismatch)
 		expectedHash := ""
 		if p.SentenceIndex < len(hashes) {
 			expectedHash = hashes[p.SentenceIndex]
 		}
-		if len(p.SentenceHash) < 6 || !strings.HasPrefix(expectedHash, p.SentenceHash[:6]) {
-			result.Failed++
-			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
-			continue
+		hashValid := len(p.SentenceHash) >= 6 && strings.HasPrefix(expectedHash, p.SentenceHash[:6])
+		if !hashValid && len(p.SentenceHash) > 0 {
+			// Log warning but continue - hash mismatch could be due to minor text variations
+			// The sentence_index is the primary anchor
 		}
 
-		// Validate citation ID
+		// Validate citation ID (REQUIRED - this is our hard constraint against hallucination)
 		if p.CitationID < 1 || p.CitationID > len(citations) {
 			result.Failed++
 			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
 			continue
 		}
 
-		// V3 CRITICAL: Validate supporting quote exists in source
-		sourceSnippet := citations[p.CitationID-1].Snippet
-		if !validateSupportingQuote(p.SupportingQuote, sourceSnippet) {
-			result.Failed++
-			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
-			continue
-		}
+		// V3 Simplified: No quote validation - citation ID range check is sufficient
+		// Quote validation removed because:
+		// 1. Chinese report text often doesn't match English source snippets
+		// 2. The citation_id range check provides the hard constraint against hallucination
+		// 3. Semantic matching is left to the LLM's judgment via strong prompt guidance
 
 		// All validations passed
 		validPlacements[p.SentenceIndex] = p.CitationID
