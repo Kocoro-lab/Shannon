@@ -166,8 +166,11 @@ var (
 		"見つかりませんでした",
 		"情報が見つかりません",
 	}
-	similarityThresh = 0.85
 )
+
+// similarityThresh is the Jaccard similarity threshold for deduplication.
+// Raised from 0.85 to 0.92 to preserve more unique content.
+const similarityThresh = 0.92
 
 func preprocessAgentResults(results []AgentExecutionResult, logger interface{}) []AgentExecutionResult {
 	if len(results) == 0 {
@@ -261,6 +264,8 @@ func jaccardSimilarity(a, b map[string]bool) float64 {
 	return float64(intersection) / float64(union)
 }
 
+// filterLowQuality removes low-quality content at LINE level (not entire response)
+// This preserves valuable content even when some lines contain error messages
 func filterLowQuality(results []AgentExecutionResult) []AgentExecutionResult {
 	var filtered []AgentExecutionResult
 	for _, r := range results {
@@ -268,14 +273,94 @@ func filterLowQuality(results []AgentExecutionResult) []AgentExecutionResult {
 		if !r.Success || resp == "" {
 			continue
 		}
-		// Filter any response containing error patterns (removed 200-char limit)
-		if containsNoInfoPatterns(resp) {
-			continue
+
+		// Clean at line level instead of discarding entire response
+		cleaned := cleanLowQualityLines(resp)
+		if strings.TrimSpace(cleaned) == "" {
+			continue // Only skip if ENTIRE content is low-quality
 		}
+
+		r.Response = cleaned
 		filtered = append(filtered, r)
 	}
 	return filtered
 }
+
+// cleanLowQualityLines removes lines that are PURELY error/no-info content
+// Preserves lines that have error phrases but also contain useful information
+func cleanLowQualityLines(text string) string {
+	lines := strings.Split(text, "\n")
+	var cleanedLines []string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Keep empty lines (preserve formatting)
+		if trimmed == "" {
+			cleanedLines = append(cleanedLines, line)
+			continue
+		}
+
+		// Only filter if line is SHORT and PURELY an error message
+		if isLinePurelyLowQuality(trimmed) {
+			continue // Skip this line only
+		}
+
+		cleanedLines = append(cleanedLines, line)
+	}
+
+	return strings.Join(cleanedLines, "\n")
+}
+
+// isLinePurelyLowQuality returns true ONLY if line is:
+// 1. Short (< 200 chars) AND
+// 2. Contains error pattern AND
+// 3. Does NOT contain substantive content indicators
+func isLinePurelyLowQuality(line string) bool {
+	// Long lines likely have useful content even with error phrases
+	if len(line) > 200 {
+		return false
+	}
+
+	lower := strings.ToLower(line)
+
+	// Check for error patterns
+	hasErrorPattern := false
+	for _, p := range noInfoPatterns {
+		if strings.Contains(lower, p) {
+			hasErrorPattern = true
+			break
+		}
+	}
+
+	if !hasErrorPattern {
+		return false
+	}
+
+	// Check for substantive content indicators (numbers, proper nouns, etc.)
+	// If line has these, keep it even with error phrase
+	substantiveIndicators := []string{
+		":", "：", // likely has key-value content
+		"$", "¥", "€", // currency
+		"%",           // percentage
+		"http", "www", // URLs
+	}
+	for _, ind := range substantiveIndicators {
+		if strings.Contains(line, ind) {
+			return false // Has substantive content, keep it
+		}
+	}
+
+	// Also check for numbers (dates, metrics, etc.)
+	if numbersPattern.MatchString(line) {
+		return false // Has numbers, likely has data
+	}
+
+	return true // Purely an error message, safe to remove
+}
+
+// numbersPattern matches 2+ digit numbers (for dates, metrics, etc.)
+var numbersPattern = regexp.MustCompile(`\d{2,}`)
 
 func containsNoInfoPatterns(text string) bool {
 	lower := strings.ToLower(text)
@@ -1452,7 +1537,7 @@ Section requirements:
 					if style, ok := input.Context["synthesis_style"].(string); ok {
 						switch style {
 						case "comprehensive":
-							minLength = 3000 // ~750 words for deep research
+							minLength = 5000 // ~1250 words for deep research (raised from 3000)
 						case "concise":
 							minLength = 500 // ~125 words for concise mode
 						}
@@ -1467,8 +1552,8 @@ Section requirements:
 							areaCount = len(t)
 						}
 						if areaCount > 0 {
-							// ~400 chars per area minimum (comprehensive expects more)
-							areaMin := areaCount * 400
+							// ~800 chars per area minimum (~200 words, raised from 400)
+							areaMin := areaCount * 800
 							if areaMin > minLength {
 								minLength = areaMin
 							}

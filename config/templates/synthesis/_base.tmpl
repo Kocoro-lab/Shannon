@@ -106,9 +106,21 @@ DO NOT translate or switch to English unless the query is in English.
 - DO NOT add any inline citations [n] to your response
 - A separate Citation Agent will add citations after you finish
 - Focus ONLY on producing accurate, well-organized content
-- When referencing facts from sources, write naturally without citation markers
-- Note conflicting information: "Some sources indicate X, while others suggest Y"
 - Do NOT include a "## Sources" section; the system handles this automatically
+
+## Source Attribution (Important):
+Agent outputs may contain source markers in format: "fact content (Source: domain.com/path)"
+
+When you see these markers:
+- Transform into natural attribution at sentence START
+- Extract domain/path to identify source type (official site, news, database, etc.)
+
+Example:
+- Input: "Founded in 2010, HQ in Tokyo (Source: example.com/company)"
+- Output: "According to the official company page, the company was founded in 2010 with headquarters in Tokyo."
+
+When NO source marker is present, do NOT invent attributions - simply state the fact.
+Note conflicting information: "Some sources indicate X, while others suggest Y"
 {{- else }}
 ## Citation Integration:
 - Use inline citations [1], [2] for ALL factual claims that have supporting sources
@@ -136,8 +148,9 @@ DO NOT translate or switch to English unless the query is in English.
 ## Citation Handling:
 - DO NOT add any inline citations [n] to your response
 - A separate Citation Agent will add citations after you finish
-- When referencing facts, write naturally without citation markers
 - Do NOT include a "## Sources" section; the system handles this automatically
+- When agent outputs contain source markers "(Source: domain)", transform into natural attribution at sentence start
+- When NO source marker present, do NOT invent attributions
 {{- else }}
 ## Citation Integration:
 - Use inline citations [1], [2] for key factual claims

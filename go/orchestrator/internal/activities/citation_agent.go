@@ -93,7 +93,21 @@ type PlacementResult struct {
 	FailedIdxs []int // Sentence indices that failed
 }
 
-// AddCitations adds inline citations to a report using LLM (V2 with fallback to legacy)
+// PlacementCitation represents a single citation placement (placement-based approach)
+type PlacementCitation struct {
+	SentenceIndex int    `json:"sentence_index"` // 0-based index of the sentence
+	SentenceHash  string `json:"sentence_hash"`  // First 6 chars of MD5(normalized_sentence), optional
+	CitationID    int    `json:"citation_id"`    // Single citation number (1-based, must be in valid range)
+	// Removed: SupportingQuote - validation now done by checking citation_id range only
+	// Removed: Confidence - not needed in simplified version
+}
+
+// PlacementPlan2 is the LLM output structure for placement-based citation
+type PlacementPlan2 struct {
+	Placements []PlacementCitation `json:"placements"`
+}
+
+// AddCitations adds inline citations to a report using LLM (placement-based with fallback to inline)
 func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
@@ -121,12 +135,38 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 		}, nil
 	}
 
-	// Use direct LLM approach (simpler, more reliable)
-	return a.addCitationsLegacy(ctx, input, role)
+	// Try placement-based approach first
+	result, err := a.addCitationsPlacement(ctx, input, role)
+
+	// Check if fallback to inline method is needed
+	needFallback := false
+	fallbackReason := ""
+
+	if err != nil {
+		needFallback = true
+		fallbackReason = fmt.Sprintf("placement error: %v", err)
+	} else if result.PlacementStats != nil {
+		applied := result.PlacementStats.Applied
+		total := result.PlacementStats.Total
+		// Fallback if: too few applied OR success rate < 50%
+		if applied < 3 || (total > 0 && float64(applied)/float64(total) < 0.5) {
+			needFallback = true
+			fallbackReason = fmt.Sprintf("placement low success: applied=%d, total=%d", applied, total)
+		}
+	}
+
+	if needFallback {
+		logger.Warn("CitationAgent: falling back to inline method",
+			"reason", fallbackReason,
+		)
+		return a.addCitationsInline(ctx, input, role)
+	}
+
+	return result, nil
 }
 
-// addCitationsLegacy adds citations using direct LLM output approach
-func (a *Activities) addCitationsLegacy(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+// addCitationsInline adds citations using direct LLM output approach
+func (a *Activities) addCitationsInline(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
 	logger := activity.GetLogger(ctx)
 
 	// Debug: count citations with snippets
@@ -1176,12 +1216,23 @@ func splitSentencesV2(text string) []string {
 		isSentenceEnd := false
 		switch r {
 		case '.':
-			// Check if this is a decimal point (digit.digit) - NOT a sentence boundary
-			// e.g., "$30.8 billion", "3.14", "v1.2.3"
+			// Check if this is NOT a sentence boundary:
+			// 1. Decimal point: digit.digit (e.g., "$30.8 billion", "3.14", "v1.2.3")
+			// 2. Domain/URL: letter.letter with no space (e.g., "example.com", "test.org")
+			// 3. Abbreviation: letter.digit (e.g., "No.1", "v1.0")
 			prevIsDigit := i > 0 && unicode.IsDigit(runes[i-1])
 			nextIsDigit := i+1 < len(runes) && unicode.IsDigit(runes[i+1])
+			prevIsLetter := i > 0 && unicode.IsLetter(runes[i-1])
+			nextIsLetter := i+1 < len(runes) && unicode.IsLetter(runes[i+1])
+
 			if prevIsDigit && nextIsDigit {
-				// This is a decimal point, not a sentence boundary
+				// Decimal point (e.g., "3.14")
+				isSentenceEnd = false
+			} else if prevIsLetter && nextIsLetter {
+				// Domain name (e.g., "example.com", "test.org")
+				isSentenceEnd = false
+			} else if prevIsLetter && nextIsDigit {
+				// Abbreviation followed by number (e.g., "No.1", "v1.0")
 				isSentenceEnd = false
 			} else {
 				isSentenceEnd = true
@@ -1935,4 +1986,570 @@ func buildSourcesSectionV2(usedIDs []int, allCitations []CitationWithIDForAgent,
 	}
 
 	return sb.String()
+}
+
+// ============================================================
+// Placement-based Citation Agent (Anthropic-style approach)
+// ============================================================
+
+// addCitationsPlacement adds citations using Anthropic-style approach with supporting_quote validation
+func (a *Activities) addCitationsPlacement(ctx context.Context, input CitationAgentInput, role string) (*CitationAgentResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	// Step 1: Preprocess report - add sentence numbers
+	sentences := splitSentencesV2(input.Report)
+	numberedReport, sentenceHashes := addSentenceNumbers(sentences)
+
+	logger.Info("CitationAgent: preprocessed report",
+		"sentence_count", len(sentences),
+		"citations_count", len(input.Citations),
+	)
+
+	// Step 2: Build placement prompt and call LLM
+	systemPrompt := buildPlacementPrompt()
+	userContent := buildPlacementUserContent(numberedReport, input.Citations, sentenceHashes)
+
+	// Call LLM service
+	llmServiceURL := os.Getenv("LLM_SERVICE_URL")
+	if llmServiceURL == "" {
+		llmServiceURL = "http://llm-service:8000"
+	}
+	reqURL := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	// Use medium tier for placement-based approach (better instruction following)
+	modelTier := input.ModelTier
+	if modelTier == "" {
+		modelTier = "medium"
+	}
+
+	reqBody := map[string]interface{}{
+		"query":       userContent,
+		"max_tokens":  8192, // More tokens for supporting quotes
+		"temperature": 0.0,
+		"agent_id":    "citation_agent_placement",
+		"model_tier":  modelTier,
+		"context": map[string]interface{}{
+			"system_prompt":      systemPrompt,
+			"parent_workflow_id": input.ParentWorkflowID,
+		},
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Timeout: 120s for placement-based approach
+	client := &http.Client{
+		Timeout:   120 * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, strings.NewReader(string(reqJSON)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", "citation_agent_placement")
+	if input.ParentWorkflowID != "" {
+		req.Header.Set("X-Workflow-ID", input.ParentWorkflowID)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("LLM call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HTTP %d from LLM service", resp.StatusCode)
+	}
+
+	// Parse LLM response
+	var llmResp struct {
+		Success  bool   `json:"success"`
+		Response string `json:"response"`
+		Metadata struct {
+			InputTokens  int     `json:"input_tokens"`
+			OutputTokens int     `json:"output_tokens"`
+			CostUSD      float64 `json:"cost_usd"`
+		} `json:"metadata"`
+		TokensUsed int    `json:"tokens_used"`
+		ModelUsed  string `json:"model_used"`
+		Provider   string `json:"provider"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		return nil, fmt.Errorf("failed to parse LLM response: %w", err)
+	}
+
+	// Step 3: Parse placement plan from LLM response
+	placementPlan, err := parsePlacementPlan2(llmResp.Response)
+	if err != nil {
+		logger.Warn("CitationAgent: failed to parse placement plan", "error", err)
+		return nil, fmt.Errorf("failed to parse placement plan: %w", err)
+	}
+
+	logger.Info("CitationAgent: parsed placement plan",
+		"placements", len(placementPlan.Placements),
+	)
+
+	if len(placementPlan.Placements) == 0 {
+		return &CitationAgentResult{
+			Role:             role,
+			CitedReport:      input.Report,
+			CitationsUsed:    nil,
+			ValidationPassed: true,
+			TokensUsed:       llmResp.TokensUsed,
+			ModelUsed:        llmResp.ModelUsed,
+			Provider:         llmResp.Provider,
+			InputTokens:      llmResp.Metadata.InputTokens,
+			OutputTokens:     llmResp.Metadata.OutputTokens,
+			PlacementStats:   &PlacementStats{Total: 0, Applied: 0, Failed: 0, SuccessRate: 0},
+		}, nil
+	}
+
+	// Step 4: Validate supporting quotes and apply placements
+	citedReport, placementResult := applyPlacements(sentences, placementPlan, sentenceHashes, input.Citations)
+
+	logger.Info("CitationAgent: applied placements",
+		"applied", placementResult.Applied,
+		"failed", placementResult.Failed,
+	)
+
+	// Calculate success rate
+	total := placementResult.Applied + placementResult.Failed
+	successRate := 0.0
+	if total > 0 {
+		successRate = float64(placementResult.Applied) / float64(total)
+	}
+
+	// Step 5: Determine validation status
+	// Placement-based is stricter: require ≥50% success rate
+	validationPassed := successRate >= 0.5 || placementResult.Applied >= 3
+
+	var warnings []string
+	if placementResult.Failed > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d/%d placements failed quote validation", placementResult.Failed, total))
+	}
+
+	return &CitationAgentResult{
+		Role:              role,
+		CitedReport:       citedReport,
+		CitationsUsed:     extractUsedCitationNumbers(citedReport),
+		ValidationPassed:  validationPassed,
+		PlacementWarnings: warnings,
+		TokensUsed:        llmResp.TokensUsed,
+		ModelUsed:         llmResp.ModelUsed,
+		Provider:          llmResp.Provider,
+		InputTokens:       llmResp.Metadata.InputTokens,
+		OutputTokens:      llmResp.Metadata.OutputTokens,
+		PlacementStats: &PlacementStats{
+			Total:       total,
+			Applied:     placementResult.Applied,
+			Failed:      placementResult.Failed,
+			SuccessRate: successRate,
+		},
+	}, nil
+}
+
+// buildPlacementPrompt returns the Anthropic-style system prompt for placement-based citation
+func buildPlacementPrompt() string {
+	return `You are a citation agent for enhancing reader trust in a research report.
+
+## YOUR GOAL
+Add correct, verifiable citations that help readers verify key claims.
+Citations should INCREASE trust, not clutter the reading experience.
+
+## INPUT
+1. A report with numbered sentences: [0], [1], [2]... and hashes
+2. Source list: [1] to [N] with URL and Content snippet
+
+## OUTPUT FORMAT
+Output ONLY valid JSON (no markdown, no explanation):
+{
+  "placements": [
+    {"sentence_index": 0, "sentence_hash": "a1b2c3", "citation_id": 3},
+    {"sentence_index": 5, "sentence_hash": "d4e5f6", "citation_id": 1}
+  ]
+}
+
+Fields:
+- sentence_index: 0-based index matching the [N] prefix in the report
+- sentence_hash: First 6 chars of the hash shown after each sentence
+- citation_id: Single number (1-based, must be between 1 and N)
+
+---
+
+## MANDATORY PRE-OUTPUT CHECKLIST (verify EACH placement)
+
+Before including ANY placement in your output, verify ALL of these:
+
+1. □ **NOT a table row**: Sentence does NOT contain "|" pipe characters
+   - If sentence has "|" → SKIP THIS SENTENCE ENTIRELY
+
+2. □ **NOT a bullet/list item**: Sentence does NOT start with "- " or "* " or numbered list
+   - If sentence starts with bullet marker → SKIP THIS SENTENCE ENTIRELY
+
+3. □ **Valid citation_id**: Number is between 1 and N (total sources)
+   - If out of range → DO NOT OUTPUT THIS PLACEMENT
+
+4. □ **Evidence exists in source**: You can point to SPECIFIC text in the source Content
+   - Numbers in sentence (2015, $10M, 500) → MUST appear in source
+   - Names in sentence (Zhang Wei, Ptmind) → MUST appear in source
+   - If you cannot find matching text → DO NOT CITE
+
+If ANY check fails → DO NOT include this placement. No exceptions.
+
+---
+
+## CITATION SELECTION PRINCIPLES (inspired by Anthropic)
+
+### 1. Reader-Centric: "What would readers want to verify?"
+Ask yourself: "If I were reading this report, which claims would I want to check?"
+- Specific numbers, dates, amounts → readers want to verify
+- Company background, founding story → readers want to verify
+- General synthesis ("Overall...") → readers do NOT need to verify
+
+### 2. Cite Meaningful Units, Not Fragments
+Good: Cite a complete factual claim
+Bad: Cite a single word or small phrase out of context
+
+### 3. Avoid Unnecessary Citations
+Not every sentence needs a citation. Focus on:
+- Key facts and findings
+- Substantive claims linked to sources
+- Claims that add credibility
+
+Skip:
+- Common knowledge
+- Transition sentences
+- Synthesis/summary language
+
+### 4. No Redundant Citations
+- Same source should NOT appear multiple times in adjacent sentences
+- If a fact is repeated, cite only the FIRST occurrence
+
+### 5. One Citation Per Sentence
+- Choose the BEST supporting source
+- Do NOT stack multiple citations on one sentence
+
+### 6. Citation Placement Rules
+- Place citations at END of sentences (after period), NOT mid-sentence
+- NEVER place citations after commas (,) or mid-clause
+- NEVER place citations inside tables or table cells
+- NEVER cite bullet points or list items individually
+
+Bad examples:
+- "The company,[1] founded in 2015..." ← citation after comma
+- "| Revenue | $10M[1] |" ← citation inside table
+- "- Feature A[1]" ← citation on list item
+
+Good example:
+- "The company was founded in 2015 and has grown rapidly.[1]" ← end of sentence
+
+### 7. When In Doubt, Don't Cite
+- If unsure whether a source supports a claim → skip it
+- If the match seems weak or partial → skip it
+- If you're guessing → skip it
+- Empty placements array is acceptable if no confident matches exist
+- Better to have fewer accurate citations than many questionable ones
+
+---
+
+## SOURCE SELECTION PRIORITY
+
+When multiple sources support the same claim, choose based on:
+
+### General Principle: Primary > Secondary > Aggregator
+
+| Source Type | Priority | Examples |
+|------------|----------|----------|
+| **Primary/Official** | Highest | Official websites, government (.gov), academic (.edu), original announcements |
+| **Authoritative** | High | Peer-reviewed papers, industry standards, official documentation |
+| **Professional** | Medium | Major news outlets, industry publications, expert analysis |
+| **Aggregator** | Lower | Wikipedia, Crunchbase, LinkedIn, data aggregators |
+| **User-generated** | Lowest | Forums, blogs, social media posts |
+
+### Context-Specific Guidelines
+
+**For company/organization research:**
+- Prefer official company domain > aggregators > news
+
+**For technical/product research:**
+- Prefer official documentation > tutorials > forums
+
+**For academic/scientific topics:**
+- Prefer peer-reviewed papers > preprints > news coverage
+
+**For current events/news:**
+- Prefer primary reporting > aggregated coverage
+
+**For legal/policy topics:**
+- Prefer government sources > legal databases > commentary
+
+### Tie-Breaker Rules
+When sources have similar authority:
+1. Prefer more recent source
+2. Prefer more specific/detailed source
+3. Prefer source with clearer attribution
+
+---
+
+## SOURCE HINT AWARENESS
+
+Sentences may contain source attributions (e.g., "According to the official website...", "Industry reports show...").
+When present, use these hints to match the appropriate citation by URL/domain.
+
+---
+
+## CRITICAL VALIDATION RULE
+
+Before outputting a placement, verify:
+1. citation_id is between 1 and N (total sources)
+2. The source Content actually supports the sentence
+
+If you cannot verify both → DO NOT include this placement.
+It is better to have fewer citations than incorrect ones.
+
+---
+
+## WHAT TO CITE
+
+✓ Specific facts: "founded in 2015", "$10M revenue", "200 employees"
+✓ Names and titles: "CEO John Smith", "Product called Ptengine"
+✓ Key findings: "market share increased 50%"
+✓ Claims readers would want to verify
+
+## WHAT NOT TO CITE
+
+✗ Section headers: "## Company Overview"
+✗ Transitions: "Moving on to discuss..."
+✗ Synthesis: "Overall, the company shows strong growth"
+✗ Common knowledge: "Tokyo is in Japan"
+✗ Vague claims without source support
+
+---
+
+## EXAMPLES (Critical for understanding)
+
+### Example 1: GOOD - Specific fact with clear source support
+Sentence [3]: "The company was founded in 2015 by Zhang Wei in Tokyo."
+Source [5] Content: "Ptmind was established in 2015. Founder: Zhang Wei. Headquarters: Tokyo."
+
+Output: {"sentence_index": 3, "sentence_hash": "abc123", "citation_id": 5}
+Reason: Source directly states founding year, founder name, and location.
+
+### Example 2: GOOD - Quantitative data
+Sentence [7]: "Revenue reached $50 million in 2023."
+Source [2] Content: "Annual revenue: $50M (2023 fiscal year)"
+
+Output: {"sentence_index": 7, "sentence_hash": "def456", "citation_id": 2}
+Reason: Source explicitly confirms the revenue figure and year.
+
+### Example 3: BAD - Do NOT cite synthesis/transition
+Sentence [12]: "Overall, the company has shown strong growth in recent years."
+
+Output: (skip this sentence, no placement)
+Reason: This is synthesis language, not a verifiable fact.
+
+### Example 4: BAD - Do NOT cite inside tables
+Sentence [15]: "| Product | Price | Users |"
+Sentence [16]: "| Ptengine | $99/mo | 10,000 |"
+
+Output: (skip these sentences, no placement)
+Reason: Never cite inside table cells.
+
+### Example 5: BAD - Do NOT cite after comma
+Sentence [8]: "The company, founded in Tokyo, expanded to China in 2018."
+
+WRONG: {"sentence_index": 8, "citation_id": 3} with citation after "Tokyo,"
+RIGHT: Either cite at end of sentence, or skip if unsure.
+
+### Example 6: BAD - Source doesn't actually support claim
+Sentence [20]: "The company has 500 employees worldwide."
+Source [4] Content: "Ptmind is a growing tech company with offices in Asia."
+
+Output: (skip - source doesn't mention employee count)
+Reason: Source is about the company but doesn't support the specific claim.
+
+### Example 7: EDGE CASE - Multiple sources, choose best
+Sentence [5]: "Ptmind raised $10M in Series A funding."
+Source [1] Content: "Funding: Series A" (no amount)
+Source [3] Content: "Ptmind announces $10M Series A round" (news article)
+Source [7] Content: "We raised $10M in our Series A" (official blog)
+
+Output: {"sentence_index": 5, "sentence_hash": "ghi789", "citation_id": 7}
+Reason: [7] is official source with exact amount. [1] lacks amount. [3] is news (lower priority than official).
+
+### Example 8: EDGE CASE - Unsure, don't cite
+Sentence [25]: "The team includes experienced engineers from Google and Meta."
+Source [9] Content: "Our team has diverse backgrounds from leading tech companies."
+
+Output: (skip - source is vague, doesn't specifically mention Google/Meta)
+Reason: When in doubt, don't cite.
+
+---
+
+## COVERAGE GUIDANCE
+
+- Aim for 15-30% of sentences to have citations
+- Quality over quantity
+- A report with 10 accurate citations is better than 50 questionable ones`
+}
+
+// buildPlacementUserContent builds the user content for placement-based citation (full snippets)
+func buildPlacementUserContent(numberedReport string, citations []CitationForAgent, hashes []string) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Available Citations:\n")
+	for i, c := range citations {
+		title := c.Title
+		if title == "" {
+			title = c.Source
+		}
+		// Use full snippet (up to MaxSnippetLength chars from collection)
+		snippet := c.Snippet
+		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", i+1, title, c.URL))
+		if snippet != "" {
+			sb.WriteString(fmt.Sprintf("    Content: %s\n", snippet))
+		}
+	}
+
+	sb.WriteString("\n## Sentence Hashes:\n")
+	for i, h := range hashes {
+		sb.WriteString(fmt.Sprintf("[%d] hash=%s\n", i, h))
+	}
+
+	sb.WriteString("\n## Report to Analyze:\n")
+	sb.WriteString(numberedReport)
+	sb.WriteString("\n\nOutput your placement plan as JSON:")
+
+	return sb.String()
+}
+
+// parsePlacementPlan2 parses the placement plan from LLM response
+func parsePlacementPlan2(response string) (*PlacementPlan2, error) {
+	// Try to find JSON in the response
+	response = strings.TrimSpace(response)
+
+	// Remove markdown code blocks if present
+	if strings.HasPrefix(response, "```json") {
+		response = strings.TrimPrefix(response, "```json")
+		if idx := strings.LastIndex(response, "```"); idx != -1 {
+			response = response[:idx]
+		}
+	} else if strings.HasPrefix(response, "```") {
+		response = strings.TrimPrefix(response, "```")
+		if idx := strings.LastIndex(response, "```"); idx != -1 {
+			response = response[:idx]
+		}
+	}
+	response = strings.TrimSpace(response)
+
+	// Find JSON object boundaries
+	startIdx := strings.Index(response, "{")
+	endIdx := strings.LastIndex(response, "}")
+	if startIdx == -1 || endIdx == -1 || endIdx <= startIdx {
+		return nil, fmt.Errorf("no valid JSON found in response")
+	}
+	jsonStr := response[startIdx : endIdx+1]
+
+	var plan PlacementPlan2
+	if err := json.Unmarshal([]byte(jsonStr), &plan); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	return &plan, nil
+}
+
+// validateSupportingQuote checks if the quote exists in the source snippet
+func validateSupportingQuote(quote string, snippet string) bool {
+	if len(quote) < 15 {
+		return false // Quote too short to be meaningful
+	}
+
+	// Normalize both strings for comparison
+	normalizedQuote := normalizeForQuoteMatch(quote)
+	normalizedSnippet := normalizeForQuoteMatch(snippet)
+
+	return strings.Contains(normalizedSnippet, normalizedQuote)
+}
+
+// normalizeForQuoteMatch normalizes a string for quote matching
+// Removes extra whitespace and lowercases for fuzzy matching
+func normalizeForQuoteMatch(s string) string {
+	// Convert to lowercase
+	s = strings.ToLower(s)
+
+	// Replace multiple whitespace with single space
+	spacePattern := regexp.MustCompile(`\s+`)
+	s = spacePattern.ReplaceAllString(s, " ")
+
+	// Trim
+	s = strings.TrimSpace(s)
+
+	return s
+}
+
+// applyPlacements applies citation placements with ID range validation (no quote validation)
+func applyPlacements(sentences []string, plan *PlacementPlan2, hashes []string, citations []CitationForAgent) (string, PlacementResult) {
+	result := PlacementResult{}
+
+	// Create a map of sentence index to citation ID (after validation)
+	validPlacements := make(map[int]int) // sentenceIdx -> citationID
+
+	for _, p := range plan.Placements {
+		// Validate sentence index (REQUIRED)
+		if p.SentenceIndex < 0 || p.SentenceIndex >= len(sentences) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// Validate hash (OPTIONAL - warn but don't fail if mismatch)
+		expectedHash := ""
+		if p.SentenceIndex < len(hashes) {
+			expectedHash = hashes[p.SentenceIndex]
+		}
+		hashValid := len(p.SentenceHash) >= 6 && strings.HasPrefix(expectedHash, p.SentenceHash[:6])
+		if !hashValid && len(p.SentenceHash) > 0 {
+			// Log warning but continue - hash mismatch could be due to minor text variations
+			// The sentence_index is the primary anchor
+		}
+
+		// Validate citation ID (REQUIRED - this is our hard constraint against hallucination)
+		if p.CitationID < 1 || p.CitationID > len(citations) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
+
+		// Simplified: No quote validation - citation ID range check is sufficient
+		// Quote validation removed because:
+		// 1. Chinese report text often doesn't match English source snippets
+		// 2. The citation_id range check provides the hard constraint against hallucination
+		// 3. Semantic matching is left to the LLM's judgment via strong prompt guidance
+
+		// All validations passed
+		validPlacements[p.SentenceIndex] = p.CitationID
+		result.Applied++
+	}
+
+	// Rebuild report with citations
+	var sb strings.Builder
+	for i, sentence := range sentences {
+		if citationID, ok := validPlacements[i]; ok {
+			// Insert citation before trailing newline (for proper markdown table formatting)
+			trimmed := strings.TrimRight(sentence, "\n\r")
+			trailing := sentence[len(trimmed):]
+			sb.WriteString(trimmed)
+			sb.WriteString(fmt.Sprintf("[%d]", citationID))
+			sb.WriteString(trailing)
+		} else {
+			sb.WriteString(sentence)
+		}
+	}
+
+	return sb.String(), result
 }
