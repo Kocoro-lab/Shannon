@@ -166,8 +166,11 @@ var (
 		"見つかりませんでした",
 		"情報が見つかりません",
 	}
-	similarityThresh = 0.92 // Raised from 0.85 to preserve more unique content
 )
+
+// similarityThresh is the Jaccard similarity threshold for deduplication.
+// Raised from 0.85 to 0.92 to preserve more unique content.
+const similarityThresh = 0.92
 
 func preprocessAgentResults(results []AgentExecutionResult, logger interface{}) []AgentExecutionResult {
 	if len(results) == 0 {

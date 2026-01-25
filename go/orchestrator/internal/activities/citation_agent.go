@@ -148,15 +148,15 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 	} else if result.PlacementStats != nil {
 		applied := result.PlacementStats.Applied
 		total := result.PlacementStats.Total
-		// Fallback if: applied < 3 AND (no placements OR success rate < 50%)
-		if applied < 3 && (total == 0 || float64(applied)/float64(total) < 0.5) {
+		// Fallback if: too few applied OR success rate < 50%
+		if applied < 3 || (total > 0 && float64(applied)/float64(total) < 0.5) {
 			needFallback = true
 			fallbackReason = fmt.Sprintf("placement low success: applied=%d, total=%d", applied, total)
 		}
 	}
 
 	if needFallback {
-		logger.Info("CitationAgent: falling back to inline method",
+		logger.Warn("CitationAgent: falling back to inline method",
 			"reason", fallbackReason,
 		)
 		return a.addCitationsInline(ctx, input, role)
