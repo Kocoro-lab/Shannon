@@ -90,6 +90,13 @@ impl SandboxServiceImpl {
                 .map_err(|e| Status::not_found(format!("Path error: {}", e)))?;
 
             if !canonical.starts_with(&workspace) {
+                warn!(
+                    session_id = %session_id,
+                    path = %path,
+                    resolved = %canonical.display(),
+                    violation = "path_escape",
+                    "Security violation: path escapes workspace"
+                );
                 return Err(Status::permission_denied("Path escapes workspace"));
             }
             return Ok(canonical);
@@ -103,6 +110,13 @@ impl SandboxServiceImpl {
                     .map_err(|e| Status::internal(format!("Parent path error: {}", e)))?;
 
                 if !canonical_parent.starts_with(&workspace) {
+                    warn!(
+                        session_id = %session_id,
+                        path = %path,
+                        resolved_parent = %canonical_parent.display(),
+                        violation = "parent_path_escape",
+                        "Security violation: parent path escapes workspace"
+                    );
                     return Err(Status::permission_denied("Path escapes workspace"));
                 }
             }
@@ -135,7 +149,12 @@ impl SandboxService for SandboxServiceImpl {
         request: Request<FileReadRequest>,
     ) -> Result<Response<FileReadResponse>, Status> {
         let req = request.into_inner();
-        info!("FileRead: session={}, path={}", req.session_id, req.path);
+        info!(
+            session_id = %req.session_id,
+            path = %req.path,
+            operation = "file_read",
+            "Sandbox file read operation"
+        );
 
         let target = self.resolve_path(&req.session_id, &req.path)?;
 
@@ -179,6 +198,15 @@ impl SandboxService for SandboxServiceImpl {
             .unwrap_or("")
             .to_string();
 
+        info!(
+            session_id = %req.session_id,
+            path = %req.path,
+            bytes = content.len(),
+            operation = "file_read",
+            success = true,
+            "File read completed"
+        );
+
         Ok(Response::new(FileReadResponse {
             success: true,
             content,
@@ -193,9 +221,14 @@ impl SandboxService for SandboxServiceImpl {
         request: Request<FileWriteRequest>,
     ) -> Result<Response<FileWriteResponse>, Status> {
         let req = request.into_inner();
+        let bytes_to_write = req.content.len();
         info!(
-            "FileWrite: session={}, path={}, append={}",
-            req.session_id, req.path, req.append
+            session_id = %req.session_id,
+            path = %req.path,
+            bytes = bytes_to_write,
+            append = req.append,
+            operation = "file_write",
+            "Sandbox file write operation"
         );
 
         // Check quota
@@ -210,10 +243,17 @@ impl SandboxService for SandboxServiceImpl {
 
         // Security: Validate ALL path components BEFORE any directory creation
         // to prevent symlink attacks via parent directory manipulation
-        fn validate_path_components(workspace: &std::path::Path, target: &std::path::Path) -> Result<(), Status> {
+        fn validate_path_components(workspace: &std::path::Path, target: &std::path::Path, session_id: &str) -> Result<(), Status> {
             // Check that target path string doesn't contain suspicious patterns
             let target_str = target.to_string_lossy();
             if target_str.contains("..") {
+                warn!(
+                    session_id = %session_id,
+                    path = %target_str,
+                    violation = "path_traversal",
+                    operation = "file_write",
+                    "Security violation: path traversal attempt detected"
+                );
                 return Err(Status::permission_denied("Path traversal not allowed"));
             }
 
@@ -237,15 +277,39 @@ impl SandboxService for SandboxServiceImpl {
                                 } else {
                                     current.parent().unwrap_or(workspace).join(&link_target)
                                 };
-                                if let Ok(canonical) = resolved.canonicalize() {
-                                    if !canonical.starts_with(workspace) {
-                                        return Err(Status::permission_denied("Symlink escapes workspace"));
-                                    }
+                                // SECURITY FIX: Symlink must be resolvable - fail closed on unresolvable symlinks
+                                let canonical = resolved.canonicalize().map_err(|_| {
+                                    warn!(
+                                        session_id = %session_id,
+                                        path = %current.display(),
+                                        violation = "unresolvable_symlink",
+                                        operation = "file_write",
+                                        "Security violation: symlink target cannot be resolved"
+                                    );
+                                    Status::permission_denied("Symlink target cannot be resolved")
+                                })?;
+                                if !canonical.starts_with(workspace) {
+                                    warn!(
+                                        session_id = %session_id,
+                                        path = %current.display(),
+                                        symlink_target = %canonical.display(),
+                                        violation = "symlink_escape",
+                                        operation = "file_write",
+                                        "Security violation: symlink escapes workspace"
+                                    );
+                                    return Err(Status::permission_denied("Symlink escapes workspace"));
                                 }
                             }
                         }
                     }
                     Component::ParentDir => {
+                        warn!(
+                            session_id = %session_id,
+                            path = %target.display(),
+                            violation = "parent_traversal",
+                            operation = "file_write",
+                            "Security violation: parent directory traversal attempt"
+                        );
                         return Err(Status::permission_denied("Parent directory traversal not allowed"));
                     }
                     _ => {}
@@ -254,7 +318,7 @@ impl SandboxService for SandboxServiceImpl {
             Ok(())
         }
 
-        validate_path_components(&workspace, &target)?;
+        validate_path_components(&workspace, &target, &req.session_id)?;
 
         // Create parent directories if requested (now safe after validation)
         if req.create_dirs {
@@ -281,7 +345,9 @@ impl SandboxService for SandboxServiceImpl {
                 warn!(
                     session_id = %req.session_id,
                     path = %req.path,
-                    "Path escape detected after creation"
+                    violation = "post_creation_escape",
+                    operation = "file_write",
+                    "Security violation: path escape detected after creation"
                 );
                 return Err(Status::permission_denied("Path escapes workspace"));
             }
@@ -312,6 +378,15 @@ impl SandboxService for SandboxServiceImpl {
             .to_string_lossy()
             .to_string();
 
+        info!(
+            session_id = %req.session_id,
+            path = %req.path,
+            bytes_written = bytes_written,
+            operation = "file_write",
+            success = true,
+            "File write completed"
+        );
+
         Ok(Response::new(FileWriteResponse {
             success: true,
             bytes_written,
@@ -326,8 +401,12 @@ impl SandboxService for SandboxServiceImpl {
     ) -> Result<Response<FileListResponse>, Status> {
         let req = request.into_inner();
         info!(
-            "FileList: session={}, path={}, recursive={}",
-            req.session_id, req.path, req.recursive
+            session_id = %req.session_id,
+            path = %req.path,
+            pattern = %req.pattern,
+            recursive = req.recursive,
+            operation = "file_list",
+            "Sandbox file list operation"
         );
 
         let target = self.resolve_path(&req.session_id, &req.path)?;
@@ -431,6 +510,16 @@ impl SandboxService for SandboxServiceImpl {
         // Sort by name
         entries.sort_by(|a, b| a.name.cmp(&b.name));
 
+        info!(
+            session_id = %req.session_id,
+            path = %req.path,
+            file_count = file_count,
+            dir_count = dir_count,
+            operation = "file_list",
+            success = true,
+            "File list completed"
+        );
+
         Ok(Response::new(FileListResponse {
             success: true,
             entries,
@@ -446,8 +535,10 @@ impl SandboxService for SandboxServiceImpl {
     ) -> Result<Response<CommandResponse>, Status> {
         let req = request.into_inner();
         info!(
-            "ExecuteCommand: session={}, command={}",
-            req.session_id, req.command
+            session_id = %req.session_id,
+            command = %req.command,
+            operation = "execute_command",
+            "Sandbox command execution"
         );
 
         let workspace = self
@@ -459,6 +550,13 @@ impl SandboxService for SandboxServiceImpl {
         let cmd = match SafeCommand::parse(&req.command) {
             Ok(c) => c,
             Err(e) => {
+                warn!(
+                    session_id = %req.session_id,
+                    command = %req.command,
+                    error = %e,
+                    operation = "execute_command",
+                    "Command not allowed"
+                );
                 return Ok(Response::new(CommandResponse {
                     success: false,
                     error: format!("Command not allowed: {}", e),
@@ -489,27 +587,49 @@ impl SandboxService for SandboxServiceImpl {
         let execution_time_ms = start.elapsed().as_millis() as i64;
 
         match result {
-            Ok(Ok(output)) => Ok(Response::new(CommandResponse {
-                success: output.exit_code == 0,
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: output.exit_code,
-                error: String::new(),
-                execution_time_ms,
-            })),
-            Ok(Err(e)) => Ok(Response::new(CommandResponse {
-                success: false,
-                stdout: String::new(),
-                stderr: e.to_string(),
-                exit_code: 1,
-                error: format!("Execution error: {}", e),
-                execution_time_ms,
-            })),
+            Ok(Ok(output)) => {
+                info!(
+                    session_id = %req.session_id,
+                    command = %req.command,
+                    exit_code = output.exit_code,
+                    execution_time_ms = execution_time_ms,
+                    operation = "execute_command",
+                    success = output.exit_code == 0,
+                    "Command execution completed"
+                );
+                Ok(Response::new(CommandResponse {
+                    success: output.exit_code == 0,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                    exit_code: output.exit_code,
+                    error: String::new(),
+                    execution_time_ms,
+                }))
+            }
+            Ok(Err(e)) => {
+                warn!(
+                    session_id = %req.session_id,
+                    command = %req.command,
+                    error = %e,
+                    execution_time_ms = execution_time_ms,
+                    operation = "execute_command",
+                    "Command execution error"
+                );
+                Ok(Response::new(CommandResponse {
+                    success: false,
+                    stdout: String::new(),
+                    stderr: e.to_string(),
+                    exit_code: 1,
+                    error: format!("Execution error: {}", e),
+                    execution_time_ms,
+                }))
+            }
             Err(_) => {
                 warn!(
                     session_id = %req.session_id,
                     command = %req.command,
                     timeout_secs = timeout_secs,
+                    operation = "execute_command",
                     "Command timed out"
                 );
                 Ok(Response::new(CommandResponse {
@@ -729,5 +849,134 @@ mod tests {
 
         assert!(!inner.success);
         assert!(inner.error.contains("not allowed"));
+    }
+
+    // Phase 4: E2E Integration Tests
+    #[tokio::test]
+    async fn test_full_session_workflow() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let session_id = "workflow-test".to_string();
+
+        // 1. Write a file with create_dirs
+        let write_req = FileWriteRequest {
+            session_id: session_id.clone(),
+            path: "subdir/data.json".to_string(),
+            content: r#"{"key": "value"}"#.to_string(),
+            append: false,
+            create_dirs: true,
+            encoding: "utf-8".to_string(),
+        };
+        let write_resp = service
+            .file_write(tonic::Request::new(write_req))
+            .await
+            .unwrap();
+        assert!(write_resp.into_inner().success);
+
+        // 2. List to verify
+        let list_req = FileListRequest {
+            session_id: session_id.clone(),
+            path: "".to_string(),
+            pattern: "".to_string(),
+            recursive: true,
+            include_hidden: false,
+        };
+        let list_resp = service
+            .file_list(tonic::Request::new(list_req))
+            .await
+            .unwrap();
+        let list_inner = list_resp.into_inner();
+        assert!(list_inner.success);
+        assert_eq!(list_inner.file_count, 1);
+        assert_eq!(list_inner.dir_count, 1);
+
+        // 3. Read back
+        let read_req = FileReadRequest {
+            session_id: session_id.clone(),
+            path: "subdir/data.json".to_string(),
+            max_bytes: 0,
+            encoding: "utf-8".to_string(),
+        };
+        let read_resp = service
+            .file_read(tonic::Request::new(read_req))
+            .await
+            .unwrap();
+        let read_inner = read_resp.into_inner();
+        assert!(read_inner.success);
+        assert!(read_inner.content.contains("value"));
+
+        // 4. Execute command to process the file
+        let cmd_req = CommandRequest {
+            session_id: session_id.clone(),
+            command: "cat subdir/data.json".to_string(),
+            timeout_seconds: 5,
+        };
+        let cmd_resp = service
+            .execute_command(tonic::Request::new(cmd_req))
+            .await
+            .unwrap();
+        let cmd_inner = cmd_resp.into_inner();
+        assert!(cmd_inner.success);
+        assert!(cmd_inner.stdout.contains("value"));
+    }
+
+    #[tokio::test]
+    async fn test_cross_session_isolation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+
+        // Create file in session-alpha
+        let write_req = FileWriteRequest {
+            session_id: "session-alpha".to_string(),
+            path: "confidential.txt".to_string(),
+            content: "TOP SECRET DATA".to_string(),
+            append: false,
+            create_dirs: false,
+            encoding: "utf-8".to_string(),
+        };
+        let write_resp = service
+            .file_write(tonic::Request::new(write_req))
+            .await
+            .unwrap();
+        assert!(write_resp.into_inner().success);
+
+        // Attempt various escape patterns from session-beta
+        let escape_attempts = vec![
+            "../session-alpha/confidential.txt",
+            "../../session-alpha/confidential.txt",
+            "./../session-alpha/confidential.txt",
+            "foo/../../session-alpha/confidential.txt",
+        ];
+
+        for attempt in escape_attempts {
+            let read_req = FileReadRequest {
+                session_id: "session-beta".to_string(),
+                path: attempt.to_string(),
+                max_bytes: 0,
+                encoding: "utf-8".to_string(),
+            };
+            let resp = service.file_read(tonic::Request::new(read_req)).await;
+
+            // All should fail
+            match resp {
+                Ok(r) => {
+                    let inner = r.into_inner();
+                    assert!(
+                        !inner.success || inner.content.is_empty(),
+                        "Escape attempt succeeded unexpectedly: {}",
+                        attempt
+                    );
+                }
+                Err(e) => {
+                    assert!(
+                        e.code() == tonic::Code::PermissionDenied
+                            || e.code() == tonic::Code::NotFound,
+                        "Unexpected error code for {}: {:?}",
+                        attempt,
+                        e.code()
+                    );
+                }
+            }
+        }
     }
 }

@@ -220,8 +220,8 @@ FIRECRAWL_API_KEY=your-firecrawl-key    # firecrawl.dev (recommended for product
 **Components:**
 
 - **Orchestrator (Go)** — Task routing, budget enforcement, session management, OPA policies
-- **Agent Core (Rust)** — WASI sandbox, policy enforcement, agent-to-agent communication
-- **LLM Service (Python)** — Provider abstraction (15+ LLMs), MCP tools, prompt optimization
+- **Agent Core (Rust)** — WASI sandbox, policy enforcement, session workspaces, file operations
+- **LLM Service (Python)** — Provider abstraction (15+ LLMs), MCP tools, skills system
 - **Data Layer** — PostgreSQL (state), Redis (sessions), Qdrant (vector memory)
 
 ## Core Capabilities
@@ -244,6 +244,35 @@ curl -N "http://localhost:8080/api/v1/stream/sse?workflow_id=task-dev-123"
 # - TOOL_INVOKED, TOOL_OBSERVATION
 # - LLM_PARTIAL, LLM_OUTPUT
 ```
+
+### Skills System
+```bash
+# List available skills
+curl http://localhost:8080/api/v1/skills
+
+# Execute task with a skill (skill becomes system prompt)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Review the auth module for security issues",
+    "skill": "code-review",
+    "session_id": "review-123"
+  }'
+```
+Create custom skills in `config/skills/user/`. See [Skills System](docs/skills-system.md).
+
+### Session Workspaces
+```bash
+# Agents can read/write files in isolated session workspaces
+# Each session_id gets its own directory at /tmp/shannon-sessions/{session_id}/
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "List files in my workspace",
+    "session_id": "my-workspace"
+  }'
+```
+Enable WASI sandbox for enhanced security: `SHANNON_USE_WASI_SANDBOX=1`. See [Session Workspaces](docs/session-workspaces.md).
 
 ### Research Workflows
 ```bash

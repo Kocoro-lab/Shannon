@@ -1,28 +1,19 @@
 """
 File Operation Tools - Safe file read/write operations with session isolation
-
-When SHANNON_USE_WASI_SANDBOX=1, file operations proxy to the Rust sandbox
-service via gRPC for true WASI isolation. Otherwise, operations run locally
-with path validation.
 """
 
+import logging
 import os
 import json
 import yaml
 import aiofiles
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
-
-# Import sandbox client for WASI proxy mode
-try:
-    from .sandbox_client import get_sandbox_client, is_sandbox_enabled
-    _SANDBOX_AVAILABLE = True
-except ImportError:
-    _SANDBOX_AVAILABLE = False
-    def is_sandbox_enabled() -> bool:
-        return False
+from .sandbox_client import is_sandbox_enabled, get_sandbox_client
 
 
 def _get_session_workspace(session_context: Optional[Dict] = None) -> Path:
@@ -154,12 +145,56 @@ class FileReadTool(Tool):
         encoding = kwargs.get("encoding", "utf-8")
         max_size_mb = kwargs.get("max_size_mb", 10)
 
-        # Proxy to sandbox service if enabled
-        if _SANDBOX_AVAILABLE and is_sandbox_enabled():
-            return await self._execute_via_sandbox(
-                session_context, file_path, encoding, max_size_mb
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, content, error, metadata = await client.file_read(
+                session_id=session_id,
+                path=file_path,
+                max_bytes=max_size_mb * 1024 * 1024,
+                encoding=encoding,
             )
+            if success:
+                logger.info(
+                    "Sandbox file_read success",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                    },
+                )
+                # Try to parse JSON/YAML like the Python implementation
+                # Use case-insensitive matching for consistency with Python path
+                file_ext_lower = Path(file_path).suffix.lower()
+                if file_ext_lower == ".json":
+                    try:
+                        content = json.loads(content)
+                    except json.JSONDecodeError:
+                        pass
+                elif file_ext_lower in (".yaml", ".yml"):
+                    try:
+                        content = yaml.safe_load(content)
+                    except yaml.YAMLError:
+                        pass
+                return ToolResult(
+                    success=True,
+                    output=content,
+                    metadata={"path": file_path, **metadata},
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_read failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
 
+        # Fall through to Python implementation if sandbox not enabled
         try:
             # Validate path
             path = Path(file_path)
@@ -176,6 +211,15 @@ class FileReadTool(Tool):
             allowed_dirs = _get_allowed_dirs(session_context)
 
             if not any(_is_allowed(path_absolute, base) for base in allowed_dirs):
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.warning(
+                    "file_read access denied",
+                    extra={
+                        "session_id": session_id,
+                        "path": str(path_absolute),
+                        "sandbox_enabled": is_sandbox_enabled(),
+                    },
+                )
                 return ToolResult(
                     success=False,
                     output=None,
@@ -216,6 +260,15 @@ class FileReadTool(Tool):
                 except yaml.YAMLError:
                     pass  # Return as plain text if not valid YAML
 
+            session_id = (session_context or {}).get("session_id", "default")
+            logger.info(
+                "file_read success",
+                extra={
+                    "session_id": session_id,
+                    "path": str(path_absolute),
+                    "sandbox_enabled": is_sandbox_enabled(),
+                },
+            )
             return ToolResult(
                 success=True,
                 output=parsed_content,
@@ -237,55 +290,6 @@ class FileReadTool(Tool):
             return ToolResult(
                 success=False, output=None, error=f"Error reading file: {str(e)}"
             )
-
-    async def _execute_via_sandbox(
-        self,
-        session_context: Optional[Dict],
-        file_path: str,
-        encoding: str,
-        max_size_mb: int,
-    ) -> ToolResult:
-        """Execute file read via sandbox gRPC service."""
-        session_id = (session_context or {}).get("session_id", "default")
-        max_bytes = max_size_mb * 1024 * 1024
-
-        client = get_sandbox_client()
-        success, content, error, metadata = await client.file_read(
-            session_id=session_id,
-            path=file_path,
-            max_bytes=max_bytes,
-            encoding=encoding,
-        )
-
-        if not success:
-            return ToolResult(success=False, output=None, error=error)
-
-        # Parse structured formats
-        parsed_content = content
-        file_extension = Path(file_path).suffix.lower()
-
-        if file_extension == ".json":
-            try:
-                parsed_content = json.loads(content)
-            except json.JSONDecodeError:
-                pass
-        elif file_extension in [".yaml", ".yml"]:
-            try:
-                parsed_content = yaml.safe_load(content)
-            except yaml.YAMLError:
-                pass
-
-        return ToolResult(
-            success=True,
-            output=parsed_content,
-            metadata={
-                "path": file_path,
-                "size_bytes": metadata.get("size_bytes", 0),
-                "encoding": encoding,
-                "file_type": metadata.get("file_type", file_extension),
-                "sandbox": True,
-            },
-        )
 
 
 class FileWriteTool(Tool):
@@ -369,12 +373,53 @@ class FileWriteTool(Tool):
         encoding = kwargs.get("encoding", "utf-8")
         create_dirs = kwargs.get("create_dirs", False)
 
-        # Proxy to sandbox service if enabled
-        if _SANDBOX_AVAILABLE and is_sandbox_enabled():
-            return await self._execute_via_sandbox(
-                session_context, file_path, content, mode, encoding, create_dirs
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, bytes_written, error, metadata = await client.file_write(
+                session_id=session_id,
+                path=file_path,
+                content=content,
+                append=(mode == "append"),
+                create_dirs=create_dirs,
+                encoding=encoding,
             )
+            if success:
+                logger.info(
+                    "Sandbox file_write success",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                        "content_length": len(content),
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output=file_path,
+                    metadata={
+                        "path": file_path,
+                        "size_bytes": bytes_written,
+                        "mode": mode,
+                        "encoding": encoding,
+                        "created_dirs": create_dirs,
+                        **metadata,
+                    },
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_write failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
 
+        # Fall through to Python implementation if sandbox not enabled
         try:
             path = Path(file_path)
 
@@ -385,6 +430,15 @@ class FileWriteTool(Tool):
             allowed_dirs = _get_allowed_dirs(session_context)
 
             if not any(_is_allowed(path_absolute, base) for base in allowed_dirs):
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.warning(
+                    "file_write access denied",
+                    extra={
+                        "session_id": session_id,
+                        "path": str(path_absolute),
+                        "sandbox_enabled": is_sandbox_enabled(),
+                    },
+                )
                 return ToolResult(
                     success=False,
                     output=None,
@@ -411,6 +465,16 @@ class FileWriteTool(Tool):
             # Get file stats after writing
             stats = path.stat()
 
+            session_id = (session_context or {}).get("session_id", "default")
+            logger.info(
+                "file_write success",
+                extra={
+                    "session_id": session_id,
+                    "path": str(path),
+                    "sandbox_enabled": is_sandbox_enabled(),
+                    "content_length": len(content),
+                },
+            )
             return ToolResult(
                 success=True,
                 output=str(path),
@@ -427,45 +491,6 @@ class FileWriteTool(Tool):
             return ToolResult(
                 success=False, output=None, error=f"Error writing file: {str(e)}"
             )
-
-    async def _execute_via_sandbox(
-        self,
-        session_context: Optional[Dict],
-        file_path: str,
-        content: str,
-        mode: str,
-        encoding: str,
-        create_dirs: bool,
-    ) -> ToolResult:
-        """Execute file write via sandbox gRPC service."""
-        session_id = (session_context or {}).get("session_id", "default")
-        append = mode == "append"
-
-        client = get_sandbox_client()
-        success, bytes_written, error, metadata = await client.file_write(
-            session_id=session_id,
-            path=file_path,
-            content=content,
-            append=append,
-            create_dirs=create_dirs,
-            encoding=encoding,
-        )
-
-        if not success:
-            return ToolResult(success=False, output=None, error=error)
-
-        return ToolResult(
-            success=True,
-            output=file_path,
-            metadata={
-                "path": metadata.get("absolute_path", file_path),
-                "size_bytes": bytes_written,
-                "mode": mode,
-                "encoding": encoding,
-                "created_dirs": create_dirs,
-                "sandbox": True,
-            },
-        )
 
 
 class FileListTool(Tool):
@@ -540,12 +565,49 @@ class FileListTool(Tool):
         recursive = kwargs.get("recursive", False)
         include_hidden = kwargs.get("include_hidden", False)
 
-        # Proxy to sandbox service if enabled
-        if _SANDBOX_AVAILABLE and is_sandbox_enabled():
-            return await self._execute_via_sandbox(
-                session_context, dir_path, pattern, recursive, include_hidden
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, entries, error, metadata = await client.file_list(
+                session_id=session_id,
+                path=dir_path,
+                pattern=pattern,
+                recursive=recursive,
+                include_hidden=include_hidden,
             )
+            if success:
+                logger.info(
+                    "Sandbox file_list success",
+                    extra={
+                        "session_id": session_id,
+                        "path": dir_path,
+                        "sandbox_enabled": True,
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output=entries,
+                    metadata={
+                        "directory": dir_path,
+                        "pattern": pattern,
+                        "recursive": recursive,
+                        **metadata,
+                    },
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_list failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": dir_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
 
+        # Fall through to Python implementation if sandbox not enabled
         try:
             path = Path(dir_path)
 
@@ -561,6 +623,15 @@ class FileListTool(Tool):
             allowed_dirs = _get_allowed_dirs(session_context)
 
             if not any(_is_allowed(path_absolute, base) for base in allowed_dirs):
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.warning(
+                    "file_list access denied",
+                    extra={
+                        "session_id": session_id,
+                        "path": str(path_absolute),
+                        "sandbox_enabled": is_sandbox_enabled(),
+                    },
+                )
                 return ToolResult(
                     success=False,
                     output=None,
@@ -606,6 +677,15 @@ class FileListTool(Tool):
                         }
                     )
 
+            session_id = (session_context or {}).get("session_id", "default")
+            logger.info(
+                "file_list success",
+                extra={
+                    "session_id": session_id,
+                    "path": str(path),
+                    "sandbox_enabled": is_sandbox_enabled(),
+                },
+            )
             return ToolResult(
                 success=True,
                 output=files,
@@ -622,39 +702,3 @@ class FileListTool(Tool):
             return ToolResult(
                 success=False, output=None, error=f"Error listing directory: {str(e)}"
             )
-
-    async def _execute_via_sandbox(
-        self,
-        session_context: Optional[Dict],
-        dir_path: str,
-        pattern: str,
-        recursive: bool,
-        include_hidden: bool,
-    ) -> ToolResult:
-        """Execute file list via sandbox gRPC service."""
-        session_id = (session_context or {}).get("session_id", "default")
-
-        client = get_sandbox_client()
-        success, entries, error, metadata = await client.file_list(
-            session_id=session_id,
-            path=dir_path,
-            pattern=pattern,
-            recursive=recursive,
-            include_hidden=include_hidden,
-        )
-
-        if not success:
-            return ToolResult(success=False, output=None, error=error)
-
-        return ToolResult(
-            success=True,
-            output=entries,
-            metadata={
-                "directory": dir_path,
-                "pattern": pattern,
-                "recursive": recursive,
-                "file_count": metadata.get("file_count", 0),
-                "dir_count": metadata.get("dir_count", 0),
-                "sandbox": True,
-            },
-        )

@@ -5,15 +5,17 @@ When SHANNON_USE_WASI_SANDBOX=1, file tools proxy to this service
 instead of executing locally.
 """
 
+import logging
 import os
 from typing import List, Optional, Tuple
 
+logger = logging.getLogger(__name__)
+
 import grpc
 
-# Proto imports - will be generated from sandbox.proto
-# For now we'll use manual message construction
+# Proto imports - generated from sandbox.proto
 try:
-    from .proto import sandbox_pb2, sandbox_pb2_grpc
+    from llm_service.grpc_gen.sandbox import sandbox_pb2, sandbox_pb2_grpc
     _PROTO_AVAILABLE = True
 except ImportError:
     _PROTO_AVAILABLE = False
@@ -49,6 +51,7 @@ class SandboxClient:
         Returns:
             (success, content, error, metadata)
         """
+        logger.debug("Sandbox gRPC file_read request", extra={"session_id": session_id, "path": path, "max_bytes": max_bytes})
         await self._ensure_connected()
 
         if not _PROTO_AVAILABLE or self._stub is None:
@@ -62,6 +65,7 @@ class SandboxClient:
                 encoding=encoding,
             )
             response = await self._stub.FileRead(request)
+            logger.info("Sandbox gRPC file_read completed", extra={"session_id": session_id, "operation": "file_read", "success": response.success})
             return (
                 response.success,
                 response.content,
@@ -72,6 +76,7 @@ class SandboxClient:
                 },
             )
         except grpc.RpcError as e:
+            logger.info("Sandbox gRPC file_read completed", extra={"session_id": session_id, "operation": "file_read", "success": False})
             return (False, "", f"gRPC error: {e.details()}", {})
 
     async def file_write(
@@ -89,6 +94,7 @@ class SandboxClient:
         Returns:
             (success, bytes_written, error, metadata)
         """
+        logger.debug("Sandbox gRPC file_write request", extra={"session_id": session_id, "path": path, "append": append, "content_len": len(content)})
         await self._ensure_connected()
 
         if not _PROTO_AVAILABLE or self._stub is None:
@@ -104,6 +110,7 @@ class SandboxClient:
                 encoding=encoding,
             )
             response = await self._stub.FileWrite(request)
+            logger.info("Sandbox gRPC file_write completed", extra={"session_id": session_id, "operation": "file_write", "success": response.success})
             return (
                 response.success,
                 response.bytes_written,
@@ -113,6 +120,7 @@ class SandboxClient:
                 },
             )
         except grpc.RpcError as e:
+            logger.info("Sandbox gRPC file_write completed", extra={"session_id": session_id, "operation": "file_write", "success": False})
             return (False, 0, f"gRPC error: {e.details()}", {})
 
     async def file_list(
@@ -129,6 +137,7 @@ class SandboxClient:
         Returns:
             (success, entries, error, metadata)
         """
+        logger.debug("Sandbox gRPC file_list request", extra={"session_id": session_id, "path": path, "pattern": pattern, "recursive": recursive})
         await self._ensure_connected()
 
         if not _PROTO_AVAILABLE or self._stub is None:
@@ -153,6 +162,7 @@ class SandboxClient:
                 }
                 for e in response.entries
             ]
+            logger.info("Sandbox gRPC file_list completed", extra={"session_id": session_id, "operation": "file_list", "success": response.success})
             return (
                 response.success,
                 entries,
@@ -163,6 +173,7 @@ class SandboxClient:
                 },
             )
         except grpc.RpcError as e:
+            logger.info("Sandbox gRPC file_list completed", extra={"session_id": session_id, "operation": "file_list", "success": False})
             return (False, [], f"gRPC error: {e.details()}", {})
 
     async def execute_command(
@@ -177,6 +188,7 @@ class SandboxClient:
         Returns:
             (success, stdout, stderr, exit_code, error, metadata)
         """
+        logger.debug("Sandbox gRPC execute_command request", extra={"session_id": session_id, "command": command, "timeout_seconds": timeout_seconds})
         await self._ensure_connected()
 
         if not _PROTO_AVAILABLE or self._stub is None:
@@ -189,6 +201,7 @@ class SandboxClient:
                 timeout_seconds=timeout_seconds,
             )
             response = await self._stub.ExecuteCommand(request)
+            logger.info("Sandbox gRPC execute_command completed", extra={"session_id": session_id, "operation": "execute_command", "success": response.success})
             return (
                 response.success,
                 response.stdout,
@@ -200,6 +213,7 @@ class SandboxClient:
                 },
             )
         except grpc.RpcError as e:
+            logger.info("Sandbox gRPC execute_command completed", extra={"session_id": session_id, "operation": "execute_command", "success": False})
             return (False, "", "", 1, f"gRPC error: {e.details()}", {})
 
     async def close(self):

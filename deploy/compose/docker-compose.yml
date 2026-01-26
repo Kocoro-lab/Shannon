@@ -10,6 +10,7 @@ include:
 volumes:
   postgres_data: {}
   qdrant_data: {}
+  shannon-sessions: {}
 
 services:
   temporal:
@@ -118,7 +119,8 @@ services:
       - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
       - WASI_MEMORY_LIMIT_MB=${WASI_MEMORY_LIMIT_MB:-512}
       - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
-      # Sandbox service configuration (session workspaces)
+      # Session workspace isolation (Phase 3)
+      - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-0}
       - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
     depends_on:
       temporal:
@@ -136,6 +138,7 @@ services:
     volumes:
       - ../../config:/app/config:ro
       - ../../wasm-interpreters:/opt/wasm-interpreters:ro
+      - shannon-sessions:/tmp/shannon-sessions
     networks: [shannon-net]
 
   orchestrator:
@@ -342,6 +345,7 @@ services:
     volumes:
       - ../../config:/app/config:ro
       - ../../wasm-interpreters:/opt/wasm-interpreters:ro
+      - shannon-sessions:/tmp/shannon-sessions
     networks: [shannon-net]
 
   playwright-service:
