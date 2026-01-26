@@ -20,6 +20,8 @@ from ..tools.builtin import (
     CalculatorTool,
     FileReadTool,
     FileWriteTool,
+    FileListTool,
+    BashExecutorTool,
     PythonWasiExecutorTool,
 )
 
@@ -336,6 +338,8 @@ async def startup_event():
         CalculatorTool,
         FileReadTool,
         FileWriteTool,
+        FileListTool,
+        BashExecutorTool,
         PythonWasiExecutorTool,
     ]
     tools_to_register.extend(_BROWSER_TOOLS)
