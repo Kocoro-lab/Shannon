@@ -26,6 +26,38 @@ class BashExecutorTool(Tool):
     - Timeout enforcement to prevent hanging commands
     """
 
+    # Safe environment variables to pass to subprocesses
+    # SECURITY: Do NOT add API keys, tokens, or credentials here
+    SAFE_ENV_VARS = {
+        # System essentials
+        "PATH",
+        "HOME",
+        "USER",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "TZ",
+        # Build tools
+        "GOPATH",
+        "GOROOT",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "NODE_PATH",
+        "NPM_CONFIG_PREFIX",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        # Git (no tokens)
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        # Shannon session context (safe)
+        "SHANNON_SESSION_ID",
+        "SHANNON_SESSION_WORKSPACES_DIR",
+    }
+
     # Keep this small and boring; expand via config/env only if needed
     ALLOWED_BINARIES = {
         "git",
@@ -47,7 +79,6 @@ class BashExecutorTool(Tool):
         "npm",
         "make",
         "echo",
-        "env",
         "which",
         "mkdir",
         "rm",
@@ -181,16 +212,22 @@ class BashExecutorTool(Tool):
         try:
             # Create subprocess with shell=False (using create_subprocess_exec, not shell)
             # This is the safe pattern - no shell interpretation of arguments
+            # SECURITY: Only pass safe env vars to prevent secret exfiltration
+            # API keys, tokens, and credentials are NOT passed to subprocesses
+            safe_env = {
+                k: v for k, v in os.environ.items()
+                if k in self.SAFE_ENV_VARS
+            }
+            # Override HOME to isolate subprocess and add session context
+            safe_env["HOME"] = str(workspace)
+            safe_env["SHANNON_SESSION_ID"] = session_id
+
             proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(workspace),
-                env={
-                    **os.environ,
-                    "SHANNON_SESSION_ID": session_id,
-                    "HOME": str(workspace),  # Isolate home directory
-                },
+                env=safe_env,
             )
 
             try:

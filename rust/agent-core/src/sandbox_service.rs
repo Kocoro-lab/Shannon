@@ -258,6 +258,29 @@ impl SandboxService for SandboxServiceImpl {
         // Check quota
         self.check_quota(&req.session_id, req.content.len() as u64)?;
 
+        // SECURITY: Reject absolute paths and traversal BEFORE workspace.join()
+        // On Unix, Path::join("/absolute") returns "/absolute", bypassing workspace
+        if req.path.starts_with('/') || req.path.starts_with('\\') {
+            warn!(
+                session_id = %req.session_id,
+                path = %req.path,
+                violation = "absolute_path",
+                operation = "file_write",
+                "Security violation: absolute path not allowed"
+            );
+            return Err(Status::permission_denied("Absolute paths not allowed"));
+        }
+        if req.path.contains("..") {
+            warn!(
+                session_id = %req.session_id,
+                path = %req.path,
+                violation = "path_traversal",
+                operation = "file_write",
+                "Security violation: path traversal not allowed"
+            );
+            return Err(Status::permission_denied("Path traversal not allowed"));
+        }
+
         let workspace = self
             .workspace_mgr
             .get_workspace(&req.session_id)
