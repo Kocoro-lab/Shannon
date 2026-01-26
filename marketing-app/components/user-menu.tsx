@@ -2,7 +2,7 @@
 
 import { useSession, signOut } from "next-auth/react";
 import { LogOut, User } from "lucide-react";
-import { useAppDispatch } from "@/lib/store";
+import { useAppDispatch, persistor } from "@/lib/store";
 import { clearAllData } from "@/lib/store/slices/marketing";
 import {
   DropdownMenu,
@@ -79,6 +79,7 @@ export function UserMenu() {
           onClick={async () => {
             try {
               dispatch(clearAllData());
+              await persistor.purge();
               await signOut({ callbackUrl: "/login", redirect: true });
             } catch (error) {
               throw new Error("Logout failed");

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,7 +25,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { createGoal } from "@/lib/marketing/utils";
+import { createGoal as createGoalInSupabase } from "@/lib/supabase/goals";
 import { useAppDispatch, useAppSelector } from "@/lib/store";
 import {
   setSelectedIndustry,
@@ -35,7 +36,7 @@ import {
   setCurrentGoal,
 } from "@/lib/store/slices/marketing";
 import type { IndustryType, GoalKPI, KPIDefinition } from "@/lib/shannon/types";
-import { Check, ChevronLeft, ChevronRight, Target, TrendingUp, Calendar, Plus, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Target, TrendingUp, Calendar, Plus, X, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const STEPS = [
@@ -56,11 +57,14 @@ interface SelectedKPI {
 export function GoalWizard() {
   const router = useRouter();
   const dispatch = useAppDispatch();
+  const { data: session } = useSession();
   const { selectedIndustry, wizardStep } = useAppSelector((state) => state.marketing);
 
   const [selectedKPIs, setSelectedKPIs] = useState<SelectedKPI[]>([]);
   const [goalName, setGoalName] = useState("");
   const [deadline, setDeadline] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   // カスタムKPI追加ダイアログ用の状態
   const [customKPIDialogOpen, setCustomKPIDialogOpen] = useState(false);
@@ -147,8 +151,11 @@ export function GoalWizard() {
     dispatch(prevWizardStep());
   };
 
-  const handleSubmit = () => {
-    if (!selectedIndustry) return;
+  const handleSubmit = async () => {
+    if (!selectedIndustry || !session?.user?.id) return;
+
+    setIsSubmitting(true);
+    setSubmitError(null);
 
     const kpis: GoalKPI[] = selectedKPIs.map((s) => ({
       kpiId: s.kpi.id,
@@ -161,16 +168,23 @@ export function GoalWizard() {
       }),
     }));
 
-    const goal = createGoal({
-      name: goalName || `${INDUSTRIES[selectedIndustry].nameJa}の目標`,
-      industry: selectedIndustry,
-      kpis,
-      deadline,
-    });
+    try {
+      const goal = await createGoalInSupabase(session.user.id, {
+        name: goalName || `${INDUSTRIES[selectedIndustry].nameJa}の目標`,
+        industry: selectedIndustry,
+        deadline,
+        kpis,
+      });
 
-    dispatch(addGoal(goal));
-    dispatch(setCurrentGoal(goal));
-    router.push(`/goals/${goal.id}`);
+      dispatch(addGoal(goal));
+      dispatch(setCurrentGoal(goal));
+      router.push(`/goals/${goal.id}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setSubmitError(`目標の作成に失敗しました: ${message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const canProceed = () => {
@@ -612,12 +626,19 @@ export function GoalWizard() {
         </CardContent>
       </Card>
 
+      {/* Error Message */}
+      {submitError && (
+        <div className="mt-4 p-4 rounded-lg border border-destructive bg-destructive/10 text-destructive text-sm">
+          {submitError}
+        </div>
+      )}
+
       {/* Navigation */}
       <div className="flex justify-between mt-6">
         <Button
           variant="outline"
           onClick={handlePrev}
-          disabled={wizardStep === 0}
+          disabled={wizardStep === 0 || isSubmitting}
         >
           <ChevronLeft className="w-4 h-4 mr-2" />
           戻る
@@ -628,9 +649,18 @@ export function GoalWizard() {
             <ChevronRight className="w-4 h-4 ml-2" />
           </Button>
         ) : (
-          <Button onClick={handleSubmit}>
-            目標を作成
-            <Check className="w-4 h-4 ml-2" />
+          <Button onClick={handleSubmit} disabled={isSubmitting || !session?.user?.id}>
+            {isSubmitting ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                作成中...
+              </>
+            ) : (
+              <>
+                目標を作成
+                <Check className="w-4 h-4 ml-2" />
+              </>
+            )}
           </Button>
         )}
       </div>
