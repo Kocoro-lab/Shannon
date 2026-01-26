@@ -26,22 +26,25 @@ def _validate_session_id(session_id: str) -> str:
         Sanitized session ID safe for use in paths
 
     Raises:
-        ValueError: If session_id contains path traversal attempts
+        ValueError: If session_id contains path traversal attempts or invalid characters
     """
     if not session_id:
         return "default"
 
-    # Block path traversal attempts
-    if ".." in session_id or "/" in session_id or "\\" in session_id:
-        raise ValueError(f"Invalid session_id: path traversal not allowed")
+    # Limit length to prevent filesystem issues (check early)
+    if len(session_id) > 128:
+        raise ValueError("Invalid session_id: too long (max 128 chars)")
 
-    # Block null bytes and other control characters
-    if any(ord(c) < 32 for c in session_id):
-        raise ValueError(f"Invalid session_id: control characters not allowed")
+    # SECURITY: Match Rust validation - ASCII alphanumeric + hyphen + underscore only
+    # This prevents path traversal, hidden files, shell metacharacters, and Unicode tricks
+    if not all(c.isascii() and (c.isalnum() or c in "-_") for c in session_id):
+        raise ValueError(
+            "Invalid session_id: must contain only ASCII alphanumeric, hyphen, or underscore"
+        )
 
-    # Limit length to prevent filesystem issues
-    if len(session_id) > 255:
-        raise ValueError(f"Invalid session_id: too long (max 255 chars)")
+    # Block path traversal patterns (defense in depth)
+    if ".." in session_id or session_id.startswith("."):
+        raise ValueError("Invalid session_id: path traversal not allowed")
 
     return session_id
 

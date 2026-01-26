@@ -24,10 +24,16 @@ except ImportError:
 class SandboxClient:
     """Client for agent-core SandboxService."""
 
-    def __init__(self, address: Optional[str] = None):
+    # Default timeout for gRPC calls (seconds)
+    DEFAULT_TIMEOUT = 30
+    # Maximum allowed command timeout (prevents DoS via unbounded waits)
+    MAX_COMMAND_TIMEOUT = 60
+
+    def __init__(self, address: Optional[str] = None, timeout: Optional[int] = None):
         self.address = address or os.getenv(
             "AGENT_CORE_ADDR", "agent-core:50051"
         )
+        self.timeout = timeout or self.DEFAULT_TIMEOUT
         self._channel: Optional[grpc.aio.Channel] = None
         self._stub = None
 
@@ -64,7 +70,7 @@ class SandboxClient:
                 max_bytes=max_bytes,
                 encoding=encoding,
             )
-            response = await self._stub.FileRead(request)
+            response = await self._stub.FileRead(request, timeout=self.timeout)
             logger.info("Sandbox gRPC file_read completed", extra={"session_id": session_id, "operation": "file_read", "success": response.success})
             return (
                 response.success,
@@ -109,7 +115,7 @@ class SandboxClient:
                 create_dirs=create_dirs,
                 encoding=encoding,
             )
-            response = await self._stub.FileWrite(request)
+            response = await self._stub.FileWrite(request, timeout=self.timeout)
             logger.info("Sandbox gRPC file_write completed", extra={"session_id": session_id, "operation": "file_write", "success": response.success})
             return (
                 response.success,
@@ -151,7 +157,7 @@ class SandboxClient:
                 recursive=recursive,
                 include_hidden=include_hidden,
             )
-            response = await self._stub.FileList(request)
+            response = await self._stub.FileList(request, timeout=self.timeout)
             entries = [
                 {
                     "name": e.name,
@@ -200,7 +206,14 @@ class SandboxClient:
                 command=command,
                 timeout_seconds=timeout_seconds,
             )
-            response = await self._stub.ExecuteCommand(request)
+            # Handle timeout: 0 means "use server default" (30s in Rust)
+            # Clamp positive values to prevent DoS via unbounded waits
+            if timeout_seconds <= 0:
+                effective_timeout = self.DEFAULT_TIMEOUT  # Match Rust's default
+            else:
+                effective_timeout = min(timeout_seconds, self.MAX_COMMAND_TIMEOUT)
+            cmd_timeout = effective_timeout + 5  # Allow 5s buffer for gRPC overhead
+            response = await self._stub.ExecuteCommand(request, timeout=cmd_timeout)
             logger.info("Sandbox gRPC execute_command completed", extra={"session_id": session_id, "operation": "execute_command", "success": response.success})
             return (
                 response.success,

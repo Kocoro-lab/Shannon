@@ -141,7 +141,7 @@ func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
 // applyTaskContextAndLabels normalizes and validates task context and mode, then
 // applies them to the gRPC request. Returns false if a validation error response
 // has already been sent to the client.
-func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchpb.SubmitTaskRequest, w http.ResponseWriter) bool {
+func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchpb.SubmitTaskRequest, w http.ResponseWriter, r *http.Request) bool {
 	// Ensure context map exists so we can inject optional fields safely
 	ctxMap := map[string]interface{}{}
 	if len(req.Context) > 0 {
@@ -174,6 +174,37 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 			return false
 		}
 
+		// SECURITY: Check authorization for dangerous skills
+		// Dangerous skills require admin/owner role OR explicit skills:dangerous scope
+		if skill.Dangerous {
+			// Get userCtx from request context (already validated in SubmitTask)
+			userCtx, _ := r.Context().Value("user").(*auth.UserContext)
+			authorized := false
+			if userCtx != nil {
+				// Admin and owner roles can use dangerous skills
+				if userCtx.Role == auth.RoleAdmin || userCtx.Role == auth.RoleOwner {
+					authorized = true
+				}
+				// Check for explicit skills:dangerous scope
+				for _, scope := range userCtx.Scopes {
+					if scope == auth.ScopeSkillsDangerous {
+						authorized = true
+						break
+					}
+				}
+			}
+			if !authorized {
+				h.sendError(w, fmt.Sprintf("Skill %s is marked dangerous and requires admin/owner role or skills:dangerous scope", skillName), http.StatusForbidden)
+				return false
+			}
+			h.logger.Warn("Dangerous skill invoked",
+				zap.String("skill", skill.Name),
+				zap.String("version", skill.Version),
+				zap.String("user_id", userCtx.UserID.String()),
+				zap.String("role", userCtx.Role),
+			)
+		}
+
 		// Skill content becomes the system prompt override
 		ctxMap["system_prompt"] = skill.Content
 
@@ -197,6 +228,7 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 			zap.String("skill", skill.Name),
 			zap.String("version", skill.Version),
 			zap.String("role", skill.RequiresRole),
+			zap.Bool("dangerous", skill.Dangerous),
 		)
 	}
 
@@ -463,7 +495,7 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply context, model controls, and mode labels
-	if !h.applyTaskContextAndLabels(&req, grpcReq, w) {
+	if !h.applyTaskContextAndLabels(&req, grpcReq, w, r) {
 		return
 	}
 
@@ -555,7 +587,7 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 	}
 
 	// Apply context, model controls, and mode labels
-	if !h.applyTaskContextAndLabels(&req, grpcReq, w) {
+	if !h.applyTaskContextAndLabels(&req, grpcReq, w, r) {
 		return
 	}
 
