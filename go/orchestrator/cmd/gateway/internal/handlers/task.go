@@ -15,6 +15,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/skills"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
@@ -30,6 +31,7 @@ type TaskHandler struct {
 	orchClient orchpb.OrchestratorServiceClient
 	db         *sqlx.DB
 	redis      *redis.Client
+	skills     *skills.SkillRegistry
 	logger     *zap.Logger
 }
 
@@ -155,6 +157,47 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 				ctxMap["template"] = tv
 			}
 		}
+	}
+
+	// Expand skill into context if specified
+	if skillName := strings.TrimSpace(req.Skill); skillName != "" && h.skills != nil {
+		entry, ok := h.skills.Get(skillName)
+		if !ok {
+			h.sendError(w, fmt.Sprintf("Unknown skill: %s", skillName), http.StatusBadRequest)
+			return false
+		}
+		skill := entry.Skill
+
+		// Check if skill is enabled
+		if !skill.Enabled {
+			h.sendError(w, fmt.Sprintf("Skill %s is disabled", skillName), http.StatusBadRequest)
+			return false
+		}
+
+		// Skill content becomes the system prompt override
+		ctxMap["system_prompt"] = skill.Content
+
+		// If skill declares a role, set it (bypasses decomposition)
+		if skill.RequiresRole != "" {
+			ctxMap["role"] = skill.RequiresRole
+		}
+
+		// Echo skill metadata into context for observability
+		ctxMap["skill"] = skill.Name
+		ctxMap["skill_version"] = skill.Version
+
+		// Apply budget_max if specified and not already set
+		if skill.BudgetMax > 0 {
+			if _, exists := ctxMap["budget_max"]; !exists {
+				ctxMap["budget_max"] = skill.BudgetMax
+			}
+		}
+
+		h.logger.Info("Applied skill to task",
+			zap.String("skill", skill.Name),
+			zap.String("version", skill.Version),
+			zap.String("role", skill.RequiresRole),
+		)
 	}
 
 	// Validate and inject model_tier from top-level (top-level wins)
@@ -295,12 +338,14 @@ func NewTaskHandler(
 	orchClient orchpb.OrchestratorServiceClient,
 	db *sqlx.DB,
 	redis *redis.Client,
+	skillRegistry *skills.SkillRegistry,
 	logger *zap.Logger,
 ) *TaskHandler {
 	return &TaskHandler{
 		orchClient: orchClient,
 		db:         db,
 		redis:      redis,
+		skills:     skillRegistry,
 		logger:     logger,
 	}
 }
@@ -313,6 +358,9 @@ type TaskRequest struct {
 	// Optional execution mode hint (e.g., "supervisor").
 	// Routed via metadata labels to orchestrator.
 	Mode string `json:"mode,omitempty"`
+	// Optional skill name to apply (expands into system_prompt + role).
+	// Skills are markdown-based task definitions loaded from config/skills/.
+	Skill string `json:"skill,omitempty"`
 	// Optional model tier hint; if provided, inject into context
 	// so downstream services can honor it (small|medium|large).
 	ModelTier string `json:"model_tier,omitempty"`

@@ -182,6 +182,10 @@ config/openapi_specs/schema_query_processor.*
 python/llm-service/llm_service/roles/ptengine/
 python/llm-service/llm_service/tools/vendor_adapters/ptengine/
 
+# User and vendor skill directories (not committed - environment-specific)
+config/skills/user/
+config/skills/vendor/
+
 # Angfa vendor-specific files (DO NOT COMMIT)
 python/llm-service/llm_service/tools/vendor_adapters/angfa.py
 python/llm-service/llm_service/roles/vendor/angfa_analytics.py

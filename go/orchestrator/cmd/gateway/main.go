@@ -20,6 +20,7 @@ import (
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/skills"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -107,13 +108,29 @@ func main() {
 
 	orchClient := orchpb.NewOrchestratorServiceClient(conn)
 
+	// Initialize skill registry
+	skillRegistry := skills.NewRegistry()
+	for _, dir := range skills.ResolveSkillDirs() {
+		if err := skillRegistry.LoadDirectory(dir); err != nil {
+			logger.Warn("Failed to load skills from directory", zap.String("path", dir), zap.Error(err))
+		}
+	}
+	if err := skillRegistry.Finalize(); err != nil {
+		logger.Fatal("Failed to finalize skill registry", zap.Error(err))
+	}
+	logger.Info("Skill registry initialized",
+		zap.Int("total_skills", skillRegistry.Count()),
+		zap.Strings("categories", skillRegistry.Categories()),
+	)
+
 	// Create handlers
-	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, logger)
+	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, skillRegistry, logger)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
 	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
 	scheduleHandler := handlers.NewScheduleHandler(orchClient, pgDB, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
+	skillHandler := handlers.NewSkillHandler(skillRegistry, logger)
 
 	// OpenAI-compatible API handler
 	adminURL := getEnvOrDefault("ADMIN_SERVER", "http://orchestrator:8081")
@@ -597,6 +614,35 @@ func main() {
 				}),
 			),
 		),
+	)
+
+	// Skills endpoints (require auth)
+	mux.Handle("GET /api/v1/skills",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(skillHandler.ListSkills),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/skills/{name}",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(skillHandler.GetSkill),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/skills/{name}/versions",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(skillHandler.GetSkillVersions),
+			),
+		),
+	)
+
+	logger.Info("Registered skills API endpoints",
+		zap.String("endpoints", "/api/v1/skills, /api/v1/skills/{name}, /api/v1/skills/{name}/versions"),
 	)
 
 	// CORS middleware for all routes (development friendly)
