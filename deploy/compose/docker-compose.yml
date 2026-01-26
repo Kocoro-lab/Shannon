@@ -118,6 +118,8 @@ services:
       - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
       - WASI_MEMORY_LIMIT_MB=${WASI_MEMORY_LIMIT_MB:-512}
       - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
+      # Sandbox service configuration (session workspaces)
+      - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
     depends_on:
       temporal:
         condition: service_started
@@ -309,6 +311,9 @@ services:
       - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
       # Agent Core address for WASI execution
       - AGENT_CORE_ADDR=agent-core:50051
+      # Sandbox service configuration (set to 1 to proxy file ops to agent-core sandbox)
+      - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-0}
+      - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
       # Observability
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-shannon-llm-service}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-localhost:4317}
