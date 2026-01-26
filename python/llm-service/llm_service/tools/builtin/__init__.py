@@ -7,8 +7,9 @@ from .web_fetch import WebFetchTool
 from .web_subpage_fetch import WebSubpageFetchTool
 from .web_crawl import WebCrawlTool
 from .calculator import CalculatorTool
-from .file_ops import FileReadTool, FileWriteTool
+from .file_ops import FileReadTool, FileWriteTool, FileListTool
 from .python_wasi_executor import PythonWasiExecutorTool
+from .bash_executor import BashExecutorTool
 
 
 # Private features (enterprise version only) - gracefully degrade if not present
@@ -45,6 +46,8 @@ __all__ = [
     "CalculatorTool",
     "FileReadTool",
     "FileWriteTool",
+    "FileListTool",
+    "BashExecutorTool",
     "PythonWasiExecutorTool",
 ]
 

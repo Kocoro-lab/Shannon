@@ -339,3 +339,144 @@ func TestExecuteAgentWithForcedToolsLogic(t *testing.T) {
 		}
 	})
 }
+
+// TestEnsureSessionContext tests the session_id and agent_id injection helper.
+// Covers edge cases: nil context, missing keys, nil values, empty strings, non-string types.
+func TestEnsureSessionContext(t *testing.T) {
+	tests := []struct {
+		name             string
+		ctx              map[string]interface{}
+		sessionID        string
+		agentID          string
+		expectedSession  string
+		expectedAgent    string
+		expectSessionKey bool
+		expectAgentKey   bool
+	}{
+		{
+			name:             "nil context - injects both",
+			ctx:              nil,
+			sessionID:        "session-123",
+			agentID:          "agent-456",
+			expectedSession:  "session-123",
+			expectedAgent:    "agent-456",
+			expectSessionKey: true,
+			expectAgentKey:   true,
+		},
+		{
+			name:             "empty context - injects both",
+			ctx:              map[string]interface{}{},
+			sessionID:        "session-abc",
+			agentID:          "agent-def",
+			expectedSession:  "session-abc",
+			expectedAgent:    "agent-def",
+			expectSessionKey: true,
+			expectAgentKey:   true,
+		},
+		{
+			name: "session_id is nil - injects",
+			ctx: map[string]interface{}{
+				"session_id": nil,
+				"role":       "developer",
+			},
+			sessionID:        "session-nil-fix",
+			agentID:          "",
+			expectedSession:  "session-nil-fix",
+			expectSessionKey: true,
+			expectAgentKey:   false,
+		},
+		{
+			name: "session_id is empty string - injects",
+			ctx: map[string]interface{}{
+				"session_id": "",
+			},
+			sessionID:        "session-empty-fix",
+			agentID:          "agent-xyz",
+			expectedSession:  "session-empty-fix",
+			expectedAgent:    "agent-xyz",
+			expectSessionKey: true,
+			expectAgentKey:   true,
+		},
+		{
+			name: "session_id is whitespace only - injects",
+			ctx: map[string]interface{}{
+				"session_id": "   ",
+			},
+			sessionID:        "session-ws-fix",
+			agentID:          "",
+			expectedSession:  "session-ws-fix",
+			expectSessionKey: true,
+			expectAgentKey:   false,
+		},
+		{
+			name: "session_id is wrong type (int) - injects",
+			ctx: map[string]interface{}{
+				"session_id": 12345,
+			},
+			sessionID:        "session-type-fix",
+			agentID:          "",
+			expectedSession:  "session-type-fix",
+			expectSessionKey: true,
+			expectAgentKey:   false,
+		},
+		{
+			name: "session_id is valid - no overwrite",
+			ctx: map[string]interface{}{
+				"session_id": "existing-session",
+			},
+			sessionID:        "new-session",
+			agentID:          "",
+			expectedSession:  "existing-session",
+			expectSessionKey: true,
+			expectAgentKey:   false,
+		},
+		{
+			name: "both existing and valid - no overwrite",
+			ctx: map[string]interface{}{
+				"session_id": "existing-session",
+				"agent_id":   "existing-agent",
+			},
+			sessionID:        "new-session",
+			agentID:          "new-agent",
+			expectedSession:  "existing-session",
+			expectedAgent:    "existing-agent",
+			expectSessionKey: true,
+			expectAgentKey:   true,
+		},
+		{
+			name: "empty input IDs - no injection",
+			ctx: map[string]interface{}{
+				"role": "developer",
+			},
+			sessionID:        "",
+			agentID:          "",
+			expectSessionKey: false,
+			expectAgentKey:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ensureSessionContext(tt.ctx, tt.sessionID, tt.agentID)
+			require.NotNil(t, result, "result should never be nil")
+
+			if tt.expectSessionKey {
+				val, exists := result["session_id"]
+				assert.True(t, exists, "session_id key should exist")
+				assert.Equal(t, tt.expectedSession, val, "session_id value mismatch")
+			} else {
+				_, exists := result["session_id"]
+				assert.False(t, exists, "session_id key should not exist")
+			}
+
+			if tt.expectAgentKey {
+				val, exists := result["agent_id"]
+				assert.True(t, exists, "agent_id key should exist")
+				assert.Equal(t, tt.expectedAgent, val, "agent_id value mismatch")
+			} else {
+				_, exists := result["agent_id"]
+				assert.False(t, exists, "agent_id key should not exist")
+			}
+		})
+	}
+}

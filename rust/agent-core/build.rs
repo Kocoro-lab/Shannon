@@ -19,12 +19,13 @@ fn main() -> Result<()> {
 
     let common_proto = format!("{}/common/common.proto", proto_path);
     let agent_proto = format!("{}/agent/agent.proto", proto_path);
+    let sandbox_proto = format!("{}/sandbox/sandbox.proto", proto_path);
 
     // Compile protobuf files with reflection support
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path(std::env::var("OUT_DIR").unwrap() + "/shannon_descriptor.bin")
-        .compile_protos(&[&common_proto, &agent_proto], &[proto_path])?;
+        .compile_protos(&[&common_proto, &agent_proto, &sandbox_proto], &[proto_path])?;
     Ok(())
 }

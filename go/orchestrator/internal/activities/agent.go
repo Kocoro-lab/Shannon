@@ -129,6 +129,48 @@ func parseFlexibleInt(v interface{}) (int, bool) {
 	return 0, false
 }
 
+// ensureSessionContext injects session_id and agent_id into context for session-aware tools.
+// Handles edge cases: nil context, missing keys, nil values, empty strings, and non-string types.
+// This is the single source of truth for session context injection - used by both
+// executeAgentCore and ExecuteAgentWithForcedTools.
+func ensureSessionContext(ctx map[string]interface{}, sessionID, agentID string) map[string]interface{} {
+	if ctx == nil {
+		ctx = make(map[string]interface{})
+	}
+
+	// Inject session_id if missing, nil, empty, or wrong type
+	if sessionID != "" {
+		needsInjection := false
+		if existing, exists := ctx["session_id"]; !exists {
+			needsInjection = true
+		} else if existing == nil {
+			needsInjection = true
+		} else if s, ok := existing.(string); !ok || strings.TrimSpace(s) == "" {
+			needsInjection = true
+		}
+		if needsInjection {
+			ctx["session_id"] = sessionID
+		}
+	}
+
+	// Inject agent_id if missing, nil, empty, or wrong type
+	if agentID != "" {
+		needsInjection := false
+		if existing, exists := ctx["agent_id"]; !exists {
+			needsInjection = true
+		} else if existing == nil {
+			needsInjection = true
+		} else if s, ok := existing.(string); !ok || strings.TrimSpace(s) == "" {
+			needsInjection = true
+		}
+		if needsInjection {
+			ctx["agent_id"] = agentID
+		}
+	}
+
+	return ctx
+}
+
 // validateContext sanitizes user-provided context to prevent injection attacks
 func validateContext(ctx map[string]interface{}, logger *zap.Logger) map[string]interface{} {
 	if ctx == nil {
@@ -1129,10 +1171,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	}
 
 	// Create protobuf struct from context AFTER adding tool_parameters and tool_calls
-	// Ensure context is not nil
-	if input.Context == nil {
-		input.Context = make(map[string]interface{})
-	}
+	// Inject session_id and agent_id for session-aware tools (browser_use, file_*, etc.)
+	input.Context = ensureSessionContext(input.Context, input.SessionID, input.AgentID)
 
 	// Validate and sanitize context before protobuf conversion to prevent injection
 	validatedContext := validateContext(input.Context, logger)
@@ -1790,6 +1830,9 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	// Prepare request to /agent/query
 	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
+
+	// Inject session_id and agent_id for session-aware tools (browser_use, file_*, etc.)
+	input.Context = ensureSessionContext(input.Context, input.SessionID, input.AgentID)
 
 	agentQueryPayload := map[string]interface{}{
 		"query":             input.Query,

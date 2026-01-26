@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package shannon.sandbox;
+option go_package = "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/sandbox";
+
+// SandboxService handles file operations in WASI-isolated workspaces.
+// All paths are relative to the session's workspace root.
+service SandboxService {
+  // Read a file from session workspace
+  rpc FileRead(FileReadRequest) returns (FileReadResponse);
+
+  // Write a file to session workspace
+  rpc FileWrite(FileWriteRequest) returns (FileWriteResponse);
+
+  // List files in session workspace directory
+  rpc FileList(FileListRequest) returns (FileListResponse);
+
+  // Execute a safe command in session workspace
+  rpc ExecuteCommand(CommandRequest) returns (CommandResponse);
+}
+
+message FileReadRequest {
+  string session_id = 1;
+  string path = 2;           // Relative to /workspace
+  int32 max_bytes = 3;       // Optional limit (0 = no limit up to 10MB)
+  string encoding = 4;       // utf-8, base64 (default: utf-8)
+}
+
+message FileReadResponse {
+  bool success = 1;
+  string content = 2;
+  string error = 3;
+  int64 size_bytes = 4;
+  string file_type = 5;      // Detected file extension
+}
+
+message FileWriteRequest {
+  string session_id = 1;
+  string path = 2;           // Relative to /workspace
+  string content = 3;
+  bool append = 4;           // false = overwrite, true = append
+  bool create_dirs = 5;      // Create parent directories if needed
+  string encoding = 6;       // utf-8, base64 (default: utf-8)
+}
+
+message FileWriteResponse {
+  bool success = 1;
+  int64 bytes_written = 2;
+  string error = 3;
+  string absolute_path = 4;  // Path within workspace
+}
+
+message FileListRequest {
+  string session_id = 1;
+  string path = 2;           // Relative to /workspace (empty = root)
+  string pattern = 3;        // Optional glob pattern (e.g., "*.txt")
+  bool recursive = 4;
+  bool include_hidden = 5;
+}
+
+message FileEntry {
+  string name = 1;
+  string path = 2;           // Relative path from workspace root
+  bool is_file = 3;
+  int64 size_bytes = 4;      // 0 for directories
+  int64 modified_time = 5;   // Unix timestamp
+}
+
+message FileListResponse {
+  bool success = 1;
+  repeated FileEntry entries = 2;
+  string error = 3;
+  int32 file_count = 4;
+  int32 dir_count = 5;
+}
+
+message CommandRequest {
+  string session_id = 1;
+  string command = 2;        // e.g., "ls -la", "cat foo.txt"
+  int32 timeout_seconds = 3; // Max 30 seconds
+}
+
+message CommandResponse {
+  bool success = 1;
+  string stdout = 2;
+  string stderr = 3;
+  int32 exit_code = 4;
+  string error = 5;
+  int64 execution_time_ms = 6;
+}

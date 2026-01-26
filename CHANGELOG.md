@@ -5,6 +5,35 @@ All notable changes to Shannon will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### Skills System
+- **Markdown-based Skills**: Define workflows with YAML frontmatter and markdown instructions
+- **Skills API**: `GET /api/v1/skills`, `GET /api/v1/skills/{name}` endpoints
+- **Skill Categories**: Organize skills by type (development, research, analysis)
+- **Version Support**: Request specific skill versions with `name@version` syntax
+- **Hot-reload**: Skills loaded at gateway startup from `config/skills/` directories
+
+#### Filesystem Tools
+- **Session Workspaces**: Isolated filesystem per session at `/tmp/shannon-sessions/{session_id}/`
+- **file_read Tool**: Read files with JSON/YAML auto-parsing, encoding support
+- **file_list Tool**: List directory contents with glob patterns, recursive option
+- **Path Validation**: Canonical path resolution, symlink protection, allowlist enforcement
+
+#### WASI Sandbox Integration
+- **Sandbox Service**: gRPC service for secure file operations in Rust agent-core
+- **Safe Commands**: Native Rust implementations of `ls`, `cat`, `head`, `tail`, `grep`, `find`
+- **Session Isolation**: Cross-session access prevention with workspace boundaries
+- **Audit Logging**: Structured tracing with session_id, operation, path, violation fields
+- **Fail-closed Security**: Symlink validation rejects unresolvable targets
+- **Shared Volumes**: Docker Compose `shannon-sessions` volume for agent-core and llm-service
+
+### Documentation
+- `docs/skills-system.md`: Skills API and custom skill creation guide
+- `docs/session-workspaces.md`: Session isolation architecture and file tool usage
+
 ## [0.1.0] - 2025-12-25
 
 ### Added

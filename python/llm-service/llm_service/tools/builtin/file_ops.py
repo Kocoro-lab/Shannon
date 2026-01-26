@@ -1,27 +1,137 @@
 """
-File Operation Tools - Safe file read/write operations
+File Operation Tools - Safe file read/write operations with session isolation
 """
 
+import logging
 import os
 import json
 import yaml
 import aiofiles
+
+logger = logging.getLogger(__name__)
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
+from .sandbox_client import is_sandbox_enabled, get_sandbox_client
+
+
+def _validate_session_id(session_id: str) -> str:
+    """Validate session_id to prevent path traversal attacks.
+
+    Args:
+        session_id: Raw session ID from request
+
+    Returns:
+        Sanitized session ID safe for use in paths
+
+    Raises:
+        ValueError: If session_id contains path traversal attempts or invalid characters
+    """
+    if not session_id:
+        return "default"
+
+    # Limit length to prevent filesystem issues (check early)
+    if len(session_id) > 128:
+        raise ValueError("Invalid session_id: too long (max 128 chars)")
+
+    # SECURITY: Match Rust validation - ASCII alphanumeric + hyphen + underscore only
+    # This prevents path traversal, hidden files, shell metacharacters, and Unicode tricks
+    if not all(c.isascii() and (c.isalnum() or c in "-_") for c in session_id):
+        raise ValueError(
+            "Invalid session_id: must contain only ASCII alphanumeric, hyphen, or underscore"
+        )
+
+    # Block path traversal patterns (defense in depth)
+    if ".." in session_id or session_id.startswith("."):
+        raise ValueError("Invalid session_id: path traversal not allowed")
+
+    return session_id
+
+
+def _get_session_workspace(session_context: Optional[Dict] = None) -> Path:
+    """Get or create session workspace directory.
+
+    Args:
+        session_context: Optional session context containing session_id
+
+    Returns:
+        Path to session workspace directory (created if needed)
+
+    Raises:
+        ValueError: If session_id is invalid
+    """
+    raw_session_id = (session_context or {}).get("session_id", "default")
+    session_id = _validate_session_id(raw_session_id)
+
+    base_dir = Path(
+        os.getenv("SHANNON_SESSION_WORKSPACES_DIR", "/tmp/shannon-sessions")
+    ).resolve()
+    session_workspace = base_dir / session_id
+
+    # Double-check the resolved path is within base_dir (defense in depth)
+    session_workspace_resolved = session_workspace.resolve()
+    if not str(session_workspace_resolved).startswith(str(base_dir)):
+        raise ValueError(f"Invalid session_id: path escape attempt detected")
+
+    session_workspace.mkdir(parents=True, exist_ok=True)
+    return session_workspace
+
+
+def _get_allowed_dirs(session_context: Optional[Dict] = None) -> List[Path]:
+    """Get list of allowed directories for file operations.
+
+    Args:
+        session_context: Optional session context containing session_id
+
+    Returns:
+        List of allowed base directories
+    """
+    allowed_dirs = [_get_session_workspace(session_context)]
+
+    # Add SHANNON_WORKSPACE if set
+    if workspace := os.getenv("SHANNON_WORKSPACE"):
+        allowed_dirs.append(Path(workspace).resolve())
+
+    # Dev-only: allow cwd when explicitly enabled
+    if os.getenv("SHANNON_DEV_ALLOW_CWD") in ("1", "true", "yes"):
+        allowed_dirs.append(Path.cwd().resolve())
+
+    # Legacy /tmp support - DISABLED by default for session isolation security
+    # Enable only if explicitly needed via SHANNON_ALLOW_GLOBAL_TMP=1
+    if os.getenv("SHANNON_ALLOW_GLOBAL_TMP") in ("1", "true", "yes"):
+        allowed_dirs.append(Path("/tmp").resolve())
+
+    return allowed_dirs
+
+
+def _is_allowed(target: Path, base: Path) -> bool:
+    """Check if target path is within base directory.
+
+    Args:
+        target: Path to check (should be resolved)
+        base: Allowed base directory (should be resolved)
+
+    Returns:
+        True if target is within base, False otherwise
+    """
+    try:
+        target.relative_to(base)
+        return True
+    except ValueError:
+        return False
 
 
 class FileReadTool(Tool):
     """
-    Safe file reading tool with sandboxing support
+    Safe file reading tool with sandboxing support and session isolation
     """
 
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
             name="file_read",
             version="1.0.0",
-            description="Read contents of a file",
+            description="Read contents of a file from session workspace",
             category="file",
             author="Shannon",
             requires_auth=False,
@@ -29,6 +139,7 @@ class FileReadTool(Tool):
             timeout_seconds=10,
             memory_limit_mb=256,
             sandboxed=True,
+            session_aware=True,
             dangerous=False,
             cost_per_use=0.0,
         )
@@ -60,14 +171,74 @@ class FileReadTool(Tool):
             ),
         ]
 
-    async def _execute_impl(self, **kwargs) -> ToolResult:
+    async def _execute_impl(
+        self,
+        session_context: Optional[Dict] = None,
+        observer: Optional[Any] = None,
+        **kwargs,
+    ) -> ToolResult:
         """
-        Read file contents safely
+        Read file contents safely with session isolation.
+
+        Args:
+            session_context: Optional session context containing session_id
+            observer: Optional callback for status updates (unused)
+            **kwargs: Tool parameters (path, encoding, max_size_mb)
         """
         file_path = kwargs["path"]
         encoding = kwargs.get("encoding", "utf-8")
         max_size_mb = kwargs.get("max_size_mb", 10)
 
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, content, error, metadata = await client.file_read(
+                session_id=session_id,
+                path=file_path,
+                max_bytes=max_size_mb * 1024 * 1024,
+                encoding=encoding,
+            )
+            if success:
+                logger.info(
+                    "Sandbox file_read success",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                    },
+                )
+                # Try to parse JSON/YAML like the Python implementation
+                # Use case-insensitive matching for consistency with Python path
+                file_ext_lower = Path(file_path).suffix.lower()
+                if file_ext_lower == ".json":
+                    try:
+                        content = json.loads(content)
+                    except json.JSONDecodeError:
+                        pass
+                elif file_ext_lower in (".yaml", ".yml"):
+                    try:
+                        content = yaml.safe_load(content)
+                    except yaml.YAMLError:
+                        pass
+                return ToolResult(
+                    success=True,
+                    output=content,
+                    metadata={"path": file_path, **metadata},
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_read failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
+
+        # Fall through to Python implementation if sandbox not enabled
         try:
             # Validate path
             path = Path(file_path)
@@ -80,25 +251,23 @@ class FileReadTool(Tool):
                     success=False, output=None, error=f"File not found: {file_path}"
                 )
 
-            # Allowlist of readable directories
-            allowed_dirs = [Path("/tmp").resolve(), Path.cwd().resolve()]
-            workspace = os.getenv("SHANNON_WORKSPACE")
-            if workspace:
-                allowed_dirs.append(Path(workspace).resolve())
-
-            # Ensure path is within an allowed directory
-            def _is_allowed(target: Path, base: Path) -> bool:
-                try:
-                    target.relative_to(base)
-                    return True
-                except Exception:
-                    return False
+            # Get allowed directories based on session context
+            allowed_dirs = _get_allowed_dirs(session_context)
 
             if not any(_is_allowed(path_absolute, base) for base in allowed_dirs):
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.warning(
+                    "file_read access denied",
+                    extra={
+                        "session_id": session_id,
+                        "path": str(path_absolute),
+                        "sandbox_enabled": is_sandbox_enabled(),
+                    },
+                )
                 return ToolResult(
                     success=False,
                     output=None,
-                    error=f"Reading {path_absolute} is not allowed. Use workspace or /tmp directory.",
+                    error=f"Reading {path_absolute} is not allowed. Use session workspace.",
                 )
 
             # Check if it's a file (not directory)
@@ -135,6 +304,15 @@ class FileReadTool(Tool):
                 except yaml.YAMLError:
                     pass  # Return as plain text if not valid YAML
 
+            session_id = (session_context or {}).get("session_id", "default")
+            logger.info(
+                "file_read success",
+                extra={
+                    "session_id": session_id,
+                    "path": str(path_absolute),
+                    "sandbox_enabled": is_sandbox_enabled(),
+                },
+            )
             return ToolResult(
                 success=True,
                 output=parsed_content,
@@ -160,14 +338,14 @@ class FileReadTool(Tool):
 
 class FileWriteTool(Tool):
     """
-    Safe file writing tool with sandboxing support
+    Safe file writing tool with sandboxing support and session isolation
     """
 
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
             name="file_write",
             version="1.0.0",
-            description="Write content to a file",
+            description="Write content to a file in session workspace",
             category="file",
             author="Shannon",
             requires_auth=True,  # Writing requires auth
@@ -175,6 +353,7 @@ class FileWriteTool(Tool):
             timeout_seconds=10,
             memory_limit_mb=256,
             sandboxed=True,
+            session_aware=True,
             dangerous=True,  # File writing is potentially dangerous
             cost_per_use=0.001,
         )
@@ -218,9 +397,19 @@ class FileWriteTool(Tool):
             ),
         ]
 
-    async def _execute_impl(self, **kwargs) -> ToolResult:
+    async def _execute_impl(
+        self,
+        session_context: Optional[Dict] = None,
+        observer: Optional[Any] = None,
+        **kwargs,
+    ) -> ToolResult:
         """
-        Write content to file safely
+        Write content to file safely with session isolation.
+
+        Args:
+            session_context: Optional session context containing session_id
+            observer: Optional callback for status updates (unused)
+            **kwargs: Tool parameters (path, content, mode, encoding, create_dirs)
         """
         file_path = kwargs["path"]
         content = kwargs["content"]
@@ -228,30 +417,76 @@ class FileWriteTool(Tool):
         encoding = kwargs.get("encoding", "utf-8")
         create_dirs = kwargs.get("create_dirs", False)
 
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, bytes_written, error, metadata = await client.file_write(
+                session_id=session_id,
+                path=file_path,
+                content=content,
+                append=(mode == "append"),
+                create_dirs=create_dirs,
+                encoding=encoding,
+            )
+            if success:
+                logger.info(
+                    "Sandbox file_write success",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                        "content_length": len(content),
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output=file_path,
+                    metadata={
+                        "path": file_path,
+                        "size_bytes": bytes_written,
+                        "mode": mode,
+                        "encoding": encoding,
+                        "created_dirs": create_dirs,
+                        **metadata,
+                    },
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_write failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": file_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
+
+        # Fall through to Python implementation if sandbox not enabled
         try:
             path = Path(file_path)
 
-            # Canonicalize to avoid symlink escapes
+            # Canonicalize to avoid symlink escapes (don't use strict=True for writes)
             path_absolute = path.resolve()
 
-            # Allow writing only within these directories
-            allowed_dirs = [Path("/tmp").resolve(), Path.cwd().resolve()]
-            workspace = os.getenv("SHANNON_WORKSPACE", None)
-            if workspace:
-                allowed_dirs.append(Path(workspace).resolve())
-
-            def _is_allowed(target: Path, base: Path) -> bool:
-                try:
-                    target.relative_to(base)
-                    return True
-                except Exception:
-                    return False
+            # Get allowed directories based on session context
+            allowed_dirs = _get_allowed_dirs(session_context)
 
             if not any(_is_allowed(path_absolute, base) for base in allowed_dirs):
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.warning(
+                    "file_write access denied",
+                    extra={
+                        "session_id": session_id,
+                        "path": str(path_absolute),
+                        "sandbox_enabled": is_sandbox_enabled(),
+                    },
+                )
                 return ToolResult(
                     success=False,
                     output=None,
-                    error=f"Writing to {path_absolute} is not allowed. Use workspace or /tmp directory.",
+                    error=f"Writing to {path_absolute} is not allowed. Use session workspace.",
                 )
 
             # Create parent directories if requested
@@ -274,6 +509,16 @@ class FileWriteTool(Tool):
             # Get file stats after writing
             stats = path.stat()
 
+            session_id = (session_context or {}).get("session_id", "default")
+            logger.info(
+                "file_write success",
+                extra={
+                    "session_id": session_id,
+                    "path": str(path),
+                    "sandbox_enabled": is_sandbox_enabled(),
+                    "content_length": len(content),
+                },
+            )
             return ToolResult(
                 success=True,
                 output=str(path),
@@ -294,14 +539,14 @@ class FileWriteTool(Tool):
 
 class FileListTool(Tool):
     """
-    List files in a directory
+    List files in a directory with session isolation
     """
 
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
             name="file_list",
             version="1.0.0",
-            description="List files in a directory",
+            description="List files in a directory within session workspace",
             category="file",
             author="Shannon",
             requires_auth=False,
@@ -309,6 +554,7 @@ class FileListTool(Tool):
             timeout_seconds=5,
             memory_limit_mb=128,
             sandboxed=True,
+            session_aware=True,
             dangerous=False,
             cost_per_use=0.0,
         )
@@ -344,24 +590,99 @@ class FileListTool(Tool):
             ),
         ]
 
-    async def _execute_impl(self, **kwargs) -> ToolResult:
+    async def _execute_impl(
+        self,
+        session_context: Optional[Dict] = None,
+        observer: Optional[Any] = None,
+        **kwargs,
+    ) -> ToolResult:
         """
-        List files in directory
+        List files in directory with session isolation.
+
+        Args:
+            session_context: Optional session context containing session_id
+            observer: Optional callback for status updates (unused)
+            **kwargs: Tool parameters (path, pattern, recursive, include_hidden)
         """
         dir_path = kwargs["path"]
         pattern = kwargs.get("pattern", "*")
         recursive = kwargs.get("recursive", False)
         include_hidden = kwargs.get("include_hidden", False)
 
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, entries, error, metadata = await client.file_list(
+                session_id=session_id,
+                path=dir_path,
+                pattern=pattern,
+                recursive=recursive,
+                include_hidden=include_hidden,
+            )
+            if success:
+                logger.info(
+                    "Sandbox file_list success",
+                    extra={
+                        "session_id": session_id,
+                        "path": dir_path,
+                        "sandbox_enabled": True,
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output=entries,
+                    metadata={
+                        "directory": dir_path,
+                        "pattern": pattern,
+                        "recursive": recursive,
+                        **metadata,
+                    },
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_list failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": dir_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
+
+        # Fall through to Python implementation if sandbox not enabled
         try:
             path = Path(dir_path)
 
-            if not path.exists():
+            # Resolve and validate path
+            try:
+                path_absolute = path.resolve(strict=True)
+            except FileNotFoundError:
                 return ToolResult(
                     success=False, output=None, error=f"Directory not found: {dir_path}"
                 )
 
-            if not path.is_dir():
+            # Get allowed directories based on session context
+            allowed_dirs = _get_allowed_dirs(session_context)
+
+            if not any(_is_allowed(path_absolute, base) for base in allowed_dirs):
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.warning(
+                    "file_list access denied",
+                    extra={
+                        "session_id": session_id,
+                        "path": str(path_absolute),
+                        "sandbox_enabled": is_sandbox_enabled(),
+                    },
+                )
+                return ToolResult(
+                    success=False,
+                    output=None,
+                    error=f"Listing {path_absolute} is not allowed. Use session workspace.",
+                )
+
+            if not path_absolute.is_dir():
                 return ToolResult(
                     success=False,
                     output=None,
@@ -400,6 +721,15 @@ class FileListTool(Tool):
                         }
                     )
 
+            session_id = (session_context or {}).get("session_id", "default")
+            logger.info(
+                "file_list success",
+                extra={
+                    "session_id": session_id,
+                    "path": str(path),
+                    "sandbox_enabled": is_sandbox_enabled(),
+                },
+            )
             return ToolResult(
                 success=True,
                 output=files,

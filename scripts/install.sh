@@ -69,6 +69,15 @@ curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/research_comprehensive.tmpl
 curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/research_concise.tmpl" -o config/templates/synthesis/research_concise.tmpl
 echo "✅ Downloaded config files"
 
+# Download skills config
+echo "⬇️  Downloading skills configuration..."
+mkdir -p config/skills/core
+curl -fsSL "${GITHUB_RAW}/config/skills/README.md" -o config/skills/README.md
+curl -fsSL "${GITHUB_RAW}/config/skills/core/code-review.md" -o config/skills/core/code-review.md
+curl -fsSL "${GITHUB_RAW}/config/skills/core/debugging.md" -o config/skills/core/debugging.md
+curl -fsSL "${GITHUB_RAW}/config/skills/core/test-driven-dev.md" -o config/skills/core/test-driven-dev.md
+echo "✅ Downloaded skills config"
+
 # Download Python WASM interpreter
 echo "⬇️  Downloading Python WASM interpreter (~20MB)..."
 mkdir -p wasm-interpreters

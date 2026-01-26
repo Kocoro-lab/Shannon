@@ -164,14 +164,15 @@ const (
 
 // Scopes for authorization
 const (
-	ScopeWorkflowsRead  = "workflows:read"
-	ScopeWorkflowsWrite = "workflows:write"
-	ScopeAgentsExecute  = "agents:execute"
-	ScopeSessionsRead   = "sessions:read"
-	ScopeSessionsWrite  = "sessions:write"
-	ScopeAPIKeysManage  = "api_keys:manage"
-	ScopeUsersManage    = "users:manage"
-	ScopeTenantManage   = "tenant:manage"
+	ScopeWorkflowsRead    = "workflows:read"
+	ScopeWorkflowsWrite   = "workflows:write"
+	ScopeAgentsExecute    = "agents:execute"
+	ScopeSessionsRead     = "sessions:read"
+	ScopeSessionsWrite    = "sessions:write"
+	ScopeAPIKeysManage    = "api_keys:manage"
+	ScopeUsersManage      = "users:manage"
+	ScopeTenantManage     = "tenant:manage"
+	ScopeSkillsDangerous  = "skills:dangerous" // Required for invoking dangerous skills
 )
 
 // User roles
