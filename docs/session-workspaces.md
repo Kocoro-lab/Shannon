@@ -9,6 +9,54 @@ This isolation is critical for:
 - **Reproducibility**: Each session starts with a clean workspace
 - **Resource management**: Per-session disk quotas prevent runaway usage
 
+## Role Requirements for File Tools
+
+**Important**: File tools are gated by role. You must specify the appropriate role in the request context to access file operations.
+
+| Role | File Tools Available |
+|------|---------------------|
+| `developer` | `file_read`, `file_write`, `file_list`, `bash`, `python_executor` |
+| `generalist` (default) | `file_read`, `file_list`, `bash` (no `file_write`) |
+| `critic` | `file_read`, `file_list`, `bash` |
+
+**To write files, you must use `role: "developer"`:**
+
+```json
+{
+  "query": "Create a file called test.txt with content 'Hello'",
+  "session_id": "my-session-123",
+  "context": {
+    "role": "developer"
+  }
+}
+```
+
+Without `role: "developer"`, the agent cannot use `file_write` and the request will either fail or the LLM won't have the tool available.
+
+### Example: File Persistence Across Requests
+
+```bash
+# First request - create file (requires developer role)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Write '\''test data'\'' to data.txt",
+    "session_id": "persist-test",
+    "context": {"role": "developer"}
+  }'
+
+# Second request - read same file (same session_id)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Read data.txt and show contents",
+    "session_id": "persist-test",
+    "context": {"role": "developer"}
+  }'
+```
+
+Files persist within a session - subsequent requests with the same `session_id` can access previously created files.
+
 ## Architecture
 
 ### Directory Structure
@@ -63,9 +111,9 @@ Each session gets a dedicated subdirectory named after its `session_id`. The wor
 
 Shannon implements two security layers for file operations. One or both may be active depending on configuration.
 
-### Phase 2: Python Path Validation (Default)
+### Phase 2: Python Path Validation (Fallback)
 
-When `SHANNON_USE_WASI_SANDBOX=0` (default), file operations are handled directly in Python with path validation:
+When `SHANNON_USE_WASI_SANDBOX=0`, file operations are handled directly in Python with path validation:
 
 1. **Path canonicalization**: All paths are resolved using `Path.resolve()` to eliminate symlinks and `..` components
 2. **Allowlist enforcement**: Resolved paths must fall within allowed directories:
@@ -81,9 +129,9 @@ When `SHANNON_USE_WASI_SANDBOX=0` (default), file operations are handled directl
 # Result: DENIED (not within session workspace)
 ```
 
-### Phase 3: WASI Sandbox (Optional, Enhanced Security)
+### Phase 3: WASI Sandbox (Default, Enhanced Security)
 
-When `SHANNON_USE_WASI_SANDBOX=1`, file operations are proxied to the Rust agent-core service which provides additional security:
+When `SHANNON_USE_WASI_SANDBOX=1` (default in docker-compose), file operations are proxied to the Rust agent-core service which provides additional security:
 
 1. **Capability-based security**: The WASI runtime only grants access to the session workspace directory
 2. **Memory limits**: Sandbox execution is constrained by memory limits
@@ -429,6 +477,18 @@ Error: Workspace quota exceeded
 - Clean up unused files with `rm`
 - Increase `SHANNON_MAX_WORKSPACE_SIZE_MB` if needed
 - Check for unexpectedly large files
+
+## Known Issues
+
+### Session ID Falls Back to "default"
+
+**Status**: Open bug
+
+When using file tools through the orchestrator workflow, the `session_id` from the task request may not be propagated correctly to the sandbox service. Files end up in `/tmp/shannon-sessions/default/` instead of `/tmp/shannon-sessions/{session_id}/`.
+
+**Workaround**: Files still work correctly within a task, but different tasks may share the same workspace unexpectedly.
+
+**To verify**: Check agent-core logs for `session_id=default` when you expected a specific session ID.
 
 ## Key Source Files
 
