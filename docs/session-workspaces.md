@@ -478,17 +478,21 @@ Error: Workspace quota exceeded
 - Increase `SHANNON_MAX_WORKSPACE_SIZE_MB` if needed
 - Check for unexpectedly large files
 
-## Known Issues
+## Known Limitations
 
-### Session ID Falls Back to "default"
+### Session ID Requires `role: developer`
 
-**Status**: Open bug
+File tools (`file_read`, `file_write`, `file_list`) are gated by role. Without `role: "developer"` in the request context, the LLM may prefer `python_executor` which cannot write files.
 
-When using file tools through the orchestrator workflow, the `session_id` from the task request may not be propagated correctly to the sandbox service. Files end up in `/tmp/shannon-sessions/default/` instead of `/tmp/shannon-sessions/{session_id}/`.
+**Solution**: Always include `"context": {"role": "developer"}` when submitting tasks that need file operations.
 
-**Workaround**: Files still work correctly within a task, but different tasks may share the same workspace unexpectedly.
+### WASI Python Sandbox vs Session Workspace
 
-**To verify**: Check agent-core logs for `session_id=default` when you expected a specific session ID.
+There are two separate sandboxes:
+1. **Python WASI Sandbox** (`python_executor` tool) - For code execution, read-only, no file I/O
+2. **Session Workspace** (`file_*` tools) - For file persistence, isolated per session
+
+The `python_executor` tool cannot write files. Use `file_write` for file operations.
 
 ## Key Source Files
 
