@@ -12,18 +12,18 @@ import (
 
 // Skill represents a parsed skill definition from a markdown file.
 type Skill struct {
-	Name          string                 `yaml:"name"`
-	Version       string                 `yaml:"version"`
-	Author        string                 `yaml:"author"`
-	Category      string                 `yaml:"category"`
-	Description   string                 `yaml:"description"`
-	RequiresTools []string               `yaml:"requires_tools"`
-	RequiresRole  string                 `yaml:"requires_role"`
-	BudgetMax     int                    `yaml:"budget_max"`
-	Dangerous     bool                   `yaml:"dangerous"`
-	Enabled       bool                   `yaml:"enabled"`
-	Metadata      map[string]interface{} `yaml:"metadata"`
-	Content       string                 `yaml:"-"` // Markdown content after frontmatter
+	Name          string                 `yaml:"name" json:"name"`
+	Version       string                 `yaml:"version" json:"version"`
+	Author        string                 `yaml:"author" json:"author,omitempty"`
+	Category      string                 `yaml:"category" json:"category"`
+	Description   string                 `yaml:"description" json:"description"`
+	RequiresTools []string               `yaml:"requires_tools" json:"requires_tools,omitempty"`
+	RequiresRole  string                 `yaml:"requires_role" json:"requires_role,omitempty"`
+	BudgetMax     int                    `yaml:"budget_max" json:"budget_max,omitempty"`
+	Dangerous     bool                   `yaml:"dangerous" json:"dangerous"`
+	Enabled       bool                   `yaml:"enabled" json:"enabled"`
+	Metadata      map[string]interface{} `yaml:"metadata" json:"metadata,omitempty"`
+	Content       string                 `yaml:"-" json:"content,omitempty"` // Markdown content after frontmatter
 }
 
 // SkillRegistry manages loaded skills with thread-safe access.

@@ -81,6 +81,30 @@ impl SandboxServiceImpl {
 
         // Handle empty path as workspace root
         let relative = if path.is_empty() { "." } else { path };
+
+        // SECURITY: Early rejection of path traversal patterns (defense in depth)
+        // This catches attempts even when target/parent don't exist yet
+        if relative.contains("..") {
+            warn!(
+                session_id = %session_id,
+                path = %path,
+                violation = "path_traversal",
+                "Security violation: path traversal pattern detected"
+            );
+            return Err(Status::permission_denied("Path traversal not allowed"));
+        }
+
+        // Block absolute paths - all paths must be relative to workspace
+        if std::path::Path::new(relative).is_absolute() {
+            warn!(
+                session_id = %session_id,
+                path = %path,
+                violation = "absolute_path",
+                "Security violation: absolute path not allowed"
+            );
+            return Err(Status::permission_denied("Absolute paths not allowed"));
+        }
+
         let target = workspace.join(relative);
 
         // For existing paths, verify they're within workspace

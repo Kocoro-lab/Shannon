@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
+from .file_ops import _validate_session_id
 
 
 class BashExecutorTool(Tool):
@@ -149,11 +150,32 @@ class BashExecutorTool(Tool):
             )
 
         # Determine working directory (session workspace)
-        session_id = (session_context or {}).get("session_id", "default")
+        raw_session_id = (session_context or {}).get("session_id", "default")
+        try:
+            session_id = _validate_session_id(raw_session_id)
+        except ValueError as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=str(e),
+                metadata={"command": command},
+            )
+
         base_dir = Path(
             os.getenv("SHANNON_SESSION_WORKSPACES_DIR", "/tmp/shannon-sessions")
         ).resolve()
         workspace = base_dir / session_id
+
+        # Defense in depth: verify resolved path is within base_dir
+        workspace_resolved = workspace.resolve()
+        if not str(workspace_resolved).startswith(str(base_dir)):
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Invalid session_id: path escape attempt detected",
+                metadata={"command": command},
+            )
+
         workspace.mkdir(parents=True, exist_ok=True)
 
         try:

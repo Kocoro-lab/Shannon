@@ -16,6 +16,36 @@ from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolRes
 from .sandbox_client import is_sandbox_enabled, get_sandbox_client
 
 
+def _validate_session_id(session_id: str) -> str:
+    """Validate session_id to prevent path traversal attacks.
+
+    Args:
+        session_id: Raw session ID from request
+
+    Returns:
+        Sanitized session ID safe for use in paths
+
+    Raises:
+        ValueError: If session_id contains path traversal attempts
+    """
+    if not session_id:
+        return "default"
+
+    # Block path traversal attempts
+    if ".." in session_id or "/" in session_id or "\\" in session_id:
+        raise ValueError(f"Invalid session_id: path traversal not allowed")
+
+    # Block null bytes and other control characters
+    if any(ord(c) < 32 for c in session_id):
+        raise ValueError(f"Invalid session_id: control characters not allowed")
+
+    # Limit length to prevent filesystem issues
+    if len(session_id) > 255:
+        raise ValueError(f"Invalid session_id: too long (max 255 chars)")
+
+    return session_id
+
+
 def _get_session_workspace(session_context: Optional[Dict] = None) -> Path:
     """Get or create session workspace directory.
 
@@ -24,12 +54,23 @@ def _get_session_workspace(session_context: Optional[Dict] = None) -> Path:
 
     Returns:
         Path to session workspace directory (created if needed)
+
+    Raises:
+        ValueError: If session_id is invalid
     """
-    session_id = (session_context or {}).get("session_id", "default")
+    raw_session_id = (session_context or {}).get("session_id", "default")
+    session_id = _validate_session_id(raw_session_id)
+
     base_dir = Path(
         os.getenv("SHANNON_SESSION_WORKSPACES_DIR", "/tmp/shannon-sessions")
     ).resolve()
     session_workspace = base_dir / session_id
+
+    # Double-check the resolved path is within base_dir (defense in depth)
+    session_workspace_resolved = session_workspace.resolve()
+    if not str(session_workspace_resolved).startswith(str(base_dir)):
+        raise ValueError(f"Invalid session_id: path escape attempt detected")
+
     session_workspace.mkdir(parents=True, exist_ok=True)
     return session_workspace
 

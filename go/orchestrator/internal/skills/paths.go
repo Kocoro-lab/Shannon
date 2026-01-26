@@ -8,9 +8,12 @@ import (
 
 // DefaultSkillDirs are the default directories to search for skills.
 // These are tried in order; missing directories are skipped.
+// User skills load after core skills, allowing overrides.
 var DefaultSkillDirs = []string{
-	"config/skills/core",      // Development: relative to working directory
-	"/app/config/skills/core", // Container: mounted config path
+	"config/skills/core",      // Development: core skills
+	"config/skills/user",      // Development: user-defined skills
+	"/app/config/skills/core", // Container: core skills
+	"/app/config/skills/user", // Container: user-defined skills
 }
 
 // ResolveSkillDirs returns the skill directories to scan.
