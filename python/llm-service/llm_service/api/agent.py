@@ -2419,6 +2419,9 @@ async def _execute_and_format_tools(
                     # Trading agents: upstream node results from TemplateWorkflow
                     "template_results",
                     "dependency_results",
+                    # Python executor mode configuration
+                    "python_executor_mode",  # "wasi" or "firecracker"
+                    "python_executor",       # Per-request config overrides
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
                 for key in ("template_results", "dependency_results"):

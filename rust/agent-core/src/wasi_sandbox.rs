@@ -26,6 +26,8 @@ pub struct WasiSandbox {
     instances_limit: usize,
     tables_limit: usize,
     memories_limit: usize,
+    /// Session workspace path for read-write access (mounted at /workspace)
+    session_workspace: Option<PathBuf>,
 }
 
 impl WasiSandbox {
@@ -68,6 +70,7 @@ impl WasiSandbox {
             instances_limit: 10,
             tables_limit: 10,
             memories_limit: 4,
+            session_workspace: None,
         })
     }
 
@@ -95,6 +98,18 @@ impl WasiSandbox {
     pub fn set_memory_limit(mut self, bytes: usize) -> Self {
         self.memory_limit = bytes;
         self
+    }
+
+    /// Set the session workspace path for read-write file access.
+    /// The workspace will be mounted at `/workspace` inside the WASI sandbox.
+    pub fn with_session_workspace(mut self, workspace_path: PathBuf) -> Self {
+        self.session_workspace = Some(workspace_path);
+        self
+    }
+
+    /// Get the session workspace path if set.
+    pub fn session_workspace(&self) -> Option<&PathBuf> {
+        self.session_workspace.as_ref()
     }
 
     #[allow(dead_code)]
@@ -191,6 +206,7 @@ impl WasiSandbox {
         let allowed_paths = self.allowed_paths.clone();
         let env_vars = self.env_vars.clone();
         let allow_env_access = self.allow_env_access;
+        let session_workspace = self.session_workspace.clone();
 
         // Start epoch ticker for timeout enforcement with cancellation support
         let engine_weak = Arc::downgrade(&self.engine);
@@ -293,6 +309,32 @@ impl WasiSandbox {
                     debug!(
                         "WASI: Allowed read-only directory access to {:?} (canonical: {:?})",
                         allowed_path, canonical_path
+                    );
+                }
+            }
+
+            // Mount session workspace with read-write permissions
+            if let Some(workspace) = &session_workspace {
+                if workspace.exists() && workspace.is_dir() {
+                    // Canonicalize to prevent symlink escapes
+                    let canonical_workspace = workspace.canonicalize().map_err(|e| {
+                        anyhow::anyhow!("Failed to canonicalize workspace {:?}: {}", workspace, e)
+                    })?;
+
+                    wasi_builder.preopened_dir(
+                        canonical_workspace.clone(),
+                        "/workspace",        // Guest path - always /workspace
+                        DirPerms::all(),     // Read + write + create directories
+                        FilePerms::all(),    // Read + write files
+                    )?;
+                    info!(
+                        "WASI: Mounted session workspace {:?} at /workspace with read-write access",
+                        canonical_workspace
+                    );
+                } else {
+                    warn!(
+                        "WASI: Session workspace {:?} does not exist or is not a directory",
+                        workspace
                     );
                 }
             }
@@ -493,5 +535,21 @@ mod tests {
             .await
             .expect("minimal wasm should execute successfully");
         assert!(out.is_empty(), "expected empty stdout, got: {}", out);
+    }
+
+    #[tokio::test]
+    async fn test_wasi_sandbox_with_session_workspace() {
+        let temp_dir = std::env::temp_dir().join("wasi-test-workspace");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let sandbox = WasiSandbox::new()
+            .unwrap()
+            .with_session_workspace(temp_dir.clone());
+
+        assert!(sandbox.session_workspace().is_some());
+        assert_eq!(sandbox.session_workspace().unwrap(), &temp_dir);
+
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

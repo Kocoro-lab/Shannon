@@ -61,7 +61,7 @@ User Request → Orchestrator → LLM Service → Agent Core (WASI) → Python.w
                                                ↓
                                         Secure Sandbox
                                           - No network
-                                          - Read-only FS
+                                          - /workspace/ read-write
                                           - Memory limits
 ```
 
@@ -119,16 +119,16 @@ export PYTHON_WASI_WASM_PATH=$(pwd)/wasm-interpreters/python-3.11.4.wasm
 ## Limitations
 
 ### Current Limitations
-- No pip/package installation at runtime
-- Limited to standard library
+- No pip/package installation at runtime (use Firecracker backend for data science packages)
+- Limited to standard library in WASI mode
 - No native C extensions
 - No network access (security feature)
-- Read-only filesystem access
+- Filesystem writes restricted to `/workspace/` (session-scoped)
 - 256MB memory limit (configurable)
 
 ### Supported Python Features
 - ✅ Standard library (math, json, datetime, etc.)
-- ✅ File operations (read-only)
+- ✅ File operations (read-write to `/workspace/`)
 - ✅ String manipulation
 - ✅ Data structures
 - ✅ Regular expressions
@@ -193,7 +193,7 @@ echo 'print("Test")' | wasmtime run \
 The WASI sandbox provides strong isolation:
 - **Memory Safety**: Separate linear memory space
 - **No Network**: Network capabilities not granted
-- **Filesystem**: Read-only access to whitelisted paths
+- **Filesystem**: Read-write to `/workspace/` (session-scoped), no other paths
 - **Resource Limits**: CPU, memory, and time limits enforced
 - **No System Calls**: Cannot spawn processes or access system
 
@@ -251,6 +251,7 @@ print(f"Amount after {time} years: ${amount:.2f}")
 4. Adjust resource limits as needed
 
 For more details, see:
-- [WASI Setup Guide](../rust/agent-core/WASI_SETUP.md)
+- [Python Executor (Hybrid)](python-executor.md): WASI + Firecracker backend comparison, `/workspace/` persistence
+- [Session Workspaces](session-workspaces.md): Workspace isolation, file tools, quota enforcement
 - [Agent Core Architecture](agent-core-architecture.md)
 - [Multi-Agent Workflow](multi-agent-workflow-architecture.md)

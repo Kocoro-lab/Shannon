@@ -105,7 +105,7 @@ make dev
 │  │  │  • CPU limit: Configurable                 │  │    │
 │  │  │  • Timeout: 30s (max 60s)                  │  │    │
 │  │  │  • No network access                       │  │    │
-│  │  │  • Read-only filesystem                    │  │    │
+│  │  │  • /workspace/ read-write, else read-only  │  │    │
 │  │  └────────────────────────────────────────────┘  │    │
 │  └──────────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────────┘
@@ -119,7 +119,7 @@ make dev
 - **Session Persistence**: Maintain variables across executions with session IDs
 - **Performance Optimization**: Cached interpreter reduces startup from 500ms to 50ms
 - **Resource Limits**: Configurable memory, CPU, and timeout limits
-- **Security Isolation**: True sandboxing via WASI - no network, no filesystem writes
+- **Security Isolation**: True sandboxing via WASI - no network, filesystem writes only to `/workspace/`
 - **Output Streaming**: Progressive output for long-running computations
 - **Error Handling**: Comprehensive error messages and timeout protection
 
@@ -272,7 +272,7 @@ llm-service:
 | -------------------- | ----------- | ------------------------------------------ |
 | **Memory Isolation** | ✅ Enforced  | Separate linear memory space per execution |
 | **Network Access**   | ❌ Blocked   | No network capabilities granted            |
-| **Filesystem**       | 🔒 Read-only | Limited to whitelisted paths               |
+| **Filesystem**       | 🔒 Scoped    | Read-write to `/workspace/`, no other paths |
 | **Process Spawning** | ❌ Blocked   | Cannot create subprocesses                 |
 | **Resource Limits**  | ✅ Enforced  | Memory, CPU, and time limits               |
 | **System Calls**     | ❌ Blocked   | No access to host system calls             |
@@ -304,7 +304,7 @@ llm-service:
 
 - `io`: Only in-memory operations
 - `sqlite3`: In-memory databases only
-- File operations: Read-only access to `/tmp`
+- File operations: Read-write access to `/workspace/` (session-scoped), no other paths
 
 ### ❌ Not Supported
 
@@ -437,11 +437,17 @@ environment:
 
 ### Planned Enhancements
 
-1. **Package Support**: Pre-compiled NumPy, Pandas via Pyodide
+1. **Firecracker Backend**: Full data science packages (numpy, pandas, scipy) via microVM isolation
 2. **Multi-language**: JavaScript (QuickJS), Ruby (ruby.wasm)
 3. **Debugging**: Step-through debugging support
 4. **Visualization**: Matplotlib output via base64 images
 5. **Distributed Execution**: Multi-node execution for large tasks
+
+## Related Documentation
+
+- **[Python Executor (Hybrid)](python-executor.md)**: WASI + Firecracker backend comparison, `/workspace/` persistence, resource limits
+- **[Session Workspaces](session-workspaces.md)**: Workspace isolation, file tools, quota enforcement, security model
+- **[Python WASI Setup](python-wasi-setup.md)**: Interpreter download and Docker configuration
 
 ## Technical Details
 
@@ -476,4 +482,4 @@ environment:
 
 ---
 
-*Last updated: January 2025*
+*Last updated: January 2026*

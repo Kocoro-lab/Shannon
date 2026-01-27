@@ -1,7 +1,7 @@
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 // FSM removed; Rust acts as an enforcement gateway
 use crate::enforcement::RequestEnforcer;
@@ -10,6 +10,8 @@ use crate::memory::MemoryPool;
 
 #[cfg(feature = "wasi")]
 use crate::wasi_sandbox::WasiSandbox;
+
+use crate::workspace::WorkspaceManager;
 
 // Include the generated proto code
 #[allow(clippy::enum_variant_names)]
@@ -86,6 +88,7 @@ impl AgentServiceImpl {
         &self,
         tool_params: &prost_types::Value,
         req: &ExecuteTaskRequest,
+        #[cfg(feature = "wasi")] sandbox_override: Option<WasiSandbox>,
     ) -> Result<Response<ExecuteTaskResponse>, Status> {
         use crate::tools::{ToolCall, ToolExecutor};
         use prost_types::{Struct, Value};
@@ -189,7 +192,10 @@ impl AgentServiceImpl {
         };
 
         #[cfg(feature = "wasi")]
-        let tool_executor = ToolExecutor::new_with_wasi(Some(self.sandbox.clone()), None);
+        let tool_executor = {
+            let sandbox = sandbox_override.unwrap_or_else(|| self.sandbox.clone());
+            ToolExecutor::new_with_wasi(Some(sandbox), None)
+        };
         #[cfg(not(feature = "wasi"))]
         let tool_executor = ToolExecutor::new_with_wasi(None, None);
 
@@ -270,6 +276,33 @@ impl AgentServiceImpl {
 
                 info!("LLM-native tool execution completed: {}", tool_name);
 
+                // Post-execution workspace size check (safety valve)
+                if let Some(session_ctx) = &req.session_context {
+                    let sid = &session_ctx.session_id;
+                    if !sid.is_empty() {
+                        let wm = WorkspaceManager::from_env();
+                        match wm.get_workspace_size(sid) {
+                            Ok(size_bytes) => {
+                                let size_mb = size_bytes / (1024 * 1024);
+                                // Default 500MB; override via WORKSPACE_MAX_SIZE_MB
+                                let max_mb: u64 = std::env::var("WORKSPACE_MAX_SIZE_MB")
+                                    .ok()
+                                    .and_then(|v| v.parse().ok())
+                                    .unwrap_or(500);
+                                if size_mb > max_mb {
+                                    warn!(
+                                        "Workspace for session {} exceeds limit: {}MB > {}MB",
+                                        sid, size_mb, max_mb
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                debug!("Could not check workspace size for {}: {}", sid, e);
+                            }
+                        }
+                    }
+                }
+
                 let response = ExecuteTaskResponse {
                     task_id: req
                         .metadata
@@ -323,6 +356,7 @@ impl AgentServiceImpl {
         &self,
         list: &prost_types::ListValue,
         req: &ExecuteTaskRequest,
+        #[cfg(feature = "wasi")] sandbox_override: Option<WasiSandbox>,
     ) -> Result<Response<ExecuteTaskResponse>, Status> {
         use crate::tools::{ToolCall, ToolExecutor};
         use prost_types::Value;
@@ -332,8 +366,12 @@ impl AgentServiceImpl {
             crate::grpc_server::prost_value_to_json(v)
         }
 
+        // Resolve the effective sandbox once: prefer override, fall back to default
         #[cfg(feature = "wasi")]
-        let tool_executor = ToolExecutor::new_with_wasi(Some(self.sandbox.clone()), None);
+        let effective_sandbox = sandbox_override.unwrap_or_else(|| self.sandbox.clone());
+
+        #[cfg(feature = "wasi")]
+        let tool_executor = ToolExecutor::new_with_wasi(Some(effective_sandbox.clone()), None);
         #[cfg(not(feature = "wasi"))]
         let tool_executor = ToolExecutor::new_with_wasi(None, None);
         let mut tool_calls_vec = Vec::new();
@@ -455,7 +493,7 @@ impl AgentServiceImpl {
                     tonic::Status::internal(format!("Failed to acquire semaphore permit: {}", e))
                 })?;
                 #[cfg(feature = "wasi")]
-                let sandbox = self.sandbox.clone();
+                let sandbox = effective_sandbox.clone();
                 #[cfg(not(feature = "wasi"))]
                 let sandbox = ();
                 let tool_name_c = tool_name.clone();
@@ -811,21 +849,50 @@ impl AgentService for AgentServiceImpl {
             debug!("Session history length: {}", session_ctx.history.len());
         }
 
-        // Configure sandbox from request config (timeouts, memory)
-        // Note: currently unused in this code path; kept for future wiring.
+        // Get session_id from session_context for workspace mounting
+        #[cfg(feature = "wasi")]
+        let session_workspace = if let Some(session_ctx) = &req.session_context {
+            let session_id = &session_ctx.session_id;
+            if !session_id.is_empty() {
+                match WorkspaceManager::from_env().get_workspace(session_id) {
+                    Ok(workspace) => {
+                        info!("WASI: Using session workspace for session_id={}", session_id);
+                        Some(workspace)
+                    }
+                    Err(e) => {
+                        warn!("WASI: Failed to get workspace for session_id={}: {}", session_id, e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            info!("WASI: No session_context - workspace not mounted (read-only sandbox)");
+            None
+        };
+
+        // Configure sandbox from request config (timeouts, memory, workspace)
         #[cfg(feature = "wasi")]
         let mut _sandbox = self.sandbox.clone();
         #[cfg(not(feature = "wasi"))]
         let mut _sandbox = ();
         #[cfg(feature = "wasi")]
-        if let Some(cfg) = &req.config {
-            if cfg.timeout_seconds > 0 {
-                _sandbox = _sandbox.set_execution_timeout(std::time::Duration::from_secs(
-                    cfg.timeout_seconds as u64,
-                ));
+        {
+            // Apply session workspace if available
+            if let Some(workspace) = session_workspace {
+                _sandbox = _sandbox.with_session_workspace(workspace);
             }
-            if cfg.memory_limit_mb > 0 {
-                _sandbox = _sandbox.set_memory_limit((cfg.memory_limit_mb as usize) * 1024 * 1024);
+            // Apply config overrides
+            if let Some(cfg) = &req.config {
+                if cfg.timeout_seconds > 0 {
+                    _sandbox = _sandbox.set_execution_timeout(std::time::Duration::from_secs(
+                        cfg.timeout_seconds as u64,
+                    ));
+                }
+                if cfg.memory_limit_mb > 0 {
+                    _sandbox = _sandbox.set_memory_limit((cfg.memory_limit_mb as usize) * 1024 * 1024);
+                }
             }
         }
         #[cfg(not(feature = "wasi"))]
@@ -849,9 +916,17 @@ impl AgentService for AgentServiceImpl {
                     let est = req.query.len().saturating_div(4);
                     let enforcer = self.enforcer.clone();
                     let list = list.clone();
+                    #[cfg(feature = "wasi")]
+                    let sandbox_for_calls = Some(_sandbox.clone());
+
                     let result = enforcer
                         .enforce(&key, est, || async {
-                            self.execute_tool_calls(&list, &req)
+                            self.execute_tool_calls(
+                                &list,
+                                &req,
+                                #[cfg(feature = "wasi")]
+                                sandbox_for_calls,
+                            )
                                 .await
                                 .map_err(|e| anyhow::anyhow!(e.to_string()))
                         })
@@ -878,9 +953,17 @@ impl AgentService for AgentServiceImpl {
                 let est = req.query.len().saturating_div(4);
                 let enforcer = self.enforcer.clone();
                 let tp = tool_params.clone();
+                #[cfg(feature = "wasi")]
+                let sandbox_for_tool = Some(_sandbox.clone());
+
                 let result = enforcer
                     .enforce(&key, est, || async {
-                        self.execute_direct_tool(&tp, &req)
+                        self.execute_direct_tool(
+                            &tp,
+                            &req,
+                            #[cfg(feature = "wasi")]
+                            sandbox_for_tool,
+                        )
                             .await
                             .map_err(|e| anyhow::anyhow!(e.to_string()))
                     })
