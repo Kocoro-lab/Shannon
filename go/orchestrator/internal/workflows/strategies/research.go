@@ -5259,6 +5259,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 					gapContext["research_mode"] = "gap_fill"
 					gapContext["target_gap"] = sq.TargetGap
 					gapContext["iteration"] = iteration
+					// Override model_tier to agent tier; synthesis sets "large" in
+					// baseContext which must not bleed into gap-filling agents.
+					gapContext["model_tier"] = modelTier
 
 					// Apply task contract if present
 					if sq.SourceGuidance != nil {
@@ -5630,6 +5633,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								gapContext["research_mode"] = "gap_fill"
 								gapContext["target_area"] = gapQuery.TargetArea
 								gapContext["gap_iteration"] = iterationCount + 1
+								// Override model_tier to agent tier; synthesis sets "large" in
+								// baseContext which must not bleed into gap-filling agents.
+								gapContext["model_tier"] = modelTier
 
 								// Use react_max_iterations from context if provided, default to 2 for gap-filling efficiency
 								gapReactMaxIterations := 2
