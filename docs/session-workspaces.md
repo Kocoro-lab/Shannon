@@ -489,10 +489,10 @@ File tools (`file_read`, `file_write`, `file_list`) are gated by role. Without `
 ### WASI Python Sandbox vs Session Workspace
 
 There are two separate sandboxes:
-1. **Python WASI Sandbox** (`python_executor` tool) - For code execution, read-only, no file I/O
+1. **Python WASI Sandbox** (`python_executor` tool) - For code execution with read-write access to `/workspace/`
 2. **Session Workspace** (`file_*` tools) - For file persistence, isolated per session
 
-The `python_executor` tool cannot write files. Use `file_write` for file operations.
+Both `python_executor` and `file_*` tools share the same session workspace. Files written via `python_executor` (to `/workspace/`) are accessible via `file_read` using relative paths.
 
 ## Key Source Files
 

@@ -88,9 +88,21 @@ impl WorkspaceManager {
                 return Err(anyhow!("Workspace path exists but is not a directory"));
             }
         } else {
-            // Create workspace directory
-            std::fs::create_dir(&workspace)?;
-            info!("Created workspace for session: {}", session_id);
+            // Create workspace directory (handle race: another request may create it first)
+            match std::fs::create_dir(&workspace) {
+                Ok(_) => info!("Created workspace for session: {}", session_id),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Race condition: another request created it between exists() and create_dir()
+                    let metadata = std::fs::symlink_metadata(&workspace)?;
+                    if metadata.file_type().is_symlink() {
+                        return Err(anyhow!("Workspace is a symlink (potential attack)"));
+                    }
+                    if !metadata.is_dir() {
+                        return Err(anyhow!("Workspace path exists but is not a directory"));
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
 
         // Post-creation verification (defense in depth)
