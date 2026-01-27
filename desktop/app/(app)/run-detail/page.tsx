@@ -18,7 +18,7 @@ import { useRunStream } from "@/lib/shannon/stream";
 import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState } from "@/lib/shannon/api";
+import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState, approveReviewPlan } from "@/lib/shannon/api";
 import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
@@ -1094,7 +1094,7 @@ function RunDetailContent() {
         dispatch(setReviewPlan(mode));
     };
 
-    const handleReviewFeedback = (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => {
+    const handleReviewFeedback = async (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => {
         dispatch(setReviewVersion(version));
         dispatch(setReviewIntent(intent));
 
@@ -1117,6 +1117,17 @@ function RunDetailContent() {
             isResearchPlan: true,
             planRound: round,
         }));
+
+        // Auto-approve when LLM detects approve intent
+        if (intent === "approve" && reviewWorkflowId) {
+            try {
+                await approveReviewPlan(reviewWorkflowId);
+                handleReviewApprove();
+            } catch (err) {
+                console.error("[RunDetail] Auto-approve failed:", err);
+                // Keep the Approve & Run button visible as fallback
+            }
+        }
     };
 
     const handleReviewApprove = () => {
