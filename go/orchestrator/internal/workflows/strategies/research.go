@@ -4922,9 +4922,23 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	// Deep Research 2.0 is now enabled by default; set iterative_research_enabled=false in context to disable
 	iterativeResearchVersion := workflow.GetVersion(ctx, "iterative_research_v1", workflow.DefaultVersion, 1)
 	iterativeEnabled := true // Default to true for Deep Research 2.0
+	iterativeEnabledExplicit := false
 	if v, ok := baseContext["iterative_research_enabled"]; ok {
+		iterativeEnabledExplicit = true
 		if b, ok := v.(bool); ok {
 			iterativeEnabled = b
+		}
+	}
+
+	// Fallback: quick strategy disables iterative loop (same pattern as gap_filling at line 5509)
+	if !iterativeEnabledExplicit {
+		strategy := ""
+		if sv, ok := baseContext["research_strategy"].(string); ok {
+			strategy = strings.ToLower(strings.TrimSpace(sv))
+		}
+		if strategy == "quick" {
+			iterativeEnabled = false
+			logger.Info("Iterative research disabled for quick strategy")
 		}
 	}
 
