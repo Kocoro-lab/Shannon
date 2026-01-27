@@ -926,3 +926,66 @@ Profit margins improved significantly due to operational efficiency.[5] The CEO 
 		validateContentImmutability(original, cited)
 	}
 }
+
+// ============================================================================
+// looksLikeTableRow Tests
+// ============================================================================
+
+func TestLooksLikeTableRow(t *testing.T) {
+	tests := []struct {
+		name     string
+		sentence string
+		want     bool
+	}{
+		{
+			name:     "markdown table row with pipes",
+			sentence: "| 首席科学家 | **张卓 (Wayland Zhang)** | 多伦多大学出身 |",
+			want:     true,
+		},
+		{
+			name:     "markdown separator row",
+			sentence: "|---|---|---|",
+			want:     true,
+		},
+		{
+			name:     "space-aligned table columns",
+			sentence: "首席科学家    张卓 (Wayland Zhang)    多伦多大学出身,师从 Geoffrey Hinton",
+			want:     true,
+		},
+		{
+			name:     "tab-aligned table columns",
+			sentence: "首席科学家\t\t张卓\t\t多伦多大学出身",
+			want:     true,
+		},
+		{
+			name:     "normal prose sentence",
+			sentence: "The company was founded in 2015 and has grown rapidly since then.",
+			want:     false,
+		},
+		{
+			name:     "prose with single pipe",
+			sentence: "The result is A or B | depending on the input.",
+			want:     false,
+		},
+		{
+			name:     "Chinese prose sentence",
+			sentence: "张卓是多伦多大学出身的首席科学家，师从Geoffrey Hinton。",
+			want:     false,
+		},
+		{
+			name:     "heading with no table structure",
+			sentence: "## 核心团队成员",
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := looksLikeTableRow(tt.sentence)
+			if got != tt.want {
+				t.Errorf("looksLikeTableRow(%q) = %v, want %v",
+					tt.sentence, got, tt.want)
+			}
+		})
+	}
+}
