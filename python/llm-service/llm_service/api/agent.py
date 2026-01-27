@@ -2843,6 +2843,7 @@ class ResearchPlanRequest(BaseModel):
 class ResearchPlanResponse(BaseModel):
     """Response with the generated research plan."""
     message: str = Field(..., description="Human-friendly research plan text")
+    intent: str = Field(default="feedback", description="LLM-detected user intent: 'feedback' or 'approve'")
     round: int = Field(default=1, description="Conversation round number")
     model: str = Field(default="", description="Model used for generation")
     provider: str = Field(default="", description="Provider used")
@@ -2892,7 +2893,13 @@ async def generate_research_plan(
             "Output your updated research directions.\n"
             "If there are still aspects to clarify, continue asking.\n"
             "If the direction is clear enough, tell the user they can proceed.\n"
-            "Reply in the same language as the user."
+            "Reply in the same language as the user.\n\n"
+            "IMPORTANT: After your response, on a new line, output exactly one of these tags:\n"
+            "[INTENT:feedback] — if the user is providing feedback, asking questions, or refining the plan\n"
+            "[INTENT:approve] — if the user clearly wants to proceed/execute/approve the plan "
+            "(e.g. '可以了', '执行', 'go ahead', 'looks good', 'approve', 'start', 'do it', 'lgtm')\n"
+            "Only output [INTENT:approve] when the user's message UNAMBIGUOUSLY indicates they want to start execution. "
+            "If there is ANY refinement, question, or 'but...' in the message, output [INTENT:feedback]."
         )
         messages = [{"role": "system", "content": system_prompt}]
         for turn in body.conversation:
@@ -2914,8 +2921,19 @@ async def generate_research_plan(
         plan_text = result.get("output_text", "")
         usage = result.get("usage", {})
 
+        # Parse intent tag from LLM response (feedback rounds only)
+        import re
+        detected_intent = "feedback"
+        if body.conversation:
+            intent_match = re.search(r"\[INTENT:(feedback|approve)\]", plan_text)
+            if intent_match:
+                detected_intent = intent_match.group(1)
+                # Strip the intent tag from the displayed message
+                plan_text = re.sub(r"\s*\[INTENT:(?:feedback|approve)\]\s*$", "", plan_text).strip()
+
         return ResearchPlanResponse(
             message=plan_text,
+            intent=detected_intent,
             round=round_num,
             model=result.get("model", ""),
             provider=result.get("provider", ""),

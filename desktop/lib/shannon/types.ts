@@ -39,7 +39,10 @@ export type EventType =
     | "MESSAGE_SENT"
     | "MESSAGE_RECEIVED"
     | "WORKSPACE_UPDATED"
-    | "STATUS_UPDATE";
+    | "STATUS_UPDATE"
+    | "RESEARCH_PLAN_READY"
+    | "RESEARCH_PLAN_UPDATED"
+    | "RESEARCH_PLAN_APPROVED";
 
 export interface BaseEvent {
     type: EventType;
@@ -262,6 +265,21 @@ export interface WorkflowCancelledEvent extends BaseEvent {
     message?: string;
 }
 
+export interface ResearchPlanReadyEvent extends BaseEvent {
+    type: "RESEARCH_PLAN_READY";
+    message?: string;
+}
+
+export interface ResearchPlanUpdatedEvent extends BaseEvent {
+    type: "RESEARCH_PLAN_UPDATED";
+    message?: string;
+}
+
+export interface ResearchPlanApprovedEvent extends BaseEvent {
+    type: "RESEARCH_PLAN_APPROVED";
+    message?: string;
+}
+
 export type ShannonEvent =
     | WorkflowStartedEvent
     | WorkflowCompletedEvent
@@ -300,4 +318,7 @@ export type ShannonEvent =
     | WorkspaceUpdatedEvent
     | StatusUpdateEvent
     | StreamEndEvent
-    | LlmOutputEvent;
+    | LlmOutputEvent
+    | ResearchPlanReadyEvent
+    | ResearchPlanUpdatedEvent
+    | ResearchPlanApprovedEvent;

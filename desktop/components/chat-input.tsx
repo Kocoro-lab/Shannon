@@ -5,13 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Send, Loader2, Sparkles, Pause, Play, Square } from "lucide-react";
+import { Send, Loader2, Sparkles, Pause, Play, Square, CheckCircle2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { submitTask } from "@/lib/shannon/api";
+import { submitTask, submitReviewFeedback, approveReviewPlan } from "@/lib/shannon/api";
 import { cn } from "@/lib/utils";
 
 export type AgentSelection = "normal" | "deep_research";
 export type ResearchStrategy = "quick" | "standard" | "deep" | "academic";
+export type ReviewPlanMode = "auto" | "review";
 
 interface ChatInputProps {
     sessionId?: string;
@@ -19,6 +20,7 @@ interface ChatInputProps {
     isTaskComplete?: boolean;
     selectedAgent?: AgentSelection;
     initialResearchStrategy?: ResearchStrategy;
+    initialReviewPlan?: ReviewPlanMode;
     onTaskCreated?: (taskId: string, query: string, workflowId?: string) => void;
     /** Use centered textarea layout for empty sessions */
     variant?: "default" | "centered";
@@ -31,15 +33,24 @@ interface ChatInputProps {
     onPause?: () => void;
     onResume?: () => void;
     onCancel?: () => void;
+    /** Review Plan (HITL) props */
+    reviewStatus?: "none" | "reviewing" | "approved";
+    reviewWorkflowId?: string | null;
+    reviewVersion?: number;
+    reviewIntent?: "feedback" | "approve" | null;
+    onReviewPlanChange?: (mode: ReviewPlanMode) => void;
+    onReviewFeedback?: (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => void;
+    onApprove?: () => void;
 }
 
-export function ChatInput({ 
-    sessionId, 
-    disabled, 
-    isTaskComplete, 
-    selectedAgent = "normal", 
-    initialResearchStrategy = "quick", 
-    onTaskCreated, 
+export function ChatInput({
+    sessionId,
+    disabled,
+    isTaskComplete,
+    selectedAgent = "normal",
+    initialResearchStrategy = "quick",
+    initialReviewPlan = "auto",
+    onTaskCreated,
     variant = "default",
     isTaskRunning = false,
     isPaused = false,
@@ -49,12 +60,22 @@ export function ChatInput({
     onPause,
     onResume,
     onCancel,
+    reviewStatus = "none",
+    reviewWorkflowId,
+    reviewVersion = 0,
+    reviewIntent,
+    onReviewPlanChange,
+    onReviewFeedback,
+    onApprove,
 }: ChatInputProps) {
     const [query, setQuery] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [researchStrategy, setResearchStrategy] = useState<ResearchStrategy>(initialResearchStrategy);
+    const [reviewPlan, setReviewPlanLocal] = useState<ReviewPlanMode>(initialReviewPlan);
     const router = useRouter();
+
+    const isReviewing = reviewStatus === "reviewing";
     
     // Use ref for composition state to avoid race conditions with state updates
     // This is more reliable than state for IME handling
@@ -76,12 +97,26 @@ export function ChatInput({
         setError(null);
 
         try {
+            // Review mode: send feedback instead of new task
+            if (isReviewing && reviewWorkflowId) {
+                const feedbackText = query.trim();
+                setQuery("");
+                const result = await submitReviewFeedback(reviewWorkflowId, feedbackText, reviewVersion);
+                if (onReviewFeedback && result.plan) {
+                    onReviewFeedback(result.plan.version, result.plan.intent, result.plan.message, result.plan.round, feedbackText);
+                }
+                return;
+            }
+
             const context: Record<string, unknown> = {};
             let research_strategy: "deep" | "academic" | "quick" | "standard" | undefined;
 
             if (selectedAgent === "deep_research") {
                 context.force_research = true;
                 research_strategy = researchStrategy;
+                if (reviewPlan === "review") {
+                    context.require_review = true;
+                }
             }
 
             const response = await submitTask({
@@ -101,6 +136,20 @@ export function ChatInput({
             }
         } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to submit");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const handleApprove = async () => {
+        if (!reviewWorkflowId) return;
+        setIsSubmitting(true);
+        setError(null);
+        try {
+            await approveReviewPlan(reviewWorkflowId);
+            onApprove?.();
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to approve plan");
         } finally {
             setIsSubmitting(false);
         }
@@ -164,22 +213,42 @@ export function ChatInput({
 
                     <form onSubmit={handleSubmit} className="space-y-4">
                         {selectedAgent === "deep_research" && (
-                            <div className="flex items-center justify-center gap-2">
-                                <span className="text-sm text-muted-foreground">Research Strategy:</span>
-                                <Select
-                                    value={researchStrategy}
-                                    onValueChange={(val) => setResearchStrategy(val as ResearchStrategy)}
-                                >
-                                    <SelectTrigger className="h-9 w-36">
-                                        <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        <SelectItem value="quick">Quick</SelectItem>
-                                        <SelectItem value="standard">Standard</SelectItem>
-                                        <SelectItem value="deep">Deep</SelectItem>
-                                        <SelectItem value="academic">Academic</SelectItem>
-                                    </SelectContent>
-                                </Select>
+                            <div className="flex items-center justify-center gap-4 flex-wrap">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm text-muted-foreground">Research Strategy:</span>
+                                    <Select
+                                        value={researchStrategy}
+                                        onValueChange={(val) => setResearchStrategy(val as ResearchStrategy)}
+                                    >
+                                        <SelectTrigger className="h-9 w-36">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="quick">Quick</SelectItem>
+                                            <SelectItem value="standard">Standard</SelectItem>
+                                            <SelectItem value="deep">Deep</SelectItem>
+                                            <SelectItem value="academic">Academic</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-sm text-muted-foreground">Review Plan:</span>
+                                    <Select
+                                        value={reviewPlan}
+                                        onValueChange={(val) => {
+                                            setReviewPlanLocal(val as ReviewPlanMode);
+                                            onReviewPlanChange?.(val as ReviewPlanMode);
+                                        }}
+                                    >
+                                        <SelectTrigger className="h-9 w-32">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="auto">Auto</SelectItem>
+                                            <SelectItem value="review">Review</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                </div>
                             </div>
                         )}
                         
@@ -247,28 +316,85 @@ export function ChatInput({
     // Default compact variant for follow-up messages
     return (
         <form onSubmit={handleSubmit} className="space-y-2">
-            {selectedAgent === "deep_research" && (
-                <div className="flex items-center gap-2">
-                    <span className="text-xs text-muted-foreground">Research Strategy:</span>
-                    <Select
-                        value={researchStrategy}
-                        onValueChange={(val) => setResearchStrategy(val as ResearchStrategy)}
-                    >
-                        <SelectTrigger className="h-8 w-32 text-xs">
-                            <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                            <SelectItem value="quick">Quick</SelectItem>
-                            <SelectItem value="standard">Standard</SelectItem>
-                            <SelectItem value="deep">Deep</SelectItem>
-                            <SelectItem value="academic">Academic</SelectItem>
-                        </SelectContent>
-                    </Select>
+            {selectedAgent === "deep_research" && !isReviewing && (
+                <div className="flex items-center gap-4 flex-wrap">
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">Research Strategy:</span>
+                        <Select
+                            value={researchStrategy}
+                            onValueChange={(val) => setResearchStrategy(val as ResearchStrategy)}
+                        >
+                            <SelectTrigger className="h-8 w-32 text-xs">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="quick">Quick</SelectItem>
+                                <SelectItem value="standard">Standard</SelectItem>
+                                <SelectItem value="deep">Deep</SelectItem>
+                                <SelectItem value="academic">Academic</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-muted-foreground">Review Plan:</span>
+                        <Select
+                            value={reviewPlan}
+                            onValueChange={(val) => {
+                                setReviewPlanLocal(val as ReviewPlanMode);
+                                onReviewPlanChange?.(val as ReviewPlanMode);
+                            }}
+                        >
+                            <SelectTrigger className="h-8 w-28 text-xs">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="auto">Auto</SelectItem>
+                                <SelectItem value="review">Review</SelectItem>
+                            </SelectContent>
+                        </Select>
+                    </div>
                 </div>
             )}
+
+            {/* Review mode: Approve & Run bar */}
+            {isReviewing && (
+                <div className={cn(
+                    "flex items-center justify-between px-3 py-2 rounded-lg border",
+                    reviewIntent === "approve"
+                        ? "bg-violet-50 dark:bg-violet-950 border-violet-300 dark:border-violet-700 animate-pulse"
+                        : "bg-muted/50 border-border"
+                )}>
+                    <span className="text-sm text-muted-foreground">
+                        {reviewIntent === "approve"
+                            ? "Ready to run? Click to start execution."
+                            : "Review the research plan. Provide feedback or approve."}
+                    </span>
+                    <Button
+                        type="button"
+                        size="sm"
+                        onClick={handleApprove}
+                        disabled={isSubmitting}
+                        className="gap-1.5 bg-violet-600 hover:bg-violet-700 text-white"
+                    >
+                        {isSubmitting ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                        )}
+                        Approve & Run
+                    </Button>
+                </div>
+            )}
+
             <div className="flex gap-2 items-end">
                 <Textarea
-                    placeholder={isInputDisabled ? "Waiting for task to complete..." : "Ask a question..."}
+                    placeholder={
+                        isReviewing
+                            ? "Type feedback or approve the plan..."
+                            : isInputDisabled
+                                ? "Waiting for task to complete..."
+                                : "Ask a question..."
+                    }
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     disabled={isInputDisabled || isSubmitting}

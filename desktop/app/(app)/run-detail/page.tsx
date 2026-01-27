@@ -9,7 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RunTimeline } from "@/components/run-timeline";
 import { RunConversation } from "@/components/run-conversation";
-import { ChatInput, AgentSelection } from "@/components/chat-input";
+import { ChatInput, AgentSelection, ReviewPlanMode } from "@/components/chat-input";
 import { ArrowLeft, Loader2, Sparkles, Microscope, Eye, EyeOff, PanelRight, PanelRightClose } from "lucide-react";
 import { RadarCanvas, RadarBridge } from "@/components/radar";
 import Link from "next/link";
@@ -19,7 +19,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState } from "@/lib/shannon/api";
-import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled } from "@/lib/features/runSlice";
+import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -70,6 +70,11 @@ function RunDetailContent() {
     const pauseCheckpoint = useSelector((state: RootState) => state.run.pauseCheckpoint);
     const isCancelling = useSelector((state: RootState) => state.run.isCancelling);
     const isCancelled = useSelector((state: RootState) => state.run.isCancelled);
+    const reviewPlan = useSelector((state: RootState) => state.run.reviewPlan);
+    const reviewStatus = useSelector((state: RootState) => state.run.reviewStatus);
+    const reviewWorkflowId = useSelector((state: RootState) => state.run.reviewWorkflowId);
+    const reviewVersion = useSelector((state: RootState) => state.run.reviewVersion);
+    const reviewIntent = useSelector((state: RootState) => state.run.reviewIntent);
     const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
 
     const handleRetryStream = () => {
@@ -1084,6 +1089,41 @@ function RunDetailContent() {
         }
     };
 
+    // Review Plan (HITL) handlers
+    const handleReviewPlanChange = (mode: ReviewPlanMode) => {
+        dispatch(setReviewPlan(mode));
+    };
+
+    const handleReviewFeedback = (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => {
+        dispatch(setReviewVersion(version));
+        dispatch(setReviewIntent(intent));
+
+        // Add user feedback message
+        dispatch(addMessage({
+            id: `review-feedback-${Date.now()}`,
+            role: "user",
+            content: userMessage,
+            timestamp: new Date().toLocaleTimeString(),
+            taskId: reviewWorkflowId,
+        }));
+
+        // Add updated plan message
+        dispatch(addMessage({
+            id: `research-plan-${reviewWorkflowId}-${Date.now()}`,
+            role: "assistant",
+            content: planMessage,
+            timestamp: new Date().toLocaleTimeString(),
+            taskId: reviewWorkflowId,
+            isResearchPlan: true,
+            planRound: round,
+        }));
+    };
+
+    const handleReviewApprove = () => {
+        dispatch(setReviewStatus("approved"));
+        dispatch(setReviewIntent(null));
+    };
+
     // Helper to categorize event type
     const categorizeEvent = (eventType: string): "agent" | "llm" | "tool" | "system" => {
         if (eventType.includes("AGENT") || eventType.includes("DELEGATION") ||
@@ -1530,6 +1570,16 @@ function RunDetailContent() {
                         <TabsContent value="conversation" className="flex-1 p-0 m-0 data-[state=active]:flex flex-col overflow-hidden">
                             {messages.length > 0 ? (
                                 <>
+                                    {/* Review Plan banner */}
+                                    {reviewStatus === "reviewing" && (
+                                        <div className="flex items-center gap-2 px-4 py-2 bg-violet-50 dark:bg-violet-950 border-b border-violet-200 dark:border-violet-800 shrink-0">
+                                            <Eye className="h-4 w-4 text-violet-600 dark:text-violet-400" />
+                                            <span className="text-sm text-violet-700 dark:text-violet-300">
+                                                Research plan ready for review
+                                            </span>
+                                        </div>
+                                    )}
+
                                     <div className="flex-1 min-h-0">
                                         <ScrollArea className="h-full" ref={conversationScrollRef}>
                                             <RunConversation messages={messages as any} agentType={selectedAgent} />
@@ -1540,12 +1590,13 @@ function RunDetailContent() {
                                     <div className="border-t bg-background p-4 shrink-0">
                                         <ChatInput
                                             sessionId={isNewSession ? undefined : sessionId ?? undefined}
-                                            disabled={runStatus === "running"}
+                                            disabled={runStatus === "running" && reviewStatus !== "reviewing"}
                                             isTaskComplete={runStatus !== "running"}
                                             selectedAgent={selectedAgent}
                                             initialResearchStrategy={researchStrategy}
+                                            initialReviewPlan={reviewPlan}
                                             onTaskCreated={handleTaskCreated}
-                                            isTaskRunning={runStatus === "running"}
+                                            isTaskRunning={runStatus === "running" && reviewStatus !== "reviewing"}
                                             isPaused={isPaused}
                                             isPauseLoading={isPauseLoading}
                                             isResumeLoading={isResumeLoading}
@@ -1553,6 +1604,13 @@ function RunDetailContent() {
                                             onPause={handlePause}
                                             onResume={handleResume}
                                             onCancel={handleCancel}
+                                            reviewStatus={reviewStatus}
+                                            reviewWorkflowId={reviewWorkflowId}
+                                            reviewVersion={reviewVersion}
+                                            reviewIntent={reviewIntent}
+                                            onReviewPlanChange={handleReviewPlanChange}
+                                            onReviewFeedback={handleReviewFeedback}
+                                            onApprove={handleReviewApprove}
                                         />
                                     </div>
                                 </>
@@ -1564,6 +1622,7 @@ function RunDetailContent() {
                                     isTaskComplete={runStatus !== "running"}
                                     selectedAgent={selectedAgent}
                                     initialResearchStrategy={researchStrategy}
+                                    initialReviewPlan={reviewPlan}
                                     onTaskCreated={handleTaskCreated}
                                     variant="centered"
                                     isTaskRunning={runStatus === "running"}
@@ -1574,6 +1633,13 @@ function RunDetailContent() {
                                     onPause={handlePause}
                                     onResume={handleResume}
                                     onCancel={handleCancel}
+                                    reviewStatus={reviewStatus}
+                                    reviewWorkflowId={reviewWorkflowId}
+                                    reviewVersion={reviewVersion}
+                                    reviewIntent={reviewIntent}
+                                    onReviewPlanChange={handleReviewPlanChange}
+                                    onReviewFeedback={handleReviewFeedback}
+                                    onApprove={handleReviewApprove}
                                 />
                             )}
                         </TabsContent>

@@ -494,6 +494,68 @@ export async function getTaskControlState(taskId: string): Promise<ControlStateR
     return response.json();
 }
 
+// Review API Types & Functions
+
+export interface ReviewFeedbackResponse {
+    status: string;
+    plan: {
+        message: string;
+        round: number;
+        version: number;
+        intent: "feedback" | "approve";
+    };
+}
+
+export interface ReviewApproveResponse {
+    status: string;
+    message: string;
+}
+
+export async function submitReviewFeedback(
+    workflowId: string,
+    message: string,
+    version?: number
+): Promise<ReviewFeedbackResponse> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+    };
+    if (version !== undefined) {
+        headers["If-Match"] = String(version);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ action: "feedback", message }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to submit review feedback: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function approveReviewPlan(workflowId: string): Promise<ReviewApproveResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ action: "approve" }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to approve review plan: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
 // Schedule Types
 
 export type ScheduleStatus = 'ACTIVE' | 'PAUSED' | 'DELETED';
