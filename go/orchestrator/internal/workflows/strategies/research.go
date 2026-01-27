@@ -3612,7 +3612,13 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	}
 
 	// Step 2: Execute based on complexity
-	if decomp.ComplexityScore < 0.5 || len(decomp.Subtasks) <= 1 {
+	// Quick strategy always uses parallel execution with quick_research_agent role
+	isQuickStrategy := false
+	if sv, ok := baseContext["research_strategy"].(string); ok && strings.ToLower(strings.TrimSpace(sv)) == "quick" {
+		isQuickStrategy = true
+	}
+
+	if !isQuickStrategy && (decomp.ComplexityScore < 0.5 || len(decomp.Subtasks) <= 1) {
 		// Simple research - use React pattern for step-by-step exploration
 		logger.Info("Using React pattern for simple research",
 			"complexity", decomp.ComplexityScore,
@@ -3973,6 +3979,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				hybridTasks := make([]execution.HybridTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
 					role := "deep_research_agent"
+					if sv, ok := baseContext["research_strategy"].(string); ok && strings.ToLower(strings.TrimSpace(sv)) == "quick" {
+						role = "quick_research_agent"
+					}
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
@@ -4226,6 +4235,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				parallelTasks := make([]execution.ParallelTask, len(decomp.Subtasks))
 				for i, subtask := range decomp.Subtasks {
 					role := "deep_research_agent"
+					if sv, ok := baseContext["research_strategy"].(string); ok && strings.ToLower(strings.TrimSpace(sv)) == "quick" {
+						role = "quick_research_agent"
+					}
 					if i < len(decomp.AgentTypes) && decomp.AgentTypes[i] != "" {
 						role = decomp.AgentTypes[i]
 					}
