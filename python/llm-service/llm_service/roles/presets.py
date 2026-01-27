@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 try:
     from .deep_research import (
         DEEP_RESEARCH_AGENT_PRESET,
+        QUICK_RESEARCH_AGENT_PRESET,
         RESEARCH_REFINER_PRESET,
         DOMAIN_DISCOVERY_PRESET,
         DOMAIN_PREFETCH_PRESET,
@@ -208,6 +209,7 @@ git, ls, pwd, rg, cat, head, tail, wc, grep, find, go, cargo, pytest, python, py
 # Register deep_research presets if loaded successfully
 if _DEEP_RESEARCH_PRESETS_LOADED:
     _PRESETS["deep_research_agent"] = DEEP_RESEARCH_AGENT_PRESET
+    _PRESETS["quick_research_agent"] = QUICK_RESEARCH_AGENT_PRESET
     _PRESETS["research_refiner"] = RESEARCH_REFINER_PRESET
     _PRESETS["domain_discovery"] = DOMAIN_DISCOVERY_PRESET
     _PRESETS["domain_prefetch"] = DOMAIN_PREFETCH_PRESET

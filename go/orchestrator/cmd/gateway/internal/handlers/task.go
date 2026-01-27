@@ -47,8 +47,9 @@ type ResearchStrategiesConfig struct {
 		GapFillingMaxGaps        int    `yaml:"gap_filling_max_gaps"`
 		GapFillingMaxIterations  int    `yaml:"gap_filling_max_iterations"`
 		GapFillingCheckCitations bool   `yaml:"gap_filling_check_citations"`
-		AgentModelTier           string `yaml:"agent_model_tier"`         // small/medium/large for agent execution
-		IterativeMaxIterations   int    `yaml:"iterative_max_iterations"` // coverage evaluation iterations (1-5)
+		AgentModelTier             string `yaml:"agent_model_tier"`               // small/medium/large for agent execution
+		IterativeMaxIterations     int    `yaml:"iterative_max_iterations"`       // coverage evaluation iterations (1-5)
+		IterativeResearchEnabled   *bool  `yaml:"iterative_research_enabled"`     // DR 2.0 iterative loop (nil = use default true)
 	} `yaml:"strategies"`
 }
 
@@ -131,6 +132,10 @@ func applyStrategyPreset(ctxMap map[string]interface{}, strategy string) {
 	// Seed model_tier from agent_model_tier (only if not already set by user)
 	if _, ok := ctxMap["model_tier"]; !ok && preset.AgentModelTier != "" {
 		ctxMap["model_tier"] = preset.AgentModelTier
+	}
+	// Seed iterative_research_enabled (DR 2.0 iterative loop; only seed when explicitly configured)
+	if _, ok := ctxMap["iterative_research_enabled"]; !ok && preset.IterativeResearchEnabled != nil {
+		ctxMap["iterative_research_enabled"] = *preset.IterativeResearchEnabled
 	}
 	// Seed iterative_max_iterations for coverage evaluation loop (1-5)
 	if _, ok := ctxMap["iterative_max_iterations"]; !ok && preset.IterativeMaxIterations >= 1 && preset.IterativeMaxIterations <= 5 {

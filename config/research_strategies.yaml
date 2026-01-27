@@ -15,6 +15,7 @@ strategies:
     max_concurrent_agents: 3
     react_max_iterations: 2
     gap_filling_enabled: false
+    iterative_research_enabled: false
     # Model tier for agent execution (utility activities always use "small")
     agent_model_tier: small
   standard:
