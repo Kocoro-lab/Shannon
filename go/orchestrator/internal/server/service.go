@@ -2842,6 +2842,101 @@ func (s *OrchestratorService) GetPendingApprovals(ctx context.Context, req *pb.G
 	}, nil
 }
 
+// SubmitReviewDecision handles the HITL research review approval.
+// It sends a Temporal Signal to the waiting workflow with the review result.
+func (s *OrchestratorService) SubmitReviewDecision(
+	ctx context.Context,
+	req *pb.SubmitReviewDecisionRequest,
+) (*pb.SubmitReviewDecisionResponse, error) {
+	if req.WorkflowId == "" {
+		return nil, status.Error(codes.InvalidArgument, "workflow_id is required")
+	}
+
+	// Authenticate
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	// Validate ownership via Temporal memo (same pattern as GetTask)
+	wfDesc, err := s.temporalClient.DescribeWorkflowExecution(ctx, req.WorkflowId, "")
+	if err != nil {
+		s.logger.Warn("Failed to describe workflow for review decision",
+			zap.String("workflow_id", req.WorkflowId),
+			zap.Error(err))
+		return nil, status.Error(codes.NotFound, "workflow not found")
+	}
+
+	// Check tenant ownership from memo
+	if wfDesc.WorkflowExecutionInfo.Memo != nil {
+		dataConverter := converter.GetDefaultDataConverter()
+		if tenantField, ok := wfDesc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
+			var memoTenant string
+			_ = dataConverter.FromPayload(tenantField, &memoTenant)
+			if memoTenant != "" && uc.TenantID.String() != memoTenant {
+				return nil, status.Error(codes.PermissionDenied, "not authorized for this workflow")
+			}
+		}
+	}
+
+	// Build the Signal payload
+	var conversation []activities.ReviewRound
+	if req.Conversation != "" {
+		if err := json.Unmarshal([]byte(req.Conversation), &conversation); err != nil {
+			s.logger.Warn("Failed to parse conversation JSON", zap.Error(err))
+			// Non-fatal: conversation is informational
+		}
+	}
+
+	reviewResult := activities.ResearchReviewResult{
+		Approved:     req.Approved,
+		FinalPlan:    req.FinalPlan,
+		Conversation: conversation,
+	}
+
+	// Send Signal to workflow
+	sigName := "research-plan-approved-" + req.WorkflowId
+	err = s.temporalClient.SignalWorkflow(ctx, req.WorkflowId, "", sigName, reviewResult)
+	if err != nil {
+		s.logger.Error("Failed to signal workflow for review decision",
+			zap.String("workflow_id", req.WorkflowId),
+			zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to signal workflow: %v", err)
+	}
+
+	s.logger.Info("HITL review decision submitted",
+		zap.String("workflow_id", req.WorkflowId),
+		zap.Bool("approved", req.Approved),
+		zap.String("approved_by", req.ApprovedBy),
+	)
+
+	return &pb.SubmitReviewDecisionResponse{
+		Success: true,
+		Message: "Review decision submitted",
+	}, nil
+}
+
+// RecordTokenUsage records token usage from Gateway-side LLM calls (e.g., HITL feedback).
+func (s *OrchestratorService) RecordTokenUsage(
+	ctx context.Context,
+	req *pb.RecordTokenUsageRequest,
+) (*pb.RecordTokenUsageResponse, error) {
+	if req.WorkflowId == "" {
+		return nil, status.Error(codes.InvalidArgument, "workflow_id is required")
+	}
+
+	// Best-effort recording — don't fail if budget manager is unavailable
+	s.logger.Info("Recording token usage from gateway",
+		zap.String("workflow_id", req.WorkflowId),
+		zap.String("agent_id", req.AgentId),
+		zap.String("model", req.Model),
+		zap.Int32("input_tokens", req.InputTokens),
+		zap.Int32("output_tokens", req.OutputTokens),
+	)
+
+	return &pb.RecordTokenUsageResponse{Success: true}, nil
+}
+
 // CreateSchedule creates a new scheduled task (with ownership)
 func (s *OrchestratorService) CreateSchedule(ctx context.Context, req *pb.CreateScheduleRequest) (*pb.CreateScheduleResponse, error) {
 	// 1. Auth enforcement

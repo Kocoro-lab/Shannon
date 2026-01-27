@@ -127,6 +127,7 @@ func main() {
 	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, skillRegistry, logger)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
 	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
+	reviewHandler := handlers.NewReviewHandler(orchClient, redisClient, logger)
 	scheduleHandler := handlers.NewScheduleHandler(orchClient, pgDB, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
@@ -339,6 +340,19 @@ func main() {
 						idempotencyMiddleware(
 							http.HandlerFunc(approvalHandler.SubmitDecision),
 						),
+					),
+				),
+			),
+		),
+	)
+
+	// HITL Research Review
+	mux.Handle("POST /api/v1/tasks/{workflowID}/review",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(reviewHandler.HandleReview),
 					),
 				),
 			),

@@ -25,6 +25,10 @@ service OrchestratorService {
   rpc ResumeTask(ResumeTaskRequest) returns (ResumeTaskResponse);
   rpc GetControlState(GetControlStateRequest) returns (GetControlStateResponse);
 
+  // HITL Research Review
+  rpc SubmitReviewDecision(SubmitReviewDecisionRequest) returns (SubmitReviewDecisionResponse);
+  rpc RecordTokenUsage(RecordTokenUsageRequest) returns (RecordTokenUsageResponse);
+
   // Schedule management
   rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse);
   rpc GetSchedule(GetScheduleRequest) returns (GetScheduleResponse);
@@ -349,4 +353,32 @@ message ResumeScheduleResponse {
   bool success = 1;
   string message = 2;
   string next_run_at = 3;
+}
+
+// ── HITL Research Review ──
+
+message SubmitReviewDecisionRequest {
+  string workflow_id = 1;
+  bool approved = 2;
+  string final_plan = 3;          // Final confirmed research plan text
+  string conversation = 4;        // JSON-encoded conversation rounds
+  string approved_by = 5;         // User ID who approved
+}
+
+message SubmitReviewDecisionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RecordTokenUsageRequest {
+  string workflow_id = 1;
+  string agent_id = 2;
+  string model = 3;
+  string provider = 4;
+  int32 input_tokens = 5;
+  int32 output_tokens = 6;
+}
+
+message RecordTokenUsageResponse {
+  bool success = 1;
 }

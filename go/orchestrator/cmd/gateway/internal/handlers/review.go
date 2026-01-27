@@ -1,0 +1,321 @@
+package handlers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
+
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+)
+
+// ReviewHandler handles HITL research plan review requests.
+type ReviewHandler struct {
+	orchClient orchpb.OrchestratorServiceClient
+	redis      *redis.Client
+	logger     *zap.Logger
+}
+
+// NewReviewHandler creates a new ReviewHandler.
+func NewReviewHandler(
+	orchClient orchpb.OrchestratorServiceClient,
+	redis *redis.Client,
+	logger *zap.Logger,
+) *ReviewHandler {
+	return &ReviewHandler{
+		orchClient: orchClient,
+		redis:      redis,
+		logger:     logger,
+	}
+}
+
+// reviewRequest is the HTTP request body for the review endpoint.
+type reviewRequest struct {
+	Action  string `json:"action"`  // "feedback" or "approve"
+	Message string `json:"message"` // User's feedback message (optional for approve)
+}
+
+// reviewRound mirrors the activity type for Redis storage.
+type reviewRound struct {
+	Role      string `json:"role"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
+}
+
+// reviewState is the Redis-stored conversation state.
+type reviewState struct {
+	WorkflowID    string                 `json:"workflow_id"`
+	Query         string                 `json:"query"`
+	Context       map[string]interface{} `json:"context"`
+	Status        string                 `json:"status"`
+	Round         int                    `json:"round"`
+	Version       int                    `json:"version"`
+	OwnerUserID   string                 `json:"owner_user_id"`
+	OwnerTenantID string                 `json:"owner_tenant_id"`
+	Rounds        []reviewRound          `json:"rounds"`
+	CurrentPlan   string                 `json:"current_plan"`
+}
+
+// llmResearchPlanRequest is the request to the LLM service.
+type llmResearchPlanRequest struct {
+	Query        string                 `json:"query"`
+	Context      map[string]interface{} `json:"context"`
+	Conversation []reviewRound          `json:"conversation"`
+}
+
+// llmResearchPlanResponse is the response from the LLM service.
+type llmResearchPlanResponse struct {
+	Message      string `json:"message"`
+	Round        int    `json:"round"`
+	Model        string `json:"model"`
+	Provider     string `json:"provider"`
+	InputTokens  int    `json:"input_tokens"`
+	OutputTokens int    `json:"output_tokens"`
+}
+
+// HandleReview processes review feedback or approval.
+func (h *ReviewHandler) HandleReview(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	workflowID := r.PathValue("workflowID")
+	if workflowID == "" {
+		h.sendError(w, "workflow_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Auth check
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok || userCtx == nil {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse request
+	var req reviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.sendError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Action != "feedback" && req.Action != "approve" {
+		h.sendError(w, "action must be 'feedback' or 'approve'", http.StatusBadRequest)
+		return
+	}
+
+	// Load state from Redis
+	key := fmt.Sprintf("review:%s", workflowID)
+	data, err := h.redis.Get(ctx, key).Result()
+	if err == redis.Nil {
+		h.sendError(w, "Review session not found or expired", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to read review state from Redis", zap.Error(err))
+		h.sendError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	var state reviewState
+	if err := json.Unmarshal([]byte(data), &state); err != nil {
+		h.logger.Error("Failed to unmarshal review state", zap.Error(err))
+		h.sendError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Owner check (skip if owner not set — e.g., dev mode without user_id in context)
+	if state.OwnerUserID != "" && state.OwnerUserID != userCtx.UserID.String() {
+		h.sendError(w, "Forbidden: not the task owner", http.StatusForbidden)
+		return
+	}
+
+	switch req.Action {
+	case "feedback":
+		h.handleFeedback(ctx, w, r, key, &state, req, workflowID)
+	case "approve":
+		h.handleApprove(ctx, w, r, key, &state, workflowID, userCtx)
+	}
+}
+
+func (h *ReviewHandler) handleFeedback(
+	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	key string, state *reviewState, req reviewRequest, workflowID string,
+) {
+	// Optimistic concurrency check
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+		if ifMatch != strconv.Itoa(state.Version) {
+			h.sendError(w, "Conflict: state has been modified", http.StatusConflict)
+			return
+		}
+	}
+
+	if req.Message == "" {
+		h.sendError(w, "message is required for feedback", http.StatusBadRequest)
+		return
+	}
+
+	// Append user message
+	state.Rounds = append(state.Rounds, reviewRound{
+		Role:      "user",
+		Message:   req.Message,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+
+	// Call LLM service for updated plan
+	plan, err := h.callResearchPlan(ctx, state.Query, state.Context, state.Rounds)
+	if err != nil {
+		h.logger.Error("Failed to generate research plan", zap.Error(err))
+		// Remove the user message we appended (don't persist bad state)
+		state.Rounds = state.Rounds[:len(state.Rounds)-1]
+		h.sendError(w, "Failed to generate updated plan", http.StatusBadGateway)
+		return
+	}
+
+	// Record token usage (best-effort, non-blocking)
+	go func() {
+		rCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := h.orchClient.RecordTokenUsage(rCtx, &orchpb.RecordTokenUsageRequest{
+			WorkflowId:   workflowID,
+			AgentId:      "research-planner",
+			Model:        plan.Model,
+			Provider:     plan.Provider,
+			InputTokens:  int32(plan.InputTokens),
+			OutputTokens: int32(plan.OutputTokens),
+		})
+		if err != nil {
+			h.logger.Warn("Failed to record token usage (best-effort)", zap.Error(err))
+		}
+	}()
+
+	// Append assistant response
+	state.Rounds = append(state.Rounds, reviewRound{
+		Role:      "assistant",
+		Message:   plan.Message,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+	})
+	state.CurrentPlan = plan.Message
+	state.Round++
+	state.Version++
+
+	// Save to Redis (keep original TTL)
+	stateBytes, _ := json.Marshal(state)
+	ttl, err := h.redis.TTL(ctx, key).Result()
+	if err != nil || ttl <= 0 {
+		ttl = 60 * time.Minute // fallback
+	}
+	h.redis.Set(ctx, key, stateBytes, ttl)
+
+	// Response
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", strconv.Itoa(state.Version))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "reviewing",
+		"plan": map[string]interface{}{
+			"message": plan.Message,
+			"round":   state.Round,
+			"version": state.Version,
+		},
+	})
+}
+
+func (h *ReviewHandler) handleApprove(
+	ctx context.Context, w http.ResponseWriter, r *http.Request,
+	key string, state *reviewState, workflowID string, userCtx *auth.UserContext,
+) {
+	// Marshal conversation for gRPC
+	convBytes, _ := json.Marshal(state.Rounds)
+
+	// Send via dedicated gRPC (Gateway → Orchestrator → Temporal Signal)
+	grpcCtx := withGRPCMetadata(ctx, r)
+	_, err := h.orchClient.SubmitReviewDecision(grpcCtx, &orchpb.SubmitReviewDecisionRequest{
+		WorkflowId:   workflowID,
+		Approved:     true,
+		FinalPlan:    state.CurrentPlan,
+		Conversation: string(convBytes),
+		ApprovedBy:   userCtx.UserID.String(),
+	})
+	if err != nil {
+		h.logger.Error("Failed to submit review decision", zap.Error(err))
+		h.sendError(w, "Failed to approve review", http.StatusBadGateway)
+		return
+	}
+
+	// Clean up Redis
+	h.redis.Del(ctx, key)
+
+	h.logger.Info("HITL review approved via gateway",
+		zap.String("workflow_id", workflowID),
+		zap.String("approved_by", userCtx.UserID.String()),
+	)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "approved",
+		"message": "Research started",
+	})
+}
+
+func (h *ReviewHandler) callResearchPlan(
+	ctx context.Context,
+	query string,
+	taskCtx map[string]interface{},
+	rounds []reviewRound,
+) (*llmResearchPlanResponse, error) {
+	base := os.Getenv("LLM_SERVICE_URL")
+	if base == "" {
+		base = "http://llm-service:8000"
+	}
+	url := fmt.Sprintf("%s/agent/research-plan", base)
+
+	reqBody := llmResearchPlanRequest{
+		Query:        query,
+		Context:      taskCtx,
+		Conversation: rounds,
+	}
+	bodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("LLM service call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("LLM service returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result llmResearchPlanResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode LLM response: %w", err)
+	}
+
+	if result.Message == "" {
+		return nil, fmt.Errorf("LLM service returned empty plan message")
+	}
+
+	return &result, nil
+}
+
+func (h *ReviewHandler) sendError(w http.ResponseWriter, message string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}

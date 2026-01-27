@@ -158,6 +158,9 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	})
 	w.RegisterActivityWithOptions(acts.GenerateSessionTitle, activity.RegisterOptions{Name: "GenerateSessionTitle"})
 
+	// HITL Research Review
+	w.RegisterActivityWithOptions(activities.GenerateResearchPlan, activity.RegisterOptions{Name: constants.GenerateResearchPlanActivity})
+
 	// Schedule activities
 	scheduleActivities := activities.NewScheduleActivities(r.db, r.logger)
 	w.RegisterActivityWithOptions(scheduleActivities.RecordScheduleExecutionStart, activity.RegisterOptions{

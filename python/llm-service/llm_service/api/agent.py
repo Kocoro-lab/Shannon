@@ -2830,6 +2830,103 @@ class DecompositionResponse(BaseModel):
     provider: str = ""
 
 
+class ResearchPlanRequest(BaseModel):
+    """Request for generating a human-friendly research plan."""
+    query: str = Field(..., description="The research query")
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Task context")
+    conversation: Optional[List[Dict[str, Any]]] = Field(
+        default_factory=list,
+        description="Previous conversation rounds for multi-turn refinement"
+    )
+
+
+class ResearchPlanResponse(BaseModel):
+    """Response with the generated research plan."""
+    message: str = Field(..., description="Human-friendly research plan text")
+    round: int = Field(default=1, description="Conversation round number")
+    model: str = Field(default="", description="Model used for generation")
+    provider: str = Field(default="", description="Provider used")
+    input_tokens: int = Field(default=0, description="Input tokens consumed")
+    output_tokens: int = Field(default=0, description="Output tokens consumed")
+
+
+@router.post("/agent/research-plan", response_model=ResearchPlanResponse)
+async def generate_research_plan(
+    request: Request, body: ResearchPlanRequest
+) -> ResearchPlanResponse:
+    """Generate a human-friendly research plan for HITL review."""
+    providers = getattr(request.app.state, "providers", None)
+
+    if not providers or not providers.is_configured():
+        raise HTTPException(status_code=503, detail="LLM providers not configured")
+
+    # Build prompt based on conversation state
+    if not body.conversation:
+        # First round: generate initial research plan
+        system_prompt = (
+            "You are a research planning assistant. The user has submitted a research topic. "
+            "Your task:\n"
+            "1. Analyze the key dimensions of the topic\n"
+            "2. Propose 3-5 research directions you plan to investigate\n"
+            "3. Point out aspects that need clarification and ask naturally\n"
+            "4. Reply in the same language as the user's query\n"
+            "Be conversational, not structured. Think of yourself as a senior researcher "
+            "discussing the approach with a colleague before starting work."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Research topic: {body.query}"},
+        ]
+        if body.context:
+            ctx_str = ", ".join(
+                f"{k}: {v}" for k, v in body.context.items()
+                if k not in ("force_research", "require_review", "review_timeout")
+            )
+            if ctx_str:
+                messages[1]["content"] += f"\n\nAdditional context: {ctx_str}"
+    else:
+        # Subsequent rounds: refine based on feedback
+        system_prompt = (
+            "You are a research planning assistant discussing research directions with a user. "
+            "Based on the user's latest feedback, update your research plan.\n"
+            "Output your updated research directions.\n"
+            "If there are still aspects to clarify, continue asking.\n"
+            "If the direction is clear enough, tell the user they can proceed.\n"
+            "Reply in the same language as the user."
+        )
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in body.conversation:
+            messages.append({
+                "role": turn.get("role", "user"),
+                "content": turn.get("message", ""),
+            })
+
+    round_num = len([t for t in (body.conversation or []) if t.get("role") == "user"]) + 1
+
+    try:
+        from ..providers.base import ModelTier
+        result = await providers.generate_completion(
+            messages=messages,
+            tier=ModelTier.MEDIUM,
+            max_tokens=2048,
+            temperature=0.7,
+        )
+        plan_text = result.get("output_text", "")
+        usage = result.get("usage", {})
+
+        return ResearchPlanResponse(
+            message=plan_text,
+            round=round_num,
+            model=result.get("model", ""),
+            provider=result.get("provider", ""),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+        )
+    except Exception as e:
+        logger.error(f"Research plan generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate research plan: {e}")
+
+
 @router.post("/agent/decompose", response_model=DecompositionResponse)
 async def decompose_task(request: Request, query: AgentQuery) -> DecompositionResponse:
     """
@@ -3345,6 +3442,14 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"
         )
         messages.append({"role": "user", "content": user})
+
+        # HITL: inject confirmed plan if present (zero impact when absent)
+        if query.context and query.context.get("confirmed_plan"):
+            confirmed_plan = query.context["confirmed_plan"]
+            messages.append({
+                "role": "user",
+                "content": f"User-approved research direction:\n{confirmed_plan}\n\nDecompose the task following this approved direction."
+            })
 
         logger.info(
             f"Decompose: Prepared {len(messages)} messages (history_rehydrated={history_rehydrated})"
