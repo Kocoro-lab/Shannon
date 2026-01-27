@@ -1,0 +1,37 @@
+# Firecracker rootfs with Python data science stack
+# Build with: docker build -t fc-python-rootfs -f Dockerfile.rootfs .
+
+FROM debian:bookworm-slim
+
+# Install Python and build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3-pip \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install data science packages
+RUN pip3 install --no-cache-dir \
+    numpy==1.26.4 \
+    pandas==2.1.4 \
+    scipy==1.11.4 \
+    scikit-learn==1.3.2 \
+    matplotlib==3.8.2 \
+    polars==0.19.19 \
+    pyarrow==14.0.2
+
+# Create workspace mount point
+RUN mkdir -p /workspace
+
+# Create executor script
+COPY executor.py /usr/local/bin/executor.py
+RUN chmod +x /usr/local/bin/executor.py
+
+# Set Python as default
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python
+
+# Minimal init for Firecracker
+COPY init /sbin/init
+RUN chmod +x /sbin/init
+
+CMD ["/sbin/init"]

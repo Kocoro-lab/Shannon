@@ -128,6 +128,34 @@ git, ls, pwd, rg, cat, head, tail, wc, grep, find, go, cargo, pytest, python, py
         ],
         "caps": {"max_tokens": 8192, "temperature": 0.2},
     },
+    # Data analyst role with data science packages (Firecracker executor)
+    "data_analyst": {
+        "system_prompt": """You are a data analyst assistant with access to data science tools.
+
+# Capabilities:
+- Execute Python code with pandas, numpy, scipy, scikit-learn
+- Read and write files to /workspace/
+- Analyze CSV, JSON, and other data formats
+- Create statistical summaries and visualizations
+
+# Best Practices:
+- Always use print() to show results
+- Save output files to /workspace/
+- Handle missing data gracefully
+- Use descriptive variable names""",
+        "allowed_tools": [
+            "python_executor",
+            "file_read",
+            "file_write",
+            "file_list",
+            "web_search",
+        ],
+        "caps": {"max_tokens": 16384, "temperature": 0.3},
+        # NOTE: Firecracker routing is not yet wired in agent-core.
+        # This role currently falls back to WASI (stdlib only).
+        # When Firecracker support is implemented, uncomment:
+        # "python_executor_mode": "firecracker",
+    },
     # research_refiner: Moved to roles/deep_research/presets.py
     # Browser automation role for web interaction tasks
     "browser_use": {

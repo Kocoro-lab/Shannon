@@ -34,6 +34,10 @@ pub struct Config {
     /// Request enforcement configuration
     #[serde(default = "EnforcementConfig::default")]
     pub enforcement: EnforcementConfig,
+
+    /// Python executor configuration
+    #[serde(default)]
+    pub python_executor: PythonExecutorConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +61,146 @@ pub struct WasiConfig {
     /// Allowed filesystem paths
     #[serde(default = "default_wasi_paths")]
     pub allowed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExecutorMode {
+    #[default]
+    Wasi,
+    Firecracker,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonExecutorConfig {
+    /// Executor mode: wasi or firecracker
+    #[serde(default)]
+    pub mode: ExecutorMode,
+
+    /// WASI-specific configuration (uses WasiConfig)
+    #[serde(default)]
+    pub wasi: WasiExecutorLimits,
+
+    /// Firecracker-specific configuration
+    #[serde(default)]
+    pub firecracker: FirecrackerExecutorConfig,
+
+    /// Workspace limits
+    #[serde(default)]
+    pub workspace: WorkspaceLimitsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasiExecutorLimits {
+    #[serde(default = "default_wasi_executor_memory")]
+    pub memory_limit_mb: usize,
+
+    #[serde(default = "default_wasi_executor_timeout")]
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FirecrackerExecutorConfig {
+    #[serde(default = "default_fc_memory")]
+    pub memory_mb: u32,
+
+    #[serde(default = "default_fc_vcpu")]
+    pub vcpu_count: u32,
+
+    #[serde(default = "default_fc_timeout")]
+    pub timeout_seconds: u32,
+
+    #[serde(default = "default_fc_pool_warm")]
+    pub pool_warm_count: u32,
+
+    #[serde(default = "default_fc_pool_max")]
+    pub pool_max_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceLimitsConfig {
+    #[serde(default = "default_workspace_size")]
+    pub max_size_mb: u64,
+
+    #[serde(default = "default_workspace_files")]
+    pub max_file_count: u32,
+
+    #[serde(default = "default_workspace_retention")]
+    pub retention_hours: u32,
+}
+
+// Default functions for Python executor config
+fn default_wasi_executor_memory() -> usize {
+    256
+}
+fn default_wasi_executor_timeout() -> u64 {
+    30
+}
+fn default_fc_memory() -> u32 {
+    1024
+} // 1GB
+fn default_fc_vcpu() -> u32 {
+    2
+}
+fn default_fc_timeout() -> u32 {
+    300
+} // 5 minutes
+fn default_fc_pool_warm() -> u32 {
+    3
+}
+fn default_fc_pool_max() -> u32 {
+    20
+}
+fn default_workspace_size() -> u64 {
+    500
+} // 500MB
+fn default_workspace_files() -> u32 {
+    10000
+}
+fn default_workspace_retention() -> u32 {
+    24
+}
+
+impl Default for WasiExecutorLimits {
+    fn default() -> Self {
+        Self {
+            memory_limit_mb: 256,
+            timeout_seconds: 30,
+        }
+    }
+}
+
+impl Default for FirecrackerExecutorConfig {
+    fn default() -> Self {
+        Self {
+            memory_mb: default_fc_memory(),
+            vcpu_count: default_fc_vcpu(),
+            timeout_seconds: default_fc_timeout(),
+            pool_warm_count: default_fc_pool_warm(),
+            pool_max_count: default_fc_pool_max(),
+        }
+    }
+}
+
+impl Default for WorkspaceLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_size_mb: default_workspace_size(),
+            max_file_count: default_workspace_files(),
+            retention_hours: default_workspace_retention(),
+        }
+    }
+}
+
+impl Default for PythonExecutorConfig {
+    fn default() -> Self {
+        Self {
+            mode: ExecutorMode::default(),
+            wasi: WasiExecutorLimits::default(),
+            firecracker: FirecrackerExecutorConfig::default(),
+            workspace: WorkspaceLimitsConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,7 +309,10 @@ fn default_wasi_fuel() -> u64 {
     1_000_000_000
 }
 fn default_wasi_paths() -> Vec<String> {
-    vec!["/tmp".to_string()]
+    // NOTE: /tmp was removed from defaults to prevent cross-session data leaks.
+    // WASI can read all of /tmp including /tmp/shannon-sessions/<other-session>/.
+    // Session workspace is now mounted separately at /workspace with read-write access.
+    vec![]
 }
 fn default_memory_pool_size() -> usize {
     1024 * 1024 * 1024
@@ -327,6 +474,7 @@ impl Default for Config {
                 collection_interval_secs: default_metrics_interval(),
             },
             enforcement: EnforcementConfig::default(),
+            python_executor: PythonExecutorConfig::default(),
         }
     }
 }
@@ -449,6 +597,48 @@ impl Config {
         if let Ok(v) = env::var("ENFORCE_RATE_REDIS_TTL") {
             if let Ok(secs) = v.parse::<u64>() {
                 config.enforcement.rate_redis_ttl_secs = secs;
+            }
+        }
+
+        // Python executor mode override
+        if let Ok(v) = env::var("PYTHON_EXECUTOR_MODE") {
+            config.python_executor.mode = match v.to_lowercase().as_str() {
+                "firecracker" => ExecutorMode::Firecracker,
+                _ => ExecutorMode::Wasi,
+            };
+        }
+
+        // Firecracker overrides
+        if let Ok(v) = env::var("FIRECRACKER_MEMORY_MB") {
+            if let Ok(mb) = v.parse::<u32>() {
+                config.python_executor.firecracker.memory_mb = mb;
+            }
+        }
+        if let Ok(v) = env::var("FIRECRACKER_VCPU_COUNT") {
+            if let Ok(n) = v.parse::<u32>() {
+                config.python_executor.firecracker.vcpu_count = n;
+            }
+        }
+        if let Ok(v) = env::var("FIRECRACKER_TIMEOUT_SECONDS") {
+            if let Ok(secs) = v.parse::<u32>() {
+                config.python_executor.firecracker.timeout_seconds = secs;
+            }
+        }
+        if let Ok(v) = env::var("FIRECRACKER_POOL_WARM_COUNT") {
+            if let Ok(n) = v.parse::<u32>() {
+                config.python_executor.firecracker.pool_warm_count = n;
+            }
+        }
+        if let Ok(v) = env::var("FIRECRACKER_POOL_MAX_COUNT") {
+            if let Ok(n) = v.parse::<u32>() {
+                config.python_executor.firecracker.pool_max_count = n;
+            }
+        }
+
+        // Workspace overrides
+        if let Ok(v) = env::var("WORKSPACE_MAX_SIZE_MB") {
+            if let Ok(mb) = v.parse::<u64>() {
+                config.python_executor.workspace.max_size_mb = mb;
             }
         }
 

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Minimal init for Firecracker
+exec /usr/local/bin/executor.py

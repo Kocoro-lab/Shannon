@@ -88,9 +88,21 @@ impl WorkspaceManager {
                 return Err(anyhow!("Workspace path exists but is not a directory"));
             }
         } else {
-            // Create workspace directory
-            std::fs::create_dir(&workspace)?;
-            info!("Created workspace for session: {}", session_id);
+            // Create workspace directory (handle race: another request may create it first)
+            match std::fs::create_dir(&workspace) {
+                Ok(_) => info!("Created workspace for session: {}", session_id),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Race condition: another request created it between exists() and create_dir()
+                    let metadata = std::fs::symlink_metadata(&workspace)?;
+                    if metadata.file_type().is_symlink() {
+                        return Err(anyhow!("Workspace is a symlink (potential attack)"));
+                    }
+                    if !metadata.is_dir() {
+                        return Err(anyhow!("Workspace path exists but is not a directory"));
+                    }
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
 
         // Post-creation verification (defense in depth)
@@ -164,29 +176,51 @@ impl WorkspaceManager {
     }
 }
 
+/// Maximum number of entries to visit during a size scan to prevent DoS
+/// via deeply nested or symlink-looped directory trees.
+const MAX_DIR_WALK_ENTRIES: usize = 50_000;
+
 /// Calculate total size of a directory recursively.
+///
+/// Security: Skips symlinks entirely to prevent escape outside the workspace
+/// and caps the total number of visited entries to avoid DoS from deeply nested trees.
 fn dir_size(path: &Path) -> Result<u64> {
-    let mut size = 0;
+    let mut size = 0u64;
+    let mut remaining = MAX_DIR_WALK_ENTRIES;
+    dir_size_inner(path, &mut size, &mut remaining)?;
+    Ok(size)
+}
 
-    if path.is_file() {
-        return Ok(path.metadata()?.len());
-    }
-
+fn dir_size_inner(path: &Path, size: &mut u64, remaining: &mut usize) -> Result<()> {
     if !path.exists() {
-        return Ok(0);
+        return Ok(());
     }
 
     for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
+        if *remaining == 0 {
+            return Err(anyhow!("Workspace walk exceeded {} entries", MAX_DIR_WALK_ENTRIES));
+        }
+        *remaining -= 1;
 
-        if metadata.is_file() {
-            size += metadata.len();
-        } else if metadata.is_dir() {
-            size += dir_size(&entry.path())?;
+        let entry = entry?;
+        // Use symlink_metadata to avoid following symlinks
+        let metadata = entry.metadata().ok();
+        let sym_meta = std::fs::symlink_metadata(entry.path()).ok();
+
+        // Skip symlinks entirely (prevents escape + infinite loops)
+        if sym_meta.is_some_and(|m| m.file_type().is_symlink()) {
+            continue;
+        }
+
+        if let Some(meta) = metadata {
+            if meta.is_file() {
+                *size += meta.len();
+            } else if meta.is_dir() {
+                dir_size_inner(&entry.path(), size, remaining)?;
+            }
         }
     }
-    Ok(size)
+    Ok(())
 }
 
 #[cfg(test)]
