@@ -4942,7 +4942,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
-	// Fallback: quick strategy disables iterative loop (same pattern as gap_filling at line 5509)
+	// Fallback: quick strategy disables iterative loop (same pattern as gap_filling below)
 	if !iterativeEnabledExplicit {
 		strategy := ""
 		if sv, ok := baseContext["research_strategy"].(string); ok {
