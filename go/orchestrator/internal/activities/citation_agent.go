@@ -27,6 +27,10 @@ var citationNumberPattern = regexp.MustCompile(`\[(\d+)\]`)
 // citationMarkerPattern matches inline citations without capture group (for position finding).
 var citationMarkerPattern = regexp.MustCompile(`\[\d+\]`)
 
+// multiSpaceGapPattern detects 3+ consecutive whitespace between non-space content,
+// indicating space-aligned table columns.
+var multiSpaceGapPattern = regexp.MustCompile(`\S\s{3,}\S`)
+
 // CitationForAgent is a simplified citation structure for the Citation Agent
 // (avoids import cycle with metadata package)
 type CitationForAgent struct {
@@ -2492,6 +2496,19 @@ func normalizeForQuoteMatch(s string) string {
 	return s
 }
 
+// looksLikeTableRow detects sentences that are markdown table rows or space-aligned table rows.
+// Citations should never be placed on table rows.
+func looksLikeTableRow(sentence string) bool {
+	// Markdown table: 2+ pipe characters
+	if strings.Count(sentence, "|") >= 2 {
+		return true
+	}
+	// Space/tab-aligned table: 2+ gaps of 3+ whitespace between content
+	normalized := strings.ReplaceAll(sentence, "\t", "   ")
+	gaps := multiSpaceGapPattern.FindAllStringIndex(normalized, -1)
+	return len(gaps) >= 2
+}
+
 // applyPlacements applies citation placements with ID range validation (no quote validation)
 func applyPlacements(sentences []string, plan *PlacementPlan2, hashes []string, citations []CitationForAgent) (string, PlacementResult) {
 	result := PlacementResult{}
@@ -2525,11 +2542,12 @@ func applyPlacements(sentences []string, plan *PlacementPlan2, hashes []string, 
 			continue
 		}
 
-		// Simplified: No quote validation - citation ID range check is sufficient
-		// Quote validation removed because:
-		// 1. Chinese report text often doesn't match English source snippets
-		// 2. The citation_id range check provides the hard constraint against hallucination
-		// 3. Semantic matching is left to the LLM's judgment via strong prompt guidance
+		// Reject placements on table rows (markdown pipes or space-aligned columns)
+		if looksLikeTableRow(sentences[p.SentenceIndex]) {
+			result.Failed++
+			result.FailedIdxs = append(result.FailedIdxs, p.SentenceIndex)
+			continue
+		}
 
 		// All validations passed
 		validPlacements[p.SentenceIndex] = p.CitationID

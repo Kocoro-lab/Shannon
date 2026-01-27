@@ -1063,3 +1063,91 @@ func BenchmarkEnsureSnippet(b *testing.B) {
 		ensureSnippet(snippet, content, title, url, MinSnippetLength)
 	}
 }
+
+// ============================================================================
+// isFallbackSnippet Tests
+// ============================================================================
+
+func TestIsFallbackSnippet(t *testing.T) {
+	tests := []struct {
+		name    string
+		snippet string
+		title   string
+		url     string
+		want    bool
+	}{
+		{
+			name:    "empty snippet",
+			snippet: "",
+			title:   "Some Title",
+			url:     "https://example.com",
+			want:    true,
+		},
+		{
+			name:    "exact fallback format",
+			snippet: "Innovation and Entrepreneurship in Japan - https://fsi9-prod.s3.us-west-1.amazonaws.com/s3fs-public/innovation_and_entrepreneurship_in_japan.pdf",
+			title:   "Innovation and Entrepreneurship in Japan",
+			url:     "https://fsi9-prod.s3.us-west-1.amazonaws.com/s3fs-public/innovation_and_entrepreneurship_in_japan.pdf",
+			want:    true,
+		},
+		{
+			name:    "real content snippet",
+			snippet: "Yuan Zheng founded Ptmind while still an undergrad at Nihon University. The company focuses on data analysis and monitoring.",
+			title:   "Innovation and Entrepreneurship in Japan",
+			url:     "https://fsi9-prod.s3.us-west-1.amazonaws.com/s3fs-public/innovation_and_entrepreneurship_in_japan.pdf",
+			want:    false,
+		},
+		{
+			name:    "short but real content",
+			snippet: "Ptmind provides data analytics tools for enterprises.",
+			title:   "Ptmind",
+			url:     "https://ptmind.com",
+			want:    false,
+		},
+		{
+			name:    "title empty with real snippet",
+			snippet: "Some real content about the topic.",
+			title:   "",
+			url:     "https://example.com",
+			want:    false,
+		},
+		{
+			name:    "simple domain fallback",
+			snippet: "Example Site - https://example.com",
+			title:   "Example Site",
+			url:     "https://example.com",
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isFallbackSnippet(tt.snippet, tt.title, tt.url)
+			if got != tt.want {
+				t.Errorf("isFallbackSnippet(%q, %q, %q) = %v, want %v",
+					tt.snippet, tt.title, tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFilterFallbackSnippets(t *testing.T) {
+	citations := []Citation{
+		{Title: "Real Article", URL: "https://example.com/article", Snippet: "This article discusses important findings about AI research."},
+		{Title: "PDF Title", URL: "https://s3.amazonaws.com/doc.pdf", Snippet: "PDF Title - https://s3.amazonaws.com/doc.pdf"},
+		{Title: "Another Real", URL: "https://news.com/story", Snippet: "Breaking news: major development in technology sector."},
+		{Title: "Empty Snippet", URL: "https://blocked.com/page", Snippet: ""},
+	}
+
+	filtered := filterFallbackSnippets(citations)
+
+	if len(filtered) != 2 {
+		t.Errorf("filterFallbackSnippets: got %d citations, want 2", len(filtered))
+	}
+	if filtered[0].Title != "Real Article" {
+		t.Errorf("first filtered citation: got %q, want %q", filtered[0].Title, "Real Article")
+	}
+	if filtered[1].Title != "Another Real" {
+		t.Errorf("second filtered citation: got %q, want %q", filtered[1].Title, "Another Real")
+	}
+}
