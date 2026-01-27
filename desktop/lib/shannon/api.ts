@@ -520,7 +520,7 @@ export async function submitReviewFeedback(
         "Content-Type": "application/json",
         ...getAuthHeaders(),
     };
-    if (version !== undefined) {
+    if (version !== undefined && version > 0) {
         headers["If-Match"] = String(version);
     }
 

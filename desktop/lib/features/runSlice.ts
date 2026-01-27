@@ -729,6 +729,11 @@ const runSlice = createSlice({
             }
         },
         resetRun: (state) => {
+            // Preserve user preferences across session changes
+            const preservedAgent = state.selectedAgent;
+            const preservedStrategy = state.researchStrategy;
+            const preservedReviewPlan = state.reviewPlan;
+
             state.events = [];
             state.messages = [];
             state.status = "idle";
@@ -747,7 +752,10 @@ const runSlice = createSlice({
             state.reviewWorkflowId = null;
             state.reviewVersion = 0;
             state.reviewIntent = null;
-            // Keep selectedAgent, reviewPlan persistent across sessions - they are user preferences
+            // Restore user preferences
+            state.selectedAgent = preservedAgent;
+            state.researchStrategy = preservedStrategy;
+            state.reviewPlan = preservedReviewPlan;
         },
         addMessage: (state, action: PayloadAction<any>) => {
             console.log("[Redux] addMessage called:", action.payload);

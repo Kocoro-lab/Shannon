@@ -356,18 +356,11 @@ export function ChatInput({
                 </div>
             )}
 
-            {/* Review mode: Approve & Run bar */}
-            {isReviewing && (
-                <div className={cn(
-                    "flex items-center justify-between px-3 py-2 rounded-lg border",
-                    reviewIntent === "approve"
-                        ? "bg-violet-50 dark:bg-violet-950 border-violet-300 dark:border-violet-700 animate-pulse"
-                        : "bg-muted/50 border-border"
-                )}>
-                    <span className="text-sm text-muted-foreground">
-                        {reviewIntent === "approve"
-                            ? "Ready to run? Click to start execution."
-                            : "Review the research plan. Provide feedback or approve."}
+            {/* Review mode: Approve & Run bar — only shown when LLM detects approve intent */}
+            {isReviewing && reviewIntent === "approve" && (
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-violet-50 dark:bg-violet-950 border-violet-300 dark:border-violet-700 animate-pulse">
+                    <span className="text-sm text-violet-700 dark:text-violet-300">
+                        Ready to run? Click to start execution.
                     </span>
                     <Button
                         type="button"

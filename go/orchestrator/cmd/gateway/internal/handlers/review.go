@@ -75,6 +75,7 @@ type llmResearchPlanRequest struct {
 // llmResearchPlanResponse is the response from the LLM service.
 type llmResearchPlanResponse struct {
 	Message      string `json:"message"`
+	Intent       string `json:"intent"`
 	Round        int    `json:"round"`
 	Model        string `json:"model"`
 	Provider     string `json:"provider"`
@@ -167,8 +168,11 @@ func (h *ReviewHandler) handleFeedback(
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
 
-	// Call LLM service for updated plan
-	plan, err := h.callResearchPlan(ctx, state.Query, state.Context, state.Rounds)
+	// Call LLM service for updated plan.
+	// Use a detached context so client disconnects don't cancel the LLM call.
+	llmCtx, llmCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer llmCancel()
+	plan, err := h.callResearchPlan(llmCtx, state.Query, state.Context, state.Rounds)
 	if err != nil {
 		h.logger.Error("Failed to generate research plan", zap.Error(err))
 		// Remove the user message we appended (don't persist bad state)
@@ -212,6 +216,12 @@ func (h *ReviewHandler) handleFeedback(
 	}
 	h.redis.Set(ctx, key, stateBytes, ttl)
 
+	// Determine intent (default to "feedback" if LLM didn't provide one)
+	intent := plan.Intent
+	if intent == "" {
+		intent = "feedback"
+	}
+
 	// Response
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("ETag", strconv.Itoa(state.Version))
@@ -221,6 +231,7 @@ func (h *ReviewHandler) handleFeedback(
 			"message": plan.Message,
 			"round":   state.Round,
 			"version": state.Version,
+			"intent":  intent,
 		},
 	})
 }

@@ -2863,16 +2863,20 @@ async def generate_research_plan(
 
     # Build prompt based on conversation state
     if not body.conversation:
-        # First round: generate initial research plan
+        # First round: generate initial research plan (specific enough to guide decompose)
         system_prompt = (
             "You are a research planning assistant. The user has submitted a research topic. "
             "Your task:\n"
             "1. Analyze the key dimensions of the topic\n"
-            "2. Propose 3-5 research directions you plan to investigate\n"
-            "3. Point out aspects that need clarification and ask naturally\n"
-            "4. Reply in the same language as the user's query\n"
-            "Be conversational, not structured. Think of yourself as a senior researcher "
-            "discussing the approach with a colleague before starting work."
+            "2. Propose 3-5 concrete research subtasks, each with:\n"
+            "   - A clear objective (what question it answers)\n"
+            "   - Specific search queries or data sources to use\n"
+            "   - Expected output format (comparison table, timeline, analysis, etc.)\n"
+            "3. If the topic is ambiguous, ask 1-2 focused clarifying questions\n"
+            "4. Reply in the same language as the user's query\n\n"
+            "Be conversational but specific. The user will review and refine this plan "
+            "before execution begins. Your plan should be detailed enough that a research "
+            "team could execute each subtask independently."
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -2890,9 +2894,9 @@ async def generate_research_plan(
         system_prompt = (
             "You are a research planning assistant discussing research directions with a user. "
             "Based on the user's latest feedback, update your research plan.\n"
-            "Output your updated research directions.\n"
-            "If there are still aspects to clarify, continue asking.\n"
-            "If the direction is clear enough, tell the user they can proceed.\n"
+            "Keep each subtask concrete with clear objectives, search queries, and expected outputs.\n"
+            "If there are still aspects to clarify, ask focused questions.\n"
+            "If the plan is solid and the user seems satisfied, confirm the final plan summary.\n"
             "Reply in the same language as the user.\n\n"
             "IMPORTANT: After your response, on a new line, output exactly one of these tags:\n"
             "[INTENT:feedback] — if the user is providing feedback, asking questions, or refining the plan\n"
