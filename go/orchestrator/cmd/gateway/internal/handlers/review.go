@@ -204,7 +204,11 @@ func (h *ReviewHandler) handleFeedback(
 		Message:   plan.Message,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
-	state.CurrentPlan = plan.Message
+	// Only update CurrentPlan when it contains actual research direction,
+	// not when LLM outputs a short approval confirmation (which has no value for decompose).
+	if plan.Intent != "approve" {
+		state.CurrentPlan = plan.Message
+	}
 	state.Round++
 	state.Version++
 
@@ -221,6 +225,13 @@ func (h *ReviewHandler) handleFeedback(
 	if intent == "" {
 		intent = "feedback"
 	}
+
+	// Publish review events to Redis stream so they're captured by SSE and persisted.
+	// This makes the review conversation visible in session history on page reload.
+	roundPayload := map[string]interface{}{"round": state.Round, "version": state.Version}
+	h.publishStreamEvent(workflowID, "REVIEW_USER_FEEDBACK", "user", req.Message, roundPayload)
+	h.publishStreamEvent(workflowID, "RESEARCH_PLAN_UPDATED", "research-planner", plan.Message,
+		map[string]interface{}{"round": state.Round, "version": state.Version, "intent": intent})
 
 	// Response
 	w.Header().Set("Content-Type", "application/json")
@@ -258,8 +269,11 @@ func (h *ReviewHandler) handleApprove(
 		return
 	}
 
-	// Clean up Redis
-	h.redis.Del(ctx, key)
+	// Mark review as approved in Redis (keep state for page reload, TTL handles cleanup)
+	state.Status = "approved"
+	if approvedBytes, err := json.Marshal(state); err == nil {
+		h.redis.Set(ctx, key, approvedBytes, 60*time.Minute)
+	}
 
 	h.logger.Info("HITL review approved via gateway",
 		zap.String("workflow_id", workflowID),
@@ -323,6 +337,108 @@ func (h *ReviewHandler) callResearchPlan(
 	}
 
 	return &result, nil
+}
+
+// HandleGetReview returns the current review conversation state from Redis.
+func (h *ReviewHandler) HandleGetReview(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	workflowID := r.PathValue("workflowID")
+	if workflowID == "" {
+		h.sendError(w, "workflow_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Auth check
+	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	if !ok || userCtx == nil {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// Load state from Redis
+	key := fmt.Sprintf("review:%s", workflowID)
+	data, err := h.redis.Get(ctx, key).Result()
+	if err == redis.Nil {
+		h.sendError(w, "Review session not found or expired", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		h.logger.Error("Failed to read review state from Redis", zap.Error(err))
+		h.sendError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	var state reviewState
+	if err := json.Unmarshal([]byte(data), &state); err != nil {
+		h.logger.Error("Failed to unmarshal review state", zap.Error(err))
+		h.sendError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// Owner check
+	if state.OwnerUserID != "" && state.OwnerUserID != userCtx.UserID.String() {
+		h.sendError(w, "Forbidden: not the task owner", http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("ETag", strconv.Itoa(state.Version))
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":       state.Status,
+		"round":        state.Round,
+		"version":      state.Version,
+		"current_plan": state.CurrentPlan,
+		"rounds":       state.Rounds,
+		"query":        state.Query,
+	})
+}
+
+// publishStreamEvent publishes a review event to the Redis event stream so it's
+// captured by SSE and persisted to DB — same format as orchestrator events.
+// This makes review conversation messages first-class citizens in the event system.
+func (h *ReviewHandler) publishStreamEvent(workflowID, eventType, agentID, message string, payload map[string]interface{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	streamKey := fmt.Sprintf("shannon:workflow:events:%s", workflowID)
+	seqKey := fmt.Sprintf("shannon:workflow:events:%s:seq", workflowID)
+
+	seq, err := h.redis.Incr(ctx, seqKey).Result()
+	if err != nil {
+		h.logger.Warn("Failed to increment event seq", zap.Error(err))
+		return
+	}
+
+	payloadJSON := "{}"
+	if payload != nil {
+		if b, err := json.Marshal(payload); err == nil {
+			payloadJSON = string(b)
+		}
+	}
+
+	_, err = h.redis.XAdd(ctx, &redis.XAddArgs{
+		Stream: streamKey,
+		MaxLen: 256,
+		Approx: true,
+		Values: map[string]interface{}{
+			"workflow_id": workflowID,
+			"type":        eventType,
+			"agent_id":    agentID,
+			"message":     message,
+			"payload":     payloadJSON,
+			"ts_nano":     strconv.FormatInt(time.Now().UnixNano(), 10),
+			"seq":         strconv.FormatUint(uint64(seq), 10),
+		},
+	}).Result()
+	if err != nil {
+		h.logger.Warn("Failed to publish review event to stream", zap.Error(err), zap.String("type", eventType))
+	} else {
+		h.logger.Info("Published review event to stream",
+			zap.String("workflow_id", workflowID),
+			zap.String("type", eventType),
+			zap.Int64("seq", seq),
+		)
+	}
 }
 
 func (h *ReviewHandler) sendError(w http.ResponseWriter, message string, code int) {

@@ -19,7 +19,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState, approveReviewPlan } from "@/lib/shannon/api";
-import { resetRun, addMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
+import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -453,6 +453,7 @@ function RunDetailContent() {
                 }
 
                 console.log("[RunDetail] Loading", eventsData.turns.length, "turns into messages");
+                let reviewModeVersion: number | null = null;
                 eventsData.turns.forEach((turn, turnIndex) => {
                     const workflowId = turn.events.length > 0 ? turn.events[0].workflow_id : turn.task_id;
                     console.log(`[RunDetail] Processing turn ${turnIndex + 1}/${eventsData.turns.length}, task_id: ${turn.task_id}, workflow_id: ${workflowId}`);
@@ -462,6 +463,9 @@ function RunDetailContent() {
                     // Check for HITL review events in this turn
                     const planReadyEvent = turn.events.find((e: any) => e.type === "RESEARCH_PLAN_READY");
                     const planApprovedEvent = turn.events.find((e: any) => e.type === "RESEARCH_PLAN_APPROVED");
+                    // Review feedback events (published by gateway to Redis stream)
+                    const reviewFeedbackEvents = turn.events.filter((e: any) => e.type === "REVIEW_USER_FEEDBACK");
+                    const planUpdatedEvents = turn.events.filter((e: any) => e.type === "RESEARCH_PLAN_UPDATED");
 
                     // User message
                     dispatch(addMessage({
@@ -474,12 +478,12 @@ function RunDetailContent() {
                     console.log(`[RunDetail] Added user message for turn ${turnIndex + 1}`);
 
                     // Add research plan message (from RESEARCH_PLAN_READY event) AFTER user message
-                    // This ensures correct ordering: user query → research plan
+                    // This ensures correct ordering: user query → research plan (Round 1)
                     if (planReadyEvent) {
                         const planMessage = (planReadyEvent as any).message;
                         if (planMessage) {
                             dispatch(addMessage({
-                                id: `research-plan-${workflowId}-hist`,
+                                id: `research-plan-${workflowId}-r1`,
                                 role: "assistant",
                                 content: planMessage,
                                 timestamp: new Date((planReadyEvent as any).timestamp || turn.timestamp).toLocaleTimeString(),
@@ -487,8 +491,41 @@ function RunDetailContent() {
                                 isResearchPlan: true,
                                 planRound: 1,
                             }));
-                            console.log(`[RunDetail] Added research plan message for turn ${turnIndex + 1}`);
+                            console.log(`[RunDetail] Added research plan Round 1 for turn ${turnIndex + 1}`);
                         }
+                    }
+
+                    // Add review feedback rounds (Round 2+) from stream events.
+                    // These are user feedback + updated plan pairs, interleaved in order.
+                    // Events are in chronological order already.
+                    const feedbackPairs = Math.min(reviewFeedbackEvents.length, planUpdatedEvents.length);
+                    for (let ri = 0; ri < feedbackPairs; ri++) {
+                        const fbEvent = reviewFeedbackEvents[ri];
+                        const planEvent = planUpdatedEvents[ri];
+                        const roundNum = ri + 2; // Round 2, 3, ...
+
+                        // User feedback message
+                        dispatch(addMessage({
+                            id: `review-feedback-${workflowId}-r${roundNum}`,
+                            role: "user",
+                            content: (fbEvent as any).message,
+                            timestamp: new Date((fbEvent as any).timestamp || turn.timestamp).toLocaleTimeString(),
+                            taskId: workflowId,
+                        }));
+
+                        // Updated plan message
+                        dispatch(addMessage({
+                            id: `review-plan-${workflowId}-r${roundNum}`,
+                            role: "assistant",
+                            content: (planEvent as any).message,
+                            timestamp: new Date((planEvent as any).timestamp || turn.timestamp).toLocaleTimeString(),
+                            taskId: workflowId,
+                            isResearchPlan: true,
+                            planRound: roundNum,
+                        }));
+                    }
+                    if (feedbackPairs > 0) {
+                        console.log(`[RunDetail] Added ${feedbackPairs} review feedback rounds for turn ${turnIndex + 1}`);
                     }
 
                     // Add plan approval message if approved
@@ -507,8 +544,18 @@ function RunDetailContent() {
                     if (isCurrentlyRunning) {
                         // If task is in review mode (plan ready but not approved), don't add generating placeholder
                         if (planReadyEvent && !planApprovedEvent) {
-                            console.log("[RunDetail] Task is in review mode - plan shown, no generating placeholder");
-                            return; // Plan message already added above
+                            console.log("[RunDetail] Task is in review mode - no generating placeholder");
+                            // Sync review version from the latest plan event for optimistic concurrency
+                            const lastPlanEvent = planUpdatedEvents[planUpdatedEvents.length - 1];
+                            if (lastPlanEvent) {
+                                try {
+                                    const pl = typeof (lastPlanEvent as any).payload === "string"
+                                        ? JSON.parse((lastPlanEvent as any).payload)
+                                        : (lastPlanEvent as any).payload;
+                                    if (pl?.version != null) reviewModeVersion = pl.version;
+                                } catch { /* ignore parse errors */ }
+                            }
+                            return; // Feedback rounds already loaded from stream events above
                         }
                         // Normal running task or approved plan waiting for execution
                         console.log("[RunDetail] Task is running - adding generating placeholder");
@@ -612,6 +659,12 @@ function RunDetailContent() {
                         }
                     }
                 });
+
+                // Sync review version from event payloads (no Redis call needed)
+                if (reviewModeVersion != null) {
+                    dispatch(setReviewVersion(reviewModeVersion));
+                    console.log("[RunDetail] Synced review version from events:", reviewModeVersion);
+                }
 
                 hasLoadedMessagesRef.current = true;
             } else {
@@ -844,11 +897,13 @@ function RunDetailContent() {
 
             // Check if we already have ANY assistant message for this task (from SSE streaming)
             // This prevents duplicates when both SSE and fetchFinalOutput create messages
+            // Exclude isResearchPlan messages — those are review plan rounds, not the final output
             const hasExistingAssistantMessage = runMessages.some(m =>
                 m.role === "assistant" &&
                 m.taskId === currentTaskId &&
                 !m.isStreaming &&
                 !m.isGenerating &&
+                !m.isResearchPlan &&
                 m.content && m.content.length > 0
             );
 
@@ -1134,22 +1189,50 @@ function RunDetailContent() {
         dispatch(setReviewPlan(mode));
     };
 
-    const handleReviewFeedback = async (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => {
-        dispatch(setReviewVersion(version));
-        dispatch(setReviewIntent(intent));
-
-        // Add user feedback message
+    // Called immediately when user clicks Send in review mode (before API call).
+    // Shows user message + generating placeholder instantly.
+    const handleReviewSending = (userMessage: string) => {
+        // Use a temporary ID that will be replaced with the stable one once round is known
         dispatch(addMessage({
-            id: `review-feedback-${Date.now()}`,
+            id: `review-feedback-${reviewWorkflowId}-pending`,
             role: "user",
             content: userMessage,
             timestamp: new Date().toLocaleTimeString(),
             taskId: reviewWorkflowId,
         }));
 
-        // Add updated plan message
+        // Add generating placeholder (bouncing dots animation)
         dispatch(addMessage({
-            id: `research-plan-${reviewWorkflowId}-${Date.now()}`,
+            id: `review-generating-${reviewWorkflowId}`,
+            role: "assistant",
+            content: "Generating...",
+            timestamp: new Date().toLocaleTimeString(),
+            isGenerating: true,
+            taskId: reviewWorkflowId,
+        }));
+    };
+
+    // Called after API returns with the updated plan.
+    const handleReviewFeedback = async (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => {
+        dispatch(setReviewVersion(version));
+        dispatch(setReviewIntent(intent));
+
+        // Remove the temporary user message and generating placeholder
+        dispatch(removeMessage(`review-feedback-${reviewWorkflowId}-pending`));
+        dispatch(removeMessage(`review-generating-${reviewWorkflowId}`));
+
+        // Add final user feedback message (stable ID matches turn-loading for dedup on reload)
+        dispatch(addMessage({
+            id: `review-feedback-${reviewWorkflowId}-r${round}`,
+            role: "user",
+            content: userMessage,
+            timestamp: new Date().toLocaleTimeString(),
+            taskId: reviewWorkflowId,
+        }));
+
+        // Add updated plan message (stable ID matches turn-loading for dedup on reload)
+        dispatch(addMessage({
+            id: `review-plan-${reviewWorkflowId}-r${round}`,
             role: "assistant",
             content: planMessage,
             timestamp: new Date().toLocaleTimeString(),
@@ -1660,6 +1743,7 @@ function RunDetailContent() {
                                             reviewVersion={reviewVersion}
                                             reviewIntent={reviewIntent}
                                             onReviewPlanChange={handleReviewPlanChange}
+                                            onReviewSending={handleReviewSending}
                                             onReviewFeedback={handleReviewFeedback}
                                             onApprove={handleReviewApprove}
                                         />
@@ -1689,6 +1773,7 @@ function RunDetailContent() {
                                     reviewVersion={reviewVersion}
                                     reviewIntent={reviewIntent}
                                     onReviewPlanChange={handleReviewPlanChange}
+                                    onReviewSending={handleReviewSending}
                                     onReviewFeedback={handleReviewFeedback}
                                     onApprove={handleReviewApprove}
                                 />

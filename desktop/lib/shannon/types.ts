@@ -42,7 +42,8 @@ export type EventType =
     | "STATUS_UPDATE"
     | "RESEARCH_PLAN_READY"
     | "RESEARCH_PLAN_UPDATED"
-    | "RESEARCH_PLAN_APPROVED";
+    | "RESEARCH_PLAN_APPROVED"
+    | "REVIEW_USER_FEEDBACK";
 
 export interface BaseEvent {
     type: EventType;
@@ -280,6 +281,11 @@ export interface ResearchPlanApprovedEvent extends BaseEvent {
     message?: string;
 }
 
+export interface ReviewUserFeedbackEvent extends BaseEvent {
+    type: "REVIEW_USER_FEEDBACK";
+    message?: string;
+}
+
 export type ShannonEvent =
     | WorkflowStartedEvent
     | WorkflowCompletedEvent
@@ -321,4 +327,5 @@ export type ShannonEvent =
     | LlmOutputEvent
     | ResearchPlanReadyEvent
     | ResearchPlanUpdatedEvent
-    | ResearchPlanApprovedEvent;
+    | ResearchPlanApprovedEvent
+    | ReviewUserFeedbackEvent;

@@ -293,6 +293,28 @@ func (m *Manager) streamReaderFrom(ctx context.Context, workflowID string, ch ch
 					}
 				}
 
+				// Best-effort DB persistence for events from external publishers (e.g., gateway).
+				// Events published via Publish() are already enqueued; the DB dedup index prevents duplicates.
+				if m.dbClient != nil && m.persistCh != nil && shouldPersistEvent(event.Type) {
+					el := db.EventLog{
+						WorkflowID: event.WorkflowID,
+						Type:       event.Type,
+						AgentID:    event.AgentID,
+						Message:    sanitizeEventMessage(event.Message),
+						Timestamp:  event.Timestamp,
+						Seq:        event.Seq,
+						StreamID:   event.StreamID,
+					}
+					if event.Payload != nil {
+						el.Payload = db.JSONB(sanitizeEventPayload(event.Payload))
+					}
+					select {
+					case m.persistCh <- el:
+					default:
+						// Channel full; event may be missing from DB but still delivered via SSE
+					}
+				}
+
 				// Send to channel (non-blocking to avoid deadlock)
 				select {
 				case ch <- event:

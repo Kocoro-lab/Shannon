@@ -2863,20 +2863,22 @@ async def generate_research_plan(
 
     # Build prompt based on conversation state
     if not body.conversation:
-        # First round: generate initial research plan (specific enough to guide decompose)
+        # First round: understand user intent before generating any plan
         system_prompt = (
-            "You are a research planning assistant. The user has submitted a research topic. "
-            "Your task:\n"
-            "1. Analyze the key dimensions of the topic\n"
-            "2. Propose 3-5 concrete research subtasks, each with:\n"
-            "   - A clear objective (what question it answers)\n"
-            "   - Specific search queries or data sources to use\n"
-            "   - Expected output format (comparison table, timeline, analysis, etc.)\n"
-            "3. If the topic is ambiguous, ask 1-2 focused clarifying questions\n"
-            "4. Reply in the same language as the user's query\n\n"
-            "Be conversational but specific. The user will review and refine this plan "
-            "before execution begins. Your plan should be detailed enough that a research "
-            "team could execute each subtask independently."
+            "You are a research planning assistant. The user has submitted a research topic.\n\n"
+            "Your task in this FIRST round is to UNDERSTAND what the user actually needs — "
+            "do NOT generate a research plan yet.\n\n"
+            "Do the following:\n"
+            "1. Briefly acknowledge the topic (1 sentence)\n"
+            "2. Ask 2-3 focused clarifying questions to understand:\n"
+            "   - Purpose: why they need this research (e.g. job interview, competitive analysis, investment)\n"
+            "   - Focus: which aspects matter most (e.g. product/tech, business model, market position, team)\n"
+            "   - Existing knowledge: what they already know, so you can skip basics and focus on incremental value\n"
+            "3. Reply in the same language as the user's query\n\n"
+            "RULES:\n"
+            "- Keep your response SHORT (under 150 words)\n"
+            "- Do NOT output a plan, subtask list, or search queries in this round\n"
+            "- Be conversational — like a senior analyst clarifying a brief before starting work"
         )
         messages = [
             {"role": "system", "content": system_prompt},
@@ -2890,19 +2892,27 @@ async def generate_research_plan(
             if ctx_str:
                 messages[1]["content"] += f"\n\nAdditional context: {ctx_str}"
     else:
-        # Subsequent rounds: refine based on feedback
+        # Subsequent rounds: refine research direction based on user's clarified intent
         system_prompt = (
-            "You are a research planning assistant discussing research directions with a user. "
-            "Based on the user's latest feedback, update your research plan.\n"
-            "Keep each subtask concrete with clear objectives, search queries, and expected outputs.\n"
-            "If there are still aspects to clarify, ask focused questions.\n"
-            "If the plan is solid and the user seems satisfied, confirm the final plan summary.\n"
+            "You are a research planning assistant discussing research directions with a user.\n\n"
+            "CONTEXT: In round 1 you asked clarifying questions. The conversation history "
+            "contains the user's answers revealing their purpose, focus areas, and existing knowledge.\n\n"
+            "YOUR TASK based on conversation state:\n"
+            "- If no plan has been proposed yet: Summarize your understanding of the user's needs, "
+            "then describe the research DIRECTION — what areas to cover, what to prioritize, "
+            "and what to skip based on what they already know. Keep it concise (under 300 words).\n"
+            "- If a plan exists and user gives feedback: adjust the direction accordingly.\n"
+            "- If the user wants to approve/proceed: respond with a SHORT confirmation "
+            "(1-2 sentences) — do NOT list search queries or results.\n"
+            "- If there are still critical unknowns: ask 1 focused follow-up question.\n\n"
             "Reply in the same language as the user.\n\n"
             "CRITICAL RULES:\n"
-            "1. NEVER generate fake execution content, search results, or pretend to run research.\n"
-            "   You are ONLY planning — the actual execution happens in a separate system.\n"
-            "2. If the user wants to approve/proceed, respond with a SHORT confirmation "
-            "(1-2 sentences like 'Great, starting execution now.') — do NOT list search queries or results.\n\n"
+            "1. Do NOT output numbered subtasks, search queries, or expected output formats. "
+            "The actual task decomposition and search execution happen in a separate system.\n"
+            "2. Focus on WHAT to research and WHY, not HOW to search.\n"
+            "3. Reflect the user's stated priorities — more depth on their focus areas, "
+            "less on areas they didn't mention or already know about.\n"
+            "4. NEVER generate fake execution content or pretend to run research.\n\n"
             "INTENT TAG (required at the very end of your response, on its own line):\n"
             "[INTENT:feedback] — the user is providing feedback, refining, or asking questions\n"
             "[INTENT:approve] — the user wants to proceed/execute/approve the plan "
@@ -3471,12 +3481,33 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         )
         messages.append({"role": "user", "content": user})
 
-        # HITL: inject confirmed plan if present (zero impact when absent)
+        # HITL: inject confirmed plan and review conversation if present
         if query.context and query.context.get("confirmed_plan"):
             confirmed_plan = query.context["confirmed_plan"]
+            # Build context from review conversation (user intent, priorities, existing knowledge)
+            review_context = ""
+            review_conv = query.context.get("review_conversation")
+            if review_conv:
+                conv_list = review_conv if isinstance(review_conv, list) else []
+                if isinstance(review_conv, str):
+                    try:
+                        import json as _json
+                        conv_list = _json.loads(review_conv)
+                    except Exception:
+                        conv_list = []
+                user_messages = [r["message"] for r in conv_list if r.get("role") == "user"]
+                if user_messages:
+                    review_context = "\n\nUser clarifications during review:\n" + "\n".join(
+                        f"- {msg}" for msg in user_messages
+                    )
             messages.append({
                 "role": "user",
-                "content": f"User-approved research direction:\n{confirmed_plan}\n\nDecompose the task following this approved direction."
+                "content": (
+                    f"User-approved research direction:\n{confirmed_plan}"
+                    f"{review_context}\n\n"
+                    "Decompose the task following this approved direction. "
+                    "Prioritize subtasks toward the user's stated focus areas."
+                )
             })
 
         logger.info(

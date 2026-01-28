@@ -347,6 +347,15 @@ func main() {
 	)
 
 	// HITL Research Review
+	mux.Handle("GET /api/v1/tasks/{workflowID}/review",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(reviewHandler.HandleGetReview),
+				),
+			),
+		),
+	)
 	mux.Handle("POST /api/v1/tasks/{workflowID}/review",
 		tracingMiddleware(
 			authMiddleware(

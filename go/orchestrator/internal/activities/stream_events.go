@@ -55,6 +55,7 @@ const (
 	StreamEventResearchPlanReady    StreamEventType = "RESEARCH_PLAN_READY"
 	StreamEventResearchPlanUpdated  StreamEventType = "RESEARCH_PLAN_UPDATED"
 	StreamEventResearchPlanApproved StreamEventType = "RESEARCH_PLAN_APPROVED"
+	StreamEventReviewUserFeedback   StreamEventType = "REVIEW_USER_FEEDBACK"
 
 	// Workflow control (pause/resume/cancel)
 	StreamEventWorkflowPausing    StreamEventType = "WORKFLOW_PAUSING"    // Pause signal received

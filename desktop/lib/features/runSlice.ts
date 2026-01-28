@@ -728,6 +728,27 @@ const runSlice = createSlice({
                     isGenerating: true,
                     taskId: event.workflow_id,
                 });
+            } else if (event.type === "REVIEW_USER_FEEDBACK") {
+                // User feedback during HITL review — treat as a regular user chat message
+                console.log("[Redux] Review user feedback for workflow:", event.workflow_id);
+                if (isHistorical) {
+                    console.log("[Redux] Historical REVIEW_USER_FEEDBACK - skipping (handled in page.tsx turn loading)");
+                    return;
+                }
+                // Live: message is already added by handleReviewFeedback via addMessage.
+                // The SSE event arrives after the HTTP response, so the message already exists.
+                // addMessage deduplicates by ID, but the live path uses a different ID.
+                // We skip here to avoid duplicates — live messages come from handleReviewFeedback.
+                console.log("[Redux] Live REVIEW_USER_FEEDBACK - skipping (already added by handleReviewFeedback)");
+            } else if (event.type === "RESEARCH_PLAN_UPDATED") {
+                // Updated research plan from feedback — treat as assistant chat message
+                console.log("[Redux] Research plan updated for workflow:", event.workflow_id);
+                if (isHistorical) {
+                    console.log("[Redux] Historical RESEARCH_PLAN_UPDATED - skipping (handled in page.tsx turn loading)");
+                    return;
+                }
+                // Live: message is already added by handleReviewFeedback.
+                console.log("[Redux] Live RESEARCH_PLAN_UPDATED - skipping (already added by handleReviewFeedback)");
             } else if (event.type === "AGENT_COMPLETED") {
                 // AGENT_COMPLETED is just a status event, not a message
                 // The actual response comes from thread.message.completed
@@ -778,6 +799,9 @@ const runSlice = createSlice({
             } else {
                 console.warn("[Redux] Message with ID already exists:", action.payload.id);
             }
+        },
+        removeMessage: (state, action: PayloadAction<string>) => {
+            state.messages = state.messages.filter(m => m.id !== action.payload);
         },
         updateMessageMetadata: (state, action: PayloadAction<{ taskId: string; metadata: any }>) => {
             const { taskId, metadata } = action.payload;
@@ -907,5 +931,5 @@ const runSlice = createSlice({
     },
 });
 
-export const { addEvent, resetRun, addMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } = runSlice.actions;
+export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } = runSlice.actions;
 export default runSlice.reducer;

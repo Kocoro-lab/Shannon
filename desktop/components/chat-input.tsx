@@ -39,6 +39,7 @@ interface ChatInputProps {
     reviewVersion?: number;
     reviewIntent?: "feedback" | "approve" | null;
     onReviewPlanChange?: (mode: ReviewPlanMode) => void;
+    onReviewSending?: (userMessage: string) => void;
     onReviewFeedback?: (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => void;
     onApprove?: () => void;
 }
@@ -65,6 +66,7 @@ export function ChatInput({
     reviewVersion = 0,
     reviewIntent,
     onReviewPlanChange,
+    onReviewSending,
     onReviewFeedback,
     onApprove,
 }: ChatInputProps) {
@@ -101,6 +103,8 @@ export function ChatInput({
             if (isReviewing && reviewWorkflowId) {
                 const feedbackText = query.trim();
                 setQuery("");
+                // Immediately show user message + loading animation
+                onReviewSending?.(feedbackText);
                 const result = await submitReviewFeedback(reviewWorkflowId, feedbackText, reviewVersion);
                 if (onReviewFeedback && result.plan) {
                     onReviewFeedback(result.plan.version, result.plan.intent, result.plan.message, result.plan.round, feedbackText);

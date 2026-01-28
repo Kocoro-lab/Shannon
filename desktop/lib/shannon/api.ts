@@ -538,6 +538,34 @@ export async function submitReviewFeedback(
     return response.json();
 }
 
+export interface ReviewStateResponse {
+    status: string;
+    round: number;
+    version: number;
+    current_plan: string;
+    query: string;
+    rounds: Array<{
+        role: string;
+        message: string;
+        timestamp: string;
+    }>;
+}
+
+export async function getReviewState(workflowId: string): Promise<ReviewStateResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        if (response.status === 404) {
+            throw new Error("Review session not found or expired");
+        }
+        throw new Error(`Failed to get review state: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
 export async function approveReviewPlan(workflowId: string): Promise<ReviewApproveResponse> {
     const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
         method: "POST",

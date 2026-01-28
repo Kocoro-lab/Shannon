@@ -124,6 +124,7 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
                 "RESEARCH_PLAN_READY",
                 "RESEARCH_PLAN_UPDATED",
                 "RESEARCH_PLAN_APPROVED",
+                "REVIEW_USER_FEEDBACK",
                 "error",
                 "done",
                 "STREAM_END"
