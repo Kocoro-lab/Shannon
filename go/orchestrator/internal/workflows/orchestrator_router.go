@@ -255,14 +255,14 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to generate research plan: %v", err)}, err
 			}
 
-			// 2) Emit SSE: plan ready
+			// 2) Emit SSE: plan ready (message already stripped of [RESEARCH_BRIEF] and [INTENT:...])
 			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 				EventType:  activities.StreamEventResearchPlanReady,
 				AgentID:    "planner",
 				Message:    plan.Message,
 				Timestamp:  workflow.Now(ctx),
-				Payload:    map[string]interface{}{"round": plan.Round},
+				Payload:    map[string]interface{}{"round": plan.Round, "intent": plan.Intent},
 			}).Get(ctx, nil)
 
 			// 3) Wait for user approval Signal or timeout

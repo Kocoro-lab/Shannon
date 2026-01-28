@@ -3445,6 +3445,11 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 "   - beginner → include foundational/introductory subtask\n"
                 "   - intermediate → skip basics, focus on analysis\n"
                 "   - expert → deep-dive only, assume domain knowledge\n"
+                "5. PRESERVE system tasks:\n"
+                "   - If a domain_analysis task is applicable (see FIRST DECISION section above),\n"
+                "     you MUST still include it as task-1 with task_type: 'domain_analysis'.\n"
+                "   - domain_analysis is a system-level task, NOT a content subtask —\n"
+                "     it is independent of the brief's priority/skip areas.\n"
             )
             decompose_system_prompt += hitl_hint
 

@@ -10,6 +10,7 @@ This module contains specialized roles for:
 from .deep_research_agent import DEEP_RESEARCH_AGENT_PRESET
 from .quick_research_agent import QUICK_RESEARCH_AGENT_PRESET
 from .research_refiner import RESEARCH_REFINER_PRESET
+from .research_supervisor import RESEARCH_SUPERVISOR_IDENTITY
 from .domain_discovery import DOMAIN_DISCOVERY_PRESET
 from .domain_prefetch import DOMAIN_PREFETCH_PRESET
 
@@ -17,6 +18,7 @@ __all__ = [
     "DEEP_RESEARCH_AGENT_PRESET",
     "QUICK_RESEARCH_AGENT_PRESET",
     "RESEARCH_REFINER_PRESET",
+    "RESEARCH_SUPERVISOR_IDENTITY",
     "DOMAIN_DISCOVERY_PRESET",
     "DOMAIN_PREFETCH_PRESET",
 ]

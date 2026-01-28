@@ -244,6 +244,7 @@ type ResearchPlanInput struct {
 // ResearchPlanResult is the result of the GenerateResearchPlan activity
 type ResearchPlanResult struct {
 	Message string `json:"message"`
+	Intent  string `json:"intent"`
 	Round   int    `json:"round"`
 }
 

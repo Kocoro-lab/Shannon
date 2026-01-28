@@ -671,8 +671,10 @@ const runSlice = createSlice({
                 state.reviewStatus = "reviewing";
                 state.reviewWorkflowId = event.workflow_id;
                 state.reviewVersion = 0;
-                state.reviewIntent = null;
-                console.log("[Redux] Research plan ready - entering review mode for workflow:", event.workflow_id);
+                // Read intent from SSE payload (e.g. "ready" shows Approve button, "feedback" does not)
+                const planIntent = planEvent.payload?.intent || null;
+                state.reviewIntent = planIntent;
+                console.log("[Redux] Research plan ready - entering review mode for workflow:", event.workflow_id, "intent:", planIntent);
 
                 // For historical events, only set state — messages are loaded from turn data in page.tsx
                 // This prevents plan appearing before user query (events dispatch before turns load)

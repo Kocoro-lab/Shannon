@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
@@ -25,6 +27,7 @@ type researchPlanLLMRequest struct {
 // researchPlanLLMResponse is the HTTP response from the LLM service
 type researchPlanLLMResponse struct {
 	Message      string `json:"message"`
+	Intent       string `json:"intent"`
 	Round        int    `json:"round"`
 	Model        string `json:"model"`
 	Provider     string `json:"provider"`
@@ -98,6 +101,32 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 		return ResearchPlanResult{}, fmt.Errorf("research plan service returned empty message")
 	}
 
+	// Determine intent (default to "feedback" if LLM didn't provide one)
+	intent := llmResp.Intent
+	if intent == "" {
+		intent = "feedback"
+	}
+
+	// Strip [RESEARCH_BRIEF]...[/RESEARCH_BRIEF] block (machine-consumed metadata, not for display)
+	briefRegex := regexp.MustCompile(`(?s)\[RESEARCH_BRIEF\]\n?(.*?)\n?\[/RESEARCH_BRIEF\]`)
+	displayMessage := llmResp.Message
+	var researchBrief string
+	if match := briefRegex.FindStringSubmatch(displayMessage); len(match) > 1 {
+		researchBrief = strings.TrimSpace(match[1])
+		displayMessage = strings.TrimSpace(briefRegex.ReplaceAllString(displayMessage, ""))
+	}
+
+	// Strip [INTENT:...] tag (already parsed above, not for display)
+	intentTagRegex := regexp.MustCompile(`\n?\[INTENT:\w+\]\s*$`)
+	displayMessage = strings.TrimSpace(intentTagRegex.ReplaceAllString(displayMessage, ""))
+
+	if researchBrief != "" {
+		logger.Info("Extracted research brief from Round 1 plan",
+			zap.String("intent", intent),
+			zap.Int("brief_len", len(researchBrief)),
+		)
+	}
+
 	// 2. Initialize Redis review state
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
@@ -111,6 +140,11 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 		rdb := redis.NewClient(redisOpts)
 		defer rdb.Close()
 
+		// Store stripped message in Redis (no [RESEARCH_BRIEF] or [INTENT:...])
+		currentPlan := ""
+		if intent == "ready" {
+			currentPlan = displayMessage
+		}
 		state := reviewRedisState{
 			WorkflowID:    in.WorkflowID,
 			Query:         in.Query,
@@ -121,9 +155,9 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 			OwnerUserID:   in.UserID,
 			OwnerTenantID: in.TenantID,
 			Rounds: []ReviewRound{
-				{Role: "assistant", Message: llmResp.Message, Timestamp: time.Now().UTC().Format(time.RFC3339)},
+				{Role: "assistant", Message: displayMessage, Timestamp: time.Now().UTC().Format(time.RFC3339)},
 			},
-			CurrentPlan: llmResp.Message,
+			CurrentPlan: currentPlan,
 		}
 
 		stateBytes, err := json.Marshal(state)
@@ -149,7 +183,8 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 	}
 
 	return ResearchPlanResult{
-		Message: llmResp.Message,
+		Message: displayMessage,
+		Intent:  intent,
 		Round:   1,
 	}, nil
 }
