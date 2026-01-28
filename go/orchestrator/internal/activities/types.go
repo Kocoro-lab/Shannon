@@ -249,9 +249,10 @@ type ResearchPlanResult struct {
 
 // ResearchReviewResult is the Signal payload sent when user approves the review
 type ResearchReviewResult struct {
-	Approved     bool          `json:"approved"`
-	FinalPlan    string        `json:"final_plan"`
-	Conversation []ReviewRound `json:"conversation"`
+	Approved      bool          `json:"approved"`
+	FinalPlan     string        `json:"final_plan"`
+	Conversation  []ReviewRound `json:"conversation"`
+	ResearchBrief string        `json:"research_brief,omitempty"`
 }
 
 // ReviewRound represents a single round in the review conversation

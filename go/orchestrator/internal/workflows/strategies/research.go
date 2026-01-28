@@ -2641,6 +2641,12 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
+	// Clean up HITL review fields from baseContext after decompose has consumed them.
+	// Subagents should NOT see raw review content — decompose encodes intent into subtask descriptions.
+	delete(baseContext, "confirmed_plan")
+	delete(baseContext, "research_brief")
+	delete(baseContext, "review_conversation")
+
 	// Check for budget configuration
 	agentMaxTokens := 0
 	if v, ok := baseContext["budget_agent_max"].(int); ok {

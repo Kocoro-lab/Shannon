@@ -363,6 +363,7 @@ message SubmitReviewDecisionRequest {
   string final_plan = 3;          // Final confirmed research plan text
   string conversation = 4;        // JSON-encoded conversation rounds
   string approved_by = 5;         // User ID who approved
+  string research_brief = 6;     // Structured brief from review (machine-consumed)
 }
 
 message SubmitReviewDecisionResponse {

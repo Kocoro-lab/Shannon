@@ -2889,9 +2889,10 @@ func (s *OrchestratorService) SubmitReviewDecision(
 	}
 
 	reviewResult := activities.ResearchReviewResult{
-		Approved:     req.Approved,
-		FinalPlan:    req.FinalPlan,
-		Conversation: conversation,
+		Approved:      req.Approved,
+		FinalPlan:     req.FinalPlan,
+		Conversation:  conversation,
+		ResearchBrief: req.ResearchBrief,
 	}
 
 	// Send Signal to workflow
