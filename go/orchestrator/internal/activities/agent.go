@@ -2123,6 +2123,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		Provider:       agentResponse.Provider,
 		InputTokens:    inputTokens,
 		OutputTokens:   outputTokens,
+		DurationMs:     time.Since(toolStartTime).Milliseconds(),
 		ToolsUsed:      toolsUsed,
 		ToolExecutions: toolExecs,
 	}, nil

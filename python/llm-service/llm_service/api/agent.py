@@ -346,23 +346,30 @@ def build_interpretation_messages(
     system_prompt: str,
     original_query: str,
     tool_results_summary: str,
-    interpretation_prompt: str = INTERPRETATION_PROMPT_GENERAL
+    interpretation_prompt: str = INTERPRETATION_PROMPT_GENERAL,
+    interpretation_system_prompt: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """
     Build clean messages for interpretation pass.
 
     P0 Fix: Instead of reusing entire messages history (which contains
     "I'll execute..." patterns), build fresh messages with only:
-    - System prompt
+    - System prompt (prefer interpretation-specific if available)
     - Original query
     - Aggregated tool results
     - Strong interpretation instruction
 
     Args:
-        interpretation_prompt: Custom prompt for specific roles (e.g., domain_discovery uses JSON-only prompt)
+        system_prompt: The tool-loop system prompt (fallback if no interpretation-specific prompt).
+        interpretation_prompt: Custom prompt for specific roles (e.g., domain_discovery uses JSON-only prompt).
+        interpretation_system_prompt: Separate system prompt for interpretation phase,
+            stripped of tool-loop instructions (OODA, tool usage patterns, coverage tracking).
+            When provided, this replaces system_prompt to prevent the LLM from
+            following tool-planning instructions during synthesis.
     """
+    effective_system = interpretation_system_prompt or system_prompt
     return [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": effective_system},
         {
             "role": "user",
             "content": (
@@ -636,6 +643,15 @@ def validate_interpretation_output(
 
     if is_continuation:
         return False, "continuation_pattern"
+
+    # OODA loop pattern detection: interpretation output should be synthesis, not planning.
+    # The OODA framework (Observe/Orient/Decide/Act) belongs to the tool loop phase.
+    # If interpretation outputs OODA sections, the system prompt contaminated the synthesis.
+    ooda_section_markers = ("## Observe", "## Orient", "## Decide", "## Act",
+                            "# Observe", "# Orient", "# Decide", "# Act")
+    ooda_section_count = sum(1 for marker in ooda_section_markers if marker in stripped)
+    if ooda_section_count >= 2:
+        return False, "ooda_pattern"
 
     # Source format: strict validation
     if expect_sources_format:
@@ -1892,6 +1908,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     else INTERPRETATION_PROMPT_GENERAL
                 )
                 role_preset_for_interp = None
+                interp_system_prompt = None
                 if role:
                     try:
                         from ..roles.presets import get_role_preset
@@ -1899,6 +1916,12 @@ async def agent_query(request: Request, query: AgentQuery):
                         custom_interp = role_preset_for_interp.get("interpretation_prompt")
                         if custom_interp:
                             interp_prompt = custom_interp
+                        # Use interpretation-specific system prompt if available.
+                        # This strips tool-loop instructions (OODA, tool patterns) that
+                        # can contaminate interpretation output with planning instead of synthesis.
+                        custom_sys = role_preset_for_interp.get("interpretation_system_prompt")
+                        if custom_sys:
+                            interp_system_prompt = custom_sys
                     except Exception:
                         pass
 
@@ -1915,7 +1938,8 @@ async def agent_query(request: Request, query: AgentQuery):
                     system_prompt=system_prompt,
                     original_query=query.query,
                     tool_results_summary=tool_results_summary,
-                    interpretation_prompt=interp_prompt + iteration_context
+                    interpretation_prompt=interp_prompt + iteration_context,
+                    interpretation_system_prompt=interp_system_prompt,
                 )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
@@ -2877,8 +2901,8 @@ async def generate_research_plan(
         "  investor relations pages, and product documentation\n"
         "- Run multiple research agents in parallel, with iterative gap-filling\n"
         "  for under-covered areas\n"
-        "- Produce a structured long-form report (2,000-8,000 words) with inline\n"
-        "  citations linked to source URLs\n\n"
+        "- Produce a structured long-form report with inline citations linked\n"
+        "  to source URLs\n\n"
         "Limitations:\n"
         "- No access to paywalled, login-required, or proprietary content\n"
         "- No real-time data feeds or live monitoring\n"
@@ -2935,7 +2959,11 @@ async def generate_research_plan(
         "- Never fabricate results or pretend to run research\n"
         "- If the user asks for something the system cannot do, say so honestly\n"
         "  and suggest what IS feasible\n"
-        "- Exactly ONE [INTENT:...] tag at the very end, on its own line\n\n"
+        "- Exactly ONE [INTENT:...] tag at the very end, on its own line\n"
+        "- Do NOT echo system capabilities back to the user: no word-count estimates,\n"
+        "  no data-source disclaimers ('publicly available', 'within accessible sources'),\n"
+        "  no caveats about what the system cannot access.\n"
+        "  Your job is to discuss WHAT to research — the system's HOW is not the user's concern.\n\n"
 
         "[RESEARCH_BRIEF] FORMAT\n"
         "Required ONLY when outputting [INTENT:ready].\n"
@@ -2990,7 +3018,7 @@ async def generate_research_plan(
         from ..providers.base import ModelTier
         result = await providers.generate_completion(
             messages=messages,
-            tier=ModelTier.MEDIUM,
+            tier=ModelTier.SMALL,
             max_tokens=2048,
             temperature=0.5,
         )
