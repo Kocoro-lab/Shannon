@@ -229,10 +229,9 @@ func (h *ReviewHandler) handleFeedback(
 		Message:   plan.Message,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
-	// Update CurrentPlan when LLM has produced an actionable research direction.
-	// intent=ready means "LLM proposed a plan direction", intent=execute means "user wants to proceed".
-	// intent=feedback means "LLM is still asking clarifying questions" — no plan to store yet.
-	if plan.Intent == "ready" || plan.Intent == "execute" || plan.Intent == "" {
+	// Update CurrentPlan only when LLM proposes an actionable research direction (ready).
+	// feedback = still asking questions (no plan yet), execute = short confirmation (not a plan).
+	if plan.Intent == "ready" {
 		state.CurrentPlan = plan.Message
 	}
 	state.Round++
@@ -251,10 +250,10 @@ func (h *ReviewHandler) handleFeedback(
 	if intent == "" {
 		intent = "feedback"
 	}
-	// Force approve on final round — LLM should have outputted approve,
-	// but we enforce it regardless to guarantee the conversation closes.
-	if isFinalRound {
-		intent = "execute"
+	// Force ready on final round — LLM should output a definitive direction,
+	// but we enforce it regardless. User still needs to click Approve.
+	if isFinalRound && intent == "feedback" {
+		intent = "ready"
 	}
 
 	// Publish review events to Redis stream so they're captured by SSE and persisted.
