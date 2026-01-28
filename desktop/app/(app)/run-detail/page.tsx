@@ -459,6 +459,10 @@ function RunDetailContent() {
 
                     const isCurrentlyRunning = workflowId === lastRunningWorkflowId;
 
+                    // Check for HITL review events in this turn
+                    const planReadyEvent = turn.events.find((e: any) => e.type === "RESEARCH_PLAN_READY");
+                    const planApprovedEvent = turn.events.find((e: any) => e.type === "RESEARCH_PLAN_APPROVED");
+
                     // User message
                     dispatch(addMessage({
                         id: `user-${turn.task_id}`,
@@ -469,9 +473,45 @@ function RunDetailContent() {
                     }));
                     console.log(`[RunDetail] Added user message for turn ${turnIndex + 1}`);
 
-                    // For running tasks, show generating indicator instead of intermediate messages
+                    // Add research plan message (from RESEARCH_PLAN_READY event) AFTER user message
+                    // This ensures correct ordering: user query → research plan
+                    if (planReadyEvent) {
+                        const planMessage = (planReadyEvent as any).message;
+                        if (planMessage) {
+                            dispatch(addMessage({
+                                id: `research-plan-${workflowId}-hist`,
+                                role: "assistant",
+                                content: planMessage,
+                                timestamp: new Date((planReadyEvent as any).timestamp || turn.timestamp).toLocaleTimeString(),
+                                taskId: workflowId,
+                                isResearchPlan: true,
+                                planRound: 1,
+                            }));
+                            console.log(`[RunDetail] Added research plan message for turn ${turnIndex + 1}`);
+                        }
+                    }
+
+                    // Add plan approval message if approved
+                    if (planApprovedEvent) {
+                        dispatch(addMessage({
+                            id: `plan-approved-${workflowId}-hist`,
+                            role: "system",
+                            content: "Plan approved. Research started.",
+                            timestamp: new Date((planApprovedEvent as any).timestamp || turn.timestamp).toLocaleTimeString(),
+                            taskId: workflowId,
+                        }));
+                        console.log(`[RunDetail] Added plan approval message for turn ${turnIndex + 1}`);
+                    }
+
+                    // For running tasks, handle review mode vs normal mode
                     if (isCurrentlyRunning) {
-                        console.log("[RunDetail] Task is running - adding generating placeholder instead of intermediate messages");
+                        // If task is in review mode (plan ready but not approved), don't add generating placeholder
+                        if (planReadyEvent && !planApprovedEvent) {
+                            console.log("[RunDetail] Task is in review mode - plan shown, no generating placeholder");
+                            return; // Plan message already added above
+                        }
+                        // Normal running task or approved plan waiting for execution
+                        console.log("[RunDetail] Task is running - adding generating placeholder");
                         dispatch(addMessage({
                             id: `generating-${workflowId}`,
                             role: "assistant",

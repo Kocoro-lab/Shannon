@@ -674,6 +674,13 @@ const runSlice = createSlice({
                 state.reviewIntent = null;
                 console.log("[Redux] Research plan ready - entering review mode for workflow:", event.workflow_id);
 
+                // For historical events, only set state — messages are loaded from turn data in page.tsx
+                // This prevents plan appearing before user query (events dispatch before turns load)
+                if (isHistorical) {
+                    console.log("[Redux] Historical RESEARCH_PLAN_READY - setting state only, skipping message");
+                    return;
+                }
+
                 // Remove generating placeholder
                 state.messages = state.messages.filter((m: any) =>
                     !(m.isGenerating && m.taskId === event.workflow_id)
@@ -696,6 +703,12 @@ const runSlice = createSlice({
                 state.reviewStatus = "approved";
                 state.reviewIntent = null;
                 console.log("[Redux] Research plan approved for workflow:", event.workflow_id);
+
+                // For historical events, only set state — messages are loaded from turn data in page.tsx
+                if (isHistorical) {
+                    console.log("[Redux] Historical RESEARCH_PLAN_APPROVED - setting state only");
+                    return;
+                }
 
                 // Add approval confirmation message
                 state.messages.push({
