@@ -502,7 +502,7 @@ export interface ReviewFeedbackResponse {
         message: string;
         round: number;
         version: number;
-        intent: "feedback" | "approve";
+        intent: "feedback" | "ready" | "execute";
     };
 }
 

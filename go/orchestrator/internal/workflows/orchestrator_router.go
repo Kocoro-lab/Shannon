@@ -20,6 +20,11 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
+const (
+	// DefaultReviewTimeout is how long the workflow waits for human review before timing out.
+	DefaultReviewTimeout = 15 * time.Minute
+)
+
 // OrchestratorWorkflow is a thin entrypoint that routes to specialized workflows.
 // It performs a single decomposition step, decides the strategy, then delegates
 // to an appropriate child workflow. It does not execute agents directly.
@@ -224,7 +229,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		if GetContextBool(input.Context, "require_review") {
 			logger.Info("HITL review enabled - generating research plan")
 
-			reviewTimeout := 60 * time.Minute
+			reviewTimeout := DefaultReviewTimeout
 			if t, ok := input.Context["review_timeout"]; ok {
 				if tFloat, fOk := t.(float64); fOk && tFloat > 0 {
 					reviewTimeout = time.Duration(int(tFloat)) * time.Second
@@ -263,7 +268,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			// 3) Wait for user approval Signal or timeout
 			sigName := "research-plan-approved-" + workflow.GetInfo(ctx).WorkflowExecution.ID
 			ch := workflow.GetSignalChannel(ctx, sigName)
-			timer := workflow.NewTimer(ctx, reviewTimeout)
+			timerCtx, cancelTimer := workflow.WithCancel(ctx)
+			timer := workflow.NewTimer(timerCtx, reviewTimeout)
 
 			var reviewResult activities.ResearchReviewResult
 			var timedOut bool
@@ -271,6 +277,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			sel := workflow.NewSelector(ctx)
 			sel.AddReceive(ch, func(c workflow.ReceiveChannel, more bool) {
 				c.Receive(ctx, &reviewResult)
+				cancelTimer() // Cancel the timer so it doesn't linger in Temporal UI
 			})
 			sel.AddFuture(timer, func(f workflow.Future) {
 				timedOut = true
@@ -289,9 +296,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				return TaskResult{Success: false, ErrorMessage: "research plan review timed out"}, nil
 			}
 
-			// 4) Inject confirmed plan into context
+			// 4) Inject confirmed plan and research brief into context
 			input.Context["confirmed_plan"] = reviewResult.FinalPlan
 			input.Context["review_conversation"] = reviewResult.Conversation
+			if reviewResult.ResearchBrief != "" {
+				input.Context["research_brief"] = reviewResult.ResearchBrief
+			}
 
 			// 5) Emit SSE: plan approved
 			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{

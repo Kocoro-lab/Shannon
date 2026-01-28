@@ -25,7 +25,7 @@ interface RunState {
     reviewStatus: "none" | "reviewing" | "approved";
     reviewWorkflowId: string | null;
     reviewVersion: number;
-    reviewIntent: "feedback" | "approve" | null;
+    reviewIntent: "feedback" | "ready" | "execute" | null;
 }
 
 const initialState: RunState = {

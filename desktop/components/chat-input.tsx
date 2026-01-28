@@ -37,10 +37,11 @@ interface ChatInputProps {
     reviewStatus?: "none" | "reviewing" | "approved";
     reviewWorkflowId?: string | null;
     reviewVersion?: number;
-    reviewIntent?: "feedback" | "approve" | null;
+    reviewIntent?: "feedback" | "ready" | "execute" | null;
     onReviewPlanChange?: (mode: ReviewPlanMode) => void;
     onReviewSending?: (userMessage: string) => void;
-    onReviewFeedback?: (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => void;
+    onReviewFeedback?: (version: number, intent: "feedback" | "ready" | "execute", planMessage: string, round: number, userMessage: string) => void;
+    onReviewError?: () => void;
     onApprove?: () => void;
 }
 
@@ -68,6 +69,7 @@ export function ChatInput({
     onReviewPlanChange,
     onReviewSending,
     onReviewFeedback,
+    onReviewError,
     onApprove,
 }: ChatInputProps) {
     const [query, setQuery] = useState("");
@@ -105,9 +107,20 @@ export function ChatInput({
                 setQuery("");
                 // Immediately show user message + loading animation
                 onReviewSending?.(feedbackText);
-                const result = await submitReviewFeedback(reviewWorkflowId, feedbackText, reviewVersion);
-                if (onReviewFeedback && result.plan) {
-                    onReviewFeedback(result.plan.version, result.plan.intent, result.plan.message, result.plan.round, feedbackText);
+                try {
+                    const result = await submitReviewFeedback(reviewWorkflowId, feedbackText, reviewVersion);
+                    if (onReviewFeedback && result.plan) {
+                        onReviewFeedback(result.plan.version, result.plan.intent, result.plan.message, result.plan.round, feedbackText);
+                    }
+                } catch (feedbackErr) {
+                    // Clean up temporary messages on error
+                    onReviewError?.();
+                    const msg = feedbackErr instanceof Error ? feedbackErr.message : "Failed to submit feedback";
+                    if (msg.includes("Maximum review rounds")) {
+                        setError("已达到最大对话轮次，请直接批准计划。");
+                    } else {
+                        setError(msg);
+                    }
                 }
                 return;
             }
@@ -360,11 +373,11 @@ export function ChatInput({
                 </div>
             )}
 
-            {/* Review mode: Approve & Run bar — only shown when LLM detects approve intent */}
-            {isReviewing && reviewIntent === "approve" && (
-                <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-violet-50 dark:bg-violet-950 border-violet-300 dark:border-violet-700 animate-pulse">
+            {/* Review mode: Approve & Run bar — shown when LLM has produced an actionable plan (intent=approve) */}
+            {isReviewing && reviewIntent === "ready" && (
+                <div className="flex items-center justify-between px-3 py-2 rounded-lg border bg-violet-50 dark:bg-violet-950 border-violet-300 dark:border-violet-700">
                     <span className="text-sm text-violet-700 dark:text-violet-300">
-                        Ready to run? Click to start execution.
+                        Ready? Approve to start research execution.
                     </span>
                     <Button
                         type="button"

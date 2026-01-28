@@ -454,6 +454,7 @@ function RunDetailContent() {
 
                 console.log("[RunDetail] Loading", eventsData.turns.length, "turns into messages");
                 let reviewModeVersion: number | null = null;
+                let reviewModeIntent: "feedback" | "ready" | "execute" | null = null;
                 eventsData.turns.forEach((turn, turnIndex) => {
                     const workflowId = turn.events.length > 0 ? turn.events[0].workflow_id : turn.task_id;
                     console.log(`[RunDetail] Processing turn ${turnIndex + 1}/${eventsData.turns.length}, task_id: ${turn.task_id}, workflow_id: ${workflowId}`);
@@ -553,6 +554,12 @@ function RunDetailContent() {
                                         ? JSON.parse((lastPlanEvent as any).payload)
                                         : (lastPlanEvent as any).payload;
                                     if (pl?.version != null) reviewModeVersion = pl.version;
+                                    if (pl?.intent) {
+                                        // Map legacy "approve" to "ready", and "execute" to "ready" on reload
+                                        // (if execute wasn't handled before reload, show button as fallback)
+                                        const rawIntent = pl.intent as string;
+                                        reviewModeIntent = rawIntent === "approve" || rawIntent === "execute" ? "ready" : rawIntent as any;
+                                    }
                                 } catch { /* ignore parse errors */ }
                             }
                             return; // Feedback rounds already loaded from stream events above
@@ -664,6 +671,10 @@ function RunDetailContent() {
                 if (reviewModeVersion != null) {
                     dispatch(setReviewVersion(reviewModeVersion));
                     console.log("[RunDetail] Synced review version from events:", reviewModeVersion);
+                }
+                if (reviewModeIntent != null) {
+                    dispatch(setReviewIntent(reviewModeIntent));
+                    console.log("[RunDetail] Synced review intent from events:", reviewModeIntent);
                 }
 
                 hasLoadedMessagesRef.current = true;
@@ -1213,7 +1224,7 @@ function RunDetailContent() {
     };
 
     // Called after API returns with the updated plan.
-    const handleReviewFeedback = async (version: number, intent: "feedback" | "approve", planMessage: string, round: number, userMessage: string) => {
+    const handleReviewFeedback = async (version: number, intent: "feedback" | "ready" | "execute", planMessage: string, round: number, userMessage: string) => {
         dispatch(setReviewVersion(version));
         dispatch(setReviewIntent(intent));
 
@@ -1241,16 +1252,26 @@ function RunDetailContent() {
             planRound: round,
         }));
 
-        // Auto-approve when LLM detects approve intent
-        if (intent === "approve" && reviewWorkflowId) {
+        // intent=ready: LLM proposed a plan direction → Approve button appears, user clicks to confirm.
+        // intent=execute: user said "do it" → auto-approve immediately.
+        if (intent === "execute" && reviewWorkflowId) {
             try {
                 await approveReviewPlan(reviewWorkflowId);
-                handleReviewApprove();
+                dispatch(setReviewStatus("approved"));
+                dispatch(setReviewIntent(null));
             } catch (err) {
                 console.error("[RunDetail] Auto-approve failed:", err);
-                // Keep the Approve & Run button visible as fallback
+                // Fallback: show the Approve button so user can click manually
+                dispatch(setReviewIntent("ready"));
             }
         }
+    };
+
+    // Called when review feedback API fails (e.g. 409 max rounds reached).
+    // Removes temporary messages so the UI doesn't show stale placeholders.
+    const handleReviewError = () => {
+        dispatch(removeMessage(`review-feedback-${reviewWorkflowId}-pending`));
+        dispatch(removeMessage(`review-generating-${reviewWorkflowId}`));
     };
 
     const handleReviewApprove = () => {
@@ -1745,6 +1766,7 @@ function RunDetailContent() {
                                             onReviewPlanChange={handleReviewPlanChange}
                                             onReviewSending={handleReviewSending}
                                             onReviewFeedback={handleReviewFeedback}
+                                            onReviewError={handleReviewError}
                                             onApprove={handleReviewApprove}
                                         />
                                     </div>
@@ -1775,6 +1797,7 @@ function RunDetailContent() {
                                     onReviewPlanChange={handleReviewPlanChange}
                                     onReviewSending={handleReviewSending}
                                     onReviewFeedback={handleReviewFeedback}
+                                    onReviewError={handleReviewError}
                                     onApprove={handleReviewApprove}
                                 />
                             )}

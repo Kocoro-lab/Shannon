@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -17,6 +19,11 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 )
+
+// MaxReviewRounds is the maximum number of review conversation rounds allowed.
+// At the final round, the LLM is instructed to produce a definitive plan.
+// Beyond this limit, further feedback is rejected (user must approve).
+const MaxReviewRounds = 10
 
 // ReviewHandler handles HITL research plan review requests.
 type ReviewHandler struct {
@@ -63,6 +70,7 @@ type reviewState struct {
 	OwnerTenantID string                 `json:"owner_tenant_id"`
 	Rounds        []reviewRound          `json:"rounds"`
 	CurrentPlan   string                 `json:"current_plan"`
+	ResearchBrief string                 `json:"research_brief,omitempty"`
 }
 
 // llmResearchPlanRequest is the request to the LLM service.
@@ -70,6 +78,7 @@ type llmResearchPlanRequest struct {
 	Query        string                 `json:"query"`
 	Context      map[string]interface{} `json:"context"`
 	Conversation []reviewRound          `json:"conversation"`
+	IsFinalRound bool                   `json:"is_final_round,omitempty"`
 }
 
 // llmResearchPlanResponse is the response from the LLM service.
@@ -161,6 +170,14 @@ func (h *ReviewHandler) handleFeedback(
 		return
 	}
 
+	// Round limit check: reject feedback beyond MaxReviewRounds
+	nextRound := state.Round + 1
+	if nextRound > MaxReviewRounds {
+		h.sendError(w, "Maximum review rounds reached. Please approve the plan.", http.StatusConflict)
+		return
+	}
+	isFinalRound := nextRound >= MaxReviewRounds
+
 	// Append user message
 	state.Rounds = append(state.Rounds, reviewRound{
 		Role:      "user",
@@ -172,7 +189,7 @@ func (h *ReviewHandler) handleFeedback(
 	// Use a detached context so client disconnects don't cancel the LLM call.
 	llmCtx, llmCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer llmCancel()
-	plan, err := h.callResearchPlan(llmCtx, state.Query, state.Context, state.Rounds)
+	plan, err := h.callResearchPlan(llmCtx, state.Query, state.Context, state.Rounds, isFinalRound)
 	if err != nil {
 		h.logger.Error("Failed to generate research plan", zap.Error(err))
 		// Remove the user message we appended (don't persist bad state)
@@ -198,15 +215,24 @@ func (h *ReviewHandler) handleFeedback(
 		}
 	}()
 
-	// Append assistant response
+	// Parse and strip [RESEARCH_BRIEF] block from LLM response (machine-consumed metadata).
+	// Same pattern as [INTENT:...] — parsed by gateway, stripped from user-visible message.
+	briefRegex := regexp.MustCompile(`(?s)\[RESEARCH_BRIEF\]\n?(.*?)\n?\[/RESEARCH_BRIEF\]`)
+	if match := briefRegex.FindStringSubmatch(plan.Message); len(match) > 1 {
+		state.ResearchBrief = strings.TrimSpace(match[1])
+		plan.Message = strings.TrimSpace(briefRegex.ReplaceAllString(plan.Message, ""))
+	}
+
+	// Append assistant response (with [RESEARCH_BRIEF] already stripped)
 	state.Rounds = append(state.Rounds, reviewRound{
 		Role:      "assistant",
 		Message:   plan.Message,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
-	// Only update CurrentPlan when it contains actual research direction,
-	// not when LLM outputs a short approval confirmation (which has no value for decompose).
-	if plan.Intent != "approve" {
+	// Update CurrentPlan when LLM has produced an actionable research direction.
+	// intent=ready means "LLM proposed a plan direction", intent=execute means "user wants to proceed".
+	// intent=feedback means "LLM is still asking clarifying questions" — no plan to store yet.
+	if plan.Intent == "ready" || plan.Intent == "execute" || plan.Intent == "" {
 		state.CurrentPlan = plan.Message
 	}
 	state.Round++
@@ -216,7 +242,7 @@ func (h *ReviewHandler) handleFeedback(
 	stateBytes, _ := json.Marshal(state)
 	ttl, err := h.redis.TTL(ctx, key).Result()
 	if err != nil || ttl <= 0 {
-		ttl = 60 * time.Minute // fallback
+		ttl = 20 * time.Minute // fallback (15min review + 5min buffer)
 	}
 	h.redis.Set(ctx, key, stateBytes, ttl)
 
@@ -224,6 +250,11 @@ func (h *ReviewHandler) handleFeedback(
 	intent := plan.Intent
 	if intent == "" {
 		intent = "feedback"
+	}
+	// Force approve on final round — LLM should have outputted approve,
+	// but we enforce it regardless to guarantee the conversation closes.
+	if isFinalRound {
+		intent = "execute"
 	}
 
 	// Publish review events to Redis stream so they're captured by SSE and persisted.
@@ -257,11 +288,12 @@ func (h *ReviewHandler) handleApprove(
 	// Send via dedicated gRPC (Gateway → Orchestrator → Temporal Signal)
 	grpcCtx := withGRPCMetadata(ctx, r)
 	_, err := h.orchClient.SubmitReviewDecision(grpcCtx, &orchpb.SubmitReviewDecisionRequest{
-		WorkflowId:   workflowID,
-		Approved:     true,
-		FinalPlan:    state.CurrentPlan,
-		Conversation: string(convBytes),
-		ApprovedBy:   userCtx.UserID.String(),
+		WorkflowId:    workflowID,
+		Approved:      true,
+		FinalPlan:     state.CurrentPlan,
+		Conversation:  string(convBytes),
+		ApprovedBy:    userCtx.UserID.String(),
+		ResearchBrief: state.ResearchBrief,
 	})
 	if err != nil {
 		h.logger.Error("Failed to submit review decision", zap.Error(err))
@@ -292,6 +324,7 @@ func (h *ReviewHandler) callResearchPlan(
 	query string,
 	taskCtx map[string]interface{},
 	rounds []reviewRound,
+	isFinalRound bool,
 ) (*llmResearchPlanResponse, error) {
 	base := os.Getenv("LLM_SERVICE_URL")
 	if base == "" {
@@ -303,6 +336,7 @@ func (h *ReviewHandler) callResearchPlan(
 		Query:        query,
 		Context:      taskCtx,
 		Conversation: rounds,
+		IsFinalRound: isFinalRound,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

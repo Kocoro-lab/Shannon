@@ -2838,12 +2838,16 @@ class ResearchPlanRequest(BaseModel):
         default_factory=list,
         description="Previous conversation rounds for multi-turn refinement"
     )
+    is_final_round: bool = Field(
+        default=False,
+        description="Whether this is the final allowed round (LLM must finalize the plan)"
+    )
 
 
 class ResearchPlanResponse(BaseModel):
     """Response with the generated research plan."""
     message: str = Field(..., description="Human-friendly research plan text")
-    intent: str = Field(default="feedback", description="LLM-detected user intent: 'feedback' or 'approve'")
+    intent: str = Field(default="feedback", description="LLM intent: 'feedback' (asking Qs), 'ready' (plan proposed), or 'execute' (user wants to proceed)")
     round: int = Field(default=1, description="Conversation round number")
     model: str = Field(default="", description="Model used for generation")
     provider: str = Field(default="", description="Provider used")
@@ -2913,14 +2917,47 @@ async def generate_research_plan(
             "3. Reflect the user's stated priorities — more depth on their focus areas, "
             "less on areas they didn't mention or already know about.\n"
             "4. NEVER generate fake execution content or pretend to run research.\n\n"
+            "STRUCTURED BRIEF (required when you propose or update a research direction):\n"
+            "At the END of your response (before the INTENT tag), output a machine-readable brief:\n\n"
+            "[RESEARCH_BRIEF]\n"
+            "purpose: <why the user needs this research, e.g. interview_prep|investment|competitive_analysis|learning>\n"
+            "priority_focus: <comma-separated areas to allocate most subtasks to>\n"
+            "secondary_focus: <comma-separated areas to cover briefly>\n"
+            "skip: <comma-separated topics user already knows or doesn't care about>\n"
+            "knowledge_level: <beginner|intermediate|expert>\n"
+            "[/RESEARCH_BRIEF]\n\n"
+            "RULES for [RESEARCH_BRIEF]:\n"
+            "- The conversational text above it is shown to the user — keep it natural and concise\n"
+            "- The [RESEARCH_BRIEF] block is machine-consumed and stripped before display — keep values short and precise\n"
+            "- Extract intent from the user's actual words, do not invent constraints they didn't mention\n"
+            "- If you cannot determine a field, omit it (the system has safe defaults)\n"
+            "- Output [RESEARCH_BRIEF] when intent=ready (proposing direction). "
+            "Do NOT output [RESEARCH_BRIEF] when intent=execute or intent=feedback.\n\n"
             "INTENT TAG (required at the very end of your response, on its own line):\n"
-            "[INTENT:feedback] — the user is providing feedback, refining, or asking questions\n"
-            "[INTENT:approve] — the user wants to proceed/execute/approve the plan "
-            "(e.g. '可以了', '执行', 'go ahead', 'looks good', 'approve', 'start', 'do it', 'lgtm', "
-            "'proceed', 'run it', '开始', '没问题', 'yes')\n"
-            "Only output [INTENT:approve] when the user UNAMBIGUOUSLY wants to start execution. "
-            "If there is ANY refinement or 'but...' in the message, output [INTENT:feedback]."
+            "[INTENT:feedback] — you are still asking clarifying questions or the conversation "
+            "has not yet produced an actionable research direction\n"
+            "[INTENT:ready] — you have just presented a concrete, actionable research direction "
+            "that the user could approve and execute. This means you have enough information to "
+            "describe WHAT to research and WHY, with clear focus areas.\n"
+            "[INTENT:execute] — the user has explicitly asked to proceed, approve, or execute "
+            "(e.g. 'do it', 'go ahead', 'let\\'s go', 'approve', 'proceed', 'start', 'lgtm', "
+            "'looks good', 'yes', '可以了', '执行', '开始', '没问题', "
+            "'実行して', '始めて', '실행해', '좋아요'). "
+            "Respond with a SHORT confirmation (1-2 sentences) and output [INTENT:execute].\n"
+            "Output [INTENT:ready] whenever your response contains a research direction proposal "
+            "(even if you also invite further feedback). "
+            "Output [INTENT:feedback] only when you are purely asking questions without proposing any direction. "
+            "Output [INTENT:execute] only when the user explicitly requested execution/approval."
         )
+        # Final round: instruct LLM to produce a definitive plan
+        if body.is_final_round:
+            system_prompt += (
+                "\n\nIMPORTANT — FINAL ROUND: This is the last round of discussion. "
+                "You MUST provide a clear, definitive research plan based on everything discussed so far. "
+                "Do NOT ask any more questions. Summarize the agreed direction and confirm readiness. "
+                "You MUST output [INTENT:execute] at the end."
+            )
+
         messages = [{"role": "system", "content": system_prompt}]
         for turn in body.conversation:
             messages.append({
@@ -2945,11 +2982,11 @@ async def generate_research_plan(
         import re
         detected_intent = "feedback"
         if body.conversation:
-            intent_match = re.search(r"\[INTENT:(feedback|approve)\]", plan_text)
+            intent_match = re.search(r"\[INTENT:(feedback|ready|execute)\]", plan_text)
             if intent_match:
                 detected_intent = intent_match.group(1)
                 # Strip the intent tag from the displayed message
-                plan_text = re.sub(r"\s*\[INTENT:(?:feedback|approve)\]\s*$", "", plan_text).strip()
+                plan_text = re.sub(r"\s*\[INTENT:(?:feedback|ready|execute)\]\s*$", "", plan_text).strip()
 
         return ResearchPlanResponse(
             message=plan_text,
@@ -3440,6 +3477,28 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     )
                     decompose_system_prompt = decompose_system_prompt + areas_hint
 
+        # Dynamic HITL hint: only appended when a confirmed_plan exists from review.
+        # When review is OFF, this section is skipped — zero impact on non-review flows.
+        if query.context and query.context.get("confirmed_plan"):
+            hitl_hint = (
+                "\n\nUSER REVIEW CONTEXT (HITL):\n"
+                "A research brief from an interactive review session is provided below.\n"
+                "You MUST use it to guide subtask allocation:\n\n"
+                "1. ALLOCATE subtasks proportionally:\n"
+                "   - priority_focus areas → 2-3 subtasks each, higher search_budget (max_queries: 15)\n"
+                "   - secondary_focus areas → 1 subtask each, standard search_budget\n"
+                "   - skip areas → NO subtask, or fold into another as a minor point\n"
+                "2. ENCODE purpose into subtask descriptions:\n"
+                "   - Include contextual framing: '(for interview preparation)' or '(for investment analysis)'\n"
+                "   - This helps the executing agent choose appropriate depth/perspective\n"
+                "3. SET boundaries.out_of_scope to include skip topics\n"
+                "4. ADJUST depth by knowledge_level:\n"
+                "   - beginner → include foundational/introductory subtask\n"
+                "   - intermediate → skip basics, focus on analysis\n"
+                "   - expert → deep-dive only, assume domain knowledge\n"
+            )
+            decompose_system_prompt += hitl_hint
+
         # Inject current date for time awareness in decomposition
         current_date = None
         if query.context and isinstance(query.context, dict):
@@ -3481,32 +3540,38 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         )
         messages.append({"role": "user", "content": user})
 
-        # HITL: inject confirmed plan and review conversation if present
+        # HITL: inject confirmed plan and structured research brief if present
         if query.context and query.context.get("confirmed_plan"):
             confirmed_plan = query.context["confirmed_plan"]
-            # Build context from review conversation (user intent, priorities, existing knowledge)
-            review_context = ""
-            review_conv = query.context.get("review_conversation")
-            if review_conv:
-                conv_list = review_conv if isinstance(review_conv, list) else []
-                if isinstance(review_conv, str):
-                    try:
-                        import json as _json
-                        conv_list = _json.loads(review_conv)
-                    except Exception:
-                        conv_list = []
-                user_messages = [r["message"] for r in conv_list if r.get("role") == "user"]
-                if user_messages:
-                    review_context = "\n\nUser clarifications during review:\n" + "\n".join(
-                        f"- {msg}" for msg in user_messages
-                    )
+            research_brief = query.context.get("research_brief", "")
+
+            # Build the brief section: prefer structured brief, fall back to raw conversation
+            brief_section = f"Research Direction:\n{confirmed_plan}"
+            if research_brief:
+                brief_section += f"\n\nStructured Brief:\n{research_brief}"
+            else:
+                # Fallback: extract user messages from raw conversation
+                review_conv = query.context.get("review_conversation")
+                if review_conv:
+                    conv_list = review_conv if isinstance(review_conv, list) else []
+                    if isinstance(review_conv, str):
+                        try:
+                            import json as _json
+                            conv_list = _json.loads(review_conv)
+                        except Exception:
+                            conv_list = []
+                    user_messages = [r["message"] for r in conv_list if r.get("role") == "user"]
+                    if user_messages:
+                        brief_section += "\n\nUser clarifications during review:\n" + "\n".join(
+                            f"- {msg}" for msg in user_messages
+                        )
+
             messages.append({
                 "role": "user",
                 "content": (
-                    f"User-approved research direction:\n{confirmed_plan}"
-                    f"{review_context}\n\n"
-                    "Decompose the task following this approved direction. "
-                    "Prioritize subtasks toward the user's stated focus areas."
+                    f"USER REVIEW BRIEF:\n{brief_section}\n\n"
+                    "Decompose following this brief. "
+                    "Prioritize subtasks toward priority_focus areas."
                 )
             })
 

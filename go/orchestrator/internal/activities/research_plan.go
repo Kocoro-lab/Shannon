@@ -132,7 +132,7 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 		} else {
 			ttl := in.TTL
 			if ttl == 0 {
-				ttl = 65 * time.Minute // default 1h + 5min buffer
+				ttl = 20 * time.Minute // default 15min + 5min buffer
 			} else {
 				ttl += 5 * time.Minute // add buffer
 			}
