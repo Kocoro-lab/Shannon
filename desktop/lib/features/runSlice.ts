@@ -36,7 +36,7 @@ const initialState: RunState = {
     streamError: null,
     sessionTitle: null,
     selectedAgent: "normal",
-    researchStrategy: "quick",
+    researchStrategy: "standard",
     mainWorkflowId: null,
     // Pause/Resume/Cancel control state
     isPaused: false,

@@ -14,6 +14,7 @@ const rootReducer = combineReducers({
 const persistConfig = {
     key: 'root',
     storage,
+    blacklist: ['run'], // Don't persist run state — reviewPlan should reset to "auto" on each launch
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);

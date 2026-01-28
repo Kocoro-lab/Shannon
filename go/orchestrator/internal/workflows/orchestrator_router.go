@@ -285,12 +285,21 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			sel.Select(ctx)
 
 			if timedOut {
-				logger.Warn("HITL review timed out", "workflow_id", workflow.GetInfo(ctx).WorkflowExecution.ID)
+				wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+				logger.Warn("HITL review timed out", "workflow_id", wfID)
 				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-					WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+					WorkflowID: wfID,
 					EventType:  activities.StreamEventErrorOccurred,
 					AgentID:    "planner",
 					Message:    "Research plan review timed out",
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+				// Emit WORKFLOW_COMPLETED so frontend/SSE can transition out of "running"
+				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+					WorkflowID: wfID,
+					EventType:  activities.StreamEventWorkflowCompleted,
+					AgentID:    "orchestrator",
+					Message:    activities.MsgWorkflowCompleted(),
 					Timestamp:  workflow.Now(ctx),
 				}).Get(ctx, nil)
 				return TaskResult{Success: false, ErrorMessage: "research plan review timed out"}, nil
