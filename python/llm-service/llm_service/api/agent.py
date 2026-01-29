@@ -3262,7 +3262,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # Research supervisor identity (for deep research workflows)
         # Defined in roles/deep_research/research_supervisor.py
-        from ..roles.deep_research import RESEARCH_SUPERVISOR_IDENTITY
+        from ..roles.deep_research import RESEARCH_SUPERVISOR_IDENTITY, DOMAIN_ANALYSIS_HINT
 
         # ================================================================
         # PRIORITY-BASED PROMPT SELECTION (IDENTITY + COMMON_SUFFIX)
@@ -3321,44 +3321,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         else:
             query_type = None
         if isinstance(query_type, str) and query_type.strip().lower() == "company":
-            domain_analysis_hint = (
-                "\n\n# FIRST DECISION: Domain Analysis (task-1)\n"
-                "Before planning other tasks, decide: does this query need official company sources?\n\n"
-                "## Include domain_analysis when:\n"
-                "- Research needs official sources (IR, product docs, leadership, careers)\n"
-                "- No specific URLs provided by user\n"
-                "- Authoritative primary sources would strengthen the research\n\n"
-                "## Skip domain_analysis when:\n"
-                "- User provides specific URLs to analyze\n"
-                "- Query focuses on external perspectives (news, reviews, public perception)\n"
-                "- Comparing 5+ companies (web_search more efficient)\n\n"
-                "## If included:\n"
-                "Write a description that tells the system WHAT to look for, derived from the user's query.\n\n"
-                "GOOD descriptions (specific, query-driven):\n"
-                "- \"Find TSMC's official IR pages focusing on 3nm capacity and Arizona fab timeline\"\n"
-                "- \"Discover Stripe's developer docs and API pricing pages\"\n"
-                "- \"Locate Tesla's investor relations for Q3 2024 delivery numbers\"\n\n"
-                "BAD descriptions (generic, template-like):\n"
-                "- \"Discover official domains for Company X\" (too vague)\n"
-                "- \"Find company website\" (no research focus)\n\n"
-                "## Structure:\n"
-                "```json\n"
-                "{\"id\": \"task-1\", \"task_type\": \"domain_analysis\",\n"
-                " \"description\": \"<specific focus derived from query>\",\n"
-                " \"dependencies\": [], \"estimated_tokens\": 400,\n"
-                " \"suggested_tools\": [], \"tool_parameters\": {}}\n"
-                "```\n"
-                "Note: Other contract fields (source_guidance, etc.) are ignored for domain_analysis.\n\n"
-                "## Impact on other tasks:\n"
-                "When domain_analysis IS included:\n"
-                "- Domain_analysis already covers official sources, so other tasks should prioritize exploratory discovery\n"
-                "- Focus on external perspectives: news, aggregator, reviews, analyst reports, community discussions\n"
-                "- Seek information that official sources typically don't provide\n\n"
-                "When domain_analysis is SKIPPED:\n"
-                "- Other tasks should include official sources in their research\n"
-                "- Balance official sources with external perspectives\n"
-            )
-            decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
+            decompose_system_prompt = decompose_system_prompt + DOMAIN_ANALYSIS_HINT
 
         # If tools are available, add a generic tool-aware hint
         if available_tools:
