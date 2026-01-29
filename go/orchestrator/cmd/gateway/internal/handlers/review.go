@@ -252,7 +252,11 @@ func (h *ReviewHandler) handleFeedback(
 	if err != nil || ttl <= 0 {
 		ttl = 20 * time.Minute // fallback (15min review + 5min buffer)
 	}
-	h.redis.Set(ctx, key, stateBytes, ttl)
+	if err := h.redis.Set(ctx, key, stateBytes, ttl).Err(); err != nil {
+		h.logger.Error("Failed to save review state to Redis", zap.Error(err), zap.String("workflow_id", workflowID))
+		h.sendError(w, "Failed to save review state", http.StatusInternalServerError)
+		return
+	}
 
 	// Determine intent (default to "feedback" if LLM didn't provide one)
 	intent := plan.Intent

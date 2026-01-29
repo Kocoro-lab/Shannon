@@ -117,8 +117,9 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 	}
 
 	// Strip [INTENT:...] tag (already parsed above, not for display)
-	intentTagRegex := regexp.MustCompile(`\n?\[INTENT:\w+\]\s*$`)
-	displayMessage = strings.TrimSpace(intentTagRegex.ReplaceAllString(displayMessage, ""))
+	// Non-anchored to match tag anywhere in string (LLM may place it mid-response)
+	intentTagRegex := regexp.MustCompile(`\s*\[INTENT:\w+\]\s*`)
+	displayMessage = strings.TrimSpace(intentTagRegex.ReplaceAllString(displayMessage, " "))
 
 	if researchBrief != "" {
 		logger.Info("Extracted research brief from Round 1 plan",
