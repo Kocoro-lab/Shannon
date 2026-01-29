@@ -163,24 +163,24 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 
 		stateBytes, err := json.Marshal(state)
 		if err != nil {
-			logger.Warn("Failed to marshal review state", zap.Error(err))
-		} else {
-			ttl := in.TTL
-			if ttl == 0 {
-				ttl = 20 * time.Minute // default 15min + 5min buffer
-			} else {
-				ttl += 5 * time.Minute // add buffer
-			}
-			key := fmt.Sprintf("review:%s", in.WorkflowID)
-			if err := rdb.Set(ctx, key, stateBytes, ttl).Err(); err != nil {
-				logger.Warn("Failed to initialize review Redis state", zap.Error(err), zap.String("key", key))
-			} else {
-				logger.Info("Initialized HITL review state in Redis",
-					zap.String("workflow_id", in.WorkflowID),
-					zap.Duration("ttl", ttl),
-				)
-			}
+			return ResearchPlanResult{}, fmt.Errorf("failed to marshal review state: %w", err)
 		}
+
+		ttl := in.TTL
+		if ttl == 0 {
+			ttl = 20 * time.Minute // default 15min + 5min buffer
+		} else {
+			ttl += 5 * time.Minute // add buffer
+		}
+		key := fmt.Sprintf("review:%s", in.WorkflowID)
+		if err := rdb.Set(ctx, key, stateBytes, ttl).Err(); err != nil {
+			// Redis failure is critical for HITL - user won't be able to interact
+			return ResearchPlanResult{}, fmt.Errorf("failed to initialize HITL review state in Redis: %w", err)
+		}
+		logger.Info("Initialized HITL review state in Redis",
+			zap.String("workflow_id", in.WorkflowID),
+			zap.Duration("ttl", ttl),
+		)
 	}
 
 	return ResearchPlanResult{

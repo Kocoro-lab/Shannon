@@ -566,18 +566,27 @@ export async function getReviewState(workflowId: string): Promise<ReviewStateRes
     return response.json();
 }
 
-export async function approveReviewPlan(workflowId: string): Promise<ReviewApproveResponse> {
+export async function approveReviewPlan(workflowId: string, version?: number): Promise<ReviewApproveResponse> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+    };
+    // Add optimistic concurrency check if version provided
+    if (version !== undefined) {
+        headers["If-Match"] = String(version);
+    }
+
     const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
         method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            ...getAuthHeaders(),
-        },
+        headers,
         body: JSON.stringify({ action: "approve" }),
     });
 
     if (!response.ok) {
         const errorText = await response.text();
+        if (response.status === 409) {
+            throw new Error("Plan has been updated. Please review the latest version before approving.");
+        }
         throw new Error(`Failed to approve review plan: ${response.statusText} - ${errorText}`);
     }
 

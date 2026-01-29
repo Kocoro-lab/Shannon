@@ -159,7 +159,7 @@ export function ChatInput({
         setIsSubmitting(true);
         setError(null);
         try {
-            await approveReviewPlan(reviewWorkflowId);
+            await approveReviewPlan(reviewWorkflowId, reviewVersion);
             onApprove?.();
         } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to approve plan");
