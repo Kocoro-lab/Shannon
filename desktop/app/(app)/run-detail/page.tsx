@@ -9,7 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RunTimeline } from "@/components/run-timeline";
 import { RunConversation } from "@/components/run-conversation";
-import { ChatInput, AgentSelection, ReviewPlanMode } from "@/components/chat-input";
+import { ChatInput, AgentSelection, AutoApproveMode } from "@/components/chat-input";
 import { ArrowLeft, Loader2, Sparkles, Microscope, Eye, EyeOff, PanelRight, PanelRightClose } from "lucide-react";
 import { RadarCanvas, RadarBridge } from "@/components/radar";
 import Link from "next/link";
@@ -19,7 +19,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState, approveReviewPlan } from "@/lib/shannon/api";
-import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
+import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -70,7 +70,7 @@ function RunDetailContent() {
     const pauseCheckpoint = useSelector((state: RootState) => state.run.pauseCheckpoint);
     const isCancelling = useSelector((state: RootState) => state.run.isCancelling);
     const isCancelled = useSelector((state: RootState) => state.run.isCancelled);
-    const reviewPlan = useSelector((state: RootState) => state.run.reviewPlan);
+    const autoApprove = useSelector((state: RootState) => state.run.autoApprove);
     const reviewStatus = useSelector((state: RootState) => state.run.reviewStatus);
     const reviewWorkflowId = useSelector((state: RootState) => state.run.reviewWorkflowId);
     const reviewVersion = useSelector((state: RootState) => state.run.reviewVersion);
@@ -1195,9 +1195,9 @@ function RunDetailContent() {
         }
     };
 
-    // Review Plan (HITL) handlers
-    const handleReviewPlanChange = (mode: ReviewPlanMode) => {
-        dispatch(setReviewPlan(mode));
+    // Auto-Approve (HITL) handlers
+    const handleAutoApproveChange = (mode: AutoApproveMode) => {
+        dispatch(setAutoApprove(mode));
     };
 
     // Called immediately when user clicks Send in review mode (before API call).
@@ -1749,7 +1749,7 @@ function RunDetailContent() {
                                             isTaskComplete={runStatus !== "running"}
                                             selectedAgent={selectedAgent}
                                             initialResearchStrategy={researchStrategy}
-                                            initialReviewPlan={reviewPlan}
+                                            initialAutoApprove={autoApprove}
                                             onTaskCreated={handleTaskCreated}
                                             isTaskRunning={runStatus === "running" && reviewStatus !== "reviewing"}
                                             isPaused={isPaused}
@@ -1763,7 +1763,7 @@ function RunDetailContent() {
                                             reviewWorkflowId={reviewWorkflowId}
                                             reviewVersion={reviewVersion}
                                             reviewIntent={reviewIntent}
-                                            onReviewPlanChange={handleReviewPlanChange}
+                                            onAutoApproveChange={handleAutoApproveChange}
                                             onReviewSending={handleReviewSending}
                                             onReviewFeedback={handleReviewFeedback}
                                             onReviewError={handleReviewError}
@@ -1779,7 +1779,7 @@ function RunDetailContent() {
                                     isTaskComplete={runStatus !== "running"}
                                     selectedAgent={selectedAgent}
                                     initialResearchStrategy={researchStrategy}
-                                    initialReviewPlan={reviewPlan}
+                                    initialAutoApprove={autoApprove}
                                     onTaskCreated={handleTaskCreated}
                                     variant="centered"
                                     isTaskRunning={runStatus === "running"}
@@ -1794,7 +1794,7 @@ function RunDetailContent() {
                                     reviewWorkflowId={reviewWorkflowId}
                                     reviewVersion={reviewVersion}
                                     reviewIntent={reviewIntent}
-                                    onReviewPlanChange={handleReviewPlanChange}
+                                    onAutoApproveChange={handleAutoApproveChange}
                                     onReviewSending={handleReviewSending}
                                     onReviewFeedback={handleReviewFeedback}
                                     onReviewError={handleReviewError}

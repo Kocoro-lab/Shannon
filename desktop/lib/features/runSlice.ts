@@ -20,8 +20,8 @@ interface RunState {
     pauseReason: string | null;
     isCancelling: boolean;
     isCancelled: boolean;
-    // Review Plan (HITL) state
-    reviewPlan: "auto" | "review";
+    // Auto-Approve (HITL) state
+    autoApprove: "on" | "off";
     reviewStatus: "none" | "reviewing" | "approved";
     reviewWorkflowId: string | null;
     reviewVersion: number;
@@ -44,8 +44,8 @@ const initialState: RunState = {
     pauseReason: null,
     isCancelling: false,
     isCancelled: false,
-    // Review Plan (HITL) state
-    reviewPlan: "auto",
+    // Auto-Approve (HITL) state
+    autoApprove: "on",
     reviewStatus: "none",
     reviewWorkflowId: null,
     reviewVersion: 0,
@@ -768,7 +768,7 @@ const runSlice = createSlice({
             // Preserve user preferences across session changes
             const preservedAgent = state.selectedAgent;
             const preservedStrategy = state.researchStrategy;
-            const preservedReviewPlan = state.reviewPlan;
+            const preservedAutoApprove = state.autoApprove;
 
             state.events = [];
             state.messages = [];
@@ -791,7 +791,7 @@ const runSlice = createSlice({
             // Restore user preferences
             state.selectedAgent = preservedAgent;
             state.researchStrategy = preservedStrategy;
-            state.reviewPlan = preservedReviewPlan;
+            state.autoApprove = preservedAutoApprove;
         },
         addMessage: (state, action: PayloadAction<any>) => {
             console.log("[Redux] addMessage called:", action.payload);
@@ -891,8 +891,8 @@ const runSlice = createSlice({
             }
             console.log("[Redux] Cancelling state set to:", action.payload);
         },
-        setReviewPlan: (state, action: PayloadAction<RunState["reviewPlan"]>) => {
-            state.reviewPlan = action.payload;
+        setAutoApprove: (state, action: PayloadAction<RunState["autoApprove"]>) => {
+            state.autoApprove = action.payload;
         },
         setReviewStatus: (state, action: PayloadAction<RunState["reviewStatus"]>) => {
             state.reviewStatus = action.payload;
@@ -933,5 +933,5 @@ const runSlice = createSlice({
     },
 });
 
-export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setReviewPlan, setReviewStatus, setReviewVersion, setReviewIntent } = runSlice.actions;
+export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent } = runSlice.actions;
 export default runSlice.reducer;

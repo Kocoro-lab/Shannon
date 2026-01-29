@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 
 export type AgentSelection = "normal" | "deep_research";
 export type ResearchStrategy = "quick" | "standard" | "deep" | "academic";
-export type ReviewPlanMode = "auto" | "review";
+export type AutoApproveMode = "on" | "off";
 
 interface ChatInputProps {
     sessionId?: string;
@@ -20,7 +20,7 @@ interface ChatInputProps {
     isTaskComplete?: boolean;
     selectedAgent?: AgentSelection;
     initialResearchStrategy?: ResearchStrategy;
-    initialReviewPlan?: ReviewPlanMode;
+    initialAutoApprove?: AutoApproveMode;
     onTaskCreated?: (taskId: string, query: string, workflowId?: string) => void;
     /** Use centered textarea layout for empty sessions */
     variant?: "default" | "centered";
@@ -38,7 +38,7 @@ interface ChatInputProps {
     reviewWorkflowId?: string | null;
     reviewVersion?: number;
     reviewIntent?: "feedback" | "ready" | "execute" | null;
-    onReviewPlanChange?: (mode: ReviewPlanMode) => void;
+    onAutoApproveChange?: (mode: AutoApproveMode) => void;
     onReviewSending?: (userMessage: string) => void;
     onReviewFeedback?: (version: number, intent: "feedback" | "ready" | "execute", planMessage: string, round: number, userMessage: string) => void;
     onReviewError?: () => void;
@@ -51,7 +51,7 @@ export function ChatInput({
     isTaskComplete,
     selectedAgent = "normal",
     initialResearchStrategy = "quick",
-    initialReviewPlan = "auto",
+    initialAutoApprove = "on",
     onTaskCreated,
     variant = "default",
     isTaskRunning = false,
@@ -66,7 +66,7 @@ export function ChatInput({
     reviewWorkflowId,
     reviewVersion = 0,
     reviewIntent,
-    onReviewPlanChange,
+    onAutoApproveChange,
     onReviewSending,
     onReviewFeedback,
     onReviewError,
@@ -76,7 +76,7 @@ export function ChatInput({
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [researchStrategy, setResearchStrategy] = useState<ResearchStrategy>(initialResearchStrategy);
-    const [reviewPlan, setReviewPlanLocal] = useState<ReviewPlanMode>(initialReviewPlan);
+    const [autoApprove, setAutoApproveLocal] = useState<AutoApproveMode>(initialAutoApprove);
     const router = useRouter();
 
     const isReviewing = reviewStatus === "reviewing";
@@ -131,7 +131,7 @@ export function ChatInput({
             if (selectedAgent === "deep_research") {
                 context.force_research = true;
                 research_strategy = researchStrategy;
-                if (reviewPlan === "review") {
+                if (autoApprove === "off") {
                     context.require_review = true;
                 }
             }
@@ -249,20 +249,20 @@ export function ChatInput({
                                     </Select>
                                 </div>
                                 <div className="flex items-center gap-2">
-                                    <span className="text-sm text-muted-foreground">Review Plan:</span>
+                                    <span className="text-sm text-muted-foreground">Auto-Approve:</span>
                                     <Select
-                                        value={reviewPlan}
+                                        value={autoApprove}
                                         onValueChange={(val) => {
-                                            setReviewPlanLocal(val as ReviewPlanMode);
-                                            onReviewPlanChange?.(val as ReviewPlanMode);
+                                            setAutoApproveLocal(val as AutoApproveMode);
+                                            onAutoApproveChange?.(val as AutoApproveMode);
                                         }}
                                     >
                                         <SelectTrigger className="h-9 w-32">
                                             <SelectValue />
                                         </SelectTrigger>
                                         <SelectContent>
-                                            <SelectItem value="auto">Auto</SelectItem>
-                                            <SelectItem value="review">Review</SelectItem>
+                                            <SelectItem value="on">On</SelectItem>
+                                            <SelectItem value="off">Off</SelectItem>
                                         </SelectContent>
                                     </Select>
                                 </div>
@@ -353,20 +353,20 @@ export function ChatInput({
                         </Select>
                     </div>
                     <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">Review Plan:</span>
+                        <span className="text-xs text-muted-foreground">Auto-Approve:</span>
                         <Select
-                            value={reviewPlan}
+                            value={autoApprove}
                             onValueChange={(val) => {
-                                setReviewPlanLocal(val as ReviewPlanMode);
-                                onReviewPlanChange?.(val as ReviewPlanMode);
+                                setAutoApproveLocal(val as AutoApproveMode);
+                                onAutoApproveChange?.(val as AutoApproveMode);
                             }}
                         >
                             <SelectTrigger className="h-8 w-28 text-xs">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="auto">Auto</SelectItem>
-                                <SelectItem value="review">Review</SelectItem>
+                                <SelectItem value="on">On</SelectItem>
+                                <SelectItem value="off">Off</SelectItem>
                             </SelectContent>
                         </Select>
                     </div>
