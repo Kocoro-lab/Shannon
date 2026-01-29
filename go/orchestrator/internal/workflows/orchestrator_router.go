@@ -226,7 +226,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Info("Force research detected - bypassing orchestrator decomposition")
 
 		// ── HITL: Research Plan Review (optional) ──
-		if GetContextBool(input.Context, "require_review") {
+		// Check both "require_review: true" (legacy) and "review_plan: manual" (frontend)
+		requireReview := GetContextBool(input.Context, "require_review") ||
+			GetContextString(input.Context, "review_plan") == "manual"
+		if requireReview {
 			logger.Info("HITL review enabled - generating research plan")
 
 			reviewTimeout := DefaultReviewTimeout
