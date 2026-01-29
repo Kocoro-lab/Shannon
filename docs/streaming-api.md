@@ -261,6 +261,110 @@ Tip: Use SSE/WS filters to only watch team events:
 curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=TEAM_RECRUITED,TEAM_RETIRED"
 ```
 
+## HITL Research Review Events
+
+When `review_plan: "manual"` or `require_review: true` is set, the workflow emits HITL-specific events for research plan review.
+
+### Event Types
+
+| Event | Description | Emitted By |
+|-------|-------------|------------|
+| `RESEARCH_PLAN_READY` | Initial plan generated, awaiting review | Orchestrator |
+| `REVIEW_USER_FEEDBACK` | User submitted feedback | Gateway (Review API) |
+| `RESEARCH_PLAN_UPDATED` | Plan refined based on feedback | Gateway (Review API) |
+| `RESEARCH_PLAN_APPROVED` | User approved, execution begins | Orchestrator |
+
+### Streaming HITL Events
+
+```bash
+# Watch all HITL review events
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=RESEARCH_PLAN_READY,REVIEW_USER_FEEDBACK,RESEARCH_PLAN_UPDATED,RESEARCH_PLAN_APPROVED"
+
+# Minimal: just plan ready and approved (for progress tracking)
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=RESEARCH_PLAN_READY,RESEARCH_PLAN_APPROVED"
+```
+
+### HITL Event Payload
+
+HITL events include a `payload` field with review metadata:
+
+```json
+{
+  "type": "RESEARCH_PLAN_UPDATED",
+  "agent_id": "research-planner",
+  "message": "Updated plan focusing on safety...",
+  "payload": {
+    "round": 2,
+    "version": 3,
+    "intent": "ready"
+  }
+}
+```
+
+**Payload fields:**
+- `round`: Current review round (1-10, max 10)
+- `version`: State version for optimistic concurrency (use with `If-Match` header)
+- `intent`: LLM's assessment — `"feedback"` (asking questions), `"ready"` (plan ready), `"execute"` (user approved)
+
+### Frontend Integration Example
+
+```jsx
+function HITLReviewStream({ workflowId }) {
+  const [reviewState, setReviewState] = useState({ status: 'waiting', plan: null });
+
+  useEffect(() => {
+    const types = 'RESEARCH_PLAN_READY,REVIEW_USER_FEEDBACK,RESEARCH_PLAN_UPDATED,RESEARCH_PLAN_APPROVED';
+    const es = new EventSource(`/stream/sse?workflow_id=${workflowId}&types=${types}`);
+
+    es.onmessage = (e) => {
+      const event = JSON.parse(e.data);
+
+      switch (event.type) {
+        case 'RESEARCH_PLAN_READY':
+          setReviewState({ status: 'reviewing', plan: event.message, ...event.payload });
+          break;
+        case 'RESEARCH_PLAN_UPDATED':
+          setReviewState(prev => ({ ...prev, plan: event.message, ...event.payload }));
+          break;
+        case 'RESEARCH_PLAN_APPROVED':
+          setReviewState(prev => ({ ...prev, status: 'approved' }));
+          break;
+      }
+    };
+
+    return () => es.close();
+  }, [workflowId]);
+
+  return (
+    <div>
+      <p>Status: {reviewState.status}</p>
+      {reviewState.plan && <pre>{reviewState.plan}</pre>}
+      {reviewState.intent === 'ready' && (
+        <button onClick={() => approveReview(workflowId)}>Approve Plan</button>
+      )}
+    </div>
+  );
+}
+```
+
+### HITL Workflow Timeline
+
+```
+Time    Event                     Description
+─────────────────────────────────────────────────────────
+0s      WORKFLOW_STARTED          Task submitted
+1s      DATA_PROCESSING           Preparing context
+3s      RESEARCH_PLAN_READY       Plan generated, UI shows review
+        ─── workflow pauses, waiting for user ───
+45s     REVIEW_USER_FEEDBACK      User: "Focus on X"
+47s     RESEARCH_PLAN_UPDATED     Refined plan (intent: ready)
+60s     RESEARCH_PLAN_APPROVED    User clicks Approve
+        ─── workflow resumes ───
+62s     DELEGATION                Starting research agents
+...     [normal research events]
+300s    WORKFLOW_COMPLETED        Research complete
+```
+
 ## Quick Start
 
 ### Development Testing

@@ -77,6 +77,53 @@ curl -X POST http://localhost:8080/api/v1/tasks \
   -d '{"query": "Explain ML", "context": {"force_research": true, "iterative_research_enabled": false}}'
 ```
 
+### HITL Research Review (Human-in-the-Loop)
+
+Enable human review of research plans before execution. When enabled, the workflow pauses after generating a research plan and waits for user approval.
+
+- `context.review_plan` — string (`"auto"` | `"manual"`) — Review mode
+  - `"auto"` (default): Research executes immediately after plan generation
+  - `"manual"`: Workflow pauses for user review; user must approve via Review API
+- `context.require_review` — boolean — Alternative to `review_plan: "manual"` (API-friendly)
+- `context.review_timeout` — integer (seconds, default: `900`) — Timeout for user approval (max 15 minutes)
+
+**Requirements:** HITL only applies when `context.force_research: true` is also set.
+
+```bash
+# Enable HITL review (Desktop-style)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Research quantum computing trends",
+    "context": {
+      "force_research": true,
+      "review_plan": "manual"
+    }
+  }'
+
+# Enable HITL review (API-style)
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Analyze AI market dynamics",
+    "context": {
+      "force_research": true,
+      "require_review": true,
+      "review_timeout": 600
+    }
+  }'
+```
+
+**HITL Workflow:**
+1. Submit task with `review_plan: "manual"` or `require_review: true`
+2. Workflow generates initial research plan → emits `RESEARCH_PLAN_READY` event
+3. User reviews plan via Review API (see below)
+4. User can provide feedback (up to 10 rounds) or approve
+5. On approval → emits `RESEARCH_PLAN_APPROVED` → research execution begins
+6. On timeout → workflow fails with error
+
+See [Review API](#review-api) for the feedback/approval endpoints.
+
 ### Research Strategy Presets
 
 Apply preset configurations for research workflows:
@@ -429,3 +476,134 @@ Use canonical model names only (no legacy aliases). If a model is unavailable on
 - **Gateway API Response**: `/api/v1/tasks/{task_id}` returns a `result` field containing the raw LLM response
   - The `result` field contains plain text or JSON string responses
   - An optional `response` field contains parsed JSON if the result is valid JSON (for backward compatibility)
+
+---
+
+## Review API
+
+The Review API enables human-in-the-loop (HITL) interaction with research plan generation. These endpoints are only available when a task was submitted with `review_plan: "manual"` or `require_review: true`.
+
+### Get Review State
+
+Retrieve the current review conversation state.
+
+```
+GET /api/v1/tasks/{workflowID}/review
+```
+
+**Headers:**
+- `Authorization: Bearer <token>` (required in production)
+
+**Response:**
+```json
+{
+  "status": "reviewing",
+  "round": 2,
+  "version": 3,
+  "current_plan": "Research plan content...",
+  "query": "Original query",
+  "rounds": [
+    {"role": "assistant", "message": "Initial plan...", "timestamp": "2025-01-29T10:00:00Z"},
+    {"role": "user", "message": "Can you focus more on X?", "timestamp": "2025-01-29T10:01:00Z"},
+    {"role": "assistant", "message": "Updated plan...", "timestamp": "2025-01-29T10:01:30Z"}
+  ]
+}
+```
+
+**Response Headers:**
+- `ETag`: Version number for optimistic concurrency
+
+### Submit Feedback or Approval
+
+Submit user feedback to refine the plan, or approve to start research execution.
+
+```
+POST /api/v1/tasks/{workflowID}/review
+```
+
+**Headers:**
+- `Authorization: Bearer <token>` (required in production)
+- `If-Match: <version>` (optional, for optimistic concurrency)
+- `Content-Type: application/json`
+
+**Request Body:**
+```json
+{
+  "action": "feedback",
+  "message": "Please focus more on recent developments in 2025"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `action` | string | Yes | `"feedback"` or `"approve"` |
+| `message` | string | For feedback | User's feedback message |
+
+**Feedback Response:**
+```json
+{
+  "status": "reviewing",
+  "plan": {
+    "message": "Updated research plan based on your feedback...",
+    "round": 3,
+    "version": 4,
+    "intent": "ready"
+  }
+}
+```
+
+**Approval Response:**
+```json
+{
+  "status": "approved",
+  "message": "Research started"
+}
+```
+
+### Intent Values
+
+The `intent` field in feedback responses indicates the LLM's assessment:
+
+| Intent | Description |
+|--------|-------------|
+| `feedback` | LLM is asking clarifying questions; plan not ready |
+| `ready` | LLM proposes a concrete plan; user can approve or refine |
+| `execute` | User's message explicitly signals approval (rare) |
+
+### Error Responses
+
+| Status | Description |
+|--------|-------------|
+| `404` | Review session not found or expired |
+| `403` | Not the task owner |
+| `409` | Version conflict (stale `If-Match`) or max rounds (10) reached |
+| `502` | LLM service unavailable |
+
+### Example: Complete HITL Flow
+
+```bash
+# 1. Submit task with HITL enabled
+RESPONSE=$(curl -sS -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Research AI safety trends", "context": {"force_research": true, "review_plan": "manual"}}')
+WORKFLOW_ID=$(echo $RESPONSE | jq -r '.workflow_id')
+
+# 2. Wait for RESEARCH_PLAN_READY event via SSE
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WORKFLOW_ID&types=RESEARCH_PLAN_READY"
+
+# 3. Get current review state
+curl -sS "http://localhost:8080/api/v1/tasks/$WORKFLOW_ID/review"
+
+# 4. Provide feedback
+curl -sS -X POST "http://localhost:8080/api/v1/tasks/$WORKFLOW_ID/review" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "feedback", "message": "Focus more on alignment research"}'
+
+# 5. Approve the plan
+curl -sS -X POST "http://localhost:8080/api/v1/tasks/$WORKFLOW_ID/review" \
+  -H "Content-Type: application/json" \
+  -d '{"action": "approve"}'
+
+# 6. Research execution begins, monitor via SSE
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WORKFLOW_ID"
+```
