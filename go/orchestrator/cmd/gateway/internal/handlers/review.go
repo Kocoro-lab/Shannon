@@ -376,8 +376,10 @@ func (h *ReviewHandler) callResearchPlan(
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Read body for logging but don't expose internal details to client
 		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("LLM service returned %d: %s", resp.StatusCode, string(body))
+		// Log detailed error for debugging (will be logged by caller)
+		return nil, fmt.Errorf("LLM service error (status %d, body: %s)", resp.StatusCode, truncateForLog(string(body), 500))
 	}
 
 	var result llmResearchPlanResponse
@@ -498,4 +500,12 @@ func (h *ReviewHandler) sendError(w http.ResponseWriter, message string, code in
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// truncateForLog truncates a string to maxLen for safe logging
+func truncateForLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

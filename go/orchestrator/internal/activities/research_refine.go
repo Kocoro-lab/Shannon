@@ -62,10 +62,11 @@ type RefineResearchQueryResult struct {
 	PrefetchSubpageLimit int                 `json:"prefetch_subpage_limit,omitempty"` // Recommended subpages per domain (5-20, default 15)
 
 	// HITL: User intent from confirmed_plan (populated only when confirmed_plan exists)
-	PriorityFocus  []string    `json:"priority_focus,omitempty"`  // Areas user wants deep research
-	SecondaryFocus []string    `json:"secondary_focus,omitempty"` // Areas for adequate coverage
-	SkipAreas      []string    `json:"skip_areas,omitempty"`      // Areas user explicitly excluded
-	UserIntent     *UserIntent `json:"user_intent,omitempty"`     // Structured user intent
+	PriorityFocus   []string    `json:"priority_focus,omitempty"`   // Areas user wants deep research
+	SecondaryFocus  []string    `json:"secondary_focus,omitempty"`  // Areas for adequate coverage
+	SkipAreas       []string    `json:"skip_areas,omitempty"`       // Areas user explicitly excluded
+	UserIntent      *UserIntent `json:"user_intent,omitempty"`      // Structured user intent
+	HITLParseFailed bool        `json:"hitl_parse_failed,omitempty"` // True if HITL plan parsing failed (degraded mode)
 }
 
 // UserIntent captures the user's research purpose and preferences
@@ -861,13 +862,14 @@ Return ONLY a JSON object:
 	}
 
 	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
-		logger.Warn("Failed to parse HITL refine JSON, using defaults",
+		logger.Error("Failed to parse HITL refine JSON, using degraded mode",
 			"error", err,
 			"response", truncateStr(llmResp.Response, 200),
 		)
-		// Fallback: use original query with empty HITL fields
+		// Degraded mode: use original query with empty HITL fields, mark as failed
 		result.RefinedQuery = in.Query
-		result.Rationale = "HITL parsing failed, using original query"
+		result.Rationale = "HITL parsing failed, using original query (degraded mode)"
+		result.HITLParseFailed = true
 		return result, nil
 	}
 
