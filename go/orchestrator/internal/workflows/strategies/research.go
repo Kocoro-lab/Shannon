@@ -2521,6 +2521,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		if len(refineResult.LocalizedNames) > 0 {
 			baseContext["localized_names"] = refineResult.LocalizedNames
 		}
+		// HITL Phase 1: Pass structured HITL output to Decompose
+		// These fields are only populated when confirmed_plan exists (HITL mode)
+		if len(refineResult.PriorityFocus) > 0 {
+			baseContext["priority_focus"] = refineResult.PriorityFocus
+		}
+		if len(refineResult.SecondaryFocus) > 0 {
+			baseContext["secondary_focus"] = refineResult.SecondaryFocus
+		}
+		if len(refineResult.SkipAreas) > 0 {
+			baseContext["skip_areas"] = refineResult.SkipAreas
+		}
+		if refineResult.UserIntent != nil {
+			baseContext["user_intent"] = refineResult.UserIntent
+		}
 		// Account for refinement tokens in the workflow total
 		totalTokens += refineResult.TokensUsed
 
@@ -2646,6 +2660,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	delete(baseContext, "confirmed_plan")
 	delete(baseContext, "research_brief")
 	delete(baseContext, "review_conversation")
+	// HITL Phase 1: Also clean up structured HITL fields
+	delete(baseContext, "priority_focus")
+	delete(baseContext, "secondary_focus")
+	delete(baseContext, "skip_areas")
+	delete(baseContext, "user_intent")
 
 	// Check for budget configuration
 	agentMaxTokens := 0

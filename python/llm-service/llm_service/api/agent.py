@@ -2934,10 +2934,10 @@ async def generate_research_plan(
         "- Describe the research direction: what areas to cover, in what priority,\n"
         "  what to skip or treat as secondary, and why — grounded in their stated purpose\n"
         "- Keep the conversational part concise (under 300 words)\n"
-        "- Append [RESEARCH_BRIEF] block (see format below)\n"
         "- End by inviting adjustment — not asking permission.\n"
         "  Good: 'You can approve to start, or tell me what to adjust.'\n"
-        "  Bad: 'Would you like me to proceed?'\n\n"
+        "  Bad: 'Would you like me to proceed?'\n"
+        "Note: Do NOT output any structured blocks like [RESEARCH_BRIEF]. The downstream system will extract structure from your conversational response.\n\n"
 
         "PATH C → [INTENT:execute]\n"
         "Condition: The user's latest message UNAMBIGUOUSLY signals they want to\n"
@@ -2963,24 +2963,7 @@ async def generate_research_plan(
         "- Do NOT echo system capabilities back to the user: no word-count estimates,\n"
         "  no data-source disclaimers ('publicly available', 'within accessible sources'),\n"
         "  no caveats about what the system cannot access.\n"
-        "  Your job is to discuss WHAT to research — the system's HOW is not the user's concern.\n\n"
-
-        "[RESEARCH_BRIEF] FORMAT\n"
-        "Required ONLY when outputting [INTENT:ready].\n"
-        "Place AFTER conversational text, BEFORE the [INTENT:ready] tag.\n"
-        "This block is machine-consumed and stripped before display to the user.\n\n"
-        "[RESEARCH_BRIEF]\n"
-        "purpose: <why they need this — e.g. interview_prep|investment_due_diligence|competitive_analysis|market_entry|learning|decision_support|trend_monitoring>\n"
-        "priority_focus: <comma-separated areas to research in depth>\n"
-        "secondary_focus: <comma-separated areas to cover briefly>\n"
-        "skip: <comma-separated topics to exclude — things user already knows or explicitly doesn't want>\n"
-        "depth: <beginner|intermediate|expert — user's apparent knowledge level>\n"
-        "[/RESEARCH_BRIEF]\n\n"
-        "Rules:\n"
-        "- Extract from the user's actual words; do not invent constraints they didn't state\n"
-        "- Omit any field you cannot confidently determine (system has safe defaults)\n"
-        "- Keep values short — keywords, not full sentences\n"
-        "- Do NOT output [RESEARCH_BRIEF] for PATH A or PATH C"
+        "  Your job is to discuss WHAT to research — the system's HOW is not the user's concern.\n"
     )
 
     # Final round override: force a direction proposal, no more questions
@@ -2988,7 +2971,7 @@ async def generate_research_plan(
         system_prompt += (
             "\n\nFINAL ROUND: This is the last round of discussion. "
             "You MUST output a definitive research direction based on everything discussed. "
-            "Do NOT ask more questions. Output [INTENT:ready] with [RESEARCH_BRIEF]."
+            "Do NOT ask more questions. Output [INTENT:ready]."
         )
 
     # Build messages: system prompt + conversation history (or initial query)
@@ -3522,31 +3505,70 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         )
         messages.append({"role": "user", "content": user})
 
-        # HITL: inject confirmed plan and structured research brief if present
-        if query.context and query.context.get("confirmed_plan"):
-            confirmed_plan = query.context["confirmed_plan"]
-            research_brief = query.context.get("research_brief", "")
+        # HITL Phase 1: inject structured output from Refine (priority_focus is the switch)
+        # When priority_focus exists, Refine has already parsed confirmed_plan into structured format.
+        # Decompose consumes these structured fields directly for subtask allocation.
+        if query.context and query.context.get("priority_focus"):
+            # New path: consume Refine's structured HITL output
+            priority_focus = query.context.get("priority_focus", [])
+            secondary_focus = query.context.get("secondary_focus", [])
+            skip_areas = query.context.get("skip_areas", [])
+            user_intent = query.context.get("user_intent", {})
+            confirmed_plan = query.context.get("confirmed_plan", "")
 
-            # Build the brief section: prefer structured brief, fall back to raw conversation
+            # Build structured brief section from Refine output
+            brief_parts = []
+            if confirmed_plan:
+                brief_parts.append(f"Research Direction:\n{confirmed_plan}")
+
+            brief_parts.append("\n## Structured Focus Areas (from Refine)")
+            if priority_focus:
+                brief_parts.append(f"priority_focus: {', '.join(priority_focus)}")
+            if secondary_focus:
+                brief_parts.append(f"secondary_focus: {', '.join(secondary_focus)}")
+            if skip_areas:
+                brief_parts.append(f"skip: {', '.join(skip_areas)}")
+
+            if user_intent:
+                intent_parts = []
+                if user_intent.get("purpose"):
+                    intent_parts.append(f"purpose={user_intent['purpose']}")
+                if user_intent.get("depth"):
+                    intent_parts.append(f"depth={user_intent['depth']}")
+                if intent_parts:
+                    brief_parts.append(f"user_intent: {', '.join(intent_parts)}")
+
+            brief_section = "\n".join(brief_parts)
+
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"USER REVIEW BRIEF:\n{brief_section}\n\n"
+                    "Decompose following this brief. "
+                    "Prioritize subtasks toward priority_focus areas."
+                )
+            })
+        elif query.context and query.context.get("confirmed_plan"):
+            # Legacy fallback: confirmed_plan exists but Refine hasn't structured it yet
+            # This handles edge cases during migration or when Refine fails to parse
+            confirmed_plan = query.context["confirmed_plan"]
+
             brief_section = f"Research Direction:\n{confirmed_plan}"
-            if research_brief:
-                brief_section += f"\n\nStructured Brief:\n{research_brief}"
-            else:
-                # Fallback: extract user messages from raw conversation
-                review_conv = query.context.get("review_conversation")
-                if review_conv:
-                    conv_list = review_conv if isinstance(review_conv, list) else []
-                    if isinstance(review_conv, str):
-                        try:
-                            import json as _json
-                            conv_list = _json.loads(review_conv)
-                        except Exception:
-                            conv_list = []
-                    user_messages = [r["message"] for r in conv_list if r.get("role") == "user"]
-                    if user_messages:
-                        brief_section += "\n\nUser clarifications during review:\n" + "\n".join(
-                            f"- {msg}" for msg in user_messages
-                        )
+            # Fallback: extract user messages from raw conversation
+            review_conv = query.context.get("review_conversation")
+            if review_conv:
+                conv_list = review_conv if isinstance(review_conv, list) else []
+                if isinstance(review_conv, str):
+                    try:
+                        import json as _json
+                        conv_list = _json.loads(review_conv)
+                    except Exception:
+                        conv_list = []
+                user_messages = [r["message"] for r in conv_list if r.get("role") == "user"]
+                if user_messages:
+                    brief_section += "\n\nUser clarifications during review:\n" + "\n".join(
+                        f"- {msg}" for msg in user_messages
+                    )
 
             messages.append({
                 "role": "user",
