@@ -303,7 +303,15 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 	}
 
 	// Apply research strategy presets (seed defaults only when absent)
-	if rs, ok := ctxMap["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
+	// Default to "standard" for force_research when no strategy specified
+	rs, rsOk := ctxMap["research_strategy"].(string)
+	if (!rsOk || strings.TrimSpace(rs) == "") {
+		if forceResearch, _ := ctxMap["force_research"].(bool); forceResearch {
+			rs = "standard"
+			ctxMap["research_strategy"] = rs
+		}
+	}
+	if strings.TrimSpace(rs) != "" {
 		applyStrategyPreset(ctxMap, rs)
 	}
 
