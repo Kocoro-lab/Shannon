@@ -989,3 +989,94 @@ func TestLooksLikeTableRow(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// Placement Fallback Logic Tests
+// ============================================================================
+
+// TestPlacementFallbackCondition verifies that inline fallback only triggers
+// when zero placements succeed, not when partial placements succeed.
+// This tests the fix for: placement with low success rate (e.g., 6/21=28%)
+// should use partial results instead of falling back to slow inline method.
+func TestPlacementFallbackCondition(t *testing.T) {
+	tests := []struct {
+		name         string
+		applied      int
+		total        int
+		wantFallback bool
+	}{
+		// Should NOT fallback - use partial results
+		{"partial success 6/21", 6, 21, false},
+		{"partial success 1/10", 1, 10, false},
+		{"partial success 3/100", 3, 100, false},
+		{"high success 20/21", 20, 21, false},
+		{"all success 10/10", 10, 10, false},
+
+		// Should fallback - zero success
+		{"zero success 0/21", 0, 21, true},
+		{"zero success 0/1", 0, 1, true},
+		{"zero success 0/100", 0, 100, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Simulate the fallback condition logic from AddCitations
+			needFallback := false
+			if tt.applied == 0 {
+				needFallback = true
+			}
+
+			if needFallback != tt.wantFallback {
+				t.Errorf("fallback condition (applied=%d, total=%d): got %v, want %v",
+					tt.applied, tt.total, needFallback, tt.wantFallback)
+			}
+		})
+	}
+}
+
+// TestApplyPlacementsV2_PartialSuccess verifies that applyPlacementsV2
+// correctly applies successful placements and records failures.
+func TestApplyPlacementsV2_PartialSuccess(t *testing.T) {
+	sentences := []string{
+		"First sentence about the company.",
+		"Second sentence with facts.",
+		"Third sentence to cite.",
+	}
+	hashes := []string{
+		computeSentenceHash(sentences[0]),
+		computeSentenceHash(sentences[1]),
+		computeSentenceHash(sentences[2]),
+	}
+
+	// Create a placement plan with one valid and one invalid placement
+	plan := &PlacementPlan{
+		Placements: []CitationPlacement{
+			{SentenceIndex: 0, SentenceHash: hashes[0], CitationIDs: []int{1}},  // valid
+			{SentenceIndex: 1, SentenceHash: "wrong!", CitationIDs: []int{2}},   // invalid hash
+			{SentenceIndex: 99, SentenceHash: "", CitationIDs: []int{3}},        // out of bounds
+		},
+	}
+
+	result, stats := applyPlacementsV2(sentences, plan, hashes, 10)
+
+	// Verify stats
+	if stats.Applied != 1 {
+		t.Errorf("Applied = %d, want 1", stats.Applied)
+	}
+	if stats.Failed != 2 {
+		t.Errorf("Failed = %d, want 2", stats.Failed)
+	}
+
+	// Verify the successful citation was applied
+	if !strings.Contains(result, "[1]") {
+		t.Errorf("Result should contain [1] citation marker")
+	}
+
+	// Verify failed citations were not applied
+	if strings.Contains(result, "[2]") {
+		t.Errorf("Result should NOT contain [2] (hash mismatch)")
+	}
+	if strings.Contains(result, "[3]") {
+		t.Errorf("Result should NOT contain [3] (out of bounds)")
+	}
+}

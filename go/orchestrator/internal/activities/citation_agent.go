@@ -152,10 +152,10 @@ func (a *Activities) AddCitations(ctx context.Context, input CitationAgentInput)
 	} else if result.PlacementStats != nil {
 		applied := result.PlacementStats.Applied
 		total := result.PlacementStats.Total
-		// Fallback if: too few applied OR success rate < 50%
-		if applied < 3 || (total > 0 && float64(applied)/float64(total) < 0.5) {
+		// Fallback only if zero placements succeeded - use partial results otherwise
+		if applied == 0 {
 			needFallback = true
-			fallbackReason = fmt.Sprintf("placement low success: applied=%d, total=%d", applied, total)
+			fallbackReason = fmt.Sprintf("placement zero success: applied=%d, total=%d", applied, total)
 		}
 	}
 
