@@ -12,13 +12,14 @@ import (
 
 // HybridConfig controls hybrid parallel/sequential execution with dependencies
 type HybridConfig struct {
-	MaxConcurrency           int                    // Maximum concurrent agents
-	EmitEvents               bool                   // Whether to emit streaming events
-	Context                  map[string]interface{} // Base context for all agents
-	DependencyWaitTimeout    time.Duration          // Max time to wait for dependencies
-	DependencyCheckInterval  time.Duration          // Interval between dependency checks (default 30s)
-	PassDependencyResults    bool                   // Pass dependency results to dependent tasks
-	ClearDependentToolParams bool                   // Clear tool params for dependent tasks
+	MaxConcurrency           int                                       // Maximum concurrent agents
+	EmitEvents               bool                                      // Whether to emit streaming events
+	Context                  map[string]interface{}                    // Base context for all agents
+	DependencyWaitTimeout    time.Duration                             // Max time to wait for dependencies
+	DependencyCheckInterval  time.Duration                             // Interval between dependency checks (default 30s)
+	PassDependencyResults    bool                                      // Pass dependency results to dependent tasks
+	ClearDependentToolParams bool                                      // Clear tool params for dependent tasks
+	PrefilledResults         map[string]activities.AgentExecutionResult // Pre-populated results from external sources (child workflows, previous phases)
 }
 
 // HybridTask represents a task with dependencies
@@ -88,6 +89,18 @@ func ExecuteHybrid(
 	completedTasks := make(map[string]bool)
 	taskResults := make(map[string]activities.AgentExecutionResult)
 	totalTokens := 0
+
+	// Merge prefilled results from external sources (child workflows, previous execution phases)
+	// This enables cross-phase dependency resolution
+	if config.PrefilledResults != nil && len(config.PrefilledResults) > 0 {
+		for id, result := range config.PrefilledResults {
+			taskResults[id] = result
+			completedTasks[id] = true
+		}
+		logger.Info("Prefilled dependency results from external sources",
+			"prefilled_count", len(config.PrefilledResults),
+		)
+	}
 
 	// Build task index for quick lookup
 	taskIndex := make(map[string]*HybridTask)
@@ -244,7 +257,13 @@ func executeHybridTask(
 				}
 			}
 		}
-		taskContext["dependency_results"] = depResults
+		if len(depResults) > 0 {
+			taskContext["dependency_results"] = depResults
+			logger.Info("Injected dependency_results into task context",
+				"task_id", task.ID,
+				"dependency_count", len(depResults),
+			)
+		}
 	}
 
 	// Clear tool parameters for dependent tasks if configured

@@ -170,6 +170,12 @@ func (h *ReviewHandler) handleFeedback(
 		h.sendError(w, "message is required for feedback", http.StatusBadRequest)
 		return
 	}
+	// Limit message length to prevent excessively large payloads
+	const maxMessageLen = 10 * 1024 // 10KB
+	if len(req.Message) > maxMessageLen {
+		h.sendError(w, "message exceeds maximum length (10KB)", http.StatusBadRequest)
+		return
+	}
 
 	// Round limit check: reject feedback beyond MaxReviewRounds
 	nextRound := state.Round + 1
@@ -312,7 +318,9 @@ func (h *ReviewHandler) handleApprove(
 	// Mark review as approved in Redis (keep state for page reload, TTL handles cleanup)
 	state.Status = "approved"
 	if approvedBytes, err := json.Marshal(state); err == nil {
-		h.redis.Set(ctx, key, approvedBytes, 60*time.Minute)
+		if err := h.redis.Set(ctx, key, approvedBytes, 60*time.Minute).Err(); err != nil {
+			h.logger.Warn("Failed to update review state in Redis (best-effort)", zap.Error(err))
+		}
 	}
 
 	h.logger.Info("HITL review approved via gateway",
@@ -358,7 +366,7 @@ func (h *ReviewHandler) callResearchPlan(
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{
-		Timeout:   30 * time.Second,
+		// Timeout controlled by context (60s from callResearchPlan caller)
 		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
 	}
 	resp, err := client.Do(httpReq)

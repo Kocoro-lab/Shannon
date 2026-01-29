@@ -2889,8 +2889,13 @@ async def generate_research_plan(
     if not providers or not providers.is_configured():
         raise HTTPException(status_code=503, detail="LLM providers not configured")
 
+    # Extract current date from context for temporal awareness
+    current_date = body.context.get("current_date_human") or body.context.get("current_date", "") if body.context else ""
+    date_line = f"The current date is {current_date}.\n\n" if current_date else ""
+
     # Unified system prompt — covers all rounds (clarification, direction, approval)
     system_prompt = (
+        f"{date_line}"
         "You are a research intake analyst for Shannon, an automated deep-research system.\n\n"
 
         "SYSTEM CAPABILITIES\n\n"
@@ -3311,8 +3316,14 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             prompt_source = "general"
             logger.info("Decompose: Using general planning identity")
 
+        # Extract current date for temporal awareness (enables time-sensitive query handling)
+        current_date = ""
+        if isinstance(query.context, dict):
+            current_date = query.context.get("current_date_human") or query.context.get("current_date", "")
+        date_prefix = f"The current date is {current_date}.\n\n" if current_date else ""
+
         # Combine identity with common decomposition suffix
-        decompose_system_prompt = identity_prompt + COMMON_DECOMPOSITION_SUFFIX
+        decompose_system_prompt = date_prefix + identity_prompt + COMMON_DECOMPOSITION_SUFFIX
 
         # FIRST DECISION: Domain Analysis (for company queries)
         # This comes before tool hints because it's the first planning decision (task-1)

@@ -116,11 +116,7 @@ export function ChatInput({
                     // Clean up temporary messages on error
                     onReviewError?.();
                     const msg = feedbackErr instanceof Error ? feedbackErr.message : "Failed to submit feedback";
-                    if (msg.includes("Maximum review rounds")) {
-                        setError("已达到最大对话轮次，请直接批准计划。");
-                    } else {
-                        setError(msg);
-                    }
+                    setError(msg);
                 }
                 return;
             }

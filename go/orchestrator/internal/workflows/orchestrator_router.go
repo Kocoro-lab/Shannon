@@ -225,6 +225,14 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if GetContextBool(input.Context, "force_research") {
 		logger.Info("Force research detected - bypassing orchestrator decomposition")
 
+		// Inject current date for time awareness (use workflow.Now for Temporal determinism)
+		// This enables HITL planner and all subsequent agents to understand temporal context
+		if _, hasDate := input.Context["current_date"]; !hasDate {
+			workflowTime := workflow.Now(ctx)
+			input.Context["current_date"] = workflowTime.UTC().Format("2006-01-02")
+			input.Context["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
+		}
+
 		// ── HITL: Research Plan Review (optional) ──
 		// Check both "require_review: true" (legacy) and "review_plan: manual" (frontend)
 		requireReview := GetContextBool(input.Context, "require_review") ||
