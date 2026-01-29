@@ -17,6 +17,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/interceptors"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 )
 
@@ -281,6 +282,14 @@ func (h *ReviewHandler) handleApprove(
 	ctx context.Context, w http.ResponseWriter, r *http.Request,
 	key string, state *reviewState, workflowID string, userCtx *auth.UserContext,
 ) {
+	// Optimistic concurrency check (ensure user approves the plan they saw)
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+		if ifMatch != strconv.Itoa(state.Version) {
+			h.sendError(w, "Conflict: plan has been updated. Please review the latest version.", http.StatusConflict)
+			return
+		}
+	}
+
 	// Marshal conversation for gRPC
 	convBytes, _ := json.Marshal(state.Rounds)
 
@@ -348,7 +357,10 @@ func (h *ReviewHandler) callResearchPlan(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("LLM service call failed: %w", err)
