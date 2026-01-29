@@ -1725,12 +1725,14 @@ function RunDetailContent() {
                         <TabsContent value="conversation" className="flex-1 p-0 m-0 data-[state=active]:flex flex-col overflow-hidden">
                             {messages.length > 0 ? (
                                 <>
-                                    {/* Review Plan banner */}
+                                    {/* Review Plan banner - text changes based on intent */}
                                     {reviewStatus === "reviewing" && (
                                         <div className="flex items-center gap-2 px-4 py-2 bg-violet-50 dark:bg-violet-950 border-b border-violet-200 dark:border-violet-800 shrink-0">
                                             <Eye className="h-4 w-4 text-violet-600 dark:text-violet-400" />
                                             <span className="text-sm text-violet-700 dark:text-violet-300">
-                                                Research plan ready for review
+                                                {reviewIntent === "ready"
+                                                    ? "Research plan ready — approve to start execution"
+                                                    : "Clarifying your research request..."}
                                             </span>
                                         </div>
                                     )}

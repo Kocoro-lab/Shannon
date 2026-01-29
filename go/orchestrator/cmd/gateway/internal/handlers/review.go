@@ -80,6 +80,8 @@ type llmResearchPlanRequest struct {
 	Context      map[string]interface{} `json:"context"`
 	Conversation []reviewRound          `json:"conversation"`
 	IsFinalRound bool                   `json:"is_final_round,omitempty"`
+	CurrentRound int                    `json:"current_round"`
+	MaxRounds    int                    `json:"max_rounds"`
 }
 
 // llmResearchPlanResponse is the response from the LLM service.
@@ -196,7 +198,7 @@ func (h *ReviewHandler) handleFeedback(
 	// Use a detached context so client disconnects don't cancel the LLM call.
 	llmCtx, llmCancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer llmCancel()
-	plan, err := h.callResearchPlan(llmCtx, state.Query, state.Context, state.Rounds, isFinalRound)
+	plan, err := h.callResearchPlan(llmCtx, state.Query, state.Context, state.Rounds, isFinalRound, nextRound)
 	if err != nil {
 		h.logger.Error("Failed to generate research plan", zap.Error(err))
 		// Remove the user message we appended (don't persist bad state)
@@ -341,6 +343,7 @@ func (h *ReviewHandler) callResearchPlan(
 	taskCtx map[string]interface{},
 	rounds []reviewRound,
 	isFinalRound bool,
+	currentRound int,
 ) (*llmResearchPlanResponse, error) {
 	base := os.Getenv("LLM_SERVICE_URL")
 	if base == "" {
@@ -353,6 +356,8 @@ func (h *ReviewHandler) callResearchPlan(
 		Context:      taskCtx,
 		Conversation: rounds,
 		IsFinalRound: isFinalRound,
+		CurrentRound: currentRound,
+		MaxRounds:    MaxReviewRounds,
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

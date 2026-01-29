@@ -2866,6 +2866,8 @@ class ResearchPlanRequest(BaseModel):
         default=False,
         description="Whether this is the final allowed round (LLM must finalize the plan)"
     )
+    current_round: int = Field(default=1, description="Current conversation round (1-based)")
+    max_rounds: int = Field(default=10, description="Maximum allowed conversation rounds")
 
 
 class ResearchPlanResponse(BaseModel):
@@ -2893,9 +2895,19 @@ async def generate_research_plan(
     current_date = body.context.get("current_date_human") or body.context.get("current_date", "") if body.context else ""
     date_line = f"The current date is {current_date}.\n\n" if current_date else ""
 
+    # Build round awareness hint based on current progress
+    round_info = f"ROUND INFO: You are on round {body.current_round} of {body.max_rounds}. "
+    if body.current_round <= 2:
+        round_info += "You have ample rounds — ask clarifying questions if genuinely needed.\n\n"
+    elif body.current_round <= 5:
+        round_info += "Mid-conversation — balance clarification with proposing a direction.\n\n"
+    else:
+        round_info += "Running low on rounds — prioritize proposing a concrete direction.\n\n"
+
     # Unified system prompt — covers all rounds (clarification, direction, approval)
     system_prompt = (
         f"{date_line}"
+        f"{round_info}"
         "You are a research intake analyst for Shannon, an automated deep-research system.\n\n"
 
         "SYSTEM CAPABILITIES\n\n"
