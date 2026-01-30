@@ -719,13 +719,35 @@ func (a *Activities) refineWithHITL(ctx context.Context, in RefineResearchQueryI
 	}
 	url := fmt.Sprintf("%s/agent/query", base)
 
+	// Build conversation context (if available)
+	conversationText := ""
+	if convRaw, ok := in.Context["review_conversation"]; ok {
+		if convSlice, ok := convRaw.([]interface{}); ok {
+			for _, r := range convSlice {
+				if round, ok := r.(map[string]interface{}); ok {
+					role, _ := round["role"].(string)
+					msg, _ := round["message"].(string)
+					if role != "" && msg != "" {
+						conversationText += fmt.Sprintf("[%s]: %s\n\n", role, msg)
+					}
+				}
+			}
+		}
+	}
+
 	// Build prompt for HITL plan parsing
+	conversationSection := ""
+	if conversationText != "" {
+		conversationSection = fmt.Sprintf("\nReview conversation (for additional context):\n%s", conversationText)
+	}
+
 	hitlPrompt := fmt.Sprintf(`You are a research plan parser. Your task is to extract structured information from a user-approved research direction.
 
 ## Input
 Original query: %s
 
 Confirmed research plan (approved by user):
+%s
 %s
 
 ## Your Task
@@ -776,7 +798,7 @@ Return ONLY a JSON object:
       "priority": "high"
     }
   ]
-}`, in.Query, confirmedPlan)
+}`, in.Query, confirmedPlan, conversationSection)
 
 	reqBody := map[string]interface{}{
 		"query":       hitlPrompt,
