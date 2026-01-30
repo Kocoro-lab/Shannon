@@ -247,18 +247,6 @@ func (h *ReviewHandler) handleFeedback(
 	state.Round++
 	state.Version++
 
-	// Save to Redis (keep original TTL)
-	stateBytes, _ := json.Marshal(state)
-	ttl, err := h.redis.TTL(ctx, key).Result()
-	if err != nil || ttl <= 0 {
-		ttl = 20 * time.Minute // fallback (15min review + 5min buffer)
-	}
-	if err := h.redis.Set(ctx, key, stateBytes, ttl).Err(); err != nil {
-		h.logger.Error("Failed to save review state to Redis", zap.Error(err), zap.String("workflow_id", workflowID))
-		h.sendError(w, "Failed to save review state", http.StatusInternalServerError)
-		return
-	}
-
 	// Determine intent (default to "feedback" if LLM didn't provide one)
 	intent := plan.Intent
 	if intent == "" {
@@ -270,6 +258,18 @@ func (h *ReviewHandler) handleFeedback(
 		intent = "ready"
 		// Also set CurrentPlan so Approve has a non-empty FinalPlan
 		state.CurrentPlan = plan.Message
+	}
+
+	// Save to Redis (keep original TTL) — AFTER intent/CurrentPlan resolution
+	stateBytes, _ := json.Marshal(state)
+	ttl, err := h.redis.TTL(ctx, key).Result()
+	if err != nil || ttl <= 0 {
+		ttl = 20 * time.Minute // fallback (15min review + 5min buffer)
+	}
+	if err := h.redis.Set(ctx, key, stateBytes, ttl).Err(); err != nil {
+		h.logger.Error("Failed to save review state to Redis", zap.Error(err), zap.String("workflow_id", workflowID))
+		h.sendError(w, "Failed to save review state", http.StatusInternalServerError)
+		return
 	}
 
 	// Publish review events to Redis stream so they're captured by SSE and persisted.
