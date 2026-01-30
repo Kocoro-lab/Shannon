@@ -238,9 +238,10 @@ func (h *ReviewHandler) handleFeedback(
 		Message:   plan.Message,
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
 	})
-	// Update CurrentPlan when LLM proposes a direction (ready) or user confirms (execute).
-	// For "execute", the plan may be brief but we need a non-empty FinalPlan for approval.
-	if plan.Intent == "ready" || plan.Intent == "execute" {
+	// Update CurrentPlan only when LLM proposes an actionable research direction (ready).
+	// feedback = still asking questions (no plan yet).
+	// execute = user said "just do it" — no specific plan, normal refine path handles this.
+	if plan.Intent == "ready" {
 		state.CurrentPlan = plan.Message
 	}
 	state.Round++
