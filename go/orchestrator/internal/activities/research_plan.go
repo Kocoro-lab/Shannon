@@ -47,6 +47,7 @@ type reviewRedisState struct {
 	OwnerTenantID string                 `json:"owner_tenant_id"`
 	Rounds        []ReviewRound          `json:"rounds"`
 	CurrentPlan   string                 `json:"current_plan"`
+	ResearchBrief string                 `json:"research_brief,omitempty"`
 }
 
 // GenerateResearchPlan calls the LLM service to generate an initial research plan
@@ -158,7 +159,8 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 			Rounds: []ReviewRound{
 				{Role: "assistant", Message: displayMessage, Timestamp: time.Now().UTC().Format(time.RFC3339)},
 			},
-			CurrentPlan: currentPlan,
+			CurrentPlan:   currentPlan,
+			ResearchBrief: researchBrief,
 		}
 
 		stateBytes, err := json.Marshal(state)
