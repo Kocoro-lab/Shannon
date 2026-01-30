@@ -51,6 +51,12 @@ const (
 	StreamEventApprovalRequested StreamEventType = "APPROVAL_REQUESTED"
 	StreamEventApprovalDecision  StreamEventType = "APPROVAL_DECISION"
 
+	// HITL Research Review
+	StreamEventResearchPlanReady    StreamEventType = "RESEARCH_PLAN_READY"
+	StreamEventResearchPlanUpdated  StreamEventType = "RESEARCH_PLAN_UPDATED"
+	StreamEventResearchPlanApproved StreamEventType = "RESEARCH_PLAN_APPROVED"
+	StreamEventReviewUserFeedback   StreamEventType = "REVIEW_USER_FEEDBACK"
+
 	// Workflow control (pause/resume/cancel)
 	StreamEventWorkflowPausing    StreamEventType = "WORKFLOW_PAUSING"    // Pause signal received
 	StreamEventWorkflowPaused     StreamEventType = "WORKFLOW_PAUSED"     // Actually blocked at checkpoint

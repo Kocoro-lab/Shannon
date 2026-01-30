@@ -421,6 +421,95 @@ Events for human-in-the-loop workflows.
 
 ---
 
+### HITL Research Review Events
+
+Events for human-in-the-loop research plan review workflows. These events are emitted when a task is submitted with `review_plan: "manual"` or `require_review: true`.
+
+#### `RESEARCH_PLAN_READY`
+**Description:** Initial research plan generated, waiting for user review
+**Agent ID:** `research-planner`
+**Example Message:** The generated research plan text
+**Use Case:** Signals frontend to display review UI
+
+```json
+{
+  "type": "RESEARCH_PLAN_READY",
+  "agent_id": "research-planner",
+  "message": "I'll research quantum computing trends focusing on...",
+  "seq": 5,
+  "payload": {
+    "round": 1,
+    "version": 1,
+    "intent": "ready"
+  }
+}
+```
+
+#### `REVIEW_USER_FEEDBACK`
+**Description:** User submitted feedback on the research plan
+**Agent ID:** `user`
+**Example Message:** User's feedback text
+**Use Case:** Persists user feedback in event history
+
+```json
+{
+  "type": "REVIEW_USER_FEEDBACK",
+  "agent_id": "user",
+  "message": "Can you focus more on safety implications?",
+  "seq": 6,
+  "payload": {
+    "round": 2,
+    "version": 2
+  }
+}
+```
+
+#### `RESEARCH_PLAN_UPDATED`
+**Description:** Research plan updated based on user feedback
+**Agent ID:** `research-planner`
+**Example Message:** Updated plan text
+**Use Case:** Shows refined plan in review UI
+
+```json
+{
+  "type": "RESEARCH_PLAN_UPDATED",
+  "agent_id": "research-planner",
+  "message": "Updated plan with focus on AI safety...",
+  "seq": 7,
+  "payload": {
+    "round": 2,
+    "version": 3,
+    "intent": "ready"
+  }
+}
+```
+
+**Payload Fields:**
+- `round` (integer): Current review round (1-10)
+- `version` (integer): State version for optimistic concurrency
+- `intent` (string): LLM's assessment — `"feedback"` | `"ready"` | `"execute"`
+
+#### `RESEARCH_PLAN_APPROVED`
+**Description:** User approved the research plan, execution begins
+**Agent ID:** `orchestrator`
+**Example Message:** Approval confirmation
+**Use Case:** Signals transition from review to execution
+
+```json
+{
+  "type": "RESEARCH_PLAN_APPROVED",
+  "agent_id": "orchestrator",
+  "message": "Research plan approved, starting execution",
+  "seq": 8,
+  "payload": {
+    "approved_by": "user-uuid",
+    "final_round": 2
+  }
+}
+```
+
+---
+
 ### Advanced Features
 
 #### `DEPENDENCY_SATISFIED`
@@ -489,6 +578,11 @@ types=WORKFLOW_STARTED,PROGRESS,AGENT_COMPLETED,WORKFLOW_COMPLETED
 types=TEAM_RECRUITED,TEAM_RETIRED,MESSAGE_SENT,MESSAGE_RECEIVED
 ```
 
+**HITL Research Review:**
+```
+types=RESEARCH_PLAN_READY,REVIEW_USER_FEEDBACK,RESEARCH_PLAN_UPDATED,RESEARCH_PLAN_APPROVED
+```
+
 **Error Monitoring:**
 ```
 types=ERROR_OCCURRED,ERROR_RECOVERY
@@ -550,6 +644,22 @@ Complex multi-agent workflow:
 11. AGENT_STARTED (writer)
 12. LLM_OUTPUT (final document)
 13. WORKFLOW_COMPLETED
+```
+
+HITL research review workflow:
+```
+1. WORKFLOW_STARTED (orchestrator)
+2. DATA_PROCESSING (preparing context)
+3. RESEARCH_PLAN_READY (research-planner) ← workflow pauses here
+   [User reviews plan in UI]
+4. REVIEW_USER_FEEDBACK (user) ← user provides feedback
+5. RESEARCH_PLAN_UPDATED (research-planner) ← refined plan
+   [User may provide more feedback or approve]
+6. RESEARCH_PLAN_APPROVED (orchestrator) ← user approves
+7. DELEGATION (starting research agents)
+8. AGENT_STARTED (research-agent-1)
+... [normal research workflow continues]
+N. WORKFLOW_COMPLETED
 ```
 
 ---
@@ -671,8 +781,9 @@ Note: Returns 404 if the session has been soft-deleted.
 | **Progress/Status** | PROGRESS, DATA_PROCESSING, TEAM_STATUS, WAITING, WORKSPACE_UPDATED | 5 |
 | **Tools** | TOOL_INVOKED | 1 |
 | **Human Interaction** | APPROVAL_REQUESTED, APPROVAL_DECISION | 2 |
+| **HITL Research Review** | RESEARCH_PLAN_READY, REVIEW_USER_FEEDBACK, RESEARCH_PLAN_UPDATED, RESEARCH_PLAN_APPROVED | 4 |
 | **Advanced** | DEPENDENCY_SATISFIED, ERROR_RECOVERY | 2 |
-| **Total** | | **26** |
+| **Total** | | **30** |
 
 ---
 

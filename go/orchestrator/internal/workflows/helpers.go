@@ -16,6 +16,19 @@ func GetContextBool(ctx map[string]interface{}, key string) bool {
 	return util.GetContextBool(ctx, key)
 }
 
+// GetContextString extracts a string value from a context map.
+func GetContextString(ctx map[string]interface{}, key string) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
 // convertHistoryForAgent formats session history into a simple string slice for agents
 func convertHistoryForAgent(messages []Message) []string {
 	result := make([]string, len(messages))

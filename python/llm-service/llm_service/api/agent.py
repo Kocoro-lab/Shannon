@@ -346,23 +346,30 @@ def build_interpretation_messages(
     system_prompt: str,
     original_query: str,
     tool_results_summary: str,
-    interpretation_prompt: str = INTERPRETATION_PROMPT_GENERAL
+    interpretation_prompt: str = INTERPRETATION_PROMPT_GENERAL,
+    interpretation_system_prompt: Optional[str] = None,
 ) -> List[Dict[str, str]]:
     """
     Build clean messages for interpretation pass.
 
     P0 Fix: Instead of reusing entire messages history (which contains
     "I'll execute..." patterns), build fresh messages with only:
-    - System prompt
+    - System prompt (prefer interpretation-specific if available)
     - Original query
     - Aggregated tool results
     - Strong interpretation instruction
 
     Args:
-        interpretation_prompt: Custom prompt for specific roles (e.g., domain_discovery uses JSON-only prompt)
+        system_prompt: The tool-loop system prompt (fallback if no interpretation-specific prompt).
+        interpretation_prompt: Custom prompt for specific roles (e.g., domain_discovery uses JSON-only prompt).
+        interpretation_system_prompt: Separate system prompt for interpretation phase,
+            stripped of tool-loop instructions (OODA, tool usage patterns, coverage tracking).
+            When provided, this replaces system_prompt to prevent the LLM from
+            following tool-planning instructions during synthesis.
     """
+    effective_system = interpretation_system_prompt or system_prompt
     return [
-        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": effective_system},
         {
             "role": "user",
             "content": (
@@ -636,6 +643,15 @@ def validate_interpretation_output(
 
     if is_continuation:
         return False, "continuation_pattern"
+
+    # OODA loop pattern detection: interpretation output should be synthesis, not planning.
+    # The OODA framework (Observe/Orient/Decide/Act) belongs to the tool loop phase.
+    # If interpretation outputs OODA sections, the system prompt contaminated the synthesis.
+    ooda_section_markers = ("## Observe", "## Orient", "## Decide", "## Act",
+                            "# Observe", "# Orient", "# Decide", "# Act")
+    ooda_section_count = sum(1 for marker in ooda_section_markers if marker in stripped)
+    if ooda_section_count >= 2:
+        return False, "ooda_pattern"
 
     # Source format: strict validation
     if expect_sources_format:
@@ -1892,6 +1908,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     else INTERPRETATION_PROMPT_GENERAL
                 )
                 role_preset_for_interp = None
+                interp_system_prompt = None
                 if role:
                     try:
                         from ..roles.presets import get_role_preset
@@ -1899,6 +1916,12 @@ async def agent_query(request: Request, query: AgentQuery):
                         custom_interp = role_preset_for_interp.get("interpretation_prompt")
                         if custom_interp:
                             interp_prompt = custom_interp
+                        # Use interpretation-specific system prompt if available.
+                        # This strips tool-loop instructions (OODA, tool patterns) that
+                        # can contaminate interpretation output with planning instead of synthesis.
+                        custom_sys = role_preset_for_interp.get("interpretation_system_prompt")
+                        if custom_sys:
+                            interp_system_prompt = custom_sys
                     except Exception:
                         pass
 
@@ -1915,7 +1938,8 @@ async def agent_query(request: Request, query: AgentQuery):
                     system_prompt=system_prompt,
                     original_query=query.query,
                     tool_results_summary=tool_results_summary,
-                    interpretation_prompt=interp_prompt + iteration_context
+                    interpretation_prompt=interp_prompt + iteration_context,
+                    interpretation_system_prompt=interp_system_prompt,
                 )
                 interpretation_result = await request.app.state.providers.generate_completion(
                     messages=interpretation_messages,
@@ -2830,6 +2854,206 @@ class DecompositionResponse(BaseModel):
     provider: str = ""
 
 
+class ResearchPlanRequest(BaseModel):
+    """Request for generating a human-friendly research plan."""
+    query: str = Field(..., description="The research query")
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Task context")
+    conversation: Optional[List[Dict[str, Any]]] = Field(
+        default_factory=list,
+        description="Previous conversation rounds for multi-turn refinement"
+    )
+    is_final_round: bool = Field(
+        default=False,
+        description="Whether this is the final allowed round (LLM must finalize the plan)"
+    )
+    current_round: int = Field(default=1, description="Current conversation round (1-based)")
+    max_rounds: int = Field(default=10, description="Maximum allowed conversation rounds")
+
+
+class ResearchPlanResponse(BaseModel):
+    """Response with the generated research plan."""
+    message: str = Field(..., description="Human-friendly research plan text")
+    intent: str = Field(default="feedback", description="LLM intent: 'feedback' (asking Qs), 'ready' (plan proposed), or 'execute' (user wants to proceed)")
+    round: int = Field(default=1, description="Conversation round number")
+    model: str = Field(default="", description="Model used for generation")
+    provider: str = Field(default="", description="Provider used")
+    input_tokens: int = Field(default=0, description="Input tokens consumed")
+    output_tokens: int = Field(default=0, description="Output tokens consumed")
+
+
+@router.post("/agent/research-plan", response_model=ResearchPlanResponse)
+async def generate_research_plan(
+    request: Request, body: ResearchPlanRequest
+) -> ResearchPlanResponse:
+    """Generate a human-friendly research plan for HITL review."""
+    providers = getattr(request.app.state, "providers", None)
+
+    if not providers or not providers.is_configured():
+        raise HTTPException(status_code=503, detail="LLM providers not configured")
+
+    # Extract current date from context for temporal awareness
+    current_date = body.context.get("current_date_human") or body.context.get("current_date", "") if body.context else ""
+    date_line = f"The current date is {current_date}.\n\n" if current_date else ""
+
+    # Build round awareness hint based on current progress
+    round_info = f"ROUND INFO: You are on round {body.current_round} of {body.max_rounds}. "
+    if body.current_round <= 2:
+        round_info += "You have ample rounds — ask clarifying questions if genuinely needed.\n\n"
+    elif body.current_round <= 5:
+        round_info += "Mid-conversation — balance clarification with proposing a direction.\n\n"
+    else:
+        round_info += "Running low on rounds — prioritize proposing a concrete direction.\n\n"
+
+    # Unified system prompt — covers all rounds (clarification, direction, approval)
+    system_prompt = (
+        f"{date_line}"
+        f"{round_info}"
+        "You are a research intake analyst for Shannon, an automated deep-research system.\n\n"
+
+        "SYSTEM CAPABILITIES\n\n"
+        "After you hand off, the research system will:\n"
+        "- Search and extract information from the public web, including news, official sites,\n"
+        "  financial filings, academic papers, and region-specific sources\n"
+        "- For company research: automatically discover and deeply read official websites,\n"
+        "  investor relations pages, and product documentation\n"
+        "- Run multiple research agents in parallel, with iterative gap-filling\n"
+        "  for under-covered areas\n"
+        "- Produce a structured long-form report with inline citations linked\n"
+        "  to source URLs\n\n"
+        "Limitations:\n"
+        "- No access to paywalled, login-required, or proprietary content\n"
+        "- No real-time data feeds or live monitoring\n"
+        "- Output is a one-time report, not an ongoing feed\n\n"
+
+        "YOUR ROLE\n\n"
+        "You are the intake step before research execution. Your job is to align on\n"
+        "WHAT to research and WHY before the system spends resources.\n"
+        "You are having a multi-turn conversation with the user. Each turn, you assess\n"
+        "the state and choose exactly one path.\n\n"
+
+        "DECISION LOGIC\n\n"
+
+        "PATH A → [INTENT:feedback]\n"
+        "Condition: You genuinely lack critical information to define a useful research\n"
+        "direction. Something important is unknown — their purpose, which aspects\n"
+        "matter, or what depth they need.\n"
+        "Behavior:\n"
+        "- State what you DO understand from the query (never re-ask what was already said)\n"
+        "- Ask 1-3 targeted questions about what is ACTUALLY missing\n"
+        "- Do NOT propose a research direction yet\n"
+        "CRITICAL: If you find yourself listing specific research areas, priorities, or a\n"
+        "concrete plan in your response, you are on PATH B — switch to [INTENT:ready].\n\n"
+
+        "PATH B → [INTENT:ready]\n"
+        "Condition: You have enough information to propose a concrete research direction.\n"
+        "This includes when the original query was already specific enough — do NOT\n"
+        "force clarification questions when the query is clear.\n"
+        "CRITICAL: If your response contains specific research areas, coverage priorities,\n"
+        "or a structured plan, you MUST use [INTENT:ready] — even if you also ask whether\n"
+        "the user wants adjustments. Proposing a direction + asking for tweaks = ready.\n"
+        "Behavior:\n"
+        "- Summarize your understanding of their need (1-2 sentences)\n"
+        "- Describe the research direction: what areas to cover, in what priority,\n"
+        "  what to skip or treat as secondary, and why — grounded in their stated purpose\n"
+        "- Keep the conversational part concise (under 300 words)\n"
+        "- End by inviting adjustment — not asking permission.\n"
+        "  Good: 'You can approve to start, or tell me what to adjust.'\n"
+        "  Bad: 'Would you like me to proceed?'\n"
+        "Note: Do NOT output any structured blocks like [RESEARCH_BRIEF]. The downstream system will extract structure from your conversational response.\n\n"
+
+        "PATH C → [INTENT:execute]\n"
+        "Condition: The user's latest message UNAMBIGUOUSLY signals they want to\n"
+        "proceed with the current direction, in any language. No refinements,\n"
+        "no 'but also...' qualifiers.\n"
+        "The message expresses unconditional approval — e.g. agreement, confirmation,\n"
+        "or a direct request to start execution. Short affirmatives count.\n"
+        "Mixed messages that approve but also request changes ('good but add X')\n"
+        "do NOT count — treat those as PATH B input.\n"
+        "Behavior:\n"
+        "- Respond with a SHORT confirmation (1-2 sentences)\n"
+        "- Do NOT repeat the plan, list steps, or output [RESEARCH_BRIEF]\n\n"
+
+        "OUTPUT RULES\n"
+        "- Reply in the SAME LANGUAGE as the user's query\n"
+        "- Be concise and direct — no filler, no over-explaining\n"
+        "- Never output subtask lists, search queries, or execution steps —\n"
+        "  that is the downstream system's job, not yours\n"
+        "- Never fabricate results or pretend to run research\n"
+        "- If the user asks for something the system cannot do, say so honestly\n"
+        "  and suggest what IS feasible\n"
+        "- Exactly ONE [INTENT:...] tag at the very end, on its own line\n"
+        "- Do NOT echo system capabilities back to the user: no word-count estimates,\n"
+        "  no data-source disclaimers ('publicly available', 'within accessible sources'),\n"
+        "  no caveats about what the system cannot access.\n"
+        "  Your job is to discuss WHAT to research — the system's HOW is not the user's concern.\n"
+    )
+
+    # Final round override: force a direction proposal, no more questions
+    if body.is_final_round:
+        system_prompt += (
+            "\n\nFINAL ROUND: This is the last round of discussion. "
+            "You MUST output a definitive research direction based on everything discussed. "
+            "Do NOT ask more questions. Output [INTENT:ready]."
+        )
+
+    # Build messages: system prompt + conversation history (or initial query)
+    messages = [{"role": "system", "content": system_prompt}]
+
+    if body.conversation:
+        for turn in body.conversation:
+            messages.append({
+                "role": turn.get("role", "user"),
+                "content": turn.get("message", ""),
+            })
+    else:
+        # First round: user query + optional context
+        user_content = f"Research topic: {body.query}"
+        if body.context:
+            ctx_str = ", ".join(
+                f"{k}: {v}" for k, v in body.context.items()
+                if k not in ("force_research", "require_review", "review_timeout")
+            )
+            if ctx_str:
+                user_content += f"\n\nAdditional context: {ctx_str}"
+        messages.append({"role": "user", "content": user_content})
+
+    round_num = len([t for t in (body.conversation or []) if t.get("role") == "user"]) + 1
+
+    try:
+        from ..providers.base import ModelTier
+        result = await providers.generate_completion(
+            messages=messages,
+            tier=ModelTier.SMALL,
+            max_tokens=2048,
+            temperature=0.5,
+        )
+        plan_text = result.get("output_text", "")
+        usage = result.get("usage", {})
+
+        # Parse intent tag from LLM response (all rounds — unified prompt may
+        # output [INTENT:ready] even on round 1 if the query is specific enough)
+        import re
+        detected_intent = "feedback"
+        intent_match = re.search(r"\[INTENT:(feedback|ready|execute)\]", plan_text)
+        if intent_match:
+            detected_intent = intent_match.group(1)
+            # Strip the intent tag from the displayed message
+            plan_text = re.sub(r"\s*\[INTENT:(?:feedback|ready|execute)\]\s*$", "", plan_text).strip()
+
+        return ResearchPlanResponse(
+            message=plan_text,
+            intent=detected_intent,
+            round=round_num,
+            model=result.get("model", ""),
+            provider=result.get("provider", ""),
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+        )
+    except Exception as e:
+        logger.error(f"Research plan generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate research plan: {e}")
+
+
 @router.post("/agent/decompose", response_model=DecompositionResponse)
 async def decompose_task(request: Request, query: AgentQuery) -> DecompositionResponse:
     """
@@ -3059,78 +3283,8 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         )
 
         # Research supervisor identity (for deep research workflows)
-        RESEARCH_SUPERVISOR_IDENTITY = (
-            "You are the lead research supervisor planning a comprehensive strategy.\n"
-            "IMPORTANT: Process queries in ANY language including English, Chinese, Japanese, Korean, etc.\n\n"
-            "# Planning Phase:\n"
-            "1. Analyze the research brief carefully\n"
-            "2. Break down into clear, SPECIFIC subtasks (avoid acronyms)\n"
-            "3. Prefer PARALLEL subtasks when possible; keep dependencies minimal\n"
-            "4. Each subtask gets COMPLETE STANDALONE INSTRUCTIONS\n\n"
-            "# Dependency Rules (CRITICAL):\n"
-            "- Dependencies are HARD blockers only: add a dependency ONLY if the subtask cannot be executed without the upstream output.\n"
-            "- Do NOT add dependencies for convenience, readability, or optional context reuse.\n"
-            "- If two subtasks can start from the same public sources/URLs independently, they MUST have empty dependencies [].\n"
-            "- Avoid dependency chains (A→B→C) unless truly required; prefer shallow DAGs.\n"
-            "- For website/docs analysis queries, default to 3–6 parallel subtasks by section/theme (e.g., overview, architecture, API, tutorials) WITHOUT dependencies.\n"
-            "- If a discovery/index step is needed (e.g., find navigation/TOC paths), make it ONE small upstream task and keep other tasks independent unless they truly require its output.\n\n"
-            "# Task Contract Requirements (MANDATORY):\n"
-            "Every research subtask MUST include ALL of the following contract fields:\n"
-            "- output_format: {type, required_fields, optional_fields}\n"
-            "- source_guidance: {required: [...], optional: [...], avoid: [...]}\n"
-            "- search_budget: {max_queries, max_fetches}\n"
-            "- boundaries: {in_scope: [...], out_of_scope: [...]}\n\n"
-            "CRITICAL: If you lack information to fill a contract field, use defaults:\n"
-            "- output_format: {type: 'narrative', required_fields: [], optional_fields: []}\n"
-            "- source_guidance: {required: ['official', 'aggregator'], optional: ['news'], avoid: ['social']}\n"
-            "- search_budget: {max_queries: 10, max_fetches: 20}\n"
-            "- boundaries: {in_scope: [...explicitly list...], out_of_scope: [...at least 1 exclusion...]}\n\n"
-            "Subtasks missing ANY contract field will be considered INVALID output.\n\n"
-            "# Detailed Task Description Requirements:\n"
-            "Each subtask description MUST include ALL elements below, using HIGH-DENSITY format (≤5 lines, 1 sentence per element):\n"
-            "1. **Objective** (1 sentence): Single most important goal\n"
-            "2. **Starting Points** (1 sentence): Specific URLs/paths/sites/queries to try first (be concrete)\n"
-            "3. **Key Questions** (1 sentence): 2-3 questions to answer\n"
-            "4. **Scope** (1 sentence): What to INCLUDE + what to EXCLUDE\n"
-            "5. **Tools** (1 sentence): Tool priority order\n\n"
-            "GOOD EXAMPLE (high-density, 5 lines):\n"
-            "\"Research TSMC's current production capacity. Start: tsmc.com/ir quarterly report, search 'TSMC fab construction 2025'. "
-            "Answer: (1) current wafer capacity, (2) new fabs, (3) 2026 projection. "
-            "Include: manufacturing capacity only. Exclude: financial performance. "
-            "Tools: web_fetch (investor reports) → web_search (news).\"\n\n"
-            "BAD EXAMPLES:\n"
-            "- Too vague: \"Research TSMC\"\n"
-            "- Too verbose: Long paragraphs explaining background, multiple unrelated points\n\n"
-            "# Research Breakdown Guidelines:\n"
-            "- Simple queries (factual, narrow scope): 1-2 subtasks, complexity_score < 0.3\n"
-            "- Complex queries (multi-faceted, analytical): 3-5 subtasks, complexity_score >= 0.3\n"
-            "- Ensure logical dependencies are clear\n"
-            "- Prioritize high-value information sources\n"
-            "- Quality over quantity: Focus on tasks yielding authoritative, relevant sources\n\n"
-            "# Scaling Rules (Task Count by Query Type):\n"
-            "- **Comparison queries** ('compare A vs B'): Create ONE subtask per entity being compared\n"
-            "  Example: 'Compare LangChain vs AutoGen vs CrewAI' → 3 subtasks (one per framework)\n"
-            "- **List/ranking queries** ('top 10 X', 'best Y'): Use SINGLE comprehensive subtask\n"
-            "  Example: 'List top 10 AI frameworks' → 1 subtask with broad search scope\n"
-            "- **Analysis queries** ('analyze market for X'): Split by major dimensions\n"
-            "  Example: 'Analyze EV market' → [market size, key players, trends, regulations]\n"
-            "- **Explanation queries** ('what is X', 'how does Y work'): Usually 1-2 subtasks\n"
-            "  Example: 'Explain quantum computing' → 1 subtask (or 2 if very complex: principles + applications)\n\n"
-            "**Anti-patterns to avoid:**\n"
-            "- DO NOT create subtasks that overlap significantly in scope\n"
-            "- DO NOT split tasks that are too granular (combine related questions)\n"
-            "- DO NOT create unnecessary dependencies (minimize sequential constraints)\n"
-            "- NEVER create more than 10 subtasks unless strictly necessary (more subtasks = more overhead = slower results)\n"
-            "- If task seems to require many subtasks, RESTRUCTURE to consolidate similar topics\n\n"
-            "# Company/Brand Name Handling in Search Queries:\n"
-            "- NEVER phonetically transliterate brand names into katakana/pinyin\n"
-            "  BAD: 'Notion' → 'ノーション', 'Stripe' → '斯特莱普' (phonetic nonsense)\n"
-            "- Keep brand names AS-IS, combine with local keywords:\n"
-            "  GOOD: 'Notion 料金' (Japanese), 'Stripe 定价' (Chinese)\n"
-            "- If official local company name exists (e.g., 株式会社メルカリ), use that exact form\n"
-            "- When uncertain, default to '{brand_name} {topic}' pattern in target language\n\n"
-            "NOTE: You MAY include an optional 'parent_area' string field per subtask when grouping by research areas is applicable.\n\n"
-        )
+        # Defined in roles/deep_research/research_supervisor.py
+        from ..roles.deep_research import RESEARCH_SUPERVISOR_IDENTITY, DOMAIN_ANALYSIS_HINT
 
         # ================================================================
         # PRIORITY-BASED PROMPT SELECTION (IDENTITY + COMMON_SUFFIX)
@@ -3179,8 +3333,14 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             prompt_source = "general"
             logger.info("Decompose: Using general planning identity")
 
+        # Extract current date for temporal awareness (enables time-sensitive query handling)
+        current_date = ""
+        if isinstance(query.context, dict):
+            current_date = query.context.get("current_date_human") or query.context.get("current_date", "")
+        date_prefix = f"The current date is {current_date}.\n\n" if current_date else ""
+
         # Combine identity with common decomposition suffix
-        decompose_system_prompt = identity_prompt + COMMON_DECOMPOSITION_SUFFIX
+        decompose_system_prompt = date_prefix + identity_prompt + COMMON_DECOMPOSITION_SUFFIX
 
         # FIRST DECISION: Domain Analysis (for company queries)
         # This comes before tool hints because it's the first planning decision (task-1)
@@ -3189,44 +3349,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
         else:
             query_type = None
         if isinstance(query_type, str) and query_type.strip().lower() == "company":
-            domain_analysis_hint = (
-                "\n\n# FIRST DECISION: Domain Analysis (task-1)\n"
-                "Before planning other tasks, decide: does this query need official company sources?\n\n"
-                "## Include domain_analysis when:\n"
-                "- Research needs official sources (IR, product docs, leadership, careers)\n"
-                "- No specific URLs provided by user\n"
-                "- Authoritative primary sources would strengthen the research\n\n"
-                "## Skip domain_analysis when:\n"
-                "- User provides specific URLs to analyze\n"
-                "- Query focuses on external perspectives (news, reviews, public perception)\n"
-                "- Comparing 5+ companies (web_search more efficient)\n\n"
-                "## If included:\n"
-                "Write a description that tells the system WHAT to look for, derived from the user's query.\n\n"
-                "GOOD descriptions (specific, query-driven):\n"
-                "- \"Find TSMC's official IR pages focusing on 3nm capacity and Arizona fab timeline\"\n"
-                "- \"Discover Stripe's developer docs and API pricing pages\"\n"
-                "- \"Locate Tesla's investor relations for Q3 2024 delivery numbers\"\n\n"
-                "BAD descriptions (generic, template-like):\n"
-                "- \"Discover official domains for Company X\" (too vague)\n"
-                "- \"Find company website\" (no research focus)\n\n"
-                "## Structure:\n"
-                "```json\n"
-                "{\"id\": \"task-1\", \"task_type\": \"domain_analysis\",\n"
-                " \"description\": \"<specific focus derived from query>\",\n"
-                " \"dependencies\": [], \"estimated_tokens\": 400,\n"
-                " \"suggested_tools\": [], \"tool_parameters\": {}}\n"
-                "```\n"
-                "Note: Other contract fields (source_guidance, etc.) are ignored for domain_analysis.\n\n"
-                "## Impact on other tasks:\n"
-                "When domain_analysis IS included:\n"
-                "- Domain_analysis already covers official sources, so other tasks should prioritize exploratory discovery\n"
-                "- Focus on external perspectives: news, aggregator, reviews, analyst reports, community discussions\n"
-                "- Seek information that official sources typically don't provide\n\n"
-                "When domain_analysis is SKIPPED:\n"
-                "- Other tasks should include official sources in their research\n"
-                "- Balance official sources with external perspectives\n"
-            )
-            decompose_system_prompt = decompose_system_prompt + domain_analysis_hint
+            decompose_system_prompt = decompose_system_prompt + DOMAIN_ANALYSIS_HINT
 
         # If tools are available, add a generic tool-aware hint
         if available_tools:
@@ -3305,6 +3428,33 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     )
                     decompose_system_prompt = decompose_system_prompt + areas_hint
 
+        # Dynamic HITL hint: only appended when a confirmed_plan exists from review.
+        # When review is OFF, this section is skipped — zero impact on non-review flows.
+        if query.context and query.context.get("confirmed_plan"):
+            hitl_hint = (
+                "\n\nUSER REVIEW CONTEXT (HITL):\n"
+                "A research brief from an interactive review session is provided below.\n"
+                "You MUST use it to guide subtask allocation:\n\n"
+                "1. ALLOCATE subtasks proportionally:\n"
+                "   - priority_focus areas → 2-3 subtasks each, higher search_budget (max_queries: 15)\n"
+                "   - secondary_focus areas → 1 subtask each, standard search_budget\n"
+                "   - skip areas → NO subtask, or fold into another as a minor point\n"
+                "2. ENCODE purpose into subtask descriptions:\n"
+                "   - Include contextual framing: '(for interview preparation)' or '(for investment analysis)'\n"
+                "   - This helps the executing agent choose appropriate depth/perspective\n"
+                "3. SET boundaries.out_of_scope to include skip topics\n"
+                "4. ADJUST depth by knowledge_level:\n"
+                "   - beginner → include foundational/introductory subtask\n"
+                "   - intermediate → skip basics, focus on analysis\n"
+                "   - expert → deep-dive only, assume domain knowledge\n"
+                "5. PRESERVE system tasks:\n"
+                "   - If a domain_analysis task is applicable (see FIRST DECISION section above),\n"
+                "     you MUST still include it as task-1 with task_type: 'domain_analysis'.\n"
+                "   - domain_analysis is a system-level task, NOT a content subtask —\n"
+                "     it is independent of the brief's priority/skip areas.\n"
+            )
+            decompose_system_prompt += hitl_hint
+
         # Inject current date for time awareness in decomposition
         current_date = None
         if query.context and isinstance(query.context, dict):
@@ -3345,6 +3495,80 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"
         )
         messages.append({"role": "user", "content": user})
+
+        # HITL Phase 1: inject structured output from Refine (priority_focus is the switch)
+        # When priority_focus exists, Refine has already parsed confirmed_plan into structured format.
+        # Decompose consumes these structured fields directly for subtask allocation.
+        if query.context and query.context.get("priority_focus"):
+            # New path: consume Refine's structured HITL output
+            priority_focus = query.context.get("priority_focus", [])
+            secondary_focus = query.context.get("secondary_focus", [])
+            skip_areas = query.context.get("skip_areas", [])
+            user_intent = query.context.get("user_intent", {})
+            confirmed_plan = query.context.get("confirmed_plan", "")
+
+            # Build structured brief section from Refine output
+            brief_parts = []
+            if confirmed_plan:
+                brief_parts.append(f"Research Direction:\n{confirmed_plan}")
+
+            brief_parts.append("\n## Structured Focus Areas (from Refine)")
+            if priority_focus:
+                brief_parts.append(f"priority_focus: {', '.join(priority_focus)}")
+            if secondary_focus:
+                brief_parts.append(f"secondary_focus: {', '.join(secondary_focus)}")
+            if skip_areas:
+                brief_parts.append(f"skip: {', '.join(skip_areas)}")
+
+            if user_intent:
+                intent_parts = []
+                if user_intent.get("purpose"):
+                    intent_parts.append(f"purpose={user_intent['purpose']}")
+                if user_intent.get("depth"):
+                    intent_parts.append(f"depth={user_intent['depth']}")
+                if intent_parts:
+                    brief_parts.append(f"user_intent: {', '.join(intent_parts)}")
+
+            brief_section = "\n".join(brief_parts)
+
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"USER REVIEW BRIEF:\n{brief_section}\n\n"
+                    "Decompose following this brief. "
+                    "Prioritize subtasks toward priority_focus areas."
+                )
+            })
+        elif query.context and query.context.get("confirmed_plan"):
+            # Legacy fallback: confirmed_plan exists but Refine hasn't structured it yet
+            # This handles edge cases during migration or when Refine fails to parse
+            confirmed_plan = query.context["confirmed_plan"]
+
+            brief_section = f"Research Direction:\n{confirmed_plan}"
+            # Fallback: extract user messages from raw conversation
+            review_conv = query.context.get("review_conversation")
+            if review_conv:
+                conv_list = review_conv if isinstance(review_conv, list) else []
+                if isinstance(review_conv, str):
+                    try:
+                        import json as _json
+                        conv_list = _json.loads(review_conv)
+                    except Exception:
+                        conv_list = []
+                user_messages = [r["message"] for r in conv_list if r.get("role") == "user"]
+                if user_messages:
+                    brief_section += "\n\nUser clarifications during review:\n" + "\n".join(
+                        f"- {msg}" for msg in user_messages
+                    )
+
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"USER REVIEW BRIEF:\n{brief_section}\n\n"
+                    "Decompose following this brief. "
+                    "Prioritize subtasks toward priority_focus areas."
+                )
+            })
 
         logger.info(
             f"Decompose: Prepared {len(messages)} messages (history_rehydrated={history_rehydrated})"

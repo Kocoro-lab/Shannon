@@ -127,6 +127,7 @@ func main() {
 	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, skillRegistry, logger)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
 	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
+	reviewHandler := handlers.NewReviewHandler(orchClient, redisClient, logger)
 	scheduleHandler := handlers.NewScheduleHandler(orchClient, pgDB, logger)
 	healthHandler := handlers.NewHealthHandler(orchClient, logger)
 	openapiHandler := handlers.NewOpenAPIHandler()
@@ -339,6 +340,28 @@ func main() {
 						idempotencyMiddleware(
 							http.HandlerFunc(approvalHandler.SubmitDecision),
 						),
+					),
+				),
+			),
+		),
+	)
+
+	// HITL Research Review
+	mux.Handle("GET /api/v1/tasks/{workflowID}/review",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(reviewHandler.HandleGetReview),
+				),
+			),
+		),
+	)
+	mux.Handle("POST /api/v1/tasks/{workflowID}/review",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(reviewHandler.HandleReview),
 					),
 				),
 			),
@@ -689,7 +712,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		isStreaming := strings.HasPrefix(r.URL.Path, "/api/v1/stream/")
 
-		allowedHeaders := "Content-Type, Authorization, X-API-Key, X-User-Id, Idempotency-Key, traceparent, tracestate, Cache-Control, Last-Event-ID"
+		allowedHeaders := "Content-Type, Authorization, X-API-Key, X-User-Id, Idempotency-Key, traceparent, tracestate, Cache-Control, Last-Event-ID, If-Match"
 
 		if !isStreaming {
 			// Allow CORS for development

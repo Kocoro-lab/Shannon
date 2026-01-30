@@ -27,6 +27,9 @@ const (
 	ProcessApprovalResponseActivity = "ProcessApprovalResponse"
 	GetApprovalStatusActivity       = "GetApprovalStatus"
 
+	// HITL Research Review Activities
+	GenerateResearchPlanActivity = "GenerateResearchPlan"
+
 	// Streaming Activities
 	StreamExecuteActivity       = "StreamExecute"
 	BatchStreamExecuteActivity  = "BatchStreamExecute"

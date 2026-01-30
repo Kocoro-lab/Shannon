@@ -2521,6 +2521,20 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		if len(refineResult.LocalizedNames) > 0 {
 			baseContext["localized_names"] = refineResult.LocalizedNames
 		}
+		// HITL Phase 1: Pass structured HITL output to Decompose
+		// These fields are only populated when confirmed_plan exists (HITL mode)
+		if len(refineResult.PriorityFocus) > 0 {
+			baseContext["priority_focus"] = refineResult.PriorityFocus
+		}
+		if len(refineResult.SecondaryFocus) > 0 {
+			baseContext["secondary_focus"] = refineResult.SecondaryFocus
+		}
+		if len(refineResult.SkipAreas) > 0 {
+			baseContext["skip_areas"] = refineResult.SkipAreas
+		}
+		if refineResult.UserIntent != nil {
+			baseContext["user_intent"] = refineResult.UserIntent
+		}
 		// Account for refinement tokens in the workflow total
 		totalTokens += refineResult.TokensUsed
 
@@ -2640,6 +2654,17 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 	if err := controlHandler.CheckPausePoint(ctx, "post_decomposition"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
+
+	// Clean up HITL review fields from baseContext after decompose has consumed them.
+	// Subagents should NOT see raw review content — decompose encodes intent into subtask descriptions.
+	delete(baseContext, "confirmed_plan")
+	delete(baseContext, "research_brief")
+	delete(baseContext, "review_conversation")
+	// HITL Phase 1: Also clean up structured HITL fields
+	delete(baseContext, "priority_focus")
+	delete(baseContext, "secondary_focus")
+	delete(baseContext, "skip_areas")
+	delete(baseContext, "user_intent")
 
 	// Check for budget configuration
 	agentMaxTokens := 0
@@ -4116,6 +4141,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						"domain_analysis_task_id", domainAnalysisTaskID,
 					)
 
+					// Collect results from all phases for cross-phase dependency resolution
+					phase1Results := make(map[string]activities.AgentExecutionResult)
+
 					// Phase 1: Execute independent tasks (runs in parallel with DomainAnalysis which is already started)
 					if len(independentTasks) > 0 {
 						indepResult, err := execution.ExecuteHybrid(
@@ -4131,8 +4159,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						if err != nil {
 							logger.Warn("Independent tasks execution failed", "error", err)
 						} else {
-							for _, result := range indepResult.Results {
+							for id, result := range indepResult.Results {
 								agentResults = append(agentResults, result)
+								phase1Results[id] = result // Collect for Phase 3
 							}
 							totalTokens += indepResult.TotalTokens
 						}
@@ -4159,15 +4188,9 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								}
 								task1DependentTasks[i].ContextOverrides["official_domains"] = domains
 								task1DependentTasks[i].ContextOverrides["official_domains_source"] = "domain_analysis"
-
-								// Remove dependency on task-1
-								var newDeps []string
-								for _, dep := range task1DependentTasks[i].Dependencies {
-									if dep != domainAnalysisTaskID {
-										newDeps = append(newDeps, dep)
-									}
-								}
-								task1DependentTasks[i].Dependencies = newDeps
+								// Note: We keep task.Dependencies intact so that hybrid.go can inject
+								// dependency_results properly. The dependency on task-1 will be satisfied
+								// via PrefilledResults which now contains domain_analysis result.
 							}
 							logger.Info("Injected official_domains into dependent tasks",
 								"domains", domains,
@@ -4176,14 +4199,41 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 						}
 					}
 
-					// Phase 3: Execute dependent tasks (now with official_domains injected)
+					// Phase 3: Execute dependent tasks with cross-phase dependency support
 					if len(task1DependentTasks) > 0 {
+						// Build PrefilledResults from domain_analysis + Phase 1 results
+						prefilledResults := make(map[string]activities.AgentExecutionResult)
+
+						// Add domain_analysis result (sub-workflow)
+						if domainAnalysisResult != nil {
+							prefilledResults[domainAnalysisTaskID] = activities.AgentExecutionResult{
+								Response:   domainAnalysisResult.DomainAnalysisDigest,
+								Success:    true,
+								TokensUsed: domainAnalysisResult.Stats.DigestTokensUsed,
+							}
+						}
+
+						// Add Phase 1 results (sub-agents) for cross-phase dependencies
+						for id, result := range phase1Results {
+							prefilledResults[id] = result
+						}
+
+						logger.Info("Building PrefilledResults for Phase 3",
+							"domain_analysis_included", domainAnalysisResult != nil,
+							"phase1_results_count", len(phase1Results),
+							"total_prefilled", len(prefilledResults),
+						)
+
+						// Create config with PrefilledResults for this phase
+						phase3Config := hybridConfig
+						phase3Config.PrefilledResults = prefilledResults
+
 						depResult, err := execution.ExecuteHybrid(
 							ctx,
 							task1DependentTasks,
 							input.SessionID,
 							convertHistoryForAgent(input.History),
-							hybridConfig,
+							phase3Config,
 							agentMaxTokens,
 							input.UserID,
 							modelTier,

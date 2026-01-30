@@ -60,6 +60,20 @@ type RefineResearchQueryResult struct {
 	TargetLanguages    []string            `json:"target_languages,omitempty"`    // Languages to search (e.g., ["en", "zh", "ja"])
 	LocalizedNames       map[string][]string `json:"localized_names,omitempty"`       // Entity names in local languages
 	PrefetchSubpageLimit int                 `json:"prefetch_subpage_limit,omitempty"` // Recommended subpages per domain (5-20, default 15)
+
+	// HITL: User intent from confirmed_plan (populated only when confirmed_plan exists)
+	PriorityFocus   []string    `json:"priority_focus,omitempty"`   // Areas user wants deep research
+	SecondaryFocus  []string    `json:"secondary_focus,omitempty"`  // Areas for adequate coverage
+	SkipAreas       []string    `json:"skip_areas,omitempty"`       // Areas user explicitly excluded
+	UserIntent      *UserIntent `json:"user_intent,omitempty"`      // Structured user intent
+	HITLParseFailed bool        `json:"hitl_parse_failed,omitempty"` // True if HITL plan parsing failed (degraded mode)
+}
+
+// UserIntent captures the user's research purpose and preferences
+type UserIntent struct {
+	Purpose          string   `json:"purpose,omitempty"`           // learning, investment, interview_prep, etc.
+	Depth            string   `json:"depth,omitempty"`             // beginner, intermediate, expert
+	SourcePreference []string `json:"source_preference,omitempty"` // preferred source types
 }
 
 // RefineResearchQuery expands vague queries into structured research plans
@@ -67,6 +81,15 @@ type RefineResearchQueryResult struct {
 func (a *Activities) RefineResearchQuery(ctx context.Context, in RefineResearchQueryInput) (*RefineResearchQueryResult, error) {
 	logger := activity.GetLogger(ctx)
 
+	// HITL mode: if confirmed_plan exists, parse it into structured output
+	if confirmedPlan, ok := in.Context["confirmed_plan"].(string); ok && confirmedPlan != "" {
+		logger.Info("RefineResearchQuery: HITL mode - parsing confirmed_plan",
+			"plan_length", len(confirmedPlan),
+		)
+		return a.refineWithHITL(ctx, in, confirmedPlan)
+	}
+
+	// Normal mode: existing logic unchanged
 	base := os.Getenv("LLM_SERVICE_URL")
 	if base == "" {
 		base = "http://llm-service:8000"
@@ -684,4 +707,236 @@ func validateLanguageDetection(query string, detectedLang string, logger log.Log
 	}
 
 	return confidence
+}
+
+// refineWithHITL parses a confirmed_plan from HITL review into structured output
+func (a *Activities) refineWithHITL(ctx context.Context, in RefineResearchQueryInput, confirmedPlan string) (*RefineResearchQueryResult, error) {
+	logger := activity.GetLogger(ctx)
+
+	base := os.Getenv("LLM_SERVICE_URL")
+	if base == "" {
+		base = "http://llm-service:8000"
+	}
+	url := fmt.Sprintf("%s/agent/query", base)
+
+	// Build conversation context (if available)
+	conversationText := ""
+	if convRaw, ok := in.Context["review_conversation"]; ok {
+		if convSlice, ok := convRaw.([]interface{}); ok {
+			for _, r := range convSlice {
+				if round, ok := r.(map[string]interface{}); ok {
+					role, _ := round["role"].(string)
+					msg, _ := round["message"].(string)
+					if role != "" && msg != "" {
+						conversationText += fmt.Sprintf("[%s]: %s\n\n", role, msg)
+					}
+				}
+			}
+		}
+	}
+
+	// Build prompt for HITL plan parsing
+	conversationSection := ""
+	if conversationText != "" {
+		conversationSection = fmt.Sprintf("\nReview conversation (for additional context):\n%s", conversationText)
+	}
+
+	hitlPrompt := fmt.Sprintf(`You are a research plan parser. Your task is to extract structured information from a user-approved research direction.
+
+## Input
+Original query: %s
+
+Confirmed research plan (approved by user):
+%s
+%s
+
+## Your Task
+Parse the confirmed plan and extract:
+1. **priority_focus**: Areas the user explicitly wants to research deeply (list)
+2. **secondary_focus**: Areas mentioned but not prioritized, OR areas you infer would help the user's goal (list)
+3. **skip_areas**: Areas the user explicitly wants to skip or exclude (list)
+4. **user_intent**:
+   - purpose: Why they need this research (learning, investment_analysis, interview_prep, competitive_analysis, decision_support, etc.)
+   - depth: User's apparent expertise level (beginner, intermediate, expert)
+   - source_preference: Types of sources they prefer (official_docs, technical_blogs, academic_papers, news, etc.)
+
+## Rules
+- Extract from the user's actual words; do not invent constraints
+- If the user mentions to "skip" or "exclude" something, put it in skip_areas
+- If the user emphasizes something as "important" or "focus on", put it in priority_focus
+- For secondary_focus: include areas mentioned but not emphasized, AND infer 1-2 related areas that would help their goal
+- Keep values as short keywords/phrases, not full sentences
+- IMPORTANT: Use human-readable format for research_areas (e.g., "Macroeconomic Policy", "Geopolitical Risk"), NOT snake_case (e.g., "macroeconomic_policy")
+
+## Also perform entity recognition (same as normal refinement):
+- canonical_name: If discussing a specific entity (company, product, framework)
+- official_domains: Known official websites
+- query_type: company, industry, scientific, comparative, exploratory
+
+## Response Format
+Return ONLY a JSON object:
+{
+  "refined_query": "...",
+  "research_areas": ["Macroeconomic Policy", "Geopolitical Risk", "Central Bank Behavior"],
+  "rationale": "Brief explanation of how you interpreted the plan",
+  "canonical_name": "Entity name if applicable",
+  "official_domains": ["domain1.com"],
+  "query_type": "company|industry|scientific|comparative|exploratory",
+  "priority_focus": ["Federal Reserve policy", "Inflation expectations"],
+  "secondary_focus": ["ETF capital flows"],
+  "skip_areas": ["Mining technology details"],
+  "user_intent": {
+    "purpose": "learning",
+    "depth": "expert",
+    "source_preference": ["official_docs", "technical_blogs"]
+  },
+  "research_dimensions": [
+    {
+      "dimension": "Monetary Policy & Real Rates",
+      "questions": ["Q1", "Q2"],
+      "source_types": ["official", "news"],
+      "priority": "high"
+    }
+  ]
+}`, in.Query, confirmedPlan, conversationSection)
+
+	reqBody := map[string]interface{}{
+		"query":       hitlPrompt,
+		"max_tokens":  4096,
+		"temperature": 0.3,
+		"agent_id":    "research-refiner-hitl",
+		"model_tier":  "small",
+		"context": map[string]interface{}{
+			"system_prompt": "You are a precise JSON parser. Return ONLY valid JSON, no markdown fences, no explanation.",
+		},
+	}
+
+	reqJSON, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal HITL refine request: %w", err)
+	}
+
+	client := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create HITL refine request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-ID", "research-refiner-hitl")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HITL refine LLM call failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("HITL refine HTTP %d", resp.StatusCode)
+	}
+
+	var llmResp struct {
+		Response string `json:"response"`
+		Metadata struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"metadata"`
+		TokensUsed int    `json:"tokens_used"`
+		ModelUsed  string `json:"model_used"`
+		Provider   string `json:"provider"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&llmResp); err != nil {
+		return nil, fmt.Errorf("failed to decode HITL refine response: %w", err)
+	}
+
+	// Parse the JSON response
+	result := &RefineResearchQueryResult{
+		OriginalQuery: in.Query,
+		TokensUsed:    llmResp.TokensUsed,
+		ModelUsed:     llmResp.ModelUsed,
+		Provider:      llmResp.Provider,
+	}
+
+	// Extract JSON from response (may have markdown fences)
+	jsonStr := llmResp.Response
+	if start := strings.Index(jsonStr, "{"); start != -1 {
+		if end := strings.LastIndex(jsonStr, "}"); end != -1 {
+			jsonStr = jsonStr[start : end+1]
+		}
+	}
+
+	var parsed struct {
+		RefinedQuery       string              `json:"refined_query"`
+		ResearchAreas      []string            `json:"research_areas"`
+		Rationale          string              `json:"rationale"`
+		CanonicalName      string              `json:"canonical_name"`
+		OfficialDomains    []string            `json:"official_domains"`
+		QueryType          string              `json:"query_type"`
+		PriorityFocus      []string            `json:"priority_focus"`
+		SecondaryFocus     []string            `json:"secondary_focus"`
+		SkipAreas          []string            `json:"skip_areas"`
+		UserIntent         *UserIntent         `json:"user_intent"`
+		ResearchDimensions []ResearchDimension `json:"research_dimensions"`
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &parsed); err != nil {
+		logger.Error("Failed to parse HITL refine JSON, using degraded mode",
+			"error", err,
+			"response", truncateStr(llmResp.Response, 200),
+		)
+		// Degraded mode: use original query with empty HITL fields, mark as failed
+		result.RefinedQuery = in.Query
+		result.Rationale = "HITL parsing failed, using original query (degraded mode)"
+		result.HITLParseFailed = true
+		return result, nil
+	}
+
+	// Populate result
+	result.RefinedQuery = parsed.RefinedQuery
+	if result.RefinedQuery == "" {
+		result.RefinedQuery = in.Query
+	}
+	result.ResearchAreas = parsed.ResearchAreas
+	result.Rationale = parsed.Rationale
+	result.CanonicalName = parsed.CanonicalName
+	result.OfficialDomains = parsed.OfficialDomains
+	result.QueryType = parsed.QueryType
+	result.PriorityFocus = parsed.PriorityFocus
+	result.SecondaryFocus = parsed.SecondaryFocus
+	result.SkipAreas = parsed.SkipAreas
+	result.UserIntent = parsed.UserIntent
+	result.ResearchDimensions = parsed.ResearchDimensions
+
+	// Generate research_dimensions from priority/secondary if not provided
+	if len(result.ResearchDimensions) == 0 && (len(result.PriorityFocus) > 0 || len(result.SecondaryFocus) > 0) {
+		for _, area := range result.PriorityFocus {
+			result.ResearchDimensions = append(result.ResearchDimensions, ResearchDimension{
+				Dimension:   area,
+				Questions:   []string{fmt.Sprintf("What are the key aspects of %s?", area)},
+				SourceTypes: []string{"official", "news"},
+				Priority:    "high",
+			})
+		}
+		for _, area := range result.SecondaryFocus {
+			result.ResearchDimensions = append(result.ResearchDimensions, ResearchDimension{
+				Dimension:   area,
+				Questions:   []string{fmt.Sprintf("What is %s?", area)},
+				SourceTypes: []string{"aggregator", "news"},
+				Priority:    "medium",
+			})
+		}
+	}
+
+	logger.Info("RefineResearchQuery: HITL mode completed",
+		"priority_focus", len(result.PriorityFocus),
+		"secondary_focus", len(result.SecondaryFocus),
+		"skip_areas", len(result.SkipAreas),
+		"dimensions", len(result.ResearchDimensions),
+	)
+
+	return result, nil
 }

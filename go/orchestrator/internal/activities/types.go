@@ -1,5 +1,7 @@
 package activities
 
+import "time"
+
 // ComplexityAnalysisInput is the input for complexity analysis
 type ComplexityAnalysisInput struct {
 	Query   string
@@ -224,4 +226,39 @@ type AgentUsage struct {
 	Tokens       int    `json:"tokens"`
 	InputTokens  int    `json:"input_tokens,omitempty"`
 	OutputTokens int    `json:"output_tokens,omitempty"`
+}
+
+// ── HITL Research Review Types ──
+
+// ResearchPlanInput is the input for the GenerateResearchPlan activity
+type ResearchPlanInput struct {
+	Query      string                 `json:"query"`
+	Context    map[string]interface{} `json:"context"`
+	WorkflowID string                `json:"workflow_id"`
+	SessionID  string                `json:"session_id"`
+	UserID     string                `json:"user_id"`
+	TenantID   string                `json:"tenant_id"`
+	TTL        time.Duration         `json:"ttl"`
+}
+
+// ResearchPlanResult is the result of the GenerateResearchPlan activity
+type ResearchPlanResult struct {
+	Message string `json:"message"`
+	Intent  string `json:"intent"`
+	Round   int    `json:"round"`
+}
+
+// ResearchReviewResult is the Signal payload sent when user approves the review
+type ResearchReviewResult struct {
+	Approved      bool          `json:"approved"`
+	FinalPlan     string        `json:"final_plan"`
+	Conversation  []ReviewRound `json:"conversation"`
+	ResearchBrief string        `json:"research_brief,omitempty"`
+}
+
+// ReviewRound represents a single round in the review conversation
+type ReviewRound struct {
+	Role      string `json:"role"`
+	Message   string `json:"message"`
+	Timestamp string `json:"timestamp"`
 }

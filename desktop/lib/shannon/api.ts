@@ -494,6 +494,105 @@ export async function getTaskControlState(taskId: string): Promise<ControlStateR
     return response.json();
 }
 
+// Review API Types & Functions
+
+export interface ReviewFeedbackResponse {
+    status: string;
+    plan: {
+        message: string;
+        round: number;
+        version: number;
+        intent: "feedback" | "ready" | "execute";
+    };
+}
+
+export interface ReviewApproveResponse {
+    status: string;
+    message: string;
+}
+
+export async function submitReviewFeedback(
+    workflowId: string,
+    message: string,
+    version?: number
+): Promise<ReviewFeedbackResponse> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+    };
+    if (version !== undefined && version > 0) {
+        headers["If-Match"] = String(version);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ action: "feedback", message }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to submit review feedback: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export interface ReviewStateResponse {
+    status: string;
+    round: number;
+    version: number;
+    current_plan: string;
+    query: string;
+    rounds: Array<{
+        role: string;
+        message: string;
+        timestamp: string;
+    }>;
+}
+
+export async function getReviewState(workflowId: string): Promise<ReviewStateResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        if (response.status === 404) {
+            throw new Error("Review session not found or expired");
+        }
+        throw new Error(`Failed to get review state: ${response.statusText}`);
+    }
+
+    return response.json();
+}
+
+export async function approveReviewPlan(workflowId: string, version?: number): Promise<ReviewApproveResponse> {
+    const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        ...getAuthHeaders(),
+    };
+    // Add optimistic concurrency check if version provided
+    if (version !== undefined) {
+        headers["If-Match"] = String(version);
+    }
+
+    const response = await fetch(`${API_BASE_URL}/api/v1/tasks/${workflowId}/review`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ action: "approve" }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        if (response.status === 409) {
+            throw new Error("Plan has been updated. Please review the latest version before approving.");
+        }
+        throw new Error(`Failed to approve review plan: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
 // Schedule Types
 
 export type ScheduleStatus = 'ACTIVE' | 'PAUSED' | 'DELETED';

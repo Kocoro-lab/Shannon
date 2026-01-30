@@ -14,6 +14,7 @@ const rootReducer = combineReducers({
 const persistConfig = {
     key: 'root',
     storage,
+    blacklist: ['run'], // Don't persist run state — autoApprove should reset to "on" on each launch
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);

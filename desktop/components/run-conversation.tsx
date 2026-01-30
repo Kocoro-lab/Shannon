@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,8 @@ interface Message {
     isGenerating?: boolean;
     isError?: boolean;
     isCancelled?: boolean;
+    isResearchPlan?: boolean;
+    planRound?: number;
     taskId?: string;
     eventType?: string; // For status messages
     metadata?: {
@@ -468,12 +471,19 @@ export function RunConversation({ messages, agentType = "normal" }: RunConversat
                             </span>
                         </div>
                         <div className="space-y-2 min-w-0 w-full">
+                            {/* Research Plan badge */}
+                            {message.isResearchPlan && (
+                                <Badge variant="outline" className="text-violet-600 dark:text-violet-400 border-violet-300 dark:border-violet-700 text-xs">
+                                    Research Plan {message.planRound ? `\u00b7 Round ${message.planRound}` : ""}
+                                </Badge>
+                            )}
                             <Card className={cn(
                                 "px-2 sm:px-3 py-1 text-sm prose prose-sm max-w-none prose-p:my-0.5 prose-p:leading-relaxed prose-ul:my-0.5 prose-ol:my-0.5 prose-li:my-0 prose-headings:mt-2 prose-headings:mb-0.5 prose-headings:leading-tight break-words overflow-wrap-anywhere overflow-hidden",
                                 message.role === "user" ? "bg-primary text-primary-foreground [&_a]:text-primary-foreground [&_a]:underline [&_a]:decoration-primary-foreground/50 [&_a:hover]:text-primary-foreground/80 [&_a:hover]:decoration-primary-foreground" :
-                                    message.role === "tool" ? "bg-muted/50 font-mono text-xs prose-pre:bg-transparent" : 
+                                    message.role === "tool" ? "bg-muted/50 font-mono text-xs prose-pre:bg-transparent" :
                                     message.role === "system" ? (message.isError ? "bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800" : message.isCancelled ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300 border-yellow-200 dark:border-yellow-800" : "bg-gray-50 dark:bg-gray-900/20") :
-                                    "bg-muted dark:prose-invert"
+                                    "bg-muted dark:prose-invert",
+                                message.isResearchPlan && "border-l-2 border-l-violet-400 dark:border-l-violet-600"
                             )}>
                                 {message.isGenerating ? (
                                     <span className="flex items-center gap-1 text-muted-foreground">

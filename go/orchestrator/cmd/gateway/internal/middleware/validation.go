@@ -56,6 +56,9 @@ func (vm *ValidationMiddleware) Middleware(next http.Handler) http.Handler {
 				return
 			}
 
+		case method == http.MethodGet && strings.HasPrefix(path, "/api/v1/tasks/") && strings.HasSuffix(path, "/review"):
+			// GET /api/v1/tasks/{workflowID}/review — uses {workflowID}, not {id}
+
 		case method == http.MethodGet && strings.HasPrefix(path, "/api/v1/tasks/"):
 			// e.g., GET /api/v1/tasks/{id}
 			if !vm.validatePathID(w, r) {

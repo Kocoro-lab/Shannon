@@ -89,29 +89,35 @@ model_tiers:
         model: gpt-5.1
         priority: 1
       - provider: anthropic
-        model: claude-opus-4-1-20250805
+        model: claude-opus-4-5-20251101
         priority: 2
+      - provider: anthropic
+        model: claude-opus-4-1-20250805
+        priority: 3
       - provider: xai
         model: grok-4-fast-reasoning
-        priority: 3
+        priority: 4
       - provider: google
         model: gemini-2.5-pro
-        priority: 4
+        priority: 5
+      - provider: google
+        model: gemini-3-pro-preview
+        priority: 6
       - provider: deepseek
         model: deepseek-r1
-        priority: 5
+        priority: 7
       - provider: qwen
         model: qwen3-omni-30b-a3b-instruct
-        priority: 6
+        priority: 8
       - provider: mistral
         model: mistral-nemo-instruct-2407
-        priority: 7
+        priority: 9
       - provider: meta
         model: llama-3.1-405b
-        priority: 8
+        priority: 10
       - provider: zai
         model: glm-4.6
-        priority: 9
+        priority: 11
 
 # Model selection strategy
 selection_strategy:
@@ -281,8 +287,25 @@ model_catalog:
       supports_functions: true
       supports_streaming: true
       supports_vision: true
+    claude-opus-4-5-20251101:
+      model_id: claude-opus-4-5-20251101
+      tier: large
+      context_window: 200000
+      max_tokens: 64000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+      supports_effort: true  # Opus 4.5 unique feature
 
   google:
+    gemini-3-pro-preview:
+      model_id: gemini-3-pro-preview
+      tier: large
+      context_window: 1000000
+      max_tokens: 64000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
     gemini-2.5-pro:
       model_id: gemini-2.5-pro
       tier: large
@@ -567,8 +590,14 @@ pricing:
       claude-opus-4-1-20250805:
         input_per_1k: 0.0150
         output_per_1k: 0.0750
-        
+      claude-opus-4-5-20251101:
+        input_per_1k: 0.0050
+        output_per_1k: 0.0250
+
     google:
+      gemini-3-pro-preview:
+        input_per_1k: 0.0020
+        output_per_1k: 0.0120
       gemini-2.5-pro:
         input_per_1k: 0.00125
         output_per_1k: 0.0100
@@ -723,9 +752,10 @@ model_capabilities:
 
   thinking_models:
     - gpt-5-pro-2025-10-06
-    - gpt-5-pro-2025-10-06
     - gpt-5.1
+    - claude-opus-4-5-20251101
     - claude-opus-4-1-20250805
+    - gemini-3-pro-preview
     - gemini-2.5-pro
     - deepseek-r1
     - qwen3-omni-30b-a3b-instruct
@@ -742,8 +772,10 @@ model_capabilities:
 
   long_context_models:
     - llama-4-scout-17b-16e-instruct  # 10M tokens
+    - gemini-3-pro-preview  # 1M tokens
     - gemini-2.5-flash  # 1M tokens
     - qwen3-omni-30b-a3b-instruct  # 262K tokens
+    - claude-opus-4-5-20251101  # 200K tokens
     - claude-sonnet-4-5-20250929  # 200K tokens
 
 # Rate limiting configuration

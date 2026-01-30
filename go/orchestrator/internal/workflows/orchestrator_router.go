@@ -20,6 +20,11 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/strategies"
 )
 
+const (
+	// DefaultReviewTimeout is how long the workflow waits for human review before timing out.
+	DefaultReviewTimeout = 15 * time.Minute
+)
+
 // OrchestratorWorkflow is a thin entrypoint that routes to specialized workflows.
 // It performs a single decomposition step, decides the strategy, then delegates
 // to an appropriate child workflow. It does not execute agents directly.
@@ -219,6 +224,119 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	// decomposition is redundant and wastes LLM tokens.
 	if GetContextBool(input.Context, "force_research") {
 		logger.Info("Force research detected - bypassing orchestrator decomposition")
+
+		// Inject current date for time awareness (use workflow.Now for Temporal determinism)
+		// This enables HITL planner and all subsequent agents to understand temporal context
+		if _, hasDate := input.Context["current_date"]; !hasDate {
+			workflowTime := workflow.Now(ctx)
+			input.Context["current_date"] = workflowTime.UTC().Format("2006-01-02")
+			input.Context["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
+		}
+
+		// ── HITL: Research Plan Review (optional) ──
+		// Check both "require_review: true" (legacy) and "review_plan: manual" (frontend)
+		requireReview := GetContextBool(input.Context, "require_review") ||
+			GetContextString(input.Context, "review_plan") == "manual"
+		if requireReview {
+			logger.Info("HITL review enabled - generating research plan")
+
+			reviewTimeout := DefaultReviewTimeout
+			if t, ok := input.Context["review_timeout"]; ok {
+				if tFloat, fOk := t.(float64); fOk && tFloat > 0 {
+					reviewTimeout = time.Duration(int(tFloat)) * time.Second
+				}
+			}
+
+			// 1) Generate initial research plan via LLM + initialize Redis state
+			var plan activities.ResearchPlanResult
+			planInput := activities.ResearchPlanInput{
+				Query:      input.Query,
+				Context:    input.Context,
+				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+				SessionID:  input.SessionID,
+				UserID:     GetContextString(input.Context, "user_id"),
+				TenantID:   GetContextString(input.Context, "tenant_id"),
+				TTL:        reviewTimeout,
+			}
+			planCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+				StartToCloseTimeout: 60 * time.Second,
+				RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
+			})
+			if err := workflow.ExecuteActivity(planCtx, constants.GenerateResearchPlanActivity, planInput).Get(ctx, &plan); err != nil {
+				return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to generate research plan: %v", err)}, err
+			}
+
+			// 2) Emit SSE: plan ready (message already stripped of [RESEARCH_BRIEF] and [INTENT:...])
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+				EventType:  activities.StreamEventResearchPlanReady,
+				AgentID:    "planner",
+				Message:    plan.Message,
+				Timestamp:  workflow.Now(ctx),
+				Payload:    map[string]interface{}{"round": plan.Round, "intent": plan.Intent},
+			}).Get(ctx, nil)
+
+			// 3) Wait for user approval Signal or timeout
+			sigName := "research-plan-approved-" + workflow.GetInfo(ctx).WorkflowExecution.ID
+			ch := workflow.GetSignalChannel(ctx, sigName)
+			timerCtx, cancelTimer := workflow.WithCancel(ctx)
+			timer := workflow.NewTimer(timerCtx, reviewTimeout)
+
+			var reviewResult activities.ResearchReviewResult
+			var timedOut bool
+
+			sel := workflow.NewSelector(ctx)
+			sel.AddReceive(ch, func(c workflow.ReceiveChannel, more bool) {
+				c.Receive(ctx, &reviewResult)
+				cancelTimer() // Cancel the timer so it doesn't linger in Temporal UI
+			})
+			sel.AddFuture(timer, func(f workflow.Future) {
+				timedOut = true
+			})
+			sel.Select(ctx)
+
+			if timedOut {
+				wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+				logger.Warn("HITL review timed out", "workflow_id", wfID)
+				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+					WorkflowID: wfID,
+					EventType:  activities.StreamEventErrorOccurred,
+					AgentID:    "planner",
+					Message:    "Research plan review timed out",
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+				// Emit WORKFLOW_COMPLETED so frontend/SSE can transition out of "running"
+				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+					WorkflowID: wfID,
+					EventType:  activities.StreamEventWorkflowCompleted,
+					AgentID:    "orchestrator",
+					Message:    activities.MsgWorkflowCompleted(),
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+				return TaskResult{Success: false, ErrorMessage: "research plan review timed out"}, nil
+			}
+
+			// 4) Inject confirmed plan and research brief into context
+			input.Context["confirmed_plan"] = reviewResult.FinalPlan
+			input.Context["review_conversation"] = reviewResult.Conversation
+			if reviewResult.ResearchBrief != "" {
+				input.Context["research_brief"] = reviewResult.ResearchBrief
+			}
+
+			// 5) Emit SSE: plan approved
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
+				EventType:  activities.StreamEventResearchPlanApproved,
+				AgentID:    "planner",
+				Message:    "Research direction confirmed, starting execution",
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
+
+			logger.Info("HITL review approved, continuing with research",
+				"conversation_rounds", len(reviewResult.Conversation),
+			)
+		}
+		// ── End HITL review ──
 
 		// Set parent workflow ID for unified event streaming (must be set before routing)
 		parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID

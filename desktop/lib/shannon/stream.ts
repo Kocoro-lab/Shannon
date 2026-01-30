@@ -121,6 +121,10 @@ export function useRunStream(workflowId: string | null, restartKey: number = 0) 
                 "MESSAGE_RECEIVED",
                 "WORKSPACE_UPDATED",
                 "STATUS_UPDATE",
+                "RESEARCH_PLAN_READY",
+                "RESEARCH_PLAN_UPDATED",
+                "RESEARCH_PLAN_APPROVED",
+                "REVIEW_USER_FEEDBACK",
                 "error",
                 "done",
                 "STREAM_END"

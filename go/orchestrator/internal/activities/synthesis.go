@@ -1020,6 +1020,14 @@ Section requirements:
 
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
 
+	// HITL: inject confirmed research plan if present (zero impact when absent)
+	if input.Context != nil {
+		if confirmedPlan, ok := input.Context["confirmed_plan"].(string); ok && confirmedPlan != "" {
+			fmt.Fprintf(&b, "\n## User's Approved Research Direction:\n%s\n\n", confirmedPlan)
+			fmt.Fprintf(&b, "Prioritize content aligned with the user's approved research direction above.\n\n")
+		}
+	}
+
 	// Categorize agent results into three buckets:
 	// 1. Domain Evidence (role=domain_analysis) - treated as primary official evidence, NOT synthesis
 	// 2. Synthesis results (agent_id contains synthesis/synthesizer) - coverage guides

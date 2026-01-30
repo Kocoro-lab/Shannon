@@ -20,6 +20,12 @@ interface RunState {
     pauseReason: string | null;
     isCancelling: boolean;
     isCancelled: boolean;
+    // Auto-Approve (HITL) state
+    autoApprove: "on" | "off";
+    reviewStatus: "none" | "reviewing" | "approved";
+    reviewWorkflowId: string | null;
+    reviewVersion: number;
+    reviewIntent: "feedback" | "ready" | "execute" | null;
 }
 
 const initialState: RunState = {
@@ -30,7 +36,7 @@ const initialState: RunState = {
     streamError: null,
     sessionTitle: null,
     selectedAgent: "normal",
-    researchStrategy: "quick",
+    researchStrategy: "standard",
     mainWorkflowId: null,
     // Pause/Resume/Cancel control state
     isPaused: false,
@@ -38,6 +44,12 @@ const initialState: RunState = {
     pauseReason: null,
     isCancelling: false,
     isCancelled: false,
+    // Auto-Approve (HITL) state
+    autoApprove: "on",
+    reviewStatus: "none",
+    reviewWorkflowId: null,
+    reviewVersion: 0,
+    reviewIntent: null,
 };
 
 // Helper to create inline status messages from events
@@ -653,6 +665,92 @@ const runSlice = createSlice({
                 } else {
                     console.log("[Redux] Not adding message from WORKFLOW_COMPLETED - will rely on fallback fetch");
                 }
+            } else if (event.type === "RESEARCH_PLAN_READY") {
+                // Research plan generated - enter review mode
+                const planEvent = event as any;
+                state.reviewStatus = "reviewing";
+                state.reviewWorkflowId = event.workflow_id;
+                state.reviewVersion = 0;
+                // Read intent from SSE payload (e.g. "ready" shows Approve button, "feedback" does not)
+                const planIntent = planEvent.payload?.intent || null;
+                state.reviewIntent = planIntent;
+                console.log("[Redux] Research plan ready - entering review mode for workflow:", event.workflow_id, "intent:", planIntent);
+
+                // For historical events, only set state — messages are loaded from turn data in page.tsx
+                // This prevents plan appearing before user query (events dispatch before turns load)
+                if (isHistorical) {
+                    console.log("[Redux] Historical RESEARCH_PLAN_READY - setting state only, skipping message");
+                    return;
+                }
+
+                // Remove generating placeholder
+                state.messages = state.messages.filter((m: any) =>
+                    !(m.isGenerating && m.taskId === event.workflow_id)
+                );
+
+                // Add the research plan as a special assistant message
+                if (planEvent.message) {
+                    state.messages.push({
+                        id: `research-plan-${event.workflow_id}-${Date.now()}`,
+                        role: "assistant",
+                        content: planEvent.message,
+                        timestamp: new Date().toLocaleTimeString(),
+                        taskId: event.workflow_id,
+                        isResearchPlan: true,
+                        planRound: 1,
+                    });
+                }
+            } else if (event.type === "RESEARCH_PLAN_APPROVED") {
+                // Plan approved - exit review mode
+                state.reviewStatus = "approved";
+                state.reviewIntent = null;
+                console.log("[Redux] Research plan approved for workflow:", event.workflow_id);
+
+                // For historical events, only set state — messages are loaded from turn data in page.tsx
+                if (isHistorical) {
+                    console.log("[Redux] Historical RESEARCH_PLAN_APPROVED - setting state only");
+                    return;
+                }
+
+                // Add approval confirmation message
+                state.messages.push({
+                    id: `plan-approved-${event.workflow_id}-${Date.now()}`,
+                    role: "system",
+                    content: "Plan approved. Research started.",
+                    timestamp: new Date().toLocaleTimeString(),
+                    taskId: event.workflow_id,
+                });
+
+                // Add generating placeholder for the actual research execution
+                state.messages.push({
+                    id: `generating-${event.workflow_id}`,
+                    role: "assistant",
+                    content: "Generating...",
+                    timestamp: new Date().toLocaleTimeString(),
+                    isGenerating: true,
+                    taskId: event.workflow_id,
+                });
+            } else if (event.type === "REVIEW_USER_FEEDBACK") {
+                // User feedback during HITL review — treat as a regular user chat message
+                console.log("[Redux] Review user feedback for workflow:", event.workflow_id);
+                if (isHistorical) {
+                    console.log("[Redux] Historical REVIEW_USER_FEEDBACK - skipping (handled in page.tsx turn loading)");
+                    return;
+                }
+                // Live: message is already added by handleReviewFeedback via addMessage.
+                // The SSE event arrives after the HTTP response, so the message already exists.
+                // addMessage deduplicates by ID, but the live path uses a different ID.
+                // We skip here to avoid duplicates — live messages come from handleReviewFeedback.
+                console.log("[Redux] Live REVIEW_USER_FEEDBACK - skipping (already added by handleReviewFeedback)");
+            } else if (event.type === "RESEARCH_PLAN_UPDATED") {
+                // Updated research plan from feedback — treat as assistant chat message
+                console.log("[Redux] Research plan updated for workflow:", event.workflow_id);
+                if (isHistorical) {
+                    console.log("[Redux] Historical RESEARCH_PLAN_UPDATED - skipping (handled in page.tsx turn loading)");
+                    return;
+                }
+                // Live: message is already added by handleReviewFeedback.
+                console.log("[Redux] Live RESEARCH_PLAN_UPDATED - skipping (already added by handleReviewFeedback)");
             } else if (event.type === "AGENT_COMPLETED") {
                 // AGENT_COMPLETED is just a status event, not a message
                 // The actual response comes from thread.message.completed
@@ -667,6 +765,11 @@ const runSlice = createSlice({
             }
         },
         resetRun: (state) => {
+            // Preserve user preferences across session changes
+            const preservedAgent = state.selectedAgent;
+            const preservedStrategy = state.researchStrategy;
+            const preservedAutoApprove = state.autoApprove;
+
             state.events = [];
             state.messages = [];
             state.status = "idle";
@@ -680,7 +783,15 @@ const runSlice = createSlice({
             state.pauseReason = null;
             state.isCancelling = false;
             state.isCancelled = false;
-            // Keep selectedAgent persistent across sessions - it's a user preference/mode
+            // Review state reset
+            state.reviewStatus = "none";
+            state.reviewWorkflowId = null;
+            state.reviewVersion = 0;
+            state.reviewIntent = null;
+            // Restore user preferences
+            state.selectedAgent = preservedAgent;
+            state.researchStrategy = preservedStrategy;
+            state.autoApprove = preservedAutoApprove;
         },
         addMessage: (state, action: PayloadAction<any>) => {
             console.log("[Redux] addMessage called:", action.payload);
@@ -690,6 +801,9 @@ const runSlice = createSlice({
             } else {
                 console.warn("[Redux] Message with ID already exists:", action.payload.id);
             }
+        },
+        removeMessage: (state, action: PayloadAction<string>) => {
+            state.messages = state.messages.filter(m => m.id !== action.payload);
         },
         updateMessageMetadata: (state, action: PayloadAction<{ taskId: string; metadata: any }>) => {
             const { taskId, metadata } = action.payload;
@@ -777,6 +891,18 @@ const runSlice = createSlice({
             }
             console.log("[Redux] Cancelling state set to:", action.payload);
         },
+        setAutoApprove: (state, action: PayloadAction<RunState["autoApprove"]>) => {
+            state.autoApprove = action.payload;
+        },
+        setReviewStatus: (state, action: PayloadAction<RunState["reviewStatus"]>) => {
+            state.reviewStatus = action.payload;
+        },
+        setReviewVersion: (state, action: PayloadAction<number>) => {
+            state.reviewVersion = action.payload;
+        },
+        setReviewIntent: (state, action: PayloadAction<RunState["reviewIntent"]>) => {
+            state.reviewIntent = action.payload;
+        },
         setCancelled: (state, action: PayloadAction<boolean>) => {
             state.isCancelled = action.payload;
             state.isCancelling = false;
@@ -807,5 +933,5 @@ const runSlice = createSlice({
     },
 });
 
-export const { addEvent, resetRun, addMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled } = runSlice.actions;
+export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent } = runSlice.actions;
 export default runSlice.reducer;
