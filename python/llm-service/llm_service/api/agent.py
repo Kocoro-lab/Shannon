@@ -1427,10 +1427,13 @@ async def agent_query(request: Request, query: AgentQuery):
                         "role": "user",
                         "content": (
                             f"Tool execution result:\n{tool_results}\n\n"
-                            "If the information is insufficient, you may call another tool; otherwise, answer the original query."
+                            "Based on this result, please answer the original query."
                         ),
                     }
                 )
+                # Forced tool execution completed - disable further tool calls to prevent duplicates
+                effective_allowed_tools = []
+                logger.info("Forced tool execution completed, disabling further tool calls")
 
             # When force_tools enabled and tools available, force model to use a tool
             # "any" forces the model to use at least one tool, "auto" only allows tools but doesn't force
