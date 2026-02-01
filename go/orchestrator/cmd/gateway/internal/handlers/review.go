@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -168,6 +170,43 @@ func (h *ReviewHandler) handleFeedback(
 		}
 	}
 
+	// Acquire distributed lock to prevent race condition during long LLM call.
+	// Without this, two concurrent feedback requests can both pass version check,
+	// then clobber each other's state on write.
+	lockKey := key + ":lock"
+	lockTTL := 90 * time.Second // longer than LLM timeout (60s) + buffer
+	// Use unique lock value to prevent accidental deletion of another request's lock
+	// if TTL expires and lock is re-acquired by another request.
+	lockBytes := make([]byte, 16)
+	if _, err := rand.Read(lockBytes); err != nil {
+		h.logger.Error("Failed to generate lock value", zap.Error(err))
+		h.sendError(w, "Failed to process feedback", http.StatusInternalServerError)
+		return
+	}
+	lockValue := hex.EncodeToString(lockBytes)
+	acquired, err := h.redis.SetNX(ctx, lockKey, lockValue, lockTTL).Result()
+	if err != nil {
+		h.logger.Error("Failed to acquire feedback lock", zap.Error(err))
+		h.sendError(w, "Failed to process feedback", http.StatusInternalServerError)
+		return
+	}
+	if !acquired {
+		h.sendError(w, "Another feedback request is in progress. Please wait.", http.StatusConflict)
+		return
+	}
+	// Conditional delete: only release lock if we still own it (value matches).
+	// Prevents accidentally deleting another request's lock if ours expired.
+	defer func() {
+		unlockScript := redis.NewScript(`
+			if redis.call("get", KEYS[1]) == ARGV[1] then
+				return redis.call("del", KEYS[1])
+			else
+				return 0
+			end
+		`)
+		unlockScript.Run(ctx, h.redis, []string{lockKey}, lockValue)
+	}()
+
 	if req.Message == "" {
 		h.sendError(w, "message is required for feedback", http.StatusBadRequest)
 		return
@@ -305,12 +344,54 @@ func (h *ReviewHandler) handleApprove(
 		}
 	}
 
+	// Acquire lock to prevent race with in-flight feedback.
+	// If feedback is mid-flight, it holds the lock and we fail fast.
+	// If we acquire first, feedback will fail when it tries to acquire.
+	lockKey := key + ":lock"
+	lockTTL := 30 * time.Second // shorter than feedback (approve is fast)
+	lockBytes := make([]byte, 16)
+	if _, err := rand.Read(lockBytes); err != nil {
+		h.logger.Error("Failed to generate lock value", zap.Error(err))
+		h.sendError(w, "Failed to process approval", http.StatusInternalServerError)
+		return
+	}
+	lockValue := hex.EncodeToString(lockBytes)
+	acquired, err := h.redis.SetNX(ctx, lockKey, lockValue, lockTTL).Result()
+	if err != nil {
+		h.logger.Error("Failed to acquire approval lock", zap.Error(err))
+		h.sendError(w, "Failed to process approval", http.StatusInternalServerError)
+		return
+	}
+	if !acquired {
+		h.sendError(w, "A feedback request is in progress. Please wait and try again.", http.StatusConflict)
+		return
+	}
+	defer func() {
+		unlockScript := redis.NewScript(`
+			if redis.call("get", KEYS[1]) == ARGV[1] then
+				return redis.call("del", KEYS[1])
+			else
+				return 0
+			end
+		`)
+		unlockScript.Run(ctx, h.redis, []string{lockKey}, lockValue)
+	}()
+
+	// Validate that a research plan exists before approval.
+	// CurrentPlan is only set when LLM returns intent="ready" with an actionable direction.
+	// Empty plan means LLM only asked clarifying questions (intent="feedback") or user
+	// skipped directly to approve without getting a plan.
+	if strings.TrimSpace(state.CurrentPlan) == "" {
+		h.sendError(w, "No research plan to approve. Please provide feedback to generate a plan first.", http.StatusBadRequest)
+		return
+	}
+
 	// Marshal conversation for gRPC
 	convBytes, _ := json.Marshal(state.Rounds)
 
 	// Send via dedicated gRPC (Gateway → Orchestrator → Temporal Signal)
 	grpcCtx := withGRPCMetadata(ctx, r)
-	_, err := h.orchClient.SubmitReviewDecision(grpcCtx, &orchpb.SubmitReviewDecisionRequest{
+	_, err = h.orchClient.SubmitReviewDecision(grpcCtx, &orchpb.SubmitReviewDecisionRequest{
 		WorkflowId:    workflowID,
 		Approved:      true,
 		FinalPlan:     state.CurrentPlan,
