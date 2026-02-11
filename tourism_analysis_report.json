@@ -1,0 +1,280 @@
+{
+  "title": "Online Tourism Data Analysis Report",
+  "date_generated": "2026-02-11T06:33:06.822144",
+  "overview": {
+    "total_records": 1000,
+    "unique_destinations": 5,
+    "avg_price": 1777.0696772867846,
+    "min_price": 507.2590624695093,
+    "max_price": 2996.636757984314,
+    "total_revenue": 1777069.6772867846,
+    "date_range": {
+      "start": "2023-01-01T00:00:00",
+      "end": "2025-09-26T00:00:00"
+    }
+  },
+  "trends": [
+    {
+      "metric": "Monthly Bookings",
+      "time_series": [
+        {
+          "period": "2023-01",
+          "value": 31
+        },
+        {
+          "period": "2023-02",
+          "value": 28
+        },
+        {
+          "period": "2023-03",
+          "value": 31
+        },
+        {
+          "period": "2023-04",
+          "value": 30
+        },
+        {
+          "period": "2023-05",
+          "value": 31
+        },
+        {
+          "period": "2023-06",
+          "value": 30
+        },
+        {
+          "period": "2023-07",
+          "value": 31
+        },
+        {
+          "period": "2023-08",
+          "value": 31
+        },
+        {
+          "period": "2023-09",
+          "value": 30
+        },
+        {
+          "period": "2023-10",
+          "value": 31
+        },
+        {
+          "period": "2023-11",
+          "value": 30
+        },
+        {
+          "period": "2023-12",
+          "value": 31
+        },
+        {
+          "period": "2024-01",
+          "value": 31
+        },
+        {
+          "period": "2024-02",
+          "value": 29
+        },
+        {
+          "period": "2024-03",
+          "value": 31
+        },
+        {
+          "period": "2024-04",
+          "value": 30
+        },
+        {
+          "period": "2024-05",
+          "value": 31
+        },
+        {
+          "period": "2024-06",
+          "value": 30
+        },
+        {
+          "period": "2024-07",
+          "value": 31
+        },
+        {
+          "period": "2024-08",
+          "value": 31
+        },
+        {
+          "period": "2024-09",
+          "value": 30
+        },
+        {
+          "period": "2024-10",
+          "value": 31
+        },
+        {
+          "period": "2024-11",
+          "value": 30
+        },
+        {
+          "period": "2024-12",
+          "value": 31
+        },
+        {
+          "period": "2025-01",
+          "value": 31
+        },
+        {
+          "period": "2025-02",
+          "value": 28
+        },
+        {
+          "period": "2025-03",
+          "value": 31
+        },
+        {
+          "period": "2025-04",
+          "value": 30
+        },
+        {
+          "period": "2025-05",
+          "value": 31
+        },
+        {
+          "period": "2025-06",
+          "value": 30
+        },
+        {
+          "period": "2025-07",
+          "value": 31
+        },
+        {
+          "period": "2025-08",
+          "value": 31
+        },
+        {
+          "period": "2025-09",
+          "value": 26
+        }
+      ],
+      "direction": "decreasing"
+    },
+    {
+      "metric": "Top Destinations by Average Price",
+      "data": [
+        {
+          "destination": "Tokyo",
+          "avg_price": 1838.06
+        },
+        {
+          "destination": "Sydney",
+          "avg_price": 1809.88
+        },
+        {
+          "destination": "London",
+          "avg_price": 1774.11
+        },
+        {
+          "destination": "New York",
+          "avg_price": 1745.32
+        },
+        {
+          "destination": "Paris",
+          "avg_price": 1717.21
+        }
+      ]
+    },
+    {
+      "metric": "Booking Source Distribution",
+      "data": [
+        {
+          "source": "Mobile App",
+          "count": 348
+        },
+        {
+          "source": "Website",
+          "count": 332
+        },
+        {
+          "source": "Travel Agency",
+          "count": 320
+        }
+      ]
+    }
+  ],
+  "insights": [
+    {
+      "category": "Revenue",
+      "description": "Total revenue: $1,777,069.68",
+      "significance": "high"
+    },
+    {
+      "category": "Revenue",
+      "description": "Average revenue per booking: $1777.07",
+      "significance": "medium"
+    },
+    {
+      "category": "Destination Popularity",
+      "description": "Tokyo is the #1 most popular destination with 212 bookings",
+      "significance": "high"
+    },
+    {
+      "category": "Destination Popularity",
+      "description": "Paris is the #2 most popular destination with 206 bookings",
+      "significance": "medium"
+    },
+    {
+      "category": "Destination Popularity",
+      "description": "London is the #3 most popular destination with 204 bookings",
+      "significance": "medium"
+    },
+    {
+      "category": "Destination Popularity",
+      "description": "New York is the #4 most popular destination with 192 bookings",
+      "significance": "medium"
+    },
+    {
+      "category": "Destination Popularity",
+      "description": "Sydney is the #5 most popular destination with 186 bookings",
+      "significance": "medium"
+    },
+    {
+      "category": "Seasonality",
+      "description": "Peak travel month is 3, lowest is 11",
+      "significance": "high"
+    }
+  ],
+  "recommendations": [
+    {
+      "category": "Destination Strategy",
+      "description": "Focus marketing on top destinations: Tokyo, Paris, London",
+      "priority": "medium"
+    },
+    {
+      "category": "Destination Strategy",
+      "description": "Consider promotional campaigns for underperforming destinations: London, New York, Sydney",
+      "priority": "low"
+    },
+    {
+      "category": "Channel Optimization",
+      "description": "Maximize investment in Mobile App channel as it drives most bookings",
+      "priority": "high"
+    },
+    {
+      "category": "Channel Optimization",
+      "description": "Evaluate effectiveness of Travel Agency channel",
+      "priority": "medium"
+    }
+  ],
+  "data_quality": {
+    "completeness": {
+      "overall_completeness": 100.0,
+      "total_records": 1000,
+      "total_attributes": 7,
+      "null_cells": 0,
+      "total_cells": 7000,
+      "booking_date": 100.0,
+      "travel_date": 100.0,
+      "destination": 100.0,
+      "price": 100.0,
+      "customer_id": 100.0,
+      "booking_source": 100.0,
+      "travel_month": 100.0
+    },
+    "consistency_issues": [],
+    "anomalies": []
+  }
+}
