@@ -37,28 +37,23 @@ const (
 )
 
 // stationNames is the pool of Japanese station-inspired agent names.
-// The list is fixed to maintain determinism for workflow replays.
+// The list is FROZEN at 59 entries to maintain determinism for Temporal workflow replays.
+// GetAgentName uses len(stationNames) as modulus, so changing the size or order
+// would alter agent name mappings for all existing workflows.
+// WARNING: NEVER reorder, rename, remove, or append entries.
 var stationNames = []string{
-	// Classics with proper romanization
-	"Ōme", "Gora", "Maji", "Ebisu", "Ōsaki",
-	"Otaru", "Namba", "Tenma", "Mejiro", "Kōenji",
-	"Gotanda", "Ryōgoku", "Yūtenji", "Nippori", "Asagaya",
-	"Mojikō", "Kottoi", "Taishō", "Yumoto", "Odawara",
-	"Enoshima", "Ogikubo", "Ichigaya", "Komazawa", "Todoroki",
-	// Quirky names
-	"Obama", "Usa", "Gero", "Ōboke", "Koboke",
-	"Naruto", "Zushi", "Fussa", "Oppama", "Pippu",
-	"Mashike", "Zōshiki",
-	// Remote & scenic gems
-	"Nikkō", "Hakone", "Beppu", "Atami", "Wakkanai",
-	"Koboro", "Shimonada", "Tadami", "Tsuwano", "Okutama",
-	"Nagatoro", "Kazamatsuri", "Chōshi", "Kururi", "Biei",
-	"Minobu", "Shimonita",
-	// Saitama & West Tokyo deep cuts
-	"Tama", "Musashi", "Urawa", "Kawagoe", "Hannō",
-	"Chichibu", "Takao", "Mitaka", "Kichijōji",
-	// Bonus obscure finds
-	"Karasuyama", "Ashikaga", "Sasago", "Shimokita", "Kuragano",
+	"Ome", "Gora", "Maji", "Ueno", "Ebisu",
+	"Osaki", "Otaru", "Namba", "Tenma", "Mejiro",
+	"Koenji", "Gotanda", "Ryogoku", "Yutenji", "Nippori",
+	"Asagaya", "Mojiko", "Kottoi", "Taisho", "Yumoto",
+	"Harajuku", "Shibuya", "Odawara", "Enoshima", "Ogikubo",
+	"Ichigaya", "Komazawa", "Shinjuku", "Wakkanai", "Todoroki",
+	"Obama", "Usa", "Gero", "Oboke", "Koboke",
+	"Naruto", "Zushi", "Fussa", "Oppama",
+	"Nikko", "Hakone", "Beppu", "Atami", "Ginza",
+	"Akiba", "Kamakura", "Yokohama", "Nagasaki", "Sapporo",
+	"Tama", "Musashi", "Omiya", "Urawa", "Kawagoe",
+	"Hanno", "Chichibu", "Takao", "Mitaka", "Kichijoji",
 }
 
 // GetAgentName returns a deterministic agent name for a given workflow and index.

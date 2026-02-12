@@ -3,6 +3,7 @@ package workflows
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -330,6 +331,26 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 				Action:    fmt.Sprintf("tool_call:%s", stepResult.Tool),
 				Result:    turnResult,
 			})
+
+			// Bail out if agent is stuck in a loop of failing tool calls (permanent errors only)
+			if consecutiveToolErrors >= 3 {
+				logger.Warn("AgentLoop aborting: 3 consecutive permanent tool errors",
+					"agent_id", input.AgentID,
+					"last_tool", stepResult.Tool,
+				)
+				return AgentLoopResult{
+					AgentID:      input.AgentID,
+					Response:     fmt.Sprintf("Agent stopped after %d consecutive tool failures. Last attempted: %s", consecutiveToolErrors, stepResult.Tool),
+					Iterations:   iteration + 1,
+					TokensUsed:   totalTokens,
+					InputTokens:  totalInput,
+					OutputTokens: totalOutput,
+					ModelUsed:    lastModel,
+					Provider:     lastProvider,
+					Success:      false,
+					Error:        "consecutive tool errors",
+				}, nil
+			}
 
 		case "send_message":
 			consecutiveNonToolActions++
@@ -865,10 +886,18 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
-	// Convert AgentLoopResults to AgentExecutionResults for synthesis
+	// Convert AgentLoopResults to AgentExecutionResults for synthesis.
+	// Sort by agent ID for deterministic Temporal replay.
+	sortedIDs := make([]string, 0, len(results))
+	for id := range results {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Strings(sortedIDs)
+
 	var agentResults []activities.AgentExecutionResult
 	var totalTokensUsed int
-	for _, r := range results {
+	for _, id := range sortedIDs {
+		r := results[id]
 		agentResults = append(agentResults, activities.AgentExecutionResult{
 			AgentID:      r.AgentID,
 			Response:     r.Response,
@@ -952,9 +981,17 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 }
 
 // buildSwarmMetadata builds metadata from swarm agent results.
+// Iterates in sorted key order for deterministic output.
 func buildSwarmMetadata(results map[string]AgentLoopResult) map[string]interface{} {
+	sortedIDs := make([]string, 0, len(results))
+	for id := range results {
+		sortedIDs = append(sortedIDs, id)
+	}
+	sort.Strings(sortedIDs)
+
 	agentSummaries := make([]map[string]interface{}, 0, len(results))
-	for _, r := range results {
+	for _, id := range sortedIDs {
+		r := results[id]
 		agentSummaries = append(agentSummaries, map[string]interface{}{
 			"agent_id":   r.AgentID,
 			"iterations": r.Iterations,
