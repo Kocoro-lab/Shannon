@@ -64,6 +64,15 @@ type WorkflowConfig struct {
 	P2PCoordinationEnabled bool `json:"p2p_coordination_enabled"`
 	P2PTimeoutSeconds      int  `json:"p2p_timeout_seconds"`
 
+	// Swarm Agent config
+	SwarmEnabled               bool `json:"swarm_enabled"`
+	SwarmMaxAgents             int  `json:"swarm_max_agents"`
+	SwarmMaxIterationsPerAgent int  `json:"swarm_max_iterations_per_agent"`
+	SwarmAgentTimeoutSeconds   int  `json:"swarm_agent_timeout_seconds"`
+	SwarmMaxMessagesPerAgent   int  `json:"swarm_max_messages_per_agent"`
+	SwarmWorkspaceSnippetChars int  `json:"swarm_workspace_snippet_chars"`
+	SwarmWorkspaceMaxEntries   int  `json:"swarm_workspace_max_entries"`
+
 	// Templates
 	TemplateFallbackEnabled bool `json:"template_fallback_enabled"`
 
@@ -79,7 +88,13 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 
 	// Determine config path
 	cfgPath := os.Getenv("CONFIG_PATH")
-	if cfgPath == "" {
+	if cfgPath != "" {
+		// CONFIG_PATH may be a directory; append filename if so
+		info, err := os.Stat(cfgPath)
+		if err == nil && info.IsDir() {
+			cfgPath = cfgPath + "/features.yaml"
+		}
+	} else {
 		// Try local development paths first
 		if _, err := os.Stat("config/features.yaml"); err == nil {
 			cfgPath = "config/features.yaml"
@@ -268,6 +283,33 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 		}
 	}
 
+	// Swarm config
+	config.SwarmEnabled = v.GetBool("workflows.swarm.enabled")
+	config.SwarmMaxAgents = v.GetInt("workflows.swarm.max_agents")
+	if config.SwarmMaxAgents == 0 {
+		config.SwarmMaxAgents = 10
+	}
+	config.SwarmMaxIterationsPerAgent = v.GetInt("workflows.swarm.max_iterations_per_agent")
+	if config.SwarmMaxIterationsPerAgent == 0 {
+		config.SwarmMaxIterationsPerAgent = 25
+	}
+	config.SwarmAgentTimeoutSeconds = v.GetInt("workflows.swarm.agent_timeout_seconds")
+	if config.SwarmAgentTimeoutSeconds == 0 {
+		config.SwarmAgentTimeoutSeconds = 600
+	}
+	config.SwarmMaxMessagesPerAgent = v.GetInt("workflows.swarm.max_messages_per_agent")
+	if config.SwarmMaxMessagesPerAgent == 0 {
+		config.SwarmMaxMessagesPerAgent = 20
+	}
+	config.SwarmWorkspaceSnippetChars = v.GetInt("workflows.swarm.workspace_snippet_chars")
+	if config.SwarmWorkspaceSnippetChars == 0 {
+		config.SwarmWorkspaceSnippetChars = 800
+	}
+	config.SwarmWorkspaceMaxEntries = v.GetInt("workflows.swarm.workspace_max_entries")
+	if config.SwarmWorkspaceMaxEntries == 0 {
+		config.SwarmWorkspaceMaxEntries = 5
+	}
+
 	// Template fallback (prefer env override; default false)
 	if env := os.Getenv("TEMPLATE_FALLBACK_ENABLED"); env != "" {
 		config.TemplateFallbackEnabled = env == "true" || env == "1"
@@ -342,6 +384,15 @@ func LoadWorkflowConfig(ctx context.Context) (map[string]interface{}, error) {
 		"p2p": map[string]interface{}{
 			"enabled":         config.P2PCoordinationEnabled,
 			"timeout_seconds": config.P2PTimeoutSeconds,
+		},
+		"swarm": map[string]interface{}{
+			"enabled":                  config.SwarmEnabled,
+			"max_agents":               config.SwarmMaxAgents,
+			"max_iterations_per_agent": config.SwarmMaxIterationsPerAgent,
+			"agent_timeout_seconds":    config.SwarmAgentTimeoutSeconds,
+			"max_messages_per_agent":   config.SwarmMaxMessagesPerAgent,
+			"workspace_snippet_chars":  config.SwarmWorkspaceSnippetChars,
+			"workspace_max_entries":    config.SwarmWorkspaceMaxEntries,
 		},
 	}, nil
 }

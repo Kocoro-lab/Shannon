@@ -2857,6 +2857,276 @@ class DecompositionResponse(BaseModel):
     provider: str = ""
 
 
+# ── Swarm Agent Loop ────────────────────────────────────────────────────────────
+
+class AgentLoopTurn(BaseModel):
+    """A previous turn in the agent's reasoning loop."""
+    iteration: int = 0
+    action: str = ""
+    result: Optional[Any] = None
+
+
+class AgentMailboxMsg(BaseModel):
+    """A message received from another agent."""
+    from_agent: str = Field(default="", alias="from")
+    type: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TeamMemberInfo(BaseModel):
+    """A teammate in the swarm."""
+    agent_id: str = ""
+    task: str = ""
+
+
+class WorkspaceSnippet(BaseModel):
+    """A truncated KV workspace entry from another agent."""
+    author: str = ""
+    data: str = ""
+    seq: int = 0
+
+
+class AgentLoopStepRequest(BaseModel):
+    """Input for a single reason-act iteration of an autonomous agent."""
+    agent_id: str = Field(..., description="Unique agent identifier")
+    workflow_id: str = Field(default="", description="Parent workflow ID")
+    task: str = Field(..., description="The task this agent is working on")
+    iteration: int = Field(default=0, description="Current iteration number")
+    messages: List[AgentMailboxMsg] = Field(default_factory=list, description="Inbox messages from other agents")
+    history: List[AgentLoopTurn] = Field(default_factory=list, description="Previous turns in this loop")
+    context: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    session_id: str = Field(default="")
+    team_roster: List[TeamMemberInfo] = Field(default_factory=list, description="Teammates and their tasks")
+    workspace_data: List[WorkspaceSnippet] = Field(default_factory=list, description="Recent shared workspace entries")
+    max_iterations: int = Field(default=25, description="Maximum iterations for this agent loop")
+
+
+class AgentLoopStepResponse(BaseModel):
+    """LLM decision for one iteration of the agent loop."""
+    action: str = Field(..., description="Action type: tool_call, send_message, publish_data, request_help, done")
+    # tool_call
+    tool: str = ""
+    tool_params: Dict[str, Any] = Field(default_factory=dict)
+    # send_message
+    to: str = ""
+    message_type: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    # publish_data
+    topic: str = ""
+    data: str = ""
+    # request_help
+    help_description: str = ""
+    help_skills: List[str] = Field(default_factory=list)
+    # done
+    response: str = ""
+    # usage
+    tokens_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    model_used: str = ""
+    provider: str = ""
+
+
+AGENT_LOOP_SYSTEM_PROMPT = """You are an autonomous agent in a multi-agent team. Your task is given below.
+You operate in a reason-act loop. Each turn, you decide ONE action to take.
+You share a session workspace directory with your teammates. Files written by any agent are readable by all.
+
+AVAILABLE ACTIONS (return exactly one per turn as JSON):
+
+1. tool_call - Execute a tool (web_search, python_executor, file_write, file_read, etc.)
+   {"action": "tool_call", "tool": "web_search", "tool_params": {"query": "..."}}
+   {"action": "tool_call", "tool": "python_executor", "tool_params": {"code": "..."}}
+   {"action": "tool_call", "tool": "file_write", "tool_params": {"path": "results.json", "content": "..."}}
+   {"action": "tool_call", "tool": "file_read", "tool_params": {"path": "teammate-results.json"}}
+
+2. publish_data - Share a text finding with the team (lightweight, for summaries and signals)
+   {"action": "publish_data", "topic": "findings", "data": "Key insight: ..."}
+
+3. send_message - Send a direct message to a specific teammate
+   {"action": "send_message", "to": "agent-id", "message_type": "info", "payload": {"message": "..."}}
+
+4. request_help - Ask the supervisor to spawn a new agent
+   {"action": "request_help", "help_description": "I need help with...", "help_skills": ["web_search"]}
+
+5. done - Task complete, return your final response
+   {"action": "done", "response": "Your complete answer here"}
+
+MEMORY MANAGEMENT:
+- For tool results larger than ~500 chars, save them to a file and note the filename
+- Before returning "done", write your complete findings to {your-agent-id}-report.md
+- This keeps your context clean and gives teammates access to your full work
+- Use file_read to discover what teammates have written
+- CRITICAL: Your "done" response MUST be a SHORT summary (under 500 chars). All detailed findings MUST be saved to files BEFORE calling done. If your response would be long, save it to a file first and reference the filename.
+
+COLLABORATION RULES:
+- Return ONLY valid JSON, no markdown wrapping
+- Choose "done" when you have enough information to answer
+- SHARE LARGE ARTIFACTS: Write data tables, full reports, code to files using file_write (relative paths only, e.g., `results.json`)
+- SHARE SUMMARIES: Use publish_data for quick text findings that teammates should see immediately
+- CHECK FIRST: Before researching, use file_read to check teammates' files and review shared findings
+- DON'T DUPLICATE: If a teammate already found what you need, build on their work
+- MESSAGE SPARINGLY: Use send_message only when you need specific data from a specific agent
+- INDEPENDENT TASKS: If your task doesn't overlap with teammates, just do your work and call "done"
+- FILE NAMING: Use {your-agent-id}-{description}.{ext} to avoid conflicts (relative paths only, no /workspace/ prefix)
+- TRACK PROGRESS: Every 3-4 iterations, publish_data with topic "status" to share what you've found and what's left to do. This helps teammates avoid duplicate work.
+"""
+
+
+@router.post("/agent/loop", response_model=AgentLoopStepResponse)
+async def agent_loop_step(request: Request, body: AgentLoopStepRequest) -> AgentLoopStepResponse:
+    """Process one iteration of an autonomous agent's reason-act loop."""
+    providers = getattr(request.app.state, "providers", None)
+
+    if not providers or not providers.is_configured():
+        raise HTTPException(status_code=503, detail="LLM providers not configured")
+
+    # Build the prompt with task, team roster, workspace, history, and mailbox
+    user_parts = [f"## Task\n{body.task}"]
+
+    # Inject team roster so agent knows its teammates
+    if body.team_roster:
+        roster_lines = []
+        for tm in body.team_roster:
+            if tm.agent_id == body.agent_id:
+                roster_lines.append(f"- **{tm.agent_id} (you)**: \"{tm.task}\"")
+            else:
+                roster_lines.append(f"- {tm.agent_id}: \"{tm.task}\"")
+        user_parts.append(
+            "## Your Team (shared session workspace)\n" + "\n".join(roster_lines)
+        )
+
+    # Inject shared workspace findings from other agents
+    if body.workspace_data:
+        ws_lines = []
+        for ws in body.workspace_data:
+            ws_lines.append(f"- {ws.author}: {ws.data}")
+        user_parts.append("## Shared Findings\n" + "\n".join(ws_lines))
+
+    if body.history:
+        history_lines = []
+        num_turns = len(body.history)
+        for idx, turn in enumerate(body.history):
+            # Last 3 iterations: full detail (4000 chars)
+            # Older iterations: summary (500 chars)
+            is_recent = (num_turns - idx) <= 3
+            max_len = 4000 if is_recent else 500
+            result_str = str(turn.result)[:max_len] if turn.result else "no result"
+            history_lines.append(f"- Iteration {turn.iteration}: {turn.action} → {result_str}")
+        user_parts.append("## Previous Actions\n" + "\n".join(history_lines))
+
+    if body.messages:
+        msg_lines = []
+        for msg in body.messages:
+            payload_str = str(msg.payload)[:2000]
+            msg_lines.append(f"- From {msg.from_agent} ({msg.type}): {payload_str}")
+        user_parts.append("## Inbox Messages\n" + "\n".join(msg_lines))
+
+    user_parts.append(f"## Budget: Iteration {body.iteration + 1} of {body.max_iterations}")
+    if body.iteration >= body.max_iterations - 2:
+        user_parts.append("⚠️ FINAL ITERATIONS: You MUST return done NOW with your best answer from research so far. Do not start new searches.")
+    user_parts.append("Decide your next action. Return ONLY valid JSON.")
+
+    user_prompt = "\n\n".join(user_parts)
+
+    # Token-aware context trimming: drop oldest history if prompt exceeds ~75% of context window.
+    # Rough estimate: 1 token ≈ 4 chars. Leave 4K tokens for system prompt + output.
+    max_prompt_chars = 400_000  # ~100K tokens, safe for medium-tier models
+    system_chars = len(AGENT_LOOP_SYSTEM_PROMPT)
+    if body.history and (system_chars + len(user_prompt)) > max_prompt_chars:
+        trimmed_history = list(body.history)
+        while len(trimmed_history) > 3 and (system_chars + len(user_prompt)) > max_prompt_chars:
+            trimmed_history = trimmed_history[1:]
+            history_lines = []
+            num_turns = len(trimmed_history)
+            for idx, turn in enumerate(trimmed_history):
+                is_recent = (num_turns - idx) <= 3
+                max_len = 4000 if is_recent else 500
+                result_str = str(turn.result)[:max_len] if turn.result else "no result"
+                history_lines.append(f"- Iteration {turn.iteration}: {turn.action} → {result_str}")
+            # Rebuild only the history section in user_parts
+            for i, part in enumerate(user_parts):
+                if part.startswith("## Previous Actions"):
+                    user_parts[i] = "## Previous Actions\n" + "\n".join(history_lines)
+                    break
+            user_prompt = "\n\n".join(user_parts)
+        if len(trimmed_history) < len(body.history):
+            logger.info(f"AgentLoop: trimmed history from {len(body.history)} to {len(trimmed_history)} entries to fit context")
+
+    try:
+        import json as json_module
+
+        from ..providers.base import ModelTier
+        result = await providers.generate_completion(
+            messages=[
+                {"role": "system", "content": AGENT_LOOP_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": "{"},
+            ],
+            tier=ModelTier.MEDIUM,
+            temperature=0.3,
+            max_tokens=2048,
+            agent_id=body.agent_id,
+        )
+
+        raw_text = result.get("output_text", "") or ""
+        # Prepend the "{" from assistant prefill
+        raw_text = "{" + raw_text
+        usage = result.get("usage", {}) or {}
+        tokens_used = int(usage.get("total_tokens") or 0)
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        model_used = result.get("model", "") or ""
+        provider_name = result.get("provider", "") or ""
+
+        # Parse LLM JSON response
+        cleaned = strip_markdown_json_wrapper(raw_text, expect_json=True).strip()
+        try:
+            action_data = json_module.loads(cleaned)
+        except json_module.JSONDecodeError:
+            # If LLM didn't return valid JSON, treat as done with the raw text
+            logger.warning(f"AgentLoop: LLM returned non-JSON, treating as done: {raw_text[:200]}")
+            return AgentLoopStepResponse(
+                action="done",
+                response=raw_text,
+                tokens_used=tokens_used,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                model_used=model_used,
+                provider=provider_name,
+            )
+
+        action = action_data.get("action", "done")
+
+        return AgentLoopStepResponse(
+            action=action,
+            # tool_call
+            tool=action_data.get("tool", ""),
+            tool_params=action_data.get("tool_params", {}),
+            # send_message
+            to=action_data.get("to", ""),
+            message_type=action_data.get("message_type", "info"),
+            payload=action_data.get("payload", {}),
+            # publish_data
+            topic=action_data.get("topic", ""),
+            data=action_data.get("data", ""),
+            # request_help
+            help_description=action_data.get("help_description", ""),
+            help_skills=action_data.get("help_skills", []),
+            # done
+            response=action_data.get("response", ""),
+            # usage
+            tokens_used=tokens_used,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model_used=model_used,
+            provider=provider_name,
+        )
+
+    except Exception as e:
+        logger.error(f"AgentLoop step failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Agent loop step failed: {str(e)}")
+
+
 class ResearchPlanRequest(BaseModel):
     """Request for generating a human-friendly research plan."""
     query: str = Field(..., description="The research query")

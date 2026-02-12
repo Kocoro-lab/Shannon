@@ -35,11 +35,15 @@ const (
 	BatchStreamExecuteActivity  = "BatchStreamExecute"
 	GetStreamingMetricsActivity = "GetStreamingMetrics"
 
+	// Swarm Agent Activities
+	AgentLoopStepActivity = "AgentLoopStep"
+
 	// P2P Activities
 	SendAgentMessageActivity   = "SendAgentMessage"
 	FetchAgentMessagesActivity = "FetchAgentMessages"
 	WorkspaceAppendActivity    = "WorkspaceAppend"
 	WorkspaceListActivity      = "WorkspaceList"
+	WorkspaceListAllActivity   = "WorkspaceListAll"
 	SendTaskRequestActivity    = "SendTaskRequest"
 	SendTaskOfferActivity      = "SendTaskOffer"
 	SendTaskAcceptActivity     = "SendTaskAccept"

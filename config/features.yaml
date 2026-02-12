@@ -97,6 +97,9 @@ workflows:
     dangerous_tools:              # Tools requiring approval
       - file_system
       - code_execution
+      - bash
+      - file_write
+      - python_executor
 
   # Template configuration
   templates:
@@ -107,6 +110,17 @@ workflows:
   p2p:
     enabled: false  # Set to true to enable P2P coordination between agents
     timeout_seconds: 600  # Maximum wait time for dependencies (10 minutes default)
+
+  # Swarm Agent Architecture (persistent multi-turn agents with inter-agent messaging)
+  swarm:
+    enabled: true  # Set to true to enable swarm agent architecture
+    max_agents: 10  # Maximum total agents (initial + dynamically spawned)
+    max_iterations_per_agent: 25  # Max reason-act loops per agent
+    agent_timeout_seconds: 600  # Per-agent timeout (25 iters × ~20s needs >5min)
+    # Collaboration guardrails
+    max_messages_per_agent: 20  # Max direct messages an agent can send per workflow
+    workspace_snippet_chars: 800  # Max chars per KV workspace entry shown in prompt
+    workspace_max_entries: 5  # Max recent KV entries shown per topic
 
 # Citation V2 configuration (DEPRECATED - V2 abandoned, using optimized Legacy)
 citation:

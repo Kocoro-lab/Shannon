@@ -343,6 +343,70 @@ func extractSummary(text string, maxLen int) string {
 }
 
 // -----------------------------------------------------------------------------
+// Swarm Workflow Messages
+// -----------------------------------------------------------------------------
+
+// MsgSwarmStarted announces swarm workflow initialization.
+func MsgSwarmStarted() string { return "Assigning a team of agents" }
+
+// MsgSwarmPlanning announces task decomposition.
+func MsgSwarmPlanning() string { return "Planning approach" }
+
+// MsgSwarmSpawning announces agents being assigned.
+func MsgSwarmSpawning(count int) string {
+	if count == 1 {
+		return "Assigning 1 agent"
+	}
+	return fmt.Sprintf("Assigning %d agents", count)
+}
+
+// MsgSwarmMonitoring announces agent coordination phase.
+func MsgSwarmMonitoring() string { return "Agents working in parallel" }
+
+// MsgSwarmSynthesizing announces result combination.
+func MsgSwarmSynthesizing(count int) string {
+	return fmt.Sprintf("Combining findings from %d agents", count)
+}
+
+// MsgSwarmCompleted announces swarm completion.
+func MsgSwarmCompleted() string { return "All done" }
+
+// MsgAgentStarted announces an agent beginning work.
+func MsgAgentStarted(agentName string) string {
+	return fmt.Sprintf("%s starting", agentName)
+}
+
+// MsgAgentCompleted announces an agent finishing work.
+func MsgAgentCompleted(agentName string) string {
+	return fmt.Sprintf("%s finished", agentName)
+}
+
+// humanizeAction converts a raw action name to user-friendly text.
+func humanizeAction(action string) string {
+	switch action {
+	case "tool_call":
+		return "using tools"
+	case "done":
+		return "wrapping up"
+	case "send_message":
+		return "coordinating with team"
+	case "publish_data":
+		return "sharing findings"
+	case "request_help":
+		return "requesting help"
+	default:
+		// For tool-specific actions like "web_search", "file_write"
+		return humanizeToolName(action)
+	}
+}
+
+// MsgAgentProgress reports agent iteration progress in UX-friendly terms.
+func MsgAgentProgress(agentName string, step, total int, action string) string {
+	friendly := humanizeAction(action)
+	return fmt.Sprintf("%s — %s (%d/%d)", agentName, friendly, step, total)
+}
+
+// -----------------------------------------------------------------------------
 // Workflow Control Messages (pause/resume/cancel)
 // -----------------------------------------------------------------------------
 

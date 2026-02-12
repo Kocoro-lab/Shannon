@@ -13,13 +13,12 @@ import "hash/fnv"
 // 213:     Fact extraction
 // 214:     Entity localization
 // 215:     Fallback search
-// 220:     Ads keyword extraction
-// 221-229: Ads LP analysis (221+i)
-// 230:     Ads synthesis
+// 220-239: Reserved for vendor extensions
 // 240:     React synthesizer
 // 250:     DAG synthesis
 // 251:     Supervisor synthesis
 // 252:     Streaming synthesis
+// 300+:    Swarm dynamically spawned agents (300+i)
 const (
 	IdxSynthesis             = 200
 	IdxIntermediateSynthesis = 201
@@ -29,18 +28,19 @@ const (
 	IdxFactExtraction        = 213
 	IdxEntityLocalization    = 214
 	IdxFallbackSearch        = 215
-	IdxAdsKeywordExtraction  = 220
-	IdxAdsLPAnalysisBase     = 221 // Use 221+i for LP analysis
-	IdxAdsSynthesis          = 230
-	IdxReactSynthesizer      = 240
+	IdxReactSynthesizer = 240
 	IdxDAGSynthesis          = 250
 	IdxSupervisorSynthesis   = 251
 	IdxStreamingSynthesis    = 252
 	IdxDomainPrefetchBase    = 100 // Use 100+i for domain prefetch
+	IdxSwarmDynamicBase      = 300 // Use 300+i for dynamically spawned swarm agents
 )
 
 // stationNames is the pool of Japanese station-inspired agent names.
-// The list is fixed to maintain determinism for workflow replays.
+// The list is FROZEN at 59 entries to maintain determinism for Temporal workflow replays.
+// GetAgentName uses len(stationNames) as modulus, so changing the size or order
+// would alter agent name mappings for all existing workflows.
+// WARNING: NEVER reorder, rename, remove, or append entries.
 var stationNames = []string{
 	"Ome", "Gora", "Maji", "Ueno", "Ebisu",
 	"Osaki", "Otaru", "Namba", "Tenma", "Mejiro",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
@@ -226,6 +227,72 @@ func (a *Activities) WorkspaceList(ctx context.Context, in WorkspaceListInput) (
 			}
 		}
 	}
+	return out, nil
+}
+
+// WorkspaceListAllInput scans all workspace topics for a workflow.
+type WorkspaceListAllInput struct {
+	WorkflowID string `json:"workflow_id"`
+	SinceSeq   uint64 `json:"since_seq"`
+	MaxEntries int    `json:"max_entries"` // Max entries total across all topics
+}
+
+// WorkspaceListAll returns recent entries from ALL workspace topics for a workflow.
+func (a *Activities) WorkspaceListAll(ctx context.Context, in WorkspaceListAllInput) ([]WorkspaceEntry, error) {
+	if in.WorkflowID == "" {
+		return nil, fmt.Errorf("invalid args: empty workflow_id")
+	}
+	if in.MaxEntries <= 0 {
+		in.MaxEntries = 10
+	}
+
+	rc := a.sessionManager.RedisWrapper().GetClient()
+	prefix := fmt.Sprintf("wf:%s:ws:", in.WorkflowID)
+	seqKey := fmt.Sprintf("wf:%s:ws:seq", in.WorkflowID)
+
+	// Scan for all workspace topic keys
+	var topicKeys []string
+	iter := rc.Scan(ctx, 0, prefix+"*", 100).Iterator()
+	for iter.Next(ctx) {
+		key := iter.Val()
+		if key != seqKey { // Skip the global seq counter
+			topicKeys = append(topicKeys, key)
+		}
+	}
+	if err := iter.Err(); err != nil {
+		return nil, err
+	}
+
+	// Read recent entries from each topic
+	var out []WorkspaceEntry
+	for _, key := range topicKeys {
+		llen := rc.LLen(ctx, key).Val()
+		start := llen - 5 // Last 5 per topic
+		if start < 0 {
+			start = 0
+		}
+		vals, err := rc.LRange(ctx, key, start, llen).Result()
+		if err != nil && err != redis.Nil {
+			continue
+		}
+		for _, v := range vals {
+			var e WorkspaceEntry
+			if json.Unmarshal([]byte(v), &e) == nil {
+				if e.Seq > in.SinceSeq {
+					out = append(out, e)
+				}
+			}
+		}
+	}
+
+	// Sort by seq (entries come from multiple Redis lists, so order isn't guaranteed)
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+
+	// Cap at MaxEntries, keeping the most recent (highest seq)
+	if len(out) > in.MaxEntries {
+		out = out[len(out)-in.MaxEntries:]
+	}
+
 	return out, nil
 }
 
