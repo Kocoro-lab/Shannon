@@ -50,6 +50,7 @@ type AgentLoopInput struct {
 	TeamRoster            []TeamMember           `json:"team_roster,omitempty"`
 	WorkspaceMaxEntries   int                    `json:"workspace_max_entries,omitempty"`
 	WorkspaceSnippetChars int                    `json:"workspace_snippet_chars,omitempty"`
+	MaxMessagesPerAgent   int                    `json:"max_messages_per_agent,omitempty"`
 }
 
 // AgentLoopResult is the final result from a persistent agent.
@@ -119,14 +120,19 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 	if wsSnippetChars <= 0 {
 		wsSnippetChars = 800
 	}
+	maxMessages := input.MaxMessagesPerAgent
+	if maxMessages <= 0 {
+		maxMessages = 20
+	}
 
 	var history []activities.AgentLoopTurn
 	var totalTokens, totalInput, totalOutput int
 	var lastModel, lastProvider string
 	var lastWorkspaceSeq uint64
-	var consecutiveToolErrors int    // Track consecutive tool failures to prevent infinite loops
-	var consecutiveNonToolActions int // Track iterations without tool calls for convergence detection
-	var consecutiveTransientErrors int // Track transient errors for escalating backoff
+	var messagesSent int                       // Track messages sent for per-agent cap enforcement
+	var consecutiveToolErrors int              // Track consecutive tool failures to prevent infinite loops
+	var consecutiveNonToolActions int          // Track iterations without tool calls for convergence detection
+	var consecutiveTransientErrors int         // Track transient errors for escalating backoff
 
 	for iteration := 0; iteration < input.MaxIterations; iteration++ {
 		logger.Info("AgentLoop iteration", "agent_id", input.AgentID, "iteration", iteration)
@@ -354,21 +360,32 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 
 		case "send_message":
 			consecutiveNonToolActions++
-			// Send message to another agent via P2P mailbox
-			_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
-				WorkflowID: input.WorkflowID,
-				From:       input.AgentID,
-				To:         stepResult.To,
-				Type:       activities.MessageType(stepResult.MessageType),
-				Payload:    stepResult.Payload,
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
+			if messagesSent >= maxMessages {
+				logger.Warn("AgentLoop message cap reached, skipping send",
+					"agent_id", input.AgentID, "cap", maxMessages, "to", stepResult.To)
+				history = append(history, activities.AgentLoopTurn{
+					Iteration: iteration,
+					Action:    fmt.Sprintf("send_message:%s", stepResult.To),
+					Result:    fmt.Sprintf("dropped: message cap reached (%d/%d)", messagesSent, maxMessages),
+				})
+			} else {
+				// Send message to another agent via P2P mailbox
+				_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
+					WorkflowID: input.WorkflowID,
+					From:       input.AgentID,
+					To:         stepResult.To,
+					Type:       activities.MessageType(stepResult.MessageType),
+					Payload:    stepResult.Payload,
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+				messagesSent++
 
-			history = append(history, activities.AgentLoopTurn{
-				Iteration: iteration,
-				Action:    fmt.Sprintf("send_message:%s", stepResult.To),
-				Result:    "sent",
-			})
+				history = append(history, activities.AgentLoopTurn{
+					Iteration: iteration,
+					Action:    fmt.Sprintf("send_message:%s", stepResult.To),
+					Result:    "sent",
+				})
+			}
 
 		case "publish_data":
 			consecutiveNonToolActions++
@@ -391,26 +408,37 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 
 		case "request_help":
 			consecutiveNonToolActions++
-			// Send help request to supervisor via mailbox
-			payload := map[string]interface{}{
-				"description": stepResult.HelpDescription,
-				"skills":      stepResult.HelpSkills,
-				"from":        input.AgentID,
-			}
-			_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
-				WorkflowID: input.WorkflowID,
-				From:       input.AgentID,
-				To:         "supervisor",
-				Type:       activities.MessageTypeRequest,
-				Payload:    payload,
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
+			if messagesSent >= maxMessages {
+				logger.Warn("AgentLoop message cap reached, skipping help request",
+					"agent_id", input.AgentID, "cap", maxMessages)
+				history = append(history, activities.AgentLoopTurn{
+					Iteration: iteration,
+					Action:    "request_help",
+					Result:    fmt.Sprintf("dropped: message cap reached (%d/%d)", messagesSent, maxMessages),
+				})
+			} else {
+				// Send help request to supervisor via mailbox
+				payload := map[string]interface{}{
+					"description": stepResult.HelpDescription,
+					"skills":      stepResult.HelpSkills,
+					"from":        input.AgentID,
+				}
+				_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
+					WorkflowID: input.WorkflowID,
+					From:       input.AgentID,
+					To:         "supervisor",
+					Type:       activities.MessageTypeRequest,
+					Payload:    payload,
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+				messagesSent++
 
-			history = append(history, activities.AgentLoopTurn{
-				Iteration: iteration,
-				Action:    "request_help",
-				Result:    stepResult.HelpDescription,
-			})
+				history = append(history, activities.AgentLoopTurn{
+					Iteration: iteration,
+					Action:    "request_help",
+					Result:    stepResult.HelpDescription,
+				})
+			}
 
 		default:
 			// Treat unrecognized actions (file_write, file_read, web_search, etc.)
@@ -708,6 +736,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			TeamRoster:            roster,
 			WorkspaceMaxEntries:   cfg.SwarmWorkspaceMaxEntries,
 			WorkspaceSnippetChars: cfg.SwarmWorkspaceSnippetChars,
+			MaxMessagesPerAgent:   cfg.SwarmMaxMessagesPerAgent,
 		})
 
 		agentFutures = append(agentFutures, agentFuture{ID: agentName, Future: future})
@@ -832,6 +861,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 							TeamRoster:            updatedRoster,
 							WorkspaceMaxEntries:   cfg.SwarmWorkspaceMaxEntries,
 							WorkspaceSnippetChars: cfg.SwarmWorkspaceSnippetChars,
+							MaxMessagesPerAgent:   cfg.SwarmMaxMessagesPerAgent,
 						})
 						dynamicSpawnCount++
 						totalExpected++
