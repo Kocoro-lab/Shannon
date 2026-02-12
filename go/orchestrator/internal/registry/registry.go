@@ -63,6 +63,11 @@ func (r *OrchestratorRegistry) RegisterWorkflows(w worker.Worker) error {
 		r.logger.Info("Registered streaming workflows")
 	}
 
+	// Swarm workflows (persistent multi-turn agents with P2P messaging)
+	w.RegisterWorkflow(workflows.AgentLoop)
+	w.RegisterWorkflow(workflows.SwarmWorkflow)
+	r.logger.Info("Registered swarm workflows")
+
 	// Strategy workflows (pattern-based)
 	w.RegisterWorkflow(strategies.DAGWorkflow)
 	w.RegisterWorkflow(strategies.ReactWorkflow)
@@ -143,6 +148,7 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(acts.FetchAgentMessages, activity.RegisterOptions{Name: constants.FetchAgentMessagesActivity})
 	w.RegisterActivityWithOptions(acts.WorkspaceAppend, activity.RegisterOptions{Name: constants.WorkspaceAppendActivity})
 	w.RegisterActivityWithOptions(acts.WorkspaceList, activity.RegisterOptions{Name: constants.WorkspaceListActivity})
+	w.RegisterActivityWithOptions(acts.WorkspaceListAll, activity.RegisterOptions{Name: constants.WorkspaceListAllActivity})
 	// Structured protocol wrappers
 	w.RegisterActivityWithOptions(acts.SendTaskRequest, activity.RegisterOptions{Name: constants.SendTaskRequestActivity})
 	w.RegisterActivityWithOptions(acts.SendTaskOffer, activity.RegisterOptions{Name: constants.SendTaskOfferActivity})
@@ -200,6 +206,11 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 		})
 		r.logger.Info("Registered streaming activities")
 	}
+
+	// Swarm agent activity (persistent agent loop step)
+	w.RegisterActivityWithOptions(activities.AgentLoopStep, activity.RegisterOptions{
+		Name: constants.AgentLoopStepActivity,
+	})
 
 	// Minimal streaming_v1 event emitter (always safe to register)
 	w.RegisterActivityWithOptions(activities.EmitTaskUpdate, activity.RegisterOptions{

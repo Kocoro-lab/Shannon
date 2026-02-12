@@ -743,6 +743,12 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Info("P2P coordination forced via context flag")
 	}
 
+	// Check if Swarm mode is requested
+	forceSwarm := GetContextBool(input.Context, "force_swarm")
+	if forceSwarm {
+		logger.Info("Swarm workflow forced via context flag")
+	}
+
 	// Supervisor heuristic: very large plans, explicit dependencies, or forced P2P
 	hasDeps := forceP2P // Start with force flag
 	if !hasDeps {
@@ -752,6 +758,47 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				break
 			}
 		}
+	}
+
+	// Swarm workflow with fallback: try swarm first, fall back to standard routing on failure
+	if forceSwarm && cfg.SwarmEnabled {
+		if err := controlHandler.CheckPausePoint(ctx, "pre_swarm_workflow"); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
+		var result TaskResult
+		ometrics.WorkflowsStarted.WithLabelValues("SwarmWorkflow", "swarm").Inc()
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: parentWorkflowID,
+			EventType:  activities.StreamEventDelegation,
+			AgentID:    "orchestrator",
+			Message:    activities.MsgSwarmStarted(),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+		input.PreplannedDecomposition = &decomp
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, SwarmWorkflow, input)
+		var childExec workflow.Execution
+		if err := childFuture.GetChildWorkflowExecution().Get(childCtx, &childExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(childExec.ID)
+		execErr := childFuture.Get(childCtx, &result)
+		controlHandler.UnregisterChildWorkflow(childExec.ID)
+
+		if execErr == nil && result.Success {
+			scheduleStreamEnd(ctx)
+			result = AddTaskContextToMetadata(result, input.Context)
+			return result, nil
+		}
+		// Fallback: swarm failed, continue to standard routing below
+		reason := "unsuccessful result"
+		if execErr != nil {
+			reason = execErr.Error()
+		}
+		logger.Warn("SwarmWorkflow failed, falling back to standard routing", "error", reason)
+		delete(input.Context, "force_swarm")
 	}
 
 	switch {
