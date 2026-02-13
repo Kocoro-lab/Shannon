@@ -4,7 +4,7 @@
 [![Documentation](https://img.shields.io/badge/docs-shannon.run-blue.svg)](https://docs.shannon.run)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-waylandzhang%2Fshannon-blue.svg)](https://hub.docker.com/u/waylandzhang)
 [![Version](https://img.shields.io/badge/version-v0.1.0-green.svg)](https://github.com/Kocoro-lab/Shannon/releases)
-[![Go Version](https://img.shields.io/badge/Go-1.22%2B-blue.svg)](https://golang.org/)
+[![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
@@ -16,6 +16,14 @@ Battle-tested infrastructure for AI agents that solves the problems you hit at s
 ![Shannon Desktop App](docs/images/desktop-demo.gif)
 
 *Native desktop app showing real-time agent execution and event streams*
+
+</div>
+
+<div align="center">
+
+![Shannon Architecture](docs/images/architecture-oss.png)
+
+*Shannon open-source platform architecture — multi-agent orchestration with execution strategies, WASI sandboxing, and built-in observability*
 
 </div>
 
@@ -200,22 +208,7 @@ FIRECRAWL_API_KEY=your-firecrawl-key    # firecrawl.dev (recommended for product
 
 ## Architecture
 
-```
-┌─────────────┐     ┌──────────────┐     ┌─────────────┐
-│   Client    │────▶│ Orchestrator │────▶│ Agent Core  │
-│  (SDK/API)  │     │     (Go)     │     │   (Rust)    │
-└─────────────┘     └──────────────┘     └─────────────┘
-                           │                    │
-                    ┌──────┴──────┐      ┌──────┴──────┐
-                    │  Temporal   │      │    WASI     │
-                    │  Workflows  │      │   Sandbox   │
-                    └─────────────┘      └─────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │ LLM Service │
-                    │  (Python)   │
-                    └─────────────┘
-```
+See the [architecture diagram above](#) for the full platform overview including execution strategies, sandbox isolation, and tool ecosystem.
 
 **Components:**
 
@@ -317,10 +310,10 @@ curl -X POST http://localhost:8080/api/v1/schedules \
 ```
 
 ### 15+ LLM Providers
-- **OpenAI**: GPT-4, GPT-3.5, GPT-4 Turbo
-- **Anthropic**: Claude 3 Opus/Sonnet/Haiku, Claude 3.5 Sonnet
-- **Google**: Gemini Pro, Gemini Ultra
-- **DeepSeek**: DeepSeek Chat, DeepSeek Coder
+- **OpenAI**: GPT-5, GPT-5 mini, o3, o4-mini
+- **Anthropic**: Claude Opus 4, Sonnet 4.5, Haiku 4.5
+- **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash
+- **DeepSeek**: DeepSeek V3, DeepSeek R1
 - **Local Models**: Ollama, LM Studio, vLLM
 - Automatic failover between providers
 
@@ -352,7 +345,7 @@ curl -X POST http://localhost:8080/api/v1/tasks \
     "config": {
       "budget": {
         "max_tokens": 5000,
-        "fallback_model": "gpt-5-mini-2025-08-07"
+        "fallback_model": "gpt-5-mini"
       }
     }
   }'
@@ -367,7 +360,7 @@ package shannon.teams
 
 allow {
     input.team == "data-science"
-    input.model in ["gpt-5-2025-08-07", "claude-sonnet-4-5-20250929"]
+    input.model in ["gpt-5", "claude-sonnet-4-5-20250929"]
 }
 
 deny_tool["database_write"] {
