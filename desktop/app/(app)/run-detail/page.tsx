@@ -19,7 +19,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState, approveReviewPlan } from "@/lib/shannon/api";
-import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent } from "@/lib/features/runSlice";
+import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -75,6 +75,7 @@ function RunDetailContent() {
     const reviewWorkflowId = useSelector((state: RootState) => state.run.reviewWorkflowId);
     const reviewVersion = useSelector((state: RootState) => state.run.reviewVersion);
     const reviewIntent = useSelector((state: RootState) => state.run.reviewIntent);
+    const swarmMode = useSelector((state: RootState) => state.run.swarmMode);
     const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
 
     const handleRetryStream = () => {
@@ -170,6 +171,11 @@ function RunDetailContent() {
                         dispatch(setResearchStrategy(strategy as "quick" | "standard" | "deep" | "academic"));
                     }
                     
+                    // Restore swarm mode
+                    if (taskContext.force_swarm === true || taskContext.force_swarm === "true") {
+                        dispatch(setSwarmMode(true));
+                    }
+
                     // Mark agent type as fetched for the task's session to avoid redundant API calls
                     if (task.session_id) {
                         hasFetchedAgentTypeRef.current = task.session_id;
@@ -1770,6 +1776,8 @@ function RunDetailContent() {
                                             onReviewFeedback={handleReviewFeedback}
                                             onReviewError={handleReviewError}
                                             onApprove={handleReviewApprove}
+                                            swarmMode={swarmMode}
+                                            onSwarmModeChange={(enabled) => dispatch(setSwarmMode(enabled))}
                                         />
                                     </div>
                                 </>
@@ -1801,6 +1809,8 @@ function RunDetailContent() {
                                     onReviewFeedback={handleReviewFeedback}
                                     onReviewError={handleReviewError}
                                     onApprove={handleReviewApprove}
+                                    swarmMode={swarmMode}
+                                    onSwarmModeChange={(enabled) => dispatch(setSwarmMode(enabled))}
                                 />
                             )}
                         </TabsContent>

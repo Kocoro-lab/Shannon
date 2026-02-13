@@ -26,6 +26,8 @@ interface RunState {
     reviewWorkflowId: string | null;
     reviewVersion: number;
     reviewIntent: "feedback" | "ready" | "execute" | null;
+    // Swarm mode
+    swarmMode: boolean;
 }
 
 const initialState: RunState = {
@@ -50,6 +52,8 @@ const initialState: RunState = {
     reviewWorkflowId: null,
     reviewVersion: 0,
     reviewIntent: null,
+    // Swarm mode
+    swarmMode: false,
 };
 
 // Helper to create inline status messages from events
@@ -769,6 +773,7 @@ const runSlice = createSlice({
             const preservedAgent = state.selectedAgent;
             const preservedStrategy = state.researchStrategy;
             const preservedAutoApprove = state.autoApprove;
+            const preservedSwarmMode = state.swarmMode;
 
             state.events = [];
             state.messages = [];
@@ -792,6 +797,7 @@ const runSlice = createSlice({
             state.selectedAgent = preservedAgent;
             state.researchStrategy = preservedStrategy;
             state.autoApprove = preservedAutoApprove;
+            state.swarmMode = preservedSwarmMode;
         },
         addMessage: (state, action: PayloadAction<any>) => {
             console.log("[Redux] addMessage called:", action.payload);
@@ -903,6 +909,9 @@ const runSlice = createSlice({
         setReviewIntent: (state, action: PayloadAction<RunState["reviewIntent"]>) => {
             state.reviewIntent = action.payload;
         },
+        setSwarmMode: (state, action: PayloadAction<boolean>) => {
+            state.swarmMode = action.payload;
+        },
         setCancelled: (state, action: PayloadAction<boolean>) => {
             state.isCancelled = action.payload;
             state.isCancelling = false;
@@ -933,5 +942,5 @@ const runSlice = createSlice({
     },
 });
 
-export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent } = runSlice.actions;
+export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode } = runSlice.actions;
 export default runSlice.reducer;

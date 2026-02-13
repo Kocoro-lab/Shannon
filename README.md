@@ -3,19 +3,19 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://img.shields.io/badge/docs-shannon.run-blue.svg)](https://docs.shannon.run)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-waylandzhang%2Fshannon-blue.svg)](https://hub.docker.com/u/waylandzhang)
-[![Version](https://img.shields.io/badge/version-v0.1.0-green.svg)](https://github.com/Kocoro-lab/Shannon/releases)
+[![Version](https://img.shields.io/badge/version-v0.2.0-green.svg)](https://github.com/Kocoro-lab/Shannon/releases)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Battle-tested infrastructure for AI agents that solves the problems you hit at scale: **runaway costs**, **non-deterministic failures**, and **security nightmares**.
+Ship reliable AI agents to production. Multi-strategy orchestration, swarm collaboration, token budget control, human approval workflows, and time-travel debugging — all built in. **<a href="https://shannon.run" target="_blank">Live Demo →</a>**
 
 <div align="center">
 
 
 ![Shannon Desktop App](docs/images/desktop-demo.gif)
 
-*Native desktop app showing real-time agent execution and event streams*
+*View real-time agent execution and event streams*
 
 </div>
 
@@ -49,7 +49,7 @@ Battle-tested infrastructure for AI agents that solves the problems you hit at s
 **Quick Install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/v0.1.0/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/v0.2.0/scripts/install.sh | bash
 ```
 
 This downloads config, prompts for API keys, pulls Docker images, and starts services.
@@ -208,7 +208,7 @@ FIRECRAWL_API_KEY=your-firecrawl-key    # firecrawl.dev (recommended for product
 
 ## Architecture
 
-See the [architecture diagram above](#) for the full platform overview including execution strategies, sandbox isolation, and tool ecosystem.
+See the [architecture diagram above](#architecture) for the full platform overview including execution strategies, sandbox isolation, and tool ecosystem.
 
 **Components:**
 
@@ -254,18 +254,18 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 ```
 Create custom skills in `config/skills/user/`. See [Skills System](docs/skills-system.md).
 
-### Session Workspaces
+### WASI Sandbox & Session Workspaces
 ```bash
-# Agents can read/write files in isolated session workspaces
-# Each session_id gets its own directory at /tmp/shannon-sessions/{session_id}/
+# Agents execute code in isolated WASI sandboxes — no network, read-only FS
+# Each session gets its own workspace at /tmp/shannon-sessions/{session_id}/
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
-    "query": "List files in my workspace",
+    "query": "Run this Python script and save the output",
     "session_id": "my-workspace"
   }'
 ```
-Enable WASI sandbox for enhanced security: `SHANNON_USE_WASI_SANDBOX=1`. See [Session Workspaces](docs/session-workspaces.md).
+WASI sandbox provides secure code execution with no system call access. See [Session Workspaces](docs/session-workspaces.md).
 
 ### Research Workflows
 ```bash
@@ -280,6 +280,34 @@ curl -X POST http://localhost:8080/api/v1/tasks \
     }
   }'
 # Orchestrates multiple research agents and synthesizes findings with citations
+```
+
+### Swarm Multi-Agent Workflows
+```bash
+# Peer-to-peer multi-agent collaboration with message passing
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Analyze this dataset from multiple perspectives",
+    "context": {
+      "execution_mode": "swarm"
+    }
+  }'
+# Agents coordinate via P2P messaging without a central supervisor
+```
+
+### Human-in-the-Loop Approval
+```bash
+# Tasks can pause for human approval before sensitive operations
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "Update the production database schema",
+    "context": {
+      "require_approval": true
+    }
+  }'
+# Workflow pauses and waits for explicit human approval before proceeding
 ```
 
 ### Session Continuity
@@ -309,13 +337,17 @@ curl -X POST http://localhost:8080/api/v1/schedules \
   }'
 ```
 
-### 15+ LLM Providers
-- **OpenAI**: GPT-5, GPT-5 mini, o3, o4-mini
-- **Anthropic**: Claude Opus 4, Sonnet 4.5, Haiku 4.5
-- **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash
-- **DeepSeek**: DeepSeek V3, DeepSeek R1
-- **Local Models**: Ollama, LM Studio, vLLM
+### 10+ LLM Providers
+- **OpenAI**: GPT-5.1, GPT-5 mini, GPT-5 nano
+- **Anthropic**: Claude Opus 4.5, Opus 4.1, Sonnet 4.5, Haiku 4.5
+- **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 3 Pro Preview
+- **xAI**: Grok 4 (reasoning & non-reasoning)
+- **DeepSeek**: DeepSeek V3.2, DeepSeek R1
+- **Others**: Qwen, Mistral, Meta (Llama 4), Zhipu (GLM-4.6), Cohere
+- **Open-Source / Local**: Ollama (Llama, Mistral, Phi, etc.), LM Studio, vLLM — any OpenAI-compatible endpoint
 - Automatic failover between providers
+
+> **Note:** OpenAI, Anthropic, xAI, and Google providers are battle-tested. Others are supported but less extensively validated.
 
 ### MCP Integration
 Native support for Model Context Protocol:
@@ -376,26 +408,10 @@ deny_tool["database_write"] {
 # Result: OSError - system calls blocked by WASI sandbox
 ```
 
-## Shannon vs. Alternatives
-
-| Capability                    | Shannon                      | LangGraph        | Dify             | AutoGen          | CrewAI           |
-| ----------------------------- | ---------------------------- | ---------------- | ---------------- | ---------------- | ---------------- |
-| **Scheduled Tasks**           | ✅ Cron-based workflows       | ❌                | ⚠️ Basic          | ❌                | ❌                |
-| **Research Workflows**        | ✅ Multi-strategy (5 types)   | ⚠️ Manual setup   | ⚠️ Manual setup   | ⚠️ Manual setup   | ⚠️ Manual setup   |
-| **Deterministic Replay**      | ✅ Time-travel debugging      | ❌                | ❌                | ❌                | ❌                |
-| **Token Budget Limits**       | ✅ Hard caps + auto-fallback  | ❌                | ❌                | ❌                | ❌                |
-| **Security Sandbox**          | ✅ WASI isolation             | ❌                | ❌                | ❌                | ❌                |
-| **OPA Policy Control**        | ✅ Fine-grained governance    | ❌                | ❌                | ❌                | ❌                |
-| **Production Metrics**        | ✅ Dashboard/Prometheus       | ⚠️ DIY            | ⚠️ Basic          | ❌                | ❌                |
-| **Native Desktop Apps**       | ✅ macOS/iOS                  | ❌                | ❌                | ❌                | ❌                |
-| **Multi-Language Core**       | ✅ Go/Rust/Python             | ⚠️ Python only    | ⚠️ Python only    | ⚠️ Python only    | ⚠️ Python only    |
-| **Session Persistence**       | ✅ Redis-backed               | ⚠️ In-memory      | ✅ Database        | ⚠️ Limited        | ❌                |
-| **Multi-Agent Orchestration** | ✅ DAG/Supervisor/Strategies  | ✅ Graphs         | ⚠️ Workflows      | ✅ Group chat     | ✅ Crews          |
-
 ## Built for Enterprise
 
 - **Multi-Tenant Isolation** — Separate memory, budgets, and policies per tenant
-- **Human-in-the-Loop** — Configurable approval workflows for sensitive operations
+- **Human-in-the-Loop** — Approval middleware pauses workflows for human review before sensitive operations
 - **Audit Trail** — Complete trace of every decision and data access
 - **On-Premise Ready** — No cloud dependencies, runs entirely in your infrastructure
 

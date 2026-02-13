@@ -33,11 +33,18 @@ Update version strings in these files:
 | File | Field to Update |
 |------|-----------------|
 | `CHANGELOG.md` | Add `## [X.Y.Z] - YYYY-MM-DD` and update the tag link |
+| `README.md` | Version badge + install command tag |
+| `scripts/install.sh` | Default `SHANNON_VERSION` |
+| `rust/agent-core/Cargo.toml` | `version = "X.Y.Z"` |
+| `rust/firecracker-executor/Cargo.toml` | `version = "X.Y.Z"` |
+| `python/llm-service/main.py` | FastAPI `version=` + health endpoint version |
+| `python/llm-service/llm_service/__init__.py` | `__version__ = "X.Y.Z"` |
+| `python/llm-service/llm_service/metrics.py` | Default `version` param |
 | `desktop/package.json` | `"version": "X.Y.Z"` |
 | `desktop/src-tauri/tauri.conf.json` | `"version": "X.Y.Z"` |
 | `desktop/src-tauri/Cargo.toml` | `version = "X.Y.Z"` |
-| `README.md` | Version badge + install command tag |
-| `scripts/install.sh` | Default `SHANNON_VERSION` |
+| `docs/agent-core-api.md` | `Current version:` |
+| `docs/event-types.md` | `Shannon Version:` |
 
 ### 3. Validate Builds Locally
 

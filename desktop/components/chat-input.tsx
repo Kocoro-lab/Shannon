@@ -5,7 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Send, Loader2, Sparkles, Pause, Play, Square, CheckCircle2 } from "lucide-react";
+import { Send, Loader2, Sparkles, Pause, Play, Square, CheckCircle2, Workflow } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRouter } from "next/navigation";
 import { submitTask, submitReviewFeedback, approveReviewPlan } from "@/lib/shannon/api";
 import { cn } from "@/lib/utils";
@@ -43,6 +44,9 @@ interface ChatInputProps {
     onReviewFeedback?: (version: number, intent: "feedback" | "ready" | "execute", planMessage: string, round: number, userMessage: string) => void;
     onReviewError?: () => void;
     onApprove?: () => void;
+    /** Swarm mode toggle */
+    swarmMode?: boolean;
+    onSwarmModeChange?: (enabled: boolean) => void;
 }
 
 export function ChatInput({
@@ -71,6 +75,8 @@ export function ChatInput({
     onReviewFeedback,
     onReviewError,
     onApprove,
+    swarmMode = false,
+    onSwarmModeChange,
 }: ChatInputProps) {
     const [query, setQuery] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -123,6 +129,11 @@ export function ChatInput({
 
             const context: Record<string, unknown> = {};
             let research_strategy: "deep" | "academic" | "quick" | "standard" | undefined;
+
+            // Swarm mode: multi-agent persistent loop
+            if (swarmMode) {
+                context.force_swarm = true;
+            }
 
             if (selectedAgent === "deep_research") {
                 context.force_research = true;
@@ -278,18 +289,33 @@ export function ChatInput({
                                 onKeyDown={handleKeyDown}
                                 className="pr-14 min-h-[120px] text-base"
                             />
-                            <Button
-                                type="submit"
-                                size="icon"
-                                disabled={!query.trim() || isInputDisabled || isSubmitting}
-                                className="absolute right-3 bottom-3"
-                            >
-                                {isSubmitting ? (
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                ) : (
-                                    <Send className="h-4 w-4" />
+                            <div className="absolute right-3 bottom-3 flex items-center gap-2">
+                                {selectedAgent === "normal" && (
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <button
+                                                type="button"
+                                                onClick={() => onSwarmModeChange?.(!swarmMode)}
+                                                className={cn(
+                                                    "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors",
+                                                    swarmMode
+                                                        ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
+                                                        : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                                                )}
+                                            >
+                                                <Workflow className="h-3.5 w-3.5" />
+                                                Swarm Mode
+                                            </button>
+                                        </TooltipTrigger>
+                                        <TooltipContent side="top">
+                                            Performs longer tasks with a team of agents
+                                        </TooltipContent>
+                                    </Tooltip>
                                 )}
-                            </Button>
+                                <Button type="submit" size="icon" disabled={!query.trim() || isInputDisabled || isSubmitting}>
+                                    {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                                </Button>
+                            </div>
                         </div>
 
                         {error && (
@@ -393,24 +419,50 @@ export function ChatInput({
             )}
 
             <div className="flex gap-2 items-end">
-                <Textarea
-                    placeholder={
-                        isReviewing
-                            ? "Type feedback or approve the plan..."
-                            : isInputDisabled
-                                ? "Waiting for task to complete..."
-                                : "Ask a question..."
-                    }
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    disabled={isInputDisabled || isSubmitting}
-                    autoFocus
-                    rows={2}
-                    onCompositionStart={handleCompositionStart}
-                    onCompositionEnd={handleCompositionEnd}
-                    onKeyDown={handleKeyDown}
-                    className="min-h-[44px]"
-                />
+                <div className="flex-1 flex flex-col gap-1.5">
+                    <Textarea
+                        placeholder={
+                            isReviewing
+                                ? "Type feedback or approve the plan..."
+                                : isInputDisabled
+                                    ? "Waiting for task to complete..."
+                                    : "Ask a question..."
+                        }
+                        value={query}
+                        onChange={(e) => setQuery(e.target.value)}
+                        disabled={isInputDisabled || isSubmitting}
+                        autoFocus
+                        rows={2}
+                        onCompositionStart={handleCompositionStart}
+                        onCompositionEnd={handleCompositionEnd}
+                        onKeyDown={handleKeyDown}
+                        className="min-h-[44px]"
+                    />
+                    {selectedAgent === "normal" && (
+                        <div className="flex items-center">
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <button
+                                        type="button"
+                                        onClick={() => onSwarmModeChange?.(!swarmMode)}
+                                        className={cn(
+                                            "flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium transition-colors",
+                                            swarmMode
+                                                ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30"
+                                                : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                                        )}
+                                    >
+                                        <Workflow className="h-3 w-3" />
+                                        Swarm Mode{swarmMode ? " ON" : ""}
+                                    </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top">
+                                    Performs longer tasks with a team of agents
+                                </TooltipContent>
+                            </Tooltip>
+                        </div>
+                    )}
+                </div>
                 {/* Show Pause/Stop buttons when task is running, otherwise show Send button */}
                 {isTaskRunning ? (
                     <div className="flex gap-1.5">

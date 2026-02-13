@@ -7,32 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-13
+
 ### Added
+- Add swarm multi-agent workflow with P2P messaging
+- Add Human-in-the-Loop research plan review system with Redis lock for feedback/approve race conditions
+- Add skills system, filesystem tools, WASI sandbox integration, and session workspace mounting
+- Add citation pipeline V2/V3 with placement-based validation, soft attribution guidance, and fallback logic
+- Add deep research domain analysis, OODA loop, domain discovery, prefetch optimization, and multilingual enhancement
+- Add research workflow tiered model architecture with quick_research_agent role and forced parallel execution
+- Add multi-engine web search with localization, Finance API, and search-first strategy
+- Add parallel_by template expansion and cron scheduling support for template workflows
+- Add trading agent roles and template workflows
+- Add browser_use tool migration from Enterprise to OSS
+- Add temporal awareness to synthesis and search prompts
+- Add DAG cycle detection, tool filtering, and idempotency TTL cleanup
+- Add hybrid Python sandbox scaffolding (WASI + Firecracker)
 
-#### Skills System
-- **Markdown-based Skills**: Define workflows with YAML frontmatter and markdown instructions
-- **Skills API**: `GET /api/v1/skills`, `GET /api/v1/skills/{name}` endpoints
-- **Skill Categories**: Organize skills by type (development, research, analysis)
-- **Version Support**: Request specific skill versions with `name@version` syntax
-- **Hot-reload**: Skills loaded at gateway startup from `config/skills/` directories
+### Fixed
+- Fix duplicate tool execution after forced_tool_calls
+- Fix synthesis "large" model_tier bleeding into gap-filling agents
+- Fix session_id propagation to Python tools via ensureSessionContext helper
+- Fix SSE streaming reliability for long-running tasks
+- Fix citation snippet pollution with three-tier LLM signal detection and fallback-only filtering
+- Fix research relationship identification to prevent vendor/customer misclassification
+- Fix Chinese vs Japanese language detection in refine pass
+- Fix web-subpage-fetch MAP_TIMEOUT from 15s to 45s
+- Fix deep research output quality and completeness across multiple iterations
+- Fix template_results truncation and warning-level import logging
+- Fix non-research roles using general output format in interpretation pass
+- Fix workspace creation race condition
+- Fix protoc missing detection in proto generation script
+- Fix domain prefetch for comparative query type
 
-#### Filesystem Tools
-- **Session Workspaces**: Isolated filesystem per session at `/tmp/shannon-sessions/{session_id}/`
-- **file_read Tool**: Read files with JSON/YAML auto-parsing, encoding support
-- **file_list Tool**: List directory contents with glob patterns, recursive option
-- **Path Validation**: Canonical path resolution, symlink protection, allowlist enforcement
+### Security
+- Add SSRF hardening, BM25 guard, URL sanitization, and alias scoring
+- Remove WASI /tmp symlink bypass and unify ModelTier enum
+- Block absolute path writes and env secret leaks in sandbox
+- Fix session ID validation, timeouts, and skill auth from code review
 
-#### WASI Sandbox Integration
-- **Sandbox Service**: gRPC service for secure file operations in Rust agent-core
-- **Safe Commands**: Native Rust implementations of `ls`, `cat`, `head`, `tail`, `grep`, `find`
-- **Session Isolation**: Cross-session access prevention with workspace boundaries
-- **Audit Logging**: Structured tracing with session_id, operation, path, violation fields
-- **Fail-closed Security**: Symlink validation rejects unresolvable targets
-- **Shared Volumes**: Docker Compose `shannon-sessions` volume for agent-core and llm-service
-
-### Documentation
-- `docs/skills-system.md`: Skills API and custom skill creation guide
-- `docs/session-workspaces.md`: Session isolation architecture and file tool usage
+### Changed
+- Skip title generation for non-first tasks in session (performance)
+- Restrict Chinese sources to Chinese-company queries only
+- Rename citation V3 to placement-based naming convention
+- Translate Chinese comments to English in web_fetch, web_search, verify
+- Update default COMPLEXITY_MODEL_ID to gpt-5
+- Update architecture diagram, model names, and versions in README
+- Sync docker-compose.release.yml and install.sh with Phase 4 features
 
 ## [0.1.0] - 2025-12-25
 
@@ -108,4 +129,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Desktop**: Next.js, Tauri 2, React
 - **Protocols**: gRPC, HTTP/2, Server-Sent Events
 
+[0.2.0]: https://github.com/Kocoro-lab/Shannon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Kocoro-lab/Shannon/releases/tag/v0.1.0

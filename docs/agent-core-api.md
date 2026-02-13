@@ -548,7 +548,7 @@ The API follows semantic versioning:
 - **Minor**: New features, backward compatible
 - **Patch**: Bug fixes
 
-Current version: `0.1.0`
+Current version: `0.2.0`
 
 Check version via capabilities:
 ```rust

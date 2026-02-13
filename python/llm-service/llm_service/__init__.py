@@ -16,4 +16,4 @@ else:
         f"grpc_gen directory not found at {_grpc_gen}, protobuf imports may fail"
     )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

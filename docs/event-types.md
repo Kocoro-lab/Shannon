@@ -788,4 +788,4 @@ Note: Returns 404 if the session has been soft-deleted.
 ---
 
 *Last Updated: 2025-10-27*
-*Shannon Version: 0.1.0*
+*Shannon Version: 0.2.0*
