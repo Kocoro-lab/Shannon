@@ -100,6 +100,11 @@ def main():
         help="Disable citation collection/integration",
     )
     submit_parser.set_defaults(enable_citations=None)
+    submit_parser.add_argument(
+        "--swarm",
+        action="store_true",
+        help="Force swarm multi-agent workflow",
+    )
 
     # Status command
     status_parser = subparsers.add_parser("status", help="Get task status")
@@ -144,6 +149,29 @@ def main():
     approve_group.add_argument("--approve", action="store_true", dest="approved", default=True, help="Approve the request (default)")
     approve_group.add_argument("--reject", action="store_false", dest="approved", help="Reject the request")
     approve_parser.add_argument("--feedback", help="Approval feedback")
+
+    # Review commands (HITL)
+    review_get = subparsers.add_parser("review-get", help="Get HITL review state")
+    review_get.add_argument("workflow_id", help="Workflow ID")
+
+    review_feedback = subparsers.add_parser("review-feedback", help="Submit review feedback")
+    review_feedback.add_argument("workflow_id", help="Workflow ID")
+    review_feedback.add_argument("message", help="Feedback message")
+    review_feedback.add_argument("--version", type=int, help="Version for optimistic concurrency")
+
+    review_approve = subparsers.add_parser("review-approve", help="Approve review plan")
+    review_approve.add_argument("workflow_id", help="Workflow ID")
+    review_approve.add_argument("--version", type=int, help="Version for optimistic concurrency")
+
+    # Skills commands
+    skills_list = subparsers.add_parser("skills-list", help="List available skills")
+    skills_list.add_argument("--category", help="Filter by category")
+
+    skill_get = subparsers.add_parser("skill-get", help="Get skill details")
+    skill_get.add_argument("name", help="Skill name")
+
+    skill_versions = subparsers.add_parser("skill-versions", help="Get skill versions")
+    skill_versions.add_argument("name", help="Skill name")
 
     # Session commands (HTTP)
     sess_get = subparsers.add_parser("session-get", help="Get a session")
@@ -253,6 +281,7 @@ def main():
                 model_override=args.model_override,
                 provider_override=args.provider_override,
                 mode=args.mode,
+                force_swarm=args.swarm,
             )
             print(f"Task submitted:")
             print(f"  Task ID: {handle.task_id}")
@@ -360,6 +389,80 @@ def main():
             else:
                 print(f"✗ Failed to submit approval")
                 sys.exit(1)
+
+        elif args.command == "review-get":
+            state = client.get_review_state(args.workflow_id)
+            print(f"Status: {state.status}")
+            print(f"Round: {state.round}")
+            print(f"Version: {state.version}")
+            if state.current_plan:
+                print(f"Current plan: {state.current_plan}")
+            if state.query:
+                print(f"Query: {state.query}")
+            if state.rounds:
+                print(f"\nConversation ({len(state.rounds)} messages):")
+                for r in state.rounds:
+                    ts = f" ({r.timestamp.isoformat()})" if r.timestamp else ""
+                    print(f"  [{r.role}]{ts}: {r.message}")
+
+        elif args.command == "review-feedback":
+            state = client.submit_review_feedback(
+                args.workflow_id, args.message, version=args.version
+            )
+            print(f"✓ Feedback submitted")
+            print(f"  Status: {state.status}")
+            print(f"  Round: {state.round}")
+            print(f"  Version: {state.version}")
+            if state.current_plan:
+                print(f"  Current plan: {state.current_plan}")
+
+        elif args.command == "review-approve":
+            result = client.approve_review(args.workflow_id, version=args.version)
+            print(f"✓ Review approved")
+            print(f"  Status: {result.get('status')}")
+            if result.get("message"):
+                print(f"  Message: {result.get('message')}")
+
+        elif args.command == "skills-list":
+            skills = client.list_skills(category=args.category)
+            if not skills:
+                print("No skills found")
+            else:
+                print(f"{'Name':<25} {'Version':<10} {'Category':<15} Description")
+                print("-" * 80)
+                for s in skills:
+                    print(f"{s.name:<25} {s.version:<10} {s.category:<15} {s.description}")
+
+        elif args.command == "skill-get":
+            skill = client.get_skill(args.name)
+            print(f"Skill: {skill.name}")
+            print(f"  Version: {skill.version}")
+            print(f"  Category: {skill.category}")
+            print(f"  Description: {skill.description}")
+            if skill.author:
+                print(f"  Author: {skill.author}")
+            if skill.requires_tools:
+                print(f"  Requires tools: {', '.join(skill.requires_tools)}")
+            if skill.requires_role:
+                print(f"  Requires role: {skill.requires_role}")
+            if skill.budget_max is not None:
+                print(f"  Budget max: {skill.budget_max}")
+            print(f"  Dangerous: {skill.dangerous}")
+            print(f"  Enabled: {skill.enabled}")
+            if skill.content:
+                print(f"\nContent:\n{skill.content}")
+            if skill.metadata:
+                print(f"\nMetadata: {skill.metadata}")
+
+        elif args.command == "skill-versions":
+            versions = client.get_skill_versions(args.name)
+            if not versions:
+                print(f"No versions found for skill '{args.name}'")
+            else:
+                print(f"Versions of '{args.name}':")
+                for v in versions:
+                    status = "enabled" if v.enabled else "disabled"
+                    print(f"  {v.version}\t{v.category}\t{status}\t{v.description}")
 
         elif args.command == "session-create":
             print("This command is no longer supported in HTTP SDK.")

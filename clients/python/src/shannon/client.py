@@ -61,6 +61,8 @@ from shannon.models import (
     Event,
     EventType,
     PendingApproval,
+    ReviewRound,
+    ReviewState,
     Schedule,
     ScheduleRun,
     ScheduleSummary,
@@ -68,6 +70,9 @@ from shannon.models import (
     SessionEventTurn,
     SessionHistoryItem,
     SessionSummary,
+    Skill,
+    SkillDetail,
+    SkillVersion,
     TaskHandle,
     TaskStatus,
     TaskStatusEnum,
@@ -172,6 +177,7 @@ class AsyncShannonClient:
         model_override: Optional[str] = None,
         provider_override: Optional[str] = None,
         mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
+        force_swarm: bool = False,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """
@@ -181,6 +187,7 @@ class AsyncShannonClient:
             query: Task query/description
             session_id: Session ID for continuity (optional)
             context: Additional context dictionary
+            force_swarm: Force swarm multi-agent workflow
             timeout: Request timeout in seconds
 
         Returns:
@@ -206,6 +213,8 @@ class AsyncShannonClient:
             payload["session_id"] = session_id
         if context:
             payload["context"] = context
+        if force_swarm:
+            payload.setdefault("context", {})["force_swarm"] = True
         if mode:
             payload["mode"] = mode
         if model_tier:
@@ -261,6 +270,7 @@ class AsyncShannonClient:
         model_override: Optional[str] = None,
         provider_override: Optional[str] = None,
         mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
+        force_swarm: bool = False,
         timeout: Optional[float] = None,
     ) -> tuple[TaskHandle, str]:
         """
@@ -270,6 +280,7 @@ class AsyncShannonClient:
             query: Task query/description
             session_id: Session ID for continuity
             context: Additional context
+            force_swarm: Force swarm multi-agent workflow
             timeout: Request timeout
 
         Returns:
@@ -294,6 +305,8 @@ class AsyncShannonClient:
             payload["session_id"] = session_id
         if context:
             payload["context"] = context
+        if force_swarm:
+            payload.setdefault("context", {})["force_swarm"] = True
         if mode:
             payload["mode"] = mode
         if model_tier:
@@ -874,6 +887,215 @@ class AsyncShannonClient:
                 f"Failed to submit approval: {str(e)}", details={"http_error": str(e)}
             )
 
+    # ===== HITL Review Operations =====
+
+    async def get_review_state(
+        self, workflow_id: str, *, timeout: Optional[float] = None
+    ) -> ReviewState:
+        """
+        Get the current review state for a workflow.
+
+        Args:
+            workflow_id: Workflow ID
+            timeout: Request timeout in seconds
+
+        Returns:
+            ReviewState with status, round, version, and conversation rounds
+
+        Raises:
+            TaskNotFoundError: Workflow not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tasks/{workflow_id}/review",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                if response.status_code == 404:
+                    try:
+                        error_data = response.json()
+                        error_msg = error_data.get("error", response.text)
+                    except Exception:
+                        error_msg = response.text or f"HTTP 404"
+                    raise errors.TaskNotFoundError(error_msg, code="404")
+                self._handle_http_error(response)
+
+            data = response.json()
+
+            rounds = []
+            for r in data.get("rounds", []):
+                ts = None
+                if r.get("timestamp"):
+                    try:
+                        ts = _parse_timestamp(r["timestamp"])
+                    except (ValueError, TypeError):
+                        pass
+                rounds.append(ReviewRound(
+                    role=r.get("role", ""),
+                    message=r.get("message", ""),
+                    timestamp=ts,
+                ))
+
+            return ReviewState(
+                status=data.get("status", ""),
+                round=data.get("round", 0),
+                version=data.get("version", 0),
+                current_plan=data.get("current_plan"),
+                rounds=rounds,
+                query=data.get("query"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get review state: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def submit_review_feedback(
+        self,
+        workflow_id: str,
+        message: str,
+        *,
+        version: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> ReviewState:
+        """
+        Submit feedback during a review cycle.
+
+        Args:
+            workflow_id: Workflow ID
+            message: Feedback message
+            version: Optional version for optimistic concurrency (If-Match header)
+            timeout: Request timeout in seconds
+
+        Returns:
+            Updated ReviewState
+
+        Raises:
+            TaskNotFoundError: Workflow not found
+            ValidationError: Version conflict (409)
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload = {"action": "feedback", "message": message}
+
+        extra_headers: Dict[str, str] = {}
+        if version is not None:
+            extra_headers["If-Match"] = str(version)
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks/{workflow_id}/review",
+                json=payload,
+                headers=self._get_headers(extra_headers),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code == 409:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("error", response.text)
+                except Exception:
+                    error_msg = response.text or "Version conflict"
+                raise errors.ValidationError(error_msg, code="409")
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+
+            rounds = []
+            for r in data.get("rounds", []):
+                ts = None
+                if r.get("timestamp"):
+                    try:
+                        ts = _parse_timestamp(r["timestamp"])
+                    except (ValueError, TypeError):
+                        pass
+                rounds.append(ReviewRound(
+                    role=r.get("role", ""),
+                    message=r.get("message", ""),
+                    timestamp=ts,
+                ))
+
+            return ReviewState(
+                status=data.get("status", ""),
+                round=data.get("round", 0),
+                version=data.get("version", 0),
+                current_plan=data.get("current_plan"),
+                rounds=rounds,
+                query=data.get("query"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to submit review feedback: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def approve_review(
+        self,
+        workflow_id: str,
+        *,
+        version: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Approve a review, allowing the workflow to proceed.
+
+        Args:
+            workflow_id: Workflow ID
+            version: Optional version for optimistic concurrency (If-Match header)
+            timeout: Request timeout in seconds
+
+        Returns:
+            Dict with status and message (e.g. {"status": "approved", "message": "..."})
+
+        Raises:
+            TaskNotFoundError: Workflow not found
+            ValidationError: Version conflict (409)
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        payload = {"action": "approve"}
+
+        extra_headers: Dict[str, str] = {}
+        if version is not None:
+            extra_headers["If-Match"] = str(version)
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/tasks/{workflow_id}/review",
+                json=payload,
+                headers=self._get_headers(extra_headers),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code == 409:
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("error", response.text)
+                except Exception:
+                    error_msg = response.text or "Version conflict"
+                raise errors.ValidationError(error_msg, code="409")
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to approve review: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
     # ===== Session Management (HTTP Gateway) =====
 
     async def list_sessions(
@@ -1244,6 +1466,171 @@ class AsyncShannonClient:
         except httpx.HTTPError as e:
             raise errors.ConnectionError(
                 f"Failed to delete session: {str(e)}", details={"http_error": str(e)}
+            )
+
+    # ===== Skills =====
+
+    async def list_skills(
+        self,
+        *,
+        category: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> List[Skill]:
+        """
+        List available skills.
+
+        Args:
+            category: Filter by skill category
+            timeout: Request timeout in seconds
+
+        Returns:
+            List of Skill objects
+
+        Raises:
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        params: Dict[str, Any] = {}
+        if category:
+            params["category"] = category
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/skills",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            skills = []
+
+            for s in data.get("skills", []):
+                skills.append(Skill(
+                    name=s.get("name", ""),
+                    version=s.get("version", ""),
+                    category=s.get("category", ""),
+                    description=s.get("description", ""),
+                    requires_tools=s.get("requires_tools", []),
+                    dangerous=s.get("dangerous", False),
+                    enabled=s.get("enabled", True),
+                ))
+
+            return skills
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list skills: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_skill(
+        self, name: str, *, timeout: Optional[float] = None
+    ) -> SkillDetail:
+        """
+        Get detailed information about a skill.
+
+        Args:
+            name: Skill name
+            timeout: Request timeout in seconds
+
+        Returns:
+            SkillDetail object
+
+        Raises:
+            ShannonError: Skill not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/skills/{name}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            s = data.get("skill", data)
+
+            # Backend may return PascalCase (Go struct) or lowercase keys
+            def _g(key: str, default=None):
+                return s.get(key, s.get(key[0].upper() + key[1:], default))
+
+            return SkillDetail(
+                name=_g("name", ""),
+                version=_g("version", ""),
+                category=_g("category", ""),
+                description=_g("description", ""),
+                author=_g("author"),
+                requires_tools=_g("requires_tools", s.get("RequiresTools", [])),
+                requires_role=_g("requires_role", s.get("RequiresRole")),
+                budget_max=_g("budget_max", s.get("BudgetMax")),
+                dangerous=_g("dangerous", s.get("Dangerous", False)),
+                enabled=_g("enabled", s.get("Enabled", True)),
+                content=_g("content", s.get("Content")),
+                metadata=_g("metadata", s.get("Metadata")),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get skill: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_skill_versions(
+        self, name: str, *, timeout: Optional[float] = None
+    ) -> List[SkillVersion]:
+        """
+        Get all versions of a skill.
+
+        Args:
+            name: Skill name
+            timeout: Request timeout in seconds
+
+        Returns:
+            List of SkillVersion objects
+
+        Raises:
+            ShannonError: Skill not found
+            ConnectionError: Failed to connect
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/skills/{name}/versions",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            versions = []
+
+            for v in data.get("versions", []):
+                versions.append(SkillVersion(
+                    name=v.get("name", ""),
+                    version=v.get("version", ""),
+                    category=v.get("category", ""),
+                    description=v.get("description", ""),
+                    requires_tools=v.get("requires_tools", []),
+                    dangerous=v.get("dangerous", False),
+                    enabled=v.get("enabled", True),
+                ))
+
+            return versions
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get skill versions: {str(e)}", details={"http_error": str(e)}
             )
 
     # ===== Schedule Management =====
@@ -2127,6 +2514,7 @@ class ShannonClient:
         model_override: Optional[str] = None,
         provider_override: Optional[str] = None,
         mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
+        force_swarm: bool = False,
         timeout: Optional[float] = None,
     ) -> TaskHandle:
         """Submit a task (blocking)."""
@@ -2141,6 +2529,7 @@ class ShannonClient:
                 model_override=model_override,
                 provider_override=provider_override,
                 mode=mode,
+                force_swarm=force_swarm,
                 timeout=timeout,
             )
         )
@@ -2159,6 +2548,7 @@ class ShannonClient:
         model_override: Optional[str] = None,
         provider_override: Optional[str] = None,
         mode: Optional[Literal["simple", "standard", "complex", "supervisor"]] = None,
+        force_swarm: bool = False,
         timeout: Optional[float] = None,
     ) -> tuple[TaskHandle, str]:
         """Submit task and get stream URL (blocking)."""
@@ -2173,6 +2563,7 @@ class ShannonClient:
                 model_override=model_override,
                 provider_override=provider_override,
                 mode=mode,
+                force_swarm=force_swarm,
                 timeout=timeout,
             )
         )
@@ -2261,6 +2652,40 @@ class ShannonClient:
             )
         )
 
+    # HITL Review operations
+    def get_review_state(
+        self, workflow_id: str, *, timeout: Optional[float] = None
+    ) -> ReviewState:
+        """Get review state for a workflow (blocking)."""
+        return self._run(self._async_client.get_review_state(workflow_id, timeout=timeout))
+
+    def submit_review_feedback(
+        self,
+        workflow_id: str,
+        message: str,
+        *,
+        version: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> ReviewState:
+        """Submit review feedback (blocking)."""
+        return self._run(
+            self._async_client.submit_review_feedback(
+                workflow_id, message, version=version, timeout=timeout
+            )
+        )
+
+    def approve_review(
+        self,
+        workflow_id: str,
+        *,
+        version: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Approve a review (blocking)."""
+        return self._run(
+            self._async_client.approve_review(workflow_id, version=version, timeout=timeout)
+        )
+
     # Session operations
     def list_sessions(
         self,
@@ -2312,6 +2737,28 @@ class ShannonClient:
     ) -> bool:
         """Delete session (blocking)."""
         return self._run(self._async_client.delete_session(session_id, timeout))
+
+    # Skills operations
+    def list_skills(
+        self,
+        *,
+        category: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> List[Skill]:
+        """List available skills (blocking)."""
+        return self._run(self._async_client.list_skills(category=category, timeout=timeout))
+
+    def get_skill(
+        self, name: str, *, timeout: Optional[float] = None
+    ) -> SkillDetail:
+        """Get skill details (blocking)."""
+        return self._run(self._async_client.get_skill(name, timeout=timeout))
+
+    def get_skill_versions(
+        self, name: str, *, timeout: Optional[float] = None
+    ) -> List[SkillVersion]:
+        """Get skill versions (blocking)."""
+        return self._run(self._async_client.get_skill_versions(name, timeout=timeout))
 
     # Schedule operations
     def create_schedule(

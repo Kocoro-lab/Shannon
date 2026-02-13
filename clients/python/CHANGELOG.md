@@ -5,6 +5,19 @@ All notable changes to the Shannon Python SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-02-13
+
+### Added
+- Add HITL review methods: `get_review_state()`, `submit_review_feedback()`, `approve_review()`
+- Add Skills API methods: `list_skills()`, `get_skill()`, `get_skill_versions()`
+- Add `force_swarm` parameter to `submit_task()` for swarm workflow mode
+- Add CLI commands: `review-get`, `review-feedback`, `review-approve`
+- Add CLI commands: `skills-list`, `skill-get`, `skill-versions`
+- Add `--swarm` flag to `submit` CLI command
+- Add models: `ReviewState`, `ReviewRound`, `ReviewPlan`, `Skill`, `SkillDetail`, `SkillVersion`
+
+---
+
 ## [0.5.0] - 2025-12-15
 
 ### Added

@@ -397,3 +397,78 @@ class ScheduleRun:
     duration_ms: Optional[int] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+
+
+@dataclass
+class ReviewRound:
+    """A single round of human-in-the-loop review conversation."""
+
+    role: str  # "user", "assistant"
+    message: str
+    timestamp: Optional[datetime] = None
+
+
+@dataclass
+class ReviewPlan:
+    """Plan submitted during a review cycle."""
+
+    message: str
+    round: int
+    version: int
+    intent: str  # "ready", "feedback"
+
+
+@dataclass
+class ReviewState:
+    """Current state of a human-in-the-loop review."""
+
+    status: str  # "reviewing", "approved"
+    round: int
+    version: int
+    current_plan: Optional[str] = None
+    rounds: List[ReviewRound] = field(default_factory=list)
+    query: Optional[str] = None
+
+
+@dataclass
+class Skill:
+    """Skill available for agent execution."""
+
+    name: str
+    version: str
+    category: str
+    description: str
+    requires_tools: List[str] = field(default_factory=list)
+    dangerous: bool = False
+    enabled: bool = True
+
+
+@dataclass
+class SkillDetail:
+    """Detailed skill information including content and metadata."""
+
+    name: str
+    version: str
+    category: str
+    description: str
+    author: Optional[str] = None
+    requires_tools: List[str] = field(default_factory=list)
+    requires_role: Optional[str] = None
+    budget_max: Optional[int] = None
+    dangerous: bool = False
+    enabled: bool = True
+    content: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class SkillVersion:
+    """A specific version of a skill."""
+
+    name: str
+    version: str
+    category: str
+    description: str
+    requires_tools: List[str] = field(default_factory=list)
+    dangerous: bool = False
+    enabled: bool = True
