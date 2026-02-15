@@ -1509,7 +1509,7 @@ class AsyncShannonClient:
             data = response.json()
             skills = []
 
-            for s in data.get("skills", []):
+            for s in data.get("skills") or []:
                 skills.append(Skill(
                     name=s.get("name", ""),
                     version=s.get("version", ""),
