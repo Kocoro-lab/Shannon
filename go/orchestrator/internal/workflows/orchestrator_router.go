@@ -850,7 +850,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		result = AddTaskContextToMetadata(result, input.Context)
 		return result, nil
 
-	case len(decomp.Subtasks) > 5 || hasDeps:
+	case false: // Supervisor routing disabled — all multi-task flows use DAGWorkflow
 		// Check pause/cancel before starting child workflow
 		if err := controlHandler.CheckPausePoint(ctx, "pre_supervisor_workflow"); err != nil {
 			return TaskResult{Success: false, ErrorMessage: err.Error()}, err

@@ -3512,7 +3512,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "IMPORTANT: Use python_executor for Python code execution tasks. Never suggest code_executor unless user\n"
             "explicitly provides WASM bytecode. For general code writing (without execution), handle directly.\n\n"
             f"{tool_schemas_text}\n\n"
-            "Example for a stock query 'Analyze Apple stock trend':\n"
+            "Example 1 — Simple query 'Analyze Apple stock trend':\n"
             "{\n"
             '  "mode": "standard",\n'
             '  "complexity_score": 0.5,\n'
@@ -3523,17 +3523,37 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "dependencies": [],\n'
             '      "estimated_tokens": 800,\n'
             '      "suggested_tools": ["web_search", "web_fetch"],\n'
-            '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
-            '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
-            '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
-            '      "search_budget": {"max_queries": 10, "max_fetches": 20},\n'
-            '      "boundaries": {"in_scope": ["stock price", "market analysis"], "out_of_scope": ["company history"]}\n'
+            '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"}\n'
             "    }\n"
             "  ],\n"
             '  "execution_strategy": "sequential",\n'
-            '  "concurrency_limit": 1,\n'
-            '  "token_estimates": {"task-1": 800},\n'
             '  "total_estimated_tokens": 800\n'
+            "}\n\n"
+            "Example 2 — Multi-dimension comparison 'Compare AI regulation policies in US, EU, and China':\n"
+            "(Note: ALL tasks run in parallel — each researches independently via web_search. "
+            "The system auto-synthesizes all outputs into one coherent response. NO synthesis subtask needed.)\n"
+            "{\n"
+            '  "mode": "complex",\n'
+            '  "complexity_score": 0.7,\n'
+            '  "subtasks": [\n'
+            '    {"id": "task-1", "description": "Research US AI regulation framework, recent legislation, and enforcement approach", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "US AI regulation policy legislation 2024 2025"}},\n'
+            '    {"id": "task-2", "description": "Research EU AI Act implementation, compliance requirements, and risk classification", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "EU AI Act implementation compliance 2024 2025"}},\n'
+            '    {"id": "task-3", "description": "Research China AI governance policies, ethical guidelines, and industry standards", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "China AI governance policy regulation 2024 2025"}}\n'
+            "  ],\n"
+            '  "execution_strategy": "parallel",\n'
+            '  "total_estimated_tokens": 3000\n'
+            "}\n\n"
+            "Example 3 — Search-then-fetch dependency 'Get Cloudflare pricing details from their website':\n"
+            "(Note: task-2 NEEDS URLs produced by task-1 — this is the only valid dependency pattern.)\n"
+            "{\n"
+            '  "mode": "standard",\n'
+            '  "complexity_score": 0.4,\n'
+            '  "subtasks": [\n'
+            '    {"id": "task-1", "description": "Search for Cloudflare pricing and plan pages", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "site:cloudflare.com pricing plans"}},\n'
+            '    {"id": "task-2", "description": "Fetch and extract detailed pricing information from Cloudflare pages", "dependencies": ["task-1"], "suggested_tools": ["web_fetch"], "tool_parameters": {}}\n'
+            "  ],\n"
+            '  "execution_strategy": "sequential",\n'
+            '  "total_estimated_tokens": 1200\n'
             "}\n\n"
             "Rules:\n"
             '- mode: must be "simple", "standard", or "complex"\n'
@@ -3545,6 +3565,16 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- boundaries: (optional) object with in_scope/out_of_scope topic arrays\n"
             "- For subtasks with non-empty dependencies, DO NOT prefill tool_parameters; set it to {} and avoid placeholders (the agent will use previous_results to construct exact parameters).\n"
             "- Let the semantic meaning of the query guide tool selection\n"
+            "- NEVER create synthesis/summary/report subtasks that combine other subtasks' results. "
+            "The system automatically synthesizes all subtask outputs into a coherent final response. "
+            "Each subtask should focus on research, analysis, or computation — not summarization.\n"
+            "- SUBTASK GRANULARITY: Prefer 3-5 broad subtasks over many narrow ones. "
+            "Each subtask should cover a complete research dimension — do NOT split one dimension into sub-steps "
+            "(e.g., do NOT separate 'search company X' from 'analyze company X'). Maximum 8 subtasks.\n"
+            "- DEPENDENCY RULE: Almost all research subtasks should have dependencies: []. "
+            "The ONLY valid dependency is when Task B needs a concrete runtime output from Task A "
+            "(e.g., URLs from a search, extracted entity IDs, generated code). "
+            "If Task B can get its information via its own web_search, it MUST be independent.\n"
         )
 
         # General planning identity (default for non-research tasks)

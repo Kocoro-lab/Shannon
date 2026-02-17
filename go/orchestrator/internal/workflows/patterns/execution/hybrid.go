@@ -303,9 +303,10 @@ func executeHybridTask(
 	}
 
 	parallelConfig := ParallelConfig{
-		MaxConcurrency: 1, // Single task execution
-		Context:        taskContext,
-		EmitEvents:     false, // Already handled
+		MaxConcurrency:   1, // Single task execution
+		Context:          taskContext,
+		EmitEvents:       false,            // Already handled
+		AgentIndexOffset: originalIndex,    // Align inner agent name with hybrid's naming
 	}
 
 	result, err := ExecuteParallel(
