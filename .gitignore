@@ -176,19 +176,16 @@ config/development/
 # Vendor-specific integrations (see docs/vendor-adapters.md)
 config/overlays/shannon.*.yaml
 !config/overlays/shannon.example.yaml
-config/overlays/ga4-service-account-key.json
-config/openapi_specs/ptengine*
-config/openapi_specs/schema_query_processor.*
+config/overlays/*-service-account-key.json
+config/openapi_specs/*
+!config/openapi_specs/.gitkeep
+python/llm-service/llm_service/roles/vendor/
 python/llm-service/llm_service/roles/ptengine/
-python/llm-service/llm_service/tools/vendor_adapters/ptengine/
+python/llm-service/llm_service/tools/vendor_adapters/
 
 # User and vendor skill directories (not committed - environment-specific)
 config/skills/user/
 config/skills/vendor/
-
-# Angfa vendor-specific files (DO NOT COMMIT)
-python/llm-service/llm_service/tools/vendor_adapters/angfa.py
-python/llm-service/llm_service/roles/vendor/angfa_analytics.py
 
 # Build artifacts
 build/
@@ -254,7 +251,8 @@ yarn-error.log*
 .idea/
 *.iml
 .cursor/
-.claude/
+# Claude Code local settings (auto-generated, user-specific)
+.claude/settings.local.json
 .codex_cache/
 *.suo
 *.ntvs*
@@ -333,7 +331,6 @@ deploy/terraform/*.tfstate*
 
 # Claude AI development files
 AGENTS.md
-CLAUDE.md
 
 # Historical/archived documentation
 docs/archive-historical/

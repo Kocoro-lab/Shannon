@@ -1,0 +1,113 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make:*)",
+      "Bash(go build:*)",
+      "Bash(go test:*)",
+      "Bash(go fmt:*)",
+      "Bash(go mod:*)",
+      "Bash(go run:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(rustfmt:*)",
+      "Bash(buf:*)",
+      "Bash(pytest:*)",
+      "Bash(ruff:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git stash:*)",
+      "Bash(docker compose:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker logs:*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Read(.env.*)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/secrets/**)",
+      "Read(**/*credentials*)",
+      "Read(**/*secret*)",
+      "Read(**/*.pem)",
+      "Read(**/*.key)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "tool == 'Bash' && tool_input.command matches 'helm (install|upgrade|delete|uninstall)'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] Helm operation - verify target cluster and namespace' >&2"
+          }
+        ]
+      },
+      {
+        "matcher": "tool == 'Bash' && tool_input.command matches 'git push.*--force'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] WARNING: Force push detected - verify branch is not protected' >&2"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "tool == 'Edit' && tool_input.file_path matches '\\.go$'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "gofmt -w \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "tool == 'Edit' && tool_input.file_path matches '\\.rs$'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rustfmt \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "tool == 'Edit' && tool_input.file_path matches '\\.py$'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "ruff format \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null; ruff check --fix \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "tool == 'Edit' && tool_input.file_path matches '\\.(go|rs|py)$'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if grep -qE '(OPENAI_API_KEY|ANTHROPIC_API_KEY|password\\s*=|secret\\s*=)' \"$TOOL_INPUT_FILE_PATH\" 2>/dev/null; then echo '[Hook] WARNING: Possible hardcoded credential detected!' >&2; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "tool == 'Bash' && tool_input.command matches 'make (build|test|lint|dev)'",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[Hook] Build/test complete - check output for warnings' >&2"
+          }
+        ]
+      }
+    ]
+  }
+}
