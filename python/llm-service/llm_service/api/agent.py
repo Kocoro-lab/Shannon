@@ -3512,7 +3512,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "IMPORTANT: Use python_executor for Python code execution tasks. Never suggest code_executor unless user\n"
             "explicitly provides WASM bytecode. For general code writing (without execution), handle directly.\n\n"
             f"{tool_schemas_text}\n\n"
-            "Example for a stock query 'Analyze Apple stock trend':\n"
+            "Example 1 — Simple query 'Analyze Apple stock trend':\n"
             "{\n"
             '  "mode": "standard",\n'
             '  "complexity_score": 0.5,\n'
@@ -3523,17 +3523,28 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '      "dependencies": [],\n'
             '      "estimated_tokens": 800,\n'
             '      "suggested_tools": ["web_search", "web_fetch"],\n'
-            '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"},\n'
-            '      "output_format": {"type": "narrative", "required_fields": [], "optional_fields": []},\n'
-            '      "source_guidance": {"required": ["news", "financial"], "optional": ["aggregator"]},\n'
-            '      "search_budget": {"max_queries": 10, "max_fetches": 20},\n'
-            '      "boundaries": {"in_scope": ["stock price", "market analysis"], "out_of_scope": ["company history"]}\n'
+            '      "tool_parameters": {"tool": "web_search", "query": "Apple stock AAPL trend analysis forecast"}\n'
             "    }\n"
             "  ],\n"
             '  "execution_strategy": "sequential",\n'
-            '  "concurrency_limit": 1,\n'
-            '  "token_estimates": {"task-1": 800},\n'
             '  "total_estimated_tokens": 800\n'
+            "}\n\n"
+            "Example 2 — Complex multi-task query 'Compare Tesla, BYD, Toyota EV strategy and predict market outlook':\n"
+            "(Note: NO synthesis/summary subtask — the system synthesizes automatically. "
+            "Independent analyses have NO dependencies between them for maximum parallelism.)\n"
+            "{\n"
+            '  "mode": "complex",\n'
+            '  "complexity_score": 0.7,\n'
+            '  "subtasks": [\n'
+            '    {"id": "task-1", "description": "Research Tesla latest EV models, specs, and technology", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "Tesla latest EV models 2024 2025 specs"}},\n'
+            '    {"id": "task-2", "description": "Research BYD latest EV models, specs, and technology", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "BYD latest EV models 2024 2025 specs"}},\n'
+            '    {"id": "task-3", "description": "Research Toyota latest EV models, specs, and technology", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "Toyota latest EV models 2024 2025 specs"}},\n'
+            '    {"id": "task-4", "description": "Compare battery technology approaches across Tesla, BYD, and Toyota", "dependencies": ["task-1", "task-2", "task-3"], "suggested_tools": [], "tool_parameters": {}},\n'
+            '    {"id": "task-5", "description": "Analyze global EV market share trends for Tesla, BYD, and Toyota", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "global EV market share Tesla BYD Toyota 2024"}},\n'
+            '    {"id": "task-6", "description": "Predict 2025 EV market outlook and investment recommendations", "dependencies": ["task-4", "task-5"], "suggested_tools": [], "tool_parameters": {}}\n'
+            "  ],\n"
+            '  "execution_strategy": "parallel",\n'
+            '  "total_estimated_tokens": 6000\n'
             "}\n\n"
             "Rules:\n"
             '- mode: must be "simple", "standard", or "complex"\n'
@@ -3545,6 +3556,19 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- boundaries: (optional) object with in_scope/out_of_scope topic arrays\n"
             "- For subtasks with non-empty dependencies, DO NOT prefill tool_parameters; set it to {} and avoid placeholders (the agent will use previous_results to construct exact parameters).\n"
             "- Let the semantic meaning of the query guide tool selection\n"
+            "- NEVER create synthesis/summary/report subtasks that combine other subtasks' results. "
+            "The system automatically synthesizes all subtask outputs into a coherent final response. "
+            "Each subtask should focus on research, analysis, or computation — not summarization.\n"
+            "- DEPENDENCY RULE — only declare a dependency when Task B must READ Task A's specific output text to start. "
+            "Ask: 'Can this task accomplish its goal using web_search or its own knowledge?' If yes → dependencies: []. "
+            "Logical relevance is NOT a dependency. The system combines all outputs automatically.\n"
+            "  WRONG (serial bottleneck):\n"
+            '    task-4 "analyze market share" depends on ["task-1"] ← wrong: can web_search independently\n'
+            '    task-6 "investment advice" depends on ["task-5"]   ← wrong: can analyze independently\n'
+            "  RIGHT (maximum parallelism):\n"
+            '    task-4 "analyze market share" dependencies: []    ← correct: uses web_search for its own data\n'
+            '    task-6 "investment advice" dependencies: []       ← correct: independent analysis, system synthesizes\n'
+            "  ONLY valid dependency: Task A does web_search → Task B does web_fetch on URLs from Task A's response.\n"
         )
 
         # General planning identity (default for non-research tasks)
