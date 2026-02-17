@@ -4,9 +4,26 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { Search, Loader2, RefreshCw, MessageSquare, Layers, DollarSign, Sparkles, Microscope, CheckCircle2, XCircle } from "lucide-react";
+import { Search, Loader2, RefreshCw, MessageSquare, Layers, DollarSign, Sparkles, Microscope, CheckCircle2, XCircle, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { listSessions, Session } from "@/lib/shannon/api";
+import { listSessions, deleteSession, updateSessionTitle, Session } from "@/lib/shannon/api";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export default function RunsPage() {
     const [sessions, setSessions] = useState<Session[]>([]);
@@ -15,6 +32,64 @@ export default function RunsPage() {
     const [error, setError] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [totalCount, setTotalCount] = useState<number | null>(null);
+
+    // Delete state
+    const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+    const [isDeleting, setIsDeleting] = useState(false);
+
+    // Rename state
+    const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+    const [renameValue, setRenameValue] = useState("");
+
+    const sessionToDelete = deleteConfirmId
+        ? sessions.find(s => s.session_id === deleteConfirmId)
+        : null;
+
+    const handleDeleteConfirm = async () => {
+        if (!deleteConfirmId) return;
+        setIsDeleting(true);
+        try {
+            await deleteSession(deleteConfirmId);
+            setSessions(prev => prev.filter(s => s.session_id !== deleteConfirmId));
+            if (totalCount !== null) setTotalCount(totalCount - 1);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to delete session");
+        } finally {
+            setIsDeleting(false);
+            setDeleteConfirmId(null);
+        }
+    };
+
+    const handleRenameStart = (session: Session) => {
+        setRenamingSessionId(session.session_id);
+        setRenameValue(session.title || "");
+    };
+
+    const handleRenameSubmit = async (sessionId: string) => {
+        const trimmed = renameValue.trim();
+        if (!trimmed || trimmed.length > 200) {
+            setRenamingSessionId(null);
+            return;
+        }
+        try {
+            await updateSessionTitle(sessionId, trimmed);
+            setSessions(prev => prev.map(s =>
+                s.session_id === sessionId ? { ...s, title: trimmed } : s
+            ));
+        } catch (err) {
+            setError(err instanceof Error ? err.message : "Failed to rename session");
+        }
+        setRenamingSessionId(null);
+    };
+
+    const handleRenameKeyDown = (e: React.KeyboardEvent, sessionId: string) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            handleRenameSubmit(sessionId);
+        } else if (e.key === "Escape") {
+            setRenamingSessionId(null);
+        }
+    };
 
     const PAGE_SIZE = 50;
 
@@ -188,13 +263,25 @@ export default function RunsPage() {
                                                                 </Tooltip>
                                                             </TooltipProvider>
                                                             <div className="flex flex-col min-w-0">
-                                                                <Link
-                                                                    href={`/run-detail?session_id=${session.session_id}`}
-                                                                    className={`font-medium truncate max-w-[280px] hover:text-primary hover:underline transition-colors ${!hasRealTitle ? 'text-muted-foreground' : ''}`}
-                                                                    title={session.title || session.latest_task_query || session.session_id}
-                                                                >
-                                                                    {displayTitle}
-                                                                </Link>
+                                                                {renamingSessionId === session.session_id ? (
+                                                                    <input
+                                                                        autoFocus
+                                                                        className="font-medium max-w-[280px] bg-transparent border-b border-primary outline-none text-sm"
+                                                                        value={renameValue}
+                                                                        onChange={(e) => setRenameValue(e.target.value)}
+                                                                        onKeyDown={(e) => handleRenameKeyDown(e, session.session_id)}
+                                                                        onBlur={() => handleRenameSubmit(session.session_id)}
+                                                                        maxLength={200}
+                                                                    />
+                                                                ) : (
+                                                                    <Link
+                                                                        href={`/run-detail?session_id=${session.session_id}`}
+                                                                        className={`font-medium truncate max-w-[280px] hover:text-primary hover:underline transition-colors ${!hasRealTitle ? 'text-muted-foreground' : ''}`}
+                                                                        title={session.title || session.latest_task_query || session.session_id}
+                                                                    >
+                                                                        {displayTitle}
+                                                                    </Link>
+                                                                )}
                                                                 <span className="text-xs text-muted-foreground">
                                                                     {new Date(session.created_at).toLocaleString()}
                                                                 </span>
@@ -274,12 +361,34 @@ export default function RunsPage() {
                                                 </TooltipProvider>
                                             </td>
                                             <td className="p-4 align-middle [&:has([role=checkbox])]:pr-0 text-right">
-                                                <Button variant="ghost" size="sm" asChild>
-                                                    <Link href={`/run-detail?session_id=${session.session_id}`}>
-                                                        <MessageSquare className="h-4 w-4 mr-2" />
-                                                        View
-                                                    </Link>
-                                                </Button>
+                                                <DropdownMenu>
+                                                    <DropdownMenuTrigger asChild>
+                                                        <Button variant="ghost" size="sm">
+                                                            <MoreHorizontal className="h-4 w-4" />
+                                                            <span className="sr-only">Actions</span>
+                                                        </Button>
+                                                    </DropdownMenuTrigger>
+                                                    <DropdownMenuContent align="end">
+                                                        <DropdownMenuItem asChild>
+                                                            <Link href={`/run-detail?session_id=${session.session_id}`}>
+                                                                <MessageSquare className="h-4 w-4 mr-2" />
+                                                                View
+                                                            </Link>
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuItem onClick={() => handleRenameStart(session)}>
+                                                            <Pencil className="h-4 w-4 mr-2" />
+                                                            Rename
+                                                        </DropdownMenuItem>
+                                                        <DropdownMenuSeparator />
+                                                        <DropdownMenuItem
+                                                            onClick={() => setDeleteConfirmId(session.session_id)}
+                                                            className="text-red-600 focus:text-red-600"
+                                                        >
+                                                            <Trash2 className="h-4 w-4 mr-2" />
+                                                            Delete
+                                                        </DropdownMenuItem>
+                                                    </DropdownMenuContent>
+                                                </DropdownMenu>
                                             </td>
                                         </tr>
                                     ))
@@ -309,6 +418,28 @@ export default function RunsPage() {
                     )}
                 </div>
             )}
+
+            <AlertDialog open={!!deleteConfirmId} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Delete Session</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            Are you sure you want to delete &quot;{sessionToDelete?.title || "this session"}&quot;?
+                            This will remove the session and all its tasks from your history.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                            onClick={handleDeleteConfirm}
+                            className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+                            disabled={isDeleting}
+                        >
+                            {isDeleting ? "Deleting..." : "Delete"}
+                        </AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </div>
     );
 }

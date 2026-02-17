@@ -163,6 +163,7 @@ export interface TaskSubmitRequest {
     context?: Record<string, any>;
     research_strategy?: "quick" | "standard" | "deep" | "academic";
     max_concurrent_agents?: number;
+    skill?: string;
 }
 
 export interface TaskSubmitResponse {
@@ -811,5 +812,33 @@ export async function deleteSchedule(scheduleId: string): Promise<void> {
     if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Failed to delete schedule: ${response.statusText} - ${errorText}`);
+    }
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to delete session: ${response.statusText} - ${errorText}`);
+    }
+}
+
+export async function updateSessionTitle(sessionId: string, title: string): Promise<void> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: {
+            "Content-Type": "application/json",
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ title }),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to update session title: ${response.statusText} - ${errorText}`);
     }
 }

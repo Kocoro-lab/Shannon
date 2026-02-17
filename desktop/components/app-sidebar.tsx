@@ -3,19 +3,38 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Plus, History, Sparkles, Microscope, Bot, CalendarClock, Settings, LogOut } from "lucide-react";
+import { Plus, History, Sparkles, Microscope, Bot, CalendarClock, Settings, LogOut, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { logout, getStoredUser } from "@/lib/auth";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useEffect, useState, Suspense, useCallback, useRef } from "react";
 import { useSelector } from "react-redux";
 import { RootState } from "@/lib/store";
-import { listSessions, Session } from "@/lib/shannon/api";
+import { useRouter } from "next/navigation";
+import { listSessions, deleteSession, updateSessionTitle, Session } from "@/lib/shannon/api";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarHeader,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarGroup,
@@ -37,6 +56,68 @@ function SidebarInner() {
   const runStatus = useSelector((state: RootState) => state.run.status);
   // Subscribe to session title from streaming events (title now generated at start of task)
   const streamingTitle = useSelector((state: RootState) => state.run.sessionTitle);
+
+  const router = useRouter();
+
+  // Rename state
+  const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  // Delete state
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const sessionToDelete = deleteConfirmId
+    ? recentSessions.find(s => s.session_id === deleteConfirmId)
+    : null;
+
+  function handleRenameStart(session: Session): void {
+    setRenamingSessionId(session.session_id);
+    setRenameValue(session.title || "");
+  }
+
+  async function handleRenameSubmit(sessionId: string): Promise<void> {
+    const trimmed = renameValue.trim();
+    if (!trimmed || trimmed.length > 200) {
+      setRenamingSessionId(null);
+      return;
+    }
+    try {
+      await updateSessionTitle(sessionId, trimmed);
+      setRecentSessions(prev => prev.map(s =>
+        s.session_id === sessionId ? { ...s, title: trimmed } : s
+      ));
+    } catch (error) {
+      console.error("Failed to rename session:", error);
+    }
+    setRenamingSessionId(null);
+  }
+
+  function handleRenameKeyDown(e: React.KeyboardEvent, sessionId: string): void {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleRenameSubmit(sessionId);
+    } else if (e.key === "Escape") {
+      setRenamingSessionId(null);
+    }
+  }
+
+  async function handleDeleteConfirm(): Promise<void> {
+    if (!deleteConfirmId) return;
+    setIsDeleting(true);
+    try {
+      await deleteSession(deleteConfirmId);
+      setRecentSessions(prev => prev.filter(s => s.session_id !== deleteConfirmId));
+      if (currentSessionId === deleteConfirmId) {
+        router.push("/run-detail?session_id=new");
+      }
+    } catch (error) {
+      console.error("Failed to delete session:", error);
+    } finally {
+      setIsDeleting(false);
+      setDeleteConfirmId(null);
+    }
+  }
 
   // Close sidebar on mobile after navigation
   const handleNavClick = useCallback(() => {
@@ -187,27 +268,70 @@ function SidebarInner() {
                 {recentSessions.map((session) => {
                   const isActive = currentSessionId === session.session_id;
                   const isResearch = session.is_research_session;
-                  // Friendly display: prefer title, else truncated query, else "New task..."
-                  const truncatedQuery = session.latest_task_query 
-                    ? (session.latest_task_query.length > 30 
-                        ? session.latest_task_query.slice(0, 30) + "..." 
+                  const isRenaming = renamingSessionId === session.session_id;
+                  const truncatedQuery = session.latest_task_query
+                    ? (session.latest_task_query.length > 30
+                        ? session.latest_task_query.slice(0, 30) + "..."
                         : session.latest_task_query)
                     : null;
                   const displayTitle = session.title || truncatedQuery || "New task...";
                   return (
-                    <SidebarMenuItem key={session.session_id}>
+                    <SidebarMenuItem key={session.session_id} className="group/menu-item">
                       <SidebarMenuButton asChild isActive={isActive} className="h-auto py-1.5">
-                        <Link href={`/run-detail?session_id=${session.session_id}`} onClick={handleNavClick}>
-                          {isResearch ? (
-                            <Microscope className="h-3.5 w-3.5 text-violet-500 shrink-0" />
-                          ) : (
-                            <Sparkles className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                          )}
-                          <span className={`truncate text-sm ${!session.title ? 'text-muted-foreground' : ''}`}>
-                            {displayTitle}
-                          </span>
-                        </Link>
+                        {isRenaming ? (
+                          <div className="flex items-center gap-2 px-2">
+                            {isResearch ? (
+                              <Microscope className="h-3.5 w-3.5 text-violet-500 shrink-0" />
+                            ) : (
+                              <Sparkles className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                            )}
+                            <input
+                              autoFocus
+                              className="flex-1 bg-transparent text-sm border-b border-primary outline-none min-w-0"
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => handleRenameKeyDown(e, session.session_id)}
+                              onBlur={() => handleRenameSubmit(session.session_id)}
+                              maxLength={200}
+                            />
+                          </div>
+                        ) : (
+                          <Link href={`/run-detail?session_id=${session.session_id}`} onClick={handleNavClick}>
+                            {isResearch ? (
+                              <Microscope className="h-3.5 w-3.5 text-violet-500 shrink-0" />
+                            ) : (
+                              <Sparkles className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+                            )}
+                            <span className={`truncate text-sm ${!session.title ? 'text-muted-foreground' : ''}`}>
+                              {displayTitle}
+                            </span>
+                          </Link>
+                        )}
                       </SidebarMenuButton>
+                      {!isRenaming && (
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <SidebarMenuAction showOnHover>
+                              <MoreHorizontal />
+                              <span className="sr-only">More</span>
+                            </SidebarMenuAction>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent side="right" align="start">
+                            <DropdownMenuItem onClick={() => handleRenameStart(session)}>
+                              <Pencil className="h-4 w-4 mr-2" />
+                              Rename
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                              onClick={() => setDeleteConfirmId(session.session_id)}
+                              className="text-red-600 focus:text-red-600"
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      )}
                     </SidebarMenuItem>
                   );
                 })}
@@ -234,6 +358,28 @@ function SidebarInner() {
           )}
         </div>
       </SidebarFooter>
+
+      <AlertDialog open={!!deleteConfirmId} onOpenChange={(open) => !open && setDeleteConfirmId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Session</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete &quot;{sessionToDelete?.title || "this session"}&quot;?
+              This will remove the session and all its tasks from your history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
+              disabled={isDeleting}
+            >
+              {isDeleting ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Sidebar>
   );
 }
