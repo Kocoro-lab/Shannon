@@ -19,7 +19,7 @@ import { useSelector, useDispatch } from "react-redux";
 import { RootState } from "@/lib/store";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState, approveReviewPlan } from "@/lib/shannon/api";
-import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode } from "@/lib/features/runSlice";
+import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode, setSelectedSkill } from "@/lib/features/runSlice";
 
 function RunDetailContent() {
     const searchParams = useSearchParams();
@@ -76,6 +76,7 @@ function RunDetailContent() {
     const reviewVersion = useSelector((state: RootState) => state.run.reviewVersion);
     const reviewIntent = useSelector((state: RootState) => state.run.reviewIntent);
     const swarmMode = useSelector((state: RootState) => state.run.swarmMode);
+    const selectedSkill = useSelector((state: RootState) => state.run.selectedSkill);
     const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
 
     const handleRetryStream = () => {
@@ -1778,6 +1779,8 @@ function RunDetailContent() {
                                             onApprove={handleReviewApprove}
                                             swarmMode={swarmMode}
                                             onSwarmModeChange={(enabled) => dispatch(setSwarmMode(enabled))}
+                                            selectedSkill={selectedSkill}
+                                            onSkillDismiss={() => dispatch(setSelectedSkill(null))}
                                         />
                                     </div>
                                 </>
@@ -1811,6 +1814,8 @@ function RunDetailContent() {
                                     onApprove={handleReviewApprove}
                                     swarmMode={swarmMode}
                                     onSwarmModeChange={(enabled) => dispatch(setSwarmMode(enabled))}
+                                    selectedSkill={selectedSkill}
+                                    onSkillDismiss={() => dispatch(setSelectedSkill(null))}
                                 />
                             )}
                         </TabsContent>

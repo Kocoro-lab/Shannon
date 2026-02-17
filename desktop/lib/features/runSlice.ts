@@ -28,6 +28,8 @@ interface RunState {
     reviewIntent: "feedback" | "ready" | "execute" | null;
     // Swarm mode
     swarmMode: boolean;
+    // Skill selection
+    selectedSkill: string | null;
 }
 
 const initialState: RunState = {
@@ -54,6 +56,8 @@ const initialState: RunState = {
     reviewIntent: null,
     // Swarm mode
     swarmMode: false,
+    // Skill selection
+    selectedSkill: null,
 };
 
 // Helper to create inline status messages from events
@@ -774,6 +778,7 @@ const runSlice = createSlice({
             const preservedStrategy = state.researchStrategy;
             const preservedAutoApprove = state.autoApprove;
             const preservedSwarmMode = state.swarmMode;
+            const preservedSkill = state.selectedSkill;
 
             state.events = [];
             state.messages = [];
@@ -793,11 +798,12 @@ const runSlice = createSlice({
             state.reviewWorkflowId = null;
             state.reviewVersion = 0;
             state.reviewIntent = null;
-            // Restore user preferences
+            // Restore user preferences (including pending skill selection)
             state.selectedAgent = preservedAgent;
             state.researchStrategy = preservedStrategy;
             state.autoApprove = preservedAutoApprove;
             state.swarmMode = preservedSwarmMode;
+            state.selectedSkill = preservedSkill;
         },
         addMessage: (state, action: PayloadAction<any>) => {
             console.log("[Redux] addMessage called:", action.payload);
@@ -912,6 +918,9 @@ const runSlice = createSlice({
         setSwarmMode: (state, action: PayloadAction<boolean>) => {
             state.swarmMode = action.payload;
         },
+        setSelectedSkill: (state, action: PayloadAction<string | null>) => {
+            state.selectedSkill = action.payload;
+        },
         setCancelled: (state, action: PayloadAction<boolean>) => {
             state.isCancelled = action.payload;
             state.isCancelling = false;
@@ -942,5 +951,5 @@ const runSlice = createSlice({
     },
 });
 
-export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode } = runSlice.actions;
+export const { addEvent, resetRun, addMessage, removeMessage, updateMessageMetadata, setConnectionState, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode, setSelectedSkill } = runSlice.actions;
 export default runSlice.reducer;

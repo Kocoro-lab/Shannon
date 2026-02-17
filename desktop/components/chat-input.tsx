@@ -2,10 +2,9 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Send, Loader2, Sparkles, Pause, Play, Square, CheckCircle2, Workflow } from "lucide-react";
+import { Send, Loader2, Sparkles, Pause, Play, Square, CheckCircle2, Workflow, Wand2, X } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useRouter } from "next/navigation";
 import { submitTask, submitReviewFeedback, approveReviewPlan } from "@/lib/shannon/api";
@@ -47,6 +46,9 @@ interface ChatInputProps {
     /** Swarm mode toggle */
     swarmMode?: boolean;
     onSwarmModeChange?: (enabled: boolean) => void;
+    /** Skill selection */
+    selectedSkill?: string | null;
+    onSkillDismiss?: () => void;
 }
 
 export function ChatInput({
@@ -77,6 +79,8 @@ export function ChatInput({
     onApprove,
     swarmMode = false,
     onSwarmModeChange,
+    selectedSkill,
+    onSkillDismiss,
 }: ChatInputProps) {
     const [query, setQuery] = useState("");
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -148,9 +152,13 @@ export function ChatInput({
                 session_id: sessionId,
                 context: Object.keys(context).length ? context : undefined,
                 research_strategy,
+                skill: selectedSkill || undefined,
             });
 
             setQuery("");
+            if (selectedSkill) {
+                onSkillDismiss?.();
+            }
 
             if (onTaskCreated) {
                 onTaskCreated(response.task_id, query.trim(), response.workflow_id);
@@ -276,6 +284,23 @@ export function ChatInput({
                             </div>
                         )}
                         
+                        {selectedSkill && (
+                            <div className="flex items-center gap-2 mb-2">
+                                <div className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-3 py-1 text-sm">
+                                    <Wand2 className="h-3.5 w-3.5 text-primary" />
+                                    <span className="text-primary font-medium">Skill: {selectedSkill}</span>
+                                    <button
+                                        type="button"
+                                        onClick={onSkillDismiss}
+                                        aria-label="Dismiss skill"
+                                        className="ml-1 rounded-full p-0.5 hover:bg-primary/20 transition-colors"
+                                    >
+                                        <X className="h-3 w-3 text-primary" />
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
                         <div className="relative">
                             <Textarea
                                 placeholder="Ask a question..."
@@ -415,6 +440,23 @@ export function ChatInput({
                         )}
                         Approve & Run
                     </Button>
+                </div>
+            )}
+
+            {selectedSkill && (
+                <div className="flex items-center gap-2">
+                    <div className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 border border-primary/20 px-3 py-1 text-sm">
+                        <Wand2 className="h-3.5 w-3.5 text-primary" />
+                        <span className="text-primary font-medium">Skill: {selectedSkill}</span>
+                        <button
+                            type="button"
+                            onClick={onSkillDismiss}
+                            aria-label="Dismiss skill"
+                            className="ml-1 rounded-full p-0.5 hover:bg-primary/20 transition-colors"
+                        >
+                            <X className="h-3 w-3 text-primary" />
+                        </button>
+                    </div>
                 </div>
             )}
 

@@ -842,3 +842,79 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
         throw new Error(`Failed to update session title: ${response.statusText} - ${errorText}`);
     }
 }
+
+// =============================================================================
+// Skill Types
+// =============================================================================
+
+export interface SkillSummary {
+    name: string;
+    version: string;
+    category: string;
+    description: string;
+    requires_tools: string[] | null;
+    dangerous: boolean;
+    enabled: boolean;
+}
+
+export interface SkillDetail {
+    name?: string;
+    version?: string;
+    author?: string;
+    category?: string;
+    description?: string;
+    requires_tools?: string[] | null;
+    requires_role?: string;
+    budget_max?: number;
+    dangerous?: boolean;
+    enabled?: boolean;
+    metadata?: Record<string, any>;
+    content?: string;
+}
+
+export interface SkillListResponse {
+    skills: SkillSummary[];
+    count: number;
+    categories: string[];
+}
+
+export interface SkillDetailResponse {
+    skill: SkillDetail;
+    metadata: {
+        source_path: string;
+        content_hash: string;
+        loaded_at: string;
+    };
+}
+
+// =============================================================================
+// Skill API Functions
+// =============================================================================
+
+export async function listSkills(category?: string): Promise<SkillListResponse> {
+    const params = category ? `?category=${encodeURIComponent(category)}` : "";
+    const response = await fetch(`${API_BASE_URL}/api/v1/skills${params}`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to list skills: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
+export async function getSkill(name: string): Promise<SkillDetailResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/skills/${encodeURIComponent(name)}`, {
+        headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to get skill: ${response.statusText} - ${errorText}`);
+    }
+
+    return response.json();
+}
+
