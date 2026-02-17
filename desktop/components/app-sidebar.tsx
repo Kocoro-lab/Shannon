@@ -71,6 +71,12 @@ function SidebarInner() {
   const sessionToDelete = deleteConfirmId
     ? recentSessions.find(s => s.session_id === deleteConfirmId)
     : null;
+  const deleteDisplayName = sessionToDelete?.title
+    || (sessionToDelete?.latest_task_query
+        ? (sessionToDelete.latest_task_query.length > 30
+            ? sessionToDelete.latest_task_query.slice(0, 30) + "..."
+            : sessionToDelete.latest_task_query)
+        : `Session ${deleteConfirmId?.slice(0, 8)}...`);
 
   function handleRenameStart(session: Session): void {
     setRenamingSessionId(session.session_id);
@@ -82,7 +88,7 @@ function SidebarInner() {
     renameSubmittingRef.current = true;
     setRenamingSessionId(null);
     const trimmed = renameValue.trim();
-    if (!trimmed || trimmed.length > 200) {
+    if (!trimmed || trimmed.length > 60) {
       renameSubmittingRef.current = false;
       return;
     }
@@ -303,7 +309,7 @@ function SidebarInner() {
                               onChange={(e) => setRenameValue(e.target.value)}
                               onKeyDown={(e) => handleRenameKeyDown(e, session.session_id)}
                               onBlur={() => handleRenameSubmit(session.session_id)}
-                              maxLength={200}
+                              maxLength={60}
                             />
                           </div>
                         ) : (
@@ -334,8 +340,8 @@ function SidebarInner() {
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
+                              variant="destructive"
                               onClick={() => setDeleteConfirmId(session.session_id)}
-                              className="text-red-600 focus:text-red-600"
                             >
                               <Trash2 className="h-4 w-4 mr-2" />
                               Delete
@@ -375,7 +381,7 @@ function SidebarInner() {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Session</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete &quot;{sessionToDelete?.title || "this session"}&quot;?
+              Are you sure you want to delete &quot;{deleteDisplayName}&quot;?
               This will remove the session and all its tasks from your history.
             </AlertDialogDescription>
           </AlertDialogHeader>
