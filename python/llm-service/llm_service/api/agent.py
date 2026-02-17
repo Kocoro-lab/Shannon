@@ -3529,22 +3529,31 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             '  "execution_strategy": "sequential",\n'
             '  "total_estimated_tokens": 800\n'
             "}\n\n"
-            "Example 2 — Complex multi-task query 'Compare Tesla, BYD, Toyota EV strategy and predict market outlook':\n"
-            "(Note: NO synthesis/summary subtask — the system synthesizes automatically. "
-            "Independent analyses have NO dependencies between them for maximum parallelism.)\n"
+            "Example 2 — Multi-dimension comparison 'Compare AI regulation policies in US, EU, and China':\n"
+            "(Note: ALL tasks run in parallel — each researches independently via web_search. "
+            "The system auto-synthesizes all outputs into one coherent response. NO synthesis subtask needed.)\n"
             "{\n"
             '  "mode": "complex",\n'
             '  "complexity_score": 0.7,\n'
             '  "subtasks": [\n'
-            '    {"id": "task-1", "description": "Research Tesla latest EV models, specs, and technology", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "Tesla latest EV models 2024 2025 specs"}},\n'
-            '    {"id": "task-2", "description": "Research BYD latest EV models, specs, and technology", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "BYD latest EV models 2024 2025 specs"}},\n'
-            '    {"id": "task-3", "description": "Research Toyota latest EV models, specs, and technology", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "Toyota latest EV models 2024 2025 specs"}},\n'
-            '    {"id": "task-4", "description": "Compare battery technology approaches across Tesla, BYD, and Toyota", "dependencies": ["task-1", "task-2", "task-3"], "suggested_tools": [], "tool_parameters": {}},\n'
-            '    {"id": "task-5", "description": "Analyze global EV market share trends for Tesla, BYD, and Toyota", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "global EV market share Tesla BYD Toyota 2024"}},\n'
-            '    {"id": "task-6", "description": "Predict 2025 EV market outlook and investment recommendations", "dependencies": ["task-4", "task-5"], "suggested_tools": [], "tool_parameters": {}}\n'
+            '    {"id": "task-1", "description": "Research US AI regulation framework, recent legislation, and enforcement approach", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "US AI regulation policy legislation 2024 2025"}},\n'
+            '    {"id": "task-2", "description": "Research EU AI Act implementation, compliance requirements, and risk classification", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "EU AI Act implementation compliance 2024 2025"}},\n'
+            '    {"id": "task-3", "description": "Research China AI governance policies, ethical guidelines, and industry standards", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "China AI governance policy regulation 2024 2025"}}\n'
             "  ],\n"
             '  "execution_strategy": "parallel",\n'
-            '  "total_estimated_tokens": 6000\n'
+            '  "total_estimated_tokens": 3000\n'
+            "}\n\n"
+            "Example 3 — Search-then-fetch dependency 'Get Cloudflare pricing details from their website':\n"
+            "(Note: task-2 NEEDS URLs produced by task-1 — this is the only valid dependency pattern.)\n"
+            "{\n"
+            '  "mode": "standard",\n'
+            '  "complexity_score": 0.4,\n'
+            '  "subtasks": [\n'
+            '    {"id": "task-1", "description": "Search for Cloudflare pricing and plan pages", "dependencies": [], "suggested_tools": ["web_search"], "tool_parameters": {"tool": "web_search", "query": "site:cloudflare.com pricing plans"}},\n'
+            '    {"id": "task-2", "description": "Fetch and extract detailed pricing information from Cloudflare pages", "dependencies": ["task-1"], "suggested_tools": ["web_fetch"], "tool_parameters": {}}\n'
+            "  ],\n"
+            '  "execution_strategy": "sequential",\n'
+            '  "total_estimated_tokens": 1200\n'
             "}\n\n"
             "Rules:\n"
             '- mode: must be "simple", "standard", or "complex"\n'
@@ -3559,16 +3568,13 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "- NEVER create synthesis/summary/report subtasks that combine other subtasks' results. "
             "The system automatically synthesizes all subtask outputs into a coherent final response. "
             "Each subtask should focus on research, analysis, or computation — not summarization.\n"
-            "- DEPENDENCY RULE — only declare a dependency when Task B must READ Task A's specific output text to start. "
-            "Ask: 'Can this task accomplish its goal using web_search or its own knowledge?' If yes → dependencies: []. "
-            "Logical relevance is NOT a dependency. The system combines all outputs automatically.\n"
-            "  WRONG (serial bottleneck):\n"
-            '    task-4 "analyze market share" depends on ["task-1"] ← wrong: can web_search independently\n'
-            '    task-6 "investment advice" depends on ["task-5"]   ← wrong: can analyze independently\n'
-            "  RIGHT (maximum parallelism):\n"
-            '    task-4 "analyze market share" dependencies: []    ← correct: uses web_search for its own data\n'
-            '    task-6 "investment advice" dependencies: []       ← correct: independent analysis, system synthesizes\n'
-            "  ONLY valid dependency: Task A does web_search → Task B does web_fetch on URLs from Task A's response.\n"
+            "- SUBTASK GRANULARITY: Prefer 3-5 broad subtasks over many narrow ones. "
+            "Each subtask should cover a complete research dimension — do NOT split one dimension into sub-steps "
+            "(e.g., do NOT separate 'search company X' from 'analyze company X'). Maximum 8 subtasks.\n"
+            "- DEPENDENCY RULE: Almost all research subtasks should have dependencies: []. "
+            "The ONLY valid dependency is when Task B needs a concrete runtime output from Task A "
+            "(e.g., URLs from a search, extracted entity IDs, generated code). "
+            "If Task B can get its information via its own web_search, it MUST be independent.\n"
         )
 
         # General planning identity (default for non-research tasks)
