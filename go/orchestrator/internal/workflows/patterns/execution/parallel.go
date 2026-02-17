@@ -19,10 +19,11 @@ import (
 
 // ParallelConfig controls parallel execution behavior
 type ParallelConfig struct {
-	MaxConcurrency int                    // Maximum concurrent agents
-	Semaphore      workflow.Semaphore     // Concurrency control (interface, not pointer)
-	EmitEvents     bool                   // Whether to emit streaming events
-	Context        map[string]interface{} // Base context for all agents
+	MaxConcurrency   int                    // Maximum concurrent agents
+	Semaphore        workflow.Semaphore     // Concurrency control (interface, not pointer)
+	EmitEvents       bool                   // Whether to emit streaming events
+	Context          map[string]interface{} // Base context for all agents
+	AgentIndexOffset int                    // Offset added to loop index for GetAgentName (used by hybrid executor)
 }
 
 // ParallelTask represents a task to execute in parallel
@@ -130,7 +131,7 @@ func ExecuteParallel(
 					wid = p
 				}
 			}
-			agentName := agents.GetAgentName(wid, i)
+			agentName := agents.GetAgentName(wid, i+config.AgentIndexOffset)
 
 			// Emit agent started event (publish under parent workflow when available)
 			if config.EmitEvents {
@@ -264,7 +265,7 @@ func ExecuteParallel(
 									wid = p
 								}
 							}
-							agentName := agents.GetAgentName(wid, fwi.Index)
+							agentName := agents.GetAgentName(wid, fwi.Index+config.AgentIndexOffset)
 							_ = workflow.ExecuteActivity(ctx, "EmitTaskUpdate",
 								activities.EmitTaskUpdateInput{
 									WorkflowID: wid,
@@ -368,7 +369,7 @@ func ExecuteParallel(
 								workflowID = p
 							}
 						}
-						agentName := agents.GetAgentName(workflowID, fwi.Index)
+						agentName := agents.GetAgentName(workflowID, fwi.Index+config.AgentIndexOffset)
 						persistAgentExecutionLocal(ctx, workflowID, agentName, tasks[fwi.Index].Description, result)
 
 						// Emit completion event (parent workflow when available)
