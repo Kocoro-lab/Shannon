@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Plus, History, Sparkles, Microscope, Bot, CalendarClock, Settings, LogOut, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
+import { Plus, History, Sparkles, Microscope, Bot, Wand2, CalendarClock, Settings, LogOut, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import { logout, getStoredUser } from "@/lib/auth";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useEffect, useState, Suspense, useCallback, useRef } from "react";
@@ -62,6 +62,7 @@ function SidebarInner() {
   // Rename state
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const renameSubmittingRef = useRef(false);
 
   // Delete state
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
@@ -77,9 +78,12 @@ function SidebarInner() {
   }
 
   async function handleRenameSubmit(sessionId: string): Promise<void> {
+    if (renameSubmittingRef.current) return;
+    renameSubmittingRef.current = true;
+    setRenamingSessionId(null);
     const trimmed = renameValue.trim();
     if (!trimmed || trimmed.length > 200) {
-      setRenamingSessionId(null);
+      renameSubmittingRef.current = false;
       return;
     }
     try {
@@ -89,8 +93,9 @@ function SidebarInner() {
       ));
     } catch (error) {
       console.error("Failed to rename session:", error);
+    } finally {
+      renameSubmittingRef.current = false;
     }
-    setRenamingSessionId(null);
   }
 
   function handleRenameKeyDown(e: React.KeyboardEvent, sessionId: string): void {
@@ -199,6 +204,12 @@ function SidebarInner() {
       icon: Bot,
       href: "/agents",
       active: pathname.startsWith("/agents"),
+    },
+    {
+      label: "Skills",
+      icon: Wand2,
+      href: "/skills",
+      active: pathname.startsWith("/skills"),
     },
     {
       label: "Schedules",
@@ -371,7 +382,10 @@ function SidebarInner() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={handleDeleteConfirm}
+              onClick={(e) => {
+                e.preventDefault();
+                handleDeleteConfirm();
+              }}
               className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
               disabled={isDeleting}
             >

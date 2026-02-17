@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Search, Loader2, RefreshCw, MessageSquare, Layers, DollarSign, Sparkles, Microscope, CheckCircle2, XCircle, MoreHorizontal, Pencil, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { listSessions, deleteSession, updateSessionTitle, Session } from "@/lib/shannon/api";
 import {
     DropdownMenu,
@@ -40,6 +40,7 @@ export default function RunsPage() {
     // Rename state
     const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
     const [renameValue, setRenameValue] = useState("");
+    const renameSubmittingRef = useRef(false);
 
     const sessionToDelete = deleteConfirmId
         ? sessions.find(s => s.session_id === deleteConfirmId)
@@ -66,9 +67,12 @@ export default function RunsPage() {
     };
 
     const handleRenameSubmit = async (sessionId: string) => {
+        if (renameSubmittingRef.current) return;
+        renameSubmittingRef.current = true;
+        setRenamingSessionId(null);
         const trimmed = renameValue.trim();
         if (!trimmed || trimmed.length > 200) {
-            setRenamingSessionId(null);
+            renameSubmittingRef.current = false;
             return;
         }
         try {
@@ -78,8 +82,9 @@ export default function RunsPage() {
             ));
         } catch (err) {
             setError(err instanceof Error ? err.message : "Failed to rename session");
+        } finally {
+            renameSubmittingRef.current = false;
         }
-        setRenamingSessionId(null);
     };
 
     const handleRenameKeyDown = (e: React.KeyboardEvent, sessionId: string) => {
@@ -431,7 +436,10 @@ export default function RunsPage() {
                     <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
-                            onClick={handleDeleteConfirm}
+                            onClick={(e) => {
+                                e.preventDefault();
+                                handleDeleteConfirm();
+                            }}
                             className="bg-red-600 hover:bg-red-700 focus:ring-red-600"
                             disabled={isDeleting}
                         >
