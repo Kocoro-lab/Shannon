@@ -281,7 +281,8 @@ logging:
     - "stderr"
 
 vector:
-  enabled: true
+  # Set to true to enable semantic memory (requires Qdrant + embedding provider e.g. OpenAI)
+  enabled: false
   host: "qdrant"
   port: 6333
   task_embeddings: "task_embeddings"
