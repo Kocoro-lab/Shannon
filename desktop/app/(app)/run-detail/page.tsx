@@ -60,6 +60,8 @@ function RunDetailContent() {
     // Get data from Redux (streaming state)
     const runEvents = useSelector((state: RootState) => state.run.events);
     const runMessages = useSelector((state: RootState) => state.run.messages);
+    const runMessagesRef = useRef<typeof runMessages>(runMessages);
+    runMessagesRef.current = runMessages;
     const runStatus = useSelector((state: RootState) => state.run.status);
     const connectionState = useSelector((state: RootState) => state.run.connectionState);
     const streamError = useSelector((state: RootState) => state.run.streamError);
@@ -916,7 +918,7 @@ function RunDetailContent() {
             // Check if we already have ANY assistant message for this task (from SSE streaming)
             // This prevents duplicates when both SSE and fetchFinalOutput create messages
             // Exclude isResearchPlan messages — those are review plan rounds, not the final output
-            const hasExistingAssistantMessage = runMessages.some(m =>
+            const hasExistingAssistantMessage = runMessagesRef.current?.some(m =>
                 m.role === "assistant" &&
                 m.taskId === currentTaskId &&
                 !m.isStreaming &&
@@ -928,7 +930,7 @@ function RunDetailContent() {
             if (hasExistingAssistantMessage) {
                 console.log("[RunDetail] ✓ Assistant message already present from SSE, skipping fetchFinalOutput");
                 // Update citations if the task has them and existing message doesn't
-                const existingMsg = runMessages.find(m => 
+                const existingMsg = runMessagesRef.current?.find(m =>
                     m.role === "assistant" && m.taskId === currentTaskId && !m.isStreaming && !m.isGenerating
                 );
                 if (task.metadata?.citations && (!existingMsg?.metadata?.citations || existingMsg.metadata.citations.length === 0)) {
@@ -985,7 +987,7 @@ function RunDetailContent() {
             console.error("[RunDetail] ❌ Failed to fetch task result:", err);
             dispatch(setStreamError("Failed to fetch final output"));
         }
-    }, [currentTaskId, dispatch, runMessages]);
+    }, [currentTaskId, dispatch]);
 
     const handleFetchFinalOutputClick = () => {
         fetchFinalOutput();
@@ -1008,7 +1010,7 @@ function RunDetailContent() {
         };
 
         fetchTaskResult();
-    }, [runStatus, currentTaskId, fetchFinalOutput]);
+    }, [runStatus, currentTaskId, fetchFinalOutput, runMessages?.length]);
 
     // Fallback polling: If task is "running" but no events received for 30s, poll API to check status
     // This handles cases where STREAM_END is lost due to network issues
