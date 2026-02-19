@@ -251,8 +251,8 @@ yarn-error.log*
 .idea/
 *.iml
 .cursor/
-# Claude Code local settings (auto-generated, user-specific)
-.claude/settings.local.json
+# Claude Code settings (committed files remain tracked; ignore new local-only files)
+.claude/
 .codex_cache/
 *.suo
 *.ntvs*
