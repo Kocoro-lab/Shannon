@@ -71,6 +71,7 @@ message ExecuteTaskResponse {
   shannon.common.ExecutionMetrics metrics = 6;
   string error_message = 7;
   AgentState final_state = 8;
+  google.protobuf.Struct metadata = 9;
 }
 
 message TaskUpdate {

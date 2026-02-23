@@ -345,3 +345,8 @@ chrome-extension/
 # antigravity
 .agent/
 .gomodcache/
+
+# Skills - exclude user and vendor-specific skills
+config/skills/user/
+config/skills/vendor/
+docs/plans/

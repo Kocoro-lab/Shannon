@@ -1379,6 +1379,7 @@ async def agent_query(request: Request, query: AgentQuery):
 
             # Collect structured tool executions for upstream observability/persistence
             tool_execution_records: List[Dict[str, Any]] = []
+            all_tool_cost_entries: List[Dict[str, Any]] = []
             seed_raw_tool_results: List[Dict[str, Any]] = []
             seed_search_urls: List[str] = []
             seed_fetch_success = False
@@ -1446,7 +1447,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 logger.info(
                     f"Executing forced tool sequence: {[fc['name'] for fc in forced_calls]}"
                 )
-                tool_results, exec_records, raw_records = await _execute_and_format_tools(
+                tool_results, exec_records, raw_records, cost_entries = await _execute_and_format_tools(
                     forced_calls,
                     effective_allowed_tools or [],
                     query.query,
@@ -1454,6 +1455,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     query.context,
                 )
                 tool_execution_records.extend(exec_records)
+                all_tool_cost_entries.extend(cost_entries)
 
                 # Seed tool-loop context from forced tool executions (e.g., precomputed web_search)
                 seed_raw_tool_results.extend(raw_records)
@@ -1752,7 +1754,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     stop_reason = "no_tool_call"
                     break
 
-                tool_results, exec_records, raw_records = await _execute_and_format_tools(
+                tool_results, exec_records, raw_records, cost_entries = await _execute_and_format_tools(
                     tool_calls_from_output,
                     effective_allowed_tools,
                     query.query,
@@ -1762,6 +1764,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 last_tool_results = tool_results
                 tool_execution_records.extend(exec_records)
                 raw_tool_results.extend(raw_records)
+                all_tool_cost_entries.extend(cost_entries)
 
                 if loop_function_call == "any":
                     loop_function_call = "auto"
@@ -1879,7 +1882,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         did_forced_fetch = True
                         logger.info(f"DR policy: auto-fetching URLs={len(urls_to_fetch)} after search")
                         policy_calls = [{"name": "web_fetch", "arguments": {"urls": urls_to_fetch}}]
-                        policy_results, policy_execs, policy_raw = await _execute_and_format_tools(
+                        policy_results, policy_execs, policy_raw, policy_costs = await _execute_and_format_tools(
                             policy_calls,
                             effective_allowed_tools,
                             query.query,
@@ -1889,6 +1892,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         last_tool_results = policy_results or last_tool_results
                         tool_execution_records.extend(policy_execs)
                         raw_tool_results.extend(policy_raw)
+                        all_tool_cost_entries.extend(policy_costs)
                         if policy_results:
                             messages.append(
                                 {
@@ -2172,6 +2176,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     "effective_max_completion": (result_data or {}).get("effective_max_completion"),
                     "tools_used": tools_used,
                     "tool_executions": tool_execution_records,
+                    "tool_cost_entries": all_tool_cost_entries,
                 },
             )
         else:
@@ -2230,10 +2235,10 @@ async def _execute_and_format_tools(
     query: str = "",
     request=None,
     context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Execute tool calls and format results into natural language."""
     if not tool_calls:
-        return "", [], []
+        return "", [], [], []
 
     from ..tools import get_registry
 
@@ -2242,6 +2247,7 @@ async def _execute_and_format_tools(
     formatted_results = []
     tool_execution_records: List[Dict[str, Any]] = []
     raw_tool_results: List[Dict[str, Any]] = []
+    tool_cost_entries: List[Dict[str, Any]] = []
 
     # Set up event emitter and workflow/agent IDs for tool events
     emitter = None
@@ -2727,6 +2733,15 @@ async def _execute_and_format_tools(
                 }
             )
 
+            if result and result.cost_usd and result.cost_usd > 0:
+                tool_cost_entries.append({
+                    "tool": tool_name,
+                    "cost_usd": result.cost_usd,
+                    "cost_model": result.cost_model or f"shannon_{tool_name}",
+                    "provider": "shannon-scraper",
+                    "synthetic_tokens": 3000,
+                })
+
             raw_tool_results.append(
                 {
                     "tool": tool_name,
@@ -2784,6 +2799,7 @@ async def _execute_and_format_tools(
         "\n\n".join(formatted_results) if formatted_results else "",
         tool_execution_records,
         raw_tool_results,
+        tool_cost_entries,
     )
 
 

@@ -760,6 +760,24 @@ pricing:
         input_per_1k: 0.0
         output_per_1k: 0.0
 
+    # Synthetic models for external tool cost attribution.
+    # Each tool call = 3000 synthetic output tokens.
+    # combined_per_1k = actual_cost_per_call / 3.0
+    # Verify: (3000 / 1000) × combined_per_1k = cost_per_call
+    shannon-scraper:
+      shannon_web_search:
+        combined_per_1k: 0.005        # (3000/1000) × 0.005 = $0.015 (SerpAPI)
+      shannon_google_ads:
+        combined_per_1k: 0.005        # (3000/1000) × 0.005 = $0.015 (SerpAPI)
+      shannon_yahoo:
+        combined_per_1k: 0.001333     # (3000/1000) × 0.001333 ≈ $0.004 (SearchAPI.io)
+      shannon_meta:
+        combined_per_1k: 0.001333     # (3000/1000) × 0.001333 ≈ $0.004 (SearchAPI.io)
+      shannon_firecrawl:
+        combined_per_1k: 0.000333     # (3000/1000) × 0.000333 ≈ $0.001 (Firecrawl)
+      shannon_web_fetch:
+        combined_per_1k: 0.00035      # SMALL model weighted avg; fallback only (real cost via cost_usd override)
+
 # Feature flags for advanced capabilities
 feature_flags:
   enable_thinking_mode: true

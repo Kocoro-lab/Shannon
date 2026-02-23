@@ -331,6 +331,7 @@ impl AgentServiceImpl {
                     } else {
                         proto::agent::AgentState::Failed.into()
                     },
+                    metadata: None, // direct tool execution — no agent metadata
                 };
 
                 tracing::info!(
@@ -642,6 +643,7 @@ impl AgentServiceImpl {
                 } else {
                     proto::agent::AgentState::Failed.into()
                 },
+                metadata: None, // multi-tool direct execution — no agent metadata
             };
             tracing::info!(
                 "ExecuteTaskResponse (multi-tool): token_usage=None, tools={}, cumulative_ms={}",
@@ -820,6 +822,7 @@ impl AgentServiceImpl {
             } else {
                 proto::agent::AgentState::Failed.into()
             },
+            metadata: None, // multi-tool direct execution — no agent metadata
         };
         Ok(Response::new(response))
     }
@@ -1056,6 +1059,7 @@ impl AgentService for AgentServiceImpl {
 
                 let (meta_tool_calls, meta_tool_results) =
                     tool_meta_to_proto(&agent_result.metadata);
+                let proto_metadata = serde_json_to_prost_struct(&agent_result.metadata);
                 let usage = agent_result.usage;
                 let result = agent_result.response;
 
@@ -1100,6 +1104,7 @@ impl AgentService for AgentServiceImpl {
                     }),
                     error_message: String::new(),
                     final_state: proto::agent::AgentState::Completed.into(),
+                    metadata: proto_metadata,
                 };
 
                 tracing::info!(
@@ -1182,6 +1187,7 @@ impl AgentService for AgentServiceImpl {
 
         let (meta_tool_calls, meta_tool_results) =
             tool_meta_to_proto(&agent_result.metadata);
+        let proto_metadata = serde_json_to_prost_struct(&agent_result.metadata);
         let usage = agent_result.usage;
         let result = agent_result.response;
 
@@ -1226,6 +1232,7 @@ impl AgentService for AgentServiceImpl {
             }),
             error_message: String::new(),
             final_state: proto::agent::AgentState::Completed.into(),
+            metadata: proto_metadata,
         };
 
         tracing::info!(
@@ -1647,6 +1654,27 @@ fn prost_value_to_json_to_prost(v: &serde_json::Value) -> prost_types::Value {
                     .collect(),
             })),
         },
+    }
+}
+
+/// Convert `Option<serde_json::Value>` (expected Object) to `Option<prost_types::Struct>`.
+/// Used to forward agent metadata (including tool_cost_entries) through gRPC responses.
+fn serde_json_to_prost_struct(meta: &Option<serde_json::Value>) -> Option<prost_types::Struct> {
+    match meta {
+        Some(serde_json::Value::Object(map)) => Some(prost_types::Struct {
+            fields: map
+                .iter()
+                .map(|(k, v)| (k.clone(), prost_value_to_json_to_prost(v)))
+                .collect(),
+        }),
+        Some(other) => {
+            tracing::debug!(
+                "serde_json_to_prost_struct: metadata is not an object (type={:?}), skipping",
+                other
+            );
+            None
+        }
+        None => None,
     }
 }
 

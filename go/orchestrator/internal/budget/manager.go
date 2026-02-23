@@ -53,9 +53,10 @@ type BudgetTokenUsage struct {
 	CacheReadTokens     int                    `json:"cache_read_tokens,omitempty"`
 	CacheCreationTokens int                    `json:"cache_creation_tokens,omitempty"`
 	CostUSD             float64                `json:"cost_usd"`
-	Timestamp      time.Time              `json:"timestamp"`
-	Metadata       map[string]interface{} `json:"metadata"`
-	IdempotencyKey string                 `json:"idempotency_key,omitempty"` // Optional key for retry safety
+	CostOverride        float64                `json:"cost_override,omitempty"` // When > 0, use this instead of pricing calculation (e.g. Python-reported cost_usd)
+	Timestamp           time.Time              `json:"timestamp"`
+	Metadata            map[string]interface{} `json:"metadata"`
+	IdempotencyKey      string                 `json:"idempotency_key,omitempty"` // Optional key for retry safety
 }
 
 // BudgetManager manages token budgets and usage tracking
@@ -321,11 +322,15 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	usage.Timestamp = time.Now()
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
-	// Calculate cost using centralized pricing (config/models.yaml)
-	usage.CostUSD = pricing.CostForSplitWithCache(
-		usage.Model, usage.InputTokens, usage.OutputTokens,
-		usage.CacheReadTokens, usage.CacheCreationTokens, usage.Provider,
-	)
+	// Calculate cost: prefer upstream-reported cost (e.g. Python LLM call) over pricing lookup
+	if usage.CostOverride > 0 {
+		usage.CostUSD = usage.CostOverride
+	} else {
+		usage.CostUSD = pricing.CostForSplitWithCache(
+			usage.Model, usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadTokens, usage.CacheCreationTokens, usage.Provider,
+		)
+	}
 
 	// Update in-memory budgets with overflow checks
 	const maxInt = int(^uint(0) >> 1)

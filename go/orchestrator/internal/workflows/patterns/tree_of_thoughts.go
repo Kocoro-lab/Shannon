@@ -350,6 +350,7 @@ Format each as a clear, concise thought.`,
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "tree_of_thoughts"},
         }).Get(recCtx, nil)
+        wopts.RecordToolCostEntries(ctx, branchResult, opts.UserID, sessionID, wid)
     }
 
 	// Parse generated branches

@@ -1348,9 +1348,15 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	// Create a timeout context for gRPC call - use agent timeout + buffer
 	grpcTimeout := time.Duration(timeoutSec+30) * time.Second // Agent timeout + 30s buffer
 	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
+	// MCP_COST_TO_TOKENS: legacy path for tool cost -> token conversion.
+	// Superseded by per-tool cost recording via tool_cost_entries in agent metadata.
+	// Keep at 0 (disabled) to prevent double-counting with the new path.
 	mcpCostToTokens := getenvInt("MCP_COST_TO_TOKENS", 0)
 
 	// Streaming is opt-in and only used when no tools are required.
+	// When tools are present, we force unary so that ExecuteTaskResponse.metadata
+	// (carrying tool_cost_entries) is available for budget recording.
+	// If this constraint changes, runStreaming must also propagate metadata.
 	useStreaming := getenvInt("ENABLE_AGENT_STREAMING", 1) > 0
 	if len(allowedByRole) > 0 || len(selectedToolCalls) > 0 || (input.ToolParameters != nil && len(input.ToolParameters) > 0) {
 		useStreaming = false
@@ -1721,6 +1727,12 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			})
 		}
 
+		// Extract agent metadata from gRPC response (carries tool_cost_entries, etc.)
+		var resultMetadata map[string]interface{}
+		if resp.GetMetadata() != nil {
+			resultMetadata = resp.GetMetadata().AsMap()
+		}
+
 		return AgentExecutionResult{
 			AgentID:        input.AgentID,
 			Role:           role,
@@ -1735,11 +1747,20 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			Error:          errMsg,
 			ToolsUsed:      toolsUsed,
 			ToolExecutions: toolExecs,
+			Metadata:       resultMetadata,
 		}, nil
 	}
 
 	if useStreaming {
 		if res, serr := runStreaming(); serr == nil {
+			// Defensive: if streaming returned tool results, metadata (including
+			// tool_cost_entries) was not propagated. Log a warning so we can detect
+			// if the useStreaming gate ever lets tool-bearing agents through.
+			if len(res.ToolsUsed) > 0 {
+				logger.Warn("Streaming path returned tool results; tool_cost_entries not captured",
+					zap.Strings("tools_used", res.ToolsUsed),
+					zap.String("agent_id", input.AgentID))
+			}
 			return res, nil
 		} else {
 			logger.Warn("Streaming execution failed, falling back to unary ExecuteTask", zap.Error(serr))
@@ -2131,6 +2152,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		DurationMs:     time.Since(toolStartTime).Milliseconds(),
 		ToolsUsed:      toolsUsed,
 		ToolExecutions: toolExecs,
+		Metadata:       agentResponse.Metadata,
 	}, nil
 }
 

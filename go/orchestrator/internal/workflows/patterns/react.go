@@ -250,6 +250,7 @@ func ReactLoop(
 				OutputTokens: outTok,
 				Metadata:     map[string]interface{}{"phase": "react_reason"},
 			}).Get(recCtx, nil)
+			wopts.RecordToolCostEntries(ctx, reasonResult, opts.UserID, sessionID, wid)
 		}
 
 		// Check if reasoning indicates completion
@@ -551,6 +552,7 @@ func ReactLoop(
 					OutputTokens: outTok,
 					Metadata:     map[string]interface{}{"phase": "react_action"},
 				}).Get(recCtx, nil)
+				wopts.RecordToolCostEntries(ctx, actionResult, opts.UserID, sessionID, wid)
 			}
 
 			logger.Info("Observation recorded",
@@ -688,6 +690,7 @@ func ReactLoop(
 			OutputTokens: outTok,
 			Metadata:     map[string]interface{}{"phase": "react_synth"},
 		}).Get(recCtx, nil)
+		wopts.RecordToolCostEntries(ctx, finalResult, opts.UserID, sessionID, wid)
 	}
 
 	return &ReactLoopResult{

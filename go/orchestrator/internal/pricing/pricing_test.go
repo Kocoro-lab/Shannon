@@ -177,6 +177,43 @@ func TestCostForSplitWithCache(t *testing.T) {
 		})
 	}
 }
+
+func TestCostForSplit_SyntheticScraperModels(t *testing.T) {
+	mu.Lock()
+	initialized = false
+	loaded = nil
+	mu.Unlock()
+
+	tests := []struct {
+		model        string
+		outputTokens int
+		wantCost     float64
+		tolerance    float64
+	}{
+		// shannon_web_search: (3000/1000) * 0.005 = $0.015
+		{"shannon_web_search", 3000, 0.015, 0.001},
+		// shannon_google_ads: (3000/1000) * 0.005 = $0.015
+		{"shannon_google_ads", 3000, 0.015, 0.001},
+		// shannon_yahoo: (3000/1000) * 0.001333 ~ $0.004
+		{"shannon_yahoo", 3000, 0.004, 0.001},
+		// shannon_meta: (3000/1000) * 0.001333 ~ $0.004
+		{"shannon_meta", 3000, 0.004, 0.001},
+		// shannon_firecrawl: (3000/1000) * 0.000333 ~ $0.001
+		{"shannon_firecrawl", 3000, 0.001, 0.001},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			// Synthetic tools use 0 input tokens, all output
+			cost := CostForSplit(tt.model, 0, tt.outputTokens)
+			if math.Abs(cost-tt.wantCost) > tt.tolerance {
+				t.Errorf("CostForSplit(%s, 0, %d) = %f, want %f (±%f)",
+					tt.model, tt.outputTokens, cost, tt.wantCost, tt.tolerance)
+			}
+		})
+	}
+}
+
 // Helper function to check if floats are approximately equal
 func floatEquals(a, b float64) bool {
 	const epsilon = 1e-9

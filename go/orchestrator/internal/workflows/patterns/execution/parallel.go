@@ -360,6 +360,7 @@ func ExecuteParallel(
 									Metadata:     meta,
 								}).Get(recCtx, nil)
 							}
+							opts.RecordToolCostEntries(ctx, result, userID, sessionID, wid)
 						}
 
 						// Persist agent execution (fire-and-forget). Use parent workflow ID when available.

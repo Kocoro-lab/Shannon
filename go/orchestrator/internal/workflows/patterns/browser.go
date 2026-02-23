@@ -496,4 +496,5 @@ func recordBrowserTokenUsage(ctx workflow.Context, wfID, sessionID string, opts 
 		OutputTokens: outTok,
 		Metadata:     map[string]interface{}{"phase": "browser_action"},
 	}).Get(recCtx, nil)
+	wopts.RecordToolCostEntries(ctx, result, opts.UserID, sessionID, wfID)
 }

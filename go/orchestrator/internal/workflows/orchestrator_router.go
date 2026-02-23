@@ -369,6 +369,44 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 		// ── End HITL review ──
 
+		// Force research still needs token budget preflight so downstream
+		// pattern calls use budgeted execution paths and record tool costs.
+		// Version-gated: in-flight workflows started before this code must not
+		// encounter the new BudgetPreflight activity during replay.
+		forceResearchBudgetVersion := workflow.GetVersion(ctx, "force_research_budget_v1", workflow.DefaultVersion, 1)
+		if forceResearchBudgetVersion >= 1 && input.UserID != "" {
+			est := EstimateTokensWithConfig(activities.DecompositionResult{
+				ComplexityScore: 0.5,
+				Subtasks:        []activities.Subtask{{ID: "force_research-1"}},
+			}, &cfg)
+			if res, err := BudgetPreflight(ctx, input, est); err == nil && res != nil {
+				if !res.CanProceed {
+					scheduleStreamEnd(ctx)
+					out := TaskResult{Success: false, ErrorMessage: res.Reason, Metadata: map[string]interface{}{"budget_blocked": true}}
+					out = AddTaskContextToMetadata(out, input.Context)
+					return out, nil
+				}
+				if input.Context == nil {
+					input.Context = map[string]interface{}{}
+				}
+				input.Context["budget_remaining"] = res.RemainingTaskBudget
+				// ResearchWorkflow distributes budget internally; pass full remaining.
+				agentMax := res.RemainingTaskBudget
+				if v := os.Getenv("TOKEN_BUDGET_PER_AGENT"); v != "" {
+					if n, err := strconv.Atoi(v); err == nil && n > 0 && n < agentMax {
+						agentMax = n
+					}
+				}
+				if capv, ok := input.Context["token_budget_per_agent"].(int); ok && capv > 0 && capv < agentMax {
+					agentMax = capv
+				}
+				if capv, ok := input.Context["token_budget_per_agent"].(float64); ok && capv > 0 && int(capv) < agentMax {
+					agentMax = int(capv)
+				}
+				input.Context["budget_agent_max"] = agentMax
+			}
+		}
+
 		// Set parent workflow ID for unified event streaming (must be set before routing)
 		parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 		input.ParentWorkflowID = parentWorkflowID

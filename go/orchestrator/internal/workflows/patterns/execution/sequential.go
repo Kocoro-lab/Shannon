@@ -343,6 +343,7 @@ func ExecuteSequential(
 					Metadata:     meta,
 				}).Get(recCtx, nil)
 			}
+			opts.RecordToolCostEntries(ctx, result, userID, sessionID, wid)
 		}
 
 		// Emit completion event (parent workflow when available)

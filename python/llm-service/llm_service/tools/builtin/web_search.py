@@ -63,6 +63,27 @@ class SearchProvider(Enum):
     BING = "bing"
 
 
+# External API cost per search call (USD).
+# Recorded as 3000 synthetic tokens in token_usage.
+SEARCH_PROVIDER_COSTS: Dict[str, float] = {
+    SearchProvider.SERPAPI.value: 0.015,
+    SearchProvider.SERPER.value: 0.002,
+    SearchProvider.FIRECRAWL.value: 0.001,
+    SearchProvider.EXA.value: 0.003,
+    SearchProvider.GOOGLE.value: 0.005,
+    SearchProvider.BING.value: 0.005,
+}
+
+SEARCH_PROVIDER_MODELS: Dict[str, str] = {
+    SearchProvider.SERPAPI.value: "shannon_web_search",
+    SearchProvider.SERPER.value: "shannon_web_search",
+    SearchProvider.FIRECRAWL.value: "shannon_firecrawl",
+    SearchProvider.EXA.value: "shannon_web_search",
+    SearchProvider.GOOGLE.value: "shannon_web_search",
+    SearchProvider.BING.value: "shannon_web_search",
+}
+
+
 class WebSearchProvider:
     """Base class for web search providers"""
 
@@ -738,6 +759,7 @@ class WebSearchTool(Tool):
     """
 
     def __init__(self):
+        self._provider_enum_value: Optional[str] = None
         self.provider = self._initialize_provider()
         self.settings = Settings()
         super().__init__()
@@ -878,9 +900,11 @@ class WebSearchTool(Tool):
                         )
                     else:
                         logger.info(f"Initializing {provider_name} search provider")
+                        self._provider_enum_value = provider_name
                         return config["class"](api_key, search_engine_id)
                 else:
                     logger.info(f"Initializing {provider_name} search provider")
+                    self._provider_enum_value = provider_name
                     return config["class"](api_key)
             else:
                 logger.warning(
@@ -909,9 +933,11 @@ class WebSearchTool(Tool):
                         search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
                         if search_engine_id:
                             logger.info(f"Falling back to {name} search provider")
+                            self._provider_enum_value = name
                             return config["class"](api_key, search_engine_id)
                     else:
                         logger.info(f"Falling back to {name} search provider")
+                        self._provider_enum_value = name
                         return config["class"](api_key)
 
         logger.error(
@@ -1606,6 +1632,10 @@ class WebSearchTool(Tool):
                         "auto_fetch_total_chars": consumed_chars,
                     }
 
+            provider_value = self._provider_enum_value or "serpapi"
+            search_cost = SEARCH_PROVIDER_COSTS.get(provider_value, 0.001)
+            cost_model = SEARCH_PROVIDER_MODELS.get(provider_value, "shannon_web_search")
+
             return ToolResult(
                 success=True,
                 output={
@@ -1621,6 +1651,8 @@ class WebSearchTool(Tool):
                     "result_count": len(results),
                     "auto_fetch": auto_fetch_meta,
                 },
+                cost_usd=search_cost,
+                cost_model=cost_model,
             )
 
         except ValueError as e:

@@ -178,6 +178,7 @@ func ChainOfThought(
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "chain_of_thought"},
         }).Get(recCtx, nil)
+        wopts.RecordToolCostEntries(ctx, cotResult, opts.UserID, sessionID, wid)
     }
 
 	// Parse reasoning steps from response
@@ -270,6 +271,7 @@ func ChainOfThought(
                         OutputTokens: outTok,
                         Metadata:     map[string]interface{}{"phase": "chain_of_thought_clarify"},
                     }).Get(recCtx, nil)
+                    wopts.RecordToolCostEntries(ctx, clarifyResult, opts.UserID, sessionID, wid)
                 }
             }
         }

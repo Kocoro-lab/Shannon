@@ -74,10 +74,12 @@ class ToolResult:
     metadata: Optional[Dict[str, Any]] = None
     execution_time_ms: Optional[int] = None
     tokens_used: Optional[int] = None
+    cost_usd: Optional[float] = None
+    cost_model: Optional[str] = None  # synthetic model name for cost attribution
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
-        return {
+        d = {
             "success": self.success,
             "output": self.output,
             "error": self.error,
@@ -85,6 +87,11 @@ class ToolResult:
             "execution_time_ms": self.execution_time_ms,
             "tokens_used": self.tokens_used,
         }
+        if self.cost_usd is not None:
+            d["cost_usd"] = self.cost_usd
+        if self.cost_model is not None:
+            d["cost_model"] = self.cost_model
+        return d
 
     def to_json(self) -> str:
         """Convert to JSON string"""

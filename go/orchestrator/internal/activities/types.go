@@ -99,6 +99,7 @@ type AgentExecutionResult struct {
 	// Tools used and their outputs (when applicable)
 	ToolsUsed      []string        `json:"tools_used,omitempty"`
 	ToolExecutions []ToolExecution `json:"tool_executions,omitempty"`
+	Metadata       map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // ToolExecution summarizes a single tool invocation result returned by Agent-Core

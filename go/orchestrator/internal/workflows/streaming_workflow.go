@@ -214,6 +214,11 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		}).Get(recCtx, nil)
 	}
 
+	// Record tool-cost rows if streaming returned tool usage metadata.
+	if input.UserID != "" {
+		opts.RecordToolCostEntries(ctx, streamRes, input.UserID, input.SessionID, workflowID)
+	}
+
 	// Update session with token usage
 	if input.SessionID != "" {
 		var sessionUpdateResult activities.SessionUpdateResult
@@ -406,6 +411,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	if input.UserID != "" {
 		recCtx := opts.WithTokenRecordOptions(ctx)
 		for _, res := range results {
+			opts.RecordToolCostEntries(ctx, res, input.UserID, input.SessionID, workflowID)
 			// Skip zero-token runs to avoid noisy rows.
 			if res.TokensUsed <= 0 && res.InputTokens <= 0 && res.OutputTokens <= 0 {
 				continue
