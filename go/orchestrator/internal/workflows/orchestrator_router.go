@@ -219,6 +219,37 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		}
 	}
 
+	// Early route: skip_synthesis forces SimpleTaskWorkflow, bypassing decomposition.
+	// Used by flows that produce structured JSON
+	// and must not be rewritten by a synthesis LLM call.
+	skipSynthesisVersion := workflow.GetVersion(ctx, "skip_synthesis_early_route_v1", workflow.DefaultVersion, 1)
+	if skipSynthesisVersion >= 1 && GetContextBool(input.Context, "skip_synthesis") {
+		logger.Info("Early route: skip_synthesis forces SimpleTaskWorkflow")
+
+		wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+		input.ParentWorkflowID = wfID
+
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: wfID,
+			EventType:  activities.StreamEventDelegation,
+			AgentID:    "orchestrator",
+			Message:    activities.MsgHandoffSimple(),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		var result TaskResult
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, SimpleTaskWorkflow, input)
+		if err := childFuture.Get(ctx, &result); err != nil {
+			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
+		}
+		scheduleStreamEnd(ctx)
+		result = AddTaskContextToMetadata(result, input.Context)
+		return result, nil
+	}
+
 	// Early route: Force ResearchWorkflow bypasses decomposition entirely
 	// ResearchWorkflow has its own query refinement + decompose pipeline, so orchestrator-level
 	// decomposition is redundant and wastes LLM tokens.

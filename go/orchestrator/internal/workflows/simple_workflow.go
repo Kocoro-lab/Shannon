@@ -434,10 +434,13 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	totalTokens := result.TokensUsed
 
 	// Determine if synthesis is needed
+	skipSynthesis := GetContextBool(input.Context, "skip_synthesis")
 	needsSynthesis := false
-
-	// Check if web_search was used
-	if input.SuggestedTools != nil {
+	if skipSynthesis {
+		logger.Info("Synthesis skipped via context flag")
+	}
+	if !skipSynthesis && input.SuggestedTools != nil {
+		// Check if web_search was used
 		for _, tool := range input.SuggestedTools {
 			if strings.EqualFold(tool, "web_search") {
 				needsSynthesis = true
@@ -447,7 +450,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 
 	// Check if response looks like JSON
-	if !needsSynthesis {
+	if !needsSynthesis && !skipSynthesis {
 		trimmed := strings.TrimSpace(result.Response)
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 			needsSynthesis = true

@@ -47,6 +47,70 @@ def strip_markdown_json_wrapper(text: str, *, expect_json: bool) -> str:
     return body
 
 
+def _parse_history_entries(raw_history: Any) -> List[Dict[str, str]]:
+    """Parse chat history from context."""
+
+    messages: List[Dict[str, str]] = []
+
+    def add_entry(role_value: Any, content_value: Any) -> None:
+        role = str(role_value).strip().lower() if role_value is not None else ""
+        if role not in ("user", "assistant"):
+            return
+        content = str(content_value).replace("\\n", "\n") if content_value is not None else ""
+        messages.append({"role": role, "content": content})
+
+    if raw_history is None:
+        return messages
+
+    # New format: list of entries from Rust
+    if isinstance(raw_history, list):
+        for item in raw_history:
+            if isinstance(item, dict):
+                add_entry(item.get("role"), item.get("content"))
+                continue
+            if isinstance(item, str):
+                line = item.strip()
+                if not line:
+                    continue
+                if ": " in line:
+                    role, content = line.split(": ", 1)
+                    add_entry(role, content)
+        return messages
+
+    if not isinstance(raw_history, str):
+        return messages
+
+    # Legacy format: multi-line "role: content" entries
+    lines = raw_history.strip().split("\n")
+    current_role: Optional[str] = None
+    current_content: List[str] = []
+
+    def flush_current() -> None:
+        nonlocal current_role, current_content
+        if current_role is None:
+            return
+        add_entry(current_role, "\n".join(current_content))
+        current_role = None
+        current_content = []
+
+    for line in lines:
+        if line.startswith("user: "):
+            flush_current()
+            current_role = "user"
+            current_content = [line[len("user: "):]]
+            continue
+        if line.startswith("assistant: "):
+            flush_current()
+            current_role = "assistant"
+            current_content = [line[len("assistant: "):]]
+            continue
+        if current_role is not None:
+            current_content.append(line)
+
+    flush_current()
+    return messages
+
+
 def _response_format_expects_json(response_format: Any) -> bool:
     if not isinstance(response_format, dict):
         return False
@@ -1036,28 +1100,17 @@ async def agent_query(request: Request, query: AgentQuery):
                 f"Context keys: {list(query.context.keys()) if isinstance(query.context, dict) else 'Invalid context type'}"
             )
             if query.context and "history" in query.context:
-                history_str = str(query.context.get("history", ""))
-                logger.info(
-                    f"History string length: {len(history_str)}, preview: {history_str[:100] if history_str else 'Empty'}"
-                )
-                if history_str:
-                    # Parse the history string format: "role: content\n"
-                    for line in history_str.strip().split("\n"):
-                        if ": " in line:
-                            role, content = line.split(": ", 1)
-                            # Only add user and assistant messages to maintain conversation flow
-                            if role.lower() in ["user", "assistant"]:
-                                messages.append(
-                                    {"role": role.lower(), "content": content}
-                                )
-                                history_rehydrated = True
+                raw_history = query.context.get("history")
+                history_entries = _parse_history_entries(raw_history)
+                logger.info(f"Parsed history entries: {len(history_entries)}")
+                for item in history_entries:
+                    messages.append({"role": item["role"], "content": item["content"]})
+                    history_rehydrated = True
 
-                    # Remove history from context to avoid duplication
-                    context_without_history = {
-                        k: v for k, v in query.context.items() if k != "history"
-                    }
-                else:
-                    context_without_history = query.context
+                # Remove history from context to avoid duplication
+                context_without_history = {
+                    k: v for k, v in query.context.items() if k != "history"
+                }
             else:
                 context_without_history = query.context if query.context else {}
 
@@ -3779,20 +3832,18 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # Rehydrate history from context if present (same as agent_query endpoint)
         history_rehydrated = False
+        context_without_history = query.context if query.context else {}
         if query.context and "history" in query.context:
-            history_str = str(query.context.get("history", ""))
-            if history_str:
-                # Parse the history string format: "role: content\n"
-                for line in history_str.strip().split("\n"):
-                    if ": " in line:
-                        role, content = line.split(": ", 1)
-                        # Only add user and assistant messages to maintain conversation flow
-                        if role.lower() in ["user", "assistant"]:
-                            messages.append({"role": role.lower(), "content": content})
-                            history_rehydrated = True
+            history_entries = _parse_history_entries(query.context.get("history"))
+            for item in history_entries:
+                messages.append({"role": item["role"], "content": item["content"]})
+                history_rehydrated = True
+            context_without_history = {
+                k: v for k, v in query.context.items() if k != "history"
+            }
 
         # Add the current query
-        ctx_keys = list(query.context.keys())[:5] if isinstance(query.context, dict) else []
+        ctx_keys = list(context_without_history.keys())[:5] if isinstance(context_without_history, dict) else []
         tools = ",".join(query.allowed_tools or [])
         user = (
             f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"

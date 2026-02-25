@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
@@ -33,7 +34,8 @@ func GetContextString(ctx map[string]interface{}, key string) string {
 func convertHistoryForAgent(messages []Message) []string {
 	result := make([]string, len(messages))
 	for i, msg := range messages {
-		result[i] = fmt.Sprintf("%s: %s", msg.Role, msg.Content)
+		content := strings.ReplaceAll(msg.Content, "\n", "\\n")
+		result[i] = fmt.Sprintf("%s: %s", msg.Role, content)
 	}
 	return result
 }

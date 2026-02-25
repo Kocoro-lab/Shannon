@@ -15,7 +15,8 @@ import (
 func convertHistoryForAgent(history []Message) []string {
 	result := make([]string, len(history))
 	for i, msg := range history {
-		result[i] = fmt.Sprintf("%s: %s", msg.Role, msg.Content)
+		content := strings.ReplaceAll(msg.Content, "\n", "\\n")
+		result[i] = fmt.Sprintf("%s: %s", msg.Role, content)
 	}
 	return result
 }

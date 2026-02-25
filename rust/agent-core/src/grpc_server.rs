@@ -1005,9 +1005,13 @@ impl AgentService for AgentServiceImpl {
 
                 if let Some(session_ctx) = &req.session_context {
                     if !session_ctx.history.is_empty() {
-                        let hist = session_ctx.history.join("\n");
+                        let hist = session_ctx
+                            .history
+                            .iter()
+                            .map(|s| serde_json::Value::String(s.clone()))
+                            .collect::<Vec<serde_json::Value>>();
                         if let Some(obj) = ctx_json.as_object_mut() {
-                            obj.insert("history".to_string(), serde_json::Value::String(hist));
+                            obj.insert("history".to_string(), serde_json::Value::Array(hist));
                         }
                     }
                 }
@@ -1136,9 +1140,13 @@ impl AgentService for AgentServiceImpl {
         let mut ctx_json = serde_json::json!({});
         if let Some(session_ctx) = &req.session_context {
             if !session_ctx.history.is_empty() {
-                let hist = session_ctx.history.join("\n");
+                let hist = session_ctx
+                    .history
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect::<Vec<serde_json::Value>>();
                 if let Some(obj) = ctx_json.as_object_mut() {
-                    obj.insert("history".to_string(), serde_json::Value::String(hist));
+                    obj.insert("history".to_string(), serde_json::Value::Array(hist));
                 }
             }
         }
@@ -1256,9 +1264,13 @@ impl AgentService for AgentServiceImpl {
         }
         if let Some(session_ctx) = &req.session_context {
             if !session_ctx.history.is_empty() {
-                let hist = session_ctx.history.join("\n");
+                let hist = session_ctx
+                    .history
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect::<Vec<serde_json::Value>>();
                 if let Some(obj) = ctx_json.as_object_mut() {
-                    obj.insert("history".to_string(), serde_json::Value::String(hist));
+                    obj.insert("history".to_string(), serde_json::Value::Array(hist));
                 }
             }
         }

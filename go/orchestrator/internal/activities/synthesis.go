@@ -80,6 +80,77 @@ func sanitizeAgentOutput(text string) string {
 	return strings.TrimSpace(strings.Join(result, "\n"))
 }
 
+func extractFirstJSONResponse(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	// If markdown fences wrap the payload, prefer the fenced body first.
+	if strings.HasPrefix(trimmed, "```") {
+		parts := strings.SplitN(trimmed, "\n", 2)
+		if len(parts) == 2 {
+			fence := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(parts[0], "```")))
+			if fence == "" || fence == "json" {
+				body := strings.TrimSpace(parts[1])
+				if strings.HasSuffix(body, "```") {
+					trimmed = strings.TrimSpace(strings.TrimSuffix(body, "```"))
+				}
+			}
+		}
+	}
+
+	for i, ch := range trimmed {
+		if ch != '{' && ch != '[' {
+			continue
+		}
+		openChar := ch
+		closeChar := byte(']')
+		if openChar == '{' {
+			closeChar = byte('}')
+		}
+
+		stack := []byte{byte(closeChar)}
+		inString := false
+		escaped := false
+		for j := i + 1; j < len(trimmed); j++ {
+			c := trimmed[j]
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if c == '\\' {
+					escaped = true
+					continue
+				}
+				if c == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '{':
+				stack = append(stack, '}')
+			case '[':
+				stack = append(stack, ']')
+			default:
+				if len(stack) > 0 && c == stack[len(stack)-1] {
+					stack = stack[:len(stack)-1]
+					if len(stack) == 0 {
+						return strings.TrimSpace(trimmed[i : j+1])
+					}
+				}
+			}
+		}
+		break
+	}
+
+	return ""
+}
+
 // normalizeLanguage maps language codes to the full language name used in prompts
 func normalizeLanguage(lang string) string {
 	l := strings.ToLower(strings.TrimSpace(lang))
@@ -1495,6 +1566,13 @@ Section requirements:
 	// Apply report formatting to ensure all citations appear in Sources
 	// Use savedCitations (preserved before deletion) instead of input.Context
 	finalResponse := out.Response
+	if input.Context != nil {
+		if skipSynth, ok := input.Context["skip_synthesis"].(bool); ok && skipSynth {
+			if extracted := extractFirstJSONResponse(finalResponse); extracted != "" {
+				finalResponse = extracted
+			}
+		}
+	}
 	if savedCitations != "" {
 		finalResponse = formatting.FormatReportWithCitations(finalResponse, savedCitations)
 	}
