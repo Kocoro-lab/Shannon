@@ -1470,7 +1470,48 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						output = tr.Output.AsInterface()
 					}
 
-					publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
+					// Emit TOOL_OBSERVATION event with human-readable message
+					if wfID != "" && toolName != "" {
+						var msg string
+						if tr.Status == commonpb.StatusCode_STATUS_CODE_OK {
+							// Format output for human-readable message
+							outputStr := ""
+							if output != nil {
+								if str, ok := output.(string); ok {
+									outputStr = str
+								} else if bytes, err := json.Marshal(output); err == nil {
+									outputStr = string(bytes)
+								}
+							}
+							msg = MsgToolCompleted(toolName, outputStr)
+						} else {
+							msg = MsgToolFailed(toolName)
+						}
+
+						payload := map[string]interface{}{
+							"tool":    toolName,
+							"success": tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
+						}
+						if toolName == "browser" && output != nil {
+							if outputMap, ok := output.(map[string]interface{}); ok {
+								if _, hasScreenshot := outputMap["screenshot"]; hasScreenshot {
+									payload["output"] = output
+								}
+							}
+						}
+						if tr.ErrorMessage != "" {
+							payload["error"] = tr.ErrorMessage
+						}
+
+						streaming.Get().Publish(wfID, streaming.Event{
+							WorkflowID: wfID,
+							Type:       string(StreamEventToolObs),
+							AgentID:    input.AgentID,
+							Message:    msg,
+							Payload:    payload,
+							Timestamp:  time.Now(),
+						})
+					}
 
 					toolExecs = append(toolExecs, ToolExecution{
 						Tool:       toolName,

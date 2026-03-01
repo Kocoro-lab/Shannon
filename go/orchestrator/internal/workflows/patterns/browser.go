@@ -321,13 +321,50 @@ func buildBrowserAgentPrompt(query string, actions []string, observations []stri
 
 	sb.WriteString("INSTRUCTIONS:\n")
 	sb.WriteString("1. Decide what action to take next to progress toward the goal\n")
-	sb.WriteString("2. Use the appropriate browser tool (browser_navigate, browser_click, browser_type, browser_screenshot, etc.)\n")
+	sb.WriteString("2. Use the browser tool with the appropriate action parameter (e.g. browser(action=\"navigate\", url=\"...\"), browser(action=\"click\", selector=\"...\"), browser(action=\"screenshot\"))\n")
 	sb.WriteString("3. If the task is complete, summarize what was accomplished\n")
-	sb.WriteString("4. If you need to see the current page, use browser_screenshot\n")
+	sb.WriteString("4. If you need to see the current page, use browser(action=\"screenshot\")\n")
+	sb.WriteString("5. Keep your response concise - focus on the action, not lengthy explanations\n\n")
+
+	return sb.String()
+}
+
+func buildBrowserAgentPromptV2(query string, actions []string, observations []string, iteration int) string {
+	var sb strings.Builder
+
+	sb.WriteString("You are a browser automation agent. Analyze the current page state and take the next action to complete the task.\n\n")
+	sb.WriteString(fmt.Sprintf("TASK: %s\n\n", query))
+
+	if len(actions) > 0 {
+		sb.WriteString("PREVIOUS ACTIONS:\n")
+		for i, a := range actions {
+			// Only show last 5 actions to save context
+			if i >= len(actions)-5 {
+				sb.WriteString(fmt.Sprintf("- %s\n", truncateStringBrowser(a, 200)))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(observations) > 0 {
+		sb.WriteString("CURRENT STATE (from previous tool results):\n")
+		for _, obs := range observations {
+			sb.WriteString(fmt.Sprintf("- %s\n", truncateStringBrowser(obs, 300)))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("INSTRUCTIONS:\n")
+	sb.WriteString("1. Decide what action to take next to progress toward the goal\n")
+	sb.WriteString("2. Use the browser tool with the appropriate action (e.g. browser(action=\"navigate\", url=\"...\"), browser(action=\"extract\", selector=\"...\"), browser(action=\"click\", selector=\"...\"))\n")
+	sb.WriteString("3. If you need page content (for reading/summarizing), use browser(action=\"extract\") — browser(action=\"navigate\") only returns url/title\n")
+	sb.WriteString("4. If the task is complete, summarize what was accomplished and say \"Task completed\"\n")
 	sb.WriteString("5. Keep your response concise - focus on the action, not lengthy explanations\n\n")
 
 	if iteration == 0 {
-		sb.WriteString("This is the first iteration. Start by navigating to the target page or taking a screenshot to understand the current state.\n")
+		sb.WriteString("This is the first iteration. Start by navigating to the target page.\n")
+	} else if iteration == 1 {
+		sb.WriteString("If the page is loaded, use browser(action=\"extract\") to get the content before summarizing.\n")
 	}
 
 	return sb.String()
@@ -342,29 +379,43 @@ func buildObservationFromTools(toolExecs []activities.ToolExecution) string {
 	var parts []string
 	for _, te := range toolExecs {
 		if te.Success {
-			// Compact success message
-			switch te.Tool {
-			case "browser_navigate":
-				if output, ok := te.Output.(map[string]interface{}); ok {
+			output, _ := te.Output.(map[string]interface{})
+			action := ""
+			if output != nil {
+				if a, ok := output["action"].(string); ok {
+					action = a
+				}
+			}
+
+			switch action {
+			case "navigate":
+				if output != nil {
 					title := output["title"]
 					url := output["url"]
 					parts = append(parts, fmt.Sprintf("Navigated to: %s (%s)", title, url))
 				} else {
-					parts = append(parts, fmt.Sprintf("%s: success", te.Tool))
+					parts = append(parts, "Navigation completed")
 				}
-			case "browser_click":
+			case "click":
 				parts = append(parts, "Click action completed")
-			case "browser_type":
+			case "type":
 				parts = append(parts, "Text input completed")
-			case "browser_screenshot":
-				// Don't include screenshot data - it's emitted separately
+			case "screenshot":
 				parts = append(parts, "Screenshot captured (see UI)")
-			case "browser_extract":
-				if output, ok := te.Output.(map[string]interface{}); ok {
+			case "extract":
+				if output != nil {
 					if content, ok := output["content"].(string); ok {
 						parts = append(parts, fmt.Sprintf("Extracted: %s", truncateStringBrowser(content, 500)))
+					} else {
+						parts = append(parts, "Content extracted")
 					}
 				}
+			case "scroll":
+				parts = append(parts, "Scrolled")
+			case "wait":
+				parts = append(parts, "Wait completed")
+			case "close":
+				parts = append(parts, "Browser session closed")
 			default:
 				parts = append(parts, fmt.Sprintf("%s: success", te.Tool))
 			}
@@ -413,14 +464,12 @@ func hasToolExecutionBrowser(toolExecs []activities.ToolExecution) bool {
 
 // responseIndicatesToolUse checks if the response contains patterns indicating a browser tool was used
 func responseIndicatesToolUse(response string) bool {
-	// Browser tool result patterns
 	toolPatterns := []string{
-		"browser_navigate result",
-		"browser_click result",
-		"browser_type result",
-		"browser_screenshot result",
-		"browser_extract result",
-		"browser_scroll result",
+		"browser result",
+		"action=\"navigate\"",
+		"action=\"click\"",
+		"action=\"extract\"",
+		"action=\"screenshot\"",
 		"navigated to",
 		"clicked on",
 		"screenshot captured",

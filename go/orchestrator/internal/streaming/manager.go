@@ -655,7 +655,7 @@ func sanitizeEventPayload(payload map[string]interface{}) map[string]interface{}
 
 		switch val := v.(type) {
 		case string:
-			// Handle raw base64 values directly (common for browser_screenshot payloads).
+			// Handle raw base64 values directly (common for browser action=screenshot payloads).
 			if (key == "screenshot" || key == "popup_screenshot") && len(val) > 1024 {
 				return "[BASE64_IMAGE_TRUNCATED]"
 			}
@@ -676,6 +676,50 @@ func sanitizeEventPayload(payload map[string]interface{}) map[string]interface{}
 	sanitized := make(map[string]interface{}, len(payload))
 	for k, v := range payload {
 		sanitized[k] = sanitizeValue(k, v, 0)
+	}
+	return sanitized
+}
+
+// sanitizePayloadForPersistence removes large data (e.g., base64 screenshots) from payloads
+// before persisting to Postgres. The full payload is still available via Redis/SSE for real-time UI.
+func sanitizePayloadForPersistence(eventType string, payload map[string]interface{}) map[string]interface{} {
+	if payload == nil {
+		return nil
+	}
+
+	// Only TOOL_OBSERVATION with screenshot data needs sanitization
+	if eventType != "TOOL_OBSERVATION" {
+		return payload
+	}
+
+	// Check if this is a browser screenshot tool result
+	tool, hasT := payload["tool"].(string)
+	output, hasO := payload["output"].(map[string]interface{})
+	if !hasT || !hasO || tool != "browser" {
+		return payload
+	}
+	// Only sanitize if output contains screenshot data
+	if _, hasScreenshot := output["screenshot"]; !hasScreenshot {
+		return payload
+	}
+
+	// Deep copy payload and strip screenshot base64
+	sanitized := make(map[string]interface{})
+	for k, v := range payload {
+		if k == "output" {
+			// Create sanitized output without screenshot base64
+			sanitizedOutput := make(map[string]interface{})
+			for ok, ov := range output {
+				if ok == "screenshot" {
+					sanitizedOutput[ok] = "[BASE64_STRIPPED_FOR_PERSISTENCE]"
+				} else {
+					sanitizedOutput[ok] = ov
+				}
+			}
+			sanitized[k] = sanitizedOutput
+		} else {
+			sanitized[k] = v
+		}
 	}
 	return sanitized
 }

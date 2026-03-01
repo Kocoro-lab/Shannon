@@ -21,19 +21,9 @@ try:
 except ImportError:
     _HAS_ADS_TOOLS = False
 
-# Browser automation tools
+# Browser automation tool
 try:
-    from .browser_use import (
-        BrowserNavigateTool,
-        BrowserClickTool,
-        BrowserTypeTool,
-        BrowserScreenshotTool,
-        BrowserExtractTool,
-        BrowserScrollTool,
-        BrowserWaitTool,
-        BrowserEvaluateTool,
-        BrowserCloseTool,
-    )
+    from .browser_use import BrowserTool
     _HAS_BROWSER_TOOLS = True
 except ImportError:
     _HAS_BROWSER_TOOLS = False
@@ -62,16 +52,6 @@ if _HAS_ADS_TOOLS:
         "AdsCreativeAnalyzeTool",
     ])
 
-# Add browser tools to exports if available
+# Add browser tool to exports if available
 if _HAS_BROWSER_TOOLS:
-    __all__.extend([
-        "BrowserNavigateTool",
-        "BrowserClickTool",
-        "BrowserTypeTool",
-        "BrowserScreenshotTool",
-        "BrowserExtractTool",
-        "BrowserScrollTool",
-        "BrowserWaitTool",
-        "BrowserEvaluateTool",
-        "BrowserCloseTool",
-    ])
+    __all__.append("BrowserTool")

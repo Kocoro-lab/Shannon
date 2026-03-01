@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncio
 
 from llm_service.tools.builtin.web_fetch import WebFetchTool
-from llm_service.tools.base import ToolResult
+from llm_service.tools.base import ToolResult, ToolParameterType
 
 
 class TestWebFetchParameterValidation:
@@ -295,6 +295,16 @@ class TestWebFetchToolMetadata:
 
         assert "concurrency" in param_names
         assert "total_chars_cap" in param_names
+
+    def test_extract_prompt_parameter_exists(self):
+        """Test that tool schema includes extract_prompt parameter"""
+        tool = WebFetchTool()
+        param_names = [p.name for p in tool.parameters]
+        assert "extract_prompt" in param_names
+
+        ep_param = next(p for p in tool.parameters if p.name == "extract_prompt")
+        assert ep_param.required is False
+        assert ep_param.type == ToolParameterType.STRING
 
     def test_tool_description_mentions_batch_mode(self):
         """Test that tool description explains batch mode"""

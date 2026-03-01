@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
-from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reuse blocked detection and noise cleaning logic
+from .web_fetch import detect_blocked_reason, clean_markdown_noise, apply_extraction, EXTRACTION_INTERNAL_MAX  # P0-A: Reuse blocked detection and noise cleaning logic
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +188,16 @@ class WebSubpageFetchTool(Tool):
                 min_value=1000,
                 max_value=50000,
             ),
+            ToolParameter(
+                name="extract_prompt",
+                type=ToolParameterType.STRING,
+                description=(
+                    "When set, uses a small model to extract relevant information "
+                    "instead of blind truncation. Provide what you need from the page. "
+                    "Example: 'Extract team members, roles, and company history'"
+                ),
+                required=False,
+            ),
         ]
 
     async def _execute_impl(
@@ -206,6 +216,8 @@ class WebSubpageFetchTool(Tool):
             target_paths = []
         target_paths = [p for p in target_paths if isinstance(p, str)]
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
+        extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
+        internal_max_length = EXTRACTION_INTERNAL_MAX
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")
@@ -245,16 +257,19 @@ class WebSubpageFetchTool(Tool):
         if self.firecrawl_available:
             try:
                 result, scrape_meta = await self._map_and_scrape(
-                    url, limit, target_keywords, target_paths, max_length
+                    url, limit, target_keywords, target_paths, internal_max_length
                 )
-                return ToolResult(
-                    success=True,
-                    output=result,
-                    metadata={
-                        "provider": "firecrawl",
-                        "strategy": "map_and_scrape",
-                        **scrape_meta,
-                    }
+                return await apply_extraction(
+                    ToolResult(
+                        success=True,
+                        output=result,
+                        metadata={
+                            "provider": "firecrawl",
+                            "strategy": "map_and_scrape",
+                            **scrape_meta,
+                        }
+                    ),
+                    extract_prompt, max_length,
                 )
             except Exception as e:
                 last_error = f"Firecrawl map+scrape failed: {e}"
@@ -265,21 +280,24 @@ class WebSubpageFetchTool(Tool):
         if self.exa_api_key:
             try:
                 result = await self._fetch_with_exa(
-                    url, limit, target_keywords, target_paths, max_length
+                    url, limit, target_keywords, target_paths, internal_max_length
                 )
-                return ToolResult(
-                    success=True,
-                    output=result,
-                    metadata={
-                        "provider": "exa",
-                        "strategy": "subpage_search",
-                        "urls_requested": [url],
-                        "urls_attempted": [url],
-                        "urls_succeeded": [url],
-                        "urls_failed": [],
-                        "partial_success": False,
-                        "failure_summary": {"failed_count": 0, "total_count": 1},
-                    }
+                return await apply_extraction(
+                    ToolResult(
+                        success=True,
+                        output=result,
+                        metadata={
+                            "provider": "exa",
+                            "strategy": "subpage_search",
+                            "urls_requested": [url],
+                            "urls_attempted": [url],
+                            "urls_succeeded": [url],
+                            "urls_failed": [],
+                            "partial_success": False,
+                            "failure_summary": {"failed_count": 0, "total_count": 1},
+                        }
+                    ),
+                    extract_prompt, max_length,
                 )
             except Exception as e:
                 error_msg = f"Exa fallback failed: {e}"

@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
-from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reuse blocked detection and noise cleaning logic
+from .web_fetch import detect_blocked_reason, clean_markdown_noise, apply_extraction, EXTRACTION_INTERNAL_MAX  # P0-A: Reuse blocked detection and noise cleaning logic
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,16 @@ class WebCrawlTool(Tool):
                 min_value=1000,
                 max_value=30000,
             ),
+            ToolParameter(
+                name="extract_prompt",
+                type=ToolParameterType.STRING,
+                description=(
+                    "When set, uses a small model to extract relevant information "
+                    "instead of blind truncation. Provide what you need from the page. "
+                    "Example: 'Extract all blog post titles, dates, and summaries'"
+                ),
+                required=False,
+            ),
         ]
 
     async def _execute_impl(
@@ -132,6 +142,8 @@ class WebCrawlTool(Tool):
         url = kwargs.get("url")
         limit = kwargs.get("limit", DEFAULT_LIMIT)
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
+        extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
+        internal_max_length = EXTRACTION_INTERNAL_MAX
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")
@@ -171,19 +183,22 @@ class WebCrawlTool(Tool):
             )
 
         try:
-            result = await self._crawl(url, limit, max_length)
-            return ToolResult(
-                success=True,
-                output=result,
-                metadata={
-                    "provider": "firecrawl",
-                    "strategy": "crawl",
-                    "partial_success": False,
-                    "urls_attempted": [url],
-                    "urls_succeeded": [url],
-                    "urls_failed": [],
-                    "failure_summary": {"failed_count": 0, "total_count": 1},
-                },
+            result = await self._crawl(url, limit, internal_max_length)
+            return await apply_extraction(
+                ToolResult(
+                    success=True,
+                    output=result,
+                    metadata={
+                        "provider": "firecrawl",
+                        "strategy": "crawl",
+                        "partial_success": False,
+                        "urls_attempted": [url],
+                        "urls_succeeded": [url],
+                        "urls_failed": [],
+                        "failure_summary": {"failed_count": 0, "total_count": 1},
+                    },
+                ),
+                extract_prompt, max_length,
             )
         except Exception as e:
             logger.error(f"Crawl failed: {e}")

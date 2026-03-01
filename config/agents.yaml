@@ -1,0 +1,15 @@
+# Shannon Agents Configuration
+# Single-purpose deterministic agents that wrap individual tools
+# Each agent exposes one tool via both Shannon API and OpenAI-compatible API
+
+version: "1.0"
+
+# Agent definitions
+agents: {}
+
+# Global settings
+settings:
+  default_timeout_seconds: 120
+  max_concurrent_agents: 5
+  enable_caching: true
+  cache_ttl_seconds: 900  # 15 minutes

@@ -25,33 +25,36 @@ from ..tools.builtin import (
     PythonWasiExecutorTool,
 )
 
-# Optional: browser automation tools (graceful fallback if not present)
+# Optional tools (may not be present in all editions)
+try:
+    from ..tools.builtin import DiffFilesTool, JsonQueryTool
+    _HAS_EXTRA_TOOLS = True
+except ImportError:
+    _HAS_EXTRA_TOOLS = False
+
+# Ads tools (enterprise version only - gracefully degrade if not present)
 try:
     from ..tools.builtin import (
-        BrowserNavigateTool,
-        BrowserClickTool,
-        BrowserTypeTool,
-        BrowserScreenshotTool,
-        BrowserExtractTool,
-        BrowserScrollTool,
-        BrowserWaitTool,
-        BrowserEvaluateTool,
-        BrowserCloseTool,
+        AdsSerpExtractTool,
+        AdsTransparencySearchTool,
+        AdsCompetitorDiscoverTool,
+        LPVisualAnalyzeTool,
+        LPBatchAnalyzeTool,
+        AdsCreativeAnalyzeTool,
+        YahooJPAdsDiscoverTool,
+        MetaAdLibrarySearchTool,
+        PageScreenshotTool,
     )
+    _HAS_ADS_TOOLS = True
+except ImportError:
+    _HAS_ADS_TOOLS = False
 
-    _BROWSER_TOOLS = [
-        BrowserNavigateTool,
-        BrowserClickTool,
-        BrowserTypeTool,
-        BrowserScreenshotTool,
-        BrowserExtractTool,
-        BrowserScrollTool,
-        BrowserWaitTool,
-        BrowserEvaluateTool,
-        BrowserCloseTool,
-    ]
-except Exception:
-    _BROWSER_TOOLS = []
+# Browser automation tool (requires playwright service)
+try:
+    from ..tools.builtin import BrowserTool
+    _HAS_BROWSER_TOOLS = True
+except ImportError:
+    _HAS_BROWSER_TOOLS = False
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -220,6 +223,10 @@ def _sanitize_session_context(ctx: Optional[Dict[str, Any]]) -> Optional[Dict[st
     """Pass through only safe, expected keys to tools.
 
     Keeps: session_id, user_id, prompt_params, tool_parameters.
+
+    Note: allow_browser_evaluate is intentionally NOT in any allowlist.
+    The browser evaluate action is disabled at both API paths (here and
+    agent.py safe_keys). To enable it, add to both allowlists.
     """
     if not isinstance(ctx, dict):
         return None
@@ -342,7 +349,8 @@ async def startup_event():
         BashExecutorTool,
         PythonWasiExecutorTool,
     ]
-    tools_to_register.extend(_BROWSER_TOOLS)
+    if _HAS_EXTRA_TOOLS:
+        tools_to_register.extend([DiffFilesTool, JsonQueryTool])
 
     for tool_class in tools_to_register:
         try:
@@ -372,6 +380,21 @@ async def startup_event():
         )
     except Exception as e:
         logger.warning(f"GA4 tools not available: {e}")
+
+    # Load financial news tools (optional - requires API keys)
+    try:
+        from ..tools.vendor_adapters.financial import register_financial_tools
+        register_financial_tools(registry)
+    except Exception as e:
+        logger.warning(f"Financial tools not available: {e}")
+
+    # Register browser automation tool if available
+    if _HAS_BROWSER_TOOLS:
+        try:
+            registry.register(BrowserTool)
+            logger.info("Registered browser automation tool: BrowserTool")
+        except Exception as e:
+            logger.error(f"Failed to register BrowserTool: {e}")
 
     logger.info(f"Tool registry initialized with {len(registry.list_tools())} tools")
 
