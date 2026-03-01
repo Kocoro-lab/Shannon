@@ -1167,7 +1167,7 @@ class _RedisCacheManager:
 
 
 def _serialize_response(resp: CompletionResponse) -> Dict[str, Any]:
-    return {
+    data = {
         "content": resp.content,
         "model": resp.model,
         "provider": resp.provider,
@@ -1186,6 +1186,9 @@ def _serialize_response(resp: CompletionResponse) -> Dict[str, Any]:
         if getattr(resp, "created_at", None)
         else None,
     }
+    if getattr(resp, "tool_calls", None):
+        data["tool_calls"] = resp.tool_calls
+    return data
 
 
 def _deserialize_response(data: Dict[str, Any]) -> CompletionResponse:
@@ -1202,6 +1205,7 @@ def _deserialize_response(data: Dict[str, Any]) -> CompletionResponse:
         usage=usage,
         finish_reason=str(data.get("finish_reason", "stop")),
         function_call=data.get("function_call"),
+        tool_calls=data.get("tool_calls"),
         request_id=data.get("request_id"),
         latency_ms=int(data.get("latency_ms"))
         if data.get("latency_ms") is not None

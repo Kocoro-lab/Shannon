@@ -1,15 +1,22 @@
+import json
+import logging
+
 from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 from ..providers.base import ModelTier
+from llm_provider.base import extract_text_from_content
 from ..metrics import metrics, TimedOperation
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
 class CompletionRequest(BaseModel):
-    messages: List[Dict[str, str]]
+    messages: List[Dict[str, Any]]
     model_tier: Optional[str] = Field(
         default="small", description="Model tier: small, medium, large"
     )
@@ -17,9 +24,12 @@ class CompletionRequest(BaseModel):
         default=None, description="Specific model to use"
     )
     temperature: Optional[float] = Field(default=0.7, ge=0.0, le=2.0)
-    max_tokens: Optional[int] = Field(default=2000, ge=1, le=32000)
+    max_tokens: Optional[int] = Field(default=8192, ge=1, le=32000)
     tools: Optional[List[dict]] = None
     cache_key: Optional[str] = None
+    stream: Optional[bool] = Field(default=False, description="Enable SSE streaming")
+    thinking: Optional[Dict[str, Any]] = Field(default=None, description="Anthropic extended thinking config")
+    reasoning_effort: Optional[str] = Field(default=None, description="OpenAI reasoning effort (minimal/low/medium/high)")
 
 
 @router.post("/")
@@ -34,7 +44,7 @@ async def generate_completion(request: Request, body: CompletionRequest):
             user_text = ""
             for m in reversed(body.messages or []):
                 if m.get("role") == "user":
-                    user_text = m.get("content") or ""
+                    user_text = extract_text_from_content(m.get("content", ""))
                     break
             reply = (
                 "(mock) I received your request and would normally ask the configured LLM. "
@@ -71,6 +81,17 @@ async def generate_completion(request: Request, body: CompletionRequest):
                 status_code=400, detail=f"Invalid model tier: {body.model_tier}"
             )
 
+    if body.stream:
+        return StreamingResponse(
+            _stream_completion(request, body, providers, tier),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     with TimedOperation("llm_completion", "llm") as timer:
         try:
             wf_id = (
@@ -91,6 +112,8 @@ async def generate_completion(request: Request, body: CompletionRequest):
                 tools=body.tools,
                 workflow_id=wf_id,
                 agent_id=ag_id,
+                thinking=body.thinking,
+                reasoning_effort=body.reasoning_effort,
             )
         except Exception as e:
             metrics.record_error("CompletionError", "llm")
@@ -117,3 +140,71 @@ async def generate_completion(request: Request, body: CompletionRequest):
     )
 
     return result
+
+
+async def _stream_completion(request, body, providers, tier):
+    """SSE generator for streaming completions."""
+    import time
+
+    start_time = time.time()
+    full_text = ""
+    final_meta = None
+
+    try:
+        async for chunk in providers.stream_completion(
+            messages=body.messages,
+            tier=tier,
+            specific_model=body.specific_model,
+            temperature=body.temperature,
+            max_tokens=body.max_tokens,
+            tools=body.tools,
+            thinking=body.thinking,
+            reasoning_effort=body.reasoning_effort,
+        ):
+            if isinstance(chunk, str):
+                full_text += chunk
+                event = {"type": "content_delta", "text": chunk}
+                yield f"data: {json.dumps(event)}\n\n"
+            elif isinstance(chunk, dict):
+                # Final metadata from provider (usage, model, function_calls)
+                final_meta = chunk
+
+        # Build the done event with full response
+        done_event = {
+            "type": "done",
+            "output_text": full_text,
+        }
+
+        if final_meta:
+            done_event["provider"] = final_meta.get("provider", "unknown")
+            done_event["model"] = final_meta.get("model", "unknown")
+            done_event["usage"] = final_meta.get("usage")
+            if final_meta.get("finish_reason"):
+                done_event["finish_reason"] = final_meta["finish_reason"]
+            if final_meta.get("function_call"):
+                done_event["function_call"] = final_meta["function_call"]
+            if final_meta.get("function_calls"):
+                done_event["tool_calls"] = final_meta["function_calls"]
+
+        yield f"data: {json.dumps(done_event)}\n\n"
+        yield "data: [DONE]\n\n"
+
+        # Record metrics
+        duration = time.time() - start_time
+        usage = (final_meta or {}).get("usage", {})
+        metrics.record_llm_request(
+            provider=(final_meta or {}).get("provider", "unknown"),
+            model=(final_meta or {}).get("model", "unknown"),
+            tier=body.model_tier or "unknown",
+            cache_hit=False,
+            duration=duration,
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+            cost=usage.get("cost_usd", 0.0),
+        )
+
+    except Exception as e:
+        logger.error(f"Streaming completion error: {e}", exc_info=True)
+        error_event = {"type": "error", "message": str(e)}
+        yield f"data: {json.dumps(error_event)}\n\n"
+        yield "data: [DONE]\n\n"

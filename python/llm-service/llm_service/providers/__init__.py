@@ -383,6 +383,9 @@ class ProviderManager:
             "cached": response.cached,
         }
 
+        if response.tool_calls:
+            result["tool_calls"] = response.tool_calls
+
         # Add effective_max_completion if available (for continuation trigger logic)
         if response.effective_max_completion is not None:
             result["effective_max_completion"] = response.effective_max_completion
