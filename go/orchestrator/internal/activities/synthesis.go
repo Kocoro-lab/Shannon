@@ -1872,7 +1872,8 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 
 	// Estimate cost if not already calculated
 	if totalInputTokens > 0 && totalOutputTokens > 0 && modelUsed != "" {
-		totalCostUsd = pricing.CostForSplit(modelUsed, totalInputTokens, totalOutputTokens)
+		totalCostUsd = pricing.CostForSplitWithCache(modelUsed, totalInputTokens, totalOutputTokens,
+			0, 0, provider)
 	}
 
 	logger.Info("Synthesis (simple) completed",

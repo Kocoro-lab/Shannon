@@ -47,10 +47,12 @@ type BudgetTokenUsage struct {
 	AgentID        string                 `json:"agent_id"`
 	Model          string                 `json:"model"`
 	Provider       string                 `json:"provider"`
-	InputTokens    int                    `json:"input_tokens"`
-	OutputTokens   int                    `json:"output_tokens"`
-	TotalTokens    int                    `json:"total_tokens"`
-	CostUSD        float64                `json:"cost_usd"`
+	InputTokens         int                    `json:"input_tokens"`
+	OutputTokens        int                    `json:"output_tokens"`
+	TotalTokens         int                    `json:"total_tokens"`
+	CacheReadTokens     int                    `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int                    `json:"cache_creation_tokens,omitempty"`
+	CostUSD             float64                `json:"cost_usd"`
 	Timestamp      time.Time              `json:"timestamp"`
 	Metadata       map[string]interface{} `json:"metadata"`
 	IdempotencyKey string                 `json:"idempotency_key,omitempty"` // Optional key for retry safety
@@ -320,7 +322,10 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
 	// Calculate cost using centralized pricing (config/models.yaml)
-	usage.CostUSD = pricing.CostForSplit(usage.Model, usage.InputTokens, usage.OutputTokens)
+	usage.CostUSD = pricing.CostForSplitWithCache(
+		usage.Model, usage.InputTokens, usage.OutputTokens,
+		usage.CacheReadTokens, usage.CacheCreationTokens, usage.Provider,
+	)
 
 	// Update in-memory budgets with overflow checks
 	const maxInt = int(^uint(0) >> 1)

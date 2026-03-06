@@ -1400,6 +1400,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		promptTokens := 0
 		completionTokens := 0
 		costUsd := 0.0
+		cacheReadTokens := 0
+		cacheCreationTokens := 0
 		toolsUsed := []string{}
 		toolExecs := []ToolExecution{}
 		success := true
@@ -1448,6 +1450,12 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						}
 						if v, ok2 := m["provider"].(string); ok2 && v != "" {
 							provider = v
+						}
+						if v, ok := parseFlexibleInt(m["cache_read_tokens"]); ok {
+							cacheReadTokens = v
+						}
+						if v, ok := parseFlexibleInt(m["cache_creation_tokens"]); ok {
+							cacheCreationTokens = v
 						}
 					}
 				} else {
@@ -1525,11 +1533,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		// Note: toolsUsed already deduplicated via seenTools map during collection (line 1371-1373)
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
-			if model != "" {
-				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
-			} else {
-				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
-			}
+			costUsd = pricing.CostForSplitWithCache(model, promptTokens, completionTokens,
+				cacheReadTokens, cacheCreationTokens, provider)
 		} else if costUsd == 0 && tokens > 0 {
 			costUsd = pricing.CostForTokens(model, tokens)
 		}
@@ -1603,6 +1608,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		promptTokens := 0
 		completionTokens := 0
 		costUsd := 0.0
+		cacheReadTokens := 0
+		cacheCreationTokens := 0
 
 		if mu := resp.GetMetrics(); mu != nil && mu.TokenUsage != nil {
 			tokens = int(mu.TokenUsage.TotalTokens)
@@ -1677,11 +1684,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
-			if model != "" {
-				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
-			} else {
-				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
-			}
+			costUsd = pricing.CostForSplitWithCache(model, promptTokens, completionTokens,
+				cacheReadTokens, cacheCreationTokens, provider)
 		} else if costUsd == 0 && tokens > 0 {
 			costUsd = pricing.CostForTokens(model, tokens)
 		}
@@ -2054,7 +2058,8 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		// Calculate cost using pricing service
 		var costUsd float64
 		if agentResponse.ModelUsed != "" && inputTokens > 0 && outputTokens > 0 {
-			costUsd = pricing.CostForSplit(agentResponse.ModelUsed, inputTokens, outputTokens)
+			costUsd = pricing.CostForSplitWithCache(agentResponse.ModelUsed, inputTokens, outputTokens,
+				0, 0, agentResponse.Provider)
 		}
 
 		streaming.Get().Publish(wfID, streaming.Event{

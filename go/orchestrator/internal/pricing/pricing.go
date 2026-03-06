@@ -249,6 +249,44 @@ func CostForSplit(model string, inputTokens, outputTokens int) float64 {
 	return float64(inputTokens+outputTokens) * DefaultPerToken()
 }
 
+// CostForSplitWithCache computes cost including prompt cache pricing adjustments.
+// For Anthropic: input_tokens excludes cache; cache_read at 10%, cache_creation at 125% of input price.
+// For OpenAI: input_tokens includes cache; cache_read gets 50% discount.
+func CostForSplitWithCache(model string, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens int, provider string) float64 {
+	base := CostForSplit(model, inputTokens, outputTokens)
+	if cacheReadTokens <= 0 && cacheCreationTokens <= 0 {
+		return base
+	}
+
+	// Find input price for this model
+	cfg := get()
+	var inputPer1K float64
+	for _, models := range cfg.Pricing.Models {
+		if m, ok := models[model]; ok {
+			inputPer1K = m.InputPer1K
+			break
+		}
+	}
+	if inputPer1K <= 0 {
+		return base
+	}
+
+	switch {
+	case provider == "anthropic":
+		// Anthropic: cache tokens are separate, add them at discounted/premium rates
+		base += (float64(cacheReadTokens) / 1000.0) * inputPer1K * 0.1
+		base += (float64(cacheCreationTokens) / 1000.0) * inputPer1K * 1.25
+	default:
+		// OpenAI: cached tokens already in input_tokens at full price, subtract 50% discount
+		base -= (float64(cacheReadTokens) / 1000.0) * inputPer1K * 0.5
+	}
+
+	if base < 0 {
+		base = 0
+	}
+	return base
+}
+
 // ValidateMap validates the pricing section in a raw config map for the config manager.
 func ValidateMap(m map[string]interface{}) error {
 	p, ok := m["pricing"].(map[string]interface{})
