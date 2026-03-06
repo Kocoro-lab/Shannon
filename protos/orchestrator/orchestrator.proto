@@ -29,6 +29,9 @@ service OrchestratorService {
   rpc SubmitReviewDecision(SubmitReviewDecisionRequest) returns (SubmitReviewDecisionResponse);
   rpc RecordTokenUsage(RecordTokenUsageRequest) returns (RecordTokenUsageResponse);
 
+  // Swarm HITL (Human-in-the-Loop)
+  rpc SendSwarmMessage(SendSwarmMessageRequest) returns (SendSwarmMessageResponse);
+
   // Schedule management
   rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse);
   rpc GetSchedule(GetScheduleRequest) returns (GetScheduleResponse);
@@ -382,4 +385,15 @@ message RecordTokenUsageRequest {
 
 message RecordTokenUsageResponse {
   bool success = 1;
+}
+
+// Swarm HITL
+message SendSwarmMessageRequest {
+  string workflow_id = 1;
+  string message = 2;
+}
+
+message SendSwarmMessageResponse {
+  bool success = 1;
+  string status = 2;
 }

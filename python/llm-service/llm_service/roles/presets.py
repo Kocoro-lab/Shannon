@@ -105,6 +105,7 @@ _PRESETS: Dict[str, Dict[str, object]] = {
 - Read files: Use `file_read` to examine file contents
 - Write files: Use `file_write` to create or modify files
 - List files: Use `file_list` to explore directories
+- Search files: Use `file_search` to grep for text in workspace files
 - Execute commands: Use `bash` to run allowlisted commands (git, ls, python, etc.)
 - Run Python: Use `python_executor` for Python code execution
 
@@ -123,6 +124,7 @@ git, ls, pwd, rg, cat, head, tail, wc, grep, find, go, cargo, pytest, python, py
             "file_read",
             "file_write",
             "file_list",
+            "file_search",
             "bash",
             "python_executor",
         ],
@@ -356,6 +358,8 @@ def get_role_preset(name: str) -> Dict[str, object]:
     alias_map = {
         "researcher": "research",  # Lightweight preset as safety net
         "research_supervisor": "deep_research_agent",  # Decomposition role uses supervisor prompt
+        "coder": "developer",  # Swarm uses "coder", presets use "developer"
+        "analyst": "analysis",  # Swarm uses "analyst", presets use "analysis"
     }
     key = alias_map.get(key, key)
     return _PRESETS.get(key, _PRESETS["generalist"]).copy()

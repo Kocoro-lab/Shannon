@@ -67,6 +67,7 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		Context:          mergedContext,
 		Mode:             "simple",
 		SessionID:        input.SessionID,
+		UserID:           input.UserID,
 		History:          input.History,
 		PersonaID:        input.PersonaID,
 		SuggestedTools:   input.SuggestedTools,

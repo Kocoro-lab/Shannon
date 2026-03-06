@@ -166,6 +166,30 @@ func (m *MockOrchestratorClient) ResumeSchedule(ctx context.Context, req *orchpb
 	return args.Get(0).(*orchpb.ResumeScheduleResponse), args.Error(1)
 }
 
+func (m *MockOrchestratorClient) RecordTokenUsage(ctx context.Context, req *orchpb.RecordTokenUsageRequest, opts ...grpc.CallOption) (*orchpb.RecordTokenUsageResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.RecordTokenUsageResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) SubmitReviewDecision(ctx context.Context, req *orchpb.SubmitReviewDecisionRequest, opts ...grpc.CallOption) (*orchpb.SubmitReviewDecisionResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.SubmitReviewDecisionResponse), args.Error(1)
+}
+
+func (m *MockOrchestratorClient) SendSwarmMessage(ctx context.Context, req *orchpb.SendSwarmMessageRequest, opts ...grpc.CallOption) (*orchpb.SendSwarmMessageResponse, error) {
+	args := m.Called(ctx, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*orchpb.SendSwarmMessageResponse), args.Error(1)
+}
+
 // TestCancelTask_OwnershipEnforcement tests that cancel endpoint properly checks ownership
 func TestCancelTask_OwnershipEnforcement(t *testing.T) {
 	tests := []struct {
@@ -216,7 +240,7 @@ func TestCancelTask_OwnershipEnforcement(t *testing.T) {
 			mockClient := new(MockOrchestratorClient)
 			tt.setupMock(mockClient)
 
-			handler := handlers.NewTaskHandler(mockClient, nil, nil, zap.NewNop())
+			handler := handlers.NewTaskHandler(mockClient, nil, nil, nil, zap.NewNop())
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+tt.taskID+"/cancel",
 				strings.NewReader(`{"reason":"test"}`))
@@ -224,7 +248,7 @@ func TestCancelTask_OwnershipEnforcement(t *testing.T) {
 			req.SetPathValue("id", tt.taskID)
 
 			// Add user context
-			ctx := context.WithValue(req.Context(), "user", &auth.UserContext{
+			ctx := context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{
 				UserID:   uuid.New(),
 				TenantID: uuid.New(),
 			})
@@ -294,7 +318,7 @@ func TestApproveTask_ValidationAndAuth(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 
 			// Add user context
-			ctx := context.WithValue(req.Context(), "user", &auth.UserContext{
+			ctx := context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{
 				UserID:   uuid.New(),
 				TenantID: uuid.New(),
 			})
@@ -328,7 +352,7 @@ func TestAPIKeyPropagation_Metadata(t *testing.T) {
 				Message: "success",
 			}, nil)
 
-		handler := handlers.NewTaskHandler(mockClient, nil, nil, zap.NewNop())
+		handler := handlers.NewTaskHandler(mockClient, nil, nil, nil, zap.NewNop())
 
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks",
 			strings.NewReader(`{"query":"test"}`))
@@ -336,7 +360,7 @@ func TestAPIKeyPropagation_Metadata(t *testing.T) {
 		req.Header.Set("X-API-Key", "test-api-key-123")
 		req.Header.Set("traceparent", "00-test-trace-id-01")
 
-		ctx := context.WithValue(req.Context(), "user", &auth.UserContext{
+		ctx := context.WithValue(req.Context(), auth.UserContextKey, &auth.UserContext{
 			UserID:   uuid.New(),
 			TenantID: uuid.New(),
 		})

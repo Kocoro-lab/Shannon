@@ -71,6 +71,8 @@ func TestRecordUsage_Idempotency(t *testing.T) {
 		50,                      // completion_tokens (OutputTokens)
 		150,                     // total_tokens
 		sqlmock.AnyArg(),        // cost_usd
+		0,                       // cache_read_tokens
+		0,                       // cache_creation_tokens
 	).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	// First call should succeed and record usage

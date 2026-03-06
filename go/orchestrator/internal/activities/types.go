@@ -73,6 +73,7 @@ type AgentExecutionInput struct {
 	Context   map[string]interface{}
 	Mode      string
 	SessionID string   // Session identifier
+	UserID    string   // User identifier (for memory mount, audit)
 	History   []string // Conversation history
 	// LLM-native tool selection
 	SuggestedTools []string               `json:"suggested_tools"`
@@ -120,6 +121,8 @@ type SynthesisInput struct {
 	// Parent workflow ID for unified event streaming
 	ParentWorkflowID   string      `json:"parent_workflow_id,omitempty"`
 	CollectedCitations interface{} `json:"collected_citations,omitempty"` // []metadata.Citation to avoid import cycle
+	// SessionID for reading workspace files (swarm mode)
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // SynthesisResult is the result of synthesis

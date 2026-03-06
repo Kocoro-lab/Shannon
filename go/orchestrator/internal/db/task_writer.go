@@ -44,6 +44,12 @@ func buildTaskMetricsPayload(task *TaskExecution) JSONB {
 	if task.CacheHits > 0 {
 		metrics["cache_hits"] = task.CacheHits
 	}
+	if task.CacheReadTokens > 0 {
+		metrics["cache_read_tokens"] = task.CacheReadTokens
+	}
+	if task.CacheCreationTokens > 0 {
+		metrics["cache_creation_tokens"] = task.CacheCreationTokens
+	}
 	if task.ComplexityScore > 0 {
 		metrics["complexity_score"] = task.ComplexityScore
 	}
@@ -83,7 +89,7 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 	sessionID := task.SessionID // VARCHAR in task_executions
 
 	// Deep copy metadata via JSON round-trip to avoid "concurrent map iteration and map write" panic
-	// The original task.Metadata may be modified by other goroutines during async writes
+	// The original task.Metadata may be modified by other goroutines
 	metadata := task.Metadata.SafeClone()
 	if metadata == nil {
 		metadata = JSONB{}
@@ -95,6 +101,9 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 		triggerType = "api"
 	}
 
+	// Deep copy response via JSON round-trip (same safety as metadata)
+	response := task.Response.SafeClone()
+
 	teQuery := `
         INSERT INTO task_executions (
             id, workflow_id, user_id, session_id, tenant_id,
@@ -104,8 +113,9 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             model_used, provider,
             total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
             duration_ms, agents_used, tools_invoked, cache_hits,
-            complexity_score, metadata, created_at,
-            trigger_type, schedule_id
+            complexity_score, response, metadata, created_at,
+            trigger_type, schedule_id,
+            cache_read_tokens, cache_creation_tokens
         ) VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8,
@@ -114,8 +124,9 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             $13, $14,
             $15, $16, $17, $18,
             $19, $20, $21, $22,
-            $23, $24, $25,
-            $26, $27
+            $23, $24, $25, $26,
+            $27, $28,
+            $29, $30
         )
         ON CONFLICT (workflow_id) DO UPDATE SET
             status = EXCLUDED.status,
@@ -133,8 +144,11 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
             tools_invoked = EXCLUDED.tools_invoked,
             cache_hits = EXCLUDED.cache_hits,
             complexity_score = EXCLUDED.complexity_score,
+            response = COALESCE(EXCLUDED.response, task_executions.response),
             metadata = EXCLUDED.metadata,
-            tenant_id = COALESCE(EXCLUDED.tenant_id, task_executions.tenant_id)
+            tenant_id = COALESCE(EXCLUDED.tenant_id, task_executions.tenant_id),
+            cache_read_tokens = EXCLUDED.cache_read_tokens,
+            cache_creation_tokens = EXCLUDED.cache_creation_tokens
         RETURNING id`
 
 	err := c.db.QueryRowContext(ctx, teQuery,
@@ -145,8 +159,9 @@ func (c *Client) SaveTaskExecution(ctx context.Context, task *TaskExecution) err
 		task.ModelUsed, task.Provider,
 		task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
 		task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
-		task.ComplexityScore, metadata, task.CreatedAt,
+		task.ComplexityScore, response, metadata, task.CreatedAt,
 		triggerType, task.ScheduleID,
+		task.CacheReadTokens, task.CacheCreationTokens,
 	).Scan(&task.ID)
 	if err != nil {
 		return fmt.Errorf("failed to save task execution: %w", err)
@@ -174,8 +189,9 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 model_used, provider,
                 total_tokens, prompt_tokens, completion_tokens, total_cost_usd,
                 duration_ms, agents_used, tools_invoked, cache_hits,
-                complexity_score, metadata, created_at,
-                trigger_type, schedule_id
+                complexity_score, response, metadata, created_at,
+                trigger_type, schedule_id,
+                cache_read_tokens, cache_creation_tokens
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7, $8,
@@ -184,8 +200,9 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 $13, $14,
                 $15, $16, $17, $18,
                 $19, $20, $21, $22,
-                $23, $24, $25,
-                $26, $27
+                $23, $24, $25, $26,
+                $27, $28,
+                $29, $30
             )
             ON CONFLICT (workflow_id) DO UPDATE SET
                 status = EXCLUDED.status,
@@ -203,8 +220,11 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
                 tools_invoked = EXCLUDED.tools_invoked,
                 cache_hits = EXCLUDED.cache_hits,
                 complexity_score = EXCLUDED.complexity_score,
+                response = COALESCE(EXCLUDED.response, task_executions.response),
                 metadata = EXCLUDED.metadata,
-                tenant_id = COALESCE(EXCLUDED.tenant_id, task_executions.tenant_id)
+                tenant_id = COALESCE(EXCLUDED.tenant_id, task_executions.tenant_id),
+                cache_read_tokens = EXCLUDED.cache_read_tokens,
+                cache_creation_tokens = EXCLUDED.cache_creation_tokens
         `)
 		if err != nil {
 			return err
@@ -233,10 +253,15 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 			} else {
 				tenantID = nil
 			}
-			// Deep copy metadata to avoid concurrent map access panic
-			metadata := task.Metadata.SafeClone()
-			if metadata == nil {
+			var metadata JSONB
+			if task.Metadata != nil {
+				metadata = task.Metadata
+			} else {
 				metadata = JSONB{}
+			}
+			var response JSONB
+			if task.Response != nil {
+				response = task.Response
 			}
 
 			// Default trigger_type to 'api' if not specified
@@ -253,8 +278,9 @@ func (c *Client) BatchSaveTaskExecutions(ctx context.Context, tasks []*TaskExecu
 				task.ModelUsed, task.Provider,
 				task.TotalTokens, task.PromptTokens, task.CompletionTokens, task.TotalCostUSD,
 				task.DurationMs, task.AgentsUsed, task.ToolsInvoked, task.CacheHits,
-				task.ComplexityScore, metadata, task.CreatedAt,
+				task.ComplexityScore, response, metadata, task.CreatedAt,
 				triggerType, task.ScheduleID,
+				task.CacheReadTokens, task.CacheCreationTokens,
 			)
 			if err != nil {
 				return fmt.Errorf("failed to insert task %s: %w", task.WorkflowID, err)
@@ -634,7 +660,7 @@ func (c *Client) GetTaskExecution(ctx context.Context, workflowID string) (*Task
 // UpdateTaskStatus updates the status of a task execution
 func (c *Client) UpdateTaskStatus(ctx context.Context, workflowID string, status string) error {
 	_, err := c.db.ExecContext(ctx,
-		`UPDATE task_executions SET status = $1 WHERE workflow_id = $2`,
+		`UPDATE task_executions SET status = $1, updated_at = NOW() WHERE workflow_id = $2`,
 		status, workflowID)
 	if err != nil {
 		return fmt.Errorf("failed to update task status: %w", err)

@@ -191,16 +191,18 @@ func (b *BudgetActivities) CheckTokenBudgetWithCircuitBreaker(ctx context.Contex
 
 // TokenUsageInput represents token usage to record
 type TokenUsageInput struct {
-	UserID       string                 `json:"user_id"`
-	SessionID    string                 `json:"session_id"`
-	TaskID       string                 `json:"task_id"`
-	AgentID      string                 `json:"agent_id"`
-	Model        string                 `json:"model"`
-	Provider     string                 `json:"provider"`
-	InputTokens  int                    `json:"input_tokens"`
-	OutputTokens int                    `json:"output_tokens"`
-	CostOverride float64                `json:"cost_override,omitempty"` // When > 0, use instead of pricing calculation
-	Metadata     map[string]interface{} `json:"metadata"`
+	UserID              string                 `json:"user_id"`
+	SessionID           string                 `json:"session_id"`
+	TaskID              string                 `json:"task_id"`
+	AgentID             string                 `json:"agent_id"`
+	Model               string                 `json:"model"`
+	Provider            string                 `json:"provider"`
+	InputTokens         int                    `json:"input_tokens"`
+	OutputTokens        int                    `json:"output_tokens"`
+	CacheReadTokens     int                    `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int                    `json:"cache_creation_tokens,omitempty"`
+	CostOverride        float64                `json:"cost_override,omitempty"` // When > 0, use instead of pricing calculation
+	Metadata            map[string]interface{} `json:"metadata"`
 }
 
 // RecordTokenUsage records actual token usage
@@ -221,17 +223,19 @@ func (b *BudgetActivities) RecordTokenUsage(ctx context.Context, input TokenUsag
 	idempotencyKey := fmt.Sprintf("%s-%s-%d", info.WorkflowExecution.ID, info.ActivityID, info.Attempt)
 
 	usage := &budget.BudgetTokenUsage{
-		UserID:         input.UserID,
-		SessionID:      input.SessionID,
-		TaskID:         input.TaskID,
-		AgentID:        input.AgentID,
-		Model:          input.Model,
-		Provider:       input.Provider,
-		InputTokens:    input.InputTokens,
-		OutputTokens:   input.OutputTokens,
-		CostOverride:   input.CostOverride,
-		Metadata:       input.Metadata,
-		IdempotencyKey: idempotencyKey,
+		UserID:              input.UserID,
+		SessionID:           input.SessionID,
+		TaskID:              input.TaskID,
+		AgentID:             input.AgentID,
+		Model:               input.Model,
+		Provider:            input.Provider,
+		InputTokens:         input.InputTokens,
+		OutputTokens:        input.OutputTokens,
+		CacheReadTokens:     input.CacheReadTokens,
+		CacheCreationTokens: input.CacheCreationTokens,
+		CostOverride:        input.CostOverride,
+		Metadata:            input.Metadata,
+		IdempotencyKey:      idempotencyKey,
 	}
 
 	// Backfill missing provider from model if available

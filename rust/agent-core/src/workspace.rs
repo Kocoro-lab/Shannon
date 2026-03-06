@@ -111,7 +111,9 @@ impl WorkspaceManager {
             // This should never happen if pre-creation checks passed
             // but we check anyway for defense in depth
             std::fs::remove_dir(&workspace).ok(); // Cleanup
-            return Err(anyhow!("Workspace path escapes base directory after creation"));
+            return Err(anyhow!(
+                "Workspace path escapes base directory after creation"
+            ));
         }
 
         debug!("Workspace path for {}: {:?}", session_id, canonical);
@@ -129,7 +131,9 @@ impl WorkspaceManager {
             // For non-existing paths, canonicalize the parent and join
             let parent = path.parent().ok_or_else(|| anyhow!("Invalid path"))?;
             if parent.exists() {
-                parent.canonicalize()?.join(path.file_name().unwrap_or_default())
+                parent
+                    .canonicalize()?
+                    .join(path.file_name().unwrap_or_default())
             } else {
                 return Ok(false);
             }
@@ -198,7 +202,10 @@ fn dir_size_inner(path: &Path, size: &mut u64, remaining: &mut usize) -> Result<
 
     for entry in std::fs::read_dir(path)? {
         if *remaining == 0 {
-            return Err(anyhow!("Workspace walk exceeded {} entries", MAX_DIR_WALK_ENTRIES));
+            return Err(anyhow!(
+                "Workspace walk exceeded {} entries",
+                MAX_DIR_WALK_ENTRIES
+            ));
         }
         *remaining -= 1;
 
@@ -273,7 +280,9 @@ mod tests {
         std::fs::write(&test_file, "hello").unwrap();
 
         assert!(mgr.is_within_workspace("test-session", &test_file).unwrap());
-        assert!(!mgr.is_within_workspace("test-session", Path::new("/etc/passwd")).unwrap());
+        assert!(!mgr
+            .is_within_workspace("test-session", Path::new("/etc/passwd"))
+            .unwrap());
     }
 
     #[test]

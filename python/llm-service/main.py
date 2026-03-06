@@ -12,6 +12,7 @@ from llm_service.api import (
     embeddings,
     complexity,
     agent,
+    lead,
     tools,
     evaluate,
     verify,
@@ -139,6 +140,7 @@ app.include_router(completions.router, prefix="/completions", tags=["completions
 app.include_router(embeddings.router, prefix="/embeddings", tags=["embeddings"])
 app.include_router(complexity.router, prefix="/complexity", tags=["complexity"])
 app.include_router(agent.router, tags=["agent"])
+app.include_router(lead.router, tags=["lead"])
 app.include_router(tools.router, tags=["tools"])
 app.include_router(evaluate.router, tags=["evaluate"])
 app.include_router(verify.router, tags=["verify"])

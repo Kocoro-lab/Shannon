@@ -13,8 +13,8 @@ pub enum SafeCommand {
     /// List directory contents
     Ls {
         path: String,
-        all: bool,      // -a: show hidden
-        long: bool,     // -l: long format
+        all: bool,  // -a: show hidden
+        long: bool, // -l: long format
     },
     /// Print file contents
     Cat { path: String },
@@ -39,16 +39,19 @@ pub enum SafeCommand {
     /// Print text
     Echo { text: String },
     /// Search for pattern in files
-    Grep { pattern: String, path: String, ignore_case: bool },
+    Grep {
+        pattern: String,
+        path: String,
+        ignore_case: bool,
+    },
     /// Find files by name
     Find { path: String, name: String },
 }
 
 impl SafeCommand {
     /// Shell metacharacters that indicate command injection attempts
-    const DANGEROUS_PATTERNS: &'static [&'static str] = &[
-        "|", ";", "&&", "||", ">", "<", ">>", "$(", "`", "\n", "\r",
-    ];
+    const DANGEROUS_PATTERNS: &'static [&'static str] =
+        &["|", ";", "&&", "||", ">", "<", ">>", "$(", "`", "\n", "\r"];
 
     /// Parse a command string into a SafeCommand.
     pub fn parse(input: &str) -> Result<SafeCommand> {
@@ -211,7 +214,11 @@ impl SafeCommand {
     }
 
     fn parse_cp(args: &[&str]) -> Result<SafeCommand> {
-        let non_flag: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).copied().collect();
+        let non_flag: Vec<&str> = args
+            .iter()
+            .filter(|a| !a.starts_with('-'))
+            .copied()
+            .collect();
         if non_flag.len() < 2 {
             return Err(anyhow!("cp requires source and destination"));
         }
@@ -222,7 +229,11 @@ impl SafeCommand {
     }
 
     fn parse_mv(args: &[&str]) -> Result<SafeCommand> {
-        let non_flag: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).copied().collect();
+        let non_flag: Vec<&str> = args
+            .iter()
+            .filter(|a| !a.starts_with('-'))
+            .copied()
+            .collect();
         if non_flag.len() < 2 {
             return Err(anyhow!("mv requires source and destination"));
         }
@@ -296,34 +307,149 @@ impl SafeCommand {
 
     /// Execute the command within a workspace directory.
     pub fn execute(&self, workspace: &Path) -> Result<CommandOutput> {
+        self.execute_with_memory(workspace, None)
+    }
+
+    /// Execute the command with optional memory workspace access for /memory paths.
+    pub fn execute_with_memory(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+    ) -> Result<CommandOutput> {
         debug!("Executing {:?} in {:?}", self, workspace);
 
         match self {
-            SafeCommand::Ls { path, all, long } => self.exec_ls(workspace, path, *all, *long),
-            SafeCommand::Cat { path } => self.exec_cat(workspace, path),
-            SafeCommand::Head { path, lines } => self.exec_head(workspace, path, *lines),
-            SafeCommand::Tail { path, lines } => self.exec_tail(workspace, path, *lines),
-            SafeCommand::Wc { path } => self.exec_wc(workspace, path),
-            SafeCommand::Mkdir { path, parents } => self.exec_mkdir(workspace, path, *parents),
-            SafeCommand::Rm { path, recursive } => self.exec_rm(workspace, path, *recursive),
-            SafeCommand::Cp { src, dst } => self.exec_cp(workspace, src, dst),
-            SafeCommand::Mv { src, dst } => self.exec_mv(workspace, src, dst),
-            SafeCommand::Touch { path } => self.exec_touch(workspace, path),
+            SafeCommand::Ls { path, all, long } => {
+                self.exec_ls(workspace, memory_workspace, path, *all, *long)
+            }
+            SafeCommand::Cat { path } => self.exec_cat(workspace, memory_workspace, path),
+            SafeCommand::Head { path, lines } => {
+                self.exec_head(workspace, memory_workspace, path, *lines)
+            }
+            SafeCommand::Tail { path, lines } => {
+                self.exec_tail(workspace, memory_workspace, path, *lines)
+            }
+            SafeCommand::Wc { path } => self.exec_wc(workspace, memory_workspace, path),
+            SafeCommand::Mkdir { path, parents } => {
+                self.exec_mkdir(workspace, memory_workspace, path, *parents)
+            }
+            SafeCommand::Rm { path, recursive } => {
+                self.exec_rm(workspace, memory_workspace, path, *recursive)
+            }
+            SafeCommand::Cp { src, dst } => self.exec_cp(workspace, memory_workspace, src, dst),
+            SafeCommand::Mv { src, dst } => self.exec_mv(workspace, memory_workspace, src, dst),
+            SafeCommand::Touch { path } => self.exec_touch(workspace, memory_workspace, path),
             SafeCommand::Pwd => Ok(CommandOutput::success(
                 workspace.to_string_lossy().to_string(),
             )),
             SafeCommand::Echo { text } => Ok(CommandOutput::success(text.clone())),
-            SafeCommand::Grep { pattern, path, ignore_case } => {
-                self.exec_grep(workspace, pattern, path, *ignore_case)
+            SafeCommand::Grep {
+                pattern,
+                path,
+                ignore_case,
+            } => self.exec_grep(workspace, memory_workspace, pattern, path, *ignore_case),
+            SafeCommand::Find { path, name } => {
+                self.exec_find(workspace, memory_workspace, path, name)
             }
-            SafeCommand::Find { path, name } => self.exec_find(workspace, path, name),
         }
     }
 
-    fn resolve_path(&self, workspace: &Path, relative: &str) -> Result<PathBuf> {
+    /// Check if the command touches the /memory mount.
+    pub fn uses_memory(&self) -> bool {
+        match self {
+            Self::Ls { path, .. }
+            | Self::Cat { path }
+            | Self::Head { path, .. }
+            | Self::Tail { path, .. }
+            | Self::Wc { path }
+            | Self::Mkdir { path, .. }
+            | Self::Rm { path, .. }
+            | Self::Touch { path }
+            | Self::Grep { path, .. } => Self::is_memory_path(path),
+            Self::Cp { src, dst } | Self::Mv { src, dst } => {
+                Self::is_memory_path(src) || Self::is_memory_path(dst)
+            }
+            Self::Find { path, .. } => Self::is_memory_path(path),
+            Self::Pwd | Self::Echo { .. } => false,
+        }
+    }
+
+    fn is_memory_path(path: &str) -> bool {
+        path == "/memory" || path.starts_with("/memory/")
+    }
+
+    fn resolve_path(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        relative: &str,
+    ) -> Result<PathBuf> {
+        let canonical_workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+
+        // Support paths that explicitly target the Firecracker mount.
+        let normalized = relative
+            .strip_prefix("/workspace/")
+            .or_else(|| relative.strip_prefix("/workspace"))
+            .unwrap_or(relative);
+
+        // Support memory mount when explicitly requested.
+        if Self::is_memory_path(normalized) {
+            if memory_workspace.is_none() {
+                return Err(anyhow!("Cannot resolve /memory path without user_id"));
+            }
+
+            let memory_workspace = memory_workspace.expect("Checked above");
+            let canonical_memory = memory_workspace
+                .canonicalize()
+                .unwrap_or_else(|_| memory_workspace.to_path_buf());
+            let memory_subpath = normalized
+                .strip_prefix("/memory/")
+                .or_else(|| normalized.strip_prefix("/memory"))
+                .unwrap_or("");
+
+            if memory_subpath.is_empty() {
+                return Ok(canonical_memory);
+            }
+
+            if memory_subpath.contains("..") {
+                return Err(anyhow!("Path traversal not allowed in /memory"));
+            }
+
+            let target = canonical_memory.join(memory_subpath);
+            if target.exists() {
+                let canonical = target.canonicalize()?;
+                if !canonical.starts_with(&canonical_memory) {
+                    return Err(anyhow!("Path escapes memory directory"));
+                }
+                return Ok(canonical);
+            }
+
+            if let Some(parent) = target.parent() {
+                if parent.exists() {
+                    let canonical_parent = parent.canonicalize()?;
+                    if !canonical_parent.starts_with(&canonical_memory) {
+                        return Err(anyhow!("Path escapes memory directory"));
+                    }
+                }
+            }
+
+            return Ok(target);
+        }
+
         // Canonicalize workspace first to handle symlinks (e.g., /var -> /private/var on macOS)
-        let canonical_workspace = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
-        let target = canonical_workspace.join(relative);
+        let target = if normalized.is_empty() {
+            canonical_workspace.clone()
+        } else {
+            // Security: Reject absolute paths in the workspace namespace after normalization.
+            let req_path = Path::new(normalized);
+            if req_path.is_absolute() {
+                return Err(anyhow!("Absolute paths are not allowed"));
+            }
+
+            canonical_workspace.join(normalized)
+        };
 
         // For existing paths, canonicalize
         if target.exists() {
@@ -347,8 +473,15 @@ impl SafeCommand {
         Ok(target)
     }
 
-    fn exec_ls(&self, workspace: &Path, path: &str, all: bool, long: bool) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_ls(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+        all: bool,
+        long: bool,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
 
         if !target.is_dir() {
             return Err(anyhow!("Not a directory: {}", path));
@@ -378,21 +511,38 @@ impl SafeCommand {
         Ok(CommandOutput::success(entries.join("\n")))
     }
 
-    fn exec_cat(&self, workspace: &Path, path: &str) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_cat(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         let content = std::fs::read_to_string(&target)?;
         Ok(CommandOutput::success(content))
     }
 
-    fn exec_head(&self, workspace: &Path, path: &str, lines: usize) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_head(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+        lines: usize,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         let content = std::fs::read_to_string(&target)?;
         let output: String = content.lines().take(lines).collect::<Vec<_>>().join("\n");
         Ok(CommandOutput::success(output))
     }
 
-    fn exec_tail(&self, workspace: &Path, path: &str, lines: usize) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_tail(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+        lines: usize,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         let content = std::fs::read_to_string(&target)?;
         let all_lines: Vec<&str> = content.lines().collect();
         let start = all_lines.len().saturating_sub(lines);
@@ -400,8 +550,13 @@ impl SafeCommand {
         Ok(CommandOutput::success(output))
     }
 
-    fn exec_wc(&self, workspace: &Path, path: &str) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_wc(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         let content = std::fs::read_to_string(&target)?;
         let lines = content.lines().count();
         let words = content.split_whitespace().count();
@@ -412,8 +567,14 @@ impl SafeCommand {
         )))
     }
 
-    fn exec_mkdir(&self, workspace: &Path, path: &str, parents: bool) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_mkdir(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+        parents: bool,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
 
         if parents {
             std::fs::create_dir_all(&target)?;
@@ -423,8 +584,14 @@ impl SafeCommand {
         Ok(CommandOutput::success(String::new()))
     }
 
-    fn exec_rm(&self, workspace: &Path, path: &str, recursive: bool) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_rm(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+        recursive: bool,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
 
         if target.is_dir() {
             if recursive {
@@ -438,22 +605,39 @@ impl SafeCommand {
         Ok(CommandOutput::success(String::new()))
     }
 
-    fn exec_cp(&self, workspace: &Path, src: &str, dst: &str) -> Result<CommandOutput> {
-        let src_path = self.resolve_path(workspace, src)?;
-        let dst_path = self.resolve_path(workspace, dst)?;
+    fn exec_cp(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        src: &str,
+        dst: &str,
+    ) -> Result<CommandOutput> {
+        let src_path = self.resolve_path(workspace, memory_workspace, src)?;
+        let dst_path = self.resolve_path(workspace, memory_workspace, dst)?;
         std::fs::copy(&src_path, &dst_path)?;
         Ok(CommandOutput::success(String::new()))
     }
 
-    fn exec_mv(&self, workspace: &Path, src: &str, dst: &str) -> Result<CommandOutput> {
-        let src_path = self.resolve_path(workspace, src)?;
-        let dst_path = self.resolve_path(workspace, dst)?;
+    fn exec_mv(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        src: &str,
+        dst: &str,
+    ) -> Result<CommandOutput> {
+        let src_path = self.resolve_path(workspace, memory_workspace, src)?;
+        let dst_path = self.resolve_path(workspace, memory_workspace, dst)?;
         std::fs::rename(&src_path, &dst_path)?;
         Ok(CommandOutput::success(String::new()))
     }
 
-    fn exec_touch(&self, workspace: &Path, path: &str) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_touch(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         if !target.exists() {
             std::fs::File::create(&target)?;
         }
@@ -463,11 +647,12 @@ impl SafeCommand {
     fn exec_grep(
         &self,
         workspace: &Path,
+        memory_workspace: Option<&Path>,
         pattern: &str,
         path: &str,
         ignore_case: bool,
     ) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         let content = std::fs::read_to_string(&target)?;
 
         let matches: Vec<&str> = content
@@ -484,8 +669,14 @@ impl SafeCommand {
         Ok(CommandOutput::success(matches.join("\n")))
     }
 
-    fn exec_find(&self, workspace: &Path, path: &str, name: &str) -> Result<CommandOutput> {
-        let target = self.resolve_path(workspace, path)?;
+    fn exec_find(
+        &self,
+        workspace: &Path,
+        memory_workspace: Option<&Path>,
+        path: &str,
+        name: &str,
+    ) -> Result<CommandOutput> {
+        let target = self.resolve_path(workspace, memory_workspace, path)?;
         let mut results = Vec::new();
 
         fn walk(dir: &Path, name: &str, workspace: &Path, results: &mut Vec<String>) -> Result<()> {
@@ -495,7 +686,8 @@ impl SafeCommand {
                     let entry_path = entry.path();
                     let entry_name = entry.file_name().to_string_lossy().to_string();
 
-                    if name.is_empty() || entry_name.contains(name) || glob_match(name, &entry_name) {
+                    if name.is_empty() || entry_name.contains(name) || glob_match(name, &entry_name)
+                    {
                         let relative = entry_path.strip_prefix(workspace).unwrap_or(&entry_path);
                         results.push(relative.to_string_lossy().to_string());
                     }
@@ -535,9 +727,7 @@ fn glob_match_recursive(pattern: &[u8], name: &[u8]) -> bool {
             // '?' matches exactly one character
             glob_match_recursive(&pattern[1..], &name[1..])
         }
-        (Some(p), Some(n)) if *p == *n => {
-            glob_match_recursive(&pattern[1..], &name[1..])
-        }
+        (Some(p), Some(n)) if *p == *n => glob_match_recursive(&pattern[1..], &name[1..]),
         _ => false,
     }
 }
@@ -653,11 +843,46 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_cat_memory_mount() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let memory = temp.path().join("memory");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&memory).unwrap();
+        std::fs::write(memory.join("MEMORY.md"), "memory note").unwrap();
+
+        let cmd = SafeCommand::parse("cat /memory/MEMORY.md").unwrap();
+        let output = cmd.execute_with_memory(&workspace, Some(&memory)).unwrap();
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, "memory note");
+    }
+
+    #[test]
+    fn test_execute_memory_path_without_mount() {
+        let temp = TempDir::new().unwrap();
+        let workspace = temp.path();
+
+        let cmd = SafeCommand::parse("cat /memory/MEMORY.md").unwrap();
+        let result = cmd.execute_with_memory(workspace, None);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Cannot resolve /memory path without user_id"
+        );
+    }
+
+    #[test]
     fn test_execute_head() {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
 
-        std::fs::write(workspace.join("lines.txt"), "line1\nline2\nline3\nline4\nline5").unwrap();
+        std::fs::write(
+            workspace.join("lines.txt"),
+            "line1\nline2\nline3\nline4\nline5",
+        )
+        .unwrap();
 
         let cmd = SafeCommand::parse("head -n 3 lines.txt").unwrap();
         let output = cmd.execute(workspace).unwrap();
@@ -671,7 +896,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
 
-        std::fs::write(workspace.join("lines.txt"), "line1\nline2\nline3\nline4\nline5").unwrap();
+        std::fs::write(
+            workspace.join("lines.txt"),
+            "line1\nline2\nline3\nline4\nline5",
+        )
+        .unwrap();
 
         let cmd = SafeCommand::parse("tail -n 2 lines.txt").unwrap();
         let output = cmd.execute(workspace).unwrap();
@@ -704,7 +933,10 @@ mod tests {
         let cmd = SafeCommand::parse("cp original.txt copy.txt").unwrap();
         cmd.execute(workspace).unwrap();
         assert!(workspace.join("copy.txt").exists());
-        assert_eq!(std::fs::read_to_string(workspace.join("copy.txt")).unwrap(), "content");
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("copy.txt")).unwrap(),
+            "content"
+        );
 
         let cmd = SafeCommand::parse("mv copy.txt moved.txt").unwrap();
         cmd.execute(workspace).unwrap();
@@ -717,7 +949,11 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let workspace = temp.path();
 
-        std::fs::write(workspace.join("data.txt"), "Hello World\nfoo bar\nHello Again").unwrap();
+        std::fs::write(
+            workspace.join("data.txt"),
+            "Hello World\nfoo bar\nHello Again",
+        )
+        .unwrap();
 
         let cmd = SafeCommand::parse("grep Hello data.txt").unwrap();
         let output = cmd.execute(workspace).unwrap();

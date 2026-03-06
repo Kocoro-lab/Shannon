@@ -3,6 +3,7 @@ Base Tool interface for Shannon platform
 """
 
 from abc import ABC, abstractmethod
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -170,15 +171,8 @@ class Tool(ABC):
             if self.metadata.rate_limit and self.metadata.rate_limit < RATE_LIMIT_SKIP_THRESHOLD:
                 retry_after = self._get_retry_after(tracker_key)
                 if retry_after is not None:
-                    # Rate limited - return remaining wait time
-                    # NOTE: Do NOT update tracker on rejection to avoid extending wait window
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error=f"Rate limit exceeded. Retry after {retry_after:.1f}s",
-                        metadata={"retry_after_seconds": int(retry_after) + 1},
-                        execution_time_ms=int((time.time() - start_time) * 1000),
-                    )
+                    # Auto-wait instead of rejecting — saves an LLM call round-trip
+                    await asyncio.sleep(min(retry_after, 30))
 
             # Execute the tool with session context if tool is session-aware
             if self.metadata.session_aware:

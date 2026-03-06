@@ -250,6 +250,56 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		return result, nil
 	}
 
+	// Early route: Force SwarmWorkflow bypasses decomposition entirely
+	// SwarmWorkflow has its own Lead Agent that does initial planning, so orchestrator-level
+	// decomposition is redundant and wastes LLM tokens.
+	forceSwarmVersion := workflow.GetVersion(ctx, "force_swarm_early_route_v1", workflow.DefaultVersion, 1)
+	if forceSwarmVersion >= 1 && GetContextBool(input.Context, "force_swarm") {
+		logger.Info("Force swarm detected - bypassing orchestrator decomposition, Lead Agent will plan")
+		swarmWfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+		input.ParentWorkflowID = swarmWfID
+
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
+		})
+		var result TaskResult
+		ometrics.WorkflowsStarted.WithLabelValues("SwarmWorkflow", "swarm").Inc()
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: swarmWfID,
+			EventType:  activities.StreamEventDelegation,
+			AgentID:    "orchestrator",
+			Message:    activities.MsgSwarmStarted(),
+			Timestamp:  workflow.Now(ctx),
+		}).Get(ctx, nil)
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, SwarmWorkflow, input)
+		var childExec workflow.Execution
+		if err := childFuture.GetChildWorkflowExecution().Get(childCtx, &childExec); err != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to start SwarmWorkflow: %v", err)}, err
+		}
+		controlHandler.RegisterChildWorkflow(childExec.ID)
+
+		// HITL: forward human-input signals from parent to SwarmWorkflow child.
+		// Uses blocking Receive — goroutine sleeps until a signal arrives (zero polling).
+		// Goroutine exits naturally when the workflow context is cancelled (child completes).
+		humanInputCh := workflow.GetSignalChannel(ctx, "human-input")
+		workflow.Go(ctx, func(gCtx workflow.Context) {
+			for {
+				var humanMsg map[string]string
+				humanInputCh.Receive(gCtx, &humanMsg)
+				_ = workflow.SignalExternalWorkflow(gCtx, childExec.ID, "", "human-input", humanMsg).Get(gCtx, nil)
+			}
+		})
+
+		execErr := childFuture.Get(childCtx, &result)
+		controlHandler.UnregisterChildWorkflow(childExec.ID)
+		if execErr != nil {
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("SwarmWorkflow failed: %v", execErr)}, execErr
+		}
+		scheduleStreamEnd(ctx)
+		result = AddTaskContextToMetadata(result, input.Context)
+		return result, nil
+	}
+
 	// Early route: Force ResearchWorkflow bypasses decomposition entirely
 	// ResearchWorkflow has its own query refinement + decompose pipeline, so orchestrator-level
 	// decomposition is redundant and wastes LLM tokens.
@@ -812,11 +862,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Info("P2P coordination forced via context flag")
 	}
 
-	// Check if Swarm mode is requested
-	forceSwarm := GetContextBool(input.Context, "force_swarm")
-	if forceSwarm {
-		logger.Info("Swarm workflow forced via context flag")
-	}
+	// NOTE: force_swarm is handled in early routing (before decomposition) to avoid
+	// redundant LLM calls. See "Early route: Force SwarmWorkflow" block above.
 
 	// Supervisor heuristic: very large plans, explicit dependencies, or forced P2P
 	hasDeps := forceP2P // Start with force flag
@@ -827,47 +874,6 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				break
 			}
 		}
-	}
-
-	// Swarm workflow with fallback: try swarm first, fall back to standard routing on failure
-	if forceSwarm && cfg.SwarmEnabled {
-		if err := controlHandler.CheckPausePoint(ctx, "pre_swarm_workflow"); err != nil {
-			return TaskResult{Success: false, ErrorMessage: err.Error()}, err
-		}
-		var result TaskResult
-		ometrics.WorkflowsStarted.WithLabelValues("SwarmWorkflow", "swarm").Inc()
-		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-			WorkflowID: parentWorkflowID,
-			EventType:  activities.StreamEventDelegation,
-			AgentID:    "orchestrator",
-			Message:    activities.MsgSwarmStarted(),
-			Timestamp:  workflow.Now(ctx),
-		}).Get(ctx, nil)
-		input.PreplannedDecomposition = &decomp
-		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-			ParentClosePolicy: enums.PARENT_CLOSE_POLICY_REQUEST_CANCEL,
-		})
-		childFuture := workflow.ExecuteChildWorkflow(childCtx, SwarmWorkflow, input)
-		var childExec workflow.Execution
-		if err := childFuture.GetChildWorkflowExecution().Get(childCtx, &childExec); err != nil {
-			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Failed to get child execution: %v", err)}, err
-		}
-		controlHandler.RegisterChildWorkflow(childExec.ID)
-		execErr := childFuture.Get(childCtx, &result)
-		controlHandler.UnregisterChildWorkflow(childExec.ID)
-
-		if execErr == nil && result.Success {
-			scheduleStreamEnd(ctx)
-			result = AddTaskContextToMetadata(result, input.Context)
-			return result, nil
-		}
-		// Fallback: swarm failed, continue to standard routing below
-		reason := "unsuccessful result"
-		if execErr != nil {
-			reason = execErr.Error()
-		}
-		logger.Warn("SwarmWorkflow failed, falling back to standard routing", "error", reason)
-		delete(input.Context, "force_swarm")
 	}
 
 	switch {

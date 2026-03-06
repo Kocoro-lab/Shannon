@@ -2977,6 +2977,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								Context:   discoveryContext,
 								Mode:      "standard",
 								SessionID: input.SessionID,
+								UserID:    input.UserID,
 								History:   convertHistoryForAgent(input.History),
 								SuggestedTools: []string{
 									"web_search",
@@ -3216,6 +3217,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 									Context:   discoveryContext,
 									Mode:      "standard",
 									SessionID: input.SessionID,
+									UserID:    input.UserID,
 									History:   convertHistoryForAgent(input.History),
 									SuggestedTools: []string{
 										"web_search",
@@ -3462,6 +3464,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 									Context:        prefetchContext,
 									Mode:           "standard",
 									SessionID:      input.SessionID,
+									UserID:         input.UserID,
 									History:        convertHistoryForAgent(input.History),
 									SuggestedTools: []string{"web_subpage_fetch"},
 									ToolParameters: map[string]interface{}{
@@ -4758,6 +4761,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				Context:          fallbackCtx,
 				Mode:             "standard",
 				SessionID:        input.SessionID,
+				UserID:           input.UserID,
 				History:          convertHistoryForAgent(input.History),
 				SuggestedTools:   []string{"web_search"},
 				ParentWorkflowID: input.ParentWorkflowID,

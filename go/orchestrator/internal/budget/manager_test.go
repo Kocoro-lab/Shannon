@@ -69,6 +69,7 @@ func TestRecordUsage_ExecInsertsTokenUsage(t *testing.T) {
 	)).WithArgs(
 		sqlmock.AnyArg(), sqlmock.AnyArg(), usage.AgentID, usage.Provider, usage.Model,
 		sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+		sqlmock.AnyArg(), sqlmock.AnyArg(), // cache_read_tokens, cache_creation_tokens
 	).WillReturnResult(sqlmock.NewResult(1, 1))
 
 	if err := bm.RecordUsage(context.Background(), usage); err != nil {

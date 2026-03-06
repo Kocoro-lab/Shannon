@@ -202,9 +202,56 @@ impl ToolRegistry {
             cache_ttl_ms: None,
         };
 
+        // Firecracker executor tool (microVM)
+        let firecracker_executor = ToolCapability {
+            id: "firecracker_executor".to_string(),
+            name: "Firecracker Executor".to_string(),
+            description: "Execute Python code inside a Firecracker microVM".to_string(),
+            category: "code".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "Python source code to execute"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session ID for workspace mapping"
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "description": "Execution timeout in seconds"
+                    }
+                },
+                "required": ["code"]
+            }),
+            output_schema: serde_json::json!({
+                "type": "string",
+                "description": "Program stdout"
+            }),
+            required_permissions: vec!["firecracker".to_string(), "filesystem".to_string()],
+            estimated_duration_ms: 10000,
+            is_dangerous: true,
+            version: "0.1.0".to_string(),
+            author: "shannon-core".to_string(),
+            tags: vec![
+                "code".to_string(),
+                "firecracker".to_string(),
+                "sandbox".to_string(),
+            ],
+            examples: vec![],
+            rate_limit: Some(RateLimit {
+                requests_per_minute: 10,
+                requests_per_hour: 100,
+            }),
+            cache_ttl_ms: None,
+        };
+
         self.register_tool(calculator);
         self.register_tool(web_search);
         self.register_tool(code_executor);
+        self.register_tool(firecracker_executor);
     }
 
     /// Register a new tool capability

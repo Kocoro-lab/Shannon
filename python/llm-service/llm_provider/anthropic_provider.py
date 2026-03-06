@@ -142,26 +142,10 @@ class AnthropicProvider(LLMProvider):
                     {"role": "user", "content": f"Function result: {content}"}
                 )
 
-        # Add cache_control to the last assistant message so the conversation
-        # history prefix is cached across turns (Anthropic prompt caching).
-        # Uses one of 4 allowed breakpoints (system + tools use 2 already).
-        # Guard: only add for conversations with prior history.
-        # Anthropic silently skips caching if the prefix is < 1024 tokens.
-        if len(claude_messages) >= 3:
-            for i in range(len(claude_messages) - 1, -1, -1):
-                if claude_messages[i]["role"] == "assistant":
-                    msg_content = claude_messages[i].get("content", "")
-                    if isinstance(msg_content, str):
-                        claude_messages[i]["content"] = [
-                            {"type": "text", "text": msg_content, "cache_control": {"type": "ephemeral"}}
-                        ]
-                    elif isinstance(msg_content, list) and msg_content:
-                        # Only text blocks accept cache_control; tool_use blocks do not.
-                        for block in reversed(msg_content):
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                block["cache_control"] = {"type": "ephemeral"}
-                                break
-                    break
+        # NOTE: Previously added cache_control to last assistant message (explicit
+        # breakpoint). Removed because the breakpoint MOVES each iteration, causing
+        # new cache creation every turn and zero cache reads. Caching is now handled
+        # by explicit system message breakpoint (line ~238) only.
 
         return system_message, claude_messages
 
@@ -188,6 +172,8 @@ class AnthropicProvider(LLMProvider):
                 },
             }
             tools.append(tool)
+        # Sort by name for cache prefix stability across requests
+        tools.sort(key=lambda t: t["name"])
         return tools
 
 
@@ -278,6 +264,14 @@ class AnthropicProvider(LLMProvider):
                         "type": "tool",
                         "name": request.function_call.get("name"),
                     }
+
+        # NOTE: Automatic caching (top-level cache_control) tested extensively but
+        # NET NEGATIVE for swarm: 25% write premium on every call, but parallel agents
+        # constantly change shared state (team roster, task board, workspace) → prefix
+        # breaks between nearly every call → ~7% hit rate → net -17% cost increase.
+        # Explicit system message cache_control (line 190) is sufficient: Sonnet/Lead
+        # (>1024 threshold, ~8K stable system prompt) benefits; Haiku agents (<4096
+        # threshold) silently skip without paying write premium.
 
         # Structured outputs: inject output_config for constrained JSON decoding.
         # SDK <0.42 doesn't have native output_config param; pass via extra_body.

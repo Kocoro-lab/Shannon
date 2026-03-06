@@ -143,6 +143,9 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	// Dynamic team authorization
 	w.RegisterActivity(activities.AuthorizeTeamAction)
 
+	// Forced tool execution (used by auto file_write guard in swarm)
+	w.RegisterActivity(activities.ExecuteAgentWithForcedTools)
+
 	// P2P mailbox + workspace (receiver methods)
 	w.RegisterActivityWithOptions(acts.SendAgentMessage, activity.RegisterOptions{Name: constants.SendAgentMessageActivity})
 	w.RegisterActivityWithOptions(acts.FetchAgentMessages, activity.RegisterOptions{Name: constants.FetchAgentMessagesActivity})
@@ -153,6 +156,21 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(acts.SendTaskRequest, activity.RegisterOptions{Name: constants.SendTaskRequestActivity})
 	w.RegisterActivityWithOptions(acts.SendTaskOffer, activity.RegisterOptions{Name: constants.SendTaskOfferActivity})
 	w.RegisterActivityWithOptions(acts.SendTaskAccept, activity.RegisterOptions{Name: constants.SendTaskAcceptActivity})
+	// File registry (swarm file tracking)
+	w.RegisterActivityWithOptions(acts.RegisterFile, activity.RegisterOptions{Name: constants.RegisterFileActivity})
+	w.RegisterActivityWithOptions(acts.GetFileRegistry, activity.RegisterOptions{Name: constants.GetFileRegistryActivity})
+	// Workspace directory setup
+	w.RegisterActivityWithOptions(acts.SetupWorkspaceDirs, activity.RegisterOptions{Name: constants.SetupWorkspaceDirsActivity})
+	// TaskList activities (swarm task tracking)
+	w.RegisterActivityWithOptions(acts.InitTaskList, activity.RegisterOptions{Name: constants.InitTaskListActivity})
+	w.RegisterActivityWithOptions(acts.GetTaskList, activity.RegisterOptions{Name: constants.GetTaskListActivity})
+	w.RegisterActivityWithOptions(acts.UpdateTaskStatus, activity.RegisterOptions{Name: constants.UpdateTaskStatusActivity})
+	w.RegisterActivityWithOptions(acts.CreateTask, activity.RegisterOptions{Name: constants.CreateTaskActivity})
+	w.RegisterActivityWithOptions(acts.ClaimTask, activity.RegisterOptions{Name: constants.ClaimTaskActivity})
+	// Lead Agent decision activity
+	w.RegisterActivityWithOptions(activities.LeadDecision, activity.RegisterOptions{Name: constants.LeadDecisionActivity})
+	w.RegisterActivityWithOptions(activities.ListWorkspaceFiles, activity.RegisterOptions{Name: constants.ListWorkspaceFilesActivity})
+	w.RegisterActivityWithOptions(activities.ReadWorkspaceFile, activity.RegisterOptions{Name: constants.ReadWorkspaceFileActivity})
 
 	// Session activities - register with consistent naming
 	w.RegisterActivityWithOptions(acts.DecomposeTask, activity.RegisterOptions{Name: constants.DecomposeTaskActivity})

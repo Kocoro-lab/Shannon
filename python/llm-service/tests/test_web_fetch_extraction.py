@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from llm_service.tools.builtin.web_fetch import (
     WebFetchTool,
     extract_with_llm,
+    extract_batch_with_llm,
     apply_extraction,
     EXTRACTION_INTERNAL_MAX,
     EXTRACTION_CONTENT_CAP,
@@ -380,13 +381,11 @@ class TestExtractionLengthClamping:
         assert processed_fail.output["extracted"] is False
 
 
+# --- Tests for research_mode no longer skipping extraction ---
 
-# --- Tests for research_mode skipping extraction ---
-
-class TestResearchModeSkipsExtraction:
-    """Research mode OODA loop does many fast fetches — extraction adds ~40-60s
-    latency per call, causing timeout.  Skip auto-extraction when
-    session_context.research_mode=True (issue #43)."""
+class TestResearchModeNoLongerSkipsExtraction:
+    """research_mode no longer bypasses extraction (reverted in favor of batch extraction).
+    Extraction always runs via apply_extraction (single URL) or consolidated batch extraction."""
 
     @pytest.fixture
     def tool(self):
@@ -418,32 +417,27 @@ class TestResearchModeSkipsExtraction:
         return mock_fetch
 
     @pytest.mark.asyncio
-    async def test_single_url_skips_extraction_in_research_mode(self, tool):
-        """research_mode=True => extract_with_llm NOT called, content hard-truncated."""
+    async def test_single_url_extracts_even_with_research_mode(self, tool):
+        """research_mode=True => extraction still runs (no longer skipped)."""
         long_content = "x" * 20000
-        max_length = 10000
 
+        manager = _mock_llm_manager()
         with patch.object(tool, "_fetch_pure_python", side_effect=self._mock_fetch(long_content)), \
-             patch("llm_service.tools.builtin.web_fetch.apply_extraction") as mock_apply, \
-             patch("llm_service.tools.builtin.web_fetch.extract_with_llm") as mock_extract:
+             patch("llm_provider.manager.get_llm_manager", return_value=manager):
             result = await tool.execute(
                 session_context={"research_mode": True},
                 url="https://example.com",
-                max_length=max_length,
+                max_length=10000,
             )
 
-        # Extraction must NOT be called
-        mock_apply.assert_not_called()
-        mock_extract.assert_not_called()
-
-        # Content should be hard-truncated to max_length
+        # Extraction should run even with research_mode
         assert result.success
-        assert len(result.output["content"]) == max_length
-        assert result.output["truncated"] is True
+        assert result.output.get("extracted") is True
+        manager.complete.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_single_url_still_extracts_without_research_mode(self, tool):
-        """No research_mode => apply_extraction IS called (existing behavior)."""
+    async def test_single_url_extracts_without_research_mode(self, tool):
+        """No research_mode => apply_extraction IS called (existing behavior unchanged)."""
         long_content = "x" * 20000
 
         manager = _mock_llm_manager()
@@ -460,8 +454,8 @@ class TestResearchModeSkipsExtraction:
         manager.complete.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_batch_skips_extraction_in_research_mode(self):
-        """Batch mode: research_mode=True => no per-page LLM extraction."""
+    async def test_batch_extracts_even_with_research_mode(self):
+        """Batch mode: research_mode=True => batch extraction still runs."""
         tool = WebFetchTool()
         long_content = "x" * 20000
 
@@ -480,22 +474,28 @@ class TestResearchModeSkipsExtraction:
             )
 
             with patch(
-                "llm_service.tools.builtin.web_fetch.extract_with_llm",
+                "llm_service.tools.builtin.web_fetch.extract_batch_with_llm",
                 new_callable=AsyncMock,
-            ) as mock_extract:
+            ) as mock_batch_extract:
+                mock_batch_extract.return_value = (
+                    {0: "Extracted 1", 1: "Extracted 2"},
+                    1000, 0.002, "claude-haiku-4-5-20251001",
+                )
+
                 result = await tool._fetch_batch(
                     ["https://example.com/1", "https://example.com/2"],
                     session_context={"research_mode": True},
                     max_length=10000,
+                    total_chars_cap=200000,
                 )
 
-                # extract_with_llm should NOT be called for batch pages
-                mock_extract.assert_not_called()
+                # Batch extraction SHOULD be called (not skipped)
+                mock_batch_extract.assert_called_once()
                 assert result.success
 
     @pytest.mark.asyncio
-    async def test_extract_prompt_ignored_in_research_mode(self, tool):
-        """extract_prompt set + research_mode=True => extraction still skipped (issue #46)."""
+    async def test_extract_prompt_works_with_research_mode(self, tool):
+        """extract_prompt + research_mode=True => extraction runs (no longer ignored)."""
         long_content = "x" * 20000
 
         manager = _mock_llm_manager()
@@ -508,7 +508,495 @@ class TestResearchModeSkipsExtraction:
                 extract_prompt="extract pricing info",
             )
 
-        # Research mode always skips extraction, even with extract_prompt
+        # Extraction runs even with research_mode + extract_prompt
         assert result.success
-        assert result.output.get("extracted") is not True
-        manager.complete.assert_not_called()
+        assert result.output.get("extracted") is True
+        manager.complete.assert_called_once()
+
+
+# --- Tests for extract_batch_with_llm ---
+
+class TestExtractBatchWithLlm:
+    """Tests for the batch extraction function that combines N pages into 1 LLM call."""
+
+    @pytest.mark.asyncio
+    async def test_batch_happy_path(self):
+        """2 pages, LLM returns both with delimiters, verify dict[page_id->text], single LLM call."""
+        pages = [
+            {"page_id": 0, "url": "https://a.com", "title": "Page A", "content": "Content of page A " * 100},
+            {"page_id": 1, "url": "https://b.com", "title": "Page B", "content": "Content of page B " * 100},
+        ]
+        llm_output = (
+            "<<<PAGE_RESULT 0>>>\nExtracted from page A\n<<<END_PAGE_RESULT 0>>>\n"
+            "<<<PAGE_RESULT 1>>>\nExtracted from page B\n<<<END_PAGE_RESULT 1>>>"
+        )
+        manager = MagicMock()
+        manager.complete = AsyncMock(return_value=FakeResponse(content=llm_output))
+
+        with patch("llm_provider.manager.get_llm_manager", return_value=manager):
+            result = await extract_batch_with_llm(pages, per_page_budget=2000)
+
+        assert result is not None
+        extracted, tokens, cost, model = result
+        assert isinstance(extracted, dict)
+        assert extracted[0] == "Extracted from page A"
+        assert extracted[1] == "Extracted from page B"
+        assert tokens == 500
+        assert cost == 0.001
+        # Single LLM call for both pages
+        manager.complete.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_batch_with_query(self):
+        """Verify extract_prompt appears in the LLM prompt message."""
+        pages = [
+            {"page_id": 0, "url": "https://a.com", "title": "Page A", "content": "Some content here"},
+        ]
+        llm_output = "<<<PAGE_RESULT 0>>>\nPricing info\n<<<END_PAGE_RESULT 0>>>"
+        manager = MagicMock()
+        manager.complete = AsyncMock(return_value=FakeResponse(content=llm_output))
+
+        with patch("llm_provider.manager.get_llm_manager", return_value=manager):
+            result = await extract_batch_with_llm(pages, extract_prompt="extract pricing")
+
+        assert result is not None
+        # Verify extract_prompt was included in the user message
+        call_args = manager.complete.call_args
+        user_msg = call_args.kwargs["messages"][1]["content"]
+        assert "extract pricing" in user_msg
+
+    @pytest.mark.asyncio
+    async def test_batch_returns_none_on_failure(self):
+        """LLM raises exception -> returns None."""
+        pages = [
+            {"page_id": 0, "url": "https://a.com", "title": "Page A", "content": "Content"},
+        ]
+        manager = MagicMock()
+        manager.complete = AsyncMock(side_effect=RuntimeError("API down"))
+
+        with patch("llm_provider.manager.get_llm_manager", return_value=manager):
+            result = await extract_batch_with_llm(pages)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_batch_missing_page_returns_empty(self):
+        """LLM only returns page 0, page 1 gets empty string."""
+        pages = [
+            {"page_id": 0, "url": "https://a.com", "title": "Page A", "content": "Content A"},
+            {"page_id": 1, "url": "https://b.com", "title": "Page B", "content": "Content B"},
+        ]
+        # LLM only returns result for page 0
+        llm_output = "<<<PAGE_RESULT 0>>>\nExtracted A\n<<<END_PAGE_RESULT 0>>>"
+        manager = MagicMock()
+        manager.complete = AsyncMock(return_value=FakeResponse(content=llm_output))
+
+        with patch("llm_provider.manager.get_llm_manager", return_value=manager):
+            result = await extract_batch_with_llm(pages)
+
+        assert result is not None
+        extracted, _, _, _ = result
+        assert extracted[0] == "Extracted A"
+        assert extracted[1] == ""  # Missing page gets empty string
+
+    @pytest.mark.asyncio
+    async def test_batch_caps_combined_content(self):
+        """Huge content (300K chars per page) still works, content truncated per-page to fit EXTRACTION_CONTENT_CAP."""
+        pages = [
+            {"page_id": 0, "url": "https://a.com", "title": "Page A", "content": "x" * 300_000},
+            {"page_id": 1, "url": "https://b.com", "title": "Page B", "content": "y" * 300_000},
+        ]
+        llm_output = (
+            "<<<PAGE_RESULT 0>>>\nSummary A\n<<<END_PAGE_RESULT 0>>>\n"
+            "<<<PAGE_RESULT 1>>>\nSummary B\n<<<END_PAGE_RESULT 1>>>"
+        )
+        manager = MagicMock()
+        manager.complete = AsyncMock(return_value=FakeResponse(content=llm_output))
+
+        with patch("llm_provider.manager.get_llm_manager", return_value=manager):
+            result = await extract_batch_with_llm(pages, per_page_budget=2000)
+
+        assert result is not None
+        # Verify combined content sent to LLM does not exceed EXTRACTION_CONTENT_CAP
+        call_args = manager.complete.call_args
+        user_msg = call_args.kwargs["messages"][1]["content"]
+        assert len(user_msg) <= EXTRACTION_CONTENT_CAP + 1000  # +1000 for prompt overhead
+
+
+# --- Tests for _fetch_batch consolidated extraction ---
+
+class TestBatchFetchUsesConsolidatedExtraction:
+    """Verify that _fetch_batch uses a single consolidated LLM call (extract_batch_with_llm)
+    instead of per-URL extract_with_llm calls."""
+
+    @pytest.mark.asyncio
+    async def test_batch_calls_single_extraction(self):
+        """Batch fetch 3 URLs with over-budget content -> extract_batch_with_llm called once,
+        extract_with_llm NOT called."""
+        tool = WebFetchTool()
+        long_content = "x" * 20000  # Over per-URL budget of ~3333 chars (10000/3)
+
+        with patch.object(tool, "_fetch_pure_python", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = ToolResult(
+                success=True,
+                output={
+                    "url": "https://example.com",
+                    "title": "Test",
+                    "content": long_content,
+                    "char_count": len(long_content),
+                    "method": "pure_python",
+                    "status_code": 200,
+                    "blocked_reason": None,
+                },
+            )
+
+            with patch(
+                "llm_service.tools.builtin.web_fetch.extract_batch_with_llm",
+                new_callable=AsyncMock,
+            ) as mock_batch_extract, \
+                 patch(
+                "llm_service.tools.builtin.web_fetch.extract_with_llm",
+                new_callable=AsyncMock,
+            ) as mock_single_extract:
+                # Simulate successful batch extraction
+                mock_batch_extract.return_value = (
+                    {0: "Extracted A", 1: "Extracted B", 2: "Extracted C"},
+                    1500,
+                    0.003,
+                    "claude-haiku-4-5-20251001",
+                )
+
+                result = await tool._fetch_batch(
+                    ["https://a.com", "https://b.com", "https://c.com"],
+                    max_length=10000,
+                    total_chars_cap=200000,  # High cap to avoid skipping
+                )
+
+                # Batch extraction called once (not per-URL)
+                mock_batch_extract.assert_called_once()
+                # Single extraction NOT called
+                mock_single_extract.assert_not_called()
+
+                assert result.success
+                assert result.tokens_used == 1500
+                assert result.cost_usd == 0.003
+                # All successful pages should have extracted content
+                for page in result.output["pages"]:
+                    if page.get("success"):
+                        assert page.get("extracted") is True
+
+    @pytest.mark.asyncio
+    async def test_batch_single_page_uses_extract_with_llm(self):
+        """When only 1 page needs extraction, use extract_with_llm (not batch)."""
+        tool = WebFetchTool()
+        long_content = "x" * 20000
+        short_content = "short"
+
+        call_count = [0]
+
+        async def mock_fetch(url, max_length, subpages=0):
+            call_count[0] += 1
+            content = long_content if call_count[0] == 1 else short_content
+            return ToolResult(
+                success=True,
+                output={
+                    "url": url,
+                    "title": "Test",
+                    "content": content,
+                    "char_count": len(content),
+                    "method": "pure_python",
+                    "status_code": 200,
+                    "blocked_reason": None,
+                },
+            )
+
+        with patch.object(tool, "_fetch_pure_python", side_effect=mock_fetch), \
+             patch(
+                "llm_service.tools.builtin.web_fetch.extract_batch_with_llm",
+                new_callable=AsyncMock,
+             ) as mock_batch_extract, \
+             patch(
+                "llm_service.tools.builtin.web_fetch.extract_with_llm",
+                new_callable=AsyncMock,
+             ) as mock_single_extract:
+            mock_single_extract.return_value = (
+                "Extracted content", 500, 0.001, "claude-haiku-4-5-20251001"
+            )
+
+            result = await tool._fetch_batch(
+                ["https://a.com", "https://b.com"],
+                max_length=10000,
+            )
+
+            # Single extraction used (only 1 page over budget)
+            mock_single_extract.assert_called_once()
+            # Batch extraction NOT used
+            mock_batch_extract.assert_not_called()
+
+            assert result.success
+            assert result.tokens_used == 500
+
+    @pytest.mark.asyncio
+    async def test_batch_fallback_on_extraction_failure(self):
+        """Batch extraction returns None -> content hard-truncated for all pages."""
+        tool = WebFetchTool()
+        long_content = "x" * 20000
+
+        with patch.object(tool, "_fetch_pure_python", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = ToolResult(
+                success=True,
+                output={
+                    "url": "https://example.com",
+                    "title": "Test",
+                    "content": long_content,
+                    "char_count": len(long_content),
+                    "method": "pure_python",
+                    "status_code": 200,
+                    "blocked_reason": None,
+                },
+            )
+
+            with patch(
+                "llm_service.tools.builtin.web_fetch.extract_batch_with_llm",
+                new_callable=AsyncMock,
+            ) as mock_batch_extract:
+                # Batch extraction fails
+                mock_batch_extract.return_value = None
+
+                result = await tool._fetch_batch(
+                    ["https://a.com", "https://b.com", "https://c.com"],
+                    max_length=10000,
+                    total_chars_cap=200000,  # High cap to avoid skipping
+                )
+
+                assert result.success
+                per_url_budget = max(10000 // 3, 2000)
+                # All successful pages should be hard-truncated (not extracted)
+                for page in result.output["pages"]:
+                    if page.get("success"):
+                        assert page.get("extracted") is False
+                        assert page.get("truncated") is True
+                        assert len(page["content"]) == per_url_budget
+
+    @pytest.mark.asyncio
+    async def test_batch_extraction_metadata_tracking(self):
+        """Verify extraction tokens/cost are tracked at batch level in metadata."""
+        tool = WebFetchTool()
+        long_content = "x" * 20000
+
+        with patch.object(tool, "_fetch_pure_python", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = ToolResult(
+                success=True,
+                output={
+                    "url": "https://example.com",
+                    "title": "Test",
+                    "content": long_content,
+                    "char_count": len(long_content),
+                    "method": "pure_python",
+                    "status_code": 200,
+                    "blocked_reason": None,
+                },
+            )
+
+            with patch(
+                "llm_service.tools.builtin.web_fetch.extract_batch_with_llm",
+                new_callable=AsyncMock,
+            ) as mock_batch_extract:
+                mock_batch_extract.return_value = (
+                    {0: "Extracted A", 1: "Extracted B"},
+                    1200,
+                    0.0025,
+                    "claude-haiku-4-5-20251001",
+                )
+
+                result = await tool._fetch_batch(
+                    ["https://a.com", "https://b.com"],
+                    max_length=10000,
+                )
+
+                assert result.metadata["extraction_tokens"] == 1200
+                assert result.metadata["extraction_cost_usd"] == 0.0025
+                assert result.metadata["extraction_model"] == "claude-haiku-4-5-20251001"
+                assert result.tokens_used == 1200
+                assert result.cost_usd == 0.0025
+
+
+class TestFirecrawlSparseFallback:
+    """When firecrawl returns <500 chars, auto-fallback to pure_python."""
+
+    @pytest.mark.asyncio
+    async def test_single_url_sparse_fallback(self):
+        """Single-URL path: firecrawl returns sparse content → falls back to pure_python."""
+        tool = WebFetchTool()
+        tool.exa_api_key = None
+
+        # Mock firecrawl returning sparse content (< 500 chars)
+        mock_firecrawl = MagicMock()
+        mock_firecrawl.fetch = AsyncMock(return_value={
+            "url": "https://example.com",
+            "title": "Blocked",
+            "content": "Please enable JavaScript.",  # Only 26 chars
+            "char_count": 26,
+        })
+        tool.firecrawl_provider = mock_firecrawl
+
+        # Mock pure_python returning real content
+        good_content = "A" * 2000  # Substantive content
+        python_result = ToolResult(
+            success=True,
+            output={
+                "url": "https://example.com",
+                "title": "Real Page",
+                "content": good_content,
+                "char_count": len(good_content),
+                "word_count": 1,
+                "truncated": False,
+                "method": "pure_python",
+                "pages_fetched": 1,
+                "tool_source": "fetch",
+                "status_code": 200,
+                "blocked_reason": None,
+            },
+            metadata={"fetch_method": "pure_python"},
+        )
+
+        with patch.object(tool, "_fetch_pure_python", return_value=python_result):
+            result = await tool.execute(url="https://example.com", max_length=10000)
+
+        assert result.success
+        assert result.output["content"] == good_content
+        assert result.output["char_count"] == len(good_content)
+        # Firecrawl was called, then fell back
+        mock_firecrawl.fetch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_single_url_no_fallback_when_enough_content(self):
+        """Single-URL path: firecrawl returns >=500 chars → no fallback."""
+        tool = WebFetchTool()
+        tool.exa_api_key = None
+
+        good_content = "B" * 600  # Above threshold
+        mock_firecrawl = MagicMock()
+        mock_firecrawl.fetch = AsyncMock(return_value={
+            "url": "https://example.com",
+            "title": "Good Page",
+            "content": good_content,
+            "char_count": len(good_content),
+        })
+        tool.firecrawl_provider = mock_firecrawl
+
+        with patch.object(tool, "_fetch_pure_python") as mock_python:
+            result = await tool.execute(url="https://example.com", max_length=10000)
+
+        assert result.success
+        assert result.output["content"] == good_content
+        # pure_python should NOT have been called
+        mock_python.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_single_url_no_fallback_for_pdf(self):
+        """Single-URL path: PDF content (starts with %PDF) should NOT trigger sparse fallback."""
+        tool = WebFetchTool()
+        tool.exa_api_key = None
+
+        pdf_content = "%PDF-1.4 short"  # Only 14 chars but it's a PDF
+        mock_firecrawl = MagicMock()
+        mock_firecrawl.fetch = AsyncMock(return_value={
+            "url": "https://example.com/doc.pdf",
+            "title": "PDF",
+            "content": pdf_content,
+            "char_count": len(pdf_content),
+        })
+        tool.firecrawl_provider = mock_firecrawl
+
+        with patch.object(tool, "_fetch_pure_python") as mock_python:
+            result = await tool.execute(url="https://example.com/doc.pdf", max_length=10000)
+
+        assert result.success
+        # pure_python should NOT have been called for PDFs
+        mock_python.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_batch_sparse_fallback(self):
+        """Batch path: firecrawl returns sparse content → falls back to pure_python."""
+        tool = WebFetchTool()
+        tool.exa_api_key = None
+
+        # Mock firecrawl._scrape returning sparse content
+        mock_firecrawl = MagicMock()
+        mock_firecrawl._scrape = AsyncMock(return_value={
+            "url": "https://example.com",
+            "title": "Blocked",
+            "content": "Enable JS",  # Only 9 chars
+            "char_count": 9,
+            "status_code": 200,
+        })
+        tool.firecrawl_provider = mock_firecrawl
+
+        # Mock pure_python returning real content
+        good_content = "C" * 2000
+        python_result = ToolResult(
+            success=True,
+            output={
+                "url": "https://example.com",
+                "title": "Real Page",
+                "content": good_content,
+                "char_count": len(good_content),
+                "method": "pure_python",
+                "status_code": 200,
+                "blocked_reason": None,
+            },
+        )
+
+        with patch.object(tool, "_fetch_pure_python", return_value=python_result):
+            result = await tool.execute(
+                urls=["https://example.com"],
+                max_length=10000,
+            )
+
+        assert result.success
+        pages = result.output["pages"]
+        assert len(pages) == 1
+        assert pages[0]["content"] == good_content
+        # Firecrawl was called, then fell back
+        mock_firecrawl._scrape.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_batch_no_fallback_when_enough_content(self):
+        """Batch path: firecrawl returns >=500 chars → no fallback."""
+        tool = WebFetchTool()
+        tool.exa_api_key = None
+
+        good_content = "D" * 600
+        mock_firecrawl = MagicMock()
+        mock_firecrawl._scrape = AsyncMock(return_value={
+            "url": "https://example.com",
+            "title": "Good Page",
+            "content": good_content,
+            "char_count": len(good_content),
+            "status_code": 200,
+        })
+        tool.firecrawl_provider = mock_firecrawl
+
+        with patch.object(tool, "_fetch_pure_python") as mock_python:
+            result = await tool.execute(
+                urls=["https://example.com"],
+                max_length=10000,
+            )
+
+        assert result.success
+        pages = result.output["pages"]
+        assert len(pages) == 1
+        assert pages[0]["content"] == good_content
+        assert pages[0]["method"] == "firecrawl"
+        # pure_python should NOT have been called
+        mock_python.assert_not_called()
+
+    def test_sparse_fallback_logic_exists_in_source(self):
+        """Verify sparse content fallback logic exists in both code paths."""
+        import inspect
+        from llm_service.tools.builtin import web_fetch as wf_module
+        source = inspect.getsource(wf_module)
+        # Both single-URL and batch paths should have sparse fallback
+        assert source.count("sparse") >= 2, \
+            "Both single-URL and batch paths should have sparse fallback logic"

@@ -170,6 +170,7 @@ func BrowserLoop(
 						Context:          agentContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
+						UserID:           opts.UserID,
 						History:          history,
 						ParentWorkflowID: wfID,
 					},
@@ -187,6 +188,7 @@ func BrowserLoop(
 					Context:          agentContext,
 					Mode:             "standard",
 					SessionID:        sessionID,
+					UserID:           opts.UserID,
 					History:          history,
 					ParentWorkflowID: wfID,
 				}).Get(ctx, &agentResult)

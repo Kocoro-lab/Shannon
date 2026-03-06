@@ -261,6 +261,88 @@ Tip: Use SSE/WS filters to only watch team events:
 curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=TEAM_RECRUITED,TEAM_RETIRED"
 ```
 
+## Swarm Workflow Events
+
+When `force_swarm: true` triggers SwarmWorkflow, additional event types are emitted for real-time task board UIs:
+
+| Event Type | Agent ID | Payload | When |
+|-----------|----------|---------|------|
+| `AGENT_STARTED` | `{agent-name}` | `{role: "researcher"}` | Agent spawned with role |
+| `AGENT_COMPLETED` | `{agent-name}` | — | Agent finished |
+| `TASKLIST_UPDATED` | `tasklist` | `{tasks: SwarmTask[]}` | Task list changed |
+| `LEAD_DECISION` | `swarm-lead` | `{event_type, actions_count}` | Lead coordination |
+
+### TASKLIST_UPDATED Payload
+
+The `TASKLIST_UPDATED` event carries the full task list in its payload, enabling frontends to render a live task board:
+
+```json
+{
+  "type": "TASKLIST_UPDATED",
+  "agent_id": "tasklist",
+  "message": "task=T1 status=in_progress",
+  "payload": {
+    "tasks": [
+      {
+        "id": "T1",
+        "description": "Research US AI chip market",
+        "status": "in_progress",
+        "owner": "takao",
+        "created_by": "decompose",
+        "depends_on": [],
+        "created_at": "2026-02-26T10:00:00Z"
+      },
+      {
+        "id": "T2",
+        "description": "Analyze comparative data",
+        "status": "pending",
+        "owner": "",
+        "depends_on": ["T1"],
+        "created_at": "2026-02-26T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### AGENT_STARTED with Role
+
+Swarm `AGENT_STARTED` events include the agent's role in the payload, which is not present in non-swarm workflows:
+
+```json
+{
+  "type": "AGENT_STARTED",
+  "agent_id": "takao",
+  "message": "Agent takao started",
+  "payload": {
+    "role": "researcher"
+  }
+}
+```
+
+### Streaming Swarm Events
+
+```bash
+# Watch swarm task board and agent lifecycle
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF&types=TASKLIST_UPDATED,AGENT_STARTED,AGENT_COMPLETED,LEAD_DECISION"
+
+# Watch everything including tool execution
+curl -N "http://localhost:8081/stream/sse?workflow_id=$WF"
+```
+
+### HITL: Mid-Execution Human Input
+
+Users can send messages to a running swarm, which arrive as `human_input` events in the Lead's decision loop:
+
+```bash
+POST /api/v1/swarm/{workflowID}/message
+Content-Type: application/json
+
+{"message": "Focus more on Samsung's foundry strategy"}
+```
+
+The Lead incorporates the feedback in its next decision cycle.
+
 ## HITL Research Review Events
 
 When `review_plan: "manual"` or `require_review: true` is set, the workflow emits HITL-specific events for research plan review.

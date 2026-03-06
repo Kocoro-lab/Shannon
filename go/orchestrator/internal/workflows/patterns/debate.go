@@ -142,6 +142,7 @@ func Debate(
 						Context:           debateContext,
 						Mode:              "debate",
 						SessionID:         sessionID,
+						UserID:            opts.UserID,
 						History:           history,
                             ParentWorkflowID: wid,
 					},
@@ -170,6 +171,7 @@ func Debate(
                     Context:           debateContext,
                     Mode:              "debate",
                     SessionID:         sessionID,
+                    UserID:            opts.UserID,
                     History:           history,
                     ParentWorkflowID:  wid,
                 })
@@ -295,6 +297,7 @@ func Debate(
 							Context:           debateContext,
 							Mode:              "debate",
 							SessionID:         sessionID,
+							UserID:            opts.UserID,
 							History:           append(history, debateHistory...),
                                 ParentWorkflowID: wid,
 						},
@@ -323,6 +326,7 @@ func Debate(
                         Context:           debateContext,
                         Mode:              "debate",
                         SessionID:         sessionID,
+                        UserID:            opts.UserID,
                         History:           append(history, debateHistory...),
                         ParentWorkflowID:  wid,
                     })

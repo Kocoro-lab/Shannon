@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/google/uuid"
@@ -354,6 +355,23 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 		return err
 	}
 
+	// Record Prometheus cache metrics (best-effort, after successful DB store)
+	if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
+		savingsUSD := 0.0
+		if usage.Model != "" {
+			costWithoutCache := pricing.CostForSplit(
+				usage.Model,
+				usage.InputTokens+usage.CacheReadTokens+usage.CacheCreationTokens,
+				usage.OutputTokens,
+			)
+			if costWithoutCache > usage.CostUSD {
+				savingsUSD = costWithoutCache - usage.CostUSD
+			}
+		}
+		metrics.RecordPromptCacheMetrics(usage.Provider, usage.Model,
+			usage.CacheReadTokens, usage.CacheCreationTokens, savingsUSD)
+	}
+
 	// Mark as processed for idempotency (only after successful storage)
 	if usage.IdempotencyKey != "" {
 		bm.idempotencyMu.Lock()
@@ -586,10 +604,12 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 	_, err := bm.db.ExecContext(ctx, `
 		INSERT INTO token_usage (
 			user_id, task_id, agent_id, provider, model,
-			prompt_tokens, completion_tokens, total_tokens, cost_usd
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			prompt_tokens, completion_tokens, total_tokens, cost_usd,
+			cache_read_tokens, cache_creation_tokens
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, userUUID, taskUUID, usage.AgentID, usage.Provider, usage.Model,
-		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD)
+		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD,
+		usage.CacheReadTokens, usage.CacheCreationTokens)
 
 	if err != nil {
 		bm.logger.Error("Failed to store token usage", zap.Error(err))
@@ -652,9 +672,11 @@ type UsageDetail struct {
 }
 
 type ModelUsage struct {
-	Tokens   int     `json:"tokens"`
-	Cost     float64 `json:"cost"`
-	Requests int     `json:"requests"`
+	Tokens              int     `json:"tokens"`
+	Cost                float64 `json:"cost"`
+	Requests            int     `json:"requests"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
 }
 
 // Enhanced Budget Manager Features - Backpressure and Circuit Breaker

@@ -631,8 +631,11 @@ func evaluateAgentPolicy(ctx context.Context, input AgentExecutionInput, logger 
 
 	// Extract additional context if available
 
-	// Extract user ID from context if available
-	if userID, ok := input.Context["user_id"].(string); ok {
+	// Use authenticated user_id (input.UserID) as primary source for policy.
+	// Fall back to context["user_id"] only if input.UserID is empty (legacy paths).
+	if input.UserID != "" {
+		policyInput.UserID = input.UserID
+	} else if userID, ok := input.Context["user_id"].(string); ok {
 		policyInput.UserID = userID
 	}
 
@@ -912,11 +915,17 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		sessionCtx = &agentpb.SessionContext{
 			SessionId: input.SessionID,
 			History:   input.History,
+			UserId:    input.UserID,
 			// Context from input already includes merged session context
 		}
 	}
 
-	// Use LLM-suggested tools if provided, otherwise NO tools
+	// Use LLM-suggested tools if provided, otherwise default to python_executor.
+	// This prevents hallucination where LLM writes <tool_call> as text without executing.
+	// NOTE: This disables agent streaming (see useStreaming below) since tool calls can't stream.
+	// Tradeoff: real tool execution > streaming UX.
+	// Set DISABLE_DEFAULT_TOOLS=1 to restore the pre-fix behavior (no default tools, streaming enabled).
+	disableDefaultTools := getenvInt("DISABLE_DEFAULT_TOOLS", 0) > 0
 	var allowedByRole []string
 	if len(input.SuggestedTools) > 0 {
 		// LLM has already suggested tools - use them directly
@@ -926,11 +935,20 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			zap.String("agent_id", input.AgentID),
 		)
 	} else {
-		// No tools suggested - keep empty to let LLM answer directly
-		allowedByRole = []string{}
-		logger.Info("No tools suggested by decomposition, using direct LLM response",
-			zap.String("agent_id", input.AgentID),
-		)
+		if disableDefaultTools {
+			// No tools suggested and default tools are disabled - keep empty to allow direct LLM response + streaming.
+			allowedByRole = []string{}
+			logger.Info("No tools suggested; default tools disabled via DISABLE_DEFAULT_TOOLS=1, using direct LLM response",
+				zap.String("agent_id", input.AgentID),
+			)
+		} else {
+			// No tools suggested - default to python_executor for computation support.
+			// Note: Firecracker VM has no network; only pure computation works.
+			allowedByRole = []string{"python_executor"}
+			logger.Info("No tools suggested, defaulting to python_executor",
+				zap.String("agent_id", input.AgentID),
+			)
+		}
 	}
 
 	// Universal guard: If any web_fetch tool is suggested but web_search is not, add web_search
@@ -1171,8 +1189,24 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 	}
 
 	// Create protobuf struct from context AFTER adding tool_parameters and tool_calls
+	// Ensure context is not nil
+	if input.Context == nil {
+		input.Context = make(map[string]interface{})
+	}
+
 	// Inject session_id and agent_id for session-aware tools (browser_use, file_*, etc.)
 	input.Context = ensureSessionContext(input.Context, input.SessionID, input.AgentID)
+
+	// Add user_id to context for agent-core (memory mount, audit).
+	// NOTE: Intentionally does NOT overwrite existing context["user_id"].
+	// The context map user_id is informational (for policy/vendor adapters).
+	// Security-critical user_id (memory mounts) uses TaskMetadata.UserId
+	// and SessionContext.user_id, which are set directly from input.UserID.
+	if input.UserID != "" {
+		if _, exists := input.Context["user_id"]; !exists {
+			input.Context["user_id"] = input.UserID
+		}
+	}
 
 	// Validate and sanitize context before protobuf conversion to prevent injection
 	validatedContext := validateContext(input.Context, logger)
@@ -1257,8 +1291,17 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 
 	req := &agentpb.ExecuteTaskRequest{
 		Metadata: &commonpb.TaskMetadata{ // minimal metadata
-			TaskId:    fmt.Sprintf("%s-%d", input.AgentID, time.Now().UnixNano()),
-			UserId:    "orchestrator",
+			TaskId: fmt.Sprintf("%s-%d", input.AgentID, time.Now().UnixNano()),
+			UserId: func() string {
+				if input.UserID != "" {
+					return input.UserID
+				}
+				logger.Warn("TaskMetadata.UserId falling back to 'orchestrator'",
+					zap.String("agent_id", input.AgentID),
+					zap.String("session_id", input.SessionID),
+				)
+				return "orchestrator"
+			}(),
 			SessionId: input.SessionID,
 		},
 		Query:          input.Query,
@@ -1298,49 +1341,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			AgentID:    input.AgentID,
 			Message:    truncateQuery(input.Query, MaxPromptChars),
 			Payload:    map[string]interface{}{"role": role},
-			Timestamp:  time.Now(),
-		})
-	}
-
-	// publishToolObservation emits TOOL_OBSERVATION events for all tools.
-	// For browser_screenshot, include full output in payload so the UI can render the image.
-	publishToolObservation := func(toolName string, success bool, output interface{}) {
-		if wfID == "" || toolName == "" {
-			return
-		}
-
-		var msg string
-		if success {
-			// Avoid marshaling huge screenshot blobs just to build a message.
-			outputStr := ""
-			if toolName != "browser_screenshot" && output != nil {
-				if str, ok := output.(string); ok {
-					outputStr = str
-				} else if bytes, err := json.Marshal(output); err == nil {
-					outputStr = string(bytes)
-				}
-			}
-			msg = MsgToolCompleted(toolName, outputStr)
-		} else {
-			msg = MsgToolFailed(toolName)
-		}
-
-		payload := map[string]interface{}{
-			"role":    role,
-			"tool":    toolName,
-			"success": success,
-		}
-		// Include full screenshot output for browser_screenshot so UI can render image
-		if toolName == "browser_screenshot" && success && output != nil {
-			payload["output"] = output
-		}
-
-		streaming.Get().Publish(wfID, streaming.Event{
-			WorkflowID: wfID,
-			Type:       string(StreamEventToolObs),
-			AgentID:    input.AgentID,
-			Message:    msg,
-			Payload:    payload,
 			Timestamp:  time.Now(),
 		})
 	}
@@ -1406,8 +1406,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		promptTokens := 0
 		completionTokens := 0
 		costUsd := 0.0
-		cacheReadTokens := 0
-		cacheCreationTokens := 0
 		toolsUsed := []string{}
 		toolExecs := []ToolExecution{}
 		success := true
@@ -1457,12 +1455,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						if v, ok2 := m["provider"].(string); ok2 && v != "" {
 							provider = v
 						}
-						if v, ok := parseFlexibleInt(m["cache_read_tokens"]); ok {
-							cacheReadTokens = v
-						}
-						if v, ok := parseFlexibleInt(m["cache_creation_tokens"]); ok {
-							cacheCreationTokens = v
-						}
 					}
 				} else {
 					output := interface{}(nil)
@@ -1492,12 +1484,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 							"tool":    toolName,
 							"success": tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
 						}
-						if toolName == "browser" && output != nil {
-							if outputMap, ok := output.(map[string]interface{}); ok {
-								if _, hasScreenshot := outputMap["screenshot"]; hasScreenshot {
-									payload["output"] = output
-								}
-							}
+						if toolName == "browser_screenshot" && output != nil {
+							payload["output"] = output
 						}
 						if tr.ErrorMessage != "" {
 							payload["error"] = tr.ErrorMessage
@@ -1580,8 +1568,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		// Note: toolsUsed already deduplicated via seenTools map during collection (line 1371-1373)
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
-			costUsd = pricing.CostForSplitWithCache(model, promptTokens, completionTokens,
-				cacheReadTokens, cacheCreationTokens, provider)
+			if model != "" {
+				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
+			} else {
+				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
+			}
 		} else if costUsd == 0 && tokens > 0 {
 			costUsd = pricing.CostForTokens(model, tokens)
 		}
@@ -1598,7 +1589,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				AgentID:    input.AgentID,
 				Message:    truncateQuery(out, MaxLLMOutputChars),
 				Payload: map[string]interface{}{
-					"role":          role,
 					"tokens_used":   tokens,
 					"model_used":    model,
 					"provider":      provider,
@@ -1606,6 +1596,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					"output_tokens": completionTokens,
 					"cost_usd":      costUsd,
 					"duration_ms":   duration,
+					"role":          role,
 				},
 				Timestamp: time.Now(),
 			})
@@ -1655,8 +1646,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		promptTokens := 0
 		completionTokens := 0
 		costUsd := 0.0
-		cacheReadTokens := 0
-		cacheCreationTokens := 0
 
 		if mu := resp.GetMetrics(); mu != nil && mu.TokenUsage != nil {
 			tokens = int(mu.TokenUsage.TotalTokens)
@@ -1681,7 +1670,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			if tr.Output != nil {
 				output = tr.Output.AsInterface()
 			}
-			publishToolObservation(toolName, tr.Status == commonpb.StatusCode_STATUS_CODE_OK, output)
 			toolExecs = append(toolExecs, ToolExecution{
 				Tool:       toolName,
 				Success:    tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
@@ -1731,8 +1719,11 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
-			costUsd = pricing.CostForSplitWithCache(model, promptTokens, completionTokens,
-				cacheReadTokens, cacheCreationTokens, provider)
+			if model != "" {
+				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
+			} else {
+				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
+			}
 		} else if costUsd == 0 && tokens > 0 {
 			costUsd = pricing.CostForTokens(model, tokens)
 		}
@@ -1755,7 +1746,6 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 				AgentID:    input.AgentID,
 				Message:    truncateQuery(out, MaxLLMOutputChars),
 				Payload: map[string]interface{}{
-					"role":          role,
 					"tokens_used":   tokens,
 					"model_used":    model,
 					"provider":      provider,
@@ -1763,6 +1753,7 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 					"output_tokens": completionTokens,
 					"cost_usd":      costUsd,
 					"duration_ms":   duration,
+					"role":          role,
 				},
 				Timestamp: time.Now(),
 			})
@@ -1859,6 +1850,15 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		"tool_count", len(input.SuggestedTools),
 	)
 
+	// Bail if no tool parameters to use
+	if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
+		logger.Warn("No ToolParameters provided; falling back to regular ExecuteAgent")
+		zapLogger := zap.L()
+		return executeAgentCore(ctx, input, zapLogger)
+	}
+
+	// Determine which tool to execute (typically just one from decomposition)
+	// Best-effort role extraction for observability (mirrors executeAgentCore)
 	role := ""
 	if input.Context != nil {
 		if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
@@ -1869,14 +1869,6 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		role = "generalist"
 	}
 
-	// Bail if no tool parameters to use
-	if input.ToolParameters == nil || len(input.ToolParameters) == 0 {
-		logger.Warn("No ToolParameters provided; falling back to regular ExecuteAgent")
-		zapLogger := zap.L()
-		return executeAgentCore(ctx, input, zapLogger)
-	}
-
-	// Determine which tool to execute (typically just one from decomposition)
 	toolName := ""
 	if len(input.SuggestedTools) > 0 {
 		toolName = input.SuggestedTools[0]
@@ -1897,8 +1889,32 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	llmServiceURL := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 	url := fmt.Sprintf("%s/agent/query", llmServiceURL)
 
+	// Debug: log session_id before injection
+	logger.Info("ExecuteAgentWithForcedTools: session_id before context injection",
+		"session_id", input.SessionID,
+		"agent_id", input.AgentID,
+	)
+
 	// Inject session_id and agent_id for session-aware tools (browser_use, file_*, etc.)
 	input.Context = ensureSessionContext(input.Context, input.SessionID, input.AgentID)
+
+	// Add user_id to context for agent-core (memory mount, audit).
+	// Mirrors the injection in executeAgentCore for parity.
+	if input.UserID != "" {
+		if _, exists := input.Context["user_id"]; !exists {
+			input.Context["user_id"] = input.UserID
+		}
+	}
+
+	// Debug: log context keys after injection
+	contextKeys := make([]string, 0, len(input.Context))
+	for k := range input.Context {
+		contextKeys = append(contextKeys, k)
+	}
+	logger.Info("ExecuteAgentWithForcedTools: context after session injection",
+		"context_keys", contextKeys,
+		"has_session_id", input.Context["session_id"] != nil,
+	)
 
 	agentQueryPayload := map[string]interface{}{
 		"query":             input.Query,
@@ -1953,9 +1969,9 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 			AgentID:    input.AgentID,
 			Message:    message,
 			Payload: map[string]interface{}{
-				"role":   role,
 				"tool":   toolName,
 				"params": sanitizeParams(input.ToolParameters),
+				"role":   role,
 			},
 			Timestamp: time.Now(),
 		})
@@ -1975,7 +1991,6 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    "Tool execution failed: request creation error",
 				Payload: map[string]interface{}{
-					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
@@ -1999,10 +2014,10 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    fmt.Sprintf("Tool execution failed: %v", err),
 				Payload: map[string]interface{}{
-					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+					"role":        role,
 				},
 				Timestamp: time.Now(),
 			})
@@ -2021,10 +2036,10 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    fmt.Sprintf("Tool execution failed: HTTP %d", resp.StatusCode),
 				Payload: map[string]interface{}{
-					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+					"role":        role,
 				},
 				Timestamp: time.Now(),
 			})
@@ -2053,10 +2068,10 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 				AgentID:    input.AgentID,
 				Message:    "Tool execution failed: invalid response",
 				Payload: map[string]interface{}{
-					"role":        role,
 					"tool":        toolName,
 					"success":     false,
 					"duration_ms": time.Since(toolStartTime).Milliseconds(),
+					"role":        role,
 				},
 				Timestamp: time.Now(),
 			})
@@ -2092,26 +2107,68 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		"output_tokens", outputTokens,
 	)
 
+	// Derive actual tool success from metadata.tool_executions when available.
+	// agentResponse.Success only reflects whether the HTTP/LLM call succeeded
+	// (always true on the happy path), not whether the individual tool succeeded.
+	// The per-tool success flag is embedded in metadata["tool_executions"][i]["success"].
+	toolSuccess := agentResponse.Success
+	toolErrMsg := ""
+	if agentResponse.Metadata != nil {
+		if te, ok := agentResponse.Metadata["tool_executions"].([]interface{}); ok && len(te) > 0 {
+			// Find the entry matching our tool name; fall back to first entry if no match.
+			var matchedEntry map[string]interface{}
+			for _, raw := range te {
+				if m, ok2 := raw.(map[string]interface{}); ok2 {
+					if name, _ := m["tool"].(string); name == toolName {
+						matchedEntry = m
+						break
+					}
+				}
+			}
+			if matchedEntry == nil {
+				// No exact match — use first entry
+				if m, ok2 := te[0].(map[string]interface{}); ok2 {
+					matchedEntry = m
+				}
+			}
+			if matchedEntry != nil {
+				if s, ok3 := matchedEntry["success"].(bool); ok3 {
+					toolSuccess = s
+				}
+				if e, ok3 := matchedEntry["error"].(string); ok3 && e != "" {
+					toolErrMsg = e
+				}
+			}
+		}
+	}
+
 	// Publish TOOL_OBSERVATION event with human-readable message
 	if wfID != "" {
 		var msg string
-		if agentResponse.Success {
+		if toolSuccess {
 			msg = MsgToolCompleted(toolName, agentResponse.Response)
 		} else {
-			msg = MsgToolFailed(toolName)
+			if toolErrMsg != "" {
+				msg = fmt.Sprintf("%s failed: %s", toolName, toolErrMsg)
+			} else {
+				msg = MsgToolFailed(toolName)
+			}
+		}
+		payload := map[string]interface{}{
+			"tool":        toolName,
+			"success":     toolSuccess,
+			"duration_ms": time.Since(toolStartTime).Milliseconds(),
+		}
+		if toolErrMsg != "" {
+			payload["error"] = toolErrMsg
 		}
 		streaming.Get().Publish(wfID, streaming.Event{
 			WorkflowID: wfID,
 			Type:       string(StreamEventToolObs),
 			AgentID:    input.AgentID,
 			Message:    msg,
-			Payload: map[string]interface{}{
-				"role":        role,
-				"tool":        toolName,
-				"success":     agentResponse.Success,
-				"duration_ms": time.Since(toolStartTime).Milliseconds(),
-			},
-			Timestamp: time.Now(),
+			Payload:    payload,
+			Timestamp:  time.Now(),
 		})
 	}
 
@@ -2120,8 +2177,7 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		// Calculate cost using pricing service
 		var costUsd float64
 		if agentResponse.ModelUsed != "" && inputTokens > 0 && outputTokens > 0 {
-			costUsd = pricing.CostForSplitWithCache(agentResponse.ModelUsed, inputTokens, outputTokens,
-				0, 0, agentResponse.Provider)
+			costUsd = pricing.CostForSplit(agentResponse.ModelUsed, inputTokens, outputTokens)
 		}
 
 		streaming.Get().Publish(wfID, streaming.Event{
@@ -2130,7 +2186,6 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 			AgentID:    input.AgentID,
 			Message:    truncateQuery(agentResponse.Response, MaxLLMOutputChars),
 			Payload: map[string]interface{}{
-				"role":          role,
 				"tokens_used":   agentResponse.TokensUsed,
 				"model_used":    agentResponse.ModelUsed,
 				"provider":      agentResponse.Provider,
@@ -2182,8 +2237,8 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 
 	return AgentExecutionResult{
 		AgentID:        input.AgentID,
-		Success:        agentResponse.Success,
 		Role:           role,
+		Success:        agentResponse.Success,
 		Response:       agentResponse.Response,
 		TokensUsed:     agentResponse.TokensUsed,
 		ModelUsed:      agentResponse.ModelUsed,
@@ -2327,15 +2382,6 @@ func getenvInt(key string, def int) int {
 // emitAgentThinkingEvent emits a human-readable thinking event
 func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-		role := ""
-		if input.Context != nil {
-			if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
-				role = strings.TrimSpace(v)
-			}
-		}
-		if role == "" {
-			role = "generalist"
-		}
 		// Determine the correct workflow ID for streaming (prefer parent)
 		wfID := ""
 		if input.ParentWorkflowID != "" {
@@ -2349,13 +2395,23 @@ func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 			wfID = info.WorkflowExecution.ID
 		}
 
+		// Best-effort role extraction for observability
+		role := ""
+		if input.Context != nil {
+			if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+				role = strings.TrimSpace(v)
+			}
+		}
+		if role == "" {
+			role = "generalist"
+		}
+
 		message := fmt.Sprintf("Thinking: %s", truncateQuery(input.Query, MaxThinkingChars))
 		eventData := EmitTaskUpdateInput{
 			WorkflowID: wfID,
 			EventType:  StreamEventAgentThinking,
 			AgentID:    input.AgentID,
 			Message:    message,
-			Payload:    map[string]interface{}{"role": role},
 			Timestamp:  time.Now(),
 		}
 		activity.RecordHeartbeat(ctx, eventData)
@@ -2365,8 +2421,10 @@ func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 			Type:       string(eventData.EventType),
 			AgentID:    eventData.AgentID,
 			Message:    eventData.Message,
-			Payload:    eventData.Payload,
-			Timestamp:  eventData.Timestamp,
+			Payload: map[string]interface{}{
+				"role": role,
+			},
+			Timestamp: eventData.Timestamp,
 		})
 	}
 }
@@ -2374,16 +2432,6 @@ func emitAgentThinkingEvent(ctx context.Context, input AgentExecutionInput) {
 // emitToolSelectionEvent emits events for selected tools
 func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, toolCalls []map[string]interface{}) {
 	if info := activity.GetInfo(ctx); info.WorkflowExecution.ID != "" {
-		role := ""
-		if input.Context != nil {
-			if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
-				role = strings.TrimSpace(v)
-			}
-		}
-		if role == "" {
-			role = "generalist"
-		}
-
 		// Determine the correct workflow ID for streaming (prefer parent)
 		wfID := ""
 		if input.ParentWorkflowID != "" {
@@ -2395,6 +2443,17 @@ func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, tool
 		}
 		if wfID == "" {
 			wfID = info.WorkflowExecution.ID
+		}
+
+		// Best-effort role extraction for observability
+		role := ""
+		if input.Context != nil {
+			if v, ok := input.Context["role"].(string); ok && strings.TrimSpace(v) != "" {
+				role = strings.TrimSpace(v)
+			}
+		}
+		if role == "" {
+			role = "generalist"
 		}
 
 		for _, call := range toolCalls {
@@ -2408,12 +2467,7 @@ func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, tool
 				EventType:  StreamEventToolInvoked,
 				AgentID:    input.AgentID,
 				Message:    message,
-				Payload: map[string]interface{}{
-					"role":   role,
-					"tool":   toolName,
-					"params": call["parameters"],
-				},
-				Timestamp: time.Now(),
+				Timestamp:  time.Now(),
 			}
 			activity.RecordHeartbeat(ctx, eventData)
 			// Also publish to Redis Streams for SSE (use parent workflow ID when available)
@@ -2422,8 +2476,11 @@ func emitToolSelectionEvent(ctx context.Context, input AgentExecutionInput, tool
 				Type:       string(eventData.EventType),
 				AgentID:    eventData.AgentID,
 				Message:    eventData.Message,
-				Payload:    eventData.Payload,
-				Timestamp:  eventData.Timestamp,
+				Payload: map[string]interface{}{
+					"tool": toolName,
+					"role": role,
+				},
+				Timestamp: eventData.Timestamp,
 			})
 		}
 	}

@@ -74,6 +74,7 @@ class PythonWasiExecutorTool(Tool):
         # Initialize settings before calling super().__init__()
         # because _get_metadata() needs it
         self.settings = Settings()
+        self.executor_mode = os.getenv("PYTHON_EXECUTOR_MODE", "wasi").strip().lower()
         self.interpreter_path = os.getenv(
             "PYTHON_WASI_WASM_PATH", "/opt/wasm-interpreters/python-3.11.4.wasm"
         )
@@ -85,7 +86,7 @@ class PythonWasiExecutorTool(Tool):
         return ToolMetadata(
             name="python_executor",
             version="2.0.0",
-            description="Execute Python code in secure WASI sandbox with full stdlib support. Files can be read/written to /workspace/ directory which persists across the session.",
+            description="Execute Python code in secure sandbox. Save files to /workspace/ for persistence (e.g., /workspace/output.csv). Files in /tmp are ephemeral.",
             category="code",
             author="Shannon",
             requires_auth=False,
@@ -95,7 +96,7 @@ class PythonWasiExecutorTool(Tool):
             sandboxed=True,
             dangerous=False,  # Safe due to WASI isolation
             cost_per_use=0.001,  # Minimal cost for compute
-            session_aware=True,  # CRITICAL: Required to receive session_context with session_id
+            session_aware=True,  # Required for Firecracker workspace isolation
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
@@ -277,7 +278,18 @@ print("__SESSION_STATE__", json.dumps({
         """Execute Python code in WASI sandbox"""
 
         code = kwargs.get("code", "")
+        # Get session_id from kwargs first, then fallback to session_context
+        session_id = kwargs.get("session_id")
+        if not session_id and session_context:
+            session_id = session_context.get("session_id")
+
+        # Log session_id source for debugging
+        if session_id:
+            logger.info(f"python_executor: session_id={session_id} (from {'kwargs' if kwargs.get('session_id') else 'session_context'})")
+        else:
+            logger.warning("python_executor: no session_id available - workspace isolation disabled")
         timeout = min(kwargs.get("timeout_seconds", 30), 60)  # Max 60 seconds
+        # stdin = kwargs.get("stdin", "")  # Not used currently, but kept for future use
 
         if not code:
             return ToolResult(
@@ -287,23 +299,14 @@ print("__SESSION_STATE__", json.dumps({
             )
 
         try:
-            # Derive a single effective session ID from session_context (authoritative)
-            # with fallback to the kwargs parameter. Used for both variable persistence
-            # and workspace mounting.
-            effective_session_id = None
-            if session_context and isinstance(session_context, dict):
-                effective_session_id = session_context.get("session_id")
-            if not effective_session_id:
-                effective_session_id = kwargs.get("session_id")
-
-            # Get or create session for variable persistence
-            session = await self._get_or_create_session(effective_session_id)
+            # Get or create session
+            session = await self._get_or_create_session(session_id)
 
             # Prepare code with session context
             if session:
                 code = self._prepare_code_with_session(code, session)
                 logger.debug(
-                    f"Executing in session {effective_session_id} (run #{session.execution_count})"
+                    f"Executing in session {session_id} (run #{session.execution_count})"
                 )
 
             # Emit progress via observer if available
@@ -314,33 +317,58 @@ print("__SESSION_STATE__", json.dumps({
                 except Exception:
                     pass
 
-            tool_params = {
-                "tool": "code_executor",  # Required field for agent-core
-                "wasm_path": self.interpreter_path,  # Use file path (Python.wasm is 20MB)
-                "stdin": code,  # Pass Python code as stdin
-                "argv": [
-                    "python",
-                    "-c",
-                    "import sys; exec(sys.stdin.read())",
-                ],  # Python argv format
-                "session_id": effective_session_id,  # Add session_id for workspace mounting
-            }
+            if self.executor_mode == "firecracker":
+                tool_params = {
+                    "tool": "firecracker_executor",
+                    "code": code,
+                    "session_id": session_id,
+                    "timeout_seconds": timeout,
+                    "exec_mode": "firecracker",
+                }
+            else:
+                # Prepare execution request with proper structure for agent-core
+                # Note: Using file path instead of base64 due to gRPC 4MB message limit
+                # Python WASM needs argv[0] to be program name, then -c flag to execute stdin
+                tool_params = {
+                    "tool": "code_executor",  # Required field for agent-core
+                    "wasm_path": self.interpreter_path,  # Use file path (Python.wasm is 20MB)
+                    "stdin": code,  # Pass Python code as stdin
+                    "argv": [
+                        "python",
+                        "-c",
+                        "import sys; exec(sys.stdin.read())",
+                    ],  # Python argv format
+                }
 
             # Build gRPC request - agent-core expects tool_parameters directly in context
             ctx = struct_pb2.Struct()
             ctx.update({"tool_parameters": tool_params})
 
-            req = agent_pb2.ExecuteTaskRequest(
-                query=f"Execute Python code (session: {effective_session_id or 'none'})",
-                context=ctx,
-                available_tools=["code_executor"],
+            available_tools = (
+                ["firecracker_executor"]
+                if self.executor_mode == "firecracker"
+                else ["code_executor"]
             )
 
-            # Forward session_id via session_context so grpc_server can mount workspace
-            if effective_session_id:
-                req.session_context.CopyFrom(
-                    agent_pb2.SessionContext(session_id=effective_session_id)
-                )
+            req = agent_pb2.ExecuteTaskRequest(
+                query=f"Execute Python code (session: {session_id or 'none'})",
+                context=ctx,
+                available_tools=available_tools,
+            )
+
+            # Set session_context for workspace and memory isolation
+            if session_id:
+                req.session_context.session_id = session_id
+                # Also set in metadata for defense-in-depth
+                req.metadata.session_id = session_id
+
+            # Set user_id for /memory mount in WASI sandbox
+            user_id = session_context.get("user_id") if session_context else None
+            if user_id:
+                req.session_context.user_id = user_id
+                req.metadata.user_id = user_id
+
+            logger.info(f"python_executor: gRPC request session_id={session_id} user_id={user_id or 'none'}")
 
             if hasattr(common_pb2, "ExecutionMode"):
                 req.mode = int(common_pb2.ExecutionMode.EXECUTION_MODE_SIMPLE)
@@ -361,7 +389,7 @@ print("__SESSION_STATE__", json.dumps({
                         success=False,
                         output=None,
                         error=f"Execution timeout after {timeout} seconds",
-                        metadata={"timeout": True, "session_id": effective_session_id},
+                        metadata={"timeout": True, "session_id": session_id},
                     )
 
             execution_time = time.time() - start_time
@@ -379,9 +407,13 @@ print("__SESSION_STATE__", json.dumps({
                     output=output,
                     metadata={
                         "execution_time_ms": int(execution_time * 1000),
-                        "session_id": effective_session_id,
+                        "session_id": session_id,
                         "execution_count": session.execution_count if session else 1,
-                        "interpreter": "CPython 3.11.4 (WASI)",
+                        "interpreter": (
+                            "Firecracker (Linux)"
+                            if self.executor_mode == "firecracker"
+                            else "CPython 3.11.4 (WASI)"
+                        ),
                     },
                 )
             else:
@@ -394,7 +426,7 @@ print("__SESSION_STATE__", json.dumps({
                     success=False,
                     output=None,
                     error=f"Execution failed: {error_msg}",
-                    metadata={"session_id": effective_session_id},
+                    metadata={"session_id": session_id},
                 )
 
         except grpc.RpcError as e:

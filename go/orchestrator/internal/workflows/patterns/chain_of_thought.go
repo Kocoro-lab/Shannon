@@ -103,6 +103,7 @@ func ChainOfThought(
 					Context:           context,
 					Mode:              "reasoning",
 					SessionID:         sessionID,
+					UserID:            opts.UserID,
 					History:           history,
                     ParentWorkflowID: wid,
 				},
@@ -130,6 +131,7 @@ func ChainOfThought(
                 Context:           context,
                 Mode:              "reasoning",
                 SessionID:         sessionID,
+                UserID:            opts.UserID,
                 History:           history,
                 ParentWorkflowID:  wid,
             }).Get(ctx, &cotResult)
@@ -218,6 +220,7 @@ func ChainOfThought(
 						Context:           context,
 						Mode:              "reasoning",
 						SessionID:         sessionID,
+						UserID:            opts.UserID,
 						History:           append(history, fmt.Sprintf("Previous: %s", cotResult.Response)),
                         ParentWorkflowID: wid,
 					},

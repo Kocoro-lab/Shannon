@@ -47,4 +47,23 @@ const (
 	SendTaskRequestActivity    = "SendTaskRequest"
 	SendTaskOfferActivity      = "SendTaskOffer"
 	SendTaskAcceptActivity     = "SendTaskAccept"
+
+	// File Registry Activities
+	RegisterFileActivity    = "RegisterFile"
+	GetFileRegistryActivity = "GetFileRegistry"
+
+	// Workspace setup
+	SetupWorkspaceDirsActivity = "SetupWorkspaceDirs"
+
+	// TaskList activities
+	InitTaskListActivity     = "InitTaskList"
+	GetTaskListActivity      = "GetTaskList"
+	UpdateTaskStatusActivity = "UpdateTaskStatus"
+	CreateTaskActivity       = "CreateTask"
+	ClaimTaskActivity        = "ClaimTask"
+
+	// Lead Agent Activities
+	LeadDecisionActivity       = "LeadDecision"
+	ListWorkspaceFilesActivity = "ListWorkspaceFiles"
+	ReadWorkspaceFileActivity  = "ReadWorkspaceFile"
 )

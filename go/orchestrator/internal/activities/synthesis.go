@@ -8,8 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -527,6 +531,97 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 		})
 	}
 	return res, nil
+}
+
+// WorkspaceMaterial represents a file read from the agent workspace.
+type WorkspaceMaterial struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated"`
+}
+
+// binaryExtensions are file extensions to skip when reading workspace files.
+var binaryExtensions = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".bmp": true,
+	".pdf": true, ".zip": true, ".tar": true, ".gz": true, ".bin": true,
+	".exe": true, ".so": true, ".dylib": true, ".wasm": true,
+}
+
+// readWorkspaceFiles reads text files from a session workspace directory.
+// Returns sorted materials with per-file and total size caps.
+// Runs inside an activity (Go I/O) — NOT through Temporal history.
+func readWorkspaceFiles(sessionDir string, maxTotalChars, maxPerFileChars int) []WorkspaceMaterial {
+	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	var materials []WorkspaceMaterial
+	totalChars := 0
+
+	filepath.WalkDir(sessionDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if binaryExtensions[ext] {
+			return nil
+		}
+		relPath, _ := filepath.Rel(sessionDir, path)
+		if relPath == "" || strings.HasPrefix(relPath, "..") {
+			return nil
+		}
+		if totalChars >= maxTotalChars {
+			return filepath.SkipAll
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		content := string(data)
+		truncated := false
+		if len(content) > maxPerFileChars {
+			content = content[:maxPerFileChars] + "..."
+			truncated = true
+		}
+		if totalChars+len(content) > maxTotalChars {
+			remaining := maxTotalChars - totalChars
+			if remaining > 0 {
+				content = content[:remaining] + "..."
+				truncated = true
+			} else {
+				return filepath.SkipAll
+			}
+		}
+		totalChars += len(content)
+		materials = append(materials, WorkspaceMaterial{
+			Path:      relPath,
+			Content:   content,
+			Truncated: truncated,
+		})
+		return nil
+	})
+
+	sort.Slice(materials, func(i, j int) bool {
+		return materials[i].Path < materials[j].Path
+	})
+	return materials
+}
+
+// formatWorkspaceMaterials formats workspace files for inclusion in synthesis prompt.
+func formatWorkspaceMaterials(materials []WorkspaceMaterial) string {
+	if len(materials) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Workspace Artifacts (files produced by agents)\n\n")
+	for _, m := range materials {
+		truncLabel := ""
+		if m.Truncated {
+			truncLabel = " [truncated]"
+		}
+		fmt.Fprintf(&b, "### File: %s%s\n```\n%s\n```\n\n", m.Path, truncLabel, m.Content)
+	}
+	return b.String()
 }
 
 // SynthesizeResultsLLM synthesizes results using the LLM service, with fallback to simple synthesis
@@ -1087,6 +1182,29 @@ Section requirements:
 			zap.Int("maxAgents", maxAgents),
 			zap.Int("totalAgents", len(input.AgentResults)),
 		)
+	}
+
+	// Read workspace files for swarm mode (Go I/O inside activity — not in Temporal history)
+	if input.SessionID != "" {
+		if err := validateSessionID(input.SessionID); err != nil {
+			diagLogger.Warn("Invalid session_id for workspace files, skipping", zap.Error(err))
+		} else {
+			baseDir := os.Getenv("SHANNON_SESSION_WORKSPACES_DIR")
+			if baseDir == "" {
+				baseDir = "/tmp/shannon-sessions"
+			}
+			sessionDir := filepath.Join(baseDir, input.SessionID)
+			materials := readWorkspaceFiles(sessionDir, 50000, 10000)
+			if len(materials) > 0 {
+				formatted := formatWorkspaceMaterials(materials)
+				b.WriteString(formatted)
+				diagLogger.Info("Included workspace files in synthesis",
+					zap.Int("file_count", len(materials)),
+					zap.Int("total_chars", len(formatted)),
+					zap.String("session_id", input.SessionID),
+				)
+			}
+		}
 	}
 
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))

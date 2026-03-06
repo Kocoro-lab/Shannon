@@ -175,6 +175,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 					Context:          input.Context,
 					Mode:             "standard",
 					SessionID:        input.SessionID,
+					UserID:           input.UserID,
 					History:          input.History,
 					ParentWorkflowID: wid,
 				},
@@ -196,6 +197,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 				Context:   input.Context,
 				Mode:      "standard",
 				SessionID: input.SessionID,
+				UserID:    input.UserID,
 				History:   input.History,
 				ParentWorkflowID: func() string {
 					if input.Context != nil {

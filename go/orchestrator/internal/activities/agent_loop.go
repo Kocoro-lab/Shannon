@@ -22,25 +22,46 @@ type WorkspaceSnippet struct {
 	Seq    uint64 `json:"seq"`
 }
 
+// TeamKnowledgeEntry records a URL fetched by any swarm agent for cross-agent dedup.
+type TeamKnowledgeEntry struct {
+	URL       string `json:"url"`
+	Agent     string `json:"agent"`
+	Summary   string `json:"summary"`
+	CharCount int    `json:"char_count"`
+}
+
 // TeamMemberInfo describes a teammate for prompt injection.
 type TeamMemberInfo struct {
 	AgentID string `json:"agent_id"`
 	Task    string `json:"task"`
+	Role    string `json:"role,omitempty"`
 }
 
 // AgentLoopStepInput is the input for a single reason-act iteration of an autonomous agent.
 type AgentLoopStepInput struct {
-	AgentID       string                 `json:"agent_id"`
-	WorkflowID    string                 `json:"workflow_id"`
-	Task          string                 `json:"task"`
-	Iteration     int                    `json:"iteration"`
-	MaxIterations int                    `json:"max_iterations,omitempty"` // Total iterations for budget display
-	Messages      []AgentMailboxMsg      `json:"messages,omitempty"`       // Inbox messages from other agents
-	History       []AgentLoopTurn        `json:"history,omitempty"`        // Previous turns in this agent's loop
-	Context       map[string]interface{} `json:"context,omitempty"`
-	SessionID     string                 `json:"session_id,omitempty"`
-	TeamRoster    []TeamMemberInfo       `json:"team_roster,omitempty"`    // Teammates and their tasks
-	WorkspaceData []WorkspaceSnippet     `json:"workspace_data,omitempty"` // Recent KV workspace entries
+	AgentID         string                 `json:"agent_id"`
+	WorkflowID      string                 `json:"workflow_id"`
+	Task            string                 `json:"task"`
+	Iteration       int                    `json:"iteration"`
+	MaxIterations   int                    `json:"max_iterations,omitempty"` // Total iterations for budget display
+	Messages        []AgentMailboxMsg      `json:"messages,omitempty"`       // Inbox messages from other agents
+	History         []AgentLoopTurn        `json:"history,omitempty"`        // Previous turns in this agent's loop
+	Context         map[string]interface{} `json:"context,omitempty"`
+	SessionID       string                 `json:"session_id,omitempty"`
+	TeamRoster      []TeamMemberInfo       `json:"team_roster,omitempty"`    // Teammates and their tasks
+	WorkspaceData   []WorkspaceSnippet     `json:"workspace_data,omitempty"` // Recent KV workspace entries
+	SuggestedTools  []string               `json:"suggested_tools,omitempty"`  // Tools available to this agent
+	RoleDescription string                 `json:"role_description,omitempty"` // e.g. "financial research specialist"
+	Role            string                 `json:"role,omitempty"`             // Persona role: researcher, coder, analyst, generalist
+	TaskList        []SwarmTask            `json:"task_list,omitempty"`        // Current TaskList state for prompt injection
+	ModelTier          string                 `json:"model_tier,omitempty"`          // "small", "medium", "large" (empty = default)
+	PreviousResponseID string                 `json:"previous_response_id,omitempty"` // OpenAI Responses API: chain from previous response
+	SystemMessage      string                 `json:"system_message,omitempty"`       // Urgent directive appended to user prompt end (recency bias)
+	RunningNotes       string                 `json:"running_notes,omitempty"`        // Agent's cumulative notes — survives history truncation
+	IsSwarm            bool                   `json:"is_swarm,omitempty"`             // True when running inside SwarmWorkflow (enables done→idle mapping)
+	CumulativeToolCalls int                   `json:"cumulative_tool_calls,omitempty"` // Total tool_calls across all tasks (survives reassignment)
+	TeamKnowledge      []TeamKnowledgeEntry   `json:"team_knowledge,omitempty"`       // URLs already fetched by other agents (L1 dedup)
+	OriginalQuery      string                 `json:"original_query,omitempty"`       // User's original question for agent context
 }
 
 // AgentMailboxMsg is a message received from another agent's mailbox.
@@ -52,14 +73,16 @@ type AgentMailboxMsg struct {
 
 // AgentLoopTurn records a previous action in the agent's loop for context.
 type AgentLoopTurn struct {
-	Iteration int         `json:"iteration"`
-	Action    string      `json:"action"`
-	Result    interface{} `json:"result,omitempty"`
+	Iteration       int         `json:"iteration"`
+	Action          string      `json:"action"`
+	Result          interface{} `json:"result,omitempty"`
+	DecisionSummary string      `json:"decision_summary,omitempty"`
 }
 
 // AgentLoopStepResult is the LLM's decision for one iteration.
 type AgentLoopStepResult struct {
-	Action string `json:"action"` // "tool_call", "send_message", "publish_data", "request_help", "done"
+	Action          string `json:"action"`                     // "tool_call", "send_message", "publish_data", "request_help", "done"
+	DecisionSummary string `json:"decision_summary,omitempty"` // 1-3 sentence reasoning (D7: controlled, not unlimited chain-of-thought)
 
 	// tool_call fields
 	Tool       string                 `json:"tool,omitempty"`
@@ -79,15 +102,26 @@ type AgentLoopStepResult struct {
 	HelpDescription string   `json:"help_description,omitempty"`
 	HelpSkills      []string `json:"help_skills,omitempty"`
 
+	// complete_task / claim_task fields
+	TaskID string `json:"task_id,omitempty"` // TaskList entry to mark completed or claimed
+
+	// create_task fields
+	TaskDescription string `json:"task_description,omitempty"`
+
 	// done fields
 	Response string `json:"response,omitempty"`
 
 	// LLM usage metadata
-	TokensUsed   int    `json:"tokens_used,omitempty"`
-	InputTokens  int    `json:"input_tokens,omitempty"`
-	OutputTokens int    `json:"output_tokens,omitempty"`
-	ModelUsed    string `json:"model_used,omitempty"`
-	Provider     string `json:"provider,omitempty"`
+	TokensUsed          int    `json:"tokens_used,omitempty"`
+	InputTokens         int    `json:"input_tokens,omitempty"`
+	OutputTokens        int    `json:"output_tokens,omitempty"`
+	CacheReadTokens     int    `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int    `json:"cache_creation_tokens,omitempty"`
+	ModelUsed           string `json:"model_used,omitempty"`
+	Provider            string `json:"provider,omitempty"`
+	ResponseID          string                 `json:"response_id,omitempty"` // OpenAI Responses API ID for chaining
+	CompletionReport    map[string]interface{} `json:"completion_report,omitempty"`
+	Notes               string                 `json:"notes,omitempty"` // Agent's updated running notes for next iteration
 }
 
 // AgentLoopStep calls the Python LLM service's /agent/loop endpoint
@@ -107,7 +141,7 @@ func AgentLoopStep(ctx context.Context, in AgentLoopStepInput) (AgentLoopStepRes
 		return AgentLoopStepResult{}, fmt.Errorf("failed to marshal agent loop input: %w", err)
 	}
 
-	timeoutSec := 60
+	timeoutSec := 180 // /agent/loop includes LLM call + tool execution + interpretation pass
 	if v := os.Getenv("AGENT_LOOP_STEP_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			timeoutSec = n

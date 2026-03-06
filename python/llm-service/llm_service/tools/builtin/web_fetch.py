@@ -155,6 +155,131 @@ async def apply_extraction(
 
     return result
 
+
+# --- Batch extraction (N pages → 1 LLM call) ---
+
+_BATCH_RESULT_RE = re.compile(
+    r"<<<PAGE_RESULT\s+(\d+)\s*>>>\s*(.*?)\s*<<<END_PAGE_RESULT\s+\1\s*>>>",
+    re.DOTALL,
+)
+
+
+async def extract_batch_with_llm(
+    pages: List[Dict],
+    per_page_budget: int = 2000,
+    extract_prompt: Optional[str] = None,
+    timeout: int = EXTRACTION_TIMEOUT,
+) -> Optional[tuple]:
+    """
+    Combine N pages into a single LLM call for extraction.
+
+    Args:
+        pages: List of dicts with keys: page_id, url, title, content
+        per_page_budget: Target chars per page in output
+        extract_prompt: Optional query to focus extraction
+        timeout: Seconds before extraction call times out
+
+    Returns:
+        (dict[int, str], total_tokens, cost_usd, model) on success, None on failure.
+        dict maps page_id → extracted text. Missing pages get empty string.
+    """
+    if not pages:
+        return None
+
+    try:
+        from llm_provider.manager import get_llm_manager
+        from llm_provider.base import ModelTier
+
+        n = len(pages)
+
+        # Cap per-page content so combined doesn't exceed EXTRACTION_CONTENT_CAP
+        # Reserve some budget for prompt overhead (delimiters, instructions)
+        overhead_budget = 1000  # for system/user prompt text + delimiters
+        available = EXTRACTION_CONTENT_CAP - overhead_budget
+        per_page_cap = max(available // n, 1000)
+
+        # Build page blocks
+        page_blocks = []
+        for p in pages:
+            content = p.get("content", "")
+            if len(content) > per_page_cap:
+                content = content[:per_page_cap]
+            block = (
+                f"<<<PAGE {p['page_id']}>>>\n"
+                f"URL: {p.get('url', '')}\n"
+                f"Title: {p.get('title', '')}\n"
+                f"{content}\n"
+                f"<<<END_PAGE {p['page_id']}>>>"
+            )
+            page_blocks.append(block)
+
+        system_msg = (
+            "You are a batch web page content extractor. You will receive multiple web pages. "
+            "Extract the main informational content from EACH page independently. "
+            "Do NOT mix content between pages. "
+            "For each page, output the result wrapped in delimiters:\n"
+            "<<<PAGE_RESULT N>>>\n(extracted content)\n<<<END_PAGE_RESULT N>>>\n"
+            "where N is the page number."
+        )
+
+        user_parts = []
+        if extract_prompt:
+            user_parts.append(f"Query: {extract_prompt}\n")
+        user_parts.append(
+            "Extract the main content from each page below. "
+            "Output each result in the delimiter format shown in the instructions.\n\n"
+        )
+        user_parts.append("\n\n".join(page_blocks))
+        user_msg = "".join(user_parts)
+        if len(user_msg) > EXTRACTION_CONTENT_CAP:
+            user_msg = user_msg[:EXTRACTION_CONTENT_CAP]
+
+        max_output = max(min(per_page_budget * n // 4, 4000), 1000)
+
+        manager = get_llm_manager()
+        response = await asyncio.wait_for(
+            manager.complete(
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": user_msg},
+                ],
+                model_tier=ModelTier.SMALL,
+                max_tokens=max_output,
+                temperature=0.0,
+            ),
+            timeout=timeout,
+        )
+
+        # Parse delimited output
+        raw = response.content or ""
+        extracted = {}
+        for match in _BATCH_RESULT_RE.finditer(raw):
+            page_id = int(match.group(1))
+            text = match.group(2).strip()
+            if len(text) > per_page_budget:
+                text = text[:per_page_budget]
+            extracted[page_id] = text
+
+        # Fill missing pages with empty string
+        for p in pages:
+            pid = p["page_id"]
+            if pid not in extracted:
+                extracted[pid] = ""
+
+        return (
+            extracted,
+            getattr(response.usage, "total_tokens", 0),
+            getattr(response.usage, "estimated_cost", 0.0),
+            response.model,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Batch LLM extraction timed out after %ds", timeout)
+        return None
+    except Exception as e:
+        logger.warning("Batch LLM extraction failed: %s", e)
+        return None
+
+
 # Constants
 MAX_SUBPAGES = 15  # Balanced limit for comprehensive research
 
@@ -613,7 +738,8 @@ class FirecrawlFetchProvider(WebFetchProvider):
                     raise Exception("Firecrawl rate limit exceeded (429)")
                 elif response.status != 200:
                     error_text = await response.text()
-                    logger.error(f"Firecrawl scrape error: {response.status} - {self.sanitize_error_message(error_text)}")
+                    sanitized = self.sanitize_error_message(error_text)
+                    logger.error(f"Firecrawl scrape error: {response.status}")
                     raise Exception(f"Firecrawl error: {response.status}")
 
                 data = await response.json()
@@ -895,7 +1021,7 @@ class FirecrawlFetchProvider(WebFetchProvider):
             
             # Add page with index (don't expose URLs in content to avoid citation extraction)
             if i == 0:
-                page_header = "# Main Page\n"
+                page_header = f"# Main Page\n"
                 if page_title:
                     page_header += f"**{page_title}**\n\n"
             else:
@@ -1236,6 +1362,7 @@ class WebFetchTool(Tool):
         if self.firecrawl_provider:
             active_providers.append("Firecrawl")
         active_providers.append("Python")  # Always available
+        provider_str = ", ".join(active_providers)
 
         return ToolMetadata(
             name="web_fetch",
@@ -1386,24 +1513,14 @@ class WebFetchTool(Tool):
         max_length = kwargs.get("max_length", 10000)
         extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
 
-        # Skip ALL LLM extraction in research mode (issue #43, #46): OODA loop does many
-        # fast fetches; LLM extraction adds ~40-60s latency per call, causing timeout
-        # and inflated costs. extract_prompt from LLM is also ignored in research mode.
-        _research_mode = (
-            isinstance(session_context, dict)
-            and session_context.get("research_mode")
-        )
-
-        if _research_mode:
-            internal_max_length = max_length
-        else:
-            internal_max_length = EXTRACTION_INTERNAL_MAX
+        internal_max_length = EXTRACTION_INTERNAL_MAX
 
         # DEPRECATED: These parameters are ignored in v3.0.0
         # Log warning if caller uses deprecated params
         deprecated_subpages = kwargs.get("subpages", 0)
         deprecated_subpage_target = kwargs.get("subpage_target")
         deprecated_required_paths = kwargs.get("required_paths")
+        deprecated_query_type = kwargs.get("query_type")
 
         if deprecated_subpages > 0 or deprecated_subpage_target or deprecated_required_paths:
             logger.warning(
@@ -1516,38 +1633,38 @@ class WebFetchTool(Tool):
             if selected_provider == "firecrawl":
                 if not self.firecrawl_provider:
                     logger.warning("Firecrawl requested but not configured, falling back")
-                    attempts.append(
-                        {
-                            "provider": "firecrawl",
-                            "status": "skipped",
-                            "reason": "not_configured",
-                        }
-                    )
+                    attempts.append({"provider": "firecrawl", "status": "skipped", "reason": "not configured"})
                     selected_provider = "exa" if self.exa_api_key else "python"
                 else:
                     try:
+                        attempts.append({"provider": "firecrawl", "status": "attempted"})
                         result_data = await self.firecrawl_provider.fetch(
                             url, internal_max_length, subpages, subpage_target,
                             required_paths=required_paths,
                             query_type=query_type
                         )
-                        attempts[-1]["status"] = "success"
-                        return await apply_extraction(
-                            _attach_metadata(
-                                ToolResult(success=True, output=result_data, metadata={"fetch_method": "firecrawl"}),
-                                "firecrawl"
-                            ),
-                            extract_prompt, max_length,
-                        )
+                        # Auto-fallback: if firecrawl returned sparse content (<500 chars),
+                        # try pure_python — the page may have anti-scraping that firecrawl can't handle.
+                        fc_content = result_data.get("content", "")
+                        if len(fc_content) < 500 and not fc_content.startswith("%PDF"):
+                            logger.warning(
+                                "web_fetch: firecrawl returned sparse content (%d chars) for %s, trying pure_python fallback",
+                                len(fc_content), url,
+                            )
+                            attempts[-1]["status"] = "sparse_fallback"
+                            selected_provider = "python"
+                            # Fall through to python path below
+                        else:
+                            attempts[-1]["status"] = "success"
+                            firecrawl_result = ToolResult(success=True, output=result_data, metadata={"fetch_method": "firecrawl"})
+                            return await apply_extraction(
+                                _attach_metadata(firecrawl_result, "firecrawl"),
+                                extract_prompt, max_length,
+                            )
                     except Exception as e:
+                        attempts[-1]["status"] = "failed"
+                        attempts[-1]["error"] = str(e)
                         logger.error(f"Firecrawl fetch failed: {e}, falling back")
-                        attempts.append(
-                            {
-                                "provider": "firecrawl",
-                                "status": "failed",
-                                "error": str(e)[:200],
-                            }
-                        )
                         selected_provider = "exa" if self.exa_api_key else "python"
 
             if selected_provider == "exa":
@@ -1563,13 +1680,7 @@ class WebFetchTool(Tool):
                     )
                 else:
                     logger.warning("Exa requested but not configured, falling back to Python")
-                    attempts.append(
-                        {
-                            "provider": "exa",
-                            "status": "skipped",
-                            "reason": "not_configured",
-                        }
-                    )
+                    attempts.append({"provider": "exa", "status": "skipped", "reason": "not configured"})
                     selected_provider = "python"
 
             # Fallback to pure Python
@@ -1585,14 +1696,9 @@ class WebFetchTool(Tool):
 
         except Exception as e:
             logger.error(f"Failed to fetch {url}: {str(e)}")
-            attempts.append(
-                {"provider": "unknown", "status": "failed", "error": str(e)[:200]}
-            )
             return _attach_metadata(
-                ToolResult(
-                    success=False, output=None, error=f"Failed to fetch page: {str(e)}"
-                ),
-                "unknown",
+                ToolResult(success=False, output=None, error=f"Failed to fetch page: {str(e)}"),
+                "error"
             )
 
     def _resolve_provider(self, provider_name: str, subpages: int) -> str:
@@ -1644,12 +1750,6 @@ class WebFetchTool(Tool):
         concurrency = kwargs.get("concurrency", 3)
         total_chars_cap = kwargs.get("total_chars_cap", 40000)
         extract_prompt = kwargs.get("extract_prompt")
-
-        # Research mode: skip ALL LLM extraction for fast fetching (issue #43, #46)
-        _research_mode = (
-            isinstance(session_context, dict)
-            and session_context.get("research_mode")
-        )
 
         # Validate URLs list
         if not urls or not isinstance(urls, list):
@@ -1710,6 +1810,14 @@ class WebFetchTool(Tool):
                             "status_code": result_data.get("status_code", 200),
                             "blocked_reason": result_data.get("blocked_reason"),
                         }
+                        # Auto-fallback: sparse firecrawl result → try pure_python
+                        fc_content = result_data.get("content", "")
+                        if page_result.get("char_count", 0) < 500 and not fc_content.startswith("%PDF"):
+                            logger.warning(
+                                "web_fetch batch: firecrawl sparse (%d chars) for %s, falling back to pure_python",
+                                page_result.get("char_count", 0), url,
+                            )
+                            page_result = None  # Triggers existing pure_python fallback below
                     except Exception as e:
                         logger.warning(f"Firecrawl batch fetch failed for {url}: {e}, falling back to pure_python")
 
@@ -1748,26 +1856,6 @@ class WebFetchTool(Tool):
                             "blocked_reason": "exception",
                         }
 
-                # Apply per-page extraction — compress over-length content via small model
-                if page_result and page_result.get("success"):
-                    content = page_result.get("content", "")
-                    if len(content) > original_per_url_budget:
-                        batch_max_output = min(original_per_url_budget, 4000)
-                        ext = await extract_with_llm(content, extract_prompt, max_output=batch_max_output)
-                        if ext:
-                            extracted_text, ext_tokens, ext_cost, ext_model = ext
-                            page_result["content"] = extracted_text
-                            page_result["extracted"] = True
-                            page_result["char_count"] = len(extracted_text)
-                            page_result["extraction_model"] = ext_model
-                            page_result["extraction_tokens"] = ext_tokens
-                            page_result["extraction_cost_usd"] = ext_cost
-                        else:
-                            page_result["content"] = content[:original_per_url_budget]
-                            page_result["extracted"] = False
-                            page_result["char_count"] = len(page_result["content"])
-                            page_result["truncated"] = True
-
                 return page_result
 
         # Execute all fetches concurrently
@@ -1776,7 +1864,7 @@ class WebFetchTool(Tool):
             return_exceptions=True
         )
 
-        # Aggregate results
+        # Aggregate raw results into pages list
         pages = []
         succeeded = 0
         failed = 0
@@ -1832,6 +1920,91 @@ class WebFetchTool(Tool):
                     "reason": result.get("error", "Unknown")
                 })
 
+        # --- Consolidated batch extraction ---
+        # Identify pages whose raw content exceeds per-URL budget
+        batch_extraction_tokens = 0
+        batch_extraction_cost = 0.0
+        batch_extraction_model = None
+
+        pages_needing_extraction = []
+        for idx, page in enumerate(pages):
+            if page.get("success") and len(page.get("content", "")) > original_per_url_budget:
+                pages_needing_extraction.append((idx, page))
+
+        if len(pages_needing_extraction) >= 2:
+            # Batch extraction: single LLM call for all over-budget pages
+            batch_pages = [
+                {
+                    "page_id": idx,
+                    "url": page.get("url", ""),
+                    "title": page.get("title", ""),
+                    "content": page.get("content", ""),
+                }
+                for idx, page in pages_needing_extraction
+            ]
+            batch_result = await extract_batch_with_llm(
+                batch_pages,
+                per_page_budget=original_per_url_budget,
+                extract_prompt=extract_prompt,
+            )
+            if batch_result:
+                extracted_map, b_tokens, b_cost, b_model = batch_result
+                batch_extraction_tokens = b_tokens
+                batch_extraction_cost = b_cost
+                batch_extraction_model = b_model
+                for idx, page in pages_needing_extraction:
+                    extracted_text = extracted_map.get(idx, "")
+                    if extracted_text:
+                        if len(extracted_text) > original_per_url_budget:
+                            extracted_text = extracted_text[:original_per_url_budget]
+                        page["content"] = extracted_text
+                        page["extracted"] = True
+                        page["truncated"] = True
+                        page["char_count"] = len(extracted_text)
+                    else:
+                        # Batch returned empty for this page — hard truncate
+                        page["content"] = page["content"][:original_per_url_budget]
+                        page["extracted"] = False
+                        page["truncated"] = True
+                        page["char_count"] = len(page["content"])
+            else:
+                # Batch extraction failed — hard truncate all
+                for idx, page in pages_needing_extraction:
+                    page["content"] = page["content"][:original_per_url_budget]
+                    page["extracted"] = False
+                    page["truncated"] = True
+                    page["char_count"] = len(page["content"])
+
+        elif len(pages_needing_extraction) == 1:
+            # Single page: use existing single-page extraction
+            idx, page = pages_needing_extraction[0]
+            content = page.get("content", "")
+            batch_max_output = min(original_per_url_budget, 4000)
+            ext = await extract_with_llm(content, extract_prompt, max_output=batch_max_output)
+            if ext:
+                extracted_text, ext_tokens, ext_cost, ext_model = ext
+                if len(extracted_text) > original_per_url_budget:
+                    extracted_text = extracted_text[:original_per_url_budget]
+                page["content"] = extracted_text
+                page["extracted"] = True
+                page["truncated"] = True
+                page["char_count"] = len(extracted_text)
+                batch_extraction_tokens = ext_tokens
+                batch_extraction_cost = ext_cost
+                batch_extraction_model = ext_model
+            else:
+                page["content"] = content[:original_per_url_budget]
+                page["extracted"] = False
+                page["truncated"] = True
+                page["char_count"] = len(page["content"])
+
+        # Recalculate total_chars after extraction/truncation
+        total_chars = sum(
+            page.get("char_count", 0)
+            for page in pages
+            if page.get("success")
+        )
+
         # Build output
         output = {
             "pages": pages,
@@ -1854,16 +2027,11 @@ class WebFetchTool(Tool):
             "total_chars_cap": total_chars_cap,
         }
 
-        # Accumulate extraction costs across all batch pages
-        batch_extraction_tokens = 0
-        batch_extraction_cost = 0.0
-        for page in pages:
-            batch_extraction_tokens += page.get("extraction_tokens", 0)
-            batch_extraction_cost += page.get("extraction_cost_usd", 0.0)
-
         if batch_extraction_tokens > 0:
             metadata["extraction_tokens"] = batch_extraction_tokens
             metadata["extraction_cost_usd"] = batch_extraction_cost
+            if batch_extraction_model:
+                metadata["extraction_model"] = batch_extraction_model
 
         result = ToolResult(
             success=succeeded > 0,
@@ -2514,17 +2682,15 @@ class WebFetchTool(Tool):
                         result = results[0]
                         content = result.get("text", "")
 
-                        exa_title = result.get("title", "")
                         # P0-A: Detect blocked content
                         blocked_reason = detect_blocked_reason(content, 200)
-
                         return ToolResult(
                             success=True,
                             output={
                                 "url": result.get("url", url),
-                                "title": exa_title,
+                                "title": result.get("title", ""),
                                 "content": content,
-                                "snippet": sanitize_snippet(content, exa_title),  # For citation extraction
+                                "snippet": sanitize_snippet(content, result.get("title", "")),  # For citation extraction
                                 "author": result.get("author"),
                                 "published_date": result.get("publishedDate"),
                                 "word_count": len(content.split()),

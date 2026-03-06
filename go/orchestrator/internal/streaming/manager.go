@@ -812,6 +812,12 @@ func (m *Manager) ReplaySince(workflowID string, since uint64) []Event {
 				event.Timestamp = time.Unix(0, nano)
 			}
 		}
+		if v, ok := msg.Values["payload"].(string); ok && v != "" {
+			var p map[string]interface{}
+			if err := json.Unmarshal([]byte(v), &p); err == nil {
+				event.Payload = p
+			}
+		}
 
 		events = append(events, event)
 	}
@@ -863,6 +869,12 @@ func (m *Manager) ReplayFromStreamID(workflowID string, streamID string) []Event
 		if v, ok := msg.Values["ts_nano"].(string); ok {
 			if nano, err := strconv.ParseInt(v, 10, 64); err == nil {
 				event.Timestamp = time.Unix(0, nano)
+			}
+		}
+		if v, ok := msg.Values["payload"].(string); ok && v != "" {
+			var p map[string]interface{}
+			if err := json.Unmarshal([]byte(v), &p); err == nil {
+				event.Payload = p
 			}
 		}
 

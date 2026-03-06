@@ -36,6 +36,7 @@ mod file_operations {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let write_resp = service.file_write(Request::new(write_req)).await.unwrap();
         let write_inner = write_resp.into_inner();
@@ -48,6 +49,7 @@ mod file_operations {
             path: "test.txt".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let read_resp = service.file_read(Request::new(read_req)).await.unwrap();
         let read_inner = read_resp.into_inner();
@@ -68,6 +70,7 @@ mod file_operations {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(write_req1)).await.unwrap();
 
@@ -79,6 +82,7 @@ mod file_operations {
             append: true,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(write_req2)).await.unwrap();
 
@@ -88,6 +92,7 @@ mod file_operations {
             path: "log.txt".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_read(Request::new(read_req)).await.unwrap();
         assert_eq!(resp.into_inner().content, "Line 1\nLine 2\n");
@@ -106,6 +111,7 @@ mod file_operations {
             append: false,
             create_dirs: true,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_write(Request::new(write_req)).await.unwrap();
         assert!(resp.into_inner().success);
@@ -116,6 +122,7 @@ mod file_operations {
             path: "deep/nested/dir/file.txt".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_read(Request::new(read_req)).await.unwrap();
         assert_eq!(resp.into_inner().content, "Nested content");
@@ -135,6 +142,7 @@ mod file_operations {
                 append: false,
                 create_dirs: false,
                 encoding: "utf-8".to_string(),
+                user_id: String::new(),
             };
             service.file_write(Request::new(req)).await.unwrap();
         }
@@ -146,6 +154,7 @@ mod file_operations {
             pattern: "".to_string(),
             recursive: false,
             include_hidden: false,
+            user_id: String::new(),
         };
         let resp = service.file_list(Request::new(list_req)).await.unwrap();
         let inner = resp.into_inner();
@@ -167,6 +176,7 @@ mod file_operations {
                 append: false,
                 create_dirs: false,
                 encoding: "utf-8".to_string(),
+                user_id: String::new(),
             };
             service.file_write(Request::new(req)).await.unwrap();
         }
@@ -178,6 +188,7 @@ mod file_operations {
             pattern: "*.txt".to_string(),
             recursive: false,
             include_hidden: false,
+            user_id: String::new(),
         };
         let resp = service.file_list(Request::new(list_req)).await.unwrap();
         let inner = resp.into_inner();
@@ -202,6 +213,7 @@ mod session_isolation {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(req_a)).await.unwrap();
 
@@ -213,6 +225,7 @@ mod session_isolation {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(req_b)).await.unwrap();
 
@@ -222,6 +235,7 @@ mod session_isolation {
             path: "secret.txt".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp_a = service.file_read(Request::new(read_a)).await.unwrap();
         assert_eq!(resp_a.into_inner().content, "Session A secret");
@@ -232,6 +246,7 @@ mod session_isolation {
             path: "secret.txt".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp_b = service.file_read(Request::new(read_b)).await.unwrap();
         assert_eq!(resp_b.into_inner().content, "Session B secret");
@@ -250,6 +265,7 @@ mod session_isolation {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(req)).await.unwrap();
 
@@ -259,6 +275,7 @@ mod session_isolation {
             path: "../session-a/data.txt".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_read(Request::new(read_req)).await;
 
@@ -270,8 +287,7 @@ mod session_isolation {
             }
             Err(e) => {
                 assert!(
-                    e.code() == tonic::Code::PermissionDenied
-                        || e.code() == tonic::Code::NotFound
+                    e.code() == tonic::Code::PermissionDenied || e.code() == tonic::Code::NotFound
                 );
             }
         }
@@ -288,6 +304,7 @@ mod session_isolation {
             path: "/etc/passwd".to_string(),
             max_bytes: 0,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_read(Request::new(read_req)).await;
 
@@ -319,6 +336,7 @@ mod quota_enforcement {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_write(Request::new(req)).await;
 
@@ -344,9 +362,104 @@ mod quota_enforcement {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         let resp = service.file_write(Request::new(req)).await.unwrap();
         assert!(resp.into_inner().success);
+    }
+}
+
+mod e2e_integration {
+    use shannon_agent_core::safe_commands::SafeCommand;
+    use shannon_agent_core::workspace::WorkspaceManager;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_full_session_workflow() {
+        let temp = TempDir::new().unwrap();
+        let manager = WorkspaceManager::new(temp.path().to_path_buf());
+
+        // 1. Get workspace for a session (creates it)
+        let workspace = manager.get_workspace("test-session-001").unwrap();
+        assert!(workspace.exists());
+        assert!(workspace.is_dir());
+
+        // 2. Write a file to workspace
+        let file_path = workspace.join("data.txt");
+        let content = "Hello from E2E test!";
+        std::fs::write(&file_path, content).unwrap();
+
+        // 3. Read file back and verify content
+        let read_content = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(read_content, content);
+
+        // 4. List files and verify count
+        let entries: Vec<_> = std::fs::read_dir(&workspace)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].file_name().to_str().unwrap() == "data.txt");
+
+        // 5. Execute SafeCommand::parse("cat data.txt") and verify output
+        let cmd = SafeCommand::parse("cat data.txt").unwrap();
+        let output = cmd.execute(&workspace).unwrap();
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(output.stdout, content);
+
+        // 6. Cleanup
+        manager.delete_workspace("test-session-001").unwrap();
+        assert!(!workspace.exists());
+    }
+
+    #[tokio::test]
+    async fn test_cross_session_isolation() {
+        let temp = TempDir::new().unwrap();
+        let manager = WorkspaceManager::new(temp.path().to_path_buf());
+
+        // 1. Create two sessions
+        let workspace_a = manager.get_workspace("session-a").unwrap();
+        let workspace_b = manager.get_workspace("session-b").unwrap();
+
+        // 2. Write secret.txt to session_a
+        let secret_content = "Top secret data for session A only!";
+        std::fs::write(workspace_a.join("secret.txt"), secret_content).unwrap();
+
+        // 3. Verify session_b cannot see the file
+        let secret_in_b = workspace_b.join("secret.txt");
+        assert!(
+            !secret_in_b.exists(),
+            "session-b should not have access to session-a's secret.txt"
+        );
+
+        // Verify listing session-b shows no files
+        let entries: Vec<_> = std::fs::read_dir(&workspace_b)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 0, "session-b workspace should be empty");
+
+        // 4. Verify attempting to cat ../session-a/secret.txt fails
+        let cmd = SafeCommand::parse("cat ../session-a/secret.txt").unwrap();
+        let result = cmd.execute(&workspace_b);
+        assert!(
+            result.is_err(),
+            "Path traversal to session-a should be blocked"
+        );
+
+        // Also test that is_within_workspace correctly rejects cross-session paths
+        let cross_session_path = workspace_b.join("../session-a/secret.txt");
+        let within_b = manager.is_within_workspace("session-b", &cross_session_path);
+        assert!(
+            within_b.is_err() || !within_b.unwrap(),
+            "Cross-session path should not be within session-b workspace"
+        );
+
+        // 5. Cleanup
+        manager.delete_workspace("session-a").unwrap();
+        manager.delete_workspace("session-b").unwrap();
+        assert!(!workspace_a.exists());
+        assert!(!workspace_b.exists());
     }
 }
 
@@ -366,6 +479,7 @@ mod safe_commands {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(req)).await.unwrap();
 
@@ -374,8 +488,12 @@ mod safe_commands {
             session_id: "cmd-test".to_string(),
             command: "ls".to_string(),
             timeout_seconds: 5,
+            user_id: String::new(),
         };
-        let resp = service.execute_command(Request::new(cmd_req)).await.unwrap();
+        let resp = service
+            .execute_command(Request::new(cmd_req))
+            .await
+            .unwrap();
         let inner = resp.into_inner();
         assert!(inner.success);
         assert!(inner.stdout.contains("file1.txt"));
@@ -394,6 +512,7 @@ mod safe_commands {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(req)).await.unwrap();
 
@@ -402,8 +521,12 @@ mod safe_commands {
             session_id: "cat-test".to_string(),
             command: "cat data.txt".to_string(),
             timeout_seconds: 5,
+            user_id: String::new(),
         };
-        let resp = service.execute_command(Request::new(cmd_req)).await.unwrap();
+        let resp = service
+            .execute_command(Request::new(cmd_req))
+            .await
+            .unwrap();
         let inner = resp.into_inner();
         assert!(inner.success);
         assert_eq!(inner.stdout, "Hello from cat");
@@ -428,6 +551,7 @@ mod safe_commands {
             session_id: "mkdir-test".to_string(),
             command: "mkdir -p subdir/nested".to_string(),
             timeout_seconds: 5,
+            user_id: String::new(),
         };
         service.execute_command(Request::new(cmd1)).await.unwrap();
 
@@ -436,6 +560,7 @@ mod safe_commands {
             session_id: "mkdir-test".to_string(),
             command: "touch subdir/nested/file.txt".to_string(),
             timeout_seconds: 5,
+            user_id: String::new(),
         };
         service.execute_command(Request::new(cmd2)).await.unwrap();
 
@@ -444,6 +569,7 @@ mod safe_commands {
             session_id: "mkdir-test".to_string(),
             command: "ls subdir/nested".to_string(),
             timeout_seconds: 5,
+            user_id: String::new(),
         };
         let resp = service.execute_command(Request::new(cmd3)).await.unwrap();
         assert!(resp.into_inner().stdout.contains("file.txt"));
@@ -467,6 +593,7 @@ mod safe_commands {
                 session_id: "dangerous".to_string(),
                 command: cmd.to_string(),
                 timeout_seconds: 5,
+                user_id: String::new(),
             };
             let resp = service.execute_command(Request::new(req)).await.unwrap();
             let inner = resp.into_inner();
@@ -502,6 +629,7 @@ mod safe_commands {
                 session_id: "injection".to_string(),
                 command: cmd.to_string(),
                 timeout_seconds: 5,
+                user_id: String::new(),
             };
             let resp = service.execute_command(Request::new(req)).await.unwrap();
             let inner = resp.into_inner();
@@ -526,6 +654,7 @@ mod safe_commands {
             append: false,
             create_dirs: false,
             encoding: "utf-8".to_string(),
+            user_id: String::new(),
         };
         service.file_write(Request::new(req)).await.unwrap();
 
@@ -534,8 +663,12 @@ mod safe_commands {
             session_id: "grep-test".to_string(),
             command: "grep ERROR log.txt".to_string(),
             timeout_seconds: 5,
+            user_id: String::new(),
         };
-        let resp = service.execute_command(Request::new(cmd_req)).await.unwrap();
+        let resp = service
+            .execute_command(Request::new(cmd_req))
+            .await
+            .unwrap();
         let inner = resp.into_inner();
         assert!(inner.success);
         assert!(inner.stdout.contains("ERROR: Failed"));

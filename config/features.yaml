@@ -115,12 +115,16 @@ workflows:
   swarm:
     enabled: true  # Set to true to enable swarm agent architecture
     max_agents: 10  # Maximum total agents (initial + dynamically spawned)
-    max_iterations_per_agent: 25  # Max reason-act loops per agent
-    agent_timeout_seconds: 600  # Per-agent timeout (25 iters × ~20s needs >5min)
+    max_iterations_per_agent: 25  # Max reason-act loops per agent (safety net; prompt targets 8-10 tool calls)
+    agent_timeout_seconds: 1800  # Per-agent timeout — must cover idle wait between phases (match max_wall_clock_minutes)
     # Collaboration guardrails
     max_messages_per_agent: 20  # Max direct messages an agent can send per workflow
     workspace_snippet_chars: 800  # Max chars per KV workspace entry shown in prompt
     workspace_max_entries: 5  # Max recent KV entries shown per topic
+    # Global budget controls (D9)
+    max_total_llm_calls: 200    # Safety net for dynamic spawn + idle + Lead overhead
+    max_total_tokens: 1000000   # Total LLM tokens across all agents + Lead (scraper tokens excluded)
+    max_wall_clock_minutes: 30  # Hard wall-clock limit for entire swarm workflow
 
 # Citation V2 configuration (DEPRECATED - V2 abandoned, using optimized Legacy)
 citation:

@@ -17,13 +17,20 @@ service SandboxService {
 
   // Execute a safe command in session workspace
   rpc ExecuteCommand(CommandRequest) returns (CommandResponse);
+
+  // Search file contents (grep-like)
+  rpc FileSearch(FileSearchRequest) returns (FileSearchResponse);
+
+  // Find-and-replace in a file
+  rpc FileEdit(FileEditRequest) returns (FileEditResponse);
 }
 
 message FileReadRequest {
   string session_id = 1;
-  string path = 2;           // Relative to /workspace
+  string path = 2;           // Relative to /workspace or /memory
   int32 max_bytes = 3;       // Optional limit (0 = no limit up to 10MB)
   string encoding = 4;       // utf-8, base64 (default: utf-8)
+  string user_id = 5;        // For /memory/ path resolution
 }
 
 message FileReadResponse {
@@ -36,11 +43,12 @@ message FileReadResponse {
 
 message FileWriteRequest {
   string session_id = 1;
-  string path = 2;           // Relative to /workspace
+  string path = 2;           // Relative to /workspace or /memory
   string content = 3;
   bool append = 4;           // false = overwrite, true = append
   bool create_dirs = 5;      // Create parent directories if needed
   string encoding = 6;       // utf-8, base64 (default: utf-8)
+  string user_id = 7;        // For /memory/ path resolution
 }
 
 message FileWriteResponse {
@@ -52,10 +60,11 @@ message FileWriteResponse {
 
 message FileListRequest {
   string session_id = 1;
-  string path = 2;           // Relative to /workspace (empty = root)
+  string path = 2;           // Relative to /workspace or /memory (empty = root)
   string pattern = 3;        // Optional glob pattern (e.g., "*.txt")
   bool recursive = 4;
   bool include_hidden = 5;
+  string user_id = 6;        // For /memory/ path resolution
 }
 
 message FileEntry {
@@ -74,10 +83,60 @@ message FileListResponse {
   int32 dir_count = 5;
 }
 
+// FileSearch - grep-like content search
+message FileSearchRequest {
+  string session_id = 1;
+  string query = 2;
+  string path = 3;
+  int32 max_results = 4;
+  bool regex = 5;
+  string include = 6;
+  int32 context_lines = 7;
+}
+
+message SearchMatch {
+  string file = 1;
+  int32 line = 2;
+  string content = 3;
+  repeated ContextLine context = 4;
+}
+
+message ContextLine {
+  int32 line = 1;
+  string content = 2;
+}
+
+message FileSearchResponse {
+  bool success = 1;
+  repeated SearchMatch matches = 2;
+  string error = 3;
+  int32 files_scanned = 4;
+  int32 matches_found = 5;
+  bool truncated = 6;
+}
+
+// FileEdit - find-and-replace in file
+message FileEditRequest {
+  string session_id = 1;
+  string path = 2;
+  string old_text = 3;
+  string new_text = 4;
+  bool replace_all = 5;
+}
+
+message FileEditResponse {
+  bool success = 1;
+  string error = 2;
+  int32 replacements = 3;
+  string snippet = 4;
+  int64 file_size_after = 5;
+}
+
 message CommandRequest {
   string session_id = 1;
   string command = 2;        // e.g., "ls -la", "cat foo.txt"
   int32 timeout_seconds = 3; // Max 30 seconds
+  string user_id = 4;        // For /memory/ path resolution in commands
 }
 
 message CommandResponse {

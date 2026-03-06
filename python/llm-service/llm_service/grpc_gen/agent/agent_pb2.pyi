@@ -45,7 +45,7 @@ class ExecuteTaskRequest(_message.Message):
     def __init__(self, metadata: _Optional[_Union[_common_pb2.TaskMetadata, _Mapping]] = ..., query: _Optional[str] = ..., context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., mode: _Optional[_Union[_common_pb2.ExecutionMode, str]] = ..., available_tools: _Optional[_Iterable[str]] = ..., config: _Optional[_Union[AgentConfig, _Mapping]] = ..., session_context: _Optional[_Union[SessionContext, _Mapping]] = ...) -> None: ...
 
 class SessionContext(_message.Message):
-    __slots__ = ("session_id", "history", "persistent_context", "files_created", "tools_used", "total_tokens_used", "total_cost_usd")
+    __slots__ = ("session_id", "history", "persistent_context", "files_created", "tools_used", "total_tokens_used", "total_cost_usd", "user_id")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     HISTORY_FIELD_NUMBER: _ClassVar[int]
     PERSISTENT_CONTEXT_FIELD_NUMBER: _ClassVar[int]
@@ -53,6 +53,7 @@ class SessionContext(_message.Message):
     TOOLS_USED_FIELD_NUMBER: _ClassVar[int]
     TOTAL_TOKENS_USED_FIELD_NUMBER: _ClassVar[int]
     TOTAL_COST_USD_FIELD_NUMBER: _ClassVar[int]
+    USER_ID_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     history: _containers.RepeatedScalarFieldContainer[str]
     persistent_context: _struct_pb2.Struct
@@ -60,7 +61,8 @@ class SessionContext(_message.Message):
     tools_used: _containers.RepeatedScalarFieldContainer[str]
     total_tokens_used: int
     total_cost_usd: float
-    def __init__(self, session_id: _Optional[str] = ..., history: _Optional[_Iterable[str]] = ..., persistent_context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., files_created: _Optional[_Iterable[str]] = ..., tools_used: _Optional[_Iterable[str]] = ..., total_tokens_used: _Optional[int] = ..., total_cost_usd: _Optional[float] = ...) -> None: ...
+    user_id: str
+    def __init__(self, session_id: _Optional[str] = ..., history: _Optional[_Iterable[str]] = ..., persistent_context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., files_created: _Optional[_Iterable[str]] = ..., tools_used: _Optional[_Iterable[str]] = ..., total_tokens_used: _Optional[int] = ..., total_cost_usd: _Optional[float] = ..., user_id: _Optional[str] = ...) -> None: ...
 
 class ConversationMessage(_message.Message):
     __slots__ = ("role", "content", "timestamp", "tokens_used")

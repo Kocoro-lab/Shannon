@@ -113,12 +113,6 @@ class CompletionRequest:
     provider_override: Optional[str] = None
     # OpenAI Responses API: chain from previous response for cache reuse
     previous_response_id: Optional[str] = None
-    # Anthropic structured outputs: output_config for constrained JSON decoding
-    output_config: Optional[Dict] = None
-    # Anthropic extended thinking config (e.g. {"type": "enabled", "budget_tokens": 5000})
-    thinking: Optional[Dict] = None
-    # OpenAI reasoning effort for o-models (minimal/low/medium/high)
-    reasoning_effort: Optional[str] = None
 
     def generate_cache_key(self) -> str:
         """Generate a cache key for this request"""
@@ -135,10 +129,6 @@ class CompletionRequest:
             "functions": self.functions,
             "seed": self.seed,
         }
-        if self.thinking:
-            key_data["thinking"] = self.thinking
-        if self.reasoning_effort:
-            key_data["reasoning_effort"] = self.reasoning_effort
 
         key_json = json.dumps(key_data, sort_keys=True)
         return hashlib.sha256(key_json.encode()).hexdigest()
@@ -154,7 +144,6 @@ class CompletionResponse:
     usage: TokenUsage
     finish_reason: str
     function_call: Optional[Dict] = None
-    tool_calls: Optional[List[Dict]] = None
 
     # Metadata
     request_id: Optional[str] = None  # Also used as response_id for OpenAI Responses API chaining
@@ -452,129 +441,6 @@ class CacheManager:
         return self.hits / total if total > 0 else 0.0
 
 
-def extract_text_from_content(content) -> str:
-    """Extract text from content that may be a string or list of content blocks."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            part.get("text", "") if isinstance(part, dict) and part.get("type") == "text"
-            else part if isinstance(part, str)
-            else ""
-            for part in content
-        )
-    return str(content) if content else ""
-
-
-def translate_content_for_openai(content):
-    """Translate Anthropic-style content blocks to OpenAI format.
-
-    Handles: text, image (base64 + url), image_url passthrough,
-    plain strings in lists, and unknown block types (passed through).
-    """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return str(content) if content else ""
-    blocks = []
-    for block in content:
-        if isinstance(block, str):
-            blocks.append({"type": "text", "text": block})
-        elif not isinstance(block, dict):
-            continue
-        elif block.get("type") == "image":
-            source = block.get("source", {})
-            if source.get("type") == "url":
-                url = source.get("url", "")
-            else:
-                url = f"data:{source.get('media_type', 'image/png')};base64,{source.get('data', '')}"
-            blocks.append({"type": "image_url", "image_url": {"url": url}})
-        else:
-            # text, image_url, and any future block types — pass through
-            blocks.append(block)
-    return blocks
-
-
-def prepare_openai_messages(messages):
-    """Translate messages for OpenAI API, handling cross-provider format differences.
-
-    Handles Anthropic-native content blocks:
-    - Assistant messages with tool_use blocks → text content + tool_calls array
-    - User messages with tool_result blocks → role:"tool" messages
-    - role:"tool" messages pass through (already OpenAI-native)
-    """
-    import json as _json
-
-    # Fast path: all string content, no cross-provider blocks to convert
-    if all(isinstance(msg.get("content"), (str, type(None))) for msg in messages
-           if msg.get("role") != "tool"):
-        return messages
-
-    result = []
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content")
-
-        # role:"tool" is already OpenAI-native, pass through
-        if role == "tool":
-            result.append(msg)
-            continue
-
-        # Assistant messages with Anthropic tool_use content blocks
-        if role == "assistant" and isinstance(content, list):
-            tool_uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
-            if tool_uses:
-                text_parts = []
-                for b in content:
-                    if isinstance(b, dict) and b.get("type") == "text":
-                        text_parts.append(b.get("text", ""))
-                    elif isinstance(b, str):
-                        text_parts.append(b)
-                text_content = "".join(text_parts) or ""
-                openai_tool_calls = []
-                for tu in tool_uses:
-                    args = tu.get("input", {})
-                    openai_tool_calls.append({
-                        "id": tu.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": tu.get("name", ""),
-                            "arguments": _json.dumps(args) if isinstance(args, dict) else str(args),
-                        },
-                    })
-                result.append({"role": "assistant", "content": text_content, "tool_calls": openai_tool_calls})
-                continue
-
-        # User messages with Anthropic tool_result content blocks
-        if role == "user" and isinstance(content, list):
-            tool_results = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_result"]
-            if tool_results:
-                non_tool = [b for b in content if not (isinstance(b, dict) and b.get("type") == "tool_result")]
-                for tr in tool_results:
-                    tr_content = tr.get("content", "")
-                    result.append({
-                        "role": "tool",
-                        "tool_call_id": tr.get("tool_use_id", ""),
-                        "content": tr_content if isinstance(tr_content, str) else str(tr_content),
-                    })
-                if non_tool:
-                    result.append({**msg, "content": translate_content_for_openai(non_tool)})
-                continue
-
-        # Default: translate content (handles images, etc.)
-        # Guard: normalize None content to "" for assistant+tool_calls messages
-        # (strict OpenAI-compatible providers reject null content in that shape)
-        if isinstance(content, (str, type(None))):
-            if content is None and role == "assistant" and msg.get("tool_calls"):
-                result.append({**msg, "content": ""})
-            else:
-                result.append(msg)
-        else:
-            result.append({**msg, "content": translate_content_for_openai(content)})
-
-    return result
-
-
 class TokenCounter:
     """Token counting utilities for different models"""
 
@@ -591,21 +457,18 @@ class TokenCounter:
         - Therefore: 1 token ≈ 3.5 characters (not 4)
         """
         total_chars = 0
-        image_tokens = 0
         for message in messages:
             content = message.get("content", "")
             if isinstance(content, str):
                 total_chars += len(content)
             elif isinstance(content, list):
+                # Handle multi-modal content
                 for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") in ("image", "image_url"):
-                            image_tokens += 256  # midpoint: ~85 low-detail, ~765 high-detail
-                        elif "text" in item:
-                            total_chars += len(item["text"])
+                    if isinstance(item, dict) and "text" in item:
+                        total_chars += len(item["text"])
 
         # More accurate: 1 token per 3.5 characters
-        base_tokens = int(total_chars / 3.5) + image_tokens
+        base_tokens = int(total_chars / 3.5)
 
         # Add overhead for message structure
         message_overhead = len(messages) * 4  # ~4 tokens per message for role/structure

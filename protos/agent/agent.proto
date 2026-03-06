@@ -45,6 +45,7 @@ message SessionContext {
   repeated string tools_used = 5;
   int32 total_tokens_used = 6;
   double total_cost_usd = 7;
+  string user_id = 8;
 }
 
 message ConversationMessage {

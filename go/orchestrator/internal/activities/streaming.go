@@ -14,6 +14,7 @@ type StreamExecuteInput struct {
 	Query     string                 `json:"query"`
 	Context   map[string]interface{} `json:"context"`
 	SessionID string                 `json:"session_id"`
+	UserID    string                 `json:"user_id"`
 	AgentID   string                 `json:"agent_id"`
 	Mode      string                 `json:"mode"`
 }
@@ -56,6 +57,7 @@ func (s *StreamingActivities) StreamExecute(ctx context.Context, input StreamExe
 		Context:   input.Context,
 		Mode:      input.Mode,
 		SessionID: input.SessionID,
+		UserID:    input.UserID,
 		History:   nil,
 	}, nil)
 	if err != nil {

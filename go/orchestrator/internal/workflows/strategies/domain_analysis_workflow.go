@@ -325,6 +325,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				Context:   discoveryContext,
 				Mode:      "standard",
 				SessionID: input.SessionID,
+				UserID:    input.UserID,
 				History:   convertHistoryForAgent(input.History),
 				SuggestedTools: []string{
 					"web_search",
@@ -594,6 +595,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 						Context:        prefetchContext,
 						Mode:           "standard",
 						SessionID:      input.SessionID,
+						UserID:         input.UserID,
 						History:        convertHistoryForAgent(input.History),
 						SuggestedTools: []string{"web_subpage_fetch"},
 						ToolParameters: map[string]interface{}{

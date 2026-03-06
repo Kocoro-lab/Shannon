@@ -21,6 +21,8 @@ from ..tools.builtin import (
     FileReadTool,
     FileWriteTool,
     FileListTool,
+    FileSearchTool,
+    FileEditTool,
     BashExecutorTool,
     PythonWasiExecutorTool,
 )
@@ -346,6 +348,8 @@ async def startup_event():
         FileReadTool,
         FileWriteTool,
         FileListTool,
+        FileSearchTool,
+        FileEditTool,
         BashExecutorTool,
         PythonWasiExecutorTool,
     ]

@@ -1,9 +1,13 @@
 #[cfg(feature = "wasi")]
 use crate::wasi_sandbox::WasiSandbox;
+use crate::{
+    firecracker_client::{FirecrackerExecuteRequest, FirecrackerExecutorClient},
+    workspace::WorkspaceManager,
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use base64::Engine;
 use tokio::fs;
@@ -59,9 +63,19 @@ pub struct ToolExecutor {
     llm_service_url: String,
     #[cfg(feature = "wasi")]
     wasi: Option<WasiSandbox>,
+    /// When true, Firecracker errors fail fast without WASI fallback.
+    /// Set via DISABLE_WASI_FALLBACK=1 env var (for production where Firecracker is required).
+    disable_wasi_fallback: bool,
 }
 
 impl ToolExecutor {
+    /// Check if WASI fallback should be disabled (Firecracker-only mode)
+    fn should_disable_wasi_fallback() -> bool {
+        std::env::var("DISABLE_WASI_FALLBACK")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false)
+    }
+
     pub fn new(llm_service_url: Option<String>) -> Self {
         Self {
             llm_service_url: llm_service_url
@@ -69,6 +83,7 @@ impl ToolExecutor {
                 .unwrap_or_else(|| "http://llm-service:8000".to_string()),
             #[cfg(feature = "wasi")]
             wasi: None,
+            disable_wasi_fallback: Self::should_disable_wasi_fallback(),
         }
     }
 
@@ -79,6 +94,7 @@ impl ToolExecutor {
                 .or_else(|| std::env::var("LLM_SERVICE_URL").ok())
                 .unwrap_or_else(|| "http://llm-service:8000".to_string()),
             wasi,
+            disable_wasi_fallback: Self::should_disable_wasi_fallback(),
         }
     }
 
@@ -88,6 +104,7 @@ impl ToolExecutor {
             llm_service_url: llm_service_url
                 .or_else(|| std::env::var("LLM_SERVICE_URL").ok())
                 .unwrap_or_else(|| "http://llm-service:8000".to_string()),
+            disable_wasi_fallback: Self::should_disable_wasi_fallback(),
         }
     }
 
@@ -121,6 +138,10 @@ impl ToolExecutor {
             "Executing tool: {} with parameters: {:?}",
             tool_call.tool_name, tool_call.parameters
         );
+
+        if self.should_route_to_firecracker(tool_call) {
+            return self.execute_firecracker(tool_call, session_context).await;
+        }
 
         // Route calculator to local execution
         if tool_call.tool_name == "calculator" {
@@ -340,5 +361,298 @@ impl ToolExecutor {
         debug!("Available tools: {:?}", tools);
 
         Ok(tools)
+    }
+
+    fn should_route_to_firecracker(&self, tool_call: &ToolCall) -> bool {
+        // Route firecracker_executor tool directly
+        if tool_call.tool_name == "firecracker_executor" {
+            info!("Routing to Firecracker: tool_name is firecracker_executor");
+            return true;
+        }
+
+        // Only route code_executor to Firecracker
+        if tool_call.tool_name != "code_executor" {
+            return false;
+        }
+
+        // Check PYTHON_EXECUTOR_MODE env var directly for reliability
+        let mode = std::env::var("PYTHON_EXECUTOR_MODE")
+            .map(|v| v.to_lowercase())
+            .unwrap_or_else(|_| "wasi".to_string());
+
+        let has_code =
+            tool_call.parameters.contains_key("code") || tool_call.parameters.contains_key("stdin");
+
+        let should_route = mode == "firecracker" && has_code;
+        info!(
+            "Firecracker routing: mode={}, has_code_or_stdin={}, route={}",
+            mode, has_code, should_route
+        );
+        should_route
+    }
+
+    async fn execute_firecracker(
+        &self,
+        tool_call: &ToolCall,
+        session_context: Option<&prost_types::Struct>,
+    ) -> Result<ToolResult> {
+        let client = FirecrackerExecutorClient::from_env();
+
+        // Check if Firecracker is available - no fallback, fail fast
+        if !client.is_available().await {
+            error!("Firecracker executor unavailable at {}", client.base_url());
+            return Ok(ToolResult {
+                tool: tool_call.tool_name.clone(),
+                success: false,
+                output: serde_json::Value::Null,
+                error: Some("Python executor (Firecracker) is unavailable".to_string()),
+            });
+        }
+
+        // Accept 'code' or 'stdin' parameter (LLM may use either)
+        let code = tool_call
+            .parameters
+            .get("code")
+            .or_else(|| tool_call.parameters.get("stdin"))
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("firecracker_executor requires 'code' or 'stdin'"))?
+            .to_string();
+
+        let session_id = tool_call
+            .parameters
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                session_context.and_then(|ctx| {
+                    ctx.fields.get("session_id").and_then(|v| {
+                        if let Some(prost_types::value::Kind::StringValue(s)) = &v.kind {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+            });
+
+        info!(
+            "Firecracker execute: session_id={:?}, context_keys={:?}",
+            session_id,
+            session_context.map(|c| c.fields.keys().collect::<Vec<_>>())
+        );
+
+        let timeout_seconds = tool_call
+            .parameters
+            .get("timeout_seconds")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+
+        let workspace_path = if let Some(sid) = &session_id {
+            let wm = WorkspaceManager::from_env();
+            wm.get_workspace(sid)
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+        } else {
+            None
+        };
+
+        let req = FirecrackerExecuteRequest {
+            code,
+            session_id,
+            timeout_seconds,
+            workspace_path,
+            stdin: tool_call
+                .parameters
+                .get("stdin")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+        };
+
+        match client.execute(req).await {
+            Ok(resp) => {
+                if resp.success {
+                    Ok(ToolResult {
+                        tool: tool_call.tool_name.clone(),
+                        success: true,
+                        output: serde_json::Value::String(resp.stdout),
+                        error: None,
+                    })
+                } else {
+                    let err = resp
+                        .error
+                        .or_else(|| {
+                            if resp.stderr.is_empty() {
+                                None
+                            } else {
+                                Some(resp.stderr)
+                            }
+                        })
+                        .unwrap_or_else(|| "Firecracker execution failed".to_string());
+                    Ok(ToolResult {
+                        tool: tool_call.tool_name.clone(),
+                        success: false,
+                        output: serde_json::Value::Null,
+                        error: Some(err),
+                    })
+                }
+            }
+            Err(e) if Self::is_transient_error(&e) && !self.disable_wasi_fallback => {
+                warn!("Firecracker transient error, falling back to WASI: {}", e);
+                self.execute_wasi_fallback(tool_call, session_context).await
+            }
+            Err(e) if Self::is_transient_error(&e) => {
+                // WASI fallback disabled (production mode) - fail fast
+                error!("Firecracker unavailable (WASI fallback disabled): {}", e);
+                Ok(ToolResult {
+                    tool: tool_call.tool_name.clone(),
+                    success: false,
+                    output: serde_json::Value::Null,
+                    error: Some(format!("Python executor unavailable: {}", e)),
+                })
+            }
+            Err(e) => Ok(ToolResult {
+                tool: tool_call.tool_name.clone(),
+                success: false,
+                output: serde_json::Value::Null,
+                error: Some(format!("Firecracker executor error: {}", e)),
+            }),
+        }
+    }
+
+    /// Check if an error is transient and should trigger WASI fallback.
+    /// Returns true for connection refused, timeout, and 503 Service Unavailable.
+    fn is_transient_error(e: &anyhow::Error) -> bool {
+        let err_str = e.to_string().to_lowercase();
+
+        // Connection refused
+        if err_str.contains("connection refused") {
+            return true;
+        }
+
+        // Timeout errors
+        if err_str.contains("timeout") || err_str.contains("timed out") {
+            return true;
+        }
+
+        // 503 Service Unavailable
+        if err_str.contains("503") || err_str.contains("service unavailable") {
+            return true;
+        }
+
+        // DNS resolution failure
+        if err_str.contains("dns") || err_str.contains("name resolution") {
+            return true;
+        }
+
+        false
+    }
+
+    /// Execute code using WASI sandbox as fallback when Firecracker is unavailable.
+    /// This provides a degraded but functional execution path.
+    #[cfg(feature = "wasi")]
+    async fn execute_wasi_fallback(
+        &self,
+        tool_call: &ToolCall,
+        _session_context: Option<&prost_types::Struct>,
+    ) -> Result<ToolResult> {
+        // Get the Python code from parameters
+        let code = match tool_call.parameters.get("code").and_then(|v| v.as_str()) {
+            Some(c) => c,
+            None => {
+                return Ok(ToolResult {
+                    tool: tool_call.tool_name.clone(),
+                    success: false,
+                    output: serde_json::Value::Null,
+                    error: Some("WASI fallback requires 'code' parameter".to_string()),
+                });
+            }
+        };
+
+        // Check if WASI sandbox is available
+        let wasi = match &self.wasi {
+            Some(w) => w,
+            None => {
+                warn!("WASI sandbox not configured for fallback execution");
+                return Ok(ToolResult {
+                    tool: tool_call.tool_name.clone(),
+                    success: false,
+                    output: serde_json::Value::Null,
+                    error: Some(
+                        "Neither Firecracker nor WASI sandbox available for code execution"
+                            .to_string(),
+                    ),
+                });
+            }
+        };
+
+        // Get Python WASM interpreter path from environment
+        let wasm_path = std::env::var("PYTHON_WASI_WASM_PATH")
+            .unwrap_or_else(|_| "/opt/wasm-interpreters/python-3.11.4.wasm".to_string());
+
+        // Read the Python WASM interpreter
+        let wasm_bytes = match fs::read(&wasm_path).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                warn!(
+                    "Failed to read Python WASM interpreter at {}: {}",
+                    wasm_path, e
+                );
+                return Ok(ToolResult {
+                    tool: tool_call.tool_name.clone(),
+                    success: false,
+                    output: serde_json::Value::Null,
+                    error: Some(format!(
+                        "python_executor unavailable: WASM interpreter not installed at {}. Use file_write to save code to a file instead.",
+                        wasm_path
+                    )),
+                });
+            }
+        };
+
+        // Execute Python code via WASI with the code as stdin
+        // The Python interpreter reads from stdin when given -c flag
+        let argv = Some(vec![
+            "python".to_string(),
+            "-c".to_string(),
+            code.to_string(),
+        ]);
+
+        match wasi.execute_wasm_with_args(&wasm_bytes, "", argv).await {
+            Ok(output) => {
+                info!("WASI fallback execution successful");
+                Ok(ToolResult {
+                    tool: tool_call.tool_name.clone(),
+                    success: true,
+                    output: serde_json::Value::String(output),
+                    error: None,
+                })
+            }
+            Err(e) => {
+                let msg = format!("WASI fallback execution error: {}", e);
+                warn!("{}", msg);
+                Ok(ToolResult {
+                    tool: tool_call.tool_name.clone(),
+                    success: false,
+                    output: serde_json::Value::Null,
+                    error: Some(msg),
+                })
+            }
+        }
+    }
+
+    /// Fallback stub when WASI feature is disabled.
+    #[cfg(not(feature = "wasi"))]
+    async fn execute_wasi_fallback(
+        &self,
+        tool_call: &ToolCall,
+        _session_context: Option<&prost_types::Struct>,
+    ) -> Result<ToolResult> {
+        warn!("WASI feature disabled, cannot provide fallback for Firecracker");
+        Ok(ToolResult {
+            tool: tool_call.tool_name.clone(),
+            success: false,
+            output: serde_json::Value::Null,
+            error: Some("Firecracker unavailable and WASI fallback not compiled".to_string()),
+        })
     }
 }

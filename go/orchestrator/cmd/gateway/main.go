@@ -318,6 +318,19 @@ func main() {
 		),
 	)
 
+	// Swarm HITL: send human message to Lead
+	mux.Handle("POST /api/v1/swarm/{workflowID}/message",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(taskHandler.SendSwarmMessage),
+					),
+				),
+			),
+		),
+	)
+
 	// Get control state
 	mux.Handle("GET /api/v1/tasks/{id}/control-state",
 		tracingMiddleware(

@@ -20,8 +20,6 @@ eggs/
 # Python virtual environment lib folders
 lib/
 lib64/
-# But explicitly allow desktop lib (Shannon UI)
-!desktop/lib/
 parts/
 sdist/
 var/
@@ -80,6 +78,7 @@ env.bak/
 venv.bak/
 .direnv/
 .envrc
+
 
 # ---------------------------------
 # Go
@@ -176,16 +175,15 @@ config/development/
 # Vendor-specific integrations (see docs/vendor-adapters.md)
 config/overlays/shannon.*.yaml
 !config/overlays/shannon.example.yaml
-config/overlays/*-service-account-key.json
-config/openapi_specs/*
-!config/openapi_specs/.gitkeep
-python/llm-service/llm_service/roles/vendor/
+config/overlays/ga4-service-account-key.json
+config/openapi_specs/ptengine*
+config/openapi_specs/schema_query_processor.*
 python/llm-service/llm_service/roles/ptengine/
-python/llm-service/llm_service/tools/vendor_adapters/
+python/llm-service/llm_service/tools/vendor_adapters/ptengine/
 
-# User and vendor skill directories (not committed - environment-specific)
-config/skills/user/
-config/skills/vendor/
+# Angfa vendor-specific files (DO NOT COMMIT)
+python/llm-service/llm_service/tools/vendor_adapters/angfa.py
+python/llm-service/llm_service/roles/vendor/angfa_analytics.py
 
 # Build artifacts
 build/
@@ -198,15 +196,12 @@ protos/gen/
 **/*.pb.go
 **/*_pb2.py
 **/*_pb2_grpc.py
-# Explicitly allow pre-generated Python protos (protobuf 5.x compatible)
-!python/llm-service/llm_service/grpc_gen/
-!python/llm-service/llm_service/grpc_gen/**
 *.pb.cc
 *.pb.h
 **/generated/
 
 # Python gRPC generated files
-# python/llm-service/llm_service/grpc_gen/  # Committed for reproducible builds with protobuf 5.x
+# python/llm-service/llm_service/grpc_gen/  # Committed for Docker build consistency
 python/llm-service/llm_service/generated/
 python/llm-service/llm_service/**/__pycache__/
 go/orchestrator/.pytest_cache/
@@ -251,7 +246,6 @@ yarn-error.log*
 .idea/
 *.iml
 .cursor/
-# Claude Code settings (committed files remain tracked; ignore new local-only files)
 .claude/
 .codex_cache/
 *.suo
@@ -269,7 +263,7 @@ yarn-error.log*
 *.patch
 *.diff
 
-# Lock files (keep go.sum, regenerate Cargo.lock)
+# Lock files (keep go.sum and Cargo.lock for reproducible builds)
 # *.lock
 
 # CI/CD
@@ -329,16 +323,27 @@ deploy/terraform/*.tfstate*
 # MCP configuration files
 .mcp.json
 
+# Worktrees
+.worktrees/
+
 # Claude AI development files
 AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
 
 # Historical/archived documentation
 docs/archive-historical/
 tests/verify_rust_pricing
 scripts/benchmark_HLE.py
 
-# Desktop application build artifacts (source tracked, builds ignored via desktop/.gitignore)
-# Note: desktop/ folder is now tracked, with build artifacts ignored via desktop/.gitignore
+# Desktop application (moved to separate repos)
+# IMPORTANT: shannon-cloud is backend-only, NO desktop code
+desktop/
+
+# Python SDK client (Shannon open source distribution)
+# IMPORTANT: shannon-cloud is backend-only, NO client libraries
+clients/
+
 # Chrome extension (browser integration)
 chrome-extension/
 
@@ -349,4 +354,9 @@ chrome-extension/
 # Skills - exclude user and vendor-specific skills
 config/skills/user/
 config/skills/vendor/
+
+# GitNexus
+.gitnexus
+
+# Documentation
 docs/plans/

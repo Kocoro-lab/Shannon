@@ -26,6 +26,9 @@ fn main() -> Result<()> {
         .build_server(true)
         .build_client(true)
         .file_descriptor_set_path(std::env::var("OUT_DIR").unwrap() + "/shannon_descriptor.bin")
-        .compile_protos(&[&common_proto, &agent_proto, &sandbox_proto], &[proto_path])?;
+        .compile_protos(
+            &[&common_proto, &agent_proto, &sandbox_proto],
+            &[proto_path],
+        )?;
     Ok(())
 }

@@ -57,6 +57,16 @@ class SandboxServiceStub(object):
                 request_serializer=sandbox_dot_sandbox__pb2.CommandRequest.SerializeToString,
                 response_deserializer=sandbox_dot_sandbox__pb2.CommandResponse.FromString,
                 _registered_method=True)
+        self.FileSearch = channel.unary_unary(
+                '/shannon.sandbox.SandboxService/FileSearch',
+                request_serializer=sandbox_dot_sandbox__pb2.FileSearchRequest.SerializeToString,
+                response_deserializer=sandbox_dot_sandbox__pb2.FileSearchResponse.FromString,
+                _registered_method=True)
+        self.FileEdit = channel.unary_unary(
+                '/shannon.sandbox.SandboxService/FileEdit',
+                request_serializer=sandbox_dot_sandbox__pb2.FileEditRequest.SerializeToString,
+                response_deserializer=sandbox_dot_sandbox__pb2.FileEditResponse.FromString,
+                _registered_method=True)
 
 
 class SandboxServiceServicer(object):
@@ -92,6 +102,20 @@ class SandboxServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def FileSearch(self, request, context):
+        """Search file contents (grep-like)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def FileEdit(self, request, context):
+        """Find-and-replace in a file
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SandboxServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -114,6 +138,16 @@ def add_SandboxServiceServicer_to_server(servicer, server):
                     servicer.ExecuteCommand,
                     request_deserializer=sandbox_dot_sandbox__pb2.CommandRequest.FromString,
                     response_serializer=sandbox_dot_sandbox__pb2.CommandResponse.SerializeToString,
+            ),
+            'FileSearch': grpc.unary_unary_rpc_method_handler(
+                    servicer.FileSearch,
+                    request_deserializer=sandbox_dot_sandbox__pb2.FileSearchRequest.FromString,
+                    response_serializer=sandbox_dot_sandbox__pb2.FileSearchResponse.SerializeToString,
+            ),
+            'FileEdit': grpc.unary_unary_rpc_method_handler(
+                    servicer.FileEdit,
+                    request_deserializer=sandbox_dot_sandbox__pb2.FileEditRequest.FromString,
+                    response_serializer=sandbox_dot_sandbox__pb2.FileEditResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -226,6 +260,60 @@ class SandboxService(object):
             '/shannon.sandbox.SandboxService/ExecuteCommand',
             sandbox_dot_sandbox__pb2.CommandRequest.SerializeToString,
             sandbox_dot_sandbox__pb2.CommandResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FileSearch(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/shannon.sandbox.SandboxService/FileSearch',
+            sandbox_dot_sandbox__pb2.FileSearchRequest.SerializeToString,
+            sandbox_dot_sandbox__pb2.FileSearchResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def FileEdit(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/shannon.sandbox.SandboxService/FileEdit',
+            sandbox_dot_sandbox__pb2.FileEditRequest.SerializeToString,
+            sandbox_dot_sandbox__pb2.FileEditResponse.FromString,
             options,
             channel_credentials,
             insecure,
