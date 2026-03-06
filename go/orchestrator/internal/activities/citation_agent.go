@@ -558,8 +558,8 @@ func buildCitationUserContent(report string, citations []CitationForAgent) strin
 			title = c.Source
 		}
 		snippet := c.Snippet
-		if len(snippet) > 500 {
-			snippet = snippet[:500] + "..."
+		if len(snippet) > 200 {
+			snippet = snippet[:200] + "..."
 		}
 		sb.WriteString(fmt.Sprintf("[%d] %s (%s)\n", i+1, title, c.URL))
 		if snippet != "" {

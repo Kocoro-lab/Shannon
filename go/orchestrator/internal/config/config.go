@@ -31,6 +31,30 @@ type Features struct {
 	Citation      CitationConfig      `mapstructure:"citation"` // P1: Citation V2 feature flags
 }
 
+// RateLimitConfigPaths is the canonical search order for rate_limits.yaml.
+var RateLimitConfigPaths = []string{
+	"/app/config/rate_limits.yaml",
+	"config/rate_limits.yaml",
+	"../../config/rate_limits.yaml",
+}
+
+// ResolveConfigFile finds a config file by checking an env var first, then
+// probing candidate paths. Only regular files are accepted (directories are
+// skipped). Returns the fallback string when nothing is found so callers can
+// produce a meaningful error message.
+func ResolveConfigFile(envVar string, candidates []string, fallback string) string {
+	if v := os.Getenv(envVar); v != "" {
+		return v
+	}
+	for _, p := range candidates {
+		info, err := os.Stat(p)
+		if err == nil && !info.IsDir() {
+			return p
+		}
+	}
+	return fallback
+}
+
 // Load loads features.yaml from CONFIG_PATH or /app/config/features.yaml
 func Load() (*Features, error) {
 	cfgPath := os.Getenv("CONFIG_PATH")
@@ -134,6 +158,38 @@ type CitationConfig struct {
 	V2MinClaimsRequired *int     `mapstructure:"v2_min_claims_required"`
 	V2AdaptiveTopK      *bool    `mapstructure:"v2_adaptive_topk"`
 	V2BaseTopK          *int     `mapstructure:"v2_base_topk"`
+}
+
+// WorkspaceTierConfig defines retention and storage limits per tier
+type WorkspaceTierConfig struct {
+	RetentionDays int `mapstructure:"retention_days"`
+	MaxSizeGB     int `mapstructure:"max_size_gb"`
+}
+
+// WorkspaceConfig captures workspace tier configuration
+type WorkspaceConfig struct {
+	Tiers struct {
+		Free       WorkspaceTierConfig `mapstructure:"free"`
+		Pro        WorkspaceTierConfig `mapstructure:"pro"`
+		Enterprise WorkspaceTierConfig `mapstructure:"enterprise"`
+	} `mapstructure:"tiers"`
+	SafetyNetRetentionDays int `mapstructure:"safety_net_retention_days"`
+}
+
+// WorkspaceDefaults returns the default workspace tier configuration
+func WorkspaceDefaults() WorkspaceConfig {
+	return WorkspaceConfig{
+		Tiers: struct {
+			Free       WorkspaceTierConfig `mapstructure:"free"`
+			Pro        WorkspaceTierConfig `mapstructure:"pro"`
+			Enterprise WorkspaceTierConfig `mapstructure:"enterprise"`
+		}{
+			Free:       WorkspaceTierConfig{RetentionDays: 7, MaxSizeGB: 5},
+			Pro:        WorkspaceTierConfig{RetentionDays: 30, MaxSizeGB: 50},
+			Enterprise: WorkspaceTierConfig{RetentionDays: 90, MaxSizeGB: 500},
+		},
+		SafetyNetRetentionDays: 90,
+	}
 }
 
 // BudgetFromEnvOrDefaults returns merged budget config using env overrides first, then config file, with sensible defaults.

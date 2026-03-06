@@ -20,6 +20,26 @@ impl MemoryManager {
         }
     }
 
+    /// Get total size (in bytes) of the user's memory directory.
+    /// Returns 0 if the directory doesn't exist yet.
+    pub fn get_memory_size(&self, user_id: &str) -> Result<u64, String> {
+        let dir = self.get_memory_dir(user_id)?;
+        if !dir.exists() {
+            return Ok(0);
+        }
+        let mut total: u64 = 0;
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("Failed to read memory dir: {}", e))?;
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.metadata() {
+                if meta.is_file() {
+                    total += meta.len();
+                }
+            }
+        }
+        Ok(total)
+    }
+
     /// Get the memory directory for a given user.
     /// Creates it if it doesn't exist.
     pub fn get_memory_dir(&self, user_id: &str) -> Result<PathBuf, String> {

@@ -220,6 +220,9 @@ class ProviderManager:
             "agent_id",
             "max_tokens_budget",
             "previous_response_id",
+            "output_config",
+            "thinking",
+            "reasoning_effort",
         }
 
         for field in list(params.keys()):
@@ -324,6 +327,9 @@ class ProviderManager:
             "task_id",
             "agent_id",
             "max_tokens_budget",
+            "output_config",
+            "thinking",
+            "reasoning_effort",
         }
 
         for field in list(params.keys()):

@@ -8,8 +8,11 @@ screenshot, extract, scroll, wait, close.
 Sessions are tied to Shannon session_id and auto-cleanup after TTL.
 """
 
+import base64
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -17,6 +20,46 @@ import aiohttp
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_screenshot(session_id: str, b64_data: str, index: int = 0) -> Optional[str]:
+    """Persist base64 PNG screenshot to session workspace.
+
+    Returns relative path from session root (e.g. 'screenshots/1709312345_0.png'),
+    or None on any failure. All errors are non-fatal.
+    """
+    if not session_id or not b64_data or len(b64_data) < 100:
+        return None
+
+    # Validate session_id (prevent path traversal)
+    if ".." in session_id or session_id.startswith(".") or len(session_id) > 128:
+        logger.warning("_persist_screenshot: invalid session_id")
+        return None
+
+    try:
+        image_bytes = base64.b64decode(b64_data)
+    except Exception:
+        logger.warning("_persist_screenshot: base64 decode failed")
+        return None
+
+    base_dir = os.getenv("SHANNON_SESSION_WORKSPACES_DIR", "/tmp/shannon-sessions")
+    ts = int(time.time() * 1000)
+    filename = f"{ts}_{index}.png"
+    rel_path = f"screenshots/{filename}"
+    abs_dir = Path(base_dir) / session_id / "screenshots"
+
+    try:
+        abs_dir.mkdir(parents=True, exist_ok=True)
+        abs_path = abs_dir / filename
+        abs_path.write_bytes(image_bytes)
+        logger.info(
+            f"_persist_screenshot: saved {rel_path} ({len(image_bytes)} bytes) "
+            f"for session {session_id}"
+        )
+        return rel_path
+    except Exception as e:
+        logger.warning(f"_persist_screenshot: write failed: {e}")
+        return None
 
 # Playwright service URL (internal k8s service or local)
 PLAYWRIGHT_SERVICE_URL = os.getenv("PLAYWRIGHT_SERVICE_URL", "")
@@ -363,9 +406,18 @@ class BrowserTool(Tool):
         elif action == "type":
             output["typed"] = True
         elif action == "screenshot":
-            output["screenshot"] = result.get("screenshot")
+            b64_screenshot = result.get("screenshot")
             output["url"] = result.get("url")
             output["title"] = result.get("title")
+            # Persist to session workspace and replace base64 with path reference
+            screenshot_path = None
+            if b64_screenshot and session_id:
+                screenshot_path = _persist_screenshot(session_id, b64_screenshot)
+            if screenshot_path:
+                output["screenshot"] = f"[stored:{screenshot_path}]"
+                output["screenshot_path"] = screenshot_path
+            else:
+                output["screenshot"] = b64_screenshot
         elif action == "extract":
             output["content"] = result.get("content")
             output["elements"] = result.get("elements")

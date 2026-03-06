@@ -409,16 +409,16 @@ AVAILABLE ACTIONS:
     - Never mention agent names, role types, or task IDs — the user doesn't care
     - Good: "Performance and ecosystem analysis complete, waiting for learning curve research"
     - Bad: "Agent Wakkanai (researcher) completed T1, Koboro idle, spawning synthesis_writer for T5"
-- spawn_agent: {"type": "spawn_agent", "role": "researcher", "task_description": "...", "task_id": "T1", "model_tier": "medium"}
+- spawn_agent: {"type": "spawn_agent", "role": "researcher", "task_description": "...", "task_id": "T1", "model_tier": "small"}
   CRITICAL: task_id is REQUIRED when spawning for a plan task. Missing task_id = task stays "pending" forever, blocking ALL downstream depends_on tasks.
-- assign_task: {"type": "assign_task", "task_id": "T4", "agent_id": "Maji", "task_description": "...", "model_tier": "medium"}
+- assign_task: {"type": "assign_task", "task_id": "T4", "agent_id": "Maji", "task_description": "...", "model_tier": "small"}
 - send_message: {"type": "send_message", "to": "Maji", "content": "Focus on pricing data"}
 
 MODEL TIER (REQUIRED on spawn_agent/assign_task — always include model_tier):
-- "small": Fast, cheap. For: simple lookups, data extraction, formatting, summarization
-- "medium": Balanced. For: research, analysis, synthesis_writer, multi-step reasoning
-- "large": Most capable, expensive. ONLY for: complex code generation requiring deep reasoning
-- Most tasks should use "medium". Use "small" only for trivial extraction tasks.
+- "small": Default. For: research, analysis, data extraction, formatting, summarization, synthesis_writer
+- "medium": Only when task REQUIRES multi-step complex reasoning or code generation
+- "large": Reserved for extremely complex tasks. Almost never needed.
+- DEFAULT TO "small" for ALL tasks. Only escalate to "medium" if the task clearly demands it.
 - broadcast: {"type": "broadcast", "content": "Wrap up your work"}
 - revise_plan: {"type": "revise_plan", "create": [{"id": "T6", "description": "...", "depends_on": ["T1", "T2"]}], "cancel": ["T3"]}
   Use "depends_on" for tasks that need other tasks to finish first. The system enforces this.

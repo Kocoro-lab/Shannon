@@ -50,8 +50,8 @@ type Subtask struct {
 	// Structured subtask classification to avoid brittle string matching
 	TaskType string `json:"task_type,omitempty"`
 	// Plan IO (optional, plan_io_v1): topics produced/consumed by this subtask
-	Produces []string
-	Consumes []string
+	Produces []string `json:"produces,omitempty"`
+	Consumes []string `json:"consumes,omitempty"`
 	// Optional grouping for research-area-driven decomposition
 	ParentArea string `json:"parent_area,omitempty"`
 	// LLM-native tool selection
@@ -86,21 +86,25 @@ type AgentExecutionInput struct {
 
 // AgentExecutionResult is the result of agent execution
 type AgentExecutionResult struct {
-	AgentID      string
-	Role         string `json:"role,omitempty"`
-	Response     string
-	TokensUsed   int
-	ModelUsed    string
-	Provider     string
-	InputTokens  int
-	OutputTokens int
-	DurationMs   int64
-	Success      bool
-	Error        string
+	AgentID             string
+	Role                string `json:"role,omitempty"`
+	Response            string
+	TokensUsed          int
+	ModelUsed           string
+	Provider            string
+	InputTokens         int
+	OutputTokens        int
+	CacheReadTokens     int `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+	DurationMs          int64
+	Success             bool
+	Error               string
 	// Tools used and their outputs (when applicable)
-	ToolsUsed      []string        `json:"tools_used,omitempty"`
-	ToolExecutions []ToolExecution `json:"tool_executions,omitempty"`
+	ToolsUsed      []string               `json:"tools_used,omitempty"`
+	ToolExecutions []ToolExecution        `json:"tool_executions,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	// ScreenshotPaths holds relative paths of persisted browser screenshots (e.g. "screenshots/17093..._0.png")
+	ScreenshotPaths []string `json:"screenshot_paths,omitempty"`
 }
 
 // ToolExecution summarizes a single tool invocation result returned by Agent-Core
@@ -191,9 +195,9 @@ type ClaimVerification struct {
 	Confidence           float64 `json:"confidence"`            // 0.0-1.0 (weighted by citation credibility)
 
 	// V2 fields
-	Verdict         string             `json:"verdict,omitempty"`          // "supported" | "unsupported" | "insufficient_evidence"
-	RetrievalScores map[int]float64    `json:"retrieval_scores,omitempty"` // citation_id -> BM25 relevance score
-	Reasoning       string             `json:"reasoning,omitempty"`        // Brief explanation for verdict
+	Verdict         string          `json:"verdict,omitempty"`          // "supported" | "unsupported" | "insufficient_evidence"
+	RetrievalScores map[int]float64 `json:"retrieval_scores,omitempty"` // citation_id -> BM25 relevance score
+	Reasoning       string          `json:"reasoning,omitempty"`        // Brief explanation for verdict
 }
 
 // ConflictReport describes conflicting information
@@ -238,11 +242,11 @@ type AgentUsage struct {
 type ResearchPlanInput struct {
 	Query      string                 `json:"query"`
 	Context    map[string]interface{} `json:"context"`
-	WorkflowID string                `json:"workflow_id"`
-	SessionID  string                `json:"session_id"`
-	UserID     string                `json:"user_id"`
-	TenantID   string                `json:"tenant_id"`
-	TTL        time.Duration         `json:"ttl"`
+	WorkflowID string                 `json:"workflow_id"`
+	SessionID  string                 `json:"session_id"`
+	UserID     string                 `json:"user_id"`
+	TenantID   string                 `json:"tenant_id"`
+	TTL        time.Duration          `json:"ttl"`
 }
 
 // ResearchPlanResult is the result of the GenerateResearchPlan activity

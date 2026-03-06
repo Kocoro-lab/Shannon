@@ -51,6 +51,10 @@ func TestPricePerTokenForModel(t *testing.T) {
 		{"claude-haiku-4-5-20251001", true, 0.000001, 0.000005},
 		// deepseek-chat: 0.00027/0.0011 per 1k = 0.00000027/0.0000011 per token
 		{"deepseek-chat", true, 0.00000027, 0.0000011},
+		// claude-sonnet-4-6: 0.003/0.015 per 1k = 0.000003/0.000015 per token
+		{"claude-sonnet-4-6", true, 0.000003, 0.000015},
+		// claude-opus-4-6: 0.005/0.025 per 1k = 0.000005/0.000025 per token
+		{"claude-opus-4-6", true, 0.000005, 0.000025},
 		{"unknown-model", false, 0, 0},
 		{"", false, 0, 0},
 	}
@@ -99,6 +103,44 @@ func TestCostForTokens(t *testing.T) {
 func TestModifiedTime(t *testing.T) {
 	// Just ensure it doesn't panic
 	_ = ModifiedTime()
+}
+
+func TestCostForSplit_SyntheticScraperModels(t *testing.T) {
+	mu.Lock()
+	initialized = false
+	loaded = nil
+	mu.Unlock()
+
+	tests := []struct {
+		model        string
+		outputTokens int
+		wantCost     float64
+		tolerance    float64
+	}{
+		// shannon_web_search: (7500/1000) × 0.002 = $0.015
+		{"shannon_web_search", 7500, 0.015, 0.001},
+		// shannon_google_ads: (7500/1000) × 0.002 = $0.015
+		{"shannon_google_ads", 7500, 0.015, 0.001},
+		// shannon_yahoo: (7500/1000) × 0.000533 ≈ $0.004
+		{"shannon_yahoo", 7500, 0.004, 0.001},
+		// shannon_meta: (7500/1000) × 0.000533 ≈ $0.004
+		{"shannon_meta", 7500, 0.004, 0.001},
+		// shannon_page_screenshot: (500/1000) × 0.002 = $0.001
+		{"shannon_page_screenshot", 500, 0.001, 0.001},
+		// shannon_firecrawl: (7500/1000) × 0.000133 ≈ $0.001
+		{"shannon_firecrawl", 7500, 0.001, 0.001},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			// Synthetic tools use 0 input tokens, all output
+			cost := CostForSplit(tt.model, 0, tt.outputTokens)
+			if math.Abs(cost-tt.wantCost) > tt.tolerance {
+				t.Errorf("CostForSplit(%s, 0, %d) = %f, want %f (±%f)",
+					tt.model, tt.outputTokens, cost, tt.wantCost, tt.tolerance)
+			}
+		})
+	}
 }
 
 func TestCostForSplitWithCache(t *testing.T) {
@@ -176,46 +218,4 @@ func TestCostForSplitWithCache(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestCostForSplit_SyntheticScraperModels(t *testing.T) {
-	mu.Lock()
-	initialized = false
-	loaded = nil
-	mu.Unlock()
-
-	tests := []struct {
-		model        string
-		outputTokens int
-		wantCost     float64
-		tolerance    float64
-	}{
-		// shannon_web_search: (3000/1000) * 0.005 = $0.015
-		{"shannon_web_search", 3000, 0.015, 0.001},
-		// shannon_google_ads: (3000/1000) * 0.005 = $0.015
-		{"shannon_google_ads", 3000, 0.015, 0.001},
-		// shannon_yahoo: (3000/1000) * 0.001333 ~ $0.004
-		{"shannon_yahoo", 3000, 0.004, 0.001},
-		// shannon_meta: (3000/1000) * 0.001333 ~ $0.004
-		{"shannon_meta", 3000, 0.004, 0.001},
-		// shannon_firecrawl: (3000/1000) * 0.000333 ~ $0.001
-		{"shannon_firecrawl", 3000, 0.001, 0.001},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.model, func(t *testing.T) {
-			// Synthetic tools use 0 input tokens, all output
-			cost := CostForSplit(tt.model, 0, tt.outputTokens)
-			if math.Abs(cost-tt.wantCost) > tt.tolerance {
-				t.Errorf("CostForSplit(%s, 0, %d) = %f, want %f (±%f)",
-					tt.model, tt.outputTokens, cost, tt.wantCost, tt.tolerance)
-			}
-		})
-	}
-}
-
-// Helper function to check if floats are approximately equal
-func floatEquals(a, b float64) bool {
-	const epsilon = 1e-9
-	return math.Abs(a-b) < epsilon
 }

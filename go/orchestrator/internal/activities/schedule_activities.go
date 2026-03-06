@@ -135,6 +135,9 @@ type RecordScheduleExecutionCompleteInput struct {
 	TotalTokens      int
 	PromptTokens     int
 	CompletionTokens int
+
+	// Full metadata from child workflow result (screenshot_urls, pipeline, etc.)
+	ResultMetadata map[string]interface{}
 }
 
 // RecordScheduleExecutionComplete logs the completion of a scheduled execution
@@ -195,6 +198,11 @@ func (a *ScheduleActivities) RecordScheduleExecutionComplete(ctx context.Context
 			}
 			if input.CompletionTokens > 0 {
 				existingTask.CompletionTokens = input.CompletionTokens
+			}
+
+			// Write full metadata from child workflow result (screenshot_urls, pipeline, etc.)
+			if len(input.ResultMetadata) > 0 {
+				existingTask.Metadata = db.JSONB(input.ResultMetadata)
 			}
 
 			// Calculate duration if we have start time

@@ -215,7 +215,7 @@ export default function RadarCanvas() {
     }
 
     type TrailSeg = { x: number; y: number; dir: number; created: number };
-    const trails = new Map<string, { segs: TrailSeg[]; lastEmit: number; lastX: number; lastY: number }>();
+    const trails = new Map<string, { segs: TrailSeg[]; lastEmit: number; lastX: number; lastY: number; color?: string }>();
     const TRAIL_STROKE_LEN = 3;
     const TRAIL_STROKE_WIDTH = 2;
     const TRAIL_GAP_PX = 8;
@@ -276,7 +276,7 @@ export default function RadarCanvas() {
         return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
       }
 
-      function drawLabel(x: number, y: number, idLine: string, timeLine: string) {
+      function drawLabel(x: number, y: number, idLine: string, timeLine: string, color?: string) {
         const ty = y + LABEL_OFFSET_Y;
         c.font = LABEL_FONT;
         const m1 = c.measureText(idLine);
@@ -292,7 +292,7 @@ export default function RadarCanvas() {
         c.fillStyle = LABEL_BG;
         c.fillRect(bx, by, bw, bh);
         c.textAlign = "right";
-        c.fillStyle = ARROW_COLOR;
+        c.fillStyle = color || ARROW_COLOR;
         c.fillText(idLine, bx + bw - LABEL_PAD_X, by + LABEL_PAD_Y + th - 2);
         c.fillStyle = LABEL_TEXT_MUTED;
         c.fillText(timeLine, bx + bw - LABEL_PAD_X, by + LABEL_PAD_Y + th - 2 + th + lineGap);
@@ -312,6 +312,7 @@ export default function RadarCanvas() {
       // Draw trails
       for (const [agentId, trail] of trails) {
         trail.segs = trail.segs.filter((s) => now - s.created <= LIFESPAN_MS);
+        const trailColor = trail.color || ARROW_COLOR;
         c.save();
         c.lineCap = "round";
         c.lineWidth = TRAIL_STROKE_WIDTH;
@@ -324,7 +325,7 @@ export default function RadarCanvas() {
           c.beginPath();
           c.moveTo(s.x - dx, s.y - dy);
           c.lineTo(s.x, s.y);
-          c.strokeStyle = ARROW_COLOR;
+          c.strokeStyle = trailColor;
           c.globalAlpha = alpha;
           c.stroke();
         }
@@ -338,6 +339,12 @@ export default function RadarCanvas() {
         if (!item || item.status !== "in_progress") continue;
 
         const labelId = (item.agent_id as string) || agent.id;
+
+        // Agent-specific color: swarm mode uses per-agent hue, non-swarm uses default green
+        const agentHue = item.agent_id ? state.agentColors[item.agent_id as string] : undefined;
+        const arrowColor = agentHue !== undefined
+          ? `hsl(${agentHue} 70% 55%)`
+          : ARROW_COLOR;
         const est = Math.max(1, item.estimate_ms || 0);
         let t = 0;
         if (typeof item.eta_ms === "number" && isFinite(item.eta_ms)) {
@@ -362,9 +369,10 @@ export default function RadarCanvas() {
         // Trail segments
         let trail = trails.get(agent.id);
         if (!trail) {
-          trail = { segs: [], lastEmit: 0, lastX: x, lastY: y };
+          trail = { segs: [], lastEmit: 0, lastX: x, lastY: y, color: arrowColor };
           trails.set(agent.id, trail);
         }
+        trail.color = arrowColor; // Update in case color was assigned after trail creation
         if (trail.segs.length === 0) {
           trail.segs.push({ x, y, dir, created: now });
           trail.lastEmit = now;
@@ -394,7 +402,7 @@ export default function RadarCanvas() {
         c.save();
         c.translate(x, y);
         c.rotate(dir);
-        c.fillStyle = ARROW_COLOR;
+        c.fillStyle = arrowColor;
         c.globalAlpha = 0.9;
         const notch = len * ARROW_NOTCH_RATIO;
         const wing = width * 0.6;
@@ -421,7 +429,7 @@ export default function RadarCanvas() {
 
         // Label
         const elapsedMs = Math.round(t * est);
-        drawLabel(x, y, labelId, fmtElapsed(elapsedMs));
+        drawLabel(x, y, labelId, fmtElapsed(elapsedMs), arrowColor);
       }
 
       // Draw pulses

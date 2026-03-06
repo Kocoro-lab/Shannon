@@ -130,34 +130,6 @@ git, ls, pwd, rg, cat, head, tail, wc, grep, find, go, cargo, pytest, python, py
         ],
         "caps": {"max_tokens": 8192, "temperature": 0.2},
     },
-    # Data analyst role with data science packages (Firecracker executor)
-    "data_analyst": {
-        "system_prompt": """You are a data analyst assistant with access to data science tools.
-
-# Capabilities:
-- Execute Python code with pandas, numpy, scipy, scikit-learn
-- Read and write files to /workspace/
-- Analyze CSV, JSON, and other data formats
-- Create statistical summaries and visualizations
-
-# Best Practices:
-- Always use print() to show results
-- Save output files to /workspace/
-- Handle missing data gracefully
-- Use descriptive variable names""",
-        "allowed_tools": [
-            "python_executor",
-            "file_read",
-            "file_write",
-            "file_list",
-            "web_search",
-        ],
-        "caps": {"max_tokens": 16384, "temperature": 0.3},
-        # NOTE: Firecracker routing is not yet wired in agent-core.
-        # This role currently falls back to WASI (stdlib only).
-        # When Firecracker support is implemented, uncomment:
-        # "python_executor_mode": "firecracker",
-    },
     # research_refiner: Moved to roles/deep_research/presets.py
     # Browser automation role for web interaction tasks
     "browser_use": {
@@ -250,7 +222,7 @@ try:
 
     _PRESETS["data_analytics"] = _PTENGINE_DATA_ANALYTICS
 except Exception as e:
-    logger.warning("Optional role preset 'data_analytics' not loaded: %s", e)
+    logger.debug("Optional role preset 'data_analytics' not loaded: %s", e)
 
 # GA4 analytics role (graceful fallback if module not available)
 try:
@@ -258,7 +230,7 @@ try:
 
     _PRESETS["ga4_analytics"] = GA4_ANALYTICS_PRESET
 except Exception as e:
-    logger.warning("Optional role preset 'ga4_analytics' not loaded: %s", e)
+    logger.debug("Optional role preset 'ga4_analytics' not loaded: %s", e)
 
 # Angfa Store GA4 analytics role (vendor-specific, not committed)
 try:
@@ -266,7 +238,7 @@ try:
 
     _PRESETS["angfa_ga4_analytics"] = ANGFA_GA4_ANALYTICS_PRESET
 except Exception as e:
-    logger.warning("Optional role preset 'angfa_ga4_analytics' not loaded: %s", e)
+    logger.debug("Optional role preset 'angfa_ga4_analytics' not loaded: %s", e)
 
 # Trading agent roles (optional)
 try:
@@ -346,6 +318,49 @@ except Exception as e:
         "Failed to import trading role presets; trading roles will be unavailable: %s",
         e,
     )
+
+# financial_news role for News Intelligence v2 (independent of trading roles)
+_PRESETS["financial_news"] = {
+    "system_prompt": """You are a financial news analyst specializing in stock market news and sentiment analysis.
+
+# Your Role:
+- Fetch and analyze financial news for stocks using the available financial tools
+- Aggregate information from multiple sources (news feeds, SEC filings, social sentiment)
+- Provide comprehensive, well-structured news summaries with sentiment analysis
+
+# Available Tools:
+- news_aggregator: Comprehensive multi-source news aggregation (USE THIS FIRST for most queries)
+- alpaca_news: Real-time stock news from Alpaca/Benzinga
+- sec_filings: Recent SEC filings (8-K, 10-K, 10-Q)
+- twitter_sentiment: Social media sentiment analysis via xAI
+- getStockBars: Real-time and historical stock price data (OHLCV bars)
+
+# Tool Usage Strategy:
+1. For general stock news queries, use news_aggregator first (it combines multiple sources)
+2. For stock price data, use getStockBars:
+   - Current price: interval=5m, range=1d → last bar's close = latest price
+   - Historical: interval=1d with range (e.g., 1mo, 3mo)
+   - Use exchange='US' for US stocks, 'HKEX' for Hong Kong, 'LSE' for London
+3. Use individual tools for specific needs:
+   - alpaca_news: When user wants real-time US stock news only
+   - sec_filings: When user asks about regulatory filings, earnings reports
+   - twitter_sentiment: When user wants social media sentiment
+
+# Output Format:
+- Start with a clear summary of key findings
+- Organize news by theme/topic rather than source
+- Include sentiment indicators (bullish/bearish/neutral) when available
+- Note the recency of information
+- For US stocks: Include relevant SEC filing highlights if available
+
+# Important Notes:
+- Always specify the stock ticker (e.g., NVDA, AAPL) when calling tools
+- For non-US stocks, only twitter_sentiment and getStockBars may return results
+- Alpaca news only covers US-listed stocks
+- getStockBars covers US, HKEX, and LSE markets""",
+    "allowed_tools": ["news_aggregator", "alpaca_news", "sec_filings", "twitter_sentiment", "getStockBars"],
+    "caps": {"max_tokens": 16000, "temperature": 0.3},
+}
 
 
 def get_role_preset(name: str) -> Dict[str, object]:

@@ -698,6 +698,185 @@ func generateOpenAPISpec() map[string]interface{} {
 					},
 				},
 			},
+			"/api/v1/tools": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "List available tools",
+					"description": "Returns tool schemas (name, description, parameters). Dangerous tools are excluded.",
+					"tags":        []string{"Tools"},
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "category",
+							"in":          "query",
+							"description": "Filter by category",
+							"required":    false,
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "List of available tools",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "array",
+										"items": map[string]interface{}{
+											"type": "object",
+											"properties": map[string]interface{}{
+												"name": map[string]interface{}{
+													"type": "string",
+												},
+												"description": map[string]interface{}{
+													"type": "string",
+												},
+												"parameters": map[string]interface{}{
+													"type": "object",
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			"/api/v1/tools/{name}": map[string]interface{}{
+				"get": map[string]interface{}{
+					"summary":     "Get tool details",
+					"description": "Returns merged metadata and parameter schema. Returns 403 for dangerous tools.",
+					"tags":        []string{"Tools"},
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "name",
+							"in":          "path",
+							"description": "Tool name",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Tool details",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"name": map[string]interface{}{
+												"type": "string",
+											},
+											"description": map[string]interface{}{
+												"type": "string",
+											},
+											"parameters": map[string]interface{}{
+												"type": "object",
+											},
+										},
+									},
+								},
+							},
+						},
+						"403": map[string]interface{}{
+							"description": "Tool not available (dangerous)",
+						},
+						"404": map[string]interface{}{
+							"description": "Tool not found",
+						},
+					},
+				},
+			},
+			"/api/v1/tools/{name}/execute": map[string]interface{}{
+				"post": map[string]interface{}{
+					"summary":     "Execute a tool directly",
+					"description": "Execute a tool without full task orchestration. Dangerous tools are blocked. Usage is recorded against quota.",
+					"tags":        []string{"Tools"},
+					"parameters": []map[string]interface{}{
+						{
+							"name":        "name",
+							"in":          "path",
+							"description": "Tool name",
+							"required":    true,
+							"schema": map[string]interface{}{
+								"type": "string",
+							},
+						},
+					},
+					"requestBody": map[string]interface{}{
+						"required": true,
+						"content": map[string]interface{}{
+							"application/json": map[string]interface{}{
+								"schema": map[string]interface{}{
+									"type":     "object",
+									"required": []string{"arguments"},
+									"properties": map[string]interface{}{
+										"arguments": map[string]interface{}{
+											"type":        "object",
+											"description": "Tool-specific parameters",
+										},
+										"session_id": map[string]interface{}{
+											"type":        "string",
+											"description": "Optional session ID for context",
+										},
+									},
+								},
+							},
+						},
+					},
+					"responses": map[string]interface{}{
+						"200": map[string]interface{}{
+							"description": "Tool execution result",
+							"content": map[string]interface{}{
+								"application/json": map[string]interface{}{
+									"schema": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"success": map[string]interface{}{
+												"type": "boolean",
+											},
+											"output": map[string]interface{}{},
+											"error": map[string]interface{}{
+												"type": "string",
+											},
+											"metadata": map[string]interface{}{
+												"type":        "object",
+												"description": "Tool-specific metadata from execution",
+											},
+											"execution_time_ms": map[string]interface{}{
+												"type": "integer",
+											},
+											"usage": map[string]interface{}{
+												"type": "object",
+												"properties": map[string]interface{}{
+													"tokens": map[string]interface{}{
+														"type": "integer",
+													},
+													"cost_usd": map[string]interface{}{
+														"type":   "number",
+														"format": "double",
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+						"403": map[string]interface{}{
+							"description": "Tool not available (dangerous)",
+						},
+						"404": map[string]interface{}{
+							"description": "Tool not found",
+						},
+						"429": map[string]interface{}{
+							"description": "Rate limit or quota exceeded",
+						},
+					},
+				},
+			},
 		},
 		"components": map[string]interface{}{
 			"securitySchemes": map[string]interface{}{

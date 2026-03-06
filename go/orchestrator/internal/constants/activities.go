@@ -66,4 +66,9 @@ const (
 	LeadDecisionActivity       = "LeadDecision"
 	ListWorkspaceFilesActivity = "ListWorkspaceFiles"
 	ReadWorkspaceFileActivity  = "ReadWorkspaceFile"
+
+	// Quota Enforcement Activities (scheduled task quota bypass fix)
+	CheckTenantQuotaActivity       = "CheckTenantQuota"
+	RecordTenantQuotaUsageActivity = "RecordTenantQuotaUsage"
+	EmitQuotaExceededEventActivity = "EmitQuotaExceededEvent"
 )

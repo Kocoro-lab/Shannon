@@ -15,9 +15,12 @@ from .bash_executor import BashExecutorTool
 
 # Private features (enterprise version only) - gracefully degrade if not present
 try:
-    from .ads_research import AdsSerpExtractTool, AdsTransparencySearchTool, AdsCompetitorDiscoverTool  # noqa: F401
-    from .lp_analyze import LPVisualAnalyzeTool  # noqa: F401
-    from .ads_creative_analyze import AdsCreativeAnalyzeTool  # noqa: F401
+    from .ads_research import AdsSerpExtractTool, AdsTransparencySearchTool, AdsCompetitorDiscoverTool
+    from .lp_analyze import LPVisualAnalyzeTool, LPBatchAnalyzeTool
+    from .ads_creative_analyze import AdsCreativeAnalyzeTool
+    from .yahoo_jp_ads import YahooJPAdsDiscoverTool
+    from .meta_ad_library import MetaAdLibrarySearchTool
+    from .page_screenshot import PageScreenshotTool
     _HAS_ADS_TOOLS = True
 except ImportError:
     _HAS_ADS_TOOLS = False
@@ -54,7 +57,11 @@ if _HAS_ADS_TOOLS:
         "AdsTransparencySearchTool",
         "AdsCompetitorDiscoverTool",
         "LPVisualAnalyzeTool",
+        "LPBatchAnalyzeTool",
         "AdsCreativeAnalyzeTool",
+        "YahooJPAdsDiscoverTool",
+        "MetaAdLibrarySearchTool",
+        "PageScreenshotTool",
     ])
 
 # Add browser tool to exports if available

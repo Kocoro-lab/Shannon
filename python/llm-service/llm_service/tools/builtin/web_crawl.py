@@ -143,7 +143,20 @@ class WebCrawlTool(Tool):
         limit = kwargs.get("limit", DEFAULT_LIMIT)
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
         extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
-        internal_max_length = EXTRACTION_INTERNAL_MAX
+
+        # Skip auto-extraction in research mode (issue #43): OODA loop does many
+        # fast fetches; LLM extraction adds ~40-60s latency per call, causing timeout.
+        # Explicit extract_prompt always triggers extraction regardless of mode.
+        _research_mode = (
+            isinstance(session_context, dict)
+            and session_context.get("research_mode")
+            and not extract_prompt
+        )
+
+        if _research_mode:
+            internal_max_length = max_length
+        else:
+            internal_max_length = EXTRACTION_INTERNAL_MAX
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")
@@ -184,22 +197,28 @@ class WebCrawlTool(Tool):
 
         try:
             result = await self._crawl(url, limit, internal_max_length)
-            return await apply_extraction(
-                ToolResult(
-                    success=True,
-                    output=result,
-                    metadata={
-                        "provider": "firecrawl",
-                        "strategy": "crawl",
-                        "partial_success": False,
-                        "urls_attempted": [url],
-                        "urls_succeeded": [url],
-                        "urls_failed": [],
-                        "failure_summary": {"failed_count": 0, "total_count": 1},
-                    },
-                ),
-                extract_prompt, max_length,
+            tool_result = ToolResult(
+                success=True,
+                output=result,
+                metadata={
+                    "provider": "firecrawl",
+                    "strategy": "crawl",
+                    "partial_success": False,
+                    "urls_attempted": [url],
+                    "urls_succeeded": [url],
+                    "urls_failed": [],
+                    "failure_summary": {"failed_count": 0, "total_count": 1},
+                },
             )
+            if _research_mode:
+                if tool_result.output:
+                    content = tool_result.output.get("content", "")
+                    if len(content) > max_length:
+                        tool_result.output["content"] = content[:max_length]
+                        tool_result.output["truncated"] = True
+                        tool_result.output["char_count"] = len(tool_result.output["content"])
+                return tool_result
+            return await apply_extraction(tool_result, extract_prompt, max_length)
         except Exception as e:
             logger.error(f"Crawl failed: {e}")
             return ToolResult(

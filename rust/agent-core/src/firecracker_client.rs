@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,8 +18,8 @@ struct HealthCheckState {
 }
 
 /// Global singleton client to preserve health cache across calls (P1 fix)
-static GLOBAL_CLIENT: Lazy<FirecrackerExecutorClient> =
-    Lazy::new(|| FirecrackerExecutorClient::new_internal());
+static GLOBAL_CLIENT: LazyLock<FirecrackerExecutorClient> =
+    LazyLock::new(|| FirecrackerExecutorClient::new_internal());
 
 #[derive(Debug, Serialize)]
 pub struct FirecrackerExecuteRequest {

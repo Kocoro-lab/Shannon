@@ -446,7 +446,7 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 				costModel, _ := em["cost_model"].(string)
 				provider, _ := em["provider"].(string)
 				toolName, _ := em["tool"].(string)
-				syntheticTokens := 3000
+				syntheticTokens := 7500
 				if st, ok := em["synthetic_tokens"].(float64); ok && int(st) > 0 {
 					syntheticTokens = int(st)
 				}

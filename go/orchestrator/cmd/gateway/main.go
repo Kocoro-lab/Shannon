@@ -126,6 +126,7 @@ func main() {
 	// Create handlers
 	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, skillRegistry, logger)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
+	workspaceHandler := handlers.NewWorkspaceHandler(pgDB, logger)
 	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
 	reviewHandler := handlers.NewReviewHandler(orchClient, redisClient, logger)
 	scheduleHandler := handlers.NewScheduleHandler(orchClient, pgDB, logger)
@@ -445,6 +446,30 @@ func main() {
 				validationMiddleware(
 					rateLimiter(
 						http.HandlerFunc(sessionHandler.DeleteSession),
+					),
+				),
+			),
+		),
+	)
+
+	// Workspace file endpoints
+	mux.Handle("GET /api/v1/sessions/{sessionId}/files",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(workspaceHandler.ListFiles),
+					),
+				),
+			),
+		),
+	)
+	mux.Handle("GET /api/v1/sessions/{sessionId}/files/{path...}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						http.HandlerFunc(workspaceHandler.DownloadFile),
 					),
 				),
 			),

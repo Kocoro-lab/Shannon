@@ -326,52 +326,34 @@ When sources disagree:
     # Custom interpretation prompt - overrides INTERPRETATION_PROMPT_SOURCES
     # This ensures output format matches structured comprehensive report contract
     # Note: Language matching removed - this is intermediate step, final synthesis handles language
-    "interpretation_prompt": """=== SYNTHESIS INSTRUCTION ===
+    "interpretation_prompt": """=== EVIDENCE SYNTHESIS ===
 
-Synthesize tool results into a COMPREHENSIVE, STRUCTURED research report.
+This output feeds a synthesis LLM — optimize for INFORMATION DENSITY. Avoid filler phrases and rhetorical prose. Every sentence should carry data or insight.
 
 **NEVER use**: "PART 1", "Source 1/2/3", raw URLs, or source-by-source organization.
 
-**REQUIRED STRUCTURE** (use user's language for headings):
+**FORMAT** (use user's language for headings):
 
-## Key Findings (关键发现 / 主要な発見 / 주요 발견)
-- 15-25 bullets, organized by importance
-- Format: "**[Category]**: Finding (Source: domain)"
-- Include concrete numbers, dates, percentages
+## Key Findings
+Bulleted list — ALL significant findings, ordered by importance.
+- **[Category]**: Concrete fact/data point (Source: domain)
+- Include numbers, dates, percentages, names, metrics
+- One finding per bullet
 
-## Comprehensive Summary (详细总结 / 詳細まとめ / 상세 요약)
+## Analysis
+2-3 paragraphs answering the core question. Embed key data with source attribution. Cover themes, trends, and relationships — but do not use a fixed sub-section template per theme. Write dense analytical prose, not filler.
 
-### Overview (概述 / 概要 / 개요)
-2-3 paragraphs answering the core question. State confidence level.
+## Structured Data
+Only when comparisons or timelines add value — use tables or lists with sources. Skip if findings already cover the data.
 
-### Thematic Analysis (主题分析 / テーマ分析 / 주제 분석)
-4-7 themes. For each:
-- **Current State**: Situation now (with dates)
-- **Key Data**: Numbers, metrics (with sources)
-- **Analysis**: Implications and meaning
-- **Trends**: Changes over time
+## Source Conflicts
+Only if sources disagree:
+- Claim X (source-a) vs Claim Y (source-b) — note recency/credibility
 
-### Structured Data (结构化数据 / 構造化データ / 구조화 데이터)
-Use tables for comparisons:
-| Dimension | Value A | Value B | Source |
-|-----------|---------|---------|--------|
+## Gaps
+- Key information NOT found or needing primary research
 
-Use timelines for events. Use lists for categories.
-
-### Relationships & Context (关系与背景 / 関係と背景 / 관계와 맥락)
-Industry position, partnerships, competitive landscape.
-
-## Conflicts & Uncertainties (冲突与不确定性 / 矛盾と不確実性 / 충돌과 불확실성)
-- Present BOTH sides when sources disagree
-- Confidence: High/Medium/Low for key claims
-- Note outdated or unverified data
-
-## Gaps / Unknowns (信息空白 / 情報ギャップ / 정보 공백)
-- Information NOT found
-- What needs primary research
-
-**ATTRIBUTION**: Every key fact needs source. Use "According to [Source]..." or "(Source: domain)".
-**BE COMPREHENSIVE**: This is deep research - provide thorough analysis, not just bullet points.""",
+**RULES**: Every key fact attributed with (Source: domain). Be thorough and evidence-rich — capture all important findings — but skip structural padding. The final report structure is handled by synthesis.""",
 
     "allowed_tools": ["web_search", "web_fetch", "web_subpage_fetch", "web_crawl"],
     "caps": {"max_tokens": 30000, "temperature": 0.3},

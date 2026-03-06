@@ -78,6 +78,7 @@ func BrowserLoop(
 	iteration := 0
 
 	var agentResults []activities.AgentExecutionResult
+	promptVersion := workflow.GetVersion(ctx, "browser_agent_prompt_v2", workflow.DefaultVersion, 1)
 
 	// Get workflow ID for SSE events
 	wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
@@ -92,7 +93,7 @@ func BrowserLoop(
 		WorkflowID: wfID,
 		Type:       "PROGRESS",
 		AgentID:    "browser",
-		Message:    "Starting browser automation",
+		Message:    activities.MsgBrowserStarted(),
 		Timestamp:  workflow.Now(ctx),
 	})
 
@@ -124,7 +125,7 @@ func BrowserLoop(
 			WorkflowID: wfID,
 			Type:       "PROGRESS",
 			AgentID:    "browser",
-			Message:    fmt.Sprintf("Browser action %d/%d", iteration+1, config.MaxIterations),
+			Message:    activities.MsgBrowserAction(iteration+1, config.MaxIterations),
 			Timestamp:  workflow.Now(ctx),
 		})
 
@@ -133,7 +134,7 @@ func BrowserLoop(
 			WorkflowID: wfID,
 			Type:       "AGENT_STARTED",
 			AgentID:    agentID,
-			Message:    "Analyzing page and taking action",
+			Message:    activities.MsgBrowserAnalyzing(),
 			Timestamp:  workflow.Now(ctx),
 		})
 
@@ -154,10 +155,20 @@ func BrowserLoop(
 		agentContext["observations"] = recentObs
 
 		// Build the unified prompt that combines reasoning and action
-		agentQuery := buildBrowserAgentPrompt(query, actions, recentObs, iteration)
+		var agentQuery string
+		if promptVersion < 1 {
+			agentQuery = buildBrowserAgentPromptV1(query, actions, recentObs, iteration)
+		} else {
+			agentQuery = buildBrowserAgentPromptV2(query, actions, recentObs, iteration)
+		}
 
 		var agentResult activities.AgentExecutionResult
 		var err error
+
+		// Browser tools that should be available for this agent
+		browserTools := []string{
+			"browser",
+		}
 
 		// Execute unified agent (reason + act together)
 		if opts.BudgetAgentMax > 0 {
@@ -173,6 +184,7 @@ func BrowserLoop(
 						UserID:           opts.UserID,
 						History:          history,
 						ParentWorkflowID: wfID,
+						SuggestedTools:   browserTools,
 					},
 					MaxTokens: opts.BudgetAgentMax,
 					UserID:    opts.UserID,
@@ -191,6 +203,7 @@ func BrowserLoop(
 					UserID:           opts.UserID,
 					History:          history,
 					ParentWorkflowID: wfID,
+					SuggestedTools:   browserTools,
 				}).Get(ctx, &agentResult)
 		}
 
@@ -206,7 +219,7 @@ func BrowserLoop(
 			WorkflowID: wfID,
 			Type:       "AGENT_COMPLETED",
 			AgentID:    agentID,
-			Message:    "Action completed",
+			Message:    activities.MsgBrowserCompleted(),
 			Timestamp:  workflow.Now(ctx),
 		})
 
@@ -268,7 +281,7 @@ func BrowserLoop(
 		WorkflowID: wfID,
 		Type:       "PROGRESS",
 		AgentID:    "browser",
-		Message:    "Browser automation completed",
+		Message:    activities.MsgBrowserCompleted(),
 		Timestamp:  workflow.Now(ctx),
 	})
 
@@ -295,8 +308,7 @@ func BrowserLoop(
 	}, nil
 }
 
-// buildBrowserAgentPrompt creates a unified prompt for browser automation
-func buildBrowserAgentPrompt(query string, actions []string, observations []string, iteration int) string {
+func buildBrowserAgentPromptV1(query string, actions []string, observations []string, iteration int) string {
 	var sb strings.Builder
 
 	sb.WriteString("You are a browser automation agent. Analyze the current page state and take the next action to complete the task.\n\n")
@@ -307,7 +319,7 @@ func buildBrowserAgentPrompt(query string, actions []string, observations []stri
 		for i, a := range actions {
 			// Only show last 5 actions to save context
 			if i >= len(actions)-5 {
-				sb.WriteString(fmt.Sprintf("- %s\n", truncateStringBrowser(a, 200)))
+				sb.WriteString(fmt.Sprintf("- %s\n", truncateString(a, 200)))
 			}
 		}
 		sb.WriteString("\n")
@@ -316,7 +328,7 @@ func buildBrowserAgentPrompt(query string, actions []string, observations []stri
 	if len(observations) > 0 {
 		sb.WriteString("CURRENT STATE (from previous tool results):\n")
 		for _, obs := range observations {
-			sb.WriteString(fmt.Sprintf("- %s\n", truncateStringBrowser(obs, 300)))
+			sb.WriteString(fmt.Sprintf("- %s\n", truncateString(obs, 300)))
 		}
 		sb.WriteString("\n")
 	}
@@ -342,7 +354,7 @@ func buildBrowserAgentPromptV2(query string, actions []string, observations []st
 		for i, a := range actions {
 			// Only show last 5 actions to save context
 			if i >= len(actions)-5 {
-				sb.WriteString(fmt.Sprintf("- %s\n", truncateStringBrowser(a, 200)))
+				sb.WriteString(fmt.Sprintf("- %s\n", truncateString(a, 200)))
 			}
 		}
 		sb.WriteString("\n")
@@ -351,7 +363,7 @@ func buildBrowserAgentPromptV2(query string, actions []string, observations []st
 	if len(observations) > 0 {
 		sb.WriteString("CURRENT STATE (from previous tool results):\n")
 		for _, obs := range observations {
-			sb.WriteString(fmt.Sprintf("- %s\n", truncateStringBrowser(obs, 300)))
+			sb.WriteString(fmt.Sprintf("- %s\n", truncateString(obs, 300)))
 		}
 		sb.WriteString("\n")
 	}
@@ -407,7 +419,7 @@ func buildObservationFromTools(toolExecs []activities.ToolExecution) string {
 			case "extract":
 				if output != nil {
 					if content, ok := output["content"].(string); ok {
-						parts = append(parts, fmt.Sprintf("Extracted: %s", truncateStringBrowser(content, 500)))
+						parts = append(parts, fmt.Sprintf("Extracted: %s", truncateString(content, 500)))
 					} else {
 						parts = append(parts, "Content extracted")
 					}
@@ -422,7 +434,7 @@ func buildObservationFromTools(toolExecs []activities.ToolExecution) string {
 				parts = append(parts, fmt.Sprintf("%s: success", te.Tool))
 			}
 		} else {
-			parts = append(parts, fmt.Sprintf("%s failed: %s", te.Tool, truncateStringBrowser(te.Error, 100)))
+			parts = append(parts, fmt.Sprintf("%s failed: %s", te.Tool, truncateString(te.Error, 100)))
 		}
 	}
 
@@ -457,10 +469,10 @@ func isBrowserTaskComplete(result activities.AgentExecutionResult) bool {
 	return false
 }
 
-// hasToolExecutionBrowser checks if any tools were executed
+// hasToolExecution checks if any tools were executed
 // Note: This checks the Go struct, but tools executed in Python may not be tracked here.
 // Use responseIndicatesToolUse for more reliable detection.
-func hasToolExecutionBrowser(toolExecs []activities.ToolExecution) bool {
+func hasToolExecution(toolExecs []activities.ToolExecution) bool {
 	return len(toolExecs) > 0
 }
 
@@ -496,7 +508,7 @@ func hasRecentToolExecutions(results []activities.AgentExecutionResult, lookback
 	}
 	for i := start; i < len(results); i++ {
 		// Check Go struct first
-		if hasToolExecutionBrowser(results[i].ToolExecutions) {
+		if hasToolExecution(results[i].ToolExecutions) {
 			return true
 		}
 		// Also check response for tool execution patterns (for Python-executed tools)
@@ -507,8 +519,8 @@ func hasRecentToolExecutions(results []activities.AgentExecutionResult, lookback
 	return false
 }
 
-// truncateStringBrowser truncates a string to maxLen chars with ellipsis
-func truncateStringBrowser(s string, maxLen int) string {
+// truncateString truncates a string to maxLen chars with ellipsis
+func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
@@ -548,4 +560,12 @@ func recordBrowserTokenUsage(ctx workflow.Context, wfID, sessionID string, opts 
 		Metadata:     map[string]interface{}{"phase": "browser_action"},
 	}).Get(recCtx, nil)
 	wopts.RecordToolCostEntries(ctx, result, opts.UserID, sessionID, wfID)
+}
+
+// max returns the larger of two ints
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

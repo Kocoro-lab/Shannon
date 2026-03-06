@@ -29,12 +29,17 @@ import (
 // sanitizeAgentOutput removes duplicate references from agent outputs
 // to avoid sending the same URLs/citations twice (once in agent output, once in Available Citations)
 func sanitizeAgentOutput(text string) string {
-	// First, filter out XML tool tags that may have leaked into agent responses
-	toolTagPattern := regexp.MustCompile(`<(search_query|web_fetch|web_search|tool)[^>]*>.*?</(search_query|web_fetch|web_search|tool)>`)
+	// Filter out XML tool tags that may have leaked into agent responses
+	// Include all known tool-calling tag patterns: search, query, search_query, web_fetch, web_search, tool
+	// Use (?s) for dotall mode so .* matches across newlines (multi-line tool blocks)
+	toolTagPattern := regexp.MustCompile(`(?s)<(search|query|search_query|web_fetch|web_search|tool)[^>]*>.*?</(search|query|search_query|web_fetch|web_search|tool)>`)
 	text = toolTagPattern.ReplaceAllString(text, "")
-	// Also filter single/self-closing tags
-	singleTagPattern := regexp.MustCompile(`<(search_query|web_fetch|web_search|tool)[^>]*/?>`)
+	// Filter single/self-closing opening tags
+	singleTagPattern := regexp.MustCompile(`<(search|query|search_query|web_fetch|web_search|tool)[^>]*/?>`)
 	text = singleTagPattern.ReplaceAllString(text, "")
+	// Filter orphan closing tags (in case opening tag was already stripped or malformed)
+	closingTagPattern := regexp.MustCompile(`</(search|query|search_query|web_fetch|web_search|tool)>`)
+	text = closingTagPattern.ReplaceAllString(text, "")
 
 	lines := strings.Split(text, "\n")
 	var result []string
@@ -960,6 +965,13 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				currentDate = time.Now().UTC().Format("January 2, 2006")
 			}
 
+			var newsCount int
+			if nc, ok := input.Context["news_count"].(int); ok {
+				newsCount = nc
+			} else if nc, ok := input.Context["news_count"].(float64); ok {
+				newsCount = int(nc)
+			}
+
 			data := SynthesisTemplateData{
 				Query:                input.Query,
 				QueryLanguage:        queryLanguage,
@@ -974,6 +986,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				SynthesisStyle:       synthesisStyle,
 				CitationAgentEnabled: citationAgentEnabled,
 				CurrentDate:          currentDate,
+				NewsCount:            newsCount,
 			}
 
 			rendered, err := RenderSynthesisTemplate(tmpl, data)
@@ -1685,7 +1698,7 @@ Section requirements:
 	// Use savedCitations (preserved before deletion) instead of input.Context
 	finalResponse := out.Response
 	if input.Context != nil {
-		if skipSynth, ok := input.Context["skip_synthesis"].(bool); ok && skipSynth {
+		if tmpl, ok := input.Context["synthesis_template"].(string); ok && tmpl == "sagasu_workflows" {
 			if extracted := extractFirstJSONResponse(finalResponse); extracted != "" {
 				finalResponse = extracted
 			}
@@ -2032,6 +2045,8 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 	totalTokens := 0
 	totalInputTokens := 0
 	totalOutputTokens := 0
+	totalCacheReadTokens := 0
+	totalCacheCreationTokens := 0
 	var totalCostUsd float64
 	var modelUsed string
 	var provider string
@@ -2045,6 +2060,8 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 				totalTokens += result.TokensUsed
 				totalInputTokens += result.InputTokens
 				totalOutputTokens += result.OutputTokens
+				totalCacheReadTokens += result.CacheReadTokens
+				totalCacheCreationTokens += result.CacheCreationTokens
 
 				// Capture model and provider from first successful agent
 				if modelUsed == "" && result.ModelUsed != "" {
@@ -2069,7 +2086,7 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 	// Estimate cost if not already calculated
 	if totalInputTokens > 0 && totalOutputTokens > 0 && modelUsed != "" {
 		totalCostUsd = pricing.CostForSplitWithCache(modelUsed, totalInputTokens, totalOutputTokens,
-			0, 0, provider)
+			totalCacheReadTokens, totalCacheCreationTokens, provider)
 	}
 
 	logger.Info("Synthesis (simple) completed",
@@ -2139,6 +2156,9 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 
 // cleanAgentOutput processes raw agent outputs to be more user-friendly
 func cleanAgentOutput(response string) string {
+	// First, sanitize any leaked XML tool tags (covers fallback synthesis path)
+	response = sanitizeAgentOutput(response)
+
 	// Try to parse as JSON array (common for web_search results)
 	var results []map[string]interface{}
 	if err := json.Unmarshal([]byte(response), &results); err == nil && len(results) > 0 {

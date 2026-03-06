@@ -918,3 +918,95 @@ export async function getSkill(name: string): Promise<SkillDetailResponse> {
     return response.json();
 }
 
+/**
+ * Get the synthesis model tier preference.
+ * Returns undefined to use backend default.
+ */
+export function getSynthesisModelTier(): string | undefined {
+    return undefined;
+}
+
+// =============================================================================
+// Blob References (for large image data stored server-side)
+// =============================================================================
+
+export interface BlobReference {
+    blob_id: string;
+    size?: number;
+}
+
+/**
+ * Resolve a blob reference to its base64 image data.
+ * Falls back to inline data if present in the object.
+ */
+export async function resolveImageField(
+    fieldName: string,
+    obj: Record<string, any>
+): Promise<string | null> {
+    // Check for inline base64 first
+    if (obj[fieldName] && typeof obj[fieldName] === "string") {
+        return obj[fieldName];
+    }
+
+    // Check for blob reference
+    const refKey = `${fieldName}_ref`;
+    const blobRef = obj[refKey] as BlobReference | undefined;
+    if (!blobRef?.blob_id) return null;
+
+    try {
+        const headers = getAuthHeaders();
+        const res = await fetch(`${API_BASE_URL}/api/v1/blobs/${blobRef.blob_id}`, { headers });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data?.data || null;
+    } catch {
+        return null;
+    }
+}
+
+// =============================================================================
+// Workspace Files
+// =============================================================================
+
+export interface WorkspaceFileInfo {
+    name: string;
+    path: string;
+    is_dir: boolean;
+    size_bytes: number;
+}
+
+interface ListFilesResponse {
+    success: boolean;
+    files: WorkspaceFileInfo[];
+    error?: string;
+}
+
+interface FileContentResponse {
+    success: boolean;
+    content?: string;
+    content_type?: string;
+    size_bytes?: number;
+    error?: string;
+}
+
+export async function listWorkspaceFiles(sessionId: string, subPath?: string): Promise<ListFilesResponse> {
+    const params = subPath ? `?path=${encodeURIComponent(subPath)}` : '';
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${encodeURIComponent(sessionId)}/files${params}`, {
+        headers: getAuthHeaders(),
+    });
+    if (!response.ok) {
+        throw new Error(`Failed to list workspace files: ${response.status}`);
+    }
+    return response.json();
+}
+
+export async function getWorkspaceFileContent(sessionId: string, filePath: string): Promise<FileContentResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/sessions/${encodeURIComponent(sessionId)}/files/${filePath}`, {
+        headers: getAuthHeaders(),
+    });
+    if (!response.ok) {
+        throw new Error(`Failed to get file content: ${response.status}`);
+    }
+    return response.json();
+}
+

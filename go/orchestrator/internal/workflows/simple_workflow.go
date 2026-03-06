@@ -157,24 +157,8 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
-	// User persistent memory prompt injection (version-gated)
-	userMemoryVersion := workflow.GetVersion(ctx, "user_memory_prompt_v1", workflow.DefaultVersion, 1)
-	if userMemoryVersion >= 1 && input.UserID != "" {
-		if input.Context == nil {
-			input.Context = make(map[string]interface{})
-		}
-		input.Context["user_memory_prompt"] = "You have access to a persistent memory directory at /memory/. " +
-			"This contains knowledge from your past sessions with this user.\n\n" +
-			"IMPORTANT: Start by reading /memory/MEMORY.md to see what memories exist.\n\n" +
-			"When writing new memory files:\n" +
-			"1. Write the file to /memory/{path}.md\n" +
-			"2. Update /memory/MEMORY.md — add an entry with the file path as heading and a 1-line description\n" +
-			"3. If the file path already exists in MEMORY.md, update the existing entry instead of adding a duplicate\n" +
-			"4. If /memory/MEMORY.md does not exist, create it with a '# User Memory' heading first\n\n" +
-			"When reading memories:\n" +
-			"1. Read /memory/MEMORY.md first to understand what's available\n" +
-			"2. Read specific files for full details as needed"
-	}
+	// User persistent memory: prompt injection and extraction are swarm-only.
+	// Simple tasks generate too many low-value extractions that bloat /memory/.
 
 	// Context compression (version-gated for determinism)
 	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
@@ -612,23 +596,8 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}).Get(ctx, nil)
 	}
 
-	// User-level memory extraction (Phase 2) — fire-and-forget
-	memExtractVersion := workflow.GetVersion(ctx, "user_memory_extract_v1", workflow.DefaultVersion, 1)
-	if memExtractVersion >= 1 && input.UserID != "" && len(finalResult) >= 500 {
-		disconnectedCtx, _ := workflow.NewDisconnectedContext(ctx)
-		memCtx := workflow.WithActivityOptions(disconnectedCtx, workflow.ActivityOptions{
-			StartToCloseTimeout: 30 * time.Second,
-			RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
-		})
-		workflow.ExecuteActivity(memCtx, activities.ExtractMemoryActivity, activities.MemoryExtractInput{
-			UserID:           input.UserID,
-			TenantID:         input.TenantID,
-			SessionID:        input.SessionID,
-			Query:            input.Query,
-			Result:           finalResult,
-			ParentWorkflowID: workflowID,
-		})
-	}
+	// Memory extraction is swarm-only — removed from SimpleTaskWorkflow to avoid
+	// low-value extractions bloating /memory/ on every simple query.
 
 	// Check pause/cancel before completion
 	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
@@ -679,6 +648,12 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
+	}
+
+	// Persist screenshot paths in task metadata (version-gated)
+	screenshotVersion := workflow.GetVersion(ctx, "screenshot_persistence_v1", workflow.DefaultVersion, 1)
+	if screenshotVersion >= 1 && len(result.ScreenshotPaths) > 0 {
+		meta["screenshots"] = result.ScreenshotPaths
 	}
 
 	// Add model and provider information for task persistence

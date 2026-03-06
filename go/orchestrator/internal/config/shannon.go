@@ -297,6 +297,8 @@ type SessionConfig struct {
 type FeatureFlagsConfig struct {
 	// AdsResearch enables the ads research workflow (enterprise version only)
 	AdsResearch bool `json:"ads_research" yaml:"ads_research"`
+	// Sagasu enables Sagasu workflows (competitor watch, morning brief)
+	Sagasu bool `json:"sagasu" yaml:"sagasu"`
 }
 
 // WorkflowConfig controls workflow behavior
@@ -330,8 +332,8 @@ func DefaultShannonConfig() *ShannonConfig {
 			Enabled:                  false,
 			SkipAuth:                 true,
 			JWTSecret:                "change-this-to-a-secure-32-char-minimum-secret",
-			AccessTokenExpiry:        30 * time.Minute,
-			RefreshTokenExpiry:       7 * 24 * time.Hour,
+			AccessTokenExpiry:        1 * time.Hour,
+			RefreshTokenExpiry:       30 * 24 * time.Hour, // 30 days
 			APIKeyRateLimit:          1000,
 			DefaultTenantLimit:       10000,
 			EnableRegistration:       true,
@@ -812,6 +814,16 @@ func (scm *ShannonConfigManager) updateConfigFromMap(configMap map[string]interf
 	if wf, ok := configMap["workflow"].(map[string]interface{}); ok {
 		if v, ok := wf["bypass_single_result"].(bool); ok {
 			newConfig.Workflow.BypassSingleResult = v
+		}
+	}
+
+	// Update features config
+	if features, ok := configMap["features"].(map[string]interface{}); ok {
+		if v, ok := features["ads_research"].(bool); ok {
+			newConfig.Features.AdsResearch = v
+		}
+		if v, ok := features["sagasu"].(bool); ok {
+			newConfig.Features.Sagasu = v
 		}
 	}
 

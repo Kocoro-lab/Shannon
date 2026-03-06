@@ -435,7 +435,7 @@ func validateSessionID(sessionID string) error {
 		return fmt.Errorf("session_id contains path traversal")
 	}
 	for _, c := range sessionID {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
 			return fmt.Errorf("session_id contains invalid char: %c", c)
 		}
 	}

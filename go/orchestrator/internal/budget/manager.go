@@ -41,13 +41,13 @@ type TokenBudget struct {
 
 // BudgetTokenUsage tracks token consumption for budget management (renamed to avoid conflict with models.TokenUsage)
 type BudgetTokenUsage struct {
-	ID             string                 `json:"id"`
-	UserID         string                 `json:"user_id"`
-	SessionID      string                 `json:"session_id"`
-	TaskID         string                 `json:"task_id"`
-	AgentID        string                 `json:"agent_id"`
-	Model          string                 `json:"model"`
-	Provider       string                 `json:"provider"`
+	ID                  string                 `json:"id"`
+	UserID              string                 `json:"user_id"`
+	SessionID           string                 `json:"session_id"`
+	TaskID              string                 `json:"task_id"`
+	AgentID             string                 `json:"agent_id"`
+	Model               string                 `json:"model"`
+	Provider            string                 `json:"provider"`
 	InputTokens         int                    `json:"input_tokens"`
 	OutputTokens        int                    `json:"output_tokens"`
 	TotalTokens         int                    `json:"total_tokens"`

@@ -1422,6 +1422,23 @@ async def agent_query(request: Request, query: AgentQuery):
             seed_last_tool_results = ""
             seed_loop_function_call: Optional[str] = None
 
+            # Detect research mode early so forced_tool_calls can check it (issue #43)
+            research_mode = (
+                isinstance(query.context, dict)
+                and (
+                    query.context.get("force_research")
+                    or query.context.get("research_strategy")
+                    or query.context.get("research_mode")
+                    or query.context.get("workflow_type") == "research"
+                    or query.context.get("role") == "deep_research_agent"
+                )
+            )
+
+            # Inject research_mode into context so tools can check it (issue #43)
+            # research_mode is already in safe_keys whitelist (~line 2532)
+            if research_mode and isinstance(query.context, dict):
+                query.context["research_mode"] = True
+
             # Generate completion with tools if specified
             if effective_allowed_tools:
                 logger.info(f"Allowed tools: {effective_allowed_tools}")
@@ -1513,18 +1530,33 @@ async def agent_query(request: Request, query: AgentQuery):
                             "content": f"[Executed {forced_calls[0]['name']}]",
                         }
                     )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Tool execution result:\n{tool_results}\n\n"
-                            "Based on this result, please answer the original query."
-                        ),
-                    }
-                )
-                # Forced tool execution completed - disable further tool calls to prevent duplicates
-                effective_allowed_tools = []
-                logger.info("Forced tool execution completed, disabling further tool calls")
+                if research_mode:
+                    # Research mode: keep tools for OODA loop, guide to continue research
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Tool execution result:\n{tool_results}\n\n"
+                                "These are seed results. Continue your OODA research loop: "
+                                "Observe results → Orient (identify gaps) → Decide → Act.\n"
+                                "Use web_fetch to read full pages, or web_search with different queries to fill gaps."
+                            ),
+                        }
+                    )
+                    logger.info("Forced tool execution completed, keeping tools for research OODA loop")
+                else:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Tool execution result:\n{tool_results}\n\n"
+                                "Based on this result, please answer the original query."
+                            ),
+                        }
+                    )
+                    # Non-research: disable further tool calls to prevent duplicates
+                    effective_allowed_tools = []
+                    logger.info("Forced tool execution completed, disabling further tool calls")
 
                     # ── SWARM FAST PATH ──────────────────────────────────────
                     # When forced_tool_calls executed data-only tools outside research mode,
@@ -1703,17 +1735,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     pass
                 return default_val
 
-            # Detect research mode first to apply appropriate limits
-            research_mode = (
-                isinstance(query.context, dict)
-                and (
-                    query.context.get("force_research")
-                    or query.context.get("research_strategy")
-                    or query.context.get("research_mode")
-                    or query.context.get("workflow_type") == "research"
-                    or query.context.get("role") == "deep_research_agent"
-                )
-            )
+            # research_mode was detected early (before forced_tool_calls) — see above
 
             # Base defaults for non-research mode
             default_iterations = 3

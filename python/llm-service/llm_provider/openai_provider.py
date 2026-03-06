@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 import tiktoken
 
-from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage
+from .base import LLMProvider, CompletionRequest, CompletionResponse, TokenUsage, extract_text_from_content, prepare_openai_messages
 
 
 class OpenAIProvider(LLMProvider):
@@ -78,6 +78,16 @@ class OpenAIProvider(LLMProvider):
                     num_tokens += len(encoder.encode(value))
                     if key == "name":
                         num_tokens += tokens_per_name
+                elif key == "content" and isinstance(value, list):
+                    for block in value:
+                        if isinstance(block, dict):
+                            if block.get("type") == "text":
+                                num_tokens += len(encoder.encode(block.get("text", "")))
+                            elif block.get("type") in ("image", "image_url"):
+                                # ~85 tokens low-detail, ~765 high-detail; use 256 as safe midpoint
+                                num_tokens += 256
+                        elif isinstance(block, str):
+                            num_tokens += len(encoder.encode(block))
 
         num_tokens += 3  # Every reply is primed with <im_start>assistant<im_sep>
         return num_tokens
@@ -116,15 +126,16 @@ class OpenAIProvider(LLMProvider):
 
         api_request = {
             "model": model,
-            "messages": request.messages,
+            "messages": prepare_openai_messages(request.messages),
         }
 
         # GPT-5 family (excluding gpt-5-pro) has restricted parameter support
         is_gpt5_chat = model.startswith("gpt-5") and not model.startswith("gpt-5-pro")
+        # OpenAI reasoning models (o1, o3, o4) don't support sampling params
+        is_reasoning_model = any(model.startswith(p) for p in ("o1", "o3", "o4"))
 
-        # Only include sampling parameters if NOT GPT-5 chat models
-        # GPT-5 chat models only support default values (temperature=1, etc)
-        if not is_gpt5_chat:
+        # Only include sampling parameters if NOT GPT-5 chat or reasoning models
+        if not is_gpt5_chat and not is_reasoning_model:
             api_request["temperature"] = request.temperature
             api_request["top_p"] = request.top_p
             api_request["frequency_penalty"] = request.frequency_penalty
@@ -160,18 +171,22 @@ class OpenAIProvider(LLMProvider):
                 f"requested_max={requested_max}, headroom={headroom}"
             )
 
-        # GPT-5 family uses max_completion_tokens instead of max_tokens
+        # GPT-5 and reasoning models use max_completion_tokens instead of max_tokens
         if adjusted_max:
-            if is_gpt5_chat:
+            if is_gpt5_chat or is_reasoning_model:
                 api_request["max_completion_tokens"] = adjusted_max
-                logger.info(
-                    f"GPT-5 Chat API request for {model}: max_completion_tokens={adjusted_max}, "
-                    f"prompt_tokens_est={prompt_tokens_est}, context_window={model_context}"
-                )
+                if is_gpt5_chat:
+                    logger.info(
+                        f"GPT-5 Chat API request for {model}: max_completion_tokens={adjusted_max}, "
+                        f"prompt_tokens_est={prompt_tokens_est}, context_window={model_context}"
+                    )
             else:
                 api_request["max_tokens"] = adjusted_max
 
-        if request.stop:
+        if request.reasoning_effort and is_reasoning_model:
+            api_request["reasoning_effort"] = request.reasoning_effort
+
+        if request.stop and not is_reasoning_model:
             api_request["stop"] = request.stop
         if request.functions:
             api_request["functions"] = request.functions
@@ -436,26 +451,30 @@ class OpenAIProvider(LLMProvider):
 
         # Normalize function/tool call information to a plain dict for JSON safety
         normalized_fc = None
+        all_tool_calls = []
         try:
             # Newer SDKs expose structured tool calls; prefer those when present
             if hasattr(message, "tool_calls") and message.tool_calls:
-                # Take the first function tool call for compatibility
-                tc = message.tool_calls[0]
-                fn = getattr(tc, "function", None)
-                if fn is not None:
-                    # Pydantic v2 objects have model_dump(); fall back to attrs
-                    if hasattr(fn, "model_dump"):
-                        data = fn.model_dump()
-                        # Ensure arguments is JSON-string or object as returned by SDK
-                        normalized_fc = {
-                            "name": data.get("name"),
-                            "arguments": data.get("arguments"),
-                        }
-                    else:
-                        normalized_fc = {
-                            "name": getattr(fn, "name", None),
-                            "arguments": getattr(fn, "arguments", None),
-                        }
+                for tc in message.tool_calls:
+                    tc_id = getattr(tc, "id", None)
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        if hasattr(fn, "model_dump"):
+                            data = fn.model_dump()
+                            entry = {
+                                "id": tc_id,
+                                "name": data.get("name"),
+                                "arguments": data.get("arguments"),
+                            }
+                        else:
+                            entry = {
+                                "id": tc_id,
+                                "name": getattr(fn, "name", None),
+                                "arguments": getattr(fn, "arguments", None),
+                            }
+                        all_tool_calls.append(entry)
+                if all_tool_calls:
+                    normalized_fc = all_tool_calls[0]
             elif hasattr(message, "function_call") and message.function_call:
                 fc = message.function_call
                 if hasattr(fc, "model_dump"):
@@ -472,6 +491,7 @@ class OpenAIProvider(LLMProvider):
         except Exception:
             # Be permissive – missing/invalid function call info should not fail the request
             normalized_fc = None
+            all_tool_calls = []
 
         return CompletionResponse(
             content=content_text,
@@ -486,6 +506,7 @@ class OpenAIProvider(LLMProvider):
             ),
             finish_reason=choice.finish_reason,
             function_call=normalized_fc,
+            tool_calls=all_tool_calls if all_tool_calls else None,
             request_id=response.id,
             latency_ms=latency_ms,
             effective_max_completion=adjusted_max,
@@ -501,29 +522,33 @@ class OpenAIProvider(LLMProvider):
         # Prepare API request (align parameters with non-streaming variant)
         api_request = {
             "model": model,
-            "messages": request.messages,
+            "messages": prepare_openai_messages(request.messages),
             "stream": True,
         }
 
         # GPT-5 family (excluding gpt-5-pro) has restricted parameter support
         is_gpt5_chat = model.startswith("gpt-5") and not model.startswith("gpt-5-pro")
+        # OpenAI reasoning models (o1, o3, o4) don't support sampling params
+        is_reasoning_model = any(model.startswith(p) for p in ("o1", "o3", "o4"))
 
-        # Only include sampling parameters if NOT GPT-5 chat models
-        # GPT-5 chat models only support default values (temperature=1, etc)
-        if not is_gpt5_chat:
+        # Only include sampling parameters if NOT GPT-5 chat or reasoning models
+        if not is_gpt5_chat and not is_reasoning_model:
             api_request["temperature"] = request.temperature
             api_request["top_p"] = request.top_p
             api_request["frequency_penalty"] = request.frequency_penalty
             api_request["presence_penalty"] = request.presence_penalty
 
-        # GPT-5 family uses max_completion_tokens instead of max_tokens
+        # GPT-5 and reasoning models use max_completion_tokens instead of max_tokens
         if request.max_tokens:
-            if is_gpt5_chat:
+            if is_gpt5_chat or is_reasoning_model:
                 api_request["max_completion_tokens"] = request.max_tokens
             else:
                 api_request["max_tokens"] = request.max_tokens
 
-        if request.stop:
+        if request.reasoning_effort and is_reasoning_model:
+            api_request["reasoning_effort"] = request.reasoning_effort
+
+        if request.stop and not is_reasoning_model:
             api_request["stop"] = request.stop
         if request.functions:
             api_request["functions"] = request.functions
@@ -596,10 +621,13 @@ class OpenAIProvider(LLMProvider):
             # OpenAI streams tool calls incrementally (name/arguments chunks).
             tool_calls_by_index: Dict[int, Dict[str, Any]] = {}
             last_model = model
+            last_finish_reason = None
             yielded_final_meta = False
 
-            def _accumulate_tool_call(index: int, name: Any, arguments_part: Any) -> None:
-                entry = tool_calls_by_index.get(index, {"name": None, "arguments": ""})
+            def _accumulate_tool_call(index: int, tc_id: Any, name: Any, arguments_part: Any) -> None:
+                entry = tool_calls_by_index.get(index, {"id": None, "name": None, "arguments": ""})
+                if isinstance(tc_id, str) and tc_id:
+                    entry["id"] = tc_id
                 if isinstance(name, str) and name:
                     entry["name"] = name
                 if isinstance(arguments_part, str) and arguments_part:
@@ -612,7 +640,12 @@ class OpenAIProvider(LLMProvider):
                     last_model = chunk.model
 
                 if chunk.choices:
-                    delta = chunk.choices[0].delta
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+
+                    # Track finish_reason (set on the final chunk)
+                    if choice.finish_reason:
+                        last_finish_reason = choice.finish_reason
 
                     # Newer SDK: tool_calls streaming (array of calls)
                     for tc in getattr(delta, "tool_calls", None) or []:
@@ -625,6 +658,7 @@ class OpenAIProvider(LLMProvider):
                                 continue
                             _accumulate_tool_call(
                                 int(idx),
+                                getattr(tc, "id", None),
                                 getattr(fn, "name", None),
                                 getattr(fn, "arguments", None),
                             )
@@ -636,7 +670,7 @@ class OpenAIProvider(LLMProvider):
                     if fc is not None:
                         try:
                             _accumulate_tool_call(
-                                0, getattr(fc, "name", None), getattr(fc, "arguments", None)
+                                0, None, getattr(fc, "name", None), getattr(fc, "arguments", None)
                             )
                         except Exception:
                             pass
@@ -654,15 +688,23 @@ class OpenAIProvider(LLMProvider):
                             stream_cache_read = int(getattr(stream_details, "cached_tokens", 0) or 0)
                     except Exception:
                         pass
+                    cost = self.estimate_cost(
+                        chunk.usage.prompt_tokens,
+                        chunk.usage.completion_tokens,
+                        last_model,
+                        cache_read_tokens=stream_cache_read,
+                    )
                     meta = {
                         "usage": {
                             "total_tokens": chunk.usage.total_tokens,
                             "input_tokens": chunk.usage.prompt_tokens,
                             "output_tokens": chunk.usage.completion_tokens,
                             "cache_read_tokens": stream_cache_read,
+                            "cost_usd": cost,
                         },
                         "model": last_model,
                         "provider": "openai",
+                        "finish_reason": last_finish_reason or "stop",
                     }
                     # Include (possibly multiple) tool calls when present.
                     if tool_calls_by_index:
@@ -720,7 +762,20 @@ class OpenAIProvider(LLMProvider):
         - Prefer Chat for GPT-5 and GPT-4.1 families (standard chat completions).
         - Prefer Responses for reasoning‑heavy tasks when supported and signaled by complexity.
         """
-        # Always use Responses API when chaining from a previous response
+        # Multimodal content must use Chat Completions — Responses API doesn't support it
+        has_image_content = any(
+            isinstance(m.get("content"), list) for m in (request.messages or [])
+        )
+        if has_image_content:
+            return "chat"
+
+        # Reasoning models (o1, o3, o4) stay on Chat Completions unless chaining
+        model_name_route = getattr(model_config, "model_id", "")
+        is_reasoning = any(model_name_route.startswith(p) for p in ("o1", "o3", "o4"))
+        if is_reasoning and not getattr(request, "previous_response_id", None):
+            return "chat"
+
+        # Prefer Responses API when chaining from a previous response
         if getattr(request, "previous_response_id", None):
             return "responses"
 
@@ -735,7 +790,6 @@ class OpenAIProvider(LLMProvider):
         high_complexity = (request.complexity_score or 0.0) >= 0.7
 
         # Check requirements that need Chat Completions API BEFORE model family checks
-        # Responses API doesn't support response_format or tools properly
         if has_tools and getattr(caps, "supports_tools", True):
             return "chat"
         if wants_json and getattr(caps, "supports_json_mode", True):
@@ -768,9 +822,7 @@ class OpenAIProvider(LLMProvider):
         inputs: List[Dict[str, Any]] = []
         for msg in request.messages:
             role = msg.get("role", "user")
-            text = msg.get("content", "")
-            if not isinstance(text, str):
-                text = str(text)
+            text = extract_text_from_content(msg.get("content", ""))
             content_block = {"type": "input_text", "text": text}
             inputs.append({"role": role, "content": [content_block]})
 
@@ -795,14 +847,16 @@ class OpenAIProvider(LLMProvider):
             # Only send the last user message as incremental input
             last_user = [m for m in request.messages if m.get("role") == "user"]
             if last_user:
-                params["input"] = [{"role": "user", "content": [{"type": "input_text", "text": last_user[-1].get("content", "")}]}]
+                params["input"] = [{"role": "user", "content": [{"type": "input_text", "text": extract_text_from_content(last_user[-1].get("content", ""))}]}]
             else:
                 params["input"] = inputs
         else:
             params["input"] = inputs
             params["store"] = True  # Enable server-side storage for future chaining
 
-        # No reasoning parameter = thinking disabled by default
+        if request.reasoning_effort and any(model.startswith(p) for p in ("o1", "o3", "o4")):
+            params["reasoning"] = {"effort": request.reasoning_effort}
+
         # Note: Responses API doesn't support response_format parameter
         # If needed, the fallback to Chat Completions API will handle it
         if request.functions:

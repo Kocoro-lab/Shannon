@@ -248,7 +248,7 @@ class ToolRegistry:
             "research": ["web_search", "web_fetch", "web_subpage_fetch"],
             "coding": ["python_executor", "file_read", "file_write", "file_edit"],
             "analysis": ["calculator", "advanced_calculator", "python_executor"],
-            "browser": ["browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_extract"],
+            "browser": ["browser"],
             "file": ["file_read", "file_write", "file_edit", "file_list", "file_search"],
             "general": ["web_search", "calculator", "file_read", "file_write"],
         }

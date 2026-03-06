@@ -245,9 +245,10 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				}
 			}
 			if len(filteredSearches) > 0 {
+				originalCount := len(searches)
 				searches = filteredSearches
 				logger.Info("Domain analysis: non-multinational filtering applied",
-					"original_count", len(searches),
+					"original_count", originalCount,
 					"filtered_count", len(filteredSearches),
 					"multinational", intent.MultinationalDefault,
 				)

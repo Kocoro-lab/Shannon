@@ -39,7 +39,7 @@ def _validate_session_id(session_id: str) -> str:
 
     # SECURITY: Match Rust validation - ASCII alphanumeric + hyphen + underscore only
     # This prevents path traversal, hidden files, shell metacharacters, and Unicode tricks
-    if not all(c.isascii() and (c.isalnum() or c in "-_") for c in session_id):
+    if not all(c.isascii() and (c.isalnum() or c in "-_.") for c in session_id):
         raise ValueError(
             "Invalid session_id: must contain only ASCII alphanumeric, hyphen, or underscore"
         )
@@ -270,14 +270,12 @@ class FileReadTool(Tool):
                     },
                 )
                 # Try to parse JSON/YAML like the Python implementation
-                # Use case-insensitive matching for consistency with Python path
-                file_ext_lower = Path(file_path).suffix.lower()
-                if file_ext_lower == ".json":
+                if file_path.endswith(".json"):
                     try:
                         content = json.loads(content)
                     except json.JSONDecodeError:
                         pass
-                elif file_ext_lower in (".yaml", ".yml"):
+                elif file_path.endswith((".yaml", ".yml")):
                     try:
                         content = yaml.safe_load(content)
                     except yaml.YAMLError:

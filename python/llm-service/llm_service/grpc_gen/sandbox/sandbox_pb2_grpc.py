@@ -3,8 +3,7 @@
 import grpc
 import warnings
 
-# Fixed import path for package-relative import
-from . import sandbox_pb2 as sandbox_dot_sandbox__pb2
+from sandbox import sandbox_pb2 as sandbox_dot_sandbox__pb2
 
 GRPC_GENERATED_VERSION = '1.68.1'
 GRPC_VERSION = grpc.__version__

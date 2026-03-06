@@ -48,7 +48,6 @@ func persistAgentExecution(ctx workflow.Context, workflowID string, agentID stri
 			ModelUsed:  result.ModelUsed,
 			DurationMs: result.DurationMs,
 			Error:      result.Error,
-			Metadata:   map[string]interface{}{"role": result.Role},
 		},
 	)
 

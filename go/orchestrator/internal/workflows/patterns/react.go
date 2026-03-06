@@ -3,7 +3,7 @@ package patterns
 import (
 	"fmt"
 	"strings"
-	"time"
+	"time" // Used for activity timeout durations
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -115,7 +115,7 @@ func ReactLoop(
 			Type:       "PROGRESS",
 			AgentID:    "react",
 			Message:    activities.MsgReactIteration(iteration+1, config.MaxIterations),
-			Timestamp:  time.Now(),
+			Timestamp:  workflow.Now(ctx),
 		})
 
 		// Phase 1: REASON - Think about what to do next
@@ -124,7 +124,7 @@ func ReactLoop(
 			Type:       "AGENT_STARTED",
 			AgentID:    reasonerID,
 			Message:    activities.MsgReactReasoning(),
-			Timestamp:  time.Now(),
+			Timestamp:  workflow.Now(ctx),
 		})
 
 		reasonContext := make(map[string]interface{})
@@ -205,7 +205,7 @@ func ReactLoop(
 			Type:       "AGENT_COMPLETED",
 			AgentID:    reasonerID,
 			Message:    activities.MsgReactReasoningDone(),
-			Timestamp:  time.Now(),
+			Timestamp:  workflow.Now(ctx),
 		})
 
 		thoughts = append(thoughts, reasonResult.Response)
@@ -305,16 +305,25 @@ func ReactLoop(
 		var suggestedTools []string
 		// Bias toward web_search + web_fetch when running in research mode to ensure citations
 		// The LLM can use web_search to find sources, then web_fetch to read full content
+		// For non-research tasks, enable python_executor for computation tasks
 		if baseContext != nil {
 			if getContextBool(baseContext, "force_research") {
-				suggestedTools = []string{"web_search", "web_fetch"}
+				suggestedTools = []string{"web_search", "web_fetch", "python_executor"}
 			} else if rs, ok := baseContext["research_strategy"].(string); ok && strings.TrimSpace(rs) != "" {
-				suggestedTools = []string{"web_search", "web_fetch"}
+				suggestedTools = []string{"web_search", "web_fetch", "python_executor"}
+			} else {
+				// Enable python_executor for general tasks to allow real code execution
+				// This prevents hallucination where LLM writes <tool_call> as text
+				// Note: Firecracker VM has no network; only pure computation works
+				suggestedTools = []string{"python_executor"}
 			}
+		} else {
+			// Fallback: enable python_executor even if baseContext is nil
+			suggestedTools = []string{"python_executor"}
 		}
 
 		actionQuery := ""
-		if len(suggestedTools) > 0 {
+		if isResearch {
 			// Research mode: be explicit about tool usage and reporting
 			// Build quoted queries and site filters from context when available
 			quoted := ""
@@ -415,7 +424,7 @@ func ReactLoop(
 			Type:       "AGENT_STARTED",
 			AgentID:    actorID,
 			Message:    activities.MsgReactActing(),
-			Timestamp:  time.Now(),
+			Timestamp:  workflow.Now(ctx),
 		})
 
 		var actionResult activities.AgentExecutionResult
@@ -481,7 +490,7 @@ func ReactLoop(
 				Type:       "AGENT_COMPLETED",
 				AgentID:    actorID,
 				Message:    activities.MsgReactActingDone(),
-				Timestamp:  time.Now(),
+				Timestamp:  workflow.Now(ctx),
 			})
 
 			// Track whether any tool actually executed successfully
@@ -495,13 +504,17 @@ func ReactLoop(
 
 			// Skip recording empty action responses (treat as no-op)
 			if strings.TrimSpace(actionResult.Response) != "" {
-				actions = append(actions, actionResult.Response)
+				// Remove base64 screenshot data from actions (already emitted to UI)
+				truncatedAction := truncateBase64Images(actionResult.Response)
+				actions = append(actions, truncatedAction)
 				// Trim actions if exceeding limit
 				if len(actions) > config.MaxActions {
 					actions = actions[len(actions)-config.MaxActions:]
 				}
 				// Phase 3: OBSERVE - Record and analyze the result
-				observation := fmt.Sprintf("Action result: %s", actionResult.Response)
+				// Remove base64 screenshot data to prevent context overflow
+				// Screenshots are already emitted to UI via TOOL_OBSERVATION events
+				observation := fmt.Sprintf("Action result: %s", truncatedAction)
 				observations = append(observations, observation)
 			} else {
 				logger.Warn("Empty action response; skipping record",
@@ -583,7 +596,7 @@ func ReactLoop(
 		Type:       "PROGRESS",
 		AgentID:    "react",
 		Message:    activities.MsgReactLoopDone(),
-		Timestamp:  time.Now(),
+		Timestamp:  workflow.Now(ctx),
 	})
 
 	// Final synthesis of all observations and actions
@@ -711,6 +724,42 @@ func ReactLoop(
 }
 
 // Helper functions
+
+// truncateBase64Images removes only base64 image data from observations/actions
+// to prevent context overflow. Screenshots are already emitted to UI via TOOL_OBSERVATION events.
+// This is safe for all workflows - only removes binary image data, not text content.
+func truncateBase64Images(content string) string {
+	// Check for base64 image data patterns (screenshots, images)
+	// Common patterns: "screenshot": "iVBOR...", "image": "data:image/png;base64,..."
+	// Only targets actual base64 data, not text descriptions
+	base64Patterns := []string{
+		`"screenshot": "`,
+		`"screenshot":"`,
+	}
+
+	result := content
+	for _, pattern := range base64Patterns {
+		for {
+			idx := strings.Index(result, pattern)
+			if idx == -1 {
+				break
+			}
+			// Find the start of the base64 data
+			startIdx := idx + len(pattern)
+			// Find the end (closing quote)
+			endIdx := strings.Index(result[startIdx:], `"`)
+			if endIdx > 500 { // Only truncate if base64 is large (>500 chars = likely actual image)
+				// Replace with placeholder, keeping JSON structure valid
+				truncated := result[:startIdx] + "[SCREENSHOT_STORED_SEPARATELY]" + result[startIdx+endIdx:]
+				result = truncated
+			} else {
+				break // Not a base64 image, stop processing this pattern
+			}
+		}
+	}
+
+	return result
+}
 
 func getRecentObservations(observations []string, window int) []string {
 	if len(observations) <= window {
@@ -874,40 +923,4 @@ func countCitations(result activities.AgentExecutionResult) int {
 		}
 	}
 	return count
-}
-
-// truncateBase64Images removes only base64 image data from observations/actions
-// to prevent context overflow. Screenshots are already emitted to UI via TOOL_OBSERVATION events.
-// This is safe for all workflows - only removes binary image data, not text content.
-func truncateBase64Images(content string) string {
-	// Check for base64 image data patterns (screenshots, images)
-	// Common patterns: "screenshot": "iVBOR...", "image": "data:image/png;base64,..."
-	// Only targets actual base64 data, not text descriptions
-	base64Patterns := []string{
-		`"screenshot": "`,
-		`"screenshot":"`,
-	}
-
-	result := content
-	for _, pattern := range base64Patterns {
-		for {
-			idx := strings.Index(result, pattern)
-			if idx == -1 {
-				break
-			}
-			// Find the start of the base64 data
-			startIdx := idx + len(pattern)
-			// Find the end (closing quote)
-			endIdx := strings.Index(result[startIdx:], `"`)
-			if endIdx > 500 { // Only truncate if base64 is large (>500 chars = likely actual image)
-				// Replace with placeholder, keeping JSON structure valid
-				truncated := result[:startIdx] + "[SCREENSHOT_STORED_SEPARATELY]" + result[startIdx+endIdx:]
-				result = truncated
-			} else {
-				break // Not a base64 image, stop processing this pattern
-			}
-		}
-	}
-
-	return result
 }

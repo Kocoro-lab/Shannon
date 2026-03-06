@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Play, Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { submitTask } from "@/lib/shannon/api";
+import { submitTask, getSynthesisModelTier } from "@/lib/shannon/api";
 
 interface RunDialogProps {
     scenarioName: string;
@@ -42,6 +42,9 @@ export function RunDialog({ scenarioName, triggerButton }: RunDialogProps) {
             const response = await submitTask({
                 query: query.trim(),
                 research_strategy: "standard",
+                context: {
+                    synthesis_model_tier: getSynthesisModelTier(),
+                },
             });
 
             setOpen(false);

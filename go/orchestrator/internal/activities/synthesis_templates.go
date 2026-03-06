@@ -27,6 +27,7 @@ type SynthesisTemplateData struct {
 	SynthesisStyle       string
 	CitationAgentEnabled bool   // Whether Citation Agent post-processing is active
 	CurrentDate          string // Current date for temporal reference (e.g., "January 7, 2026")
+	NewsCount            int    // Number of news items for morning brief (0 = use template default)
 }
 
 // synthesisTemplateCache caches loaded templates for performance.

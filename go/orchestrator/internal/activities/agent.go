@@ -1406,12 +1406,16 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		promptTokens := 0
 		completionTokens := 0
 		costUsd := 0.0
+		cacheReadTokens := 0
+		cacheCreationTokens := 0
 		toolsUsed := []string{}
 		toolExecs := []ToolExecution{}
 		success := true
 		toolCostUsd := 0.0
 		toolTokenBump := 0
 		seenTools := map[string]struct{}{}
+		streamScreenshotIdx := 0
+		var streamScreenshotPaths []string
 
 		for {
 			upd, recvErr := stream.Recv()
@@ -1455,6 +1459,12 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 						if v, ok2 := m["provider"].(string); ok2 && v != "" {
 							provider = v
 						}
+						if v, ok := parseFlexibleInt(m["cache_read_tokens"]); ok {
+							cacheReadTokens = v
+						}
+						if v, ok := parseFlexibleInt(m["cache_creation_tokens"]); ok {
+							cacheCreationTokens = v
+						}
 					}
 				} else {
 					output := interface{}(nil)
@@ -1484,8 +1494,56 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 							"tool":    toolName,
 							"success": tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
 						}
-						if toolName == "browser_screenshot" && output != nil {
-							payload["output"] = output
+						if toolName == "browser" && output != nil && input.SessionID != "" {
+							if outputMap, ok := output.(map[string]interface{}); ok {
+								// Case 1: Python already persisted
+								if pathVal, ok2 := outputMap["screenshot_path"].(string); ok2 && pathVal != "" {
+									streamScreenshotPaths = append(streamScreenshotPaths, pathVal)
+									if wfID != "" {
+										streaming.Get().Publish(wfID, streaming.Event{
+											WorkflowID: wfID,
+											Type:       string(StreamEventScreenshotSaved),
+											AgentID:    input.AgentID,
+											Payload: map[string]interface{}{
+												"screenshot_path": pathVal,
+												"session_id":      input.SessionID,
+											},
+											Timestamp: time.Now(),
+										})
+									}
+									payload["output"] = output
+								} else if b64, hasScreenshot := outputMap["screenshot"]; hasScreenshot {
+									// Case 2: base64 present, persist from Go
+									if b64Str, ok2 := b64.(string); ok2 {
+										if relPath := persistScreenshot(logger, input.SessionID, wfID, streamScreenshotIdx, b64Str); relPath != "" {
+											streamScreenshotPaths = append(streamScreenshotPaths, relPath)
+											outputMap["screenshot"] = fmt.Sprintf("[stored:%s]", relPath)
+											outputMap["screenshot_path"] = relPath
+											output = outputMap
+											if wfID != "" {
+												streaming.Get().Publish(wfID, streaming.Event{
+													WorkflowID: wfID,
+													Type:       string(StreamEventScreenshotSaved),
+													AgentID:    input.AgentID,
+													Payload: map[string]interface{}{
+														"screenshot_path": relPath,
+														"session_id":      input.SessionID,
+													},
+													Timestamp: time.Now(),
+												})
+											}
+											streamScreenshotIdx++
+										}
+									}
+									payload["output"] = output
+								}
+							}
+						} else if toolName == "browser" && output != nil {
+							if outputMap, ok := output.(map[string]interface{}); ok {
+								if _, hasScreenshot := outputMap["screenshot"]; hasScreenshot {
+									payload["output"] = output
+								}
+							}
 						}
 						if tr.ErrorMessage != "" {
 							payload["error"] = tr.ErrorMessage
@@ -1568,11 +1626,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		// Note: toolsUsed already deduplicated via seenTools map during collection (line 1371-1373)
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
-			if model != "" {
-				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
-			} else {
-				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
-			}
+			costUsd = pricing.CostForSplitWithCache(model, promptTokens, completionTokens,
+				cacheReadTokens, cacheCreationTokens, provider)
 		} else if costUsd == 0 && tokens > 0 {
 			costUsd = pricing.CostForTokens(model, tokens)
 		}
@@ -1603,19 +1658,22 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 
 		return AgentExecutionResult{
-			AgentID:        input.AgentID,
-			Role:           role,
-			Response:       out,
-			TokensUsed:     tokens,
-			ModelUsed:      model,
-			Provider:       provider,
-			InputTokens:    promptTokens,
-			OutputTokens:   completionTokens,
-			DurationMs:     duration,
-			Success:        success,
-			Error:          "",
-			ToolsUsed:      toolsUsed,
-			ToolExecutions: toolExecs,
+			AgentID:             input.AgentID,
+			Role:                role,
+			Response:            out,
+			TokensUsed:          tokens,
+			ModelUsed:           model,
+			Provider:            provider,
+			InputTokens:         promptTokens,
+			OutputTokens:        completionTokens,
+			CacheReadTokens:     cacheReadTokens,
+			CacheCreationTokens: cacheCreationTokens,
+			DurationMs:          duration,
+			Success:             success,
+			Error:               "",
+			ToolsUsed:           toolsUsed,
+			ToolExecutions:      toolExecs,
+			ScreenshotPaths:     streamScreenshotPaths,
 		}, nil
 	}
 
@@ -1646,6 +1704,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		promptTokens := 0
 		completionTokens := 0
 		costUsd := 0.0
+		cacheReadTokens := 0
+		cacheCreationTokens := 0
 
 		if mu := resp.GetMetrics(); mu != nil && mu.TokenUsage != nil {
 			tokens = int(mu.TokenUsage.TotalTokens)
@@ -1664,12 +1724,60 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		seenTools := map[string]struct{}{}
 		toolCostUsd := 0.0
 		toolTokenBump := 0
+		screenshotIdx := 0
+		var screenshotPaths []string
 		for _, tr := range resp.ToolResults {
 			toolName := tr.GetToolId()
 			output := interface{}(nil)
 			if tr.Output != nil {
 				output = tr.Output.AsInterface()
 			}
+
+			// Collect/persist browser screenshots
+			if toolName == "browser" && output != nil && input.SessionID != "" {
+				if outputMap, ok := output.(map[string]interface{}); ok {
+					// Case 1: Python already persisted
+					if pathVal, ok2 := outputMap["screenshot_path"].(string); ok2 && pathVal != "" {
+						screenshotPaths = append(screenshotPaths, pathVal)
+						if wfID != "" {
+							streaming.Get().Publish(wfID, streaming.Event{
+								WorkflowID: wfID,
+								Type:       string(StreamEventScreenshotSaved),
+								AgentID:    input.AgentID,
+								Payload: map[string]interface{}{
+									"screenshot_path": pathVal,
+									"session_id":      input.SessionID,
+								},
+								Timestamp: time.Now(),
+							})
+						}
+					} else if b64, hasScreenshot := outputMap["screenshot"]; hasScreenshot {
+						// Case 2: base64 present, persist from Go
+						if b64Str, ok2 := b64.(string); ok2 {
+							if relPath := persistScreenshot(logger, input.SessionID, wfID, screenshotIdx, b64Str); relPath != "" {
+								screenshotPaths = append(screenshotPaths, relPath)
+								outputMap["screenshot"] = fmt.Sprintf("[stored:%s]", relPath)
+								outputMap["screenshot_path"] = relPath
+								output = outputMap
+								if wfID != "" {
+									streaming.Get().Publish(wfID, streaming.Event{
+										WorkflowID: wfID,
+										Type:       string(StreamEventScreenshotSaved),
+										AgentID:    input.AgentID,
+										Payload: map[string]interface{}{
+											"screenshot_path": relPath,
+											"session_id":      input.SessionID,
+										},
+										Timestamp: time.Now(),
+									})
+								}
+								screenshotIdx++
+							}
+						}
+					}
+				}
+			}
+
 			toolExecs = append(toolExecs, ToolExecution{
 				Tool:       toolName,
 				Success:    tr.Status == commonpb.StatusCode_STATUS_CODE_OK,
@@ -1719,11 +1827,8 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 		}
 
 		if costUsd == 0 && (promptTokens > 0 || completionTokens > 0) {
-			if model != "" {
-				costUsd = pricing.CostForSplit(model, promptTokens, completionTokens)
-			} else {
-				costUsd = pricing.CostForSplit("", promptTokens, completionTokens)
-			}
+			costUsd = pricing.CostForSplitWithCache(model, promptTokens, completionTokens,
+				cacheReadTokens, cacheCreationTokens, provider)
 		} else if costUsd == 0 && tokens > 0 {
 			costUsd = pricing.CostForTokens(model, tokens)
 		}
@@ -1765,21 +1870,30 @@ func executeAgentCore(ctx context.Context, input AgentExecutionInput, logger *za
 			resultMetadata = resp.GetMetadata().AsMap()
 		}
 
+		// Merge screenshot paths from metadata (Python agent loop persists screenshots
+		// and records paths in tool_execution_records — not in gRPC ToolResults)
+		if metaPaths := extractScreenshotPathsFromMetadata(resultMetadata); len(metaPaths) > 0 {
+			screenshotPaths = append(screenshotPaths, metaPaths...)
+		}
+
 		return AgentExecutionResult{
-			AgentID:        input.AgentID,
-			Role:           role,
-			Response:       out,
-			TokensUsed:     tokens,
-			ModelUsed:      model,
-			Provider:       provider,
-			InputTokens:    promptTokens,
-			OutputTokens:   completionTokens,
-			DurationMs:     duration,
-			Success:        success,
-			Error:          errMsg,
-			ToolsUsed:      toolsUsed,
-			ToolExecutions: toolExecs,
-			Metadata:       resultMetadata,
+			AgentID:             input.AgentID,
+			Role:                role,
+			Response:            out,
+			TokensUsed:          tokens,
+			ModelUsed:           model,
+			Provider:            provider,
+			InputTokens:         promptTokens,
+			OutputTokens:        completionTokens,
+			CacheReadTokens:     cacheReadTokens,
+			CacheCreationTokens: cacheCreationTokens,
+			DurationMs:          duration,
+			Success:             success,
+			Error:               errMsg,
+			ToolsUsed:           toolsUsed,
+			ToolExecutions:      toolExecs,
+			Metadata:            resultMetadata,
+			ScreenshotPaths:     screenshotPaths,
 		}, nil
 	}
 
@@ -2089,12 +2203,20 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 	// Extract detailed token metrics from metadata
 	inputTokens := 0
 	outputTokens := 0
+	cacheReadTokens := 0
+	cacheCreationTokens := 0
 	if agentResponse.Metadata != nil {
 		if v, ok := agentResponse.Metadata["input_tokens"].(float64); ok {
 			inputTokens = int(v)
 		}
 		if v, ok := agentResponse.Metadata["output_tokens"].(float64); ok {
 			outputTokens = int(v)
+		}
+		if v, ok := agentResponse.Metadata["cache_read_tokens"].(float64); ok {
+			cacheReadTokens = int(v)
+		}
+		if v, ok := agentResponse.Metadata["cache_creation_tokens"].(float64); ok {
+			cacheCreationTokens = int(v)
 		}
 	}
 
@@ -2177,7 +2299,8 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		// Calculate cost using pricing service
 		var costUsd float64
 		if agentResponse.ModelUsed != "" && inputTokens > 0 && outputTokens > 0 {
-			costUsd = pricing.CostForSplit(agentResponse.ModelUsed, inputTokens, outputTokens)
+			costUsd = pricing.CostForSplitWithCache(agentResponse.ModelUsed, inputTokens, outputTokens,
+				cacheReadTokens, cacheCreationTokens, agentResponse.Provider)
 		}
 
 		streaming.Get().Publish(wfID, streaming.Event{
@@ -2235,20 +2358,96 @@ func ExecuteAgentWithForcedTools(ctx context.Context, input AgentExecutionInput)
 		}
 	}
 
+	// Collect browser screenshot paths from tool executions.
+	// Two cases: (1) Python already persisted → screenshot_path is set,
+	// (2) Direct tool path → screenshot is base64, persist here.
+	var screenshotPaths []string
+	if input.SessionID != "" {
+		zapLogger := zap.L()
+		screenshotIdx := 0
+		for i, te := range toolExecs {
+			if te.Tool != "browser" || te.Output == nil {
+				continue
+			}
+			outputMap, ok := te.Output.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			// Case 1: Python already persisted — just collect the path
+			if pathVal, ok := outputMap["screenshot_path"].(string); ok && pathVal != "" {
+				screenshotPaths = append(screenshotPaths, pathVal)
+				if wfID != "" {
+					streaming.Get().Publish(wfID, streaming.Event{
+						WorkflowID: wfID,
+						Type:       string(StreamEventScreenshotSaved),
+						AgentID:    input.AgentID,
+						Payload: map[string]interface{}{
+							"screenshot_path": pathVal,
+							"session_id":      input.SessionID,
+						},
+						Timestamp: time.Now(),
+					})
+				}
+				continue
+			}
+
+			// Case 2: Direct tool path — base64 present, persist from Go
+			b64, hasScreenshot := outputMap["screenshot"]
+			if !hasScreenshot {
+				continue
+			}
+			b64Str, ok := b64.(string)
+			if !ok {
+				continue
+			}
+			relPath := persistScreenshot(zapLogger, input.SessionID, wfID, screenshotIdx, b64Str)
+			if relPath == "" {
+				continue
+			}
+			screenshotPaths = append(screenshotPaths, relPath)
+			outputMap["screenshot"] = fmt.Sprintf("[stored:%s]", relPath)
+			outputMap["screenshot_path"] = relPath
+			toolExecs[i].Output = outputMap
+
+			if wfID != "" {
+				streaming.Get().Publish(wfID, streaming.Event{
+					WorkflowID: wfID,
+					Type:       string(StreamEventScreenshotSaved),
+					AgentID:    input.AgentID,
+					Payload: map[string]interface{}{
+						"screenshot_path": relPath,
+						"session_id":      input.SessionID,
+					},
+					Timestamp: time.Now(),
+				})
+			}
+			screenshotIdx++
+		}
+	}
+
+	// Also scan metadata tool_execution_records for paths from Python agent loop
+	if metaPaths := extractScreenshotPathsFromMetadata(agentResponse.Metadata); len(metaPaths) > 0 {
+		screenshotPaths = append(screenshotPaths, metaPaths...)
+	}
+
 	return AgentExecutionResult{
-		AgentID:        input.AgentID,
-		Role:           role,
-		Success:        agentResponse.Success,
-		Response:       agentResponse.Response,
-		TokensUsed:     agentResponse.TokensUsed,
-		ModelUsed:      agentResponse.ModelUsed,
-		Provider:       agentResponse.Provider,
-		InputTokens:    inputTokens,
-		OutputTokens:   outputTokens,
-		DurationMs:     time.Since(toolStartTime).Milliseconds(),
-		ToolsUsed:      toolsUsed,
-		ToolExecutions: toolExecs,
-		Metadata:       agentResponse.Metadata,
+		AgentID:             input.AgentID,
+		Role:                role,
+		Success:             agentResponse.Success,
+		Response:            agentResponse.Response,
+		TokensUsed:          agentResponse.TokensUsed,
+		ModelUsed:           agentResponse.ModelUsed,
+		Provider:            agentResponse.Provider,
+		InputTokens:         inputTokens,
+		OutputTokens:        outputTokens,
+		CacheReadTokens:     cacheReadTokens,
+		CacheCreationTokens: cacheCreationTokens,
+		DurationMs:          time.Since(toolStartTime).Milliseconds(),
+		ToolsUsed:           toolsUsed,
+		ToolExecutions:      toolExecs,
+		Metadata:            agentResponse.Metadata,
+		ScreenshotPaths:     screenshotPaths,
 	}, nil
 }
 

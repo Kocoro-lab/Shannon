@@ -36,7 +36,6 @@ import (
 	common "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	pb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/quota"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/schedules"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
@@ -84,9 +83,9 @@ type OrchestratorService struct {
 	// Provider for per-request default workflow flags
 	getWorkflowDefaults func() (bypassSingle bool)
 
-	// Enterprise: Quota management
-	quotaChecker  *quota.Checker
-	quotaRecorder *quota.Recorder
+	// Enterprise: Quota management (nil in OSS)
+	quotaChecker  interface{}
+	quotaRecorder interface{}
 }
 
 // SessionManager returns the session manager for use by other services
@@ -122,24 +121,16 @@ func (s *OrchestratorService) SetScheduleManager(m *schedules.Manager) {
 }
 
 // SetQuotaManagement sets the quota checker and recorder for enterprise rate limiting.
-func (s *OrchestratorService) SetQuotaManagement(checker *quota.Checker, recorder *quota.Recorder) {
+// In the OSS build both arguments are always nil.
+func (s *OrchestratorService) SetQuotaManagement(checker, recorder interface{}) {
 	s.quotaChecker = checker
 	s.quotaRecorder = recorder
 }
 
 // RecordUsage records token usage for a completed task (called from workflow completion).
-func (s *OrchestratorService) RecordUsage(ctx context.Context, tenantID uuid.UUID, workflowID string, tokensUsed int64) {
-	if s.quotaRecorder == nil || tenantID == uuid.Nil || tokensUsed <= 0 {
-		return
-	}
-
-	if err := s.quotaRecorder.RecordUsage(ctx, tenantID, workflowID, tokensUsed); err != nil {
-		s.logger.Error("Failed to record token usage",
-			zap.String("tenant_id", tenantID.String()),
-			zap.String("workflow_id", workflowID),
-			zap.Int64("tokens_used", tokensUsed),
-			zap.Error(err))
-	}
+// Enterprise: quota.Recorder integration. OSS: no-op.
+func (s *OrchestratorService) RecordUsage(_ context.Context, _ uuid.UUID, _ string, _ int64) {
+	// Enterprise quota recording handled by quota.Recorder when available
 }
 
 // SetWorkflowDefaultsProvider sets a provider for BypassSingleResult default
@@ -276,38 +267,7 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 		tenantID = req.Metadata.GetTenantId()
 	}
 
-	// Enterprise: Check quota before task submission
-	if s.quotaChecker != nil {
-		if tenantID == "" {
-			// Reject if tenant ID is required but missing (prevents quota bypass)
-			if s.quotaChecker.RequiresTenantID() {
-				s.logger.Warn("Rejecting task submission: tenant_id required but missing")
-				return nil, status.Error(codes.Unauthenticated,
-					"tenant_id is required for task submission")
-			}
-			// If tenant not required, allow without quota check
-		} else {
-			tenantUUID, parseErr := uuid.Parse(tenantID)
-			if parseErr == nil {
-				result, quotaErr := s.quotaChecker.Check(ctx, tenantUUID)
-				if quotaErr != nil {
-					s.logger.Error("Quota check failed",
-						zap.String("tenant_id", tenantID),
-						zap.Error(quotaErr))
-					// Depending on config, this may fail open or closed
-				} else if !result.Allowed {
-					s.logger.Warn("Quota exceeded, rejecting task",
-						zap.String("tenant_id", tenantID),
-						zap.String("window", result.ExceededWindow),
-						zap.Int("monthly_remaining", result.MonthlyRemaining),
-						zap.Int("daily_remaining", result.DailyRemaining))
-					return nil, status.Errorf(codes.ResourceExhausted,
-						"Token quota exceeded (%s). Resets at %s",
-						result.ExceededWindow, result.ResetAt.Format(time.RFC3339))
-				}
-			}
-		}
-	}
+	// Enterprise: Quota check before task submission (no-op in OSS)
 
 	sessionID := req.Metadata.GetSessionId()
 	dbSessionID := sessionID      // Use the requested ID for DB persistence/metrics

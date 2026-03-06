@@ -21,6 +21,8 @@ export type EventType =
     | "BUDGET_THRESHOLD"
     | "TOOL_INVOKED"
     | "TOOL_OBSERVATION"
+    | "TOOL_STARTED"      // Browser automation: tool execution started
+    | "TOOL_COMPLETED"    // Browser automation: tool execution completed
     | "WORKFLOW_STARTED"
     | "WORKFLOW_COMPLETED"
     | "AGENT_STARTED"
@@ -28,6 +30,7 @@ export type EventType =
     | "AGENT_THINKING"
     | "LLM_PROMPT"
     | "LLM_OUTPUT"
+    | "LLM_PARTIAL"       // Streaming LLM output
     | "DATA_PROCESSING"
     | "PROGRESS"
     | "WAITING"
@@ -39,11 +42,15 @@ export type EventType =
     | "MESSAGE_SENT"
     | "MESSAGE_RECEIVED"
     | "WORKSPACE_UPDATED"
+    | "SCREENSHOT_SAVED"
     | "STATUS_UPDATE"
     | "RESEARCH_PLAN_READY"
     | "RESEARCH_PLAN_UPDATED"
     | "RESEARCH_PLAN_APPROVED"
-    | "REVIEW_USER_FEEDBACK";
+    | "REVIEW_USER_FEEDBACK"
+    | "HITL_RESPONSE"
+    | "LEAD_DECISION"
+    | "TASKLIST_UPDATED";
 
 export interface BaseEvent {
     type: EventType;
@@ -134,6 +141,12 @@ export interface AgentStartedEvent extends BaseEvent {
 export interface AgentCompletedEvent extends BaseEvent {
     type: "AGENT_COMPLETED";
     message?: string;
+    payload?: {
+        url?: string;
+        has_changes?: boolean;
+        model?: string;
+        screenshot_url?: string;
+    };
 }
 
 export interface AgentThinkingEvent extends BaseEvent {
@@ -154,6 +167,10 @@ export interface DelegationEvent extends BaseEvent {
 export interface RoleAssignedEvent extends BaseEvent {
     type: "ROLE_ASSIGNED";
     message?: string;
+    payload?: {
+        role: string;           // e.g., "browser_use", "deep_research"
+        auto_detected?: boolean; // True if role was auto-assigned by backend
+    };
 }
 
 export interface TeamRecruitedEvent extends BaseEvent {
@@ -231,13 +248,98 @@ export interface WorkspaceUpdatedEvent extends BaseEvent {
     message?: string;
 }
 
+export interface ScreenshotSavedEvent extends BaseEvent {
+    type: "SCREENSHOT_SAVED";
+    message?: string;
+}
+
 export interface StatusUpdateEvent extends BaseEvent {
     type: "STATUS_UPDATE";
     message?: string;
 }
 
+// =============================================================================
+// HITL (Human-in-the-Loop) Research Plan Review Events
+// =============================================================================
+
+export interface ResearchPlanReadyEvent extends BaseEvent {
+    type: "RESEARCH_PLAN_READY";
+    message?: string;
+    payload?: {
+        intent?: "feedback" | "ready" | "execute";
+        round?: number;
+        version?: number;
+    };
+}
+
+export interface ResearchPlanUpdatedEvent extends BaseEvent {
+    type: "RESEARCH_PLAN_UPDATED";
+    message?: string;
+    payload?: {
+        intent?: "feedback" | "ready" | "execute";
+        round?: number;
+        version?: number;
+    };
+}
+
+export interface ResearchPlanApprovedEvent extends BaseEvent {
+    type: "RESEARCH_PLAN_APPROVED";
+    message?: string;
+}
+
+export interface ReviewUserFeedbackEvent extends BaseEvent {
+    type: "REVIEW_USER_FEEDBACK";
+    message?: string;
+}
+
+export interface HITLResponseEvent extends BaseEvent {
+    type: "HITL_RESPONSE";
+    message?: string;
+}
+
+export interface LeadDecisionEvent extends BaseEvent {
+    type: "LEAD_DECISION";
+    message?: string;
+    payload?: {
+        event_type?: string;
+        actions?: number;
+    };
+}
+
 export interface StreamEndEvent extends BaseEvent {
     type: "done" | "STREAM_END";
+}
+
+// =============================================================================
+// Browser Automation Events (browser_use role)
+// =============================================================================
+
+export interface ToolStartedEvent extends BaseEvent {
+    type: "TOOL_STARTED";
+    message?: string;
+    payload?: {
+        tool: string;           // e.g., "navigate", "click", "extract", "screenshot"
+        params?: Record<string, unknown>;
+    };
+}
+
+export interface ToolCompletedEvent extends BaseEvent {
+    type: "TOOL_COMPLETED";
+    message?: string;
+    payload?: {
+        tool: string;
+        success: boolean;
+        result_preview?: string; // Truncated result for display
+        error?: string;
+    };
+}
+
+export interface LlmPartialEvent extends BaseEvent {
+    type: "LLM_PARTIAL";
+    message?: string;
+    payload?: {
+        text: string;
+    };
 }
 
 export interface WorkflowPausingEvent extends BaseEvent {
@@ -266,24 +368,23 @@ export interface WorkflowCancelledEvent extends BaseEvent {
     message?: string;
 }
 
-export interface ResearchPlanReadyEvent extends BaseEvent {
-    type: "RESEARCH_PLAN_READY";
-    message?: string;
+export interface SwarmTask {
+    id: string;
+    description: string;
+    status: "pending" | "in_progress" | "completed";
+    owner: string;
+    created_by: string;
+    depends_on: string[];
+    created_at: string;
+    completed_at?: string;
 }
 
-export interface ResearchPlanUpdatedEvent extends BaseEvent {
-    type: "RESEARCH_PLAN_UPDATED";
+export interface TaskListUpdatedEvent extends BaseEvent {
+    type: "TASKLIST_UPDATED";
     message?: string;
-}
-
-export interface ResearchPlanApprovedEvent extends BaseEvent {
-    type: "RESEARCH_PLAN_APPROVED";
-    message?: string;
-}
-
-export interface ReviewUserFeedbackEvent extends BaseEvent {
-    type: "REVIEW_USER_FEEDBACK";
-    message?: string;
+    payload?: {
+        tasks: SwarmTask[];
+    };
 }
 
 export type ShannonEvent =
@@ -300,7 +401,10 @@ export type ShannonEvent =
     | AgentThinkingEvent
     | ToolInvokedEvent
     | ToolObservationEvent
+    | ToolStartedEvent      // Browser automation
+    | ToolCompletedEvent    // Browser automation
     | LlmPromptEvent
+    | LlmPartialEvent       // Browser automation streaming
     | ThreadMessageDeltaEvent
     | ThreadMessageCompletedEvent
     | ErrorEvent
@@ -322,10 +426,28 @@ export type ShannonEvent =
     | MessageSentEvent
     | MessageReceivedEvent
     | WorkspaceUpdatedEvent
+    | ScreenshotSavedEvent
     | StatusUpdateEvent
     | StreamEndEvent
     | LlmOutputEvent
     | ResearchPlanReadyEvent
     | ResearchPlanUpdatedEvent
     | ResearchPlanApprovedEvent
-    | ReviewUserFeedbackEvent;
+    | ReviewUserFeedbackEvent
+    | HITLResponseEvent
+    | LeadDecisionEvent
+    | TaskListUpdatedEvent;
+
+// =============================================================================
+// Model Breakdown Types (token & cost tracking per model/tool)
+// =============================================================================
+
+export interface ModelBreakdownEntry {
+  model: string;
+  provider: string;
+  executions: number;
+  tokens: number;
+  cost_usd: number;
+  /** Percentage of total cost (server-computed) */
+  percentage?: number;
+}

@@ -64,7 +64,7 @@ class SearchProvider(Enum):
 
 
 # External API cost per search call (USD).
-# Recorded as 3000 synthetic tokens in token_usage.
+# Recorded as 7500 synthetic tokens in token_usage ($2/1M billing rate).
 SEARCH_PROVIDER_COSTS: Dict[str, float] = {
     SearchProvider.SERPAPI.value: 0.015,
     SearchProvider.SERPER.value: 0.002,
@@ -1231,16 +1231,7 @@ class WebSearchTool(Tool):
             },
             "financial": {
                 "category": "financial report",
-                "sites": [
-                    # Global startup funding sources
-                    "crunchbase.com",
-                    "pitchbook.com",
-                    "dealroom.co",
-                    # Public company sources
-                    "sec.gov",
-                    "nasdaq.com",
-                    "yahoo.com",
-                ],
+                "sites": ["sec.gov", "nasdaq.com", "yahoo.com"],
             },
             "local_cn": {
                 "category": None,

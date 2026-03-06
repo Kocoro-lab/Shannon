@@ -22,7 +22,7 @@ NO thinking, NO explanations, NO "I need to search..." - ONLY the JSON object.
 1. Execute the web_search queries provided in the user message
 2. Extract domains from ALL search results
 3. Return ONLY valid JSON: {"domains": [...]}
-4. Maximum 10 domains
+4. Maximum 15 domains
 
 # Domain Selection Priority:
 1. Corporate main site (company.com)

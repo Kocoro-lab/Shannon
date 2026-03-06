@@ -47,6 +47,9 @@ const (
 	StreamEventLLMOutput  StreamEventType = "LLM_OUTPUT"  // Final output for a step
 	StreamEventToolObs    StreamEventType = "TOOL_OBSERVATION"
 
+	// Browser screenshot persistence
+	StreamEventScreenshotSaved StreamEventType = "SCREENSHOT_SAVED"
+
 	// Stream lifecycle
 	StreamEventStreamEnd StreamEventType = "STREAM_END" // Explicit end-of-stream signal
 

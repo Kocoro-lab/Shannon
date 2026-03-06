@@ -1,6 +1,8 @@
 package metadata
 
 import (
+    "sort"
+
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
     "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
@@ -29,7 +31,16 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 	// Per-agent usage details for visibility
 	agentUsages := make([]map[string]interface{}, 0, len(agentResults))
 
+	// Track tool invocations across all agents
+	totalToolsInvoked := 0
+	toolNames := make(map[string]bool)
+
 	for _, result := range agentResults {
+		// Count tool executions
+		totalToolsInvoked += len(result.ToolExecutions)
+		for _, te := range result.ToolExecutions {
+			toolNames[te.Tool] = true
+		}
 		if result.Success && result.ModelUsed != "" {
 			modelCounts[result.ModelUsed]++
 			if primaryModel == "" {
@@ -122,6 +133,18 @@ func AggregateAgentMetadata(agentResults []activities.AgentExecutionResult, synt
 	// NOTE: agent_usages is deprecated; consumers should prefer model_breakdown.
 	if len(agentUsages) > 0 {
 		meta["agent_usages"] = agentUsages
+	}
+
+	// Include tool invocation count
+	if totalToolsInvoked > 0 {
+		meta["tools_invoked"] = totalToolsInvoked
+		// Also include list of unique tools used (sorted for deterministic output)
+		tools := make([]string, 0, len(toolNames))
+		for tool := range toolNames {
+			tools = append(tools, tool)
+		}
+		sort.Strings(tools)
+		meta["tools_used"] = tools
 	}
 
 	return meta

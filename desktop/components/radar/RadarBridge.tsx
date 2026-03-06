@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import { useSelector } from "react-redux";
 import { RootState } from "@/lib/store";
 import { radarStore } from "@/lib/radar/store";
+import { generateAgentColor } from "@/lib/swarm/agent-colors";
 
 // Longer estimate = slower flight to center (more time to see the animation)
 const DEFAULT_ESTIMATE_MS = 45000; // ~45s to center (matches original dashboard)
@@ -18,6 +19,19 @@ const INTERNAL_AGENTS = new Set([
   "decomposer",
   "synthesizer",
   "system",
+  "tasklist",
+  "workspace",
+  "lead",
+  "swarm-lead",
+  "swarm-supervisor",
+]);
+
+// Event types that are metadata/management, not agent activity — skip entirely in radar
+const RADAR_IGNORE_EVENTS = new Set([
+  "TASKLIST_UPDATED",
+  "TEAM_RECRUITED",
+  "WORKSPACE_UPDATED",
+  "TASK_STATUS_CHANGED",
 ]);
 
 // Check if an agent ID is internal/should be hidden
@@ -36,6 +50,9 @@ function isInternalAgent(agentId: string): boolean {
 export function RadarBridge() {
   const events = useSelector((state: RootState) => state.run.events);
   const status = useSelector((state: RootState) => state.run.status);
+  const swarmAgentRegistry = useSelector(
+    (state: RootState) => state.run.swarm?.agentRegistry
+  );
   const processedRef = useRef<Set<string>>(new Set());
   const tickRef = useRef<number>(0);
   const timeoutRefs = useRef<Map<string, number>>(new Map());
@@ -62,6 +79,19 @@ export function RadarBridge() {
     }
     prevStatusRef.current = status;
   }, [status]);
+
+  // Sync swarm agent colors to radar store
+  useEffect(() => {
+    if (!swarmAgentRegistry) {
+      radarStore.setState({ agentColors: {} });
+      return;
+    }
+    const colors: Record<string, number> = {};
+    for (const [name, info] of Object.entries(swarmAgentRegistry)) {
+      colors[name] = generateAgentColor(info.colorIndex).hue;
+    }
+    radarStore.setState({ agentColors: colors });
+  }, [swarmAgentRegistry]);
 
   // When task completes, accelerate all flights to center
   useEffect(() => {
@@ -125,7 +155,10 @@ export function RadarBridge() {
       
       // Skip internal system agents - only show user-facing agent activity
       if (isInternalAgent(agentId)) continue;
-      
+
+      // Skip metadata/management events that don't represent agent activity
+      if (RADAR_IGNORE_EVENTS.has(ev.type)) continue;
+
       // One flight per agent - reuse same ID for all events from the same agent
       const id = `${workflowId}::${agentId}`;
 

@@ -66,10 +66,25 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		logger.Warn("Failed to emit workflow started event", "error", err)
 	}
 
-	// Start async title generation only for first task in session (non-blocking)
+	// Start async title generation only if session doesn't have a title yet (non-blocking)
 	// Title is generated from query, doesn't need task result, so start early for better UX
-	// Skip if history exists - indicates this is not the first task in the session
-	if len(input.History) == 0 {
+	// v2: Check SessionCtx for existing title - more reliable than history length
+	titleGateVersion := workflow.GetVersion(ctx, "title_gate_v2", workflow.DefaultVersion, 1)
+	needsTitle := true
+	if titleGateVersion >= 1 {
+		// New behavior: check SessionCtx for existing title
+		if input.SessionCtx != nil {
+			if existingTitle, ok := input.SessionCtx["title"].(string); ok && existingTitle != "" {
+				needsTitle = false
+			}
+		}
+	} else {
+		// Old behavior: check history length (kept for replay compatibility)
+		if len(input.History) > 0 {
+			needsTitle = false
+		}
+	}
+	if needsTitle {
 		startAsyncTitleGeneration(ctx, input.SessionID, input.Query)
 	}
 
@@ -220,7 +235,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	// Early route: skip_synthesis forces SimpleTaskWorkflow, bypassing decomposition.
-	// Used by flows that produce structured JSON
+	// Used by Sagasu NL workflow setup and other flows that produce structured JSON
 	// and must not be rewritten by a synthesis LLM call.
 	skipSynthesisVersion := workflow.GetVersion(ctx, "skip_synthesis_early_route_v1", workflow.DefaultVersion, 1)
 	if skipSynthesisVersion >= 1 && GetContextBool(input.Context, "skip_synthesis") {
@@ -306,12 +321,15 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	if GetContextBool(input.Context, "force_research") {
 		logger.Info("Force research detected - bypassing orchestrator decomposition")
 
-		// Inject current date for time awareness (use workflow.Now for Temporal determinism)
-		// This enables HITL planner and all subsequent agents to understand temporal context
-		if _, hasDate := input.Context["current_date"]; !hasDate {
-			workflowTime := workflow.Now(ctx)
-			input.Context["current_date"] = workflowTime.UTC().Format("2006-01-02")
-			input.Context["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
+		// Inject current date for time awareness (use workflow.Now for Temporal determinism).
+		// Version-gated to preserve replay for workflows started before this behavior existed.
+		forceResearchDateVersion := workflow.GetVersion(ctx, "force_research_current_date_v1", workflow.DefaultVersion, 1)
+		if forceResearchDateVersion >= 1 {
+			if _, hasDate := input.Context["current_date"]; !hasDate {
+				workflowTime := workflow.Now(ctx)
+				input.Context["current_date"] = workflowTime.UTC().Format("2006-01-02")
+				input.Context["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
+			}
 		}
 
 		// ── HITL: Research Plan Review (optional) ──
@@ -323,9 +341,28 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 			reviewTimeout := DefaultReviewTimeout
 			if t, ok := input.Context["review_timeout"]; ok {
-				if tFloat, fOk := t.(float64); fOk && tFloat > 0 {
-					reviewTimeout = time.Duration(int(tFloat)) * time.Second
+				var seconds int
+				switch v := t.(type) {
+				case float64:
+					seconds = int(v)
+				case int:
+					seconds = v
+				case int32:
+					seconds = int(v)
+				case int64:
+					seconds = int(v)
+				case string:
+					if parsed, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+						seconds = parsed
+					}
 				}
+				if seconds > 0 {
+					reviewTimeout = time.Duration(seconds) * time.Second
+				}
+			}
+			// Safety clamp: keep review wait bounded (docs specify max 15 minutes).
+			if reviewTimeout > DefaultReviewTimeout {
+				reviewTimeout = DefaultReviewTimeout
 			}
 
 			// 1) Generate initial research plan via LLM + initialize Redis state
@@ -335,8 +372,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				Context:    input.Context,
 				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 				SessionID:  input.SessionID,
-				UserID:     GetContextString(input.Context, "user_id"),
-				TenantID:   GetContextString(input.Context, "tenant_id"),
+				UserID:     input.UserID,
+				TenantID:   input.TenantID,
 				TTL:        reviewTimeout,
 			}
 			planCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -383,7 +420,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 					WorkflowID: wfID,
 					EventType:  activities.StreamEventErrorOccurred,
 					AgentID:    "planner",
-					Message:    "Research plan review timed out",
+					Message:    activities.MsgResearchTimedOut(),
 					Timestamp:  workflow.Now(ctx),
 				}).Get(ctx, nil)
 				// Emit WORKFLOW_COMPLETED so frontend/SSE can transition out of "running"
@@ -409,7 +446,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
 				EventType:  activities.StreamEventResearchPlanApproved,
 				AgentID:    "planner",
-				Message:    "Research direction confirmed, starting execution",
+				Message:    activities.MsgResearchConfirmed(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 
@@ -497,6 +534,11 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		return result, nil
 	}
 
+	// Early route: Sagasu strategy workflows bypass decomposition entirely.
+	// Scheduled tasks set research_strategy in context (e.g., "competitor_watch").
+	// Without early routing, decomposition sees the raw query (e.g., "毎日ptmind.co.jpをチェックして")
+	// and the LLM interprets it as a scheduling request instead of executing the research.
+	//
 	// 1) Decompose the task (planning + complexity)
 	// Add history to context for decomposition to be context-aware
 	decompContext := make(map[string]interface{})
@@ -512,6 +554,10 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 		decompContext["current_date"] = workflowTime.UTC().Format("2006-01-02")
 		decompContext["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
 	}
+	// Inject P2P flag so decomposition prompt can include produces/consumes fields
+	if cfg.P2PCoordinationEnabled {
+		decompContext["p2p_enabled"] = true
+	}
 	// Add history for context awareness in decomposition
 	if len(input.History) > 0 {
 		// Convert history to a single string for the decompose endpoint
@@ -521,12 +567,56 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 
 	var decomp activities.DecompositionResult
 
+	// If a single-purpose agent is specified, bypass LLM decomposition entirely.
+	// AgentWorkflow is already fully deterministic and self-contained.
+	agentPresent := false
+	if input.Context != nil {
+		if agentID, ok := input.Context["agent"].(string); ok && agentID != "" {
+			agentPresent = true
+			logger.Info("Agent specified - bypassing LLM decomposition", "agent_id", agentID)
+
+			// Pass through suggested_tools from API context (e.g., Sagasu sends ["web_search"]
+			// for setup conversations so the agent can resolve company names to URLs).
+			var agentTools []string
+			if toolsVal, ok := input.Context["suggested_tools"]; ok {
+				if arr, ok := toolsVal.([]interface{}); ok {
+					for _, v := range arr {
+						if s, ok := v.(string); ok {
+							agentTools = append(agentTools, s)
+						}
+					}
+				}
+			}
+
+			decomp = activities.DecompositionResult{
+				Mode:              "simple",
+				ComplexityScore:   0.0,
+				ExecutionStrategy: "sequential",
+				ConcurrencyLimit:  1,
+				Subtasks: []activities.Subtask{
+					{
+						ID:              "task-1",
+						Description:     fmt.Sprintf("Execute agent %s", agentID),
+						Dependencies:    []string{},
+						EstimatedTokens: 0,
+						SuggestedTools:  agentTools,
+						ToolParameters:  map[string]interface{}{},
+					},
+				},
+				TotalEstimatedTokens: 0,
+				TokensUsed:           0,
+				InputTokens:          0,
+				OutputTokens:         0,
+			}
+		}
+	}
+
 	// Check if a role is specified - if so, bypass LLM decomposition and create simple plan
 	// Role-specific agents have their own internal multi-step logic, so orchestrator-level
 	// decomposition is unnecessary and can cause conflicts (e.g., data_analytics role expects
 	// to output dataResult format, which conflicts with decomposition's subtasks format).
 	rolePresent := false
-	if input.Context != nil {
+	if !agentPresent && input.Context != nil {
 		if role, ok := input.Context["role"].(string); ok && role != "" {
 			rolePresent = true
 			roleTools := roles.AllowedTools(role)
@@ -576,7 +666,7 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	// If no role, proceed with normal LLM decomposition
-	if !rolePresent {
+	if !rolePresent && !agentPresent {
 		// Emit "Understanding your request" before decomposition
 		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 			WorkflowID: workflow.GetInfo(ctx).WorkflowExecution.ID,
@@ -708,7 +798,6 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 				input.Context["current_date_human"] = workflowTime.UTC().Format("January 2, 2006")
 			}
 			input.Context["budget_remaining"] = res.RemainingTaskBudget
-
 			n := len(decomp.Subtasks)
 			if n == 0 {
 				n = 1
@@ -787,14 +876,6 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	parentWorkflowID := workflow.GetInfo(ctx).WorkflowExecution.ID
 	input.ParentWorkflowID = parentWorkflowID
 
-	// Cognitive program takes precedence if specified
-	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
-		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx, controlHandler); handled {
-			return result, err
-		}
-		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
-	}
-
 	// NOTE: force_research is handled in early routing (before decomposition) to avoid
 	// redundant LLM calls. See "Early route: Force ResearchWorkflow" block above.
 
@@ -821,7 +902,8 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 	}
 
 	// Auto-detect browser intent and assign browser_use role if not already set
-	// Only returns true for sites that REQUIRE JavaScript rendering (conservative)
+	// IMPORTANT: detectBrowserIntent behavior changed significantly (simplified to JS-required domains only)
+	// Use a separate changeID to track this behavior change independently from workflow routing
 	autoDetectVersion := workflow.GetVersion(ctx, "browser_auto_detect_v2", workflow.DefaultVersion, 1)
 	if autoDetectVersion >= 1 && !rolePresent && detectBrowserIntent(input.Query) {
 		logger.Info("Auto-detected browser intent, assigning browser_use role")
@@ -852,6 +934,23 @@ func OrchestratorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, er
 			strategy = "react"
 		}
 		if result, handled, err := routeStrategyWorkflow(ctx, input, strategy, decomp.Mode, emitCtx, controlHandler); handled {
+			return result, err
+		}
+	}
+
+	// Cognitive program takes precedence if specified
+	if decomp.CognitiveStrategy != "" && decomp.CognitiveStrategy != "direct" && decomp.CognitiveStrategy != "decompose" {
+		if result, handled, err := routeStrategyWorkflow(ctx, input, decomp.CognitiveStrategy, decomp.Mode, emitCtx, controlHandler); handled {
+			return result, err
+		}
+		logger.Warn("Unknown cognitive strategy; continuing routing", "strategy", decomp.CognitiveStrategy)
+	}
+
+	// Force ResearchWorkflow via context flag (user-facing via CLI and scheduled tasks)
+	// Uses GetContextBool to handle both bool and string "true" (proto map<string,string> converts to string)
+	if GetContextBool(input.Context, "force_research") {
+		logger.Info("Forcing ResearchWorkflow via context flag")
+		if result, handled, err := routeStrategyWorkflow(ctx, input, "research", decomp.Mode, emitCtx, controlHandler); handled {
 			return result, err
 		}
 	}
@@ -1185,7 +1284,7 @@ func routeStrategyWorkflow(ctx workflow.Context, input TaskInput, strategy strin
 		// Add task context to metadata for API exposure
 		result = AddTaskContextToMetadata(result, input.Context)
 		return result, true, nil
-	case "react", "exploratory", "research", "scientific", "browser_use":
+	case "react", "exploratory", "research", "scientific", "ads_research", "browser_use", "competitor_watch", "morning_brief", "seo_rank":
 		// Check pause/cancel before starting child workflow
 		if controlHandler != nil {
 			if err := controlHandler.CheckPausePoint(ctx, "pre_"+strategyLower+"_workflow"); err != nil {
@@ -1316,22 +1415,27 @@ func recommendStrategy(ctx workflow.Context, input TaskInput) (*activities.Recom
 }
 
 // detectBrowserIntent checks if the query requires browser automation.
-// This is conservative: only returns true for sites that REQUIRE JavaScript rendering.
-// For static sites, web_fetch is more efficient than browser automation.
+// Only returns true for sites that REQUIRE JavaScript rendering.
+// Normal URLs go through decomposition which chooses web_fetch/web_search.
+// Users can explicitly set role=browser_use for interactive tasks.
 func detectBrowserIntent(query string) bool {
-	lq := strings.ToLower(query)
+	q := strings.ToLower(query)
 
-	// Sites that require JavaScript rendering (conservative list).
-	// Only include sites where web_fetch cannot extract meaningful content.
+	// Sites that REQUIRE browser automation (JavaScript rendering)
+	// These sites cannot be fetched with simple HTTP - they need a real browser
 	jsRequiredDomains := []string{
-		"weixin.qq.com",
-		"mp.weixin.qq.com",
+		"weixin.qq.com",    // WeChat articles (heavy JS)
+		"mp.weixin.qq.com", // WeChat public accounts
+		// Add other JS-required domains as discovered
 	}
 	for _, domain := range jsRequiredDomains {
-		if strings.Contains(lq, domain) {
+		if strings.Contains(q, domain) {
 			return true
 		}
 	}
 
+	// All other URLs (including http://, https://, .com, .io, etc.)
+	// go through normal decomposition which will choose appropriate tools
+	// (web_fetch, web_search, research workflow, etc.)
 	return false
 }

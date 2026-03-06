@@ -43,6 +43,7 @@ class ToolParameter:
     min_value: Optional[Union[int, float]] = None
     max_value: Optional[Union[int, float]] = None
     pattern: Optional[str] = None  # Regex pattern for validation
+    items: Optional[Dict[str, Any]] = None  # For ARRAY types: {"type": "string"}
 
 
 @dataclass
@@ -59,7 +60,7 @@ class ToolMetadata:
     timeout_seconds: int = 30
     memory_limit_mb: int = 512
     sandboxed: bool = True  # Whether to run in sandbox
-    session_aware: bool = False  # Whether tool uses session context
+    session_aware: bool = True  # Whether tool uses session context (default True to avoid footgun)
     dangerous: bool = False  # Requires extra confirmation
     cost_per_use: float = 0.0  # Cost in USD per invocation
     input_examples: Optional[List[Dict[str, Any]]] = None  # Examples for tool usage (Anthropic-specific)
@@ -354,17 +355,17 @@ class Tool(ABC):
         # For requests without session_id or agent_id, use request-scoped tracking
         # This prevents false rate limiting across concurrent requests
         # NOTE: Per-request UUID means no cross-request rate limiting without context
-        # UUID is generated upfront in _reset_request_id() to avoid race conditions
+        if self._current_request_id is None:
+            self._current_request_id = uuid.uuid4().hex[:8]
         return f"request:{self._current_request_id}"
 
     def _reset_request_id(self) -> None:
-        """Generate a new request ID for this execution.
+        """Reset request ID for next execution.
 
         Called at the start of each execute() to ensure each execution
-        gets a unique tracker key when no session_id/agent_id is available.
-        Generating upfront avoids race conditions in _get_tracker_key().
+        gets a unique tracker key when no session_id is available.
         """
-        self._current_request_id = uuid.uuid4().hex[:8]
+        self._current_request_id = None
 
     def _get_retry_after(self, tracker_key: str) -> Optional[float]:
         """Check rate limit and return remaining wait time if limited.
@@ -423,6 +424,8 @@ class Tool(ABC):
                 prop["pattern"] = param.pattern
             if param.default is not None:
                 prop["default"] = param.default
+            if param.items:
+                prop["items"] = param.items
 
             properties[param.name] = prop
 
