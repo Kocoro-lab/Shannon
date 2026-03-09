@@ -11,6 +11,7 @@ use crate::memory::MemoryPool;
 #[cfg(feature = "wasi")]
 use crate::wasi_sandbox::WasiSandbox;
 
+use crate::memory_manager::MemoryManager;
 use crate::workspace::WorkspaceManager;
 
 // Include the generated proto code
@@ -31,6 +32,14 @@ pub mod proto {
 
 use proto::agent::agent_service_server::{AgentService, AgentServiceServer};
 use proto::agent::*;
+
+/// Type alias for sandbox override parameter.
+/// When wasi feature is enabled, carries a WasiSandbox with session workspace mounted.
+/// When wasi is disabled, this is just a unit type.
+#[cfg(feature = "wasi")]
+type SandboxOverride = WasiSandbox;
+#[cfg(not(feature = "wasi"))]
+type SandboxOverride = ();
 
 // Streaming limits to prevent resource exhaustion
 const MAX_STREAM_BUFFER_SIZE: usize = 1_000_000; // 1MB max buffer size
@@ -84,11 +93,12 @@ impl AgentServiceImpl {
     }
 
     /// LLM-native direct tool execution - bypass FSM entirely
+    /// Execute a single tool directly with an optional sandbox override for session workspace.
     async fn execute_direct_tool(
         &self,
         tool_params: &prost_types::Value,
         req: &ExecuteTaskRequest,
-        #[cfg(feature = "wasi")] sandbox_override: Option<WasiSandbox>,
+        sandbox_override: Option<SandboxOverride>,
     ) -> Result<Response<ExecuteTaskResponse>, Status> {
         use crate::tools::{ToolCall, ToolExecutor};
         use prost_types::{Struct, Value};
@@ -197,12 +207,61 @@ impl AgentServiceImpl {
             ToolExecutor::new_with_wasi(Some(sandbox), None)
         };
         #[cfg(not(feature = "wasi"))]
-        let tool_executor = ToolExecutor::new_with_wasi(None, None);
+        let tool_executor = {
+            let _ = sandbox_override; // Suppress unused warning
+            ToolExecutor::new_with_wasi(None, None)
+        };
+
+        // Build context with session_id for Firecracker (defense-in-depth: try multiple sources)
+        let tool_context = {
+            let mut ctx = req.context.clone().unwrap_or_default();
+
+            // Try to get session_id from multiple sources (priority order)
+            let session_id = if let Some(session_ctx) = &req.session_context {
+                if !session_ctx.session_id.is_empty() {
+                    info!(
+                        "execute_direct_tool: using session_id from session_context={}",
+                        session_ctx.session_id
+                    );
+                    Some(session_ctx.session_id.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+            .or_else(|| {
+                // Fallback: try metadata.session_id
+                req.metadata.as_ref().and_then(|m| {
+                    if !m.session_id.is_empty() {
+                        info!(
+                            "execute_direct_tool: using session_id from metadata={}",
+                            m.session_id
+                        );
+                        Some(m.session_id.clone())
+                    } else {
+                        None
+                    }
+                })
+            });
+
+            if let Some(sid) = session_id {
+                ctx.fields.insert(
+                    "session_id".to_string(),
+                    prost_types::Value {
+                        kind: Some(prost_types::value::Kind::StringValue(sid)),
+                    },
+                );
+            } else {
+                warn!("execute_direct_tool: no session_id found in session_context or metadata");
+            }
+            ctx
+        };
 
         // Measure execution time
         let start_time = std::time::Instant::now();
         match tool_executor
-            .execute_tool(&tool_call, req.context.as_ref())
+            .execute_tool(&tool_call, Some(&tool_context))
             .await
         {
             Ok(tool_result) => {
@@ -331,6 +390,7 @@ impl AgentServiceImpl {
                     } else {
                         proto::agent::AgentState::Failed.into()
                     },
+                    metadata: None, // direct tool execution — no agent metadata
                 };
 
                 tracing::info!(
@@ -352,11 +412,12 @@ impl AgentServiceImpl {
     }
 
     /// Execute a sequence of tool calls provided by Python in context.tool_calls
+    /// Execute a sequence of tool calls with an optional sandbox override for session workspace.
     async fn execute_tool_calls(
         &self,
         list: &prost_types::ListValue,
         req: &ExecuteTaskRequest,
-        #[cfg(feature = "wasi")] sandbox_override: Option<WasiSandbox>,
+        sandbox_override: Option<SandboxOverride>,
     ) -> Result<Response<ExecuteTaskResponse>, Status> {
         use crate::tools::{ToolCall, ToolExecutor};
         use prost_types::Value;
@@ -369,6 +430,8 @@ impl AgentServiceImpl {
         // Resolve the effective sandbox once: prefer override, fall back to default
         #[cfg(feature = "wasi")]
         let effective_sandbox = sandbox_override.unwrap_or_else(|| self.sandbox.clone());
+        #[cfg(not(feature = "wasi"))]
+        let _ = sandbox_override; // Suppress unused warning
 
         #[cfg(feature = "wasi")]
         let tool_executor = ToolExecutor::new_with_wasi(Some(effective_sandbox.clone()), None);
@@ -498,7 +561,41 @@ impl AgentServiceImpl {
                 let sandbox = ();
                 let tool_name_c = tool_name.clone();
                 let params_map_c = params_map.clone();
-                let context_c = req.context.clone();
+                // Build context with session_id for Firecracker (defense-in-depth: try multiple sources)
+                let context_c = {
+                    let mut ctx = req.context.clone().unwrap_or_default();
+
+                    // Try to get session_id from multiple sources (priority order)
+                    let session_id = if let Some(session_ctx) = &req.session_context {
+                        if !session_ctx.session_id.is_empty() {
+                            Some(session_ctx.session_id.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                    .or_else(|| {
+                        // Fallback: try metadata.session_id
+                        req.metadata.as_ref().and_then(|m| {
+                            if !m.session_id.is_empty() {
+                                Some(m.session_id.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+
+                    if let Some(sid) = session_id {
+                        ctx.fields.insert(
+                            "session_id".to_string(),
+                            prost_types::Value {
+                                kind: Some(prost_types::value::Kind::StringValue(sid)),
+                            },
+                        );
+                    }
+                    Some(ctx)
+                };
                 let jh = tokio::spawn(async move {
                     let _p = permit;
                     let exec = ToolExecutor::new_with_wasi(Some(sandbox), None);
@@ -642,6 +739,7 @@ impl AgentServiceImpl {
                 } else {
                     proto::agent::AgentState::Failed.into()
                 },
+                metadata: None, // multi-tool direct execution — no agent metadata
             };
             tracing::info!(
                 "ExecuteTaskResponse (multi-tool): token_usage=None, tools={}, cumulative_ms={}",
@@ -703,11 +801,45 @@ impl AgentServiceImpl {
                 call_id: None,
             };
             debug!("Executing tool {}/{}: {}", idx + 1, total, tool_name);
+
+            // Build context with session_id for Firecracker (defense-in-depth: try multiple sources)
+            let tool_context = {
+                let mut ctx = req.context.clone().unwrap_or_default();
+
+                // Try to get session_id from multiple sources (priority order)
+                let session_id = if let Some(session_ctx) = &req.session_context {
+                    if !session_ctx.session_id.is_empty() {
+                        Some(session_ctx.session_id.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    // Fallback: try metadata.session_id
+                    req.metadata.as_ref().and_then(|m| {
+                        if !m.session_id.is_empty() {
+                            Some(m.session_id.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+                if let Some(sid) = session_id {
+                    ctx.fields.insert(
+                        "session_id".to_string(),
+                        prost_types::Value {
+                            kind: Some(prost_types::value::Kind::StringValue(sid)),
+                        },
+                    );
+                }
+                ctx
+            };
+
             let start = std::time::Instant::now();
-            match tool_executor
-                .execute_tool(&call, req.context.as_ref())
-                .await
-            {
+            match tool_executor.execute_tool(&call, Some(&tool_context)).await {
                 Ok(res) => {
                     let dur = start.elapsed().as_millis() as i64;
                     last_output = res.output.clone();
@@ -820,6 +952,7 @@ impl AgentServiceImpl {
             } else {
                 proto::agent::AgentState::Failed.into()
             },
+            metadata: None, // multi-tool direct execution — no agent metadata
         };
         Ok(Response::new(response))
     }
@@ -849,6 +982,29 @@ impl AgentService for AgentServiceImpl {
             debug!("Session history length: {}", session_ctx.history.len());
         }
 
+        // Extract user_id from session_context (primary) or metadata (fallback)
+        let mut user_id = req
+            .session_context
+            .as_ref()
+            .map(|ctx| ctx.user_id.clone())
+            .unwrap_or_default();
+        if user_id.is_empty() {
+            user_id = req
+                .metadata
+                .as_ref()
+                .and_then(|m| {
+                    if m.user_id.is_empty() || m.user_id == "orchestrator" {
+                        None
+                    } else {
+                        Some(m.user_id.clone())
+                    }
+                })
+                .unwrap_or_default();
+        }
+        if !user_id.is_empty() {
+            info!(user_id = %user_id, "Extracted user_id for memory mount");
+        }
+
         // Get session_id from session_context for workspace mounting
         #[cfg(feature = "wasi")]
         let session_workspace = if let Some(session_ctx) = &req.session_context {
@@ -856,11 +1012,17 @@ impl AgentService for AgentServiceImpl {
             if !session_id.is_empty() {
                 match WorkspaceManager::from_env().get_workspace(session_id) {
                     Ok(workspace) => {
-                        info!("WASI: Using session workspace for session_id={}", session_id);
+                        info!(
+                            "WASI: Using session workspace for session_id={}",
+                            session_id
+                        );
                         Some(workspace)
                     }
                     Err(e) => {
-                        warn!("WASI: Failed to get workspace for session_id={}: {}", session_id, e);
+                        warn!(
+                            "WASI: Failed to get workspace for session_id={}: {}",
+                            session_id, e
+                        );
                         None
                     }
                 }
@@ -869,6 +1031,23 @@ impl AgentService for AgentServiceImpl {
             }
         } else {
             info!("WASI: No session_context - workspace not mounted (read-only sandbox)");
+            None
+        };
+
+        // Construct user memory workspace from user_id
+        #[cfg(feature = "wasi")]
+        let memory_workspace = if !user_id.is_empty() {
+            match MemoryManager::from_env().get_memory_dir(&user_id) {
+                Ok(memory_dir) => {
+                    info!(user_id = %user_id, "WASI: Using memory workspace: {:?}", memory_dir);
+                    Some(memory_dir)
+                }
+                Err(e) => {
+                    warn!(user_id = %user_id, "WASI: Failed to get memory workspace: {}", e);
+                    None
+                }
+            }
+        } else {
             None
         };
 
@@ -883,6 +1062,10 @@ impl AgentService for AgentServiceImpl {
             if let Some(workspace) = session_workspace {
                 _sandbox = _sandbox.with_session_workspace(workspace);
             }
+            // Apply user memory workspace if available
+            if let Some(ref mw) = memory_workspace {
+                _sandbox = _sandbox.with_memory_workspace(mw.clone());
+            }
             // Apply config overrides
             if let Some(cfg) = &req.config {
                 if cfg.timeout_seconds > 0 {
@@ -891,7 +1074,8 @@ impl AgentService for AgentServiceImpl {
                     ));
                 }
                 if cfg.memory_limit_mb > 0 {
-                    _sandbox = _sandbox.set_memory_limit((cfg.memory_limit_mb as usize) * 1024 * 1024);
+                    _sandbox =
+                        _sandbox.set_memory_limit((cfg.memory_limit_mb as usize) * 1024 * 1024);
                 }
             }
         }
@@ -905,6 +1089,31 @@ impl AgentService for AgentServiceImpl {
                 "Context fields available: {:?}",
                 context.fields.keys().collect::<Vec<_>>()
             );
+            // Pre-execution workspace quota check (prevent DoS before tool runs)
+            if let Some(session_ctx) = &req.session_context {
+                let sid = &session_ctx.session_id;
+                if !sid.is_empty() {
+                    let wm = WorkspaceManager::from_env();
+                    if let Ok(size_bytes) = wm.get_workspace_size(sid) {
+                        let size_mb = size_bytes / (1024 * 1024);
+                        let max_mb: u64 = std::env::var("WORKSPACE_MAX_SIZE_MB")
+                            .ok()
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or(500);
+                        if size_mb >= max_mb {
+                            warn!(
+                                "Workspace quota exceeded before tool execution: session={} {}MB >= {}MB",
+                                sid, size_mb, max_mb
+                            );
+                            return Err(Status::resource_exhausted(format!(
+                                "Session workspace quota exceeded: {}MB >= {}MB limit",
+                                size_mb, max_mb
+                            )));
+                        }
+                    }
+                }
+            }
+
             if let Some(tc_list) = context.fields.get("tool_calls") {
                 if let Some(prost_types::value::Kind::ListValue(list)) = &tc_list.kind {
                     info!("Detected tool_calls list; executing (parallelism may apply)");
@@ -917,16 +1126,13 @@ impl AgentService for AgentServiceImpl {
                     let enforcer = self.enforcer.clone();
                     let list = list.clone();
                     #[cfg(feature = "wasi")]
-                    let sandbox_for_calls = Some(_sandbox.clone());
+                    let sandbox_for_calls: Option<SandboxOverride> = Some(_sandbox.clone());
+                    #[cfg(not(feature = "wasi"))]
+                    let sandbox_for_calls: Option<SandboxOverride> = None;
 
                     let result = enforcer
                         .enforce(&key, est, || async {
-                            self.execute_tool_calls(
-                                &list,
-                                &req,
-                                #[cfg(feature = "wasi")]
-                                sandbox_for_calls,
-                            )
+                            self.execute_tool_calls(&list, &req, sandbox_for_calls)
                                 .await
                                 .map_err(|e| anyhow::anyhow!(e.to_string()))
                         })
@@ -954,16 +1160,13 @@ impl AgentService for AgentServiceImpl {
                 let enforcer = self.enforcer.clone();
                 let tp = tool_params.clone();
                 #[cfg(feature = "wasi")]
-                let sandbox_for_tool = Some(_sandbox.clone());
+                let sandbox_for_tool: Option<SandboxOverride> = Some(_sandbox.clone());
+                #[cfg(not(feature = "wasi"))]
+                let sandbox_for_tool: Option<SandboxOverride> = None;
 
                 let result = enforcer
                     .enforce(&key, est, || async {
-                        self.execute_direct_tool(
-                            &tp,
-                            &req,
-                            #[cfg(feature = "wasi")]
-                            sandbox_for_tool,
-                        )
+                        self.execute_direct_tool(&tp, &req, sandbox_for_tool)
                             .await
                             .map_err(|e| anyhow::anyhow!(e.to_string()))
                     })
@@ -1005,9 +1208,13 @@ impl AgentService for AgentServiceImpl {
 
                 if let Some(session_ctx) = &req.session_context {
                     if !session_ctx.history.is_empty() {
-                        let hist = session_ctx.history.join("\n");
+                        let hist = session_ctx
+                            .history
+                            .iter()
+                            .map(|s| serde_json::Value::String(s.clone()))
+                            .collect::<Vec<serde_json::Value>>();
                         if let Some(obj) = ctx_json.as_object_mut() {
-                            obj.insert("history".to_string(), serde_json::Value::String(hist));
+                            obj.insert("history".to_string(), serde_json::Value::Array(hist));
                         }
                     }
                 }
@@ -1052,6 +1259,7 @@ impl AgentService for AgentServiceImpl {
 
                 let (meta_tool_calls, meta_tool_results) =
                     tool_meta_to_proto(&agent_result.metadata);
+                let proto_metadata = serde_json_to_prost_struct(&agent_result.metadata);
                 let usage = agent_result.usage;
                 let result = agent_result.response;
 
@@ -1096,6 +1304,7 @@ impl AgentService for AgentServiceImpl {
                     }),
                     error_message: String::new(),
                     final_state: proto::agent::AgentState::Completed.into(),
+                    metadata: proto_metadata,
                 };
 
                 tracing::info!(
@@ -1136,9 +1345,13 @@ impl AgentService for AgentServiceImpl {
         let mut ctx_json = serde_json::json!({});
         if let Some(session_ctx) = &req.session_context {
             if !session_ctx.history.is_empty() {
-                let hist = session_ctx.history.join("\n");
+                let hist = session_ctx
+                    .history
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect::<Vec<serde_json::Value>>();
                 if let Some(obj) = ctx_json.as_object_mut() {
-                    obj.insert("history".to_string(), serde_json::Value::String(hist));
+                    obj.insert("history".to_string(), serde_json::Value::Array(hist));
                 }
             }
         }
@@ -1172,8 +1385,8 @@ impl AgentService for AgentServiceImpl {
                 _ => Status::internal(e.to_string()),
             })?;
 
-        let (meta_tool_calls, meta_tool_results) =
-            tool_meta_to_proto(&agent_result.metadata);
+        let (meta_tool_calls, meta_tool_results) = tool_meta_to_proto(&agent_result.metadata);
+        let proto_metadata = serde_json_to_prost_struct(&agent_result.metadata);
         let usage = agent_result.usage;
         let result = agent_result.response;
 
@@ -1218,6 +1431,7 @@ impl AgentService for AgentServiceImpl {
             }),
             error_message: String::new(),
             final_state: proto::agent::AgentState::Completed.into(),
+            metadata: proto_metadata,
         };
 
         tracing::info!(
@@ -1256,9 +1470,13 @@ impl AgentService for AgentServiceImpl {
         }
         if let Some(session_ctx) = &req.session_context {
             if !session_ctx.history.is_empty() {
-                let hist = session_ctx.history.join("\n");
+                let hist = session_ctx
+                    .history
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect::<Vec<serde_json::Value>>();
                 if let Some(obj) = ctx_json.as_object_mut() {
-                    obj.insert("history".to_string(), serde_json::Value::String(hist));
+                    obj.insert("history".to_string(), serde_json::Value::Array(hist));
                 }
             }
         }
@@ -1432,9 +1650,12 @@ impl AgentService for AgentServiceImpl {
                             let _ = tx.send(Err(e)).await;
                         }
                         Err(_) => {
-                            let _ = tx.send(Err(Status::deadline_exceeded(
-                                format!("Stream timeout after {} seconds", stream_timeout_secs)
-                            ))).await;
+                            let _ = tx
+                                .send(Err(Status::deadline_exceeded(format!(
+                                    "Stream timeout after {} seconds",
+                                    stream_timeout_secs
+                                ))))
+                                .await;
                         }
                     }
                 }
@@ -1459,11 +1680,23 @@ impl AgentService for AgentServiceImpl {
         debug!("Getting agent capabilities");
 
         let response = GetCapabilitiesResponse {
-            supported_tools: vec![
-                "web_search".to_string(),
-                "code_executor".to_string(),
-                "database_query".to_string(),
-            ],
+            supported_tools: {
+                let mut tools = vec![
+                    "web_search".to_string(),
+                    "database_query".to_string(),
+                ];
+                // C1: Only advertise code execution tools if an executor backend is available
+                let wasm_path = std::env::var("PYTHON_WASI_WASM_PATH")
+                    .unwrap_or_else(|_| "/opt/wasm-interpreters/python-3.11.4.wasm".to_string());
+                let firecracker_mode = std::env::var("PYTHON_EXECUTOR_MODE")
+                    .map(|v| v.to_lowercase())
+                    .unwrap_or_default();
+                if std::path::Path::new(&wasm_path).exists() || firecracker_mode == "firecracker" {
+                    tools.push("code_executor".to_string());
+                    tools.push("firecracker_executor".to_string());
+                }
+                tools
+            },
             supported_modes: vec![
                 proto::common::ExecutionMode::Simple.into(),
                 proto::common::ExecutionMode::Standard.into(),
@@ -1529,10 +1762,7 @@ fn tool_meta_to_proto(
     meta: &Option<serde_json::Value>,
 ) -> (Vec<proto::common::ToolCall>, Vec<proto::common::ToolResult>) {
     if let Some(meta_val) = meta {
-        if let Some(exec_list) = meta_val
-            .get("tool_executions")
-            .and_then(|v| v.as_array())
-        {
+        if let Some(exec_list) = meta_val.get("tool_executions").and_then(|v| v.as_array()) {
             let mut calls = Vec::new();
             let mut results = Vec::new();
             for exec in exec_list {
@@ -1635,6 +1865,27 @@ fn prost_value_to_json_to_prost(v: &serde_json::Value) -> prost_types::Value {
                     .collect(),
             })),
         },
+    }
+}
+
+/// Convert `Option<serde_json::Value>` (expected Object) to `Option<prost_types::Struct>`.
+/// Used to forward agent metadata (including tool_cost_entries) through gRPC responses.
+fn serde_json_to_prost_struct(meta: &Option<serde_json::Value>) -> Option<prost_types::Struct> {
+    match meta {
+        Some(serde_json::Value::Object(map)) => Some(prost_types::Struct {
+            fields: map
+                .iter()
+                .map(|(k, v)| (k.clone(), prost_value_to_json_to_prost(v)))
+                .collect(),
+        }),
+        Some(other) => {
+            tracing::debug!(
+                "serde_json_to_prost_struct: metadata is not an object (type={:?}), skipping",
+                other
+            );
+            None
+        }
+        None => None,
     }
 }
 

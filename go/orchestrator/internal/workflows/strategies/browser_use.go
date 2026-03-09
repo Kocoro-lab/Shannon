@@ -89,7 +89,7 @@ func BrowserUseWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 
 	// Configure browser loop
 	browserConfig := patterns.BrowserConfig{
-		MaxIterations: 15,     // Browser tasks typically need more iterations
+		MaxIterations: 15, // Browser tasks typically need more iterations
 		ActionTimeout: 180000, // 3 minutes per action
 	}
 
@@ -196,6 +196,18 @@ func BrowserUseWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		"iterations":   browserResult.Iterations,
 		"actions":      len(browserResult.Actions),
 		"observations": len(browserResult.Observations),
+	}
+
+	// Collect persisted screenshot paths from agent results (version-gated)
+	screenshotVersion := workflow.GetVersion(ctx, "screenshot_persistence_v1", workflow.DefaultVersion, 1)
+	if screenshotVersion >= 1 {
+		var allScreenshots []string
+		for _, ar := range browserResult.AgentResults {
+			allScreenshots = append(allScreenshots, ar.ScreenshotPaths...)
+		}
+		if len(allScreenshots) > 0 {
+			meta["screenshots"] = allScreenshots
+		}
 	}
 
 	// Aggregate agent metadata

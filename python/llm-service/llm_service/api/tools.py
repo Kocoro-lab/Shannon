@@ -11,6 +11,7 @@ import logging
 
 from ..tools import get_registry
 from ..tools.mcp import create_mcp_tool_class
+from ..tools.text_formatter import format_tool_text
 from ..tools.openapi_tool import load_openapi_tools_from_config
 from ..tools.builtin import (
     WebSearchTool,
@@ -21,37 +22,37 @@ from ..tools.builtin import (
     FileReadTool,
     FileWriteTool,
     FileListTool,
+    FileSearchTool,
+    FileEditTool,
     BashExecutorTool,
     PythonWasiExecutorTool,
+    DiffFilesTool,
+    JsonQueryTool,
 )
 
-# Optional: browser automation tools (graceful fallback if not present)
+# Ads tools (enterprise version only - gracefully degrade if not present)
 try:
     from ..tools.builtin import (
-        BrowserNavigateTool,
-        BrowserClickTool,
-        BrowserTypeTool,
-        BrowserScreenshotTool,
-        BrowserExtractTool,
-        BrowserScrollTool,
-        BrowserWaitTool,
-        BrowserEvaluateTool,
-        BrowserCloseTool,
+        AdsSerpExtractTool,
+        AdsTransparencySearchTool,
+        AdsCompetitorDiscoverTool,
+        LPVisualAnalyzeTool,
+        LPBatchAnalyzeTool,
+        AdsCreativeAnalyzeTool,
+        YahooJPAdsDiscoverTool,
+        MetaAdLibrarySearchTool,
+        PageScreenshotTool,
     )
+    _HAS_ADS_TOOLS = True
+except ImportError:
+    _HAS_ADS_TOOLS = False
 
-    _BROWSER_TOOLS = [
-        BrowserNavigateTool,
-        BrowserClickTool,
-        BrowserTypeTool,
-        BrowserScreenshotTool,
-        BrowserExtractTool,
-        BrowserScrollTool,
-        BrowserWaitTool,
-        BrowserEvaluateTool,
-        BrowserCloseTool,
-    ]
-except Exception:
-    _BROWSER_TOOLS = []
+# Browser automation tool (requires playwright service)
+try:
+    from ..tools.builtin import BrowserTool
+    _HAS_BROWSER_TOOLS = True
+except ImportError:
+    _HAS_BROWSER_TOOLS = False
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tools", tags=["tools"])
@@ -84,6 +85,7 @@ class ToolExecuteResponse(BaseModel):
 
     success: bool
     output: Any
+    text: Optional[str] = None
     error: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     execution_time_ms: Optional[int] = None
@@ -206,20 +208,28 @@ def _resolve_shannon_config_path() -> str:
 
     Order:
     - SHANNON_CONFIG_PATH
-    - CONFIG_PATH (legacy; may point to features.yaml, handled gracefully)
+    - CONFIG_PATH (legacy; may point to a directory or features.yaml)
     - /app/config/shannon.yaml (default)
     """
-    return (
-        os.getenv("SHANNON_CONFIG_PATH")
-        or os.getenv("CONFIG_PATH")
-        or "/app/config/shannon.yaml"
-    )
+    for env_var in ("SHANNON_CONFIG_PATH", "CONFIG_PATH"):
+        val = os.getenv(env_var)
+        if val:
+            # CONFIG_PATH may be set to a directory (e.g. /app/config);
+            # auto-append shannon.yaml so callers get a file path.
+            if os.path.isdir(val):
+                return os.path.join(val, "shannon.yaml")
+            return val
+    return "/app/config/shannon.yaml"
 
 
 def _sanitize_session_context(ctx: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Pass through only safe, expected keys to tools.
 
     Keeps: session_id, user_id, prompt_params, tool_parameters.
+
+    Note: allow_browser_evaluate is intentionally NOT in any allowlist.
+    The browser evaluate action is disabled at both API paths (here and
+    agent.py safe_keys). To enable it, add to both allowlists.
     """
     if not isinstance(ctx, dict):
         return None
@@ -339,10 +349,27 @@ async def startup_event():
         FileReadTool,
         FileWriteTool,
         FileListTool,
+        FileSearchTool,
+        FileEditTool,
         BashExecutorTool,
         PythonWasiExecutorTool,
+        DiffFilesTool,
+        JsonQueryTool,
     ]
-    tools_to_register.extend(_BROWSER_TOOLS)
+
+    # Add ads tools if available (enterprise only)
+    if _HAS_ADS_TOOLS:
+        tools_to_register.extend([
+            AdsSerpExtractTool,
+            AdsTransparencySearchTool,
+            AdsCompetitorDiscoverTool,
+            LPVisualAnalyzeTool,
+            LPBatchAnalyzeTool,
+            AdsCreativeAnalyzeTool,
+            YahooJPAdsDiscoverTool,
+            MetaAdLibrarySearchTool,
+            PageScreenshotTool,
+        ])
 
     for tool_class in tools_to_register:
         try:
@@ -372,6 +399,21 @@ async def startup_event():
         )
     except Exception as e:
         logger.warning(f"GA4 tools not available: {e}")
+
+    # Load financial news tools (optional - requires API keys)
+    try:
+        from ..tools.vendor_adapters.financial import register_financial_tools
+        register_financial_tools(registry)
+    except Exception as e:
+        logger.warning(f"Financial tools not available: {e}")
+
+    # Register browser automation tool if available
+    if _HAS_BROWSER_TOOLS:
+        try:
+            registry.register(BrowserTool)
+            logger.info("Registered browser automation tool: BrowserTool")
+        except Exception as e:
+            logger.error(f"Failed to register BrowserTool: {e}")
 
     logger.info(f"Tool registry initialized with {len(registry.list_tools())} tools")
 
@@ -734,9 +776,18 @@ async def execute_tool(request: ToolExecuteRequest) -> ToolExecuteResponse:
             **params,
         )
 
+        if not result.success:
+            logger.warning(
+                f"Tool {request.tool_name} returned success=false: {result.error}",
+                extra={"tool": request.tool_name},
+            )
+
+        text = format_tool_text(request.tool_name, result.output, result.metadata)
+
         return ToolExecuteResponse(
             success=result.success,
             output=result.output,
+            text=text,
             error=result.error,
             metadata=result.metadata,
             execution_time_ms=result.execution_time_ms,

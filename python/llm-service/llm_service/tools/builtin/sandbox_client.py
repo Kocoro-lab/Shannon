@@ -48,6 +48,7 @@ class SandboxClient:
         self,
         session_id: str,
         path: str,
+        user_id: str = "",
         max_bytes: int = 0,
         encoding: str = "utf-8",
     ) -> Tuple[bool, str, str, dict]:
@@ -66,6 +67,7 @@ class SandboxClient:
         try:
             request = sandbox_pb2.FileReadRequest(
                 session_id=session_id,
+                user_id=user_id,
                 path=path,
                 max_bytes=max_bytes,
                 encoding=encoding,
@@ -90,6 +92,7 @@ class SandboxClient:
         session_id: str,
         path: str,
         content: str,
+        user_id: str = "",
         append: bool = False,
         create_dirs: bool = False,
         encoding: str = "utf-8",
@@ -109,6 +112,7 @@ class SandboxClient:
         try:
             request = sandbox_pb2.FileWriteRequest(
                 session_id=session_id,
+                user_id=user_id,
                 path=path,
                 content=content,
                 append=append,
@@ -132,6 +136,7 @@ class SandboxClient:
     async def file_list(
         self,
         session_id: str,
+        user_id: str = "",
         path: str = "",
         pattern: str = "",
         recursive: bool = False,
@@ -152,6 +157,7 @@ class SandboxClient:
         try:
             request = sandbox_pb2.FileListRequest(
                 session_id=session_id,
+                user_id=user_id,
                 path=path,
                 pattern=pattern,
                 recursive=recursive,
@@ -182,10 +188,115 @@ class SandboxClient:
             logger.info("Sandbox gRPC file_list completed", extra={"session_id": session_id, "operation": "file_list", "success": False})
             return (False, [], f"gRPC error: {e.details()}", {})
 
+    async def file_search(
+        self,
+        session_id: str,
+        query: str,
+        path: str = ".",
+        max_results: int = 20,
+        regex: bool = False,
+        include: str = "",
+        context_lines: int = 0,
+    ) -> Tuple[bool, List[dict], str, dict]:
+        """
+        Search file contents in session workspace.
+
+        Returns:
+            (success, matches, error, metadata)
+        """
+        logger.debug("Sandbox gRPC file_search request", extra={"session_id": session_id, "query": query, "path": path})
+        await self._ensure_connected()
+
+        if not _PROTO_AVAILABLE or self._stub is None:
+            return (False, [], "Sandbox proto not available", {})
+
+        try:
+            request = sandbox_pb2.FileSearchRequest(
+                session_id=session_id,
+                query=query,
+                path=path,
+                max_results=max_results,
+                regex=regex,
+                include=include,
+                context_lines=context_lines,
+            )
+            response = await self._stub.FileSearch(request, timeout=self.timeout)
+            matches = []
+            for m in response.matches:
+                entry = {
+                    "file": m.file,
+                    "line": m.line,
+                    "content": m.content,
+                }
+                if m.context:
+                    entry["context"] = [
+                        {"line": c.line, "content": c.content}
+                        for c in m.context
+                    ]
+                matches.append(entry)
+            logger.info("Sandbox gRPC file_search completed", extra={"session_id": session_id, "operation": "file_search", "success": response.success})
+            return (
+                response.success,
+                matches,
+                response.error,
+                {
+                    "files_scanned": response.files_scanned,
+                    "matches_found": response.matches_found,
+                    "truncated": response.truncated,
+                },
+            )
+        except grpc.RpcError as e:
+            logger.info("Sandbox gRPC file_search completed", extra={"session_id": session_id, "operation": "file_search", "success": False})
+            return (False, [], f"gRPC error: {e.details()}", {})
+
+    async def file_edit(
+        self,
+        session_id: str,
+        path: str,
+        old_text: str,
+        new_text: str,
+        replace_all: bool = False,
+    ) -> Tuple[bool, str, str, dict]:
+        """
+        Edit a file in session workspace by replacing text.
+
+        Returns:
+            (success, snippet, error, metadata)
+        """
+        logger.debug("Sandbox gRPC file_edit request", extra={"session_id": session_id, "path": path})
+        await self._ensure_connected()
+
+        if not _PROTO_AVAILABLE or self._stub is None:
+            return (False, "", "Sandbox proto not available", {})
+
+        try:
+            request = sandbox_pb2.FileEditRequest(
+                session_id=session_id,
+                path=path,
+                old_text=old_text,
+                new_text=new_text,
+                replace_all=replace_all,
+            )
+            response = await self._stub.FileEdit(request, timeout=self.timeout)
+            logger.info("Sandbox gRPC file_edit completed", extra={"session_id": session_id, "operation": "file_edit", "success": response.success})
+            return (
+                response.success,
+                response.snippet,
+                response.error,
+                {
+                    "replacements": response.replacements,
+                    "file_size_after": response.file_size_after,
+                },
+            )
+        except grpc.RpcError as e:
+            logger.info("Sandbox gRPC file_edit completed", extra={"session_id": session_id, "operation": "file_edit", "success": False})
+            return (False, "", f"gRPC error: {e.details()}", {})
+
     async def execute_command(
         self,
         session_id: str,
         command: str,
+        user_id: str = "",
         timeout_seconds: int = 30,
     ) -> Tuple[bool, str, str, int, str, dict]:
         """
@@ -203,6 +314,7 @@ class SandboxClient:
         try:
             request = sandbox_pb2.CommandRequest(
                 session_id=session_id,
+                user_id=user_id,
                 command=command,
                 timeout_seconds=timeout_seconds,
             )

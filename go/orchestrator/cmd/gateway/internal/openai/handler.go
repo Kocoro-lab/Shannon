@@ -1,12 +1,15 @@
 package openai
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -32,6 +35,7 @@ type Handler struct {
 	sessionManager *SessionManager
 	rateLimiter    *RateLimiter
 	adminURL       string // URL for SSE streaming (e.g., "http://orchestrator:8081")
+	llmServiceURL  string // URL for LLM service (e.g., "http://llm-service:8000")
 }
 
 // NewHandler creates a new OpenAI API handler.
@@ -47,6 +51,11 @@ func NewHandler(
 		return nil, fmt.Errorf("failed to load model registry: %w", err)
 	}
 
+	llmURL := os.Getenv("LLM_SERVICE_URL")
+	if llmURL == "" {
+		llmURL = "http://llm-service:8000"
+	}
+
 	return &Handler{
 		orchClient:     orchClient,
 		db:             db,
@@ -57,6 +66,7 @@ func NewHandler(
 		sessionManager: NewSessionManager(redisClient, logger),
 		rateLimiter:    NewRateLimiter(redisClient, registry, logger),
 		adminURL:       strings.TrimRight(adminURL, "/"),
+		llmServiceURL:  strings.TrimRight(llmURL, "/"),
 	}, nil
 }
 
@@ -537,6 +547,276 @@ func (h *Handler) sendError(w http.ResponseWriter, message, errType, code string
 		h.logger.Error("Failed to encode error response", zap.Error(err))
 	}
 }
+
+// completionsRequestPeek is used to peek at model_tier and stream flag for rate limiting.
+type completionsRequestPeek struct {
+	ModelTier     string `json:"model_tier"`
+	SpecificModel string `json:"specific_model"`
+	Stream        bool   `json:"stream"`
+}
+
+// llmCompletionUsage represents token usage from the LLM service.
+type llmCompletionUsage struct {
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	TotalTokens  int     `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+// llmCompletionResponse represents the LLM service /completions/ response.
+type llmCompletionResponse struct {
+	Provider string              `json:"provider"`
+	Model    string              `json:"model"`
+	Usage    *llmCompletionUsage `json:"usage"`
+}
+
+// Completions handles POST /v1/completions — thin authenticated proxy to the
+// Python LLM service. The CLI sends messages + tool schemas and gets
+// function_call responses back for local tool execution.
+func (h *Handler) Completions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get user context from auth middleware
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", ErrorTypeAuthentication, ErrorCodeInvalidAPIKey, http.StatusUnauthorized)
+		return
+	}
+
+	// Read and buffer request body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		h.sendError(w, "Failed to read request body", ErrorTypeInvalidRequest, ErrorCodeInvalidRequest, http.StatusBadRequest)
+		return
+	}
+
+	// Peek-parse model_tier for rate limit bucketing
+	var reqPeek completionsRequestPeek
+	_ = json.Unmarshal(body, &reqPeek)
+	modelTier := reqPeek.ModelTier
+	if modelTier == "" {
+		modelTier = "small"
+	}
+	modelKey := "completions-" + modelTier
+
+	// Get API key ID for rate limiting
+	apiKeyID := userCtx.UserID.String()
+	if userCtx.IsAPIKey && userCtx.APIKeyID != uuid.Nil {
+		apiKeyID = userCtx.APIKeyID.String()
+	}
+
+	// Check rate limits
+	rateLimitResult, err := h.rateLimiter.CheckLimit(ctx, apiKeyID, modelKey)
+	if err != nil {
+		h.logger.Error("Rate limit check failed", zap.Error(err))
+	} else {
+		h.rateLimiter.SetRateLimitHeaders(w, rateLimitResult)
+		if !rateLimitResult.Allowed {
+			limitType := rateLimitResult.LimitType
+			if limitType == "" {
+				limitType = "requests"
+			}
+			h.sendError(w, "Rate limit exceeded. Please retry after the specified time.", ErrorTypeRateLimit, ErrorCodeRateLimitExceeded, http.StatusTooManyRequests)
+			return
+		}
+	}
+
+	// Generate tracking ID
+	requestID := uuid.New().String()
+
+	// Build proxy request to LLM service
+	proxyURL := h.llmServiceURL + "/completions/"
+	proxyReq, err := http.NewRequestWithContext(ctx, http.MethodPost, proxyURL, bytes.NewReader(body))
+	if err != nil {
+		h.sendError(w, "Failed to create proxy request", ErrorTypeServer, ErrorCodeInternalError, http.StatusInternalServerError)
+		return
+	}
+	proxyReq.Header.Set("Content-Type", "application/json")
+	proxyReq.Header.Set("X-User-ID", userCtx.UserID.String())
+	proxyReq.Header.Set("X-Tenant-ID", userCtx.TenantID.String())
+	proxyReq.Header.Set("X-Workflow-ID", requestID)
+
+	// Streaming requests need no timeout (client context handles cancellation).
+	// Non-streaming keeps the existing 120s timeout.
+	var client *http.Client
+	if reqPeek.Stream {
+		client = &http.Client{}
+	} else {
+		client = &http.Client{Timeout: 120 * time.Second}
+	}
+
+	resp, err := client.Do(proxyReq)
+	if err != nil {
+		h.logger.Error("LLM service proxy failed", zap.Error(err))
+		h.sendError(w, "LLM service unavailable", ErrorTypeServer, ErrorCodeInternalError, http.StatusBadGateway)
+		return
+	}
+	defer resp.Body.Close()
+
+	// If LLM returned error, forward as-is
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(resp.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(errBody)
+		return
+	}
+
+	// Streaming: forward SSE from Python to client, capture usage from final event
+	if reqPeek.Stream {
+		h.handleCompletionsStream(ctx, w, resp, userCtx, requestID, apiKeyID, modelKey)
+		return
+	}
+
+	// Non-streaming: read full response, record usage, forward
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		h.logger.Error("Failed to read LLM response", zap.Error(err))
+		h.sendError(w, "Failed to read LLM response", ErrorTypeServer, ErrorCodeInternalError, http.StatusBadGateway)
+		return
+	}
+
+	// Best-effort parse response for usage recording
+	var llmResp llmCompletionResponse
+	if err := json.Unmarshal(respBody, &llmResp); err != nil {
+		h.logger.Warn("Failed to parse LLM completion response for usage", zap.Error(err))
+	} else if llmResp.Usage != nil && llmResp.Usage.TotalTokens > 0 {
+		// Fire-and-forget usage recording
+		go h.recordCompletionUsage(
+			userCtx.UserID, requestID,
+			llmResp.Provider, llmResp.Model, llmResp.Usage,
+		)
+		// Record rate limit tokens
+		if err := h.rateLimiter.RecordTokens(ctx, apiKeyID, modelKey, llmResp.Usage.TotalTokens); err != nil {
+			h.logger.Debug("Failed to record completion token usage", zap.Error(err))
+		}
+	}
+
+	h.logger.Info("Completions proxy response",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userCtx.UserID.String()),
+		zap.Int("status", resp.StatusCode),
+	)
+
+	// Forward response to client as-is
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(respBody)
+}
+
+// handleCompletionsStream forwards SSE from the Python LLM service to the client,
+// capturing usage from the final "done" event for usage recording.
+func (h *Handler) handleCompletionsStream(
+	ctx context.Context,
+	w http.ResponseWriter,
+	resp *http.Response,
+	userCtx *auth.UserContext,
+	requestID, apiKeyID, modelKey string,
+) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		h.sendError(w, "Streaming not supported", ErrorTypeServer, ErrorCodeInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	// Track the second-to-last data line — the "done" event with usage.
+	// Python emits: data: {"type":"done",...} then data: [DONE].
+	// We need the done event, not the [DONE] sentinel.
+	var prevDataLine, lastDataLine string
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		line := scanner.Text()
+
+		// Track data lines for usage extraction
+		if strings.HasPrefix(line, "data: ") {
+			payload := strings.TrimPrefix(line, "data: ")
+			prevDataLine = lastDataLine
+			lastDataLine = payload
+		}
+
+		// Forward every line to client as-is
+		fmt.Fprintf(w, "%s\n", line)
+		flusher.Flush()
+	}
+
+	if err := scanner.Err(); err != nil {
+		h.logger.Error("Completions stream scanner error", zap.Error(err))
+	}
+
+	// The done event is the second-to-last data line (before [DONE] sentinel).
+	// If lastDataLine is not [DONE], it IS the done event (stream ended early).
+	usageLine := prevDataLine
+	if lastDataLine != "[DONE]" {
+		usageLine = lastDataLine
+	}
+
+	// Extract usage from the done event
+	if usageLine != "" {
+		var doneEvent struct {
+			Type     string              `json:"type"`
+			Provider string              `json:"provider"`
+			Model    string              `json:"model"`
+			Usage    *llmCompletionUsage `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(usageLine), &doneEvent); err == nil {
+			if doneEvent.Usage != nil && doneEvent.Usage.TotalTokens > 0 {
+				go h.recordCompletionUsage(
+					userCtx.UserID, requestID,
+					doneEvent.Provider, doneEvent.Model, doneEvent.Usage,
+				)
+				if err := h.rateLimiter.RecordTokens(ctx, apiKeyID, modelKey, doneEvent.Usage.TotalTokens); err != nil {
+					h.logger.Debug("Failed to record streaming completion token usage", zap.Error(err))
+				}
+			}
+		}
+	}
+
+	h.logger.Info("Completions stream completed",
+		zap.String("request_id", requestID),
+		zap.String("user_id", userCtx.UserID.String()),
+	)
+}
+
+// recordCompletionUsage writes token usage to the DB.
+// Runs in a background goroutine — errors are logged, not propagated.
+func (h *Handler) recordCompletionUsage(
+	userID uuid.UUID,
+	requestID, provider, model string,
+	usage *llmCompletionUsage,
+) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Insert into token_usage (task_id=NULL for completions proxy)
+	_, err := h.db.ExecContext(ctx, `
+		INSERT INTO token_usage (
+			user_id, task_id, agent_id, provider, model,
+			prompt_tokens, completion_tokens, total_tokens, cost_usd
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	`, userID, nil, "completions-proxy", provider, model,
+		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD)
+	if err != nil {
+		h.logger.Warn("Failed to record completion token usage",
+			zap.String("request_id", requestID),
+			zap.Error(err))
+	}
+}
+
 
 // streamContent is a helper to write raw bytes for non-buffered streaming.
 func streamContent(w io.Writer, content string) {

@@ -172,6 +172,7 @@ func ExecuteParallel(
 							Context:          taskContext,
 							Mode:             "standard",
 							SessionID:        sessionID,
+							UserID:           userID,
 							History:          history,
 							SuggestedTools:   task.SuggestedTools,
 							ToolParameters:   task.ToolParameters,
@@ -206,6 +207,7 @@ func ExecuteParallel(
 						Context:          taskContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
+						UserID:           userID,
 						History:          history,
 						SuggestedTools:   task.SuggestedTools,
 						ToolParameters:   task.ToolParameters,
@@ -360,6 +362,7 @@ func ExecuteParallel(
 									Metadata:     meta,
 								}).Get(recCtx, nil)
 							}
+							opts.RecordToolCostEntries(ctx, result, userID, sessionID, wid)
 						}
 
 						// Persist agent execution (fire-and-forget). Use parent workflow ID when available.

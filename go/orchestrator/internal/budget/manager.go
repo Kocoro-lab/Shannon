@@ -5,9 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/streaming"
 	"github.com/google/uuid"
@@ -40,20 +40,23 @@ type TokenBudget struct {
 
 // BudgetTokenUsage tracks token consumption for budget management (renamed to avoid conflict with models.TokenUsage)
 type BudgetTokenUsage struct {
-	ID             string                 `json:"id"`
-	UserID         string                 `json:"user_id"`
-	SessionID      string                 `json:"session_id"`
-	TaskID         string                 `json:"task_id"`
-	AgentID        string                 `json:"agent_id"`
-	Model          string                 `json:"model"`
-	Provider       string                 `json:"provider"`
-	InputTokens    int                    `json:"input_tokens"`
-	OutputTokens   int                    `json:"output_tokens"`
-	TotalTokens    int                    `json:"total_tokens"`
-	CostUSD        float64                `json:"cost_usd"`
-	Timestamp      time.Time              `json:"timestamp"`
-	Metadata       map[string]interface{} `json:"metadata"`
-	IdempotencyKey string                 `json:"idempotency_key,omitempty"` // Optional key for retry safety
+	ID                  string                 `json:"id"`
+	UserID              string                 `json:"user_id"`
+	SessionID           string                 `json:"session_id"`
+	TaskID              string                 `json:"task_id"`
+	AgentID             string                 `json:"agent_id"`
+	Model               string                 `json:"model"`
+	Provider            string                 `json:"provider"`
+	InputTokens         int                    `json:"input_tokens"`
+	OutputTokens        int                    `json:"output_tokens"`
+	TotalTokens         int                    `json:"total_tokens"`
+	CacheReadTokens     int                    `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int                    `json:"cache_creation_tokens,omitempty"`
+	CostUSD             float64                `json:"cost_usd"`
+	CostOverride        float64                `json:"cost_override,omitempty"` // When > 0, use this instead of pricing calculation (e.g. Python-reported cost_usd)
+	Timestamp           time.Time              `json:"timestamp"`
+	Metadata            map[string]interface{} `json:"metadata"`
+	IdempotencyKey      string                 `json:"idempotency_key,omitempty"` // Optional key for retry safety
 }
 
 // BudgetManager manages token budgets and usage tracking
@@ -319,8 +322,15 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	usage.Timestamp = time.Now()
 	usage.TotalTokens = usage.InputTokens + usage.OutputTokens
 
-	// Calculate cost using centralized pricing (config/models.yaml)
-	usage.CostUSD = pricing.CostForSplit(usage.Model, usage.InputTokens, usage.OutputTokens)
+	// Calculate cost: prefer upstream-reported cost (e.g. Python LLM call) over pricing lookup
+	if usage.CostOverride > 0 {
+		usage.CostUSD = usage.CostOverride
+	} else {
+		usage.CostUSD = pricing.CostForSplitWithCache(
+			usage.Model, usage.InputTokens, usage.OutputTokens,
+			usage.CacheReadTokens, usage.CacheCreationTokens, usage.Provider,
+		)
+	}
 
 	// Update in-memory budgets with overflow checks
 	const maxInt = int(^uint(0) >> 1)
@@ -342,6 +352,23 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 	err := bm.storeUsage(ctx, usage)
 	if err != nil {
 		return err
+	}
+
+	// Record Prometheus cache metrics (best-effort, after successful DB store)
+	if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
+		savingsUSD := 0.0
+		if usage.Model != "" {
+			costWithoutCache := pricing.CostForSplit(
+				usage.Model,
+				usage.InputTokens+usage.CacheReadTokens+usage.CacheCreationTokens,
+				usage.OutputTokens,
+			)
+			if costWithoutCache > usage.CostUSD {
+				savingsUSD = costWithoutCache - usage.CostUSD
+			}
+		}
+		metrics.RecordPromptCacheMetrics(usage.Provider, usage.Model,
+			usage.CacheReadTokens, usage.CacheCreationTokens, savingsUSD)
 	}
 
 	// Mark as processed for idempotency (only after successful storage)
@@ -576,10 +603,12 @@ func (bm *BudgetManager) storeUsage(ctx context.Context, usage *BudgetTokenUsage
 	_, err := bm.db.ExecContext(ctx, `
 		INSERT INTO token_usage (
 			user_id, task_id, agent_id, provider, model,
-			prompt_tokens, completion_tokens, total_tokens, cost_usd
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			prompt_tokens, completion_tokens, total_tokens, cost_usd,
+			cache_read_tokens, cache_creation_tokens
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`, userUUID, taskUUID, usage.AgentID, usage.Provider, usage.Model,
-		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD)
+		usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.CostUSD,
+		usage.CacheReadTokens, usage.CacheCreationTokens)
 
 	if err != nil {
 		bm.logger.Error("Failed to store token usage", zap.Error(err))
@@ -642,9 +671,11 @@ type UsageDetail struct {
 }
 
 type ModelUsage struct {
-	Tokens   int     `json:"tokens"`
-	Cost     float64 `json:"cost"`
-	Requests int     `json:"requests"`
+	Tokens              int     `json:"tokens"`
+	Cost                float64 `json:"cost"`
+	Requests            int     `json:"requests"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
 }
 
 // Enhanced Budget Manager Features - Backpressure and Circuit Breaker
@@ -853,7 +884,7 @@ func (bm *BudgetManager) RecordFailure(userID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	atomic.AddInt32(&cb.failureCount, 1)
+	cb.failureCount++
 	cb.lastFailureTime = time.Now()
 
 	if int(cb.failureCount) >= cb.config.FailureThreshold {
@@ -875,11 +906,11 @@ func (bm *BudgetManager) RecordSuccess(userID string) {
 	defer cb.mu.Unlock()
 
 	if cb.state == "half-open" {
-		atomic.AddInt32(&cb.successCount, 1)
+		cb.successCount++
 		if int(cb.successCount) >= cb.config.HalfOpenRequests {
 			cb.state = "closed"
-			atomic.StoreInt32(&cb.failureCount, 0)
-			atomic.StoreInt32(&cb.successCount, 0)
+			cb.failureCount = 0
+			cb.successCount = 0
 		}
 	}
 }
@@ -897,7 +928,7 @@ func (bm *BudgetManager) GetCircuitState(userID string) string {
 	cb.mu.Lock()
 	if cb.state == "open" && time.Since(cb.lastFailureTime) > cb.config.ResetTimeout {
 		cb.state = "half-open"
-		atomic.StoreInt32(&cb.successCount, 0)
+		cb.successCount = 0
 	}
 	state := cb.state
 	cb.mu.Unlock()
@@ -927,14 +958,19 @@ func (bm *BudgetManager) CheckBudgetWithCircuitBreaker(
 		cb := bm.circuitBreakers[userID]
 		bm.cbMu.RUnlock()
 
-		if cb != nil && int(atomic.LoadInt32(&cb.successCount)) >= cb.config.HalfOpenRequests {
-			return &BackpressureResult{
-				BudgetCheckResult: &BudgetCheckResult{
-					CanProceed: false,
-					Reason:     "Circuit breaker in half-open state, test quota exceeded",
-				},
-				CircuitBreakerOpen: true,
-			}, nil
+		if cb != nil {
+			cb.mu.RLock()
+			exceeded := int(cb.successCount) >= cb.config.HalfOpenRequests
+			cb.mu.RUnlock()
+			if exceeded {
+				return &BackpressureResult{
+					BudgetCheckResult: &BudgetCheckResult{
+						CanProceed: false,
+						Reason:     "Circuit breaker in half-open state, test quota exceeded",
+					},
+					CircuitBreakerOpen: true,
+				}, nil
+			}
 		}
 	}
 

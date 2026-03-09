@@ -45,6 +45,7 @@ message SessionContext {
   repeated string tools_used = 5;
   int32 total_tokens_used = 6;
   double total_cost_usd = 7;
+  string user_id = 8;
 }
 
 message ConversationMessage {
@@ -71,6 +72,7 @@ message ExecuteTaskResponse {
   shannon.common.ExecutionMetrics metrics = 6;
   string error_message = 7;
   AgentState final_state = 8;
+  google.protobuf.Struct metadata = 9;
 }
 
 message TaskUpdate {

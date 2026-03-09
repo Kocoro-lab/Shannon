@@ -3,6 +3,7 @@ Base Tool interface for Shannon platform
 """
 
 from abc import ABC, abstractmethod
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -42,6 +43,7 @@ class ToolParameter:
     min_value: Optional[Union[int, float]] = None
     max_value: Optional[Union[int, float]] = None
     pattern: Optional[str] = None  # Regex pattern for validation
+    items: Optional[Dict[str, Any]] = None  # For ARRAY types: {"type": "string"}
 
 
 @dataclass
@@ -58,7 +60,7 @@ class ToolMetadata:
     timeout_seconds: int = 30
     memory_limit_mb: int = 512
     sandboxed: bool = True  # Whether to run in sandbox
-    session_aware: bool = False  # Whether tool uses session context
+    session_aware: bool = True  # Whether tool uses session context (default True to avoid footgun)
     dangerous: bool = False  # Requires extra confirmation
     cost_per_use: float = 0.0  # Cost in USD per invocation
     input_examples: Optional[List[Dict[str, Any]]] = None  # Examples for tool usage (Anthropic-specific)
@@ -74,10 +76,12 @@ class ToolResult:
     metadata: Optional[Dict[str, Any]] = None
     execution_time_ms: Optional[int] = None
     tokens_used: Optional[int] = None
+    cost_usd: Optional[float] = None
+    cost_model: Optional[str] = None  # synthetic model name for cost attribution
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization"""
-        return {
+        d = {
             "success": self.success,
             "output": self.output,
             "error": self.error,
@@ -85,6 +89,11 @@ class ToolResult:
             "execution_time_ms": self.execution_time_ms,
             "tokens_used": self.tokens_used,
         }
+        if self.cost_usd is not None:
+            d["cost_usd"] = self.cost_usd
+        if self.cost_model is not None:
+            d["cost_model"] = self.cost_model
+        return d
 
     def to_json(self) -> str:
         """Convert to JSON string"""
@@ -163,15 +172,8 @@ class Tool(ABC):
             if self.metadata.rate_limit and self.metadata.rate_limit < RATE_LIMIT_SKIP_THRESHOLD:
                 retry_after = self._get_retry_after(tracker_key)
                 if retry_after is not None:
-                    # Rate limited - return remaining wait time
-                    # NOTE: Do NOT update tracker on rejection to avoid extending wait window
-                    return ToolResult(
-                        success=False,
-                        output=None,
-                        error=f"Rate limit exceeded. Retry after {retry_after:.1f}s",
-                        metadata={"retry_after_seconds": int(retry_after) + 1},
-                        execution_time_ms=int((time.time() - start_time) * 1000),
-                    )
+                    # Auto-wait instead of rejecting — saves an LLM call round-trip
+                    await asyncio.sleep(min(retry_after, 30))
 
             # Execute the tool with session context if tool is session-aware
             if self.metadata.session_aware:
@@ -353,17 +355,17 @@ class Tool(ABC):
         # For requests without session_id or agent_id, use request-scoped tracking
         # This prevents false rate limiting across concurrent requests
         # NOTE: Per-request UUID means no cross-request rate limiting without context
-        # UUID is generated upfront in _reset_request_id() to avoid race conditions
+        if self._current_request_id is None:
+            self._current_request_id = uuid.uuid4().hex[:8]
         return f"request:{self._current_request_id}"
 
     def _reset_request_id(self) -> None:
-        """Generate a new request ID for this execution.
+        """Reset request ID for next execution.
 
         Called at the start of each execute() to ensure each execution
-        gets a unique tracker key when no session_id/agent_id is available.
-        Generating upfront avoids race conditions in _get_tracker_key().
+        gets a unique tracker key when no session_id is available.
         """
-        self._current_request_id = uuid.uuid4().hex[:8]
+        self._current_request_id = None
 
     def _get_retry_after(self, tracker_key: str) -> Optional[float]:
         """Check rate limit and return remaining wait time if limited.
@@ -422,6 +424,8 @@ class Tool(ABC):
                 prop["pattern"] = param.pattern
             if param.default is not None:
                 prop["default"] = param.default
+            if param.items:
+                prop["items"] = param.items
 
             properties[param.name] = prop
 

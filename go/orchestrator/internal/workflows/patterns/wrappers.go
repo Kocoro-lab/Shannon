@@ -7,7 +7,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/constants"
 	imodels "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/models"
 	pricing "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
-	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
+	wopts "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows/opts"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -175,6 +175,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 					Context:          input.Context,
 					Mode:             "standard",
 					SessionID:        input.SessionID,
+					UserID:           input.UserID,
 					History:          input.History,
 					ParentWorkflowID: wid,
 				},
@@ -196,6 +197,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 				Context:   input.Context,
 				Mode:      "standard",
 				SessionID: input.SessionID,
+				UserID:    input.UserID,
 				History:   input.History,
 				ParentWorkflowID: func() string {
 					if input.Context != nil {
@@ -233,7 +235,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 		if strings.TrimSpace(provider) == "" {
 			provider = imodels.DetectProvider(model)
 		}
-		recCtx := opts.WithTokenRecordOptions(ctx)
+		recCtx := wopts.WithTokenRecordOptions(ctx)
 		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
 			UserID:       input.UserID,
 			SessionID:    input.SessionID,
@@ -245,6 +247,7 @@ func (reflectionPattern) Execute(ctx workflow.Context, input PatternInput) (*Pat
 			OutputTokens: outTok,
 			Metadata:     map[string]interface{}{"phase": "reflection_initial"},
 		}).Get(recCtx, nil)
+		wopts.RecordToolCostEntries(ctx, initial, input.UserID, input.SessionID, wid)
 	}
 
 	// Apply reflection with defaults

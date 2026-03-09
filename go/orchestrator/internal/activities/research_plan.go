@@ -143,10 +143,8 @@ func GenerateResearchPlan(ctx context.Context, in ResearchPlanInput) (ResearchPl
 		defer rdb.Close()
 
 		// Store stripped message in Redis (no [RESEARCH_BRIEF] or [INTENT:...])
-		currentPlan := ""
-		if intent == "ready" {
-			currentPlan = displayMessage
-		}
+		// Always set currentPlan so users can approve at any point
+		currentPlan := displayMessage
 		state := reviewRedisState{
 			WorkflowID:    in.WorkflowID,
 			Query:         in.Query,

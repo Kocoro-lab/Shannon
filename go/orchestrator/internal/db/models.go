@@ -12,27 +12,45 @@ import (
 // JSONB represents a PostgreSQL jsonb column
 type JSONB map[string]interface{}
 
+// ErrConcurrentAccess is returned when JSONB cloning fails due to concurrent map access
+var ErrConcurrentAccess = fmt.Errorf("concurrent map access during JSONB clone")
+
 // SafeClone creates a deep copy of JSONB via JSON serialization.
-// NOTE: This is NOT fully concurrency-safe. If the original map is being modified
-// concurrently during the Marshal call, a panic can still occur. The caller must
-// ensure no concurrent writes are happening when SafeClone is called.
-// This function helps prevent panics during async DB writes by creating a copy
-// BEFORE passing to the async writer, reducing the window for concurrent access.
-func (j JSONB) SafeClone() JSONB {
+// Uses recover() to handle concurrent map access panics gracefully.
+//
+// WARNING: Returns empty JSONB{} on concurrent access or errors.
+// Use TryClone() if you need to detect and handle failures.
+func (j JSONB) SafeClone() (result JSONB) {
+	clone, _ := j.TryClone()
+	return clone
+}
+
+// TryClone creates a deep copy of JSONB via JSON serialization.
+// Returns an error if cloning fails due to concurrent access or serialization issues.
+// This is the preferred method when you need to handle clone failures explicitly.
+func (j JSONB) TryClone() (result JSONB, err error) {
 	if j == nil {
-		return nil
+		return nil, nil
 	}
-	// Deep copy via JSON round-trip
-	data, err := json.Marshal(j)
-	if err != nil {
-		// Fallback to empty map on error
-		return JSONB{}
+
+	// Recover from panic caused by concurrent map iteration
+	defer func() {
+		if r := recover(); r != nil {
+			result = JSONB{}
+			err = fmt.Errorf("%w: %v", ErrConcurrentAccess, r)
+		}
+	}()
+
+	// Use JSON round-trip for deep clone
+	data, marshalErr := json.Marshal(j)
+	if marshalErr != nil {
+		return JSONB{}, fmt.Errorf("JSONB marshal failed: %w", marshalErr)
 	}
 	var clone JSONB
-	if err := json.Unmarshal(data, &clone); err != nil {
-		return JSONB{}
+	if unmarshalErr := json.Unmarshal(data, &clone); unmarshalErr != nil {
+		return JSONB{}, fmt.Errorf("JSONB unmarshal failed: %w", unmarshalErr)
 	}
-	return clone
+	return clone, nil
 }
 
 // Value implements the driver.Valuer interface
@@ -91,6 +109,13 @@ type TaskExecution struct {
 	ToolsInvoked    int     `db:"tools_invoked"`
 	CacheHits       int     `db:"cache_hits"`
 	ComplexityScore float64 `db:"complexity_score"`
+
+	// Prompt cache metrics (Anthropic cache read/creation tokens)
+	CacheReadTokens     int `db:"cache_read_tokens"`
+	CacheCreationTokens int `db:"cache_creation_tokens"`
+
+	// Structured response (unified API format, stored in response JSONB column)
+	Response JSONB `db:"response"`
 
 	// Metadata
 	Metadata  JSONB     `db:"metadata"`

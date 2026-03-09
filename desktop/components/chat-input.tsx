@@ -10,7 +10,7 @@ import { useRouter } from "next/navigation";
 import { submitTask, submitReviewFeedback, approveReviewPlan } from "@/lib/shannon/api";
 import { cn } from "@/lib/utils";
 
-export type AgentSelection = "normal" | "deep_research";
+export type AgentSelection = "normal" | "deep_research" | "browser_use";
 export type ResearchStrategy = "quick" | "standard" | "deep" | "academic";
 export type AutoApproveMode = "on" | "off";
 

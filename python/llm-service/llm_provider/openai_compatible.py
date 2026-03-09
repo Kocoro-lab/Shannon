@@ -15,6 +15,7 @@ from .base import (
     CompletionResponse,
     TokenUsage,
     TokenCounter,
+    prepare_openai_messages,
 )
 
 
@@ -199,10 +200,11 @@ class OpenAICompatibleProvider(LLMProvider):
         model = model_config.model_id
         model_alias = self._resolve_alias(model)
 
-        # Prepare API request
+        # Prepare API request (translate Anthropic-style image blocks to OpenAI format)
+        messages = prepare_openai_messages(request.messages)
         api_request = {
             "model": model,
-            "messages": request.messages,
+            "messages": messages,
             "temperature": request.temperature,
             "top_p": request.top_p,
             "frequency_penalty": request.frequency_penalty,
@@ -331,10 +333,11 @@ class OpenAICompatibleProvider(LLMProvider):
         model_config = self.resolve_model_config(request)
         model = model_config.model_id
 
-        # Prepare API request
+        # Prepare API request (translate Anthropic-style image blocks to OpenAI format)
+        messages = prepare_openai_messages(request.messages)
         api_request = {
             "model": model,
-            "messages": request.messages,
+            "messages": messages,
             "temperature": request.temperature,
             "stream": True,
             "stream_options": {"include_usage": True},  # Request usage statistics

@@ -385,27 +385,6 @@ func (m *Manager) Unsubscribe(workflowID string, ch chan Event) {
 
 // Publish sends an event to Redis stream and all local subscribers (for backward compatibility)
 func (m *Manager) Publish(workflowID string, evt Event) {
-	// Ensure role is always present for observability (best-effort).
-	if evt.Payload == nil {
-		evt.Payload = map[string]interface{}{}
-	}
-	if v, ok := evt.Payload["role"].(string); !ok || strings.TrimSpace(v) == "" {
-		role := ""
-		if strings.TrimSpace(evt.AgentID) != "" {
-			role = strings.ReplaceAll(strings.TrimSpace(evt.AgentID), "-", "_")
-		}
-		if role == "" {
-			role = "generalist"
-		}
-		// Avoid mutating caller-provided payload maps.
-		merged := make(map[string]interface{}, len(evt.Payload)+1)
-		for k, val := range evt.Payload {
-			merged[k] = val
-		}
-		merged["role"] = role
-		evt.Payload = merged
-	}
-
 	if m.redis != nil {
 		ctx := context.Background()
 
@@ -459,24 +438,49 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 		// Use longer TTL for sequence counter to prevent resets
 		m.redis.Expire(ctx, streamKey, 24*time.Hour)
 		m.redis.Expire(ctx, m.seqKey(workflowID), 48*time.Hour)
+
+		// Publish to global notification stream for webhook delivery
+		// Only for terminal workflow events (completion/failure)
+		if isNotifiableEvent(evt.Type) {
+			globalKey := "shannon:notifications:global"
+			_, gErr := m.redis.XAdd(ctx, &redis.XAddArgs{
+				Stream: globalKey,
+				MaxLen: 1000,
+				Approx: true,
+				Values: map[string]interface{}{
+					"workflow_id": evt.WorkflowID,
+					"type":        evt.Type,
+					"agent_id":    evt.AgentID,
+					"message":     evt.Message,
+					"ts_nano":     strconv.FormatInt(evt.Timestamp.UnixNano(), 10),
+				},
+			}).Result()
+			if gErr != nil {
+				m.logger.Error("Failed to publish to global notification stream",
+					zap.String("workflow_id", workflowID),
+					zap.String("type", evt.Type),
+					zap.Error(gErr))
+			}
+			m.redis.Expire(ctx, globalKey, 48*time.Hour)
+		}
 	}
 
 	// Persist to DB if configured (best-effort, non-blocking)
 	// Only persist important events, not streaming deltas
 	if m.dbClient != nil && m.persistCh != nil && shouldPersistEvent(evt.Type) {
 		// Non-blocking enqueue; drop if full (we never block streaming)
-		// Sanitize message and payload to remove large base64 images (browser screenshots)
 		el := db.EventLog{
 			WorkflowID: evt.WorkflowID,
 			Type:       evt.Type,
 			AgentID:    evt.AgentID,
-			Message:    sanitizeEventMessage(evt.Message),
+			Message:    sanitizeUTF8(evt.Message),
 			Timestamp:  evt.Timestamp,
 			Seq:        evt.Seq,
 			StreamID:   evt.StreamID,
 		}
 		if evt.Payload != nil {
-			el.Payload = db.JSONB(sanitizeEventPayload(evt.Payload))
+			// Sanitize payload for persistence (remove large base64 data)
+			el.Payload = db.JSONB(sanitizePayloadForPersistence(evt.Type, evt.Payload))
 		}
 		select {
 		case m.persistCh <- el:
@@ -537,7 +541,8 @@ func shouldPersistEvent(eventType string) bool {
 		// Phase 2A: Multi-agent coordination events
 		"ROLE_ASSIGNED",
 		"DELEGATION",
-		"BUDGET_THRESHOLD":
+		"BUDGET_THRESHOLD",
+		"SCREENSHOT_SAVED":
 		return true
 
 	// ❌ Don't persist: Streaming deltas and heartbeats
@@ -557,29 +562,17 @@ func shouldPersistEvent(eventType string) bool {
 	}
 }
 
-// sanitizeUTF8 ensures invalid UTF-8 bytes are removed before persistence.
-func sanitizeUTF8(s string) string {
-	if s == "" || utf8.ValidString(s) {
-		return s
+// isNotifiableEvent returns true for events that should trigger webhook notifications.
+func isNotifiableEvent(eventType string) bool {
+	switch eventType {
+	case "WORKFLOW_COMPLETED", "WORKFLOW_FAILED":
+		return true
+	default:
+		return false
 	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for len(s) > 0 {
-		r, size := utf8.DecodeRuneInString(s)
-		if r == utf8.RuneError && size == 1 {
-			// Skip invalid byte; Postgres rejects malformed UTF-8.
-			s = s[size:]
-			continue
-		}
-		b.WriteRune(r)
-		s = s[size:]
-	}
-	return b.String()
 }
 
-// SanitizeBase64Image truncates large base64-encoded images in strings to prevent
-// Redis/Postgres bloat from browser automation screenshots.
-// Returns the sanitized string with base64 data replaced by a placeholder.
+// SanitizeBase64Image truncates large base64 image data in strings.
 func SanitizeBase64Image(s string) string {
 	if s == "" {
 		return s
@@ -631,8 +624,6 @@ func SanitizeBase64Image(s string) string {
 	return result
 }
 
-// sanitizeEventMessage sanitizes event message content for storage.
-// Removes invalid UTF-8 and truncates large base64 images.
 func sanitizeEventMessage(s string) string {
 	s = sanitizeUTF8(s)
 	s = SanitizeBase64Image(s)
@@ -655,7 +646,7 @@ func sanitizeEventPayload(payload map[string]interface{}) map[string]interface{}
 
 		switch val := v.(type) {
 		case string:
-			// Handle raw base64 values directly (common for browser_screenshot payloads).
+			// Handle raw base64 values directly (common for browser action=screenshot payloads).
 			if (key == "screenshot" || key == "popup_screenshot") && len(val) > 1024 {
 				return "[BASE64_IMAGE_TRUNCATED]"
 			}
@@ -678,6 +669,70 @@ func sanitizeEventPayload(payload map[string]interface{}) map[string]interface{}
 		sanitized[k] = sanitizeValue(k, v, 0)
 	}
 	return sanitized
+}
+
+// sanitizePayloadForPersistence removes large data (e.g., base64 screenshots) from payloads
+// before persisting to Postgres. The full payload is still available via Redis/SSE for real-time UI.
+func sanitizePayloadForPersistence(eventType string, payload map[string]interface{}) map[string]interface{} {
+	if payload == nil {
+		return nil
+	}
+
+	// Only TOOL_OBSERVATION with screenshot data needs sanitization
+	if eventType != "TOOL_OBSERVATION" {
+		return payload
+	}
+
+	// Check if this is a browser screenshot tool result
+	tool, hasT := payload["tool"].(string)
+	output, hasO := payload["output"].(map[string]interface{})
+	if !hasT || !hasO || tool != "browser" {
+		return payload
+	}
+	// Only sanitize if output contains screenshot data
+	if _, hasScreenshot := output["screenshot"]; !hasScreenshot {
+		return payload
+	}
+
+	// Deep copy payload and strip screenshot base64
+	sanitized := make(map[string]interface{})
+	for k, v := range payload {
+		if k == "output" {
+			// Create sanitized output without screenshot base64
+			sanitizedOutput := make(map[string]interface{})
+			for ok, ov := range output {
+				if ok == "screenshot" {
+					sanitizedOutput[ok] = "[BASE64_STRIPPED_FOR_PERSISTENCE]"
+				} else {
+					sanitizedOutput[ok] = ov
+				}
+			}
+			sanitized[k] = sanitizedOutput
+		} else {
+			sanitized[k] = v
+		}
+	}
+	return sanitized
+}
+
+// sanitizeUTF8 ensures invalid UTF-8 bytes are removed before persistence.
+func sanitizeUTF8(s string) string {
+	if s == "" || utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			// Skip invalid byte; Postgres rejects malformed UTF-8.
+			s = s[size:]
+			continue
+		}
+		b.WriteRune(r)
+		s = s[size:]
+	}
+	return b.String()
 }
 
 // persistWorker batches event logs and writes them asynchronously.
@@ -768,6 +823,12 @@ func (m *Manager) ReplaySince(workflowID string, since uint64) []Event {
 				event.Timestamp = time.Unix(0, nano)
 			}
 		}
+		if v, ok := msg.Values["payload"].(string); ok && v != "" {
+			var p map[string]interface{}
+			if err := json.Unmarshal([]byte(v), &p); err == nil {
+				event.Payload = p
+			}
+		}
 
 		events = append(events, event)
 	}
@@ -821,29 +882,17 @@ func (m *Manager) ReplayFromStreamID(workflowID string, streamID string) []Event
 				event.Timestamp = time.Unix(0, nano)
 			}
 		}
+		if v, ok := msg.Values["payload"].(string); ok && v != "" {
+			var p map[string]interface{}
+			if err := json.Unmarshal([]byte(v), &p); err == nil {
+				event.Payload = p
+			}
+		}
 
 		events = append(events, event)
 	}
 
 	return events
-}
-
-// GetLastStreamID returns the ID of the last message in the stream
-func (m *Manager) GetLastStreamID(workflowID string) string {
-	if m.redis == nil {
-		return ""
-	}
-
-	ctx := context.Background()
-	streamKey := m.streamKey(workflowID)
-
-	// Get only the last message efficiently with XRevRangeN
-	messages, err := m.redis.XRevRangeN(ctx, streamKey, "+", "-", 1).Result()
-	if err != nil || len(messages) == 0 {
-		return ""
-	}
-
-	return messages[0].ID
 }
 
 // HasEmittedCompletion checks if WORKFLOW_COMPLETED has been emitted for a workflow.
@@ -881,6 +930,24 @@ func (m *Manager) HasEmittedCompletion(ctx context.Context, workflowID string) b
 	}
 
 	return false
+}
+
+// GetLastStreamID returns the ID of the last message in the stream
+func (m *Manager) GetLastStreamID(workflowID string) string {
+	if m.redis == nil {
+		return ""
+	}
+
+	ctx := context.Background()
+	streamKey := m.streamKey(workflowID)
+
+	// Get only the last message efficiently with XRevRangeN
+	messages, err := m.redis.XRevRangeN(ctx, streamKey, "+", "-", 1).Result()
+	if err != nil || len(messages) == 0 {
+		return ""
+	}
+
+	return messages[0].ID
 }
 
 // Shutdown gracefully shuts down the manager, stopping all stream readers and flushing persistence.
@@ -939,4 +1006,71 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	m.logger.Info("Streaming manager shutdown complete")
 	return nil
+}
+
+// Blob storage for large payloads (screenshots, etc.) that exceed Temporal limits
+
+const (
+	// blobKeyPrefix is the Redis key prefix for stored blobs
+	blobKeyPrefix = "shannon:blob:"
+	// blobTTL is how long blobs are kept in Redis (7 days)
+	blobTTL = 7 * 24 * time.Hour
+)
+
+// StoreBlob stores a large blob in Redis and returns a reference key.
+// The blob is stored with a TTL and can be retrieved via GetBlob.
+func (m *Manager) StoreBlob(ctx context.Context, workflowID, fieldName, data string) (string, error) {
+	if m.redis == nil {
+		return "", fmt.Errorf("redis not configured")
+	}
+
+	// Generate a unique key for this blob
+	key := fmt.Sprintf("%s%s:%s", blobKeyPrefix, workflowID, fieldName)
+
+	err := m.redis.Set(ctx, key, data, blobTTL).Err()
+	if err != nil {
+		m.logger.Error("Failed to store blob in Redis",
+			zap.String("key", key),
+			zap.Int("size", len(data)),
+			zap.Error(err))
+		return "", err
+	}
+
+	m.logger.Debug("Stored blob in Redis",
+		zap.String("key", key),
+		zap.Int("size", len(data)),
+		zap.Duration("ttl", blobTTL))
+
+	return key, nil
+}
+
+// GetBlob retrieves a blob from Redis by its key.
+// Returns empty string if not found or expired.
+func (m *Manager) GetBlob(ctx context.Context, key string) (string, error) {
+	if m.redis == nil {
+		return "", fmt.Errorf("redis not configured")
+	}
+
+	data, err := m.redis.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return "", nil // Not found or expired
+	}
+	if err != nil {
+		m.logger.Error("Failed to get blob from Redis",
+			zap.String("key", key),
+			zap.Error(err))
+		return "", err
+	}
+
+	return data, nil
+}
+
+// RefreshBlobTTL extends the TTL of a blob key.
+// Useful when a blob is still being accessed.
+func (m *Manager) RefreshBlobTTL(ctx context.Context, key string) error {
+	if m.redis == nil {
+		return fmt.Errorf("redis not configured")
+	}
+
+	return m.redis.Expire(ctx, key, blobTTL).Err()
 }

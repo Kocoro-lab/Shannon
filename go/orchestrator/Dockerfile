@@ -5,12 +5,15 @@ RUN apk add --no-cache git
 
 WORKDIR /app
 
-# Copy go.mod and go.sum
-COPY go.mod go.sum ./
+# Copy go.mod and go.sum (context is project root)
+COPY go/orchestrator/go.mod go/orchestrator/go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY go/orchestrator/ .
+
+# Copy shared proto definitions for proto generation check
+COPY protos/ /protos/
 
 # Check if proto files exist, if not, provide clear error message
 RUN if [ ! -d "internal/pb" ]; then \

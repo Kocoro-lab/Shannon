@@ -4,14 +4,16 @@
 pub mod config;
 pub mod enforcement;
 pub mod error;
+pub mod firecracker_client;
 pub mod grpc_server;
 pub mod llm_client;
 pub mod memory;
+pub mod memory_manager;
 pub mod metrics;
 pub mod proto;
+pub mod safe_commands;
 #[cfg(feature = "wasi")]
 pub mod sandbox;
-pub mod safe_commands;
 pub mod sandbox_service;
 pub mod tool_cache;
 pub mod tool_registry;

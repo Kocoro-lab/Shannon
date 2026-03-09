@@ -246,11 +246,11 @@ class ToolRegistry:
         # Core tools that should be prioritized for each task type
         TASK_CORE_TOOLS = {
             "research": ["web_search", "web_fetch", "web_subpage_fetch"],
-            "coding": ["python_executor", "file_read", "file_write"],
+            "coding": ["python_executor", "file_read", "file_write", "file_edit"],
             "analysis": ["calculator", "advanced_calculator", "python_executor"],
-            "browser": ["browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_extract"],
-            "file": ["file_read", "file_write", "file_list"],
-            "general": ["web_search", "calculator"],
+            "browser": ["browser"],
+            "file": ["file_read", "file_write", "file_edit", "file_list", "file_search"],
+            "general": ["web_search", "calculator", "file_read", "file_write"],
         }
 
         # Get base tools to filter from

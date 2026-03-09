@@ -1,20 +1,44 @@
-import { configureStore } from '@reduxjs/toolkit';
+import { configureStore, combineReducers } from '@reduxjs/toolkit';
 import { persistStore, persistReducer } from 'redux-persist';
-import storage from 'redux-persist/lib/storage'; // defaults to localStorage for web
-import { combineReducers } from 'redux';
+import createWebStorage from 'redux-persist/lib/storage/createWebStorage';
 
 import runReducer from './features/runSlice';
 
+const createNoopStorage = () => {
+    return {
+        getItem() {
+            return Promise.resolve(null);
+        },
+        setItem(_key: string, value: unknown) {
+            return Promise.resolve(value);
+        },
+        removeItem() {
+            return Promise.resolve();
+        },
+    };
+};
+
+const storage = typeof window !== 'undefined' ? createWebStorage('local') : createNoopStorage();
+
+// Nested persist config for run slice - only persist user preferences
+// Exclude: events, messages, toolHistory (contain large base64 screenshots)
+const runPersistConfig = {
+    key: 'run',
+    storage,
+    whitelist: [
+        'selectedAgent',
+        'researchStrategy',
+    ],
+};
+
 const rootReducer = combineReducers({
-    // Add reducers here
-    // example: example: exampleReducer,
-    run: runReducer,
+    run: persistReducer(runPersistConfig, runReducer),
 });
 
 const persistConfig = {
     key: 'root',
     storage,
-    blacklist: ['run'], // Don't persist run state — autoApprove should reset to "on" on each launch
+    blacklist: ['run'], // run has its own nested config
 };
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);
@@ -24,7 +48,15 @@ export const store = configureStore({
     middleware: (getDefaultMiddleware) =>
         getDefaultMiddleware({
             serializableCheck: {
-                ignoredActions: ['persist/PERSIST', 'persist/REHYDRATE'],
+                // Ignore all redux-persist actions (they use non-serializable callbacks)
+                ignoredActions: [
+                    'persist/PERSIST',
+                    'persist/REHYDRATE',
+                    'persist/PURGE',
+                    'persist/FLUSH',
+                    'persist/PAUSE',
+                    'persist/REGISTER',
+                ],
             },
         }),
 });

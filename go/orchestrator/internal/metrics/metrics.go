@@ -465,6 +465,30 @@ var (
 		[]string{"reason"}, // reason: duplicate, low_value, error
 	)
 
+	// Prompt cache metrics (Anthropic prompt caching)
+	PromptCacheReadTokens = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_prompt_cache_read_tokens_total",
+			Help: "Total prompt cache read tokens (Anthropic cache hits)",
+		},
+		[]string{"provider", "model"},
+	)
+
+	PromptCacheCreationTokens = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "shannon_prompt_cache_creation_tokens_total",
+			Help: "Total prompt cache creation tokens (Anthropic cache writes)",
+		},
+		[]string{"provider", "model"},
+	)
+
+	PromptCacheSavingsUSD = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "shannon_prompt_cache_savings_usd_total",
+			Help: "Total USD saved by prompt caching",
+		},
+	)
+
 	// Model tier selection metrics (regression prevention)
 	ModelTierRequested = promauto.NewCounterVec(
 		prometheus.CounterOpts{
@@ -625,5 +649,18 @@ func RecordProviderOverride(provider string, respected bool) {
 func RecordProviderDrift(requestedProvider, selectedProvider, reason string) {
 	if requestedProvider != "" && selectedProvider != "" && requestedProvider != selectedProvider {
 		ProviderSelectionDrift.WithLabelValues(requestedProvider, selectedProvider, reason).Inc()
+	}
+}
+
+// RecordPromptCacheMetrics records prompt cache token metrics
+func RecordPromptCacheMetrics(provider, model string, readTokens, creationTokens int, savingsUSD float64) {
+	if readTokens > 0 {
+		PromptCacheReadTokens.WithLabelValues(provider, model).Add(float64(readTokens))
+	}
+	if creationTokens > 0 {
+		PromptCacheCreationTokens.WithLabelValues(provider, model).Add(float64(creationTokens))
+	}
+	if savingsUSD > 0 {
+		PromptCacheSavingsUSD.Add(savingsUSD)
 	}
 }

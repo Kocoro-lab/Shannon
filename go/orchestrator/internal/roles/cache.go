@@ -20,11 +20,30 @@ type presetPayload struct {
 
 var (
 	roleAllowlist = map[string][]string{
-		"analysis":   {"web_search", "code_reader"},
-		"research":   {"web_search"},
-		"writer":     {"code_reader"},
-		"critic":     {"code_reader"},
-		"generalist": {},
+		// Fallback allowlist used when llm-service /roles is unavailable.
+		// Keep this aligned with python/llm-service/llm_service/roles/presets.py.
+		"analysis":            {"web_search", "file_read"},
+		"research":            {"web_search", "web_fetch", "web_subpage_fetch", "web_crawl"},
+		"deep_research_agent": {"web_search", "web_fetch", "web_subpage_fetch", "web_crawl"},
+		"writer":              {"file_read"},
+		"critic":              {"file_read", "file_list", "bash"},
+		"generalist":          {"file_read", "file_list", "bash", "web_search"},
+		"research_refiner":    {},
+		"developer":           {"file_read", "file_write", "file_list", "bash", "python_executor"},
+		"ads_research": {
+			"ads_serp_extract",
+			"ads_transparency_search",
+			"ads_competitor_discover",
+			"ads_creative_analyze",
+			"lp_visual_analyze",
+			"lp_batch_analyze",
+			"web_search",
+			"web_fetch",
+		},
+		"browser_use": {
+			"browser",
+			"web_search",
+		},
 	}
 	roleAllowlistOnce sync.Once
 	roleAllowlistMu   sync.RWMutex

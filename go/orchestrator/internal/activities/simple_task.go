@@ -30,8 +30,9 @@ type ExecuteSimpleTaskResult struct {
 	Error          string          `json:"error,omitempty"`
 	ModelUsed      string          `json:"model_used,omitempty"`
 	Provider       string          `json:"provider,omitempty"`
-	DurationMs     int64           `json:"duration_ms,omitempty"`
-	ToolExecutions []ToolExecution `json:"tool_executions,omitempty"`
+	DurationMs      int64           `json:"duration_ms,omitempty"`
+	ToolExecutions  []ToolExecution `json:"tool_executions,omitempty"`
+	ScreenshotPaths []string        `json:"screenshot_paths,omitempty"`
 }
 
 // ExecuteSimpleTask executes a simple query with minimal overhead
@@ -60,6 +61,13 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		mergedContext[k] = v
 	}
 
+	// Add user_id to context for audit logging in Python tools (e.g., session_file)
+	if input.UserID != "" {
+		if _, exists := mergedContext["user_id"]; !exists {
+			mergedContext["user_id"] = input.UserID
+		}
+	}
+
 	// Step 2: Execute agent using shared helper (not calling activity directly)
 	agentInput := AgentExecutionInput{
 		Query:            input.Query,
@@ -67,6 +75,7 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 		Context:          mergedContext,
 		Mode:             "simple",
 		SessionID:        input.SessionID,
+		UserID:           input.UserID,
 		History:          input.History,
 		PersonaID:        input.PersonaID,
 		SuggestedTools:   input.SuggestedTools,
@@ -95,12 +104,13 @@ func ExecuteSimpleTask(ctx context.Context, input ExecuteSimpleTaskInput) (Execu
 	// Return the complete result including details needed for persistence
 	// The workflow will handle persistence via Temporal activities for better resilience
 	return ExecuteSimpleTaskResult{
-		Response:       agentResult.Response,
-		TokensUsed:     agentResult.TokensUsed,
-		Success:        true,
-		ModelUsed:      agentResult.ModelUsed,
-		Provider:       agentResult.Provider,
-		DurationMs:     agentResult.DurationMs,
-		ToolExecutions: agentResult.ToolExecutions,
+		Response:        agentResult.Response,
+		TokensUsed:      agentResult.TokensUsed,
+		Success:         true,
+		ModelUsed:       agentResult.ModelUsed,
+		Provider:        agentResult.Provider,
+		DurationMs:      agentResult.DurationMs,
+		ToolExecutions:  agentResult.ToolExecutions,
+		ScreenshotPaths: agentResult.ScreenshotPaths,
 	}, nil
 }

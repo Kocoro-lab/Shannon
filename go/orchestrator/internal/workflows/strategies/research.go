@@ -2977,6 +2977,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 								Context:   discoveryContext,
 								Mode:      "standard",
 								SessionID: input.SessionID,
+								UserID:    input.UserID,
 								History:   convertHistoryForAgent(input.History),
 								SuggestedTools: []string{
 									"web_search",
@@ -3216,6 +3217,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 									Context:   discoveryContext,
 									Mode:      "standard",
 									SessionID: input.SessionID,
+									UserID:    input.UserID,
 									History:   convertHistoryForAgent(input.History),
 									SuggestedTools: []string{
 										"web_search",
@@ -3462,6 +3464,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 									Context:        prefetchContext,
 									Mode:           "standard",
 									SessionID:      input.SessionID,
+									UserID:         input.UserID,
 									History:        convertHistoryForAgent(input.History),
 									SuggestedTools: []string{"web_subpage_fetch"},
 									ToolParameters: map[string]interface{}{
@@ -4758,6 +4761,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				Context:          fallbackCtx,
 				Mode:             "standard",
 				SessionID:        input.SessionID,
+				UserID:           input.UserID,
 				History:          convertHistoryForAgent(input.History),
 				SuggestedTools:   []string{"web_search"},
 				ParentWorkflowID: input.ParentWorkflowID,
@@ -4992,7 +4996,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}
 	}
 
-	// Fallback: quick strategy disables iterative loop (same pattern as gap_filling below)
+	// Fallback: quick strategy disables iterative loop (same pattern as gap_filling at line 5509)
 	if !iterativeEnabledExplicit {
 		strategy := ""
 		if sv, ok := baseContext["research_strategy"].(string); ok {
@@ -6044,7 +6048,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to service error",
+				Message:    activities.MsgCitationSkipped(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 		} else if citationResult.ValidationPassed {
@@ -6077,7 +6081,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to validation failure",
+				Message:    activities.MsgCitationSkipped(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 		}

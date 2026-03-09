@@ -118,6 +118,7 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 		Query:     input.Query,
 		Context:   input.Context,
 		SessionID: input.SessionID,
+		UserID:    input.UserID,
 		AgentID:   agentName,
 		Mode:      input.Mode,
 	}
@@ -212,6 +213,11 @@ func StreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error
 				"workflow": "streaming",
 			},
 		}).Get(recCtx, nil)
+	}
+
+	// Record tool-cost rows if streaming returned tool usage metadata.
+	if input.UserID != "" {
+		opts.RecordToolCostEntries(ctx, streamRes, input.UserID, input.SessionID, workflowID)
 	}
 
 	// Update session with token usage
@@ -350,6 +356,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			Query:     input.Query + " (perspective 1)",
 			Context:   input.Context,
 			SessionID: input.SessionID,
+			UserID:    input.UserID,
 			AgentID:   agent1,
 			Mode:      input.Mode,
 		},
@@ -357,6 +364,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			Query:     input.Query + " (perspective 2)",
 			Context:   input.Context,
 			SessionID: input.SessionID,
+			UserID:    input.UserID,
 			AgentID:   agent2,
 			Mode:      input.Mode,
 		},
@@ -364,6 +372,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 			Query:     input.Query + " (perspective 3)",
 			Context:   input.Context,
 			SessionID: input.SessionID,
+			UserID:    input.UserID,
 			AgentID:   agent3,
 			Mode:      input.Mode,
 		},
@@ -406,6 +415,7 @@ func ParallelStreamingWorkflow(ctx workflow.Context, input TaskInput) (TaskResul
 	if input.UserID != "" {
 		recCtx := opts.WithTokenRecordOptions(ctx)
 		for _, res := range results {
+			opts.RecordToolCostEntries(ctx, res, input.UserID, input.SessionID, workflowID)
 			// Skip zero-token runs to avoid noisy rows.
 			if res.TokensUsed <= 0 && res.InputTokens <= 0 && res.OutputTokens <= 0 {
 				continue

@@ -191,15 +191,18 @@ func (b *BudgetActivities) CheckTokenBudgetWithCircuitBreaker(ctx context.Contex
 
 // TokenUsageInput represents token usage to record
 type TokenUsageInput struct {
-	UserID       string                 `json:"user_id"`
-	SessionID    string                 `json:"session_id"`
-	TaskID       string                 `json:"task_id"`
-	AgentID      string                 `json:"agent_id"`
-	Model        string                 `json:"model"`
-	Provider     string                 `json:"provider"`
-	InputTokens  int                    `json:"input_tokens"`
-	OutputTokens int                    `json:"output_tokens"`
-	Metadata     map[string]interface{} `json:"metadata"`
+	UserID              string                 `json:"user_id"`
+	SessionID           string                 `json:"session_id"`
+	TaskID              string                 `json:"task_id"`
+	AgentID             string                 `json:"agent_id"`
+	Model               string                 `json:"model"`
+	Provider            string                 `json:"provider"`
+	InputTokens         int                    `json:"input_tokens"`
+	OutputTokens        int                    `json:"output_tokens"`
+	CacheReadTokens     int                    `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int                    `json:"cache_creation_tokens,omitempty"`
+	CostOverride        float64                `json:"cost_override,omitempty"` // When > 0, use instead of pricing calculation
+	Metadata            map[string]interface{} `json:"metadata"`
 }
 
 // RecordTokenUsage records actual token usage
@@ -220,16 +223,19 @@ func (b *BudgetActivities) RecordTokenUsage(ctx context.Context, input TokenUsag
 	idempotencyKey := fmt.Sprintf("%s-%s-%d", info.WorkflowExecution.ID, info.ActivityID, info.Attempt)
 
 	usage := &budget.BudgetTokenUsage{
-		UserID:         input.UserID,
-		SessionID:      input.SessionID,
-		TaskID:         input.TaskID,
-		AgentID:        input.AgentID,
-		Model:          input.Model,
-		Provider:       input.Provider,
-		InputTokens:    input.InputTokens,
-		OutputTokens:   input.OutputTokens,
-		Metadata:       input.Metadata,
-		IdempotencyKey: idempotencyKey,
+		UserID:              input.UserID,
+		SessionID:           input.SessionID,
+		TaskID:              input.TaskID,
+		AgentID:             input.AgentID,
+		Model:               input.Model,
+		Provider:            input.Provider,
+		InputTokens:         input.InputTokens,
+		OutputTokens:        input.OutputTokens,
+		CacheReadTokens:     input.CacheReadTokens,
+		CacheCreationTokens: input.CacheCreationTokens,
+		CostOverride:        input.CostOverride,
+		Metadata:            input.Metadata,
+		IdempotencyKey:      idempotencyKey,
 	}
 
 	// Backfill missing provider from model if available
@@ -377,6 +383,11 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 	}
 
 	// Treat empty output with no tokens/tools as a failure and skip recording unless explicitly requested
+	// Check for tool cost entries before early exits — these must be recorded
+	// even if the LLM call produced zero tokens (e.g., provider error).
+	hasToolCosts := result.Metadata != nil &&
+		func() bool { _, ok := result.Metadata["tool_cost_entries"].([]interface{}); return ok }()
+
 	noOutput := strings.TrimSpace(result.Response) == "" &&
 		len(result.ToolExecutions) == 0 &&
 		result.TokensUsed == 0 &&
@@ -387,13 +398,13 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		if result.Error == "" {
 			result.Error = "agent produced no output or token usage"
 		}
-		if !recordZeroToken {
+		if !recordZeroToken && !hasToolCosts {
 			return &result, nil
 		}
 	}
 
-	// Skip recording zero-token runs unless explicitly requested
-	if (inputTokens+outputTokens) == 0 && !recordZeroToken {
+	// Skip recording zero-token runs unless explicitly requested or tool costs exist
+	if (inputTokens+outputTokens) == 0 && !recordZeroToken && !hasToolCosts {
 		b.logger.Warn("Skipping token usage record: zero tokens and no record_zero_token flag",
 			zap.String("agent_id", input.AgentInput.AgentID),
 			zap.String("task_id", input.TaskID),
@@ -408,13 +419,64 @@ func (b *BudgetActivities) ExecuteAgentWithBudget(ctx context.Context, input Bud
 		AgentID:        input.AgentInput.AgentID,
 		Model:          actualModel,
 		Provider:       actualProvider,
-		InputTokens:    inputTokens,
-		OutputTokens:   outputTokens,
-		IdempotencyKey: idempotencyKey,
+		InputTokens:         inputTokens,
+		OutputTokens:        outputTokens,
+		CacheReadTokens:     result.CacheReadTokens,
+		CacheCreationTokens: result.CacheCreationTokens,
+		IdempotencyKey:      idempotencyKey,
 	})
 
 	if err != nil {
 		b.logger.Error("Failed to record usage after agent execution", zap.Error(err))
+	}
+
+	// Record external tool costs if present in agent metadata.
+	// Metadata is populated by both paths:
+	//   - HTTP path (ExecuteAgentWithForcedTools): from Python agent response metadata
+	//   - gRPC path (executeAgentCore): from ExecuteTaskResponse.metadata proto field
+	// Note: streaming path (runStreaming) does not carry metadata, but agents with
+	// tools always use the unary path (useStreaming=false when tools are present).
+	if result.Metadata != nil {
+		if rawEntries, ok := result.Metadata["tool_cost_entries"].([]interface{}); ok {
+			for i, raw := range rawEntries {
+				em, ok := raw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				costModel, _ := em["cost_model"].(string)
+				provider, _ := em["provider"].(string)
+				toolName, _ := em["tool"].(string)
+				syntheticTokens := 7500
+				if st, ok := em["synthetic_tokens"].(float64); ok && int(st) > 0 {
+					syntheticTokens = int(st)
+				}
+				// Read upstream-reported cost (e.g. web_fetch LLM extraction cost)
+				var costOverride float64
+				if c, ok := em["cost_usd"].(float64); ok && c > 0 {
+					costOverride = c
+				}
+
+				toolUsage := &budget.BudgetTokenUsage{
+					UserID:         input.UserID,
+					SessionID:      input.AgentInput.SessionID,
+					TaskID:         input.TaskID,
+					AgentID:        fmt.Sprintf("tool_%s", toolName),
+					Model:          costModel,
+					Provider:       provider,
+					InputTokens:    0,
+					OutputTokens:   syntheticTokens,
+					CostOverride:   costOverride,
+					IdempotencyKey: fmt.Sprintf("%s-%s-tool-%s-%d",
+						input.TaskID, input.AgentInput.AgentID, toolName, i),
+				}
+				if err := b.budgetManager.RecordUsage(ctx, toolUsage); err != nil {
+					b.logger.Warn("Failed to record tool cost",
+						zap.String("tool", toolName),
+						zap.String("model", costModel),
+						zap.Error(err))
+				}
+			}
+		}
 	}
 
 	return &result, nil

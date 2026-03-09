@@ -27,8 +27,8 @@ strategies:
     gap_filling_max_iterations: 1
     gap_filling_check_citations: false
     iterative_max_iterations: 1
-    # Standard uses medium for agents; final synthesis auto-upgrades to large
-    agent_model_tier: medium
+    # Standard uses small for agents; final synthesis auto-upgrades to large
+    agent_model_tier: small
   deep:
     verification_enabled: true
     max_concurrent_agents: 5

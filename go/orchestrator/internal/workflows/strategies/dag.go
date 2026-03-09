@@ -744,7 +744,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to service error",
+				Message:    activities.MsgCitationSkipped(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 		} else if citationResult.ValidationPassed {
@@ -776,7 +776,7 @@ func DAGWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to validation failure",
+				Message:    activities.MsgCitationSkipped(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 			// Keep original finalResult (which already has Sources)

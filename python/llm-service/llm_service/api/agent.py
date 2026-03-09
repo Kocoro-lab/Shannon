@@ -2,6 +2,7 @@
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List, Tuple
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -19,6 +20,9 @@ def strip_markdown_json_wrapper(text: str, *, expect_json: bool) -> str:
 
     Only strips wrappers for JSON-looking content (```json ... ``` or ``` ... ``` with
     a JSON object/array body). This avoids breaking normal markdown/code outputs.
+
+    Handles trailing text after the closing fence (e.g. LLM appending notes after
+    the JSON block).
     """
     if not expect_json or not text or not isinstance(text, str):
         return text
@@ -37,14 +41,85 @@ def strip_markdown_json_wrapper(text: str, *, expect_json: bool) -> str:
         return text
 
     body = trimmed[first_newline + 1 :].strip()
-    if not body.endswith("```"):
-        return text
+    if body.endswith("```"):
+        # Clean case: ```json ... ```
+        body = body[:-3].strip()
+    else:
+        # Trailing text after closing fence: ```json ... ``` \n **notes:** ...
+        # Find the closing ``` and extract only the JSON block.
+        closing_idx = body.find("\n```")
+        if closing_idx == -1:
+            return text
+        body = body[:closing_idx].strip()
 
-    body = body[:-3].strip()
     if not body or body[0] not in "{[":
         return text
 
     return body
+
+
+def _parse_history_entries(raw_history: Any) -> List[Dict[str, str]]:
+    """Parse chat history from context."""
+
+    messages: List[Dict[str, str]] = []
+
+    def add_entry(role_value: Any, content_value: Any) -> None:
+        role = str(role_value).strip().lower() if role_value is not None else ""
+        if role not in ("user", "assistant"):
+            return
+        content = str(content_value).replace("\\n", "\n") if content_value is not None else ""
+        messages.append({"role": role, "content": content})
+
+    if raw_history is None:
+        return messages
+
+    # New format: list of entries from Rust
+    if isinstance(raw_history, list):
+        for item in raw_history:
+            if isinstance(item, dict):
+                add_entry(item.get("role"), item.get("content"))
+                continue
+            if isinstance(item, str):
+                line = item.strip()
+                if not line:
+                    continue
+                if ": " in line:
+                    role, content = line.split(": ", 1)
+                    add_entry(role, content)
+        return messages
+
+    if not isinstance(raw_history, str):
+        return messages
+
+    # Legacy format: multi-line "role: content" entries
+    lines = raw_history.strip().split("\n")
+    current_role: Optional[str] = None
+    current_content: List[str] = []
+
+    def flush_current() -> None:
+        nonlocal current_role, current_content
+        if current_role is None:
+            return
+        add_entry(current_role, "\n".join(current_content))
+        current_role = None
+        current_content = []
+
+    for line in lines:
+        if line.startswith("user: "):
+            flush_current()
+            current_role = "user"
+            current_content = [line[len("user: "):]]
+            continue
+        if line.startswith("assistant: "):
+            flush_current()
+            current_role = "assistant"
+            current_content = [line[len("assistant: "):]]
+            continue
+        if current_role is not None:
+            current_content.append(line)
+
+    flush_current()
+    return messages
 
 
 def _response_format_expects_json(response_format: Any) -> bool:
@@ -219,6 +294,19 @@ def should_use_source_format(role: Optional[str]) -> bool:
     return role.strip().lower() in SOURCE_FORMAT_ROLES
 
 
+# Tools whose output doesn't need LLM summarization — raw results go directly back.
+# These tools return structured data (file listings, file content, search results, write confirmations)
+# that the next LLM call can process directly without an intermediate interpretation step.
+# For swarm agents, skipping interpretation saves ~10s per tool call.
+DATA_ONLY_TOOLS = frozenset({
+    "file_list", "file_read", "file_search", "file_write",
+    "publish_data",
+    "web_search",  # Search snippets are short structured data
+    "web_fetch", "web_subpage_fetch",  # Content already compressed by extract_with_llm inside web_fetch.py
+    "calculator",
+})
+
+
 def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], max_chars: int = 3000) -> str:
     """
     Generate a human-readable digest from tool results.
@@ -281,18 +369,28 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
                 if not pages and any(k in output for k in ("url", "title", "content")):
                     pages = [output]
 
-            for page in (pages or [])[:3]:  # Top 3 pages
-                if isinstance(page, dict) and page.get("success") is False:
-                    continue
+            valid_pages = [p for p in (pages or [])[:3] if not (isinstance(p, dict) and p.get("success") is False)]
+            # Budget per page: leave ~1000 chars for headers/other tools, divide rest among pages
+            per_page_budget = max(2000, (max_chars - 1000) // max(len(valid_pages), 1))
+            for page in valid_pages:
                 title = page.get("title", "Untitled") if isinstance(page, dict) else "Untitled"
                 content = page.get("content", "") if isinstance(page, dict) else ""
                 url = page.get("url", "") if isinstance(page, dict) else ""
+                truncated = page.get("truncated", False) if isinstance(page, dict) else False
+                char_count = page.get("char_count", len(content)) if isinstance(page, dict) else len(content)
                 if content and len(content) > 50:
                     if content.startswith("%PDF"):
                         lines.append(f"- **{title}** (PDF document)")
                     else:
-                        preview = content[:500].replace("\n", " ").strip()
-                        lines.append(f"- **{title}**: {preview}...")
+                        # Quality signal: help agent decide whether to retry
+                        if char_count < 500:
+                            quality = f"[{char_count} chars, POOR QUALITY — skip this URL, try a different source]"
+                        elif truncated:
+                            quality = f"[{char_count} chars, TRUNCATED — do NOT re-fetch same URL, content below is the best extraction available]"
+                        else:
+                            quality = f"[{char_count} chars]"
+                        preview = content[:per_page_budget].replace("\n", " ").strip()
+                        lines.append(f"- **{title}** {quality}: {preview}")
                     if url:
                         lines.append(f"  Source: {url}")
             lines.append("")
@@ -319,8 +417,9 @@ def generate_tool_digest(tool_results: str, tool_records: List[Dict[str, Any]], 
             if isinstance(output, dict):
                 url = output.get("url") or ""
                 content = output.get("content") or ""
-                preview = str(content)[:800].replace("\n", " ").strip()
-                lines.append(f"- {preview}...")
+                crawl_budget = max(2000, max_chars - 1000)
+                preview = str(content)[:crawl_budget].replace("\n", " ").strip()
+                lines.append(f"- {preview}")
                 if url:
                     lines.append(f"  Source: {url}")
             lines.append("")
@@ -906,9 +1005,8 @@ async def agent_query(request: Request, query: AgentQuery):
                             if isinstance(prompt_params, dict):
                                 current_date = prompt_params.get("current_date")
                     if not current_date:
-                        from datetime import datetime, timezone
                         current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    
+
                     # Prepend date to system prompt
                     date_prefix = f"Current date: {current_date} (UTC).\n\n"
                     system_prompt = date_prefix + system_prompt
@@ -1036,28 +1134,17 @@ async def agent_query(request: Request, query: AgentQuery):
                 f"Context keys: {list(query.context.keys()) if isinstance(query.context, dict) else 'Invalid context type'}"
             )
             if query.context and "history" in query.context:
-                history_str = str(query.context.get("history", ""))
-                logger.info(
-                    f"History string length: {len(history_str)}, preview: {history_str[:100] if history_str else 'Empty'}"
-                )
-                if history_str:
-                    # Parse the history string format: "role: content\n"
-                    for line in history_str.strip().split("\n"):
-                        if ": " in line:
-                            role, content = line.split(": ", 1)
-                            # Only add user and assistant messages to maintain conversation flow
-                            if role.lower() in ["user", "assistant"]:
-                                messages.append(
-                                    {"role": role.lower(), "content": content}
-                                )
-                                history_rehydrated = True
+                raw_history = query.context.get("history")
+                history_entries = _parse_history_entries(raw_history)
+                logger.info(f"Parsed history entries: {len(history_entries)}")
+                for item in history_entries:
+                    messages.append({"role": item["role"], "content": item["content"]})
+                    history_rehydrated = True
 
-                    # Remove history from context to avoid duplication
-                    context_without_history = {
-                        k: v for k, v in query.context.items() if k != "history"
-                    }
-                else:
-                    context_without_history = query.context
+                # Remove history from context to avoid duplication
+                context_without_history = {
+                    k: v for k, v in query.context.items() if k != "history"
+                }
             else:
                 context_without_history = query.context if query.context else {}
 
@@ -1071,7 +1158,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 def _truncate_text(text: str, max_chars: int) -> str:
                     if len(text) <= max_chars:
                         return text
-                    return text[:max_chars] + "\n...[TRUNCATED]"
+                    return text[:max_chars] + "\n...[TRUNCATED — this is the available data, do NOT re-search for more]"
 
                 def _format_template_results(value: Any) -> str:
                     if not isinstance(value, dict):
@@ -1115,8 +1202,10 @@ async def agent_query(request: Request, query: AgentQuery):
                     return _truncate_text(str(value), 20000)
 
                 session_allowed = {
-                    "agent_memory",    # Conversation memory items (injected by workflows)
-                    "context_summary", # Compressed context history (injected by workflows)
+                    "agent_memory",        # Conversation memory items (injected by workflows)
+                    "context_summary",     # Compressed context history (injected by workflows)
+                    "user_memory",         # User persistent memory recall (auto-injected, Phase 3)
+                    "user_memory_prompt",  # System instructions for /memory directory access
                 }
                 task_allowed = {
                     # ReAct / dependency context (transient)
@@ -1326,11 +1415,29 @@ async def agent_query(request: Request, query: AgentQuery):
 
             # Collect structured tool executions for upstream observability/persistence
             tool_execution_records: List[Dict[str, Any]] = []
+            all_tool_cost_entries: List[Dict[str, Any]] = []
             seed_raw_tool_results: List[Dict[str, Any]] = []
             seed_search_urls: List[str] = []
             seed_fetch_success = False
             seed_last_tool_results = ""
             seed_loop_function_call: Optional[str] = None
+
+            # Detect research mode early so forced_tool_calls can check it (issue #43)
+            research_mode = (
+                isinstance(query.context, dict)
+                and (
+                    query.context.get("force_research")
+                    or query.context.get("research_strategy")
+                    or query.context.get("research_mode")
+                    or query.context.get("workflow_type") == "research"
+                    or query.context.get("role") == "deep_research_agent"
+                )
+            )
+
+            # Inject research_mode into context so tools can check it (issue #43)
+            # research_mode is already in safe_keys whitelist (~line 2532)
+            if research_mode and isinstance(query.context, dict):
+                query.context["research_mode"] = True
 
             # Generate completion with tools if specified
             if effective_allowed_tools:
@@ -1393,7 +1500,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 logger.info(
                     f"Executing forced tool sequence: {[fc['name'] for fc in forced_calls]}"
                 )
-                tool_results, exec_records, raw_records = await _execute_and_format_tools(
+                tool_results, exec_records, raw_records, cost_entries = await _execute_and_format_tools(
                     forced_calls,
                     effective_allowed_tools or [],
                     query.query,
@@ -1401,6 +1508,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     query.context,
                 )
                 tool_execution_records.extend(exec_records)
+                all_tool_cost_entries.extend(cost_entries)
 
                 # Seed tool-loop context from forced tool executions (e.g., precomputed web_search)
                 seed_raw_tool_results.extend(raw_records)
@@ -1422,18 +1530,87 @@ async def agent_query(request: Request, query: AgentQuery):
                             "content": f"[Executed {forced_calls[0]['name']}]",
                         }
                     )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"Tool execution result:\n{tool_results}\n\n"
-                            "Based on this result, please answer the original query."
-                        ),
-                    }
-                )
-                # Forced tool execution completed - disable further tool calls to prevent duplicates
-                effective_allowed_tools = []
-                logger.info("Forced tool execution completed, disabling further tool calls")
+                if research_mode:
+                    # Research mode: keep tools for OODA loop, guide to continue research
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Tool execution result:\n{tool_results}\n\n"
+                                "These are seed results. Continue your OODA research loop: "
+                                "Observe results → Orient (identify gaps) → Decide → Act.\n"
+                                "Use web_fetch to read full pages, or web_search with different queries to fill gaps."
+                            ),
+                        }
+                    )
+                    logger.info("Forced tool execution completed, keeping tools for research OODA loop")
+                else:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Tool execution result:\n{tool_results}\n\n"
+                                "Based on this result, please answer the original query."
+                            ),
+                        }
+                    )
+                    # Non-research: disable further tool calls to prevent duplicates
+                    effective_allowed_tools = []
+                    logger.info("Forced tool execution completed, disabling further tool calls")
+
+                    # ── SWARM FAST PATH ──────────────────────────────────────
+                    # When forced_tool_calls executed data-only tools outside research mode,
+                    # return raw results directly. The swarm agent's next /agent/loop
+                    # iteration will process these results. This eliminates one redundant
+                    # Haiku call per tool_call iteration (~40% token savings).
+                    is_swarm = isinstance(query.context, dict) and query.context.get("force_swarm")
+                    all_forced_data_only = tool_execution_records and all(
+                        r.get("tool") in DATA_ONLY_TOOLS for r in tool_execution_records
+                    )
+                    if all_forced_data_only and is_swarm:
+                        # 10K is enough for swarm agents — results go into next /agent/loop
+                        # context, so oversized digests inflate prompt tokens for little gain.
+                        digest = generate_tool_digest(
+                            tool_results or "",
+                            tool_execution_records,
+                            max_chars=10000,
+                        )
+                        fast_response = digest or tool_results or ""
+                        tools_used = sorted(
+                            {rec.get("tool") for rec in tool_execution_records if rec.get("tool")}
+                        )
+                        logger.info(
+                            f"[swarm_fast_path] Direct tool return for agent={query.agent_id}, "
+                            f"tools={tools_used}, skipping LLM call"
+                        )
+                        return AgentResponse(
+                            success=True,
+                            response=fast_response,
+                            tokens_used=0,
+                            model_used="",
+                            provider="bypass",
+                            finish_reason="swarm_fast_path",
+                            metadata={
+                                "agent_id": query.agent_id,
+                                "mode": query.mode,
+                                "allowed_tools": [],
+                                "role": effective_role,
+                                "requested_role": requested_role,
+                                "system_prompt_source": system_prompt_source,
+                                "provider": "bypass",
+                                "finish_reason": "swarm_fast_path",
+                                "requested_max_tokens": max_tokens,
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "cache_read_tokens": 0,
+                                "cache_creation_tokens": 0,
+                                "cost_usd": 0.0,
+                                "effective_max_completion": 0,
+                                "tools_used": tools_used,
+                                "tool_executions": tool_execution_records,
+                                "tool_cost_entries": all_tool_cost_entries,
+                            },
+                        )
 
             # When force_tools enabled and tools available, force model to use a tool
             # "any" forces the model to use at least one tool, "auto" only allows tools but doesn't force
@@ -1558,17 +1735,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     pass
                 return default_val
 
-            # Detect research mode first to apply appropriate limits
-            research_mode = (
-                isinstance(query.context, dict)
-                and (
-                    query.context.get("force_research")
-                    or query.context.get("research_strategy")
-                    or query.context.get("research_mode")
-                    or query.context.get("workflow_type") == "research"
-                    or query.context.get("role") == "deep_research_agent"
-                )
-            )
+            # research_mode was detected early (before forced_tool_calls) — see above
 
             # Base defaults for non-research mode
             default_iterations = 3
@@ -1598,6 +1765,8 @@ async def agent_query(request: Request, query: AgentQuery):
             total_tokens = 0
             total_input_tokens = 0
             total_output_tokens = 0
+            total_cache_read = 0
+            total_cache_creation = 0
             total_cost_usd = 0.0
             total_tool_output_chars = 0
             loop_iterations = 0
@@ -1650,6 +1819,8 @@ async def agent_query(request: Request, query: AgentQuery):
                     total_tokens += int(usage.get("total_tokens") or 0)
                     total_input_tokens += int(usage.get("input_tokens") or 0)
                     total_output_tokens += int(usage.get("output_tokens") or 0)
+                    total_cache_read += int(usage.get("cache_read_tokens") or 0)
+                    total_cache_creation += int(usage.get("cache_creation_tokens") or 0)
                     total_cost_usd += float(usage.get("cost_usd") or 0.0)
                 except Exception:
                     pass
@@ -1699,7 +1870,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     stop_reason = "no_tool_call"
                     break
 
-                tool_results, exec_records, raw_records = await _execute_and_format_tools(
+                tool_results, exec_records, raw_records, cost_entries = await _execute_and_format_tools(
                     tool_calls_from_output,
                     effective_allowed_tools,
                     query.query,
@@ -1709,6 +1880,7 @@ async def agent_query(request: Request, query: AgentQuery):
                 last_tool_results = tool_results
                 tool_execution_records.extend(exec_records)
                 raw_tool_results.extend(raw_records)
+                all_tool_cost_entries.extend(cost_entries)
 
                 if loop_function_call == "any":
                     loop_function_call = "auto"
@@ -1826,7 +1998,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         did_forced_fetch = True
                         logger.info(f"DR policy: auto-fetching URLs={len(urls_to_fetch)} after search")
                         policy_calls = [{"name": "web_fetch", "arguments": {"urls": urls_to_fetch}}]
-                        policy_results, policy_execs, policy_raw = await _execute_and_format_tools(
+                        policy_results, policy_execs, policy_raw, policy_costs = await _execute_and_format_tools(
                             policy_calls,
                             effective_allowed_tools,
                             query.query,
@@ -1836,6 +2008,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         last_tool_results = policy_results or last_tool_results
                         tool_execution_records.extend(policy_execs)
                         raw_tool_results.extend(policy_raw)
+                        all_tool_cost_entries.extend(policy_costs)
                         if policy_results:
                             messages.append(
                                 {
@@ -1884,7 +2057,16 @@ async def agent_query(request: Request, query: AgentQuery):
             # (previously skipped, causing "I'll execute..." output instead of JSON)
             skip_interpretation_roles: set[str] = set()  # No roles skip interpretation
             role = query.context.get("role") if isinstance(query.context, dict) else None
-            skip_interpretation = role in skip_interpretation_roles
+            # A3: Skip interpretation when ALL executed tools are data-only (file_list, file_read, etc.)
+            # These tools return structured data that doesn't benefit from LLM summarization.
+            all_data_only_tools = tool_execution_records and all(
+                r.get("tool") in DATA_ONLY_TOOLS for r in tool_execution_records
+            )
+            # Research roles always need interpretation to produce structured reports
+            # (Key Findings / Analysis format) even when all tools are data-only.
+            if all_data_only_tools and should_use_source_format(role):
+                all_data_only_tools = False
+            skip_interpretation = role in skip_interpretation_roles or all_data_only_tools
 
             has_successful_tool = any(r.get("success") for r in tool_execution_records)
             if not skip_interpretation and tool_execution_records and (
@@ -2008,13 +2190,28 @@ async def agent_query(request: Request, query: AgentQuery):
                     total_tokens += int(i_usage.get("total_tokens") or 0)
                     total_input_tokens += int(i_usage.get("input_tokens") or 0)
                     total_output_tokens += int(i_usage.get("output_tokens") or 0)
+                    total_cache_read += int(i_usage.get("cache_read_tokens") or 0)
+                    total_cache_creation += int(i_usage.get("cache_creation_tokens") or 0)
                     total_cost_usd += float(i_usage.get("cost_usd") or 0.0)
                 except Exception:
                     pass
                 result_data = interpretation_result
             else:
                 result_data = last_result_data or {}
-                skip_reason = f"role={role}" if skip_interpretation else f"has_successful_tool={has_successful_tool}, stop_reason={stop_reason}"
+                # A3: When skipping due to data-only tools, use digest (no LLM call) as response
+                if all_data_only_tools and tool_execution_records:
+                    digest = generate_tool_digest(
+                        last_tool_results or "",
+                        tool_execution_records,
+                        max_chars=30000,
+                    )
+                    if digest:
+                        response_text = digest
+                skip_reason = (
+                    "data_only_tools" if all_data_only_tools else
+                    f"role={role}" if role in skip_interpretation_roles else
+                    f"has_successful_tool={has_successful_tool}, stop_reason={stop_reason}"
+                )
                 logger.info(f"[interpretation_pass] SKIPPED for agent={query.agent_id}, {skip_reason}, response_preview={str(response_text)[:100]}")
 
             # Stub Guard: Clean any pseudo tool-call stubs from final output
@@ -2066,6 +2263,8 @@ async def agent_query(request: Request, query: AgentQuery):
                             total_tokens += int(cleanup_usage.get("total_tokens") or 0)
                             total_input_tokens += int(cleanup_usage.get("input_tokens") or 0)
                             total_output_tokens += int(cleanup_usage.get("output_tokens") or 0)
+                            total_cache_read += int(cleanup_usage.get("cache_read_tokens") or 0)
+                            total_cache_creation += int(cleanup_usage.get("cache_creation_tokens") or 0)
                             total_cost_usd += float(cleanup_usage.get("cost_usd") or 0.0)
                         except Exception:
                             pass
@@ -2115,10 +2314,13 @@ async def agent_query(request: Request, query: AgentQuery):
                     "requested_max_tokens": max_tokens,
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
+                    "cache_read_tokens": total_cache_read,
+                    "cache_creation_tokens": total_cache_creation,
                     "cost_usd": total_cost_usd,
                     "effective_max_completion": (result_data or {}).get("effective_max_completion"),
                     "tools_used": tools_used,
                     "tool_executions": tool_execution_records,
+                    "tool_cost_entries": all_tool_cost_entries,
                 },
             )
         else:
@@ -2177,10 +2379,10 @@ async def _execute_and_format_tools(
     query: str = "",
     request=None,
     context: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Execute tool calls and format results into natural language."""
     if not tool_calls:
-        return "", [], []
+        return "", [], [], []
 
     from ..tools import get_registry
 
@@ -2189,6 +2391,7 @@ async def _execute_and_format_tools(
     formatted_results = []
     tool_execution_records: List[Dict[str, Any]] = []
     raw_tool_results: List[Dict[str, Any]] = []
+    tool_cost_entries: List[Dict[str, Any]] = []
 
     # Set up event emitter and workflow/agent IDs for tool events
     emitter = None
@@ -2232,6 +2435,27 @@ async def _execute_and_format_tools(
             logger.info(f"[tool_audit] {payload}")
         except Exception:
             pass
+
+    _TOOL_DISPLAY_NAMES = {
+        "web_search": "Searching the web",
+        "web_fetch": "Fetching page",
+        "calculator": "Calculating",
+        "python_code": "Running code",
+        "python_executor": "Running code",
+        "code_executor": "Running code",
+        "file_read": "Reading file",
+        "file_reader": "Reading file",
+        "file_write": "Writing to file",
+        "file_list": "Listing files",
+        "file_search": "Searching files",
+        "code_reader": "Reviewing code",
+    }
+
+    def _humanize_tool(tool_name: str) -> str:
+        """Convert raw tool name to user-friendly action text."""
+        if tool_name in _TOOL_DISPLAY_NAMES:
+            return _TOOL_DISPLAY_NAMES[tool_name]
+        return tool_name.replace("_", " ").capitalize()
 
     def _sanitize_payload(
         value: Any,
@@ -2385,7 +2609,7 @@ async def _execute_and_format_tools(
                         wf_id,
                         "TOOL_INVOKED",
                         agent_id=agent_id,
-                        message=f"Executing {tool_name}",
+                        message=_humanize_tool(tool_name),
                         payload={"tool": tool_name, "params": sanitized_params},
                     )
                 except Exception:
@@ -2446,9 +2670,6 @@ async def _execute_and_format_tools(
                     # Trading agents: upstream node results from TemplateWorkflow
                     "template_results",
                     "dependency_results",
-                    # Python executor mode configuration
-                    "python_executor_mode",  # "wasi" or "firecracker"
-                    "python_executor",       # Per-request config overrides
                 }
                 sanitized_context = {k: v for k, v in context.items() if k in safe_keys}
                 for key in ("template_results", "dependency_results"):
@@ -2674,6 +2895,15 @@ async def _execute_and_format_tools(
                 }
             )
 
+            if result and result.cost_usd and result.cost_usd > 0:
+                tool_cost_entries.append({
+                    "tool": tool_name,
+                    "cost_usd": result.cost_usd,
+                    "cost_model": result.cost_model or f"shannon_{tool_name}",
+                    "provider": "shannon-scraper",
+                    "synthetic_tokens": result.tokens_used or 7500,
+                })
+
             raw_tool_results.append(
                 {
                     "tool": tool_name,
@@ -2731,6 +2961,7 @@ async def _execute_and_format_tools(
         "\n\n".join(formatted_results) if formatted_results else "",
         tool_execution_records,
         raw_tool_results,
+        tool_cost_entries,
     )
 
 
@@ -2824,6 +3055,13 @@ class Subtask(BaseModel):
     boundaries: Optional[BoundariesSpec] = Field(
         default=None, description="Scope boundaries"
     )
+    # P2P Coordination fields (populated when p2p_enabled=true)
+    produces: List[str] = Field(
+        default_factory=list, description="Topics this subtask produces"
+    )
+    consumes: List[str] = Field(
+        default_factory=list, description="Topics this subtask consumes"
+    )
 
 
 class DecompositionResponse(BaseModel):
@@ -2864,6 +3102,7 @@ class AgentLoopTurn(BaseModel):
     iteration: int = 0
     action: str = ""
     result: Optional[Any] = None
+    decision_summary: str = ""
 
 
 class AgentMailboxMsg(BaseModel):
@@ -2877,6 +3116,7 @@ class TeamMemberInfo(BaseModel):
     """A teammate in the swarm."""
     agent_id: str = ""
     task: str = ""
+    role: str = ""
 
 
 class WorkspaceSnippet(BaseModel):
@@ -2884,6 +3124,14 @@ class WorkspaceSnippet(BaseModel):
     author: str = ""
     data: str = ""
     seq: int = 0
+
+
+class TeamKnowledgeEntry(BaseModel):
+    """A URL fetched by a swarm agent, for cross-agent dedup (L2)."""
+    url: str = ""
+    agent: str = ""
+    summary: str = ""
+    char_count: int = 0
 
 
 class AgentLoopStepRequest(BaseModel):
@@ -2899,11 +3147,24 @@ class AgentLoopStepRequest(BaseModel):
     team_roster: List[TeamMemberInfo] = Field(default_factory=list, description="Teammates and their tasks")
     workspace_data: List[WorkspaceSnippet] = Field(default_factory=list, description="Recent shared workspace entries")
     max_iterations: int = Field(default=25, description="Maximum iterations for this agent loop")
+    suggested_tools: List[str] = Field(default_factory=list, description="Tools available to this agent")
+    role_description: str = Field(default="", description="Agent role description for system prompt")
+    role: str = Field(default="", description="Persona role: researcher, coder, analyst, generalist")
+    task_list: List[Dict[str, Any]] = Field(default_factory=list, description="Current TaskList state for prompt")
+    model_tier: Optional[str] = Field(default=None, description="Model tier: small, medium, large")
+    previous_response_id: Optional[str] = Field(default=None, description="OpenAI Responses API: chain from previous response")
+    system_message: Optional[str] = Field(default=None, description="Urgent directive appended to user prompt end (recency bias)")
+    running_notes: Optional[str] = Field(default=None, description="Agent's cumulative notes from previous iterations")
+    is_swarm: bool = Field(default=False, description="True when running inside SwarmWorkflow (enables done→idle mapping)")
+    cumulative_tool_calls: int = Field(default=0, description="Total tool_calls across all tasks (survives reassignment)")
+    team_knowledge: List[TeamKnowledgeEntry] = Field(default_factory=list, description="URLs already fetched by team agents (L2 dedup)")
+    original_query: str = Field(default="", description="User's original question for broader context")
 
 
 class AgentLoopStepResponse(BaseModel):
     """LLM decision for one iteration of the agent loop."""
     action: str = Field(..., description="Action type: tool_call, send_message, publish_data, request_help, done")
+    decision_summary: str = Field(default="", description="1-3 sentence reasoning for this action (max 500 chars)")
     # tool_call
     tool: str = ""
     tool_params: Dict[str, Any] = Field(default_factory=dict)
@@ -2917,59 +3178,175 @@ class AgentLoopStepResponse(BaseModel):
     # request_help
     help_description: str = ""
     help_skills: List[str] = Field(default_factory=list)
+    # complete_task / claim_task
+    task_id: str = ""
+    # create_task
+    task_description: str = ""
     # done
     response: str = ""
+    # done — structured completion report for Lead visibility
+    completion_report: Dict[str, Any] = Field(default_factory=dict, description="Structured report: {summary, files_written, key_findings}")
     # usage
     tokens_used: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
     model_used: str = ""
     provider: str = ""
+    response_id: str = ""  # OpenAI Responses API ID for chaining
+    notes: str = ""  # Agent's updated running notes for next iteration
 
 
-AGENT_LOOP_SYSTEM_PROMPT = """You are an autonomous agent in a multi-agent team. Your task is given below.
-You operate in a reason-act loop. Each turn, you decide ONE action to take.
-You share a session workspace directory with your teammates. Files written by any agent are readable by all.
+# Import swarm prompts from roles/swarm/ — single source of truth
+from ..roles.swarm.agent_protocol import get_work_protocol  # noqa: E402
+from ..roles.swarm.role_prompts import SWARM_ROLE_PROMPTS  # noqa: E402
 
-AVAILABLE ACTIONS (return exactly one per turn as JSON):
 
-1. tool_call - Execute a tool (web_search, python_executor, file_write, file_read, etc.)
-   {"action": "tool_call", "tool": "web_search", "tool_params": {"query": "..."}}
-   {"action": "tool_call", "tool": "python_executor", "tool_params": {"code": "..."}}
-   {"action": "tool_call", "tool": "file_write", "tool_params": {"path": "results.json", "content": "..."}}
-   {"action": "tool_call", "tool": "file_read", "tool_params": {"path": "teammate-results.json"}}
+def build_agent_messages(body: AgentLoopStepRequest) -> list:
+    """Build [system, user] messages for the agent loop.
 
-2. publish_data - Share a text finding with the team (lightweight, for summaries and signals)
-   {"action": "publish_data", "topic": "findings", "data": "Key insight: ..."}
+    Restores the original single-user-message structure that agents are
+    trained on. Multi-turn (fake assistant messages) caused agent identity
+    confusion ("I cannot execute tools"). Explicit cache_control on system
+    message (anthropic_provider.py:238) provides prefix caching for Lead
+    (>1024 token threshold). Automatic caching was removed as net-negative.
 
-3. send_message - Send a direct message to a specific teammate
-   {"action": "send_message", "to": "agent-id", "message_type": "info", "payload": {"message": "..."}}
+    Returns a list of [{"role": "system", ...}, {"role": "user", ...}].
+    """
+    from ..roles.presets import get_role_preset
 
-4. request_help - Ask the supervisor to spawn a new agent
-   {"action": "request_help", "help_description": "I need help with...", "help_skills": ["web_search"]}
+    # --- System prompt ---
+    role_key = body.role or ""
+    role_prompt = ""
+    if role_key:
+        swarm_prompt = SWARM_ROLE_PROMPTS.get(role_key, "")
+        if swarm_prompt:
+            role_prompt = swarm_prompt
+        else:
+            preset = get_role_preset(role_key)
+            preset_prompt = preset.get("system_prompt", "")
+            if preset_prompt and role_key != "generalist":
+                role_prompt = preset_prompt + "\n\n"
+    if not role_prompt and body.role_description:
+        role_prompt = f"You are a specialist focused on: {body.role_description}\n\n"
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    system_prompt = f"The current date is {current_date} (UTC).\n\n" + role_prompt + get_work_protocol(role_key or "generalist")
 
-5. done - Task complete, return your final response
-   {"action": "done", "response": "Your complete answer here"}
+    # --- Single user message (original structure) ---
+    user_parts: list[str] = []
+    if body.original_query:
+        user_parts.append(f"## User's Original Question\n{body.original_query}")
+    user_parts.append(f"## Task\n{body.task}")
 
-MEMORY MANAGEMENT:
-- For tool results larger than ~500 chars, save them to a file and note the filename
-- Before returning "done", write your complete findings to {your-agent-id}-report.md
-- This keeps your context clean and gives teammates access to your full work
-- Use file_read to discover what teammates have written
-- CRITICAL: Your "done" response MUST be a SHORT summary (under 500 chars). All detailed findings MUST be saved to files BEFORE calling done. If your response would be long, save it to a file first and reference the filename.
+    if body.team_roster:
+        roster_lines = []
+        for tm in body.team_roster:
+            role_tag = f" [{tm.role}]" if tm.role else ""
+            if tm.agent_id == body.agent_id:
+                roster_lines.append(f"- **{tm.agent_id}{role_tag} (you)**: \"{tm.task}\"")
+            else:
+                roster_lines.append(f"- {tm.agent_id}{role_tag}: \"{tm.task}\"")
+        user_parts.append("## Your Team (shared session workspace)\n" + "\n".join(roster_lines))
 
-COLLABORATION RULES:
-- Return ONLY valid JSON, no markdown wrapping
-- Choose "done" when you have enough information to answer
-- SHARE LARGE ARTIFACTS: Write data tables, full reports, code to files using file_write (relative paths only, e.g., `results.json`)
-- SHARE SUMMARIES: Use publish_data for quick text findings that teammates should see immediately
-- CHECK FIRST: Before researching, use file_read to check teammates' files and review shared findings
-- DON'T DUPLICATE: If a teammate already found what you need, build on their work
-- MESSAGE SPARINGLY: Use send_message only when you need specific data from a specific agent
-- INDEPENDENT TASKS: If your task doesn't overlap with teammates, just do your work and call "done"
-- FILE NAMING: Use {your-agent-id}-{description}.{ext} to avoid conflicts (relative paths only, no /workspace/ prefix)
-- TRACK PROGRESS: Every 3-4 iterations, publish_data with topic "status" to share what you've found and what's left to do. This helps teammates avoid duplicate work.
-"""
+    # L2 Team Knowledge: URLs already fetched by teammates — injected as stable context
+    # so agents avoid redundant fetches and leverage existing data.
+    if body.team_knowledge:
+        tk_lines = [f"- {e.url} ({e.agent}): {e.summary}" for e in body.team_knowledge[-30:]]
+        user_parts.append(
+            "## Team Knowledge (already fetched — use this data, do NOT re-fetch)\n"
+            + "\n".join(tk_lines)
+        )
+        logger.debug("L2 team knowledge injected: agent=%s entries=%d", body.agent_id, len(body.team_knowledge))
+
+    # History BEFORE TaskBoard — old history entries are stable across iterations,
+    # extending the cacheable prefix (explicit system message breakpoint). TaskBoard changes
+    # frequently in parallel swarms (agents completing tasks), breaking the prefix.
+    # Order: Task → Team → Knowledge → History (stable prefix) → Board/Notes/Findings/Inbox (volatile)
+    history_lines = []  # Initialized here so trimming loop below can reference it
+    if body.history:
+        # Uniform 2000 char truncation for prefix stability: tiered truncation
+        # (4000 recent / 2000 old) causes ONE entry to change every iteration
+        # when it transitions from "recent" to "old", breaking the cache prefix.
+        # 2000 chars is 4x the original 500 and sufficient for context.
+        HISTORY_RESULT_MAX = 2000
+        for turn in body.history:
+            result_str = str(turn.result)[:HISTORY_RESULT_MAX] if turn.result else "no result"
+            history_lines.append(f"- Iteration {turn.iteration}: {turn.action} → {result_str}")
+        user_parts.append("## Previous Actions\n" + "\n".join(history_lines))
+
+    # TaskBoard here (volatile — status changes frequently in parallel swarms)
+    if body.task_list:
+        tl_lines = []
+        for t in body.task_list:
+            status = t.get("status", "pending").upper()
+            owner = t.get("owner", "")
+            desc = t.get("description", "")
+            tid = t.get("id", "")
+            you_marker = " (you)" if owner == body.agent_id else ""
+            tl_lines.append(f"- {tid} [{status}] {owner}{you_marker}: {desc}")
+        user_parts.append("## Task Board\n" + "\n".join(tl_lines))
+
+    if body.running_notes:
+        user_parts.append("## Your Running Notes (update every turn)\n" + body.running_notes)
+
+    if body.workspace_data:
+        ws_lines = [f"- {ws.author}: {ws.data}" for ws in body.workspace_data]
+        user_parts.append("## Shared Findings\n" + "\n".join(ws_lines))
+
+    if body.messages:
+        msg_lines = [f"- From {msg.from_agent} ({msg.type}): {str(msg.payload)[:2000]}" for msg in body.messages]
+        user_parts.append("## Inbox Messages\n" + "\n".join(msg_lines))
+
+    # Go passes cumulative_tool_calls; fallback counts from history (action format: "tool_call:web_search")
+    tool_call_count = body.cumulative_tool_calls if body.cumulative_tool_calls > 0 else sum(1 for t in body.history if (t.action or "").startswith("tool_call"))
+    # Go history uses "tool_call:file_write" format for action field
+    has_file_write = any(
+        "file_write" in (t.action or "")
+        for t in body.history
+    ) if body.history else False
+    TOOL_CALL_TARGET = 15
+    TOOL_CALL_NUDGE = 10
+    TOOL_CALL_RESERVE = 13  # Reserve last 2 calls for file_write + idle
+    budget_text = f"## Budget: {tool_call_count}/{TOOL_CALL_TARGET} tool calls used\n"
+    if has_file_write:
+        # Agent already wrote file — push toward idle, not another file_write
+        budget_text += "You already saved your findings via file_write. Go idle NOW with key_findings.\n"
+    elif tool_call_count >= TOOL_CALL_TARGET + 3:
+        budget_text += "OVER BUDGET: STOP all search/fetch. Your NEXT action MUST be file_write. Data not written to file is LOST.\n"
+    elif tool_call_count >= TOOL_CALL_TARGET:
+        budget_text += "BUDGET REACHED: Your NEXT action MUST be file_write with your findings. Then go idle.\n"
+    elif tool_call_count >= TOOL_CALL_RESERVE:
+        budget_text += f"WARNING: {TOOL_CALL_TARGET - tool_call_count} calls left. STOP searching. Your NEXT action MUST be file_write to save findings.\n"
+    elif tool_call_count >= TOOL_CALL_NUDGE:
+        budget_text += f"Approaching budget — {TOOL_CALL_TARGET - tool_call_count} calls left. Reserve last 2 for file_write + idle.\n"
+    budget_text += "Decide your next action. Return ONLY valid JSON."
+    user_parts.append(budget_text)
+
+    if body.system_message:
+        user_parts.append(
+            f"## ⚠️ SYSTEM DIRECTIVE\n{body.system_message}\n"
+            "You MUST follow this directive IMMEDIATELY in your next action."
+        )
+
+    # Token-aware context trimming: drop oldest history if user message too large
+    max_prompt_chars = 400_000  # ~100K tokens, safe for medium-tier models
+    user_content = "\n\n".join(user_parts)
+    while len(user_content) > max_prompt_chars and len(history_lines) > 2:
+        # Remove oldest history entry
+        history_lines.pop(0)
+        # Rebuild the history section in user_parts
+        for i, part in enumerate(user_parts):
+            if part.startswith("## Previous Actions"):
+                user_parts[i] = "## Previous Actions\n" + "\n".join(history_lines)
+                break
+        user_content = "\n\n".join(user_parts)
+        logger.info(f"AgentLoop: trimmed oldest history to fit context (agent={body.agent_id})")
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
 
 
 @router.post("/agent/loop", response_model=AgentLoopStepResponse)
@@ -2980,146 +3357,204 @@ async def agent_loop_step(request: Request, body: AgentLoopStepRequest) -> Agent
     if not providers or not providers.is_configured():
         raise HTTPException(status_code=503, detail="LLM providers not configured")
 
-    # Build the prompt with task, team roster, workspace, history, and mailbox
-    user_parts = [f"## Task\n{body.task}"]
-
-    # Inject team roster so agent knows its teammates
-    if body.team_roster:
-        roster_lines = []
-        for tm in body.team_roster:
-            if tm.agent_id == body.agent_id:
-                roster_lines.append(f"- **{tm.agent_id} (you)**: \"{tm.task}\"")
-            else:
-                roster_lines.append(f"- {tm.agent_id}: \"{tm.task}\"")
-        user_parts.append(
-            "## Your Team (shared session workspace)\n" + "\n".join(roster_lines)
-        )
-
-    # Inject shared workspace findings from other agents
-    if body.workspace_data:
-        ws_lines = []
-        for ws in body.workspace_data:
-            ws_lines.append(f"- {ws.author}: {ws.data}")
-        user_parts.append("## Shared Findings\n" + "\n".join(ws_lines))
-
-    if body.history:
-        history_lines = []
-        num_turns = len(body.history)
-        for idx, turn in enumerate(body.history):
-            # Last 3 iterations: full detail (4000 chars)
-            # Older iterations: summary (500 chars)
-            is_recent = (num_turns - idx) <= 3
-            max_len = 4000 if is_recent else 500
-            result_str = str(turn.result)[:max_len] if turn.result else "no result"
-            history_lines.append(f"- Iteration {turn.iteration}: {turn.action} → {result_str}")
-        user_parts.append("## Previous Actions\n" + "\n".join(history_lines))
-
-    if body.messages:
-        msg_lines = []
-        for msg in body.messages:
-            payload_str = str(msg.payload)[:2000]
-            msg_lines.append(f"- From {msg.from_agent} ({msg.type}): {payload_str}")
-        user_parts.append("## Inbox Messages\n" + "\n".join(msg_lines))
-
-    user_parts.append(f"## Budget: Iteration {body.iteration + 1} of {body.max_iterations}")
-    if body.iteration >= body.max_iterations - 2:
-        user_parts.append("⚠️ FINAL ITERATIONS: You MUST return done NOW with your best answer from research so far. Do not start new searches.")
-    user_parts.append("Decide your next action. Return ONLY valid JSON.")
-
-    user_prompt = "\n\n".join(user_parts)
-
-    # Token-aware context trimming: drop oldest history if prompt exceeds ~75% of context window.
-    # Rough estimate: 1 token ≈ 4 chars. Leave 4K tokens for system prompt + output.
-    max_prompt_chars = 400_000  # ~100K tokens, safe for medium-tier models
-    system_chars = len(AGENT_LOOP_SYSTEM_PROMPT)
-    if body.history and (system_chars + len(user_prompt)) > max_prompt_chars:
-        trimmed_history = list(body.history)
-        while len(trimmed_history) > 3 and (system_chars + len(user_prompt)) > max_prompt_chars:
-            trimmed_history = trimmed_history[1:]
-            history_lines = []
-            num_turns = len(trimmed_history)
-            for idx, turn in enumerate(trimmed_history):
-                is_recent = (num_turns - idx) <= 3
-                max_len = 4000 if is_recent else 500
-                result_str = str(turn.result)[:max_len] if turn.result else "no result"
-                history_lines.append(f"- Iteration {turn.iteration}: {turn.action} → {result_str}")
-            # Rebuild only the history section in user_parts
-            for i, part in enumerate(user_parts):
-                if part.startswith("## Previous Actions"):
-                    user_parts[i] = "## Previous Actions\n" + "\n".join(history_lines)
-                    break
-            user_prompt = "\n\n".join(user_parts)
-        if len(trimmed_history) < len(body.history):
-            logger.info(f"AgentLoop: trimmed history from {len(body.history)} to {len(trimmed_history)} entries to fit context")
+    # Build [system, user] messages with context trimming handled inside.
+    messages = build_agent_messages(body)
 
     try:
         import json as json_module
 
         from ..providers.base import ModelTier
+
+        # Tier selection (explicit request > context > default)
+        tier_map = {
+            "small": ModelTier.SMALL,
+            "medium": ModelTier.MEDIUM,
+            "large": ModelTier.LARGE,
+            # Be forgiving: some upstream components may emit xlarge; map it to large.
+            "xlarge": ModelTier.LARGE,
+        }
+        tier = ModelTier.MEDIUM
+        requested_tier_raw = body.model_tier if isinstance(body.model_tier, str) else None
+        if requested_tier_raw:
+            tier = tier_map.get(requested_tier_raw.lower().strip(), tier)
+        elif isinstance(body.context, dict):
+            ctx_tier_raw = body.context.get("model_tier")
+            if isinstance(ctx_tier_raw, str):
+                tier = tier_map.get(ctx_tier_raw.lower().strip(), tier)
+
+        logger.info(f"AgentLoop: using model tier {tier.value} (agent_id={body.agent_id})")
+
+        gen_kwargs: Dict[str, Any] = {
+            "tier": tier,
+            "temperature": 0.3,
+            "max_tokens": 16384,
+            "agent_id": body.agent_id,
+        }
+        if body.previous_response_id:
+            gen_kwargs["previous_response_id"] = body.previous_response_id
+
         result = await providers.generate_completion(
-            messages=[
-                {"role": "system", "content": AGENT_LOOP_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": "{"},
-            ],
-            tier=ModelTier.MEDIUM,
-            temperature=0.3,
-            max_tokens=2048,
-            agent_id=body.agent_id,
+            messages=messages,
+            **gen_kwargs,
         )
 
         raw_text = result.get("output_text", "") or ""
-        # Prepend the "{" from assistant prefill
-        raw_text = "{" + raw_text
+        # Safety net: some models may wrap JSON in markdown code fences.
+        # strip_markdown_json_wrapper handles this below (line ~3256).
         usage = result.get("usage", {}) or {}
         tokens_used = int(usage.get("total_tokens") or 0)
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
+        cache_read_tokens = int(usage.get("cache_read_tokens") or 0)
+        cache_creation_tokens = int(usage.get("cache_creation_tokens") or 0)
         model_used = result.get("model", "") or ""
         provider_name = result.get("provider", "") or ""
+        resp_id = result.get("request_id", "") or ""  # Responses API ID for chaining
 
         # Parse LLM JSON response
         cleaned = strip_markdown_json_wrapper(raw_text, expect_json=True).strip()
         try:
             action_data = json_module.loads(cleaned)
         except json_module.JSONDecodeError:
-            # If LLM didn't return valid JSON, treat as done with the raw text
-            logger.warning(f"AgentLoop: LLM returned non-JSON, treating as done: {raw_text[:200]}")
+            action_data = None
+
+        # GPT-5.1 sometimes emits multiple JSON objects concatenated with newlines
+        # (e.g. tool_params JSON then action JSON). json.loads() either fails on the
+        # combined string (JSONDecodeError) or parses only the first object which may
+        # lack "action". Scan backwards for the real action object in either case.
+        if (action_data is None or "action" not in action_data) and "\n" in cleaned:
+            for candidate in reversed(cleaned.split("\n")):
+                candidate = candidate.strip()
+                if candidate.startswith("{"):
+                    try:
+                        parsed = json_module.loads(candidate)
+                        if "action" in parsed:
+                            logger.info(f"AgentLoop: recovered action from multi-JSON output: action={parsed['action']}")
+                            action_data = parsed
+                            break
+                    except json_module.JSONDecodeError:
+                        continue
+
+        if action_data is None:
+            stop_reason = result.get("stop_reason", "") or result.get("finish_reason", "") or ""
+            logger.warning(f"AgentLoop: LLM returned non-JSON, treating as done: output_tokens={output_tokens}, stop_reason={stop_reason}, text_len={len(raw_text)}, preview={raw_text[:200]}")
             return AgentLoopStepResponse(
                 action="done",
                 response=raw_text,
                 tokens_used=tokens_used,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
                 model_used=model_used,
                 provider=provider_name,
+                response_id=resp_id,
             )
 
-        action = action_data.get("action", "done")
+        action = action_data.get("action", "idle")
+        # Normalize: prompt only defines "idle" (not "done") for completion,
+        # but LLMs sometimes return "done" anyway. Map to idle in swarm mode.
+        if action == "done" and body.is_swarm:
+            logger.info(f"Mapped done→idle for swarm agent {body.agent_id}")
+            action = "idle"
+
+        # Extract and truncate decision_summary (D7: max 500 chars)
+        decision_summary = str(action_data.get("decision_summary", ""))[:500]
+
+        # Debug: log every agent decision for tracing double-write and other issues
+        tool_name = action_data.get("tool", "")
+        tool_path = ""
+        if action == "tool_call" and isinstance(action_data.get("tool_params"), dict):
+            tool_path = action_data["tool_params"].get("path", "")
+        logger.info(f"[agent_decision] agent={body.agent_id} action={action} tool={tool_name} path={tool_path} summary={decision_summary[:200]}")
+
+        # Normalize tool_params to be more tolerant of schema drift in LLM JSON.
+        tool_params = action_data.get("tool_params", {}) or {}
+        if not isinstance(tool_params, dict):
+            tool_params = {}
+        # Common fields that models sometimes emit at top-level instead of under tool_params.
+        for k in (
+            "role",
+            "additional_spawns",
+            "create",
+            "cancel",
+            "spawn",
+            "task_id",
+            "agent_id",
+            "task_description",
+            "description",
+        ):
+            if k in action_data and k not in tool_params:
+                tool_params[k] = action_data[k]
+
+        # Normalize publish_data.data: LLM sometimes returns dict instead of string
+        publish_data_val = action_data.get("data", "")
+        if isinstance(publish_data_val, dict):
+            publish_data_val = json_module.dumps(publish_data_val, ensure_ascii=False)
+        elif not isinstance(publish_data_val, str):
+            publish_data_val = str(publish_data_val)
+
+        task_description = (
+            action_data.get("task_description")
+            or action_data.get("description")
+            or tool_params.get("task_description")
+            or tool_params.get("description")
+            or action_data.get("task")
+            or ""
+        )
+
+        # Build structured completion report for done/idle actions
+        completion_report = {}
+        if action in ("done", "idle"):
+            # Agent-generated summary (from response field, capped at 1000 chars)
+            raw_response = str(action_data.get("response", ""))
+            if raw_response and not (raw_response.strip().startswith("{") and "tool_params" in raw_response):
+                completion_report["summary"] = raw_response[:1000]
+            else:
+                completion_report["summary"] = decision_summary
+
+            # Extract key_findings if agent provided them
+            completion_report["key_findings"] = action_data.get("key_findings", [])
+
+        # Extract running notes — agent's cumulative memory (cap at 6000 chars)
+        notes = str(action_data.get("notes", ""))[:6000]
+        if action == "tool_call" and tool_name == "file_write":
+            logger.info(f"[agent_decision_notes] agent={body.agent_id} file_write notes={notes[:500]}")
 
         return AgentLoopStepResponse(
             action=action,
+            decision_summary=decision_summary,
             # tool_call
             tool=action_data.get("tool", ""),
-            tool_params=action_data.get("tool_params", {}),
-            # send_message
-            to=action_data.get("to", ""),
-            message_type=action_data.get("message_type", "info"),
+            tool_params=tool_params,
+            # send_message / assign_task target
+            to=action_data.get("to", "") or action_data.get("agent_id", ""),
+            message_type=action_data.get("message_type", "") or action_data.get("role", ""),
             payload=action_data.get("payload", {}),
             # publish_data
             topic=action_data.get("topic", ""),
-            data=action_data.get("data", ""),
+            data=publish_data_val,
             # request_help
             help_description=action_data.get("help_description", ""),
             help_skills=action_data.get("help_skills", []),
+            # complete_task / claim_task
+            task_id=action_data.get("task_id", ""),
+            # create_task
+            task_description=task_description,
             # done
             response=action_data.get("response", ""),
+            completion_report=completion_report,
+            # running notes
+            notes=notes,
             # usage
             tokens_used=tokens_used,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
             model_used=model_used,
             provider=provider_name,
+            response_id=resp_id,
         )
 
     except Exception as e:
@@ -3417,7 +3852,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                             f"  Required: {', '.join(required_params)}\n"
                         )
         else:
-            tool_schemas_text = "\n\nDefault tools: web_search, calculator, python_executor, file_read\n"
+            tool_schemas_text = "\n\nDefault tools: web_search, calculator, python_executor, file_read, file_write, file_list, file_search\n"
 
         # ================================================================
         # PROMPT CONSTANTS: Identity prompts + Common decomposition suffix
@@ -3475,6 +3910,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             "## OTHER TOOLS:\n"
             "- calculator: For mathematical computations beyond basic arithmetic\n"
             "- file_read: When explicitly asked to read/open a specific local file\n"
+            "- file_write: When asked to create/save/write a file (NOT python_executor for file creation)\n"
             "- python_executor: For executing Python code, data analysis, or programming tasks\n"
             "- code_executor: ONLY for executing provided WASM code (do not use for Python)\n\n"
             "## Deep Research 2.0: Task Contracts (Optional, but REQUIRED for research workflows)\n"
@@ -3767,7 +4203,6 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                 if isinstance(prompt_params, dict):
                     current_date = prompt_params.get("current_date")
         if not current_date:
-            from datetime import datetime, timezone
             current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
         date_prefix = f"Current date: {current_date} (UTC).\n\n"
@@ -3779,20 +4214,18 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
 
         # Rehydrate history from context if present (same as agent_query endpoint)
         history_rehydrated = False
+        context_without_history = query.context if query.context else {}
         if query.context and "history" in query.context:
-            history_str = str(query.context.get("history", ""))
-            if history_str:
-                # Parse the history string format: "role: content\n"
-                for line in history_str.strip().split("\n"):
-                    if ": " in line:
-                        role, content = line.split(": ", 1)
-                        # Only add user and assistant messages to maintain conversation flow
-                        if role.lower() in ["user", "assistant"]:
-                            messages.append({"role": role.lower(), "content": content})
-                            history_rehydrated = True
+            history_entries = _parse_history_entries(query.context.get("history"))
+            for item in history_entries:
+                messages.append({"role": item["role"], "content": item["content"]})
+                history_rehydrated = True
+            context_without_history = {
+                k: v for k, v in query.context.items() if k != "history"
+            }
 
         # Add the current query
-        ctx_keys = list(query.context.keys())[:5] if isinstance(query.context, dict) else []
+        ctx_keys = list(context_without_history.keys())[:5] if isinstance(context_without_history, dict) else []
         tools = ",".join(query.allowed_tools or [])
         user = (
             f"Query: {query.query}\nContext keys: {ctx_keys}\nAvailable tools: {tools}"
@@ -4027,6 +4460,8 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     source_guidance=source_guidance,
                     search_budget=search_budget,
                     boundaries=boundaries,
+                    produces=st.get("produces", []),
+                    consumes=st.get("consumes", []),
                 )
                 subtasks.append(subtask)
                 total_tokens += subtask.estimated_tokens
@@ -4091,6 +4526,24 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     logger.info(
                         f"Post-parse backfill completed: {backfilled_count} fields backfilled across {len(subtasks)} subtasks"
                     )
+
+            # P2P post-processing: derive produces/consumes from dependencies
+            p2p_enabled = isinstance(query.context, dict) and query.context.get("p2p_enabled")
+            if p2p_enabled and subtasks:
+                has_any_deps = any(st.dependencies for st in subtasks)
+                needs_backfill = has_any_deps and not any(st.produces or st.consumes for st in subtasks)
+                if needs_backfill:
+                    # Build produces: each task with dependents produces "output-{id}"
+                    depended_on = set()
+                    for st in subtasks:
+                        for dep in st.dependencies:
+                            depended_on.add(dep)
+                    for st in subtasks:
+                        if st.id in depended_on and not st.produces:
+                            st.produces = [f"output-{st.id}"]
+                        if st.dependencies and not st.consumes:
+                            st.consumes = [f"output-{dep}" for dep in st.dependencies]
+                    logger.info(f"P2P backfill: derived produces/consumes from dependencies for {len(subtasks)} subtasks")
 
             # Extract cognitive routing fields from data
             cognitive_strategy = data.get("cognitive_strategy", "decompose")

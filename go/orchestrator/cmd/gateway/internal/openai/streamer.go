@@ -109,13 +109,14 @@ func (s *Streamer) StreamResponse(ctx context.Context, sseReader io.Reader, w ht
 	go func() {
 		defer close(lineCh)
 		scanner := bufio.NewScanner(sseReader)
-		// Configure scanner buffer for large responses
+		// Allow large SSE events (e.g., browser action=screenshot base64 payloads).
+		// Configurable via env to accommodate different deployments.
 		// Cap values to prevent excessive memory allocation from bad env vars
 		const maxBufBytesCap = 1 * 1024 * 1024    // 1MB max initial buffer
 		const maxTokenBytesCap = 64 * 1024 * 1024 // 64MB max token size cap
 
-		bufBytes := 64 * 1024 // 64KB initial buffer
-		if v := os.Getenv("OPENAI_SSE_SCANNER_BUFFER_BYTES"); v != "" {
+		bufBytes := 64 * 1024
+		if v := os.Getenv("OPENAI_SSE_SCANNER_BUF_BYTES"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				bufBytes = n
 				if bufBytes > maxBufBytesCap {

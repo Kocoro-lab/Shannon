@@ -10,8 +10,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { RunTimeline } from "@/components/run-timeline";
 import { RunConversation } from "@/components/run-conversation";
 import { ChatInput, AgentSelection, AutoApproveMode } from "@/components/chat-input";
-import { ArrowLeft, Loader2, Sparkles, Microscope, Eye, EyeOff, PanelRight, PanelRightClose } from "lucide-react";
+import { ArrowLeft, Loader2, Sparkles, Microscope, Eye, EyeOff, Globe, FolderOpen } from "lucide-react";
 import { RadarCanvas, RadarBridge } from "@/components/radar";
+import { WorkspacePanel } from "@/components/workspace-panel";
+import { SwarmTaskBoard } from "@/components/swarm-task-board";
+import { BrowserModeIndicator, BrowserLimitationsBanner } from "@/components/browser-mode-indicator";
 import Link from "next/link";
 import { Suspense, useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useRunStream } from "@/lib/shannon/stream";
@@ -38,6 +41,8 @@ function RunDetailContent() {
     const [showTimeline, setShowTimeline] = useState(false); // Hidden by default - status events now appear inline in conversation
     const [isPauseLoading, setIsPauseLoading] = useState(false);
     const [isResumeLoading, setIsResumeLoading] = useState(false);
+    const [showWorkspace, setShowWorkspace] = useState(false);
+    const [workspaceUpdateSeq, setWorkspaceUpdateSeq] = useState(0);
     const dispatch = useDispatch();
     const router = useRouter();
 
@@ -78,7 +83,14 @@ function RunDetailContent() {
     const reviewVersion = useSelector((state: RootState) => state.run.reviewVersion);
     const reviewIntent = useSelector((state: RootState) => state.run.reviewIntent);
     const swarmMode = useSelector((state: RootState) => state.run.swarmMode);
+    const swarm = useSelector((state: RootState) => state.run.swarm);
     const selectedSkill = useSelector((state: RootState) => state.run.selectedSkill);
+    const browserMode = useSelector((state: RootState) => state.run.browserMode);
+    const browserAutoDetected = useSelector((state: RootState) => state.run.browserAutoDetected);
+    const currentIteration = useSelector((state: RootState) => state.run.currentIteration);
+    const totalIterations = useSelector((state: RootState) => state.run.totalIterations);
+    const currentTool = useSelector((state: RootState) => state.run.currentTool);
+    const toolHistory = useSelector((state: RootState) => state.run.toolHistory);
     const isReconnecting = connectionState === "reconnecting" || connectionState === "connecting";
 
     const handleRetryStream = () => {
@@ -112,13 +124,13 @@ function RunDetailContent() {
             dispatch(resetRun());
             userHasScrolledRef.current = false; // Reset scroll tracking on session change
         }
-        
+
         // Reset fetch flags when session changes
         // For new-to-real transitions, preserve message state (we already have streaming data)
         if (sessionChanged || !hasInitializedRef.current) {
             prevSessionIdRef.current = sessionId;
             hasInitializedRef.current = true;
-            
+
             // Only reset message/history flags if NOT transitioning from "new" to real session
             // During new-to-real transition, handleTaskCreated already added the user message
             if (!isNewToReal) {
@@ -126,8 +138,13 @@ function RunDetailContent() {
                 hasFetchedHistoryRef.current = false;
                 hasInitializedTaskRef.current = null;
                 setCurrentTaskId(null);
+                // Reset workspace state so it re-fetches with new session ID
+                setShowWorkspace(false);
+                setWorkspaceUpdateSeq(0);
             }
             hasFetchedAgentTypeRef.current = null;
+            // Immediately update actualSessionId to prevent stale workspace queries
+            setActualSessionId(sessionId !== "new" ? sessionId : null);
         }
     }, [dispatch, sessionId]);
 
@@ -933,7 +950,7 @@ function RunDetailContent() {
                 const existingMsg = runMessagesRef.current?.find(m =>
                     m.role === "assistant" && m.taskId === currentTaskId && !m.isStreaming && !m.isGenerating
                 );
-                if (task.metadata?.citations && (!existingMsg?.metadata?.citations || existingMsg.metadata.citations.length === 0)) {
+                if (task.metadata?.citations && (!existingMsg?.metadata?.citations || (Array.isArray(existingMsg.metadata.citations) && existingMsg.metadata.citations.length === 0))) {
                     console.log("[RunDetail] Updating existing message with citations from task");
                     dispatch(updateMessageMetadata({ taskId: currentTaskId, metadata: { citations: task.metadata.citations } }));
                 }
@@ -1527,6 +1544,18 @@ function RunDetailContent() {
         }
     }, [messages]);
 
+    // Track workspace updates from events (WORKSPACE_UPDATED, SCREENSHOT_SAVED)
+    const prevWorkspaceCountRef = useRef(0);
+    useEffect(() => {
+        const workspaceEvents = runEvents.filter(
+            (e: any) => e.type === "WORKSPACE_UPDATED" || e.type === "SCREENSHOT_SAVED"
+        );
+        if (workspaceEvents.length > prevWorkspaceCountRef.current) {
+            prevWorkspaceCountRef.current = workspaceEvents.length;
+            setWorkspaceUpdateSeq(seq => seq + 1);
+        }
+    }, [runEvents]);
+
     // Auto-scroll timeline to bottom when events change (only when visible)
     useEffect(() => {
         if (showTimeline && timelineScrollRef.current) {
@@ -1655,6 +1684,17 @@ function RunDetailContent() {
                                     Cancelled
                                 </Badge>
                             )}
+                            {browserMode && (
+                                <BrowserModeIndicator
+                                    isActive={browserMode}
+                                    autoDetected={browserAutoDetected}
+                                    currentTool={currentTool}
+                                    iteration={currentIteration}
+                                    totalIterations={totalIterations}
+                                    toolHistory={toolHistory || []}
+                                    className="shrink-0"
+                                />
+                            )}
                         </div>
                     )}
                 </div>
@@ -1677,6 +1717,12 @@ function RunDetailContent() {
                                 <div className="flex items-center gap-2">
                                     <Microscope className="h-4 w-4 text-violet-500" />
                                     Deep Research
+                                </div>
+                            </SelectItem>
+                            <SelectItem value="browser_use">
+                                <div className="flex items-center gap-2">
+                                    <Globe className="h-4 w-4 text-blue-500" />
+                                    Web Automation
                                 </div>
                             </SelectItem>
                         </SelectContent>
@@ -1728,12 +1774,31 @@ function RunDetailContent() {
                                         {showTimeline ? "Hide Timeline" : "Show Timeline"}
                                     </Button>
                                 )}
+                                {actualSessionId && (
+                                    <Button
+                                        variant={showWorkspace ? "secondary" : "outline"}
+                                        size="sm"
+                                        className="gap-2"
+                                        onClick={() => {
+                                            setShowWorkspace(!showWorkspace);
+                                            if (!showWorkspace) setShowTimeline(false);
+                                        }}
+                                    >
+                                        <FolderOpen className="h-4 w-4" />
+                                        Workspace
+                                    </Button>
+                                )}
                             </div>
                         </div>
 
                         <TabsContent value="conversation" className="flex-1 p-0 m-0 data-[state=active]:flex flex-col overflow-hidden">
                             {messages.length > 0 ? (
                                 <>
+                                    {/* Browser limitations banner */}
+                                    {browserMode && runStatus === "running" && (
+                                        <BrowserLimitationsBanner />
+                                    )}
+
                                     {/* Review Plan banner - text changes based on intent */}
                                     {reviewStatus === "reviewing" && (
                                         <div className="flex items-center gap-2 px-4 py-2 bg-violet-50 dark:bg-violet-950 border-b border-violet-200 dark:border-violet-800 shrink-0">
@@ -2147,11 +2212,18 @@ function RunDetailContent() {
                                 <RadarCanvas />
                             </div>
                         </div>
-                        
+
+                        {/* Swarm Task Board — only in swarm mode */}
+                        {swarmMode && <SwarmTaskBoard />}
+
                         <div className="flex-1 min-h-0">
                             <ScrollArea className="h-full" ref={timelineScrollRef}>
                                 {timelineEvents.length > 0 ? (
-                                    <RunTimeline events={timelineEvents as any} />
+                                    <RunTimeline
+                                        events={timelineEvents as any}
+                                        swarmMode={swarmMode}
+                                        agentRegistry={swarm?.agentRegistry}
+                                    />
                                 ) : (
                                     <div className="p-4 text-sm text-muted-foreground text-center">
                                         Starting...
@@ -2159,6 +2231,16 @@ function RunDetailContent() {
                                 )}
                             </ScrollArea>
                         </div>
+                    </div>
+                )}
+
+                {/* Right Column: Workspace Files panel */}
+                {showWorkspace && actualSessionId && (
+                    <div className="w-80 border-l bg-muted/10 flex-col hidden md:flex">
+                        <WorkspacePanel
+                            sessionId={actualSessionId}
+                            workspaceUpdateSeq={workspaceUpdateSeq}
+                        />
                     </div>
                 )}
             </div>

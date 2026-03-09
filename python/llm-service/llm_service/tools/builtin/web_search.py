@@ -60,7 +60,31 @@ class SearchProvider(Enum):
     GOOGLE = "google"
     SERPER = "serper"
     SERPAPI = "serpapi"
+    SEARCHAPI = "searchapi"
     BING = "bing"
+
+
+# External API cost per search call (USD).
+# Recorded as 7500 synthetic tokens in token_usage ($2/1M billing rate).
+SEARCH_PROVIDER_COSTS: Dict[str, float] = {
+    SearchProvider.SERPAPI.value: 0.015,
+    SearchProvider.SERPER.value: 0.002,
+    SearchProvider.SEARCHAPI.value: 0.004,
+    SearchProvider.FIRECRAWL.value: 0.001,
+    SearchProvider.EXA.value: 0.003,
+    SearchProvider.GOOGLE.value: 0.005,
+    SearchProvider.BING.value: 0.005,
+}
+
+SEARCH_PROVIDER_MODELS: Dict[str, str] = {
+    SearchProvider.SERPAPI.value: "shannon_web_search",
+    SearchProvider.SERPER.value: "shannon_web_search",
+    SearchProvider.SEARCHAPI.value: "shannon_web_search",
+    SearchProvider.FIRECRAWL.value: "shannon_firecrawl",
+    SearchProvider.EXA.value: "shannon_web_search",
+    SearchProvider.GOOGLE.value: "shannon_web_search",
+    SearchProvider.BING.value: "shannon_web_search",
+}
 
 
 class WebSearchProvider:
@@ -661,6 +685,122 @@ class SerpAPISearchProvider(WebSearchProvider):
                 return results
 
 
+class SearchAPISearchProvider(WebSearchProvider):
+    """SearchAPI.io provider - Multi-engine SERP API supporting Google, Bing, Yahoo, Baidu, etc."""
+
+    def __init__(self, api_key: str, engine: str = "google"):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
+        self.api_key = api_key
+        self.base_url = "https://www.searchapi.io/api/v1/search"
+        self.engine = engine.lower() if engine else "google"
+
+    async def search(
+        self,
+        query: str,
+        max_results: int = 10,
+        engine: Optional[str] = None,
+        **extra_params: Any,
+    ) -> List[Dict[str, Any]]:
+        max_results = self.validate_max_results(max_results)
+        effective_engine = engine.lower() if engine else self.engine
+
+        # SearchAPI.io uses GET with Bearer auth (keeps key out of URL logs)
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        params: Dict[str, Any] = {
+            "engine": effective_engine,
+            "q": query,
+        }
+
+        # Merge extra params (gl, hl, location, device, etc.)
+        params.update(extra_params)
+
+        all_results: List[Dict[str, Any]] = []
+
+        # Google engine returns fixed 10 results per page;
+        # paginate if more requested.
+        pages_needed = (max_results + 9) // 10  # ceil division
+
+        async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+
+            for page_num in range(1, pages_needed + 1):
+                if page_num > 1:
+                    params["page"] = page_num
+
+                async with session.get(
+                    self.base_url, params=params, headers=headers, timeout=timeout
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        sanitized_error = self.sanitize_error_message(error_text)
+                        logger.error(
+                            f"SearchAPI error: status={response.status}, details logged"
+                        )
+                        logger.debug(f"SearchAPI raw error: {sanitized_error}")
+                        if response.status == 401:
+                            raise Exception(
+                                "Search service authentication failed. Please check your API credentials."
+                            )
+                        elif response.status == 429:
+                            raise Exception(
+                                "Search rate limit exceeded. Please try again later."
+                            )
+                        else:
+                            raise Exception(
+                                f"Search service temporarily unavailable (Error {response.status})"
+                            )
+
+                    data = await response.json()
+
+                    # Process organic results (same structure as SerpAPI)
+                    for result in data.get("organic_results", []):
+                        all_results.append(
+                            {
+                                "title": result.get("title", ""),
+                                "snippet": result.get("snippet", ""),
+                                "url": result.get("link", ""),
+                                "source": "searchapi",
+                                "position": result.get("position", 0),
+                                "date": result.get("date"),
+                                "domain": result.get("domain"),
+                            }
+                        )
+
+                    # Include knowledge graph on first page only
+                    if page_num == 1 and data.get("knowledge_graph"):
+                        kg = data["knowledge_graph"]
+                        kg_url = ""
+                        kg_source = kg.get("source")
+                        if isinstance(kg_source, dict):
+                            kg_url = kg_source.get("link", "")
+                        elif isinstance(kg_source, str):
+                            kg_url = kg_source
+
+                        all_results.insert(
+                            0,
+                            {
+                                "title": kg.get("title", ""),
+                                "snippet": kg.get("description", ""),
+                                "content": kg.get("description", ""),
+                                "url": kg_url,
+                                "source": "searchapi_knowledge_graph",
+                                "type": kg.get("type", ""),
+                            },
+                        )
+
+                    # Stop paginating if we have enough or no more results
+                    if len(all_results) >= max_results:
+                        break
+                    if not data.get("pagination", {}).get("next"):
+                        break
+
+        return all_results[:max_results]
+
+
 class BingSearchProvider(WebSearchProvider):
     """Bing Search API v7 provider (Azure Cognitive Services)"""
 
@@ -738,6 +878,7 @@ class WebSearchTool(Tool):
     """
 
     def __init__(self):
+        self._provider_enum_value: Optional[str] = None
         self.provider = self._initialize_provider()
         self.settings = Settings()
         super().__init__()
@@ -850,6 +991,10 @@ class WebSearchTool(Tool):
                 "class": SerpAPISearchProvider,
                 "api_key_env": "SERPAPI_API_KEY",
             },
+            SearchProvider.SEARCHAPI.value: {
+                "class": SearchAPISearchProvider,
+                "api_key_env": "SEARCHAPI_API_KEY",
+            },
             SearchProvider.BING.value: {
                 "class": BingSearchProvider,
                 "api_key_env": "BING_API_KEY",
@@ -878,9 +1023,11 @@ class WebSearchTool(Tool):
                         )
                     else:
                         logger.info(f"Initializing {provider_name} search provider")
+                        self._provider_enum_value = provider_name
                         return config["class"](api_key, search_engine_id)
                 else:
                     logger.info(f"Initializing {provider_name} search provider")
+                    self._provider_enum_value = provider_name
                     return config["class"](api_key)
             else:
                 logger.warning(
@@ -892,6 +1039,7 @@ class WebSearchTool(Tool):
             SearchProvider.GOOGLE.value,
             SearchProvider.SERPER.value,
             SearchProvider.SERPAPI.value,
+            SearchProvider.SEARCHAPI.value,
             SearchProvider.BING.value,
             SearchProvider.EXA.value,
             SearchProvider.FIRECRAWL.value,
@@ -909,9 +1057,11 @@ class WebSearchTool(Tool):
                         search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
                         if search_engine_id:
                             logger.info(f"Falling back to {name} search provider")
+                            self._provider_enum_value = name
                             return config["class"](api_key, search_engine_id)
                     else:
                         logger.info(f"Falling back to {name} search provider")
+                        self._provider_enum_value = name
                         return config["class"](api_key)
 
         logger.error(
@@ -919,10 +1069,11 @@ class WebSearchTool(Tool):
             "- GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
             "- SERPER_API_KEY for Serper search\n"
             "- SERPAPI_API_KEY for SerpAPI search\n"
+            "- SEARCHAPI_API_KEY for SearchAPI.io search\n"
             "- BING_API_KEY for Bing search\n"
             "- EXA_API_KEY for Exa search\n"
             "- FIRECRAWL_API_KEY for Firecrawl search\n"
-            "And optionally set WEB_SEARCH_PROVIDER=google|serper|serpapi|bing|exa|firecrawl"
+            "And optionally set WEB_SEARCH_PROVIDER=google|serper|serpapi|searchapi|bing|exa|firecrawl"
         )
         return None
 
@@ -1160,6 +1311,8 @@ class WebSearchTool(Tool):
                     "No web search provider configured. Please set one of:\n"
                     "- GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID for Google Custom Search\n"
                     "- SERPER_API_KEY for Serper search\n"
+                    "- SERPAPI_API_KEY for SerpAPI search\n"
+                    "- SEARCHAPI_API_KEY for SearchAPI.io search\n"
                     "- BING_API_KEY for Bing search\n"
                     "- EXA_API_KEY for Exa search\n"
                     "- FIRECRAWL_API_KEY for Firecrawl search"
@@ -1205,16 +1358,7 @@ class WebSearchTool(Tool):
             },
             "financial": {
                 "category": "financial report",
-                "sites": [
-                    # Global startup funding sources
-                    "crunchbase.com",
-                    "pitchbook.com",
-                    "dealroom.co",
-                    # Public company sources
-                    "sec.gov",
-                    "nasdaq.com",
-                    "yahoo.com",
-                ],
+                "sites": ["sec.gov", "nasdaq.com", "yahoo.com"],
             },
             "local_cn": {
                 "category": None,
@@ -1606,6 +1750,10 @@ class WebSearchTool(Tool):
                         "auto_fetch_total_chars": consumed_chars,
                     }
 
+            provider_value = self._provider_enum_value or "serpapi"
+            search_cost = SEARCH_PROVIDER_COSTS.get(provider_value, 0.001)
+            cost_model = SEARCH_PROVIDER_MODELS.get(provider_value, "shannon_web_search")
+
             return ToolResult(
                 success=True,
                 output={
@@ -1621,6 +1769,8 @@ class WebSearchTool(Tool):
                     "result_count": len(results),
                     "auto_fetch": auto_fetch_meta,
                 },
+                cost_usd=search_cost,
+                cost_model=cost_model,
             )
 
         except ValueError as e:

@@ -327,6 +327,9 @@ class OpenAPILoader:
                 )
             )
 
+        # Human-readable summary for progress events (falls back to operationId)
+        op_summary = operation.get("summary", operation_id)
+
         # Capture variables for closure
         base_url = self.base_url
         auth_type = self.auth_type
@@ -500,9 +503,9 @@ class OpenAPILoader:
                         observer = kwargs.get("observer")
                         if observer:
                             try:
-                                msg = f"Requesting {method} {url}"
+                                msg = op_summary
                                 if attempt > 1:
-                                    msg += f" (Attempt {attempt}/{retries})"
+                                    msg += f" (retry {attempt}/{retries})"
                                 observer("progress", {"message": msg})
                             except Exception:
                                 pass

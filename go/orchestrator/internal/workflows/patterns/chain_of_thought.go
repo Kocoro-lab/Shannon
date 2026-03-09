@@ -103,6 +103,7 @@ func ChainOfThought(
 					Context:           context,
 					Mode:              "reasoning",
 					SessionID:         sessionID,
+					UserID:            opts.UserID,
 					History:           history,
                     ParentWorkflowID: wid,
 				},
@@ -130,6 +131,7 @@ func ChainOfThought(
                 Context:           context,
                 Mode:              "reasoning",
                 SessionID:         sessionID,
+                UserID:            opts.UserID,
                 History:           history,
                 ParentWorkflowID:  wid,
             }).Get(ctx, &cotResult)
@@ -178,6 +180,7 @@ func ChainOfThought(
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "chain_of_thought"},
         }).Get(recCtx, nil)
+        wopts.RecordToolCostEntries(ctx, cotResult, opts.UserID, sessionID, wid)
     }
 
 	// Parse reasoning steps from response
@@ -217,6 +220,7 @@ func ChainOfThought(
 						Context:           context,
 						Mode:              "reasoning",
 						SessionID:         sessionID,
+						UserID:            opts.UserID,
 						History:           append(history, fmt.Sprintf("Previous: %s", cotResult.Response)),
                         ParentWorkflowID: wid,
 					},
@@ -270,6 +274,7 @@ func ChainOfThought(
                         OutputTokens: outTok,
                         Metadata:     map[string]interface{}{"phase": "chain_of_thought_clarify"},
                     }).Get(recCtx, nil)
+                    wopts.RecordToolCostEntries(ctx, clarifyResult, opts.UserID, sessionID, wid)
                 }
             }
         }

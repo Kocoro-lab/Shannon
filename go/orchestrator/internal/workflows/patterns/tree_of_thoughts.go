@@ -286,6 +286,7 @@ Format each as a clear, concise thought.`,
 					Context:           context,
 					Mode:              "exploration",
 					SessionID:         sessionID,
+					UserID:            opts.UserID,
 					History:           history,
                         ParentWorkflowID: wid,
 				},
@@ -314,6 +315,7 @@ Format each as a clear, concise thought.`,
                 Context:           context,
                 Mode:              "exploration",
                 SessionID:         sessionID,
+                UserID:            opts.UserID,
                 History:           history,
                 ParentWorkflowID:  wid,
             }).Get(ctx, &branchResult)
@@ -350,6 +352,7 @@ Format each as a clear, concise thought.`,
             OutputTokens: outTok,
             Metadata:     map[string]interface{}{"phase": "tree_of_thoughts"},
         }).Get(recCtx, nil)
+        wopts.RecordToolCostEntries(ctx, branchResult, opts.UserID, sessionID, wid)
     }
 
 	// Parse generated branches

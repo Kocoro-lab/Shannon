@@ -188,6 +188,21 @@ func TemplateWorkflow(ctx workflow.Context, input TemplateWorkflowInput) (TaskRe
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
+	// Emit final clean LLM_OUTPUT for OpenAI-compatible streaming.
+	// Agent ID "final_output" signals the streamer to always show this content.
+	if finalResult != "" {
+		_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+			WorkflowID: workflowID,
+			EventType:  activities.StreamEventLLMOutput,
+			AgentID:    "final_output",
+			Message:    finalResult,
+			Timestamp:  workflow.Now(ctx),
+			Payload: map[string]interface{}{
+				"tokens_used": runtime.TotalTokens,
+			},
+		}).Get(ctx, nil)
+	}
+
 	// Emit WORKFLOW_COMPLETED before returning
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
@@ -404,8 +419,7 @@ func executeCognitiveTemplateNode(ctx workflow.Context, rt *templateRuntime, nod
 // expandParallelByTasks generates HybridTasks from a context array using parallel_by.
 // For example, if parallel_by="tickers" and context["tickers"]=["NVDA","AAPL"],
 // it generates one task per ticker using the prompt_template from metadata.
-// Only placeholders that exist in the template are substituted (for efficiency).
-// Task IDs include an index to prevent collisions from duplicates or sanitization.
+// All context fields are available for substitution using {field_name} syntax.
 func expandParallelByTasks(nodeContext map[string]interface{}, metadata map[string]interface{}, parallelBy string) []execution.HybridTask {
 	if nodeContext == nil || parallelBy == "" {
 		return nil
@@ -671,28 +685,8 @@ func determineNodeQuery(defaultQuery string, metadata map[string]interface{}, no
 		return defaultQuery
 	}
 
-	// Substitute context field placeholders FIRST using sorted keys for determinism.
-	// This must happen before node output substitution to avoid accidentally
-	// replacing {key} patterns that appear inside node output text.
-	// Skip map/slice values to avoid non-deterministic fmt.Sprintf output on Temporal replay.
-	keys := contextKeys(nodeContext)
-	for _, key := range keys {
-		placeholder := fmt.Sprintf("{%s}", key)
-		if !strings.Contains(query, placeholder) {
-			continue
-		}
-		val := nodeContext[key]
-		// Skip map and slice types - they produce non-deterministic string representation
-		switch val.(type) {
-		case map[string]interface{}, map[string]string, []interface{}, []string:
-			continue
-		}
-		query = strings.ReplaceAll(query, placeholder, fmt.Sprintf("%v", val))
-	}
-
-	// Substitute {node_results} placeholders with actual outputs SECOND.
+	// Substitute {node_results} placeholders with actual outputs
 	// e.g., {fetch_news_results} -> output from fetch_news node
-	// Done after context substitution so node output content won't be modified.
 	nodeIDs := make([]string, 0, len(nodeOutputs))
 	for nodeID := range nodeOutputs {
 		nodeIDs = append(nodeIDs, nodeID)
@@ -702,6 +696,15 @@ func determineNodeQuery(defaultQuery string, metadata map[string]interface{}, no
 		output := nodeOutputs[nodeID]
 		placeholder := fmt.Sprintf("{%s_results}", nodeID)
 		query = strings.ReplaceAll(query, placeholder, output)
+	}
+
+	// Substitute context field placeholders using sorted keys for determinism
+	keys := contextKeys(nodeContext)
+	for _, key := range keys {
+		placeholder := fmt.Sprintf("{%s}", key)
+		if strings.Contains(query, placeholder) {
+			query = strings.ReplaceAll(query, placeholder, fmt.Sprintf("%v", nodeContext[key]))
+		}
 	}
 
 	return query

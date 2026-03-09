@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
@@ -25,6 +27,9 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"gopkg.in/yaml.v3"
 )
+
+// ErrWorkspaceQuotaExceeded is returned when tenant workspace quota is exceeded
+var ErrWorkspaceQuotaExceeded = errors.New("workspace quota exceeded")
 
 // TaskHandler handles task-related HTTP requests
 type TaskHandler struct {
@@ -47,43 +52,68 @@ type ResearchStrategiesConfig struct {
 		GapFillingMaxGaps        int    `yaml:"gap_filling_max_gaps"`
 		GapFillingMaxIterations  int    `yaml:"gap_filling_max_iterations"`
 		GapFillingCheckCitations bool   `yaml:"gap_filling_check_citations"`
-		AgentModelTier             string `yaml:"agent_model_tier"`               // small/medium/large for agent execution
-		IterativeMaxIterations     int    `yaml:"iterative_max_iterations"`       // coverage evaluation iterations (1-5)
-		IterativeResearchEnabled   *bool  `yaml:"iterative_research_enabled"`     // DR 2.0 iterative loop (nil = use default true)
+		AgentModelTier           string `yaml:"agent_model_tier"`           // small/medium/large for agent execution
+		IterativeMaxIterations   int    `yaml:"iterative_max_iterations"`   // coverage evaluation iterations (1-5)
+		IterativeResearchEnabled *bool  `yaml:"iterative_research_enabled"` // DR 2.0 iterative loop (nil = use default true)
 	} `yaml:"strategies"`
 }
 
-// Cached research strategies configuration
-var (
-	researchStrategiesOnce   sync.Once
-	researchStrategiesCached *ResearchStrategiesConfig
-	researchStrategiesErr    error
-)
+// researchStrategiesPtr holds the latest parsed config, atomically swapped by
+// a background goroutine every 30 seconds. Readers call loadResearchStrategies()
+// which is a simple atomic load — no lock, no I/O on the hot path.
+var researchStrategiesPtr atomic.Pointer[ResearchStrategiesConfig]
 
-// loadResearchStrategies loads presets from standard locations
-func loadResearchStrategies() (*ResearchStrategiesConfig, error) {
-	researchStrategiesOnce.Do(func() {
-		candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
-		for _, p := range candidates {
-			if _, statErr := os.Stat(p); statErr == nil {
-				data, rerr := os.ReadFile(p)
-				if rerr != nil {
-					researchStrategiesErr = rerr
-					return
-				}
-				var tmp ResearchStrategiesConfig
-				if yerr := yaml.Unmarshal(data, &tmp); yerr != nil {
-					researchStrategiesErr = yerr
-					return
-				}
-				researchStrategiesCached = &tmp
-				researchStrategiesErr = nil
-				return
+func init() {
+	// Eagerly load once at startup so the first request is never empty.
+	if cfg := readResearchStrategiesFromDisk(); cfg != nil {
+		researchStrategiesPtr.Store(cfg)
+	} else {
+		log.Printf("[warn] research_strategies.yaml not found at startup; strategy presets disabled")
+	}
+
+	// Background reloader — picks up YAML changes without Gateway restart.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if cfg := readResearchStrategiesFromDisk(); cfg != nil {
+				researchStrategiesPtr.Store(cfg)
 			}
 		}
-		researchStrategiesErr = fmt.Errorf("research_strategies.yaml not found")
-	})
-	return researchStrategiesCached, researchStrategiesErr
+	}()
+}
+
+// readResearchStrategiesFromDisk tries the standard candidate paths and returns
+// the parsed config, or nil on any error.
+// NOTE: Uses stdlib log (not zap) because this runs from init() before zap is configured.
+func readResearchStrategiesFromDisk() *ResearchStrategiesConfig {
+	candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
+	for _, p := range candidates {
+		if _, statErr := os.Stat(p); statErr != nil {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[warn] failed to read %s: %v", p, err)
+			continue
+		}
+		var cfg ResearchStrategiesConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Printf("[warn] failed to parse %s: %v", p, err)
+			continue
+		}
+		return &cfg
+	}
+	return nil
+}
+
+// loadResearchStrategies returns the latest cached config (lock-free).
+func loadResearchStrategies() (*ResearchStrategiesConfig, error) {
+	cfg := researchStrategiesPtr.Load()
+	if cfg == nil {
+		return nil, fmt.Errorf("research_strategies.yaml not loaded")
+	}
+	return cfg, nil
 }
 
 // applyStrategyPreset seeds ctxMap with preset defaults when absent
@@ -183,7 +213,7 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 		// Dangerous skills require admin/owner role OR explicit skills:dangerous scope
 		if skill.Dangerous {
 			// Get userCtx from request context (already validated in SubmitTask)
-			userCtx, _ := r.Context().Value("user").(*auth.UserContext)
+			userCtx, _ := r.Context().Value(auth.UserContextKey).(*auth.UserContext)
 			authorized := false
 			if userCtx != nil {
 				// Admin and owner roles can use dangerous skills
@@ -305,7 +335,7 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 	// Apply research strategy presets (seed defaults only when absent)
 	// Default to "standard" for force_research when no strategy specified
 	rs, rsOk := ctxMap["research_strategy"].(string)
-	if (!rsOk || strings.TrimSpace(rs) == "") {
+	if !rsOk || strings.TrimSpace(rs) == "" {
 		if forceResearch, _ := ctxMap["force_research"].(bool); forceResearch {
 			rs = "standard"
 			ctxMap["research_strategy"] = rs
@@ -447,7 +477,8 @@ type TaskStatusResponse struct {
 	ModelUsed string                 `json:"model_used,omitempty"`
 	Provider  string                 `json:"provider,omitempty"`
 	Usage     map[string]interface{} `json:"usage,omitempty"`
-	Metadata  map[string]interface{} `json:"metadata,omitempty"` // Task metadata (citations, etc.)
+	Metadata  map[string]interface{} `json:"metadata,omitempty"`         // Task metadata (citations, etc.)
+	Unified   map[string]interface{} `json:"unified_response,omitempty"` // Structured unified response
 }
 
 // ListTasksResponse represents the list tasks response
@@ -472,7 +503,7 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user context from auth middleware
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -495,6 +526,9 @@ func (h *TaskHandler) SubmitTask(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID == "" {
 		req.SessionID = uuid.New().String()
 	}
+
+	// NOTE: Workspace quota check deferred to Phase 2.
+	// Current count-based approach is too coarse - blocks all tasks, not just workspace-using ones.
 
 	// Build gRPC request
 	grpcReq := &orchpb.SubmitTaskRequest{
@@ -564,7 +598,7 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 	ctx := r.Context()
 
 	// Get user context from auth middleware
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -587,6 +621,8 @@ func (h *TaskHandler) SubmitTaskAndGetStreamURL(w http.ResponseWriter, r *http.R
 	if req.SessionID == "" {
 		req.SessionID = uuid.New().String()
 	}
+
+	// NOTE: Workspace quota check deferred to Phase 2.
 
 	// Build gRPC request (reuse same shape as SubmitTask)
 	grpcReq := &orchpb.SubmitTaskRequest{
@@ -655,7 +691,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user context
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -709,7 +745,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		// If unmarshal fails, it's plain text - only result field will be populated
 	}
 
-	// Enrich with metadata from database (query, session_id, mode, model, provider, tokens, cost, metadata)
+	// Enrich with metadata from database (query, session_id, mode, model, provider, tokens, cost, metadata, response)
 	var (
 		q                sql.NullString
 		sid              sql.NullString
@@ -720,6 +756,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		promptTokens     sql.NullInt32
 		completionTokens sql.NullInt32
 		totalCost        sql.NullFloat64
+		responseJSON     []byte
 		metadataJSON     []byte
 	)
 	row := h.db.QueryRowxContext(ctx, `
@@ -733,11 +770,12 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 			prompt_tokens,
 			completion_tokens,
 			total_cost_usd,
+			COALESCE(response::text, '{}'),
 			metadata
 		FROM task_executions
 		WHERE workflow_id = $1
 		LIMIT 1`, taskID)
-	if err := row.Scan(&q, &sid, &mode, &modelUsed, &provider, &totalTokens, &promptTokens, &completionTokens, &totalCost, &metadataJSON); err != nil {
+	if err := row.Scan(&q, &sid, &mode, &modelUsed, &provider, &totalTokens, &promptTokens, &completionTokens, &totalCost, &responseJSON, &metadataJSON); err != nil {
 		h.logger.Warn("Failed to scan task metadata", zap.Error(err), zap.String("workflow_id", taskID))
 	}
 	statusResp.Query = q.String
@@ -766,6 +804,14 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if totalCost.Valid && totalCost.Float64 > 0 {
 			statusResp.Usage["estimated_cost"] = totalCost.Float64
+		}
+	}
+
+	// Parse and populate unified response if available
+	if len(responseJSON) > 0 {
+		var unified map[string]interface{}
+		if err := json.Unmarshal(responseJSON, &unified); err == nil && len(unified) > 0 {
+			statusResp.Unified = unified
 		}
 	}
 
@@ -811,7 +857,7 @@ func (h *TaskHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -911,7 +957,7 @@ func (h *TaskHandler) ListTasks(w http.ResponseWriter, r *http.Request) {
 func (h *TaskHandler) GetTaskEvents(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	if _, ok := ctx.Value("user").(*auth.UserContext); !ok {
+	if _, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext); !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -933,7 +979,7 @@ func (h *TaskHandler) GetTaskEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := h.db.QueryxContext(ctx, `
-        SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,'')
+        SELECT workflow_id, type, COALESCE(agent_id,''), COALESCE(message,''), timestamp, COALESCE(seq,0), COALESCE(stream_id,''), COALESCE(payload, '{}')
         FROM event_logs
         WHERE workflow_id = $1
         ORDER BY timestamp ASC
@@ -946,20 +992,25 @@ func (h *TaskHandler) GetTaskEvents(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	type Event struct {
-		WorkflowID string    `json:"workflow_id"`
-		Type       string    `json:"type"`
-		AgentID    string    `json:"agent_id,omitempty"`
-		Message    string    `json:"message,omitempty"`
-		Timestamp  time.Time `json:"timestamp"`
-		Seq        uint64    `json:"seq"`
-		StreamID   string    `json:"stream_id,omitempty"`
+		WorkflowID string          `json:"workflow_id"`
+		Type       string          `json:"type"`
+		AgentID    string          `json:"agent_id,omitempty"`
+		Message    string          `json:"message,omitempty"`
+		Timestamp  time.Time       `json:"timestamp"`
+		Seq        uint64          `json:"seq"`
+		StreamID   string          `json:"stream_id,omitempty"`
+		Payload    json.RawMessage `json:"payload,omitempty"`
 	}
 	events := []Event{}
 	for rows.Next() {
 		var e Event
-		if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID); err != nil {
+		var payloadBytes []byte
+		if err := rows.Scan(&e.WorkflowID, &e.Type, &e.AgentID, &e.Message, &e.Timestamp, &e.Seq, &e.StreamID, &payloadBytes); err != nil {
 			h.sendError(w, fmt.Sprintf("Failed to scan event: %v", err), http.StatusInternalServerError)
 			return
+		}
+		if len(payloadBytes) > 0 && string(payloadBytes) != "{}" {
+			e.Payload = payloadBytes
 		}
 		events = append(events, e)
 	}
@@ -1012,7 +1063,7 @@ func (h *TaskHandler) CancelTask(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user context
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1083,7 +1134,7 @@ func (h *TaskHandler) PauseTask(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user context
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1152,7 +1203,7 @@ func (h *TaskHandler) ResumeTask(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user context
-	userCtx, ok := ctx.Value("user").(*auth.UserContext)
+	userCtx, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1221,7 +1272,7 @@ func (h *TaskHandler) GetControlState(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Get user context (auth required)
-	_, ok := ctx.Value("user").(*auth.UserContext)
+	_, ok := ctx.Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -1279,7 +1330,9 @@ func (h *TaskHandler) buildModelBreakdown(ctx context.Context, workflowID string
 			model,
 			COUNT(*) as executions,
 			SUM(total_tokens) as total_tokens,
-			SUM(cost_usd) as total_cost
+			SUM(cost_usd) as total_cost,
+			COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+			COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens
 		FROM token_usage
 		WHERE task_id = (
 			SELECT id FROM task_executions WHERE workflow_id = $1
@@ -1301,17 +1354,20 @@ func (h *TaskHandler) buildModelBreakdown(ctx context.Context, workflowID string
 
 	// First pass: collect data and calculate totals
 	type modelData struct {
-		Provider   string
-		Model      string
-		Executions int
-		Tokens     int64
-		Cost       float64
+		Provider            string
+		Model               string
+		Executions          int
+		Tokens              int64
+		Cost                float64
+		CacheReadTokens     int64
+		CacheCreationTokens int64
 	}
 	var models []modelData
 
 	for rows.Next() {
 		var m modelData
-		if err := rows.Scan(&m.Provider, &m.Model, &m.Executions, &m.Tokens, &m.Cost); err != nil {
+		if err := rows.Scan(&m.Provider, &m.Model, &m.Executions, &m.Tokens, &m.Cost,
+			&m.CacheReadTokens, &m.CacheCreationTokens); err != nil {
 			h.logger.Debug("Failed to scan model breakdown row", zap.Error(err))
 			continue
 		}
@@ -1327,14 +1383,21 @@ func (h *TaskHandler) buildModelBreakdown(ctx context.Context, workflowID string
 			percentage = int((m.Cost / totalCost) * 100)
 		}
 
-		breakdown = append(breakdown, map[string]interface{}{
+		entry := map[string]interface{}{
 			"model":      m.Model,
 			"provider":   m.Provider,
 			"executions": m.Executions,
 			"tokens":     m.Tokens,
 			"cost_usd":   m.Cost,
 			"percentage": percentage,
-		})
+		}
+		if m.CacheReadTokens > 0 {
+			entry["cache_read_tokens"] = m.CacheReadTokens
+		}
+		if m.CacheCreationTokens > 0 {
+			entry["cache_creation_tokens"] = m.CacheCreationTokens
+		}
+		breakdown = append(breakdown, entry)
 	}
 
 	return breakdown
@@ -1346,5 +1409,131 @@ func (h *TaskHandler) sendError(w http.ResponseWriter, message string, code int)
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{
 		"error": message,
+	})
+}
+
+// checkWorkspaceQuota checks if the tenant has exceeded their workspace quota.
+// Uses count-based approach: count active sessions for tenant, compare to workspace_max_size_gb.
+// This is a simple proxy since each workspace uses approximately 1GB of storage.
+func (h *TaskHandler) checkWorkspaceQuota(ctx context.Context, tenantID uuid.UUID) error {
+	// Skip quota check if db is not configured (e.g., in tests)
+	if h.db == nil {
+		return nil
+	}
+
+	// Get tenant's workspace quota
+	var tenant struct {
+		WorkspaceMaxSizeGB sql.NullInt32 `db:"workspace_max_size_gb"`
+	}
+	err := h.db.GetContext(ctx, &tenant,
+		`SELECT workspace_max_size_gb FROM auth.tenants WHERE id = $1`, tenantID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// Tenant not found in auth.tenants - use default quota (5GB = 5 workspaces)
+			h.logger.Debug("Tenant not found in auth.tenants, using default quota",
+				zap.String("tenant_id", tenantID.String()))
+			return nil
+		}
+		h.logger.Warn("Failed to query tenant workspace quota", zap.Error(err))
+		// Don't block on quota check failure
+		return nil
+	}
+
+	// If workspace_max_size_gb is not set, use default (5GB)
+	maxWorkspaces := 5
+	if tenant.WorkspaceMaxSizeGB.Valid && tenant.WorkspaceMaxSizeGB.Int32 > 0 {
+		maxWorkspaces = int(tenant.WorkspaceMaxSizeGB.Int32)
+	}
+
+	// Count active sessions for this tenant as a proxy for workspace count
+	var sessionCount int
+	err = h.db.GetContext(ctx, &sessionCount, `
+		SELECT COUNT(*) FROM sessions
+		WHERE tenant_id = $1 AND deleted_at IS NULL`,
+		tenantID)
+	if err != nil {
+		h.logger.Warn("Failed to count tenant sessions", zap.Error(err))
+		// Don't block on count failure
+		return nil
+	}
+
+	if sessionCount >= maxWorkspaces {
+		h.logger.Warn("Workspace quota exceeded",
+			zap.String("tenant_id", tenantID.String()),
+			zap.Int("session_count", sessionCount),
+			zap.Int("max_workspaces", maxWorkspaces))
+		return ErrWorkspaceQuotaExceeded
+	}
+
+	return nil
+}
+
+// SendSwarmMessage handles POST /api/v1/swarm/{workflowID}/message
+// Sends a human message to a running SwarmWorkflow's Lead agent.
+func (h *TaskHandler) SendSwarmMessage(w http.ResponseWriter, r *http.Request) {
+	// Verify tenant ownership
+	userCtx, ok := r.Context().Value(auth.UserContextKey).(*auth.UserContext)
+	if !ok {
+		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	workflowID := r.PathValue("workflowID")
+	if workflowID == "" {
+		h.sendError(w, "workflow_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the workflow belongs to the caller's tenant
+	if h.db != nil {
+		var tenantID string
+		err := h.db.QueryRowContext(r.Context(),
+			`SELECT tenant_id FROM task_executions WHERE workflow_id = $1 LIMIT 1`,
+			workflowID).Scan(&tenantID)
+		if err != nil {
+			h.sendError(w, "Workflow not found", http.StatusNotFound)
+			return
+		}
+		if tenantID != userCtx.TenantID.String() {
+			h.sendError(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
+	type swarmMessageRequest struct {
+		Message string `json:"message"`
+	}
+	var req swarmMessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
+		h.sendError(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := withGRPCMetadata(r.Context(), r)
+
+	resp, err := h.orchClient.SendSwarmMessage(ctx, &orchpb.SendSwarmMessageRequest{
+		WorkflowId: workflowID,
+		Message:    req.Message,
+	})
+	if err != nil {
+		if st, ok := status.FromError(err); ok {
+			switch st.Code() {
+			case codes.InvalidArgument:
+				h.sendError(w, st.Message(), http.StatusBadRequest)
+			case codes.NotFound:
+				h.sendError(w, "Workflow not found", http.StatusNotFound)
+			default:
+				h.sendError(w, "Failed to send message", http.StatusInternalServerError)
+			}
+			return
+		}
+		h.sendError(w, "Failed to send message", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": resp.Success,
+		"status":  resp.Status,
 	})
 }

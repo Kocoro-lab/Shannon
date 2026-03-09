@@ -1,9 +1,12 @@
 package server
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/activities"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pricing"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
 )
 
@@ -41,12 +44,13 @@ type ResponseMetadata struct {
 
 // ResponseUsage contains token and cost information
 type ResponseUsage struct {
-	InputTokens  int      `json:"input_tokens"`
-	OutputTokens int      `json:"output_tokens"`
-	TotalTokens  int      `json:"total_tokens"`
-	CostUSD      float64  `json:"cost_usd"`
-	CacheHits    *int     `json:"cache_hits,omitempty"`  // Optional until wired
-	CacheScore   *float64 `json:"cache_score,omitempty"` // Optional until wired
+	InputTokens         int     `json:"input_tokens"`
+	OutputTokens        int     `json:"output_tokens"`
+	TotalTokens         int     `json:"total_tokens"`
+	CostUSD             float64 `json:"cost_usd"`
+	CacheReadTokens     int     `json:"cache_read_tokens,omitempty"`
+	CacheCreationTokens int     `json:"cache_creation_tokens,omitempty"`
+	CacheSavingsUSD     float64 `json:"cache_savings_usd,omitempty"`
 }
 
 // ResponsePerformance contains timing metrics
@@ -281,12 +285,46 @@ func extractUsage(result workflows.TaskResult) ResponseUsage {
 			usage.CostUSD = cost
 		}
 
-		// Optional cache metrics (when available)
-		if cacheHits, ok := result.Metadata["cache_hits"].(int); ok {
-			usage.CacheHits = &cacheHits
-		}
-		if cacheScore, ok := result.Metadata["cache_score"].(float64); ok {
-			usage.CacheScore = &cacheScore
+		// Prompt cache metrics (Anthropic cache read/creation tokens)
+		usage.CacheReadTokens = getIntFromMetadata(result.Metadata, "cache_read_tokens")
+		usage.CacheCreationTokens = getIntFromMetadata(result.Metadata, "cache_creation_tokens")
+
+		// Calculate cache savings: difference between full-price and cache-discounted cost
+		if usage.CacheReadTokens > 0 || usage.CacheCreationTokens > 0 {
+			model := ""
+			provider := ""
+			if m, ok := result.Metadata["model"].(string); ok {
+				model = m
+			} else if m, ok := result.Metadata["model_used"].(string); ok {
+				model = m
+			}
+			if p, ok := result.Metadata["provider"].(string); ok {
+				provider = p
+			}
+			if model != "" {
+				// Single-model workflow: precise calculation
+				costWithCache := pricing.CostForSplitWithCache(model, usage.InputTokens, usage.OutputTokens,
+					usage.CacheReadTokens, usage.CacheCreationTokens, provider)
+				costWithoutCache := pricing.CostForSplit(model, usage.InputTokens+usage.CacheReadTokens+usage.CacheCreationTokens, usage.OutputTokens)
+				if costWithoutCache > costWithCache {
+					usage.CacheSavingsUSD = costWithoutCache - costWithCache
+				}
+			} else if s, ok := result.Metadata["cache_savings_usd"].(float64); ok && s > 0 {
+				// Multi-model workflow: use pre-computed per-model savings from DB
+				usage.CacheSavingsUSD = s
+			} else if usage.CostUSD > 0 {
+				// Multi-model workflow fallback: estimate savings from blended average
+				totalTokens := usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheCreationTokens
+				if totalTokens > 0 {
+					avgInputPricePerToken := usage.CostUSD / float64(totalTokens)
+					readSavings := float64(usage.CacheReadTokens) * avgInputPricePerToken * 0.9
+					creationSurcharge := float64(usage.CacheCreationTokens) * avgInputPricePerToken * 0.25
+					netSavings := readSavings - creationSurcharge
+					if netSavings > 0 {
+						usage.CacheSavingsUSD = netSavings
+					}
+				}
+			}
 		}
 	}
 
@@ -381,4 +419,31 @@ func extractUniqueModelsFromUsages(usages []activities.AgentUsage) []string {
 	}
 
 	return models
+}
+
+// getIntFromMetadata extracts an int from a metadata map, handling both int and float64
+// (Go JSON unmarshals numbers as float64 for interface{}).
+func getIntFromMetadata(m map[string]interface{}, key string) int {
+	if v, ok := m[key]; ok {
+		switch n := v.(type) {
+		case int:
+			return n
+		case float64:
+			return int(n)
+		}
+	}
+	return 0
+}
+
+// unifiedRespToJSONB converts a UnifiedResponse to db.JSONB for persistence.
+func unifiedRespToJSONB(resp UnifiedResponse) db.JSONB {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return db.JSONB{}
+	}
+	var m db.JSONB
+	if err := json.Unmarshal(data, &m); err != nil {
+		return db.JSONB{}
+	}
+	return m
 }

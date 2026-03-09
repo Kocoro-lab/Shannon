@@ -27,6 +27,7 @@ type SynthesisTemplateData struct {
 	SynthesisStyle       string
 	CitationAgentEnabled bool   // Whether Citation Agent post-processing is active
 	CurrentDate          string // Current date for temporal reference (e.g., "January 7, 2026")
+	NewsCount            int    // Number of news items for morning brief (0 = use template default)
 }
 
 // synthesisTemplateCache caches loaded templates for performance.
@@ -175,10 +176,11 @@ func RenderSynthesisTemplate(tmpl *template.Template, data SynthesisTemplateData
 // 1. context["synthesis_template"] - explicit template name
 // 2. context["workflow_type"] == "research" -> research_comprehensive
 // 3. context["force_research"] == true -> research_comprehensive
-// 4. context["synthesis_style"] == "comprehensive" -> research_comprehensive
-// 5. context["synthesis_style"] == "concise" -> research_concise
-// 6. len(research_areas) > 0 -> research_comprehensive
-// 7. Default -> normal_default
+// 4. context["force_swarm"] == true -> swarm_default
+// 5. context["synthesis_style"] == "comprehensive" -> research_comprehensive
+// 6. context["synthesis_style"] == "concise" -> research_concise
+// 7. len(research_areas) > 0 -> research_comprehensive
+// 8. Default -> normal_default
 func SelectSynthesisTemplate(context map[string]interface{}) (templateName string, explicit bool) {
 	if context == nil {
 		return "normal_default", false
@@ -199,7 +201,12 @@ func SelectSynthesisTemplate(context map[string]interface{}) (templateName strin
 		return "research_comprehensive", false
 	}
 
-	// 4-5. Synthesis style
+	// 4. Swarm workflow
+	if util.GetContextBool(context, "force_swarm") {
+		return "swarm_default", false
+	}
+
+	// 5-6. Synthesis style
 	if style, ok := context["synthesis_style"].(string); ok {
 		switch style {
 		case "comprehensive":
@@ -209,7 +216,7 @@ func SelectSynthesisTemplate(context map[string]interface{}) (templateName strin
 		}
 	}
 
-	// 6. Research areas presence
+	// 7. Research areas presence
 	if rawAreas, ok := context["research_areas"]; ok && rawAreas != nil {
 		switch t := rawAreas.(type) {
 		case []string:
@@ -223,7 +230,7 @@ func SelectSynthesisTemplate(context map[string]interface{}) (templateName strin
 		}
 	}
 
-	// 7. Default
+	// 8. Default
 	return "normal_default", false
 }
 

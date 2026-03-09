@@ -1,23 +1,18 @@
 """
-Browser Use Tools for Shannon
+Browser Tool for Shannon
 
-Multi-tool approach for browser automation via Playwright.
-Each tool represents a specific browser action.
-
-Tools:
-- browser_navigate: Navigate to a URL
-- browser_click: Click on an element
-- browser_type: Type text into an input field
-- browser_screenshot: Take a screenshot
-- browser_extract: Extract content from page/elements
-- browser_scroll: Scroll the page
-- browser_close: Close a browser session
+Single unified tool for browser automation via Playwright.
+Uses an `action` parameter to dispatch: navigate, click, type,
+screenshot, extract, scroll, wait, close.
 
 Sessions are tied to Shannon session_id and auto-cleanup after TTL.
 """
 
+import base64
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiohttp
@@ -26,11 +21,57 @@ from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolRes
 
 logger = logging.getLogger(__name__)
 
+
+def _persist_screenshot(session_id: str, b64_data: str, index: int = 0) -> Optional[str]:
+    """Persist base64 PNG screenshot to session workspace.
+
+    Returns relative path from session root (e.g. 'screenshots/1709312345_0.png'),
+    or None on any failure. All errors are non-fatal.
+    """
+    if not session_id or not b64_data or len(b64_data) < 100:
+        return None
+
+    # Validate session_id (prevent path traversal)
+    if ".." in session_id or session_id.startswith(".") or len(session_id) > 128:
+        logger.warning("_persist_screenshot: invalid session_id")
+        return None
+
+    try:
+        image_bytes = base64.b64decode(b64_data)
+    except Exception:
+        logger.warning("_persist_screenshot: base64 decode failed")
+        return None
+
+    base_dir = os.getenv("SHANNON_SESSION_WORKSPACES_DIR", "/tmp/shannon-sessions")
+    ts = int(time.time() * 1000)
+    filename = f"{ts}_{index}.png"
+    rel_path = f"screenshots/{filename}"
+    abs_dir = Path(base_dir) / session_id / "screenshots"
+
+    try:
+        abs_dir.mkdir(parents=True, exist_ok=True)
+        abs_path = abs_dir / filename
+        abs_path.write_bytes(image_bytes)
+        logger.info(
+            f"_persist_screenshot: saved {rel_path} ({len(image_bytes)} bytes) "
+            f"for session {session_id}"
+        )
+        return rel_path
+    except Exception as e:
+        logger.warning(f"_persist_screenshot: write failed: {e}")
+        return None
+
 # Playwright service URL (internal k8s service or local)
 PLAYWRIGHT_SERVICE_URL = os.getenv("PLAYWRIGHT_SERVICE_URL", "")
 
 # Timeout for playwright service calls
 PLAYWRIGHT_TIMEOUT = int(os.getenv("PLAYWRIGHT_TIMEOUT", "60"))
+
+# Actions advertised to the LLM (safe actions only)
+SAFE_ACTIONS = ("navigate", "click", "type", "screenshot", "extract", "scroll", "wait", "close")
+
+# Actions that require special runtime permission
+GATED_ACTIONS = {"evaluate"}
 
 
 async def _call_playwright_action(
@@ -98,596 +139,295 @@ async def _close_playwright_session(session_id: str) -> Dict[str, Any]:
 
 
 def _get_session_id(session_context: Optional[Dict], kwargs: Dict) -> str:
-    """Extract session_id from session_context.
-
-    Session context is injected by the orchestrator and contains session_id.
-    If not available, generates a unique session ID to prevent cross-task collisions.
-    """
-    # Get session_id from session_context (injected by orchestrator)
+    """Extract session_id from session_context."""
     if session_context and isinstance(session_context, dict):
         session_id = session_context.get("session_id")
         if session_id:
             return session_id
 
-    # Generate unique session ID to prevent cross-task collisions
-    # This should rarely happen - session_context should always be provided
     import uuid
-    import logging
-    logger = logging.getLogger(__name__)
     generated_id = f"browser-{uuid.uuid4().hex[:12]}"
     logger.warning(f"No session_id in session_context, generated: {generated_id}")
     return generated_id
 
 
-class BrowserNavigateTool(Tool):
-    """Navigate to a URL in the browser."""
+# Required parameters per action (runtime validation)
+_ACTION_REQUIRED_PARAMS: Dict[str, List[str]] = {
+    "navigate": ["url"],
+    "click": ["selector"],
+    "type": ["selector", "text"],
+    "screenshot": [],
+    "extract": [],
+    "scroll": [],
+    "wait": [],
+    "evaluate": ["script"],
+    "close": [],
+}
+
+
+class BrowserTool(Tool):
+    """Unified browser automation tool with action-based dispatch."""
 
     def _get_metadata(self) -> ToolMetadata:
         return ToolMetadata(
-            name="browser_navigate",
-            version="1.0.0",
+            name="browser",
+            version="2.0.0",
             description=(
-                "Navigate to a URL in a browser session. "
-                "Opens the page and waits for it to load. "
-                "Returns the page title and final URL (after redirects)."
+                "Browser automation tool. Use the 'action' parameter to specify "
+                "what to do: navigate to a URL, click elements, type text, take "
+                "screenshots, extract page content, scroll, or wait for elements."
             ),
             category="browser",
             requires_auth=False,
             rate_limit=30,
             timeout_seconds=60,
             cost_per_use=0.001,
-            session_aware=True,  # Receive session_context for session_id
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
-            ToolParameter(
-                name="url",
-                type=ToolParameterType.STRING,
-                description="URL to navigate to",
-                required=True,
-            ),
-            ToolParameter(
-                name="wait_until",
-                type=ToolParameterType.STRING,
-                description="When to consider navigation done: 'load', 'domcontentloaded', or 'networkidle'",
-                required=False,
-                default="domcontentloaded",
-            ),
-            ToolParameter(
-                name="timeout_ms",
-                type=ToolParameterType.INTEGER,
-                description="Navigation timeout in milliseconds",
-                required=False,
-                default=30000,
-            ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="navigate",
-            url=kwargs["url"],
-            wait_until=kwargs.get("wait_until", "domcontentloaded"),
-            timeout_ms=kwargs.get("timeout_ms", 30000),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Navigation failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={
-                "url": result.get("url"),
-                "title": result.get("title"),
-                "elapsed_ms": result.get("elapsed_ms"),
-            },
-        )
-
-
-class BrowserClickTool(Tool):
-    """Click on an element in the browser."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_click",
-            version="1.0.0",
-            description=(
-                "Click on an element matching a CSS or XPath selector. "
-                "Waits for the element to be visible before clicking."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=60,
-            timeout_seconds=30,
-            cost_per_use=0.0005,
             session_aware=True,
         )
 
     def _get_parameters(self) -> List[ToolParameter]:
         return [
+            # --- Core parameter ---
+            ToolParameter(
+                name="action",
+                type=ToolParameterType.STRING,
+                description=(
+                    "Browser action to perform. One of: "
+                    "navigate (go to URL), "
+                    "click (click element by selector), "
+                    "type (type text into input), "
+                    "screenshot (capture page image), "
+                    "extract (get page/element text or HTML), "
+                    "scroll (scroll page or element into view), "
+                    "wait (wait for element or duration), "
+                    "close (end browser session)"
+                ),
+                required=True,
+                enum=list(SAFE_ACTIONS),
+            ),
+            # --- navigate ---
+            ToolParameter(
+                name="url",
+                type=ToolParameterType.STRING,
+                description="URL to navigate to (required for action=navigate)",
+                required=False,
+            ),
+            ToolParameter(
+                name="wait_until",
+                type=ToolParameterType.STRING,
+                description="When navigation is done: 'load', 'domcontentloaded', or 'networkidle' (action=navigate)",
+                required=False,
+                default="domcontentloaded",
+            ),
+            # --- click ---
             ToolParameter(
                 name="selector",
                 type=ToolParameterType.STRING,
-                description="CSS or XPath selector for the element to click",
-                required=True,
+                description="CSS or XPath selector for the target element (action=click/type/extract/scroll/wait)",
+                required=False,
             ),
             ToolParameter(
                 name="button",
                 type=ToolParameterType.STRING,
-                description="Mouse button: 'left', 'right', or 'middle'",
+                description="Mouse button: 'left', 'right', or 'middle' (action=click)",
                 required=False,
                 default="left",
             ),
             ToolParameter(
                 name="click_count",
                 type=ToolParameterType.INTEGER,
-                description="Number of clicks (2 for double-click)",
+                description="Number of clicks, 2 for double-click (action=click)",
                 required=False,
                 default=1,
             ),
-            ToolParameter(
-                name="timeout_ms",
-                type=ToolParameterType.INTEGER,
-                description="Timeout in milliseconds",
-                required=False,
-                default=5000,
-            ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="click",
-            selector=kwargs["selector"],
-            button=kwargs.get("button", "left"),
-            click_count=kwargs.get("click_count", 1),
-            timeout_ms=kwargs.get("timeout_ms", 5000),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Click failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={"clicked": True, "elapsed_ms": result.get("elapsed_ms")},
-        )
-
-
-class BrowserTypeTool(Tool):
-    """Type text into an input field."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_type",
-            version="1.0.0",
-            description=(
-                "Type text into an input field matching a selector. "
-                "Clears the field first, then types the new text."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=60,
-            timeout_seconds=30,
-            cost_per_use=0.0005,
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
-            ToolParameter(
-                name="selector",
-                type=ToolParameterType.STRING,
-                description="CSS or XPath selector for the input field",
-                required=True,
-            ),
+            # --- type ---
             ToolParameter(
                 name="text",
                 type=ToolParameterType.STRING,
-                description="Text to type into the field",
-                required=True,
-            ),
-            ToolParameter(
-                name="timeout_ms",
-                type=ToolParameterType.INTEGER,
-                description="Timeout in milliseconds",
+                description="Text to type into the field (required for action=type)",
                 required=False,
-                default=5000,
             ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="type",
-            selector=kwargs["selector"],
-            text=kwargs["text"],
-            timeout_ms=kwargs.get("timeout_ms", 5000),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Type failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={"typed": True, "elapsed_ms": result.get("elapsed_ms")},
-        )
-
-
-class BrowserScreenshotTool(Tool):
-    """Take a screenshot of the current page."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_screenshot",
-            version="1.0.0",
-            description=(
-                "Take a screenshot of the current browser page. "
-                "Returns base64-encoded PNG image along with page title and URL."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=20,
-            timeout_seconds=30,
-            cost_per_use=0.002,
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
+            # --- screenshot ---
             ToolParameter(
                 name="full_page",
                 type=ToolParameterType.BOOLEAN,
-                description="Capture full scrollable page (true) or just viewport (false)",
+                description="Capture full scrollable page (action=screenshot)",
                 required=False,
                 default=False,
             ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="screenshot",
-            full_page=kwargs.get("full_page", False),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Screenshot failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={
-                "screenshot": result.get("screenshot"),  # base64
-                "url": result.get("url"),
-                "title": result.get("title"),
-                "elapsed_ms": result.get("elapsed_ms"),
-            },
-        )
-
-
-class BrowserExtractTool(Tool):
-    """Extract content from page or specific elements."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_extract",
-            version="1.0.0",
-            description=(
-                "Extract text content or HTML from the page or specific elements. "
-                "Can extract text, HTML, or specific attributes from matched elements."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=30,
-            timeout_seconds=30,
-            cost_per_use=0.001,
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
-            ToolParameter(
-                name="selector",
-                type=ToolParameterType.STRING,
-                description="CSS selector for elements to extract (omit for whole page)",
-                required=False,
-            ),
+            # --- extract ---
             ToolParameter(
                 name="extract_type",
                 type=ToolParameterType.STRING,
-                description="What to extract: 'text', 'html', or 'attribute'",
+                description="What to extract: 'text', 'html', or 'attribute' (action=extract)",
                 required=False,
                 default="text",
             ),
             ToolParameter(
                 name="attribute",
                 type=ToolParameterType.STRING,
-                description="Attribute name to extract (only used with extract_type='attribute')",
+                description="Attribute name to extract when extract_type='attribute' (action=extract)",
                 required=False,
             ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="extract",
-            selector=kwargs.get("selector"),
-            extract_type=kwargs.get("extract_type", "text"),
-            attribute=kwargs.get("attribute"),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Extract failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={
-                "content": result.get("content"),
-                "elements": result.get("elements"),
-                "elapsed_ms": result.get("elapsed_ms"),
-            },
-        )
-
-
-class BrowserScrollTool(Tool):
-    """Scroll the page or scroll an element into view."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_scroll",
-            version="1.0.0",
-            description=(
-                "Scroll the page by a specified amount or scroll an element into view. "
-                "Use selector to scroll element into view, or x/y for manual scroll."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=60,
-            timeout_seconds=10,
-            cost_per_use=0.0002,
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
-            ToolParameter(
-                name="selector",
-                type=ToolParameterType.STRING,
-                description="CSS selector for element to scroll into view",
-                required=False,
-            ),
+            # --- scroll ---
             ToolParameter(
                 name="x",
                 type=ToolParameterType.INTEGER,
-                description="Horizontal scroll amount in pixels (positive = right)",
+                description="Horizontal scroll pixels, positive=right (action=scroll)",
                 required=False,
                 default=0,
             ),
             ToolParameter(
                 name="y",
                 type=ToolParameterType.INTEGER,
-                description="Vertical scroll amount in pixels (positive = down)",
+                description="Vertical scroll pixels, positive=down (action=scroll)",
                 required=False,
                 default=0,
             ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="scroll",
-            selector=kwargs.get("selector"),
-            x=kwargs.get("x", 0),
-            y=kwargs.get("y", 0),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Scroll failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={"scrolled": True, "elapsed_ms": result.get("elapsed_ms")},
-        )
-
-
-class BrowserWaitTool(Tool):
-    """Wait for an element or a specified duration."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_wait",
-            version="1.0.0",
-            description=(
-                "Wait for an element to appear or for a specified duration. "
-                "Use selector to wait for element, or just timeout_ms for delay."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=60,
-            timeout_seconds=30,
-            cost_per_use=0.0001,
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
-            ToolParameter(
-                name="selector",
-                type=ToolParameterType.STRING,
-                description="CSS selector for element to wait for",
-                required=False,
-            ),
+            # --- shared ---
             ToolParameter(
                 name="timeout_ms",
                 type=ToolParameterType.INTEGER,
-                description="Maximum wait time in milliseconds",
+                description="Timeout in milliseconds (action=navigate/click/type/wait)",
                 required=False,
                 default=5000,
             ),
-        ]
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _call_playwright_action(
-            session_id=session_id,
-            action="wait",
-            selector=kwargs.get("selector"),
-            timeout_ms=kwargs.get("timeout_ms", 5000),
-        )
-
-        if not result.get("success"):
-            return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Wait failed"),
-            )
-
-        return ToolResult(
-            success=True,
-            output={"waited": True, "elapsed_ms": result.get("elapsed_ms")},
-        )
-
-
-class BrowserEvaluateTool(Tool):
-    """Execute JavaScript in the browser context."""
-
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_evaluate",
-            version="1.0.0",
-            description=(
-                "Execute JavaScript code in the browser page context. "
-                "Returns the result of the script evaluation. "
-                "Use for advanced interactions or data extraction."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=30,
-            timeout_seconds=30,
-            cost_per_use=0.001,
-            dangerous=True,  # Mark as dangerous due to script execution
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return [
+            # --- evaluate (hidden, not in enum) ---
             ToolParameter(
                 name="script",
                 type=ToolParameterType.STRING,
-                description="JavaScript code to execute (should be an expression or IIFE)",
-                required=True,
+                description="JavaScript code to execute (requires special permission)",
+                required=False,
             ),
         ]
 
     async def _execute_impl(
         self, session_context: Optional[Dict] = None, **kwargs
     ) -> ToolResult:
+        action = kwargs.get("action", "").lower().strip()
+
+        # --- Validate action ---
+        all_actions = set(SAFE_ACTIONS) | GATED_ACTIONS
+        if action not in all_actions:
+            return ToolResult(
+                success=False, output=None,
+                error=f"Unknown action '{action}'. Valid actions: {', '.join(SAFE_ACTIONS)}",
+            )
+
+        # --- Gate dangerous actions ---
+        if action in GATED_ACTIONS:
+            allow = (
+                session_context
+                and isinstance(session_context, dict)
+                and session_context.get("allow_browser_evaluate")
+            )
+            if not allow:
+                return ToolResult(
+                    success=False, output=None,
+                    error=f"Action '{action}' is disabled. To enable, add allow_browser_evaluate to session context sanitizer safe_keys in tools.py and agent.py",
+                )
+
+        # --- Validate required params for this action ---
+        required = _ACTION_REQUIRED_PARAMS.get(action, [])
+        missing = [p for p in required if not kwargs.get(p)]
+        if missing:
+            return ToolResult(
+                success=False, output=None,
+                error=f"Action '{action}' requires parameters: {', '.join(missing)}",
+            )
+
         session_id = _get_session_id(session_context, kwargs)
+
+        # --- Dispatch ---
+        if action == "close":
+            result = await _close_playwright_session(session_id)
+            return ToolResult(
+                success=result.get("success", False),
+                output={"closed": result.get("success", False), "action": "close"},
+                error=result.get("error") if not result.get("success") else None,
+            )
+
+        # Build action-specific kwargs for playwright
+        action_kwargs: Dict[str, Any] = {}
+
+        if action == "navigate":
+            action_kwargs["url"] = kwargs["url"]
+            action_kwargs["wait_until"] = kwargs.get("wait_until", "domcontentloaded")
+            action_kwargs["timeout_ms"] = kwargs.get("timeout_ms", 30000)
+        elif action == "click":
+            action_kwargs["selector"] = kwargs["selector"]
+            action_kwargs["button"] = kwargs.get("button", "left")
+            action_kwargs["click_count"] = kwargs.get("click_count", 1)
+            action_kwargs["timeout_ms"] = kwargs.get("timeout_ms", 5000)
+        elif action == "type":
+            action_kwargs["selector"] = kwargs["selector"]
+            action_kwargs["text"] = kwargs["text"]
+            action_kwargs["timeout_ms"] = kwargs.get("timeout_ms", 5000)
+        elif action == "screenshot":
+            action_kwargs["full_page"] = kwargs.get("full_page", False)
+        elif action == "extract":
+            if kwargs.get("selector"):
+                action_kwargs["selector"] = kwargs["selector"]
+            action_kwargs["extract_type"] = kwargs.get("extract_type", "text")
+            if kwargs.get("attribute"):
+                action_kwargs["attribute"] = kwargs["attribute"]
+        elif action == "scroll":
+            if kwargs.get("selector"):
+                action_kwargs["selector"] = kwargs["selector"]
+            action_kwargs["x"] = kwargs.get("x", 0)
+            action_kwargs["y"] = kwargs.get("y", 0)
+        elif action == "wait":
+            if kwargs.get("selector"):
+                action_kwargs["selector"] = kwargs["selector"]
+            action_kwargs["timeout_ms"] = kwargs.get("timeout_ms", 5000)
+        elif action == "evaluate":
+            action_kwargs["script"] = kwargs["script"]
 
         result = await _call_playwright_action(
             session_id=session_id,
-            action="evaluate",
-            script=kwargs["script"],
+            action=action,
+            **action_kwargs,
         )
 
         if not result.get("success"):
             return ToolResult(
-                success=False,
-                output=None,
-                error=result.get("error", "Evaluate failed"),
+                success=False, output=None,
+                error=result.get("error", f"{action} failed"),
             )
 
-        return ToolResult(
-            success=True,
-            output={
-                "result": result.get("result"),
-                "elapsed_ms": result.get("elapsed_ms"),
-            },
-        )
+        # --- Format output per action ---
+        output: Dict[str, Any] = {"action": action}
 
+        if action == "navigate":
+            output["url"] = result.get("url")
+            output["title"] = result.get("title")
+        elif action == "click":
+            output["clicked"] = True
+        elif action == "type":
+            output["typed"] = True
+        elif action == "screenshot":
+            b64_screenshot = result.get("screenshot")
+            output["url"] = result.get("url")
+            output["title"] = result.get("title")
+            # Persist to session workspace and replace base64 with path reference
+            screenshot_path = None
+            if b64_screenshot and session_id:
+                screenshot_path = _persist_screenshot(session_id, b64_screenshot)
+            if screenshot_path:
+                output["screenshot"] = f"[stored:{screenshot_path}]"
+                output["screenshot_path"] = screenshot_path
+            else:
+                output["screenshot"] = b64_screenshot
+        elif action == "extract":
+            output["content"] = result.get("content")
+            output["elements"] = result.get("elements")
+        elif action == "scroll":
+            output["scrolled"] = True
+        elif action == "wait":
+            output["waited"] = True
+        elif action == "evaluate":
+            output["result"] = result.get("result")
 
-class BrowserCloseTool(Tool):
-    """Close the browser session."""
+        output["elapsed_ms"] = result.get("elapsed_ms")
 
-    def _get_metadata(self) -> ToolMetadata:
-        return ToolMetadata(
-            name="browser_close",
-            version="1.0.0",
-            description=(
-                "Close the browser session and free resources. "
-                "Call this when done with browser automation to release memory."
-            ),
-            category="browser",
-            requires_auth=False,
-            rate_limit=60,
-            timeout_seconds=10,
-            cost_per_use=0.0,
-            session_aware=True,
-        )
-
-    def _get_parameters(self) -> List[ToolParameter]:
-        return []
-
-    async def _execute_impl(
-        self, session_context: Optional[Dict] = None, **kwargs
-    ) -> ToolResult:
-        session_id = _get_session_id(session_context, kwargs)
-
-        result = await _close_playwright_session(session_id)
-
-        return ToolResult(
-            success=result.get("success", False),
-            output={"closed": result.get("success", False)},
-            error=result.get("error") if not result.get("success") else None,
-        )
+        return ToolResult(success=True, output=output)

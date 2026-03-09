@@ -157,6 +157,9 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}
 	}
 
+	// User persistent memory: prompt injection and extraction are swarm-only.
+	// Simple tasks generate too many low-value extractions that bloat /memory/.
+
 	// Context compression (version-gated for determinism)
 	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
 	if compressionVersion >= 1 && input.SessionID != "" && len(input.History) > 20 {
@@ -434,10 +437,13 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	totalTokens := result.TokensUsed
 
 	// Determine if synthesis is needed
+	skipSynthesis := GetContextBool(input.Context, "skip_synthesis")
 	needsSynthesis := false
-
-	// Check if web_search was used
-	if input.SuggestedTools != nil {
+	if skipSynthesis {
+		logger.Info("Synthesis skipped via context flag")
+	}
+	if !skipSynthesis && input.SuggestedTools != nil {
+		// Check if web_search was used
 		for _, tool := range input.SuggestedTools {
 			if strings.EqualFold(tool, "web_search") {
 				needsSynthesis = true
@@ -447,7 +453,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 
 	// Check if response looks like JSON
-	if !needsSynthesis {
+	if !needsSynthesis && !skipSynthesis {
 		trimmed := strings.TrimSpace(result.Response)
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 			needsSynthesis = true
@@ -590,6 +596,9 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		}).Get(ctx, nil)
 	}
 
+	// Memory extraction is swarm-only — removed from SimpleTaskWorkflow to avoid
+	// low-value extractions bloating /memory/ on every simple query.
+
 	// Check pause/cancel before completion
 	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
@@ -639,6 +648,12 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 	if len(toolErrors) > 0 {
 		meta["tool_errors"] = toolErrors
+	}
+
+	// Persist screenshot paths in task metadata (version-gated)
+	screenshotVersion := workflow.GetVersion(ctx, "screenshot_persistence_v1", workflow.DefaultVersion, 1)
+	if screenshotVersion >= 1 && len(result.ScreenshotPaths) > 0 {
+		meta["screenshots"] = result.ScreenshotPaths
 	}
 
 	// Add model and provider information for task persistence

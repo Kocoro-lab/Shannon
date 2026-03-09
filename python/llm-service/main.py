@@ -12,11 +12,13 @@ from llm_service.api import (
     embeddings,
     complexity,
     agent,
+    lead,
     tools,
     evaluate,
     verify,
     context as context_api,
     providers as providers_api,
+    memory,
 )
 from llm_service.api import mcp_mock
 from llm_service.config import Settings
@@ -117,12 +119,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Shannon LLM Service",
     description="LLM integration service for Shannon platform",
-    version="0.2.0",
+    version="0.1.0",
     lifespan=lifespan,
 )
 
-# Initialize tracing after app creation
-setup_tracing(app)
+# Initialize tracing after app creation (only if explicitly enabled)
+if os.getenv("OTEL_ENABLED", "false").lower() == "true":
+    setup_tracing(app)
 
 # Add CORS middleware
 app.add_middleware(
@@ -139,11 +142,13 @@ app.include_router(completions.router, prefix="/completions", tags=["completions
 app.include_router(embeddings.router, prefix="/embeddings", tags=["embeddings"])
 app.include_router(complexity.router, prefix="/complexity", tags=["complexity"])
 app.include_router(agent.router, tags=["agent"])
+app.include_router(lead.router, tags=["lead"])
 app.include_router(tools.router, tags=["tools"])
 app.include_router(evaluate.router, tags=["evaluate"])
 app.include_router(verify.router, tags=["verify"])
 app.include_router(context_api.router, tags=["context"])
 app.include_router(providers_api.router, tags=["providers"])
+app.include_router(memory.router, prefix="/memory", tags=["memory"])
 app.include_router(mcp_mock.router, tags=["mcp-mock"])
 
 # Mount Prometheus metrics
@@ -154,7 +159,7 @@ app.mount("/metrics", metrics_app)
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {"service": "Shannon LLM Service", "version": "0.2.0", "status": "running"}
+    return {"service": "Shannon LLM Service", "version": "0.1.0", "status": "running"}
 
 
 if __name__ == "__main__":

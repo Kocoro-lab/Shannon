@@ -50,36 +50,39 @@ model_tiers:
     # Target allocation: 40% (not enforced - actual usage depends on complexity)
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
-      - provider: openai
-        model: gpt-5-mini-2025-08-07
-        priority: 2
       - provider: anthropic
         model: claude-sonnet-4-5-20250929
         priority: 1
+      - provider: anthropic
+        model: claude-sonnet-4-6
+        priority: 2
+      - provider: openai
+        model: gpt-5-mini-2025-08-07
+        priority: 3
       - provider: xai
         model: grok-4-fast-non-reasoning
-        priority: 3
+        priority: 4
       - provider: google
         model: gemini-2.5-flash
-        priority: 4
+        priority: 5
       - provider: meta
         model: llama-4-scout
-        priority: 5
+        priority: 6
       - provider: deepseek
         model: 'deepseek-v3.2'
-        priority: 6
+        priority: 7
       - provider: qwen
         model: qwen3-8b
-        priority: 7
+        priority: 8
       - provider: mistral
         model: mistral-small-3.2-24b-instruct-2506
-        priority: 8
+        priority: 9
       - provider: cohere
         model: command-r-plus-08-2024
-        priority: 9
+        priority: 10
       - provider: zai
         model: glm-4.5-air
-        priority: 10
+        priority: 11
 
   large:
     # Target allocation: 10% (not enforced - actual usage depends on complexity)
@@ -89,35 +92,38 @@ model_tiers:
         model: gpt-5.1
         priority: 1
       - provider: anthropic
-        model: claude-opus-4-5-20251101
+        model: claude-opus-4-6
         priority: 2
       - provider: anthropic
-        model: claude-opus-4-1-20250805
+        model: claude-opus-4-5-20251101
         priority: 3
+      - provider: anthropic
+        model: claude-opus-4-1-20250805
+        priority: 4
       - provider: xai
         model: grok-4-fast-reasoning
-        priority: 4
-      - provider: google
-        model: gemini-2.5-pro
         priority: 5
       - provider: google
-        model: gemini-3-pro-preview
+        model: gemini-2.5-pro
         priority: 6
+      - provider: google
+        model: gemini-3-pro-preview
+        priority: 7
       - provider: deepseek
         model: deepseek-r1
-        priority: 7
+        priority: 8
       - provider: qwen
         model: qwen3-omni-30b-a3b-instruct
-        priority: 8
+        priority: 9
       - provider: mistral
         model: mistral-nemo-instruct-2407
-        priority: 9
+        priority: 10
       - provider: meta
         model: llama-3.1-405b
-        priority: 10
+        priority: 11
       - provider: zai
         model: glm-4.6
-        priority: 11
+        priority: 12
 
 # Model selection strategy
 selection_strategy:
@@ -296,6 +302,23 @@ model_catalog:
       supports_streaming: true
       supports_vision: true
       supports_effort: true  # Opus 4.5 unique feature
+    claude-sonnet-4-6:
+      model_id: claude-sonnet-4-6
+      tier: medium
+      context_window: 200000
+      max_tokens: 64000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+    claude-opus-4-6:
+      model_id: claude-opus-4-6
+      tier: large
+      context_window: 200000
+      max_tokens: 64000
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
+      supports_effort: true
 
   google:
     gemini-3-pro-preview:
@@ -554,7 +577,7 @@ model_catalog:
       supports_streaming: true
 
 # Centralized model pricing (USD per 1K tokens)
-# Updated: November 2025 with latest pricing
+# Updated: March 2026 — verified against current Anthropic/OpenAI/Google billing
 # Used across Go/Rust/Python for consistent cost calculation.
 pricing:
   defaults:
@@ -579,20 +602,26 @@ pricing:
 
     anthropic:
       claude-haiku-4-5-20251001:
-        input_per_1k: 0.00010
-        output_per_1k: 0.00050
+        input_per_1k: 0.00100
+        output_per_1k: 0.00500
       claude-sonnet-4-20250514:
-        input_per_1k: 0.00030
-        output_per_1k: 0.00150
+        input_per_1k: 0.00300
+        output_per_1k: 0.01500
       claude-sonnet-4-5-20250929:
-        input_per_1k: 0.00030
-        output_per_1k: 0.00150
+        input_per_1k: 0.00300
+        output_per_1k: 0.01500
       claude-opus-4-1-20250805:
         input_per_1k: 0.0150
         output_per_1k: 0.0750
       claude-opus-4-5-20251101:
         input_per_1k: 0.0050
         output_per_1k: 0.0250
+      claude-sonnet-4-6:
+        input_per_1k: 0.00300
+        output_per_1k: 0.01500
+      claude-opus-4-6:
+        input_per_1k: 0.00500
+        output_per_1k: 0.02500
 
     google:
       gemini-3-pro-preview:
@@ -730,6 +759,28 @@ pricing:
       qwen2.5:0.5b:
         input_per_1k: 0.0
         output_per_1k: 0.0
+
+    # Synthetic models for external tool cost attribution.
+    # Each tool call = 7500 synthetic output tokens (≈ $2/1M token billing rate).
+    # combined_per_1k = actual_cost_per_call / 7.5
+    # Verify: (7500 / 1000) × combined_per_1k = cost_per_call
+    shannon-scraper:
+      shannon_web_search:
+        combined_per_1k: 0.002        # (7500/1000) × 0.002 = $0.015 (SerpAPI)
+      shannon_searchapi:
+        combined_per_1k: 0.000533     # (7500/1000) × 0.000533 ≈ $0.004 (SearchAPI.io)
+      shannon_google_ads:
+        combined_per_1k: 0.002        # (7500/1000) × 0.002 = $0.015 (SerpAPI)
+      shannon_yahoo:
+        combined_per_1k: 0.000533     # (7500/1000) × 0.000533 ≈ $0.004 (SearchAPI.io)
+      shannon_meta:
+        combined_per_1k: 0.000533     # (7500/1000) × 0.000533 ≈ $0.004 (SearchAPI.io)
+      shannon_page_screenshot:
+        combined_per_1k: 0.002        # (500/1000) × 0.002 = $0.001 (Playwright + S3)
+      shannon_firecrawl:
+        combined_per_1k: 0.000133     # (7500/1000) × 0.000133 ≈ $0.001 (Firecrawl)
+      shannon_web_fetch:
+        combined_per_1k: 0.00035      # SMALL model weighted avg; fallback only (real cost via cost_usd override)
 
 # Feature flags for advanced capabilities
 feature_flags:

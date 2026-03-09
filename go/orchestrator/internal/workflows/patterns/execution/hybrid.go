@@ -12,13 +12,13 @@ import (
 
 // HybridConfig controls hybrid parallel/sequential execution with dependencies
 type HybridConfig struct {
-	MaxConcurrency           int                                       // Maximum concurrent agents
-	EmitEvents               bool                                      // Whether to emit streaming events
-	Context                  map[string]interface{}                    // Base context for all agents
-	DependencyWaitTimeout    time.Duration                             // Max time to wait for dependencies
-	DependencyCheckInterval  time.Duration                             // Interval between dependency checks (default 30s)
-	PassDependencyResults    bool                                      // Pass dependency results to dependent tasks
-	ClearDependentToolParams bool                                      // Clear tool params for dependent tasks
+	MaxConcurrency           int                                        // Maximum concurrent agents
+	EmitEvents               bool                                       // Whether to emit streaming events
+	Context                  map[string]interface{}                     // Base context for all agents
+	DependencyWaitTimeout    time.Duration                              // Max time to wait for dependencies
+	DependencyCheckInterval  time.Duration                              // Interval between dependency checks (default 30s)
+	PassDependencyResults    bool                                       // Pass dependency results to dependent tasks
+	ClearDependentToolParams bool                                       // Clear tool params for dependent tasks
 	PrefilledResults         map[string]activities.AgentExecutionResult // Pre-populated results from external sources (child workflows, previous phases)
 }
 
@@ -206,7 +206,7 @@ func executeHybridTask(
 			"dependencies", task.Dependencies,
 		)
 
-		if !waitForDependencies(ctx, task.Dependencies, completedTasks, config.DependencyWaitTimeout, config.DependencyCheckInterval) {
+		if !waitForDependencies(ctx, task.Dependencies, completedTasks, config.DependencyWaitTimeout) {
 			resultsChan.Send(ctx, taskExecutionResult{
 				TaskID: task.ID,
 				Error:  fmt.Errorf("timeout waiting for dependencies"),
@@ -365,63 +365,33 @@ func executeHybridTask(
 	}
 }
 
-// waitForDependencies waits for all dependencies to complete using incremental timeouts.
-// Instead of a single long timeout (e.g., 6 minutes), it uses multiple short check intervals
-// (e.g., 30 seconds) so that Temporal UI shows more accurate timer durations.
+// waitForDependencies waits for all dependencies to complete
 func waitForDependencies(
 	ctx workflow.Context,
 	dependencies []string,
 	completedTasks map[string]bool,
 	timeout time.Duration,
-	checkInterval time.Duration,
 ) bool {
 	logger := workflow.GetLogger(ctx)
 
-	// Default check interval: 30 seconds
-	if checkInterval == 0 {
-		checkInterval = 30 * time.Second
-	}
-
-	startTime := workflow.Now(ctx)
-	deadline := startTime.Add(timeout)
-
-	for workflow.Now(ctx).Before(deadline) {
-		// Calculate wait time: minimum of check interval and remaining time
-		remaining := deadline.Sub(workflow.Now(ctx))
-		waitTime := checkInterval
-		if remaining < waitTime {
-			waitTime = remaining
-		}
-
-		ok, err := workflow.AwaitWithTimeout(ctx, waitTime, func() bool {
-			for _, depID := range dependencies {
-				if !completedTasks[depID] {
-					return false
-				}
+	ok, err := workflow.AwaitWithTimeout(ctx, timeout, func() bool {
+		for _, depID := range dependencies {
+			if !completedTasks[depID] {
+				return false
 			}
-			return true
-		})
-
-		if err != nil {
-			logger.Debug("Context cancelled during dependency wait", "error", err)
-			return false
 		}
-
-		if ok {
-			return true
-		}
-
-		// Condition not met, log progress and continue next iteration
-		logger.Debug("Dependency check iteration",
-			"dependencies", dependencies,
-			"elapsed", workflow.Now(ctx).Sub(startTime),
-			"remaining", remaining,
-		)
+		return true
+	})
+	if err != nil {
+		logger.Debug("Context cancelled during dependency wait", "error", err)
+		return false
 	}
-
-	logger.Warn("Dependency wait timeout",
-		"dependencies", dependencies,
-		"timeout", timeout,
-	)
-	return false
+	if !ok {
+		logger.Warn("Dependency wait timeout",
+			"dependencies", dependencies,
+			"timeout", timeout,
+		)
+		return false
+	}
+	return true
 }

@@ -58,6 +58,25 @@ cd python/llm-service && python3 -m pytest
 - **`docs/`**: Architecture and API documentation
 - **`scripts/`**: Automation and helper scripts
 
+### Tool Execution API
+
+Direct tool execution without full task orchestration:
+- `GET /api/v1/tools` — List available tool schemas (excludes dangerous)
+- `GET /api/v1/tools/{name}` — Get tool metadata + parameter schema
+- `POST /api/v1/tools/{name}/execute` — Execute a tool directly
+
+Request: `{"arguments": {...}, "session_id": "optional"}`
+Response: `{"success": bool, "output": ..., "usage": {"tokens": N, "cost_usd": N}}`
+
+Dangerous tools (`bash_executor`, `file_write`) are blocked at gateway — they only run inside orchestrated workflows. The browser `evaluate` action is disabled by default — not advertised in the tool schema and blocked by session context sanitizers in both API paths. To enable, add `allow_browser_evaluate` to safe_keys in both `tools.py` and `agent.py`.
+
+## Subsystem References
+
+- **Skills System**: Markdown-based workflows. API: `GET /api/v1/skills[/{name}]`. See `docs/skills-system.md`.
+- **Session Workspaces**: File ops isolated per session via WASI sandbox. See `docs/session-workspaces.md`.
+
+---
+
 ## Workflow Types & Strategies
 
 Shannon's orchestrator uses different workflow types based on task complexity and execution patterns. **All workflows populate usage metadata** (model, provider, tokens, cost) in API responses.

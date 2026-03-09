@@ -20,6 +20,7 @@ const (
 	StreamEventMessageSent       StreamEventType = "MESSAGE_SENT"
 	StreamEventMessageReceived   StreamEventType = "MESSAGE_RECEIVED"
 	StreamEventWorkspaceUpdated  StreamEventType = "WORKSPACE_UPDATED"
+	StreamEventTaskListUpdated   StreamEventType = "TASKLIST_UPDATED"
 	// Extended types (emitted when corresponding gates are enabled)
 	StreamEventTeamRecruited       StreamEventType = "TEAM_RECRUITED"
 	StreamEventTeamRetired         StreamEventType = "TEAM_RETIRED"
@@ -37,12 +38,17 @@ const (
 	StreamEventWaiting        StreamEventType = "WAITING"         // Waiting for resources/responses
 	StreamEventErrorRecovery  StreamEventType = "ERROR_RECOVERY"  // Handling and recovering from errors
 	StreamEventWarning        StreamEventType = "WARNING"         // Non-fatal warnings that user should be aware of
+	StreamEventHITLResponse   StreamEventType = "HITL_RESPONSE"   // Lead's response to human input during swarm execution
+	StreamEventLeadDecision   StreamEventType = "LEAD_DECISION"   // Lead agent made a planning/coordination decision
 
 	// LLM events (uniform across workflows)
 	StreamEventLLMPrompt  StreamEventType = "LLM_PROMPT"  // Sanitized prompt
 	StreamEventLLMPartial StreamEventType = "LLM_PARTIAL" // Incremental output chunk
 	StreamEventLLMOutput  StreamEventType = "LLM_OUTPUT"  // Final output for a step
 	StreamEventToolObs    StreamEventType = "TOOL_OBSERVATION"
+
+	// Browser screenshot persistence
+	StreamEventScreenshotSaved StreamEventType = "SCREENSHOT_SAVED"
 
 	// Stream lifecycle
 	StreamEventStreamEnd StreamEventType = "STREAM_END" // Explicit end-of-stream signal

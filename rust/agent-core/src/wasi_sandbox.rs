@@ -28,6 +28,8 @@ pub struct WasiSandbox {
     memories_limit: usize,
     /// Session workspace path for read-write access (mounted at /workspace)
     session_workspace: Option<PathBuf>,
+    /// User memory workspace path for persistent read-write access (mounted at /memory)
+    memory_workspace: Option<PathBuf>,
 }
 
 impl WasiSandbox {
@@ -71,6 +73,7 @@ impl WasiSandbox {
             tables_limit: 10,
             memories_limit: 4,
             session_workspace: None,
+            memory_workspace: None,
         })
     }
 
@@ -110,6 +113,13 @@ impl WasiSandbox {
     /// Get the session workspace path if set.
     pub fn session_workspace(&self) -> Option<&PathBuf> {
         self.session_workspace.as_ref()
+    }
+
+    /// Set the user memory workspace path for persistent read-write file access.
+    /// The workspace will be mounted at `/memory` inside the WASI sandbox.
+    pub fn with_memory_workspace(mut self, memory_path: PathBuf) -> Self {
+        self.memory_workspace = Some(memory_path);
+        self
     }
 
     #[allow(dead_code)]
@@ -207,6 +217,7 @@ impl WasiSandbox {
         let env_vars = self.env_vars.clone();
         let allow_env_access = self.allow_env_access;
         let session_workspace = self.session_workspace.clone();
+        let memory_workspace = self.memory_workspace.clone();
 
         // Start epoch ticker for timeout enforcement with cancellation support
         let engine_weak = Arc::downgrade(&self.engine);
@@ -335,6 +346,31 @@ impl WasiSandbox {
                     warn!(
                         "WASI: Session workspace {:?} does not exist or is not a directory",
                         workspace
+                    );
+                }
+            }
+
+            // Mount user memory workspace with read-write permissions
+            if let Some(ref memory_path) = memory_workspace {
+                if memory_path.exists() && memory_path.is_dir() {
+                    let canonical_memory = memory_path.canonicalize().map_err(|e| {
+                        anyhow::anyhow!("Failed to canonicalize memory workspace {:?}: {}", memory_path, e)
+                    })?;
+
+                    wasi_builder.preopened_dir(
+                        canonical_memory.clone(),
+                        "/memory",           // Guest path - always /memory
+                        DirPerms::all(),     // Read + write + create directories
+                        FilePerms::all(),    // Read + write files
+                    )?;
+                    info!(
+                        "WASI: Mounted user memory {:?} at /memory with read-write access",
+                        canonical_memory
+                    );
+                } else {
+                    warn!(
+                        "WASI: User memory workspace {:?} does not exist or is not a directory",
+                        memory_path
                     );
                 }
             }

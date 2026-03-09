@@ -59,6 +59,7 @@ class BashExecutorTool(Tool):
     }
 
     # Keep this small and boring; expand via config/env only if needed
+    # NOTE: 'env' command removed - exposes all environment variables including secrets
     ALLOWED_BINARIES = {
         "git",
         "ls",

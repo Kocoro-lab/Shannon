@@ -219,6 +219,10 @@ class ProviderManager:
             "task_id",
             "agent_id",
             "max_tokens_budget",
+            "previous_response_id",
+            "output_config",
+            "thinking",
+            "reasoning_effort",
         }
 
         for field in list(params.keys()):
@@ -323,6 +327,9 @@ class ProviderManager:
             "task_id",
             "agent_id",
             "max_tokens_budget",
+            "output_config",
+            "thinking",
+            "reasoning_effort",
         }
 
         for field in list(params.keys()):
@@ -383,6 +390,9 @@ class ProviderManager:
             "cached": response.cached,
         }
 
+        if response.tool_calls:
+            result["tool_calls"] = response.tool_calls
+
         # Add effective_max_completion if available (for continuation trigger logic)
         if response.effective_max_completion is not None:
             result["effective_max_completion"] = response.effective_max_completion
@@ -398,6 +408,8 @@ class ProviderManager:
             "output_tokens": usage.output_tokens,
             "total_tokens": usage.total_tokens,
             "cost_usd": usage.estimated_cost,
+            "cache_read_tokens": usage.cache_read_tokens,
+            "cache_creation_tokens": usage.cache_creation_tokens,
         }
 
     def _extract_user_query(self, content: str) -> str:

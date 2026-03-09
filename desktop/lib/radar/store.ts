@@ -6,6 +6,9 @@ type PartialWithId<T extends { id: string }> = Partial<T> & { id: string };
 export interface UIState extends AppState {
   lastTickId: number;
   pingAudioEnabled: boolean;
+  leadActive: boolean;
+  leadLastPulse: number;
+  agentColors: Record<string, number>; // agent name → hue (0-360), populated in swarm mode
   applySnapshot: (snapshot: AppState) => void;
   applyTick: (diff: {
     tick_id: number;
@@ -13,6 +16,7 @@ export interface UIState extends AppState {
     agents?: PartialWithId<Agent>[];
     metrics?: Partial<ProjectMetrics>;
     agents_remove?: string[];
+    lead_pulse?: boolean;
   }) => void;
   setPingAudioEnabled: (enabled: boolean) => void;
   reset: () => void;
@@ -36,6 +40,9 @@ export function createRadarStore(initial?: Partial<AppState>) {
     running: initial?.running ?? true,
     lastTickId: 0,
     pingAudioEnabled: false,
+    leadActive: false,
+    leadLastPulse: 0,
+    agentColors: {},
 
     applySnapshot(snapshot) {
       set({
@@ -81,7 +88,13 @@ export function createRadarStore(initial?: Partial<AppState>) {
           ? { ...state.metrics, ...diff.metrics }
           : state.metrics;
 
-        return { items, agents, metrics, lastTickId: diff.tick_id };
+        const leadUpdates: Partial<UIState> = {};
+        if (diff.lead_pulse) {
+          leadUpdates.leadActive = true;
+          leadUpdates.leadLastPulse = Date.now();
+        }
+
+        return { items, agents, metrics, lastTickId: diff.tick_id, ...leadUpdates };
       });
     },
 
@@ -95,6 +108,10 @@ export function createRadarStore(initial?: Partial<AppState>) {
         agents: {},
         metrics: emptyMetrics,
         lastTickId: 0,
+        leadActive: false,
+        leadLastPulse: 0,
+        // NOTE: agentColors is NOT reset here — it's managed by RadarBridge's
+        // swarmAgentRegistry sync effect and must survive status transitions.
       });
     },
   }));

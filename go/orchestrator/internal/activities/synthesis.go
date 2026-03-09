@@ -8,8 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,12 +29,17 @@ import (
 // sanitizeAgentOutput removes duplicate references from agent outputs
 // to avoid sending the same URLs/citations twice (once in agent output, once in Available Citations)
 func sanitizeAgentOutput(text string) string {
-	// First, filter out XML tool tags that may have leaked into agent responses
-	toolTagPattern := regexp.MustCompile(`<(search_query|web_fetch|web_search|tool)[^>]*>.*?</(search_query|web_fetch|web_search|tool)>`)
+	// Filter out XML tool tags that may have leaked into agent responses
+	// Include all known tool-calling tag patterns: search, query, search_query, web_fetch, web_search, tool
+	// Use (?s) for dotall mode so .* matches across newlines (multi-line tool blocks)
+	toolTagPattern := regexp.MustCompile(`(?s)<(search|query|search_query|web_fetch|web_search|tool)[^>]*>.*?</(search|query|search_query|web_fetch|web_search|tool)>`)
 	text = toolTagPattern.ReplaceAllString(text, "")
-	// Also filter single/self-closing tags
-	singleTagPattern := regexp.MustCompile(`<(search_query|web_fetch|web_search|tool)[^>]*/?>`)
+	// Filter single/self-closing opening tags
+	singleTagPattern := regexp.MustCompile(`<(search|query|search_query|web_fetch|web_search|tool)[^>]*/?>`)
 	text = singleTagPattern.ReplaceAllString(text, "")
+	// Filter orphan closing tags (in case opening tag was already stripped or malformed)
+	closingTagPattern := regexp.MustCompile(`</(search|query|search_query|web_fetch|web_search|tool)>`)
+	text = closingTagPattern.ReplaceAllString(text, "")
 
 	lines := strings.Split(text, "\n")
 	var result []string
@@ -78,6 +87,77 @@ func sanitizeAgentOutput(text string) string {
 	}
 
 	return strings.TrimSpace(strings.Join(result, "\n"))
+}
+
+func extractFirstJSONResponse(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	// If markdown fences wrap the payload, prefer the fenced body first.
+	if strings.HasPrefix(trimmed, "```") {
+		parts := strings.SplitN(trimmed, "\n", 2)
+		if len(parts) == 2 {
+			fence := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(parts[0], "```")))
+			if fence == "" || fence == "json" {
+				body := strings.TrimSpace(parts[1])
+				if strings.HasSuffix(body, "```") {
+					trimmed = strings.TrimSpace(strings.TrimSuffix(body, "```"))
+				}
+			}
+		}
+	}
+
+	for i, ch := range trimmed {
+		if ch != '{' && ch != '[' {
+			continue
+		}
+		openChar := ch
+		closeChar := byte(']')
+		if openChar == '{' {
+			closeChar = byte('}')
+		}
+
+		stack := []byte{byte(closeChar)}
+		inString := false
+		escaped := false
+		for j := i + 1; j < len(trimmed); j++ {
+			c := trimmed[j]
+			if inString {
+				if escaped {
+					escaped = false
+					continue
+				}
+				if c == '\\' {
+					escaped = true
+					continue
+				}
+				if c == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch c {
+			case '"':
+				inString = true
+			case '{':
+				stack = append(stack, '}')
+			case '[':
+				stack = append(stack, ']')
+			default:
+				if len(stack) > 0 && c == stack[len(stack)-1] {
+					stack = stack[:len(stack)-1]
+					if len(stack) == 0 {
+						return strings.TrimSpace(trimmed[i : j+1])
+					}
+				}
+			}
+		}
+		break
+	}
+
+	return ""
 }
 
 // normalizeLanguage maps language codes to the full language name used in prompts
@@ -458,6 +538,97 @@ func SynthesizeResults(ctx context.Context, input SynthesisInput) (SynthesisResu
 	return res, nil
 }
 
+// WorkspaceMaterial represents a file read from the agent workspace.
+type WorkspaceMaterial struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Truncated bool   `json:"truncated"`
+}
+
+// binaryExtensions are file extensions to skip when reading workspace files.
+var binaryExtensions = map[string]bool{
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".bmp": true,
+	".pdf": true, ".zip": true, ".tar": true, ".gz": true, ".bin": true,
+	".exe": true, ".so": true, ".dylib": true, ".wasm": true,
+}
+
+// readWorkspaceFiles reads text files from a session workspace directory.
+// Returns sorted materials with per-file and total size caps.
+// Runs inside an activity (Go I/O) — NOT through Temporal history.
+func readWorkspaceFiles(sessionDir string, maxTotalChars, maxPerFileChars int) []WorkspaceMaterial {
+	if _, err := os.Stat(sessionDir); os.IsNotExist(err) {
+		return nil
+	}
+
+	var materials []WorkspaceMaterial
+	totalChars := 0
+
+	filepath.WalkDir(sessionDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if binaryExtensions[ext] {
+			return nil
+		}
+		relPath, _ := filepath.Rel(sessionDir, path)
+		if relPath == "" || strings.HasPrefix(relPath, "..") {
+			return nil
+		}
+		if totalChars >= maxTotalChars {
+			return filepath.SkipAll
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		content := string(data)
+		truncated := false
+		if len(content) > maxPerFileChars {
+			content = content[:maxPerFileChars] + "..."
+			truncated = true
+		}
+		if totalChars+len(content) > maxTotalChars {
+			remaining := maxTotalChars - totalChars
+			if remaining > 0 {
+				content = content[:remaining] + "..."
+				truncated = true
+			} else {
+				return filepath.SkipAll
+			}
+		}
+		totalChars += len(content)
+		materials = append(materials, WorkspaceMaterial{
+			Path:      relPath,
+			Content:   content,
+			Truncated: truncated,
+		})
+		return nil
+	})
+
+	sort.Slice(materials, func(i, j int) bool {
+		return materials[i].Path < materials[j].Path
+	})
+	return materials
+}
+
+// formatWorkspaceMaterials formats workspace files for inclusion in synthesis prompt.
+func formatWorkspaceMaterials(materials []WorkspaceMaterial) string {
+	if len(materials) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Workspace Artifacts (files produced by agents)\n\n")
+	for _, m := range materials {
+		truncLabel := ""
+		if m.Truncated {
+			truncLabel = " [truncated]"
+		}
+		fmt.Fprintf(&b, "### File: %s%s\n```\n%s\n```\n\n", m.Path, truncLabel, m.Content)
+	}
+	return b.String()
+}
+
 // SynthesizeResultsLLM synthesizes results using the LLM service, with fallback to simple synthesis
 func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisResult, error) {
 	// Use activity logger for Temporal correlation
@@ -794,6 +965,13 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				currentDate = time.Now().UTC().Format("January 2, 2006")
 			}
 
+			var newsCount int
+			if nc, ok := input.Context["news_count"].(int); ok {
+				newsCount = nc
+			} else if nc, ok := input.Context["news_count"].(float64); ok {
+				newsCount = int(nc)
+			}
+
 			data := SynthesisTemplateData{
 				Query:                input.Query,
 				QueryLanguage:        queryLanguage,
@@ -808,6 +986,7 @@ func SynthesizeResultsLLM(ctx context.Context, input SynthesisInput) (SynthesisR
 				SynthesisStyle:       synthesisStyle,
 				CitationAgentEnabled: citationAgentEnabled,
 				CurrentDate:          currentDate,
+				NewsCount:            newsCount,
 			}
 
 			rendered, err := RenderSynthesisTemplate(tmpl, data)
@@ -1016,6 +1195,29 @@ Section requirements:
 			zap.Int("maxAgents", maxAgents),
 			zap.Int("totalAgents", len(input.AgentResults)),
 		)
+	}
+
+	// Read workspace files for swarm mode (Go I/O inside activity — not in Temporal history)
+	if input.SessionID != "" {
+		if err := validateSessionID(input.SessionID); err != nil {
+			diagLogger.Warn("Invalid session_id for workspace files, skipping", zap.Error(err))
+		} else {
+			baseDir := os.Getenv("SHANNON_SESSION_WORKSPACES_DIR")
+			if baseDir == "" {
+				baseDir = "/tmp/shannon-sessions"
+			}
+			sessionDir := filepath.Join(baseDir, input.SessionID)
+			materials := readWorkspaceFiles(sessionDir, 50000, 10000)
+			if len(materials) > 0 {
+				formatted := formatWorkspaceMaterials(materials)
+				b.WriteString(formatted)
+				diagLogger.Info("Included workspace files in synthesis",
+					zap.Int("file_count", len(materials)),
+					zap.Int("total_chars", len(formatted)),
+					zap.String("session_id", input.SessionID),
+				)
+			}
+		}
 	}
 
 	fmt.Fprintf(&b, "Agent results (%d total):\n\n", len(input.AgentResults))
@@ -1495,6 +1697,13 @@ Section requirements:
 	// Apply report formatting to ensure all citations appear in Sources
 	// Use savedCitations (preserved before deletion) instead of input.Context
 	finalResponse := out.Response
+	if input.Context != nil {
+		if tmpl, ok := input.Context["synthesis_template"].(string); ok && tmpl == "sagasu_workflows" {
+			if extracted := extractFirstJSONResponse(finalResponse); extracted != "" {
+				finalResponse = extracted
+			}
+		}
+	}
 	if savedCitations != "" {
 		finalResponse = formatting.FormatReportWithCitations(finalResponse, savedCitations)
 	}
@@ -1836,6 +2045,8 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 	totalTokens := 0
 	totalInputTokens := 0
 	totalOutputTokens := 0
+	totalCacheReadTokens := 0
+	totalCacheCreationTokens := 0
 	var totalCostUsd float64
 	var modelUsed string
 	var provider string
@@ -1849,6 +2060,8 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 				totalTokens += result.TokensUsed
 				totalInputTokens += result.InputTokens
 				totalOutputTokens += result.OutputTokens
+				totalCacheReadTokens += result.CacheReadTokens
+				totalCacheCreationTokens += result.CacheCreationTokens
 
 				// Capture model and provider from first successful agent
 				if modelUsed == "" && result.ModelUsed != "" {
@@ -1872,7 +2085,8 @@ func simpleSynthesisNoEvents(ctx context.Context, input SynthesisInput) (Synthes
 
 	// Estimate cost if not already calculated
 	if totalInputTokens > 0 && totalOutputTokens > 0 && modelUsed != "" {
-		totalCostUsd = pricing.CostForSplit(modelUsed, totalInputTokens, totalOutputTokens)
+		totalCostUsd = pricing.CostForSplitWithCache(modelUsed, totalInputTokens, totalOutputTokens,
+			totalCacheReadTokens, totalCacheCreationTokens, provider)
 	}
 
 	logger.Info("Synthesis (simple) completed",
@@ -1942,6 +2156,9 @@ func simpleSynthesis(ctx context.Context, input SynthesisInput) (SynthesisResult
 
 // cleanAgentOutput processes raw agent outputs to be more user-friendly
 func cleanAgentOutput(response string) string {
+	// First, sanitize any leaked XML tool tags (covers fallback synthesis path)
+	response = sanitizeAgentOutput(response)
+
 	// Try to parse as JSON array (common for web_search results)
 	var results []map[string]interface{}
 	if err := json.Unmarshal([]byte(response), &results); err == nil && len(results) > 0 {

@@ -11,6 +11,7 @@ volumes:
   postgres_data: {}
   qdrant_data: {}
   shannon-sessions: {}
+  shannon-users: {}
 
 services:
   temporal:
@@ -107,21 +108,27 @@ services:
       - TOOL_PARALLELISM=${TOOL_PARALLELISM:-1}
       # Optional distributed rate limiting (leave empty to use in-memory limiter)
       - ENFORCE_RATE_REDIS_URL=${ENFORCE_RATE_REDIS_URL:-}
-      - ENFORCE_TIMEOUT_SECONDS=${ENFORCE_TIMEOUT_SECONDS:-90}
+      - ENFORCE_TIMEOUT_SECONDS=${ENFORCE_TIMEOUT_SECONDS:-300}
       - ENFORCE_MAX_TOKENS=${ENFORCE_MAX_TOKENS:-32768}
       - ENFORCE_RATE_RPS=${ENFORCE_RATE_RPS:-20}
       - ENFORCE_CB_ERROR_THRESHOLD=${ENFORCE_CB_ERROR_THRESHOLD:-0.5}
       - ENFORCE_CB_WINDOW_SECONDS=${ENFORCE_CB_WINDOW_SECONDS:-30}
       - ENFORCE_CB_MIN_REQUESTS=${ENFORCE_CB_MIN_REQUESTS:-20}
       - LLM_SERVICE_URL=${LLM_SERVICE_URL:-http://llm-service:8000}
-      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-360}
       # Python WASI interpreter configuration
       - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
       - WASI_MEMORY_LIMIT_MB=${WASI_MEMORY_LIMIT_MB:-512}
       - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
-      # Session workspace isolation (Phase 3)
-      - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-0}
+      # Session workspace isolation (Phase 3) - enabled by default
+      - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-1}
       - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
+      - SHANNON_USER_MEMORY_DIR=${SHANNON_USER_MEMORY_DIR:-/tmp/shannon-users}
+      # Python executor mode: "wasi" (default) or "firecracker"
+      # When using firecracker, agent-core checks health and falls back to WASI if unavailable
+      - PYTHON_EXECUTOR_MODE=${PYTHON_EXECUTOR_MODE:-wasi}
+      # Firecracker executor URL (only used when PYTHON_EXECUTOR_MODE is "firecracker")
+      # - FIRECRACKER_EXECUTOR_URL=${FIRECRACKER_EXECUTOR_URL:-http://firecracker-executor:9001}
     depends_on:
       temporal:
         condition: service_started
@@ -139,12 +146,13 @@ services:
       - ../../config:/app/config:ro
       - ../../wasm-interpreters:/opt/wasm-interpreters:ro
       - shannon-sessions:/tmp/shannon-sessions
+      - shannon-users:/tmp/shannon-users
     networks: [shannon-net]
 
   orchestrator:
     build:
-      context: ../../go/orchestrator
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: go/orchestrator/Dockerfile
     restart: unless-stopped
     environment:
       - TEMPORAL_HOST=temporal:7233
@@ -154,11 +162,13 @@ services:
       - POSTGRES_DB=shannon
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_SSLMODE=${POSTGRES_SSLMODE:-disable}
+      # CRITICAL: JWT_SECRET must match gateway's secret for JWT validation
+      - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
       - CONFIG_PATH=/app/config/features.yaml
       - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/app/config/models.yaml}
       - METRICS_PORT=${ORCHESTRATOR_METRICS_PORT:-2112}
       - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-600}
-      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-30}
+      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-90}
       # Optional: Account MCP tool costs in tokens (cost*1000); default off
       - MCP_COST_TO_TOKENS=${MCP_COST_TO_TOKENS:-0}
       # Priority-based task queues: set to 'on' to enable separate workers per priority
@@ -206,10 +216,13 @@ services:
       - EVENTS_INGEST_URL=${EVENTS_INGEST_URL:-http://orchestrator:8081/events}
       - EVENTS_AUTH_TOKEN=${EVENTS_AUTH_TOKEN:-}
       # Template configuration
-      - TEMPLATES_PATH=${TEMPLATES_PATH:-/app/config/workflows/examples:/app/config/workflows/user}
+      - TEMPLATES_PATH=${TEMPLATES_PATH:-/app/config/workflows/examples:/app/config/workflows/user:/app/config/workflows/financial}
       - SYNTHESIS_TEMPLATES_DIR=${SYNTHESIS_TEMPLATES_DIR:-/app/config/templates/synthesis}
-      # JWT secret for auth (must match gateway JWT_SECRET)
-      - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
+      # Session workspaces (swarm shared workspace)
+      - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
+      # User-level memory extraction (Phase 2)
+      - SHANNON_USER_MEMORY_DIR=${SHANNON_USER_MEMORY_DIR:-/tmp/shannon-users}
+      - USER_MEMORY_ENABLED=${USER_MEMORY_ENABLED:-1}
     depends_on:
       temporal:
         condition: service_started
@@ -228,12 +241,14 @@ services:
       retries: 5
     volumes:
       - ../../config:/app/config:ro
+      - shannon-sessions:/tmp/shannon-sessions
+      - shannon-users:/tmp/shannon-users
     networks: [shannon-net]
 
   llm-service:
     build:
-      context: ../../python/llm-service
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: python/llm-service/Dockerfile
     restart: unless-stopped
     env_file:
       - ../../.env
@@ -282,6 +297,7 @@ services:
       - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID:-}
       - SERPER_API_KEY=${SERPER_API_KEY:-}
       - SERPAPI_API_KEY=${SERPAPI_API_KEY:-}
+      - SEARCHAPI_API_KEY=${SEARCHAPI_API_KEY:-}
       - BING_API_KEY=${BING_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
@@ -314,9 +330,10 @@ services:
       - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
       # Agent Core address for WASI execution
       - AGENT_CORE_ADDR=agent-core:50051
-      # Sandbox service configuration (set to 1 to proxy file ops to agent-core sandbox)
-      - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-0}
+      # Session workspace isolation (Phase 3) - enabled by default
+      - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-1}
       - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
+      - SHANNON_USER_MEMORY_DIR=${SHANNON_USER_MEMORY_DIR:-/tmp/shannon-users}
       # Observability
       - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-shannon-llm-service}
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-localhost:4317}
@@ -324,8 +341,15 @@ services:
       # Events ingestion
       - EVENTS_INGEST_URL=${EVENTS_INGEST_URL:-http://orchestrator:8081/events}
       - EVENTS_AUTH_TOKEN=${EVENTS_AUTH_TOKEN:-}
-      # Browser automation (playwright-service)
+      # Playwright screenshot service (optional - for popup dismissal screenshots)
       - PLAYWRIGHT_SERVICE_URL=${PLAYWRIGHT_SERVICE_URL:-http://playwright-service:8002}
+      # S3 screenshot storage (optional - for LP analysis screenshot persistence)
+      - S3_LP_SCREENSHOT_BUCKET=${S3_LP_SCREENSHOT_BUCKET:-}
+      - S3_LP_SCREENSHOT_REGION=${S3_LP_SCREENSHOT_REGION:-ap-northeast-1}
+      - S3_LP_SCREENSHOT_PREFIX=${S3_LP_SCREENSHOT_PREFIX:-lp-screenshots}
+      # Google Cloud Vision OCR (for Japanese LP text extraction)
+      # Note: Uses container path, not host path from .env
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/vision-key.json
     depends_on:
       redis:
         condition: service_healthy
@@ -345,7 +369,12 @@ services:
     volumes:
       - ../../config:/app/config:ro
       - ../../wasm-interpreters:/opt/wasm-interpreters:ro
+      # Mount Google Cloud credentials (optional - for Vision OCR)
+      - ${GOOGLE_CREDENTIALS_DIR:-../../secrets}:/app/secrets:ro
       - shannon-sessions:/tmp/shannon-sessions
+      - shannon-users:/tmp/shannon-users
+      # Mount AWS credentials for local S3 access
+      - ${AWS_CREDENTIALS_DIR:-${HOME}/.aws}:/root/.aws:ro
     networks: [shannon-net]
 
   playwright-service:
@@ -354,25 +383,17 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      - HOST=0.0.0.0
-      - PORT=8002
-      - DEBUG=${DEBUG:-false}
-      # Session management
-      - SESSION_TTL_SECONDS=${BROWSER_SESSION_TTL:-300}
-      - MAX_SESSIONS=${BROWSER_MAX_SESSIONS:-50}
-      # Browser settings
-      - HEADLESS=${BROWSER_HEADLESS:-true}
-      - VIEWPORT_WIDTH=${BROWSER_VIEWPORT_WIDTH:-1280}
-      - VIEWPORT_HEIGHT=${BROWSER_VIEWPORT_HEIGHT:-720}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
       - "8002:8002"
     healthcheck:
-      test: ['CMD-SHELL', 'python -c "import urllib.request; urllib.request.urlopen(''http://localhost:8002/health''); print(''ok'')"']
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8002/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
       start_period: 60s
     networks: [shannon-net]
+    # Increase shared memory for Chromium
     shm_size: 2gb
 
   gateway:
@@ -413,6 +434,7 @@ services:
       retries: 5
     volumes:
       - ../../config:/app/config:ro
+      - shannon-sessions:/tmp/shannon-sessions:ro
     networks: [shannon-net]
 
   # Dashboard removed - use desktop/ folder for native macOS/iOS apps instead

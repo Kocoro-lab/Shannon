@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15sandbox/sandbox.proto\x12\x0fshannon.sandbox\"X\n\x0f\x46ileReadRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x11\n\tmax_bytes\x18\x03 \x01(\x05\x12\x10\n\x08\x65ncoding\x18\x04 \x01(\t\"j\n\x10\x46ileReadResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nsize_bytes\x18\x04 \x01(\x03\x12\x11\n\tfile_type\x18\x05 \x01(\t\"|\n\x10\x46ileWriteRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x0e\n\x06\x61ppend\x18\x04 \x01(\x08\x12\x13\n\x0b\x63reate_dirs\x18\x05 \x01(\x08\x12\x10\n\x08\x65ncoding\x18\x06 \x01(\t\"a\n\x11\x46ileWriteResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x15\n\rbytes_written\x18\x02 \x01(\x03\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x15\n\rabsolute_path\x18\x04 \x01(\t\"o\n\x0f\x46ileListRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x0f\n\x07pattern\x18\x03 \x01(\t\x12\x11\n\trecursive\x18\x04 \x01(\x08\x12\x16\n\x0einclude_hidden\x18\x05 \x01(\x08\"c\n\tFileEntry\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x0f\n\x07is_file\x18\x03 \x01(\x08\x12\x12\n\nsize_bytes\x18\x04 \x01(\x03\x12\x15\n\rmodified_time\x18\x05 \x01(\x03\"\x86\x01\n\x10\x46ileListResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12+\n\x07\x65ntries\x18\x02 \x03(\x0b\x32\x1a.shannon.sandbox.FileEntry\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nfile_count\x18\x04 \x01(\x05\x12\x11\n\tdir_count\x18\x05 \x01(\x05\"N\n\x0e\x43ommandRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63ommand\x18\x02 \x01(\t\x12\x17\n\x0ftimeout_seconds\x18\x03 \x01(\x05\"\x7f\n\x0f\x43ommandResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0e\n\x06stdout\x18\x02 \x01(\t\x12\x0e\n\x06stderr\x18\x03 \x01(\t\x12\x11\n\texit_code\x18\x04 \x01(\x05\x12\r\n\x05\x65rror\x18\x05 \x01(\t\x12\x19\n\x11\x65xecution_time_ms\x18\x06 \x01(\x03\x32\xdb\x02\n\x0eSandboxService\x12O\n\x08\x46ileRead\x12 .shannon.sandbox.FileReadRequest\x1a!.shannon.sandbox.FileReadResponse\x12R\n\tFileWrite\x12!.shannon.sandbox.FileWriteRequest\x1a\".shannon.sandbox.FileWriteResponse\x12O\n\x08\x46ileList\x12 .shannon.sandbox.FileListRequest\x1a!.shannon.sandbox.FileListResponse\x12S\n\x0e\x45xecuteCommand\x12\x1f.shannon.sandbox.CommandRequest\x1a .shannon.sandbox.CommandResponseBCZAgithub.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/sandboxb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15sandbox/sandbox.proto\x12\x0fshannon.sandbox\"i\n\x0f\x46ileReadRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x11\n\tmax_bytes\x18\x03 \x01(\x05\x12\x10\n\x08\x65ncoding\x18\x04 \x01(\t\x12\x0f\n\x07user_id\x18\x05 \x01(\t\"j\n\x10\x46ileReadResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nsize_bytes\x18\x04 \x01(\x03\x12\x11\n\tfile_type\x18\x05 \x01(\t\"\x8d\x01\n\x10\x46ileWriteRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x0e\n\x06\x61ppend\x18\x04 \x01(\x08\x12\x13\n\x0b\x63reate_dirs\x18\x05 \x01(\x08\x12\x10\n\x08\x65ncoding\x18\x06 \x01(\t\x12\x0f\n\x07user_id\x18\x07 \x01(\t\"a\n\x11\x46ileWriteResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x15\n\rbytes_written\x18\x02 \x01(\x03\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x15\n\rabsolute_path\x18\x04 \x01(\t\"\x80\x01\n\x0f\x46ileListRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x0f\n\x07pattern\x18\x03 \x01(\t\x12\x11\n\trecursive\x18\x04 \x01(\x08\x12\x16\n\x0einclude_hidden\x18\x05 \x01(\x08\x12\x0f\n\x07user_id\x18\x06 \x01(\t\"c\n\tFileEntry\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x0f\n\x07is_file\x18\x03 \x01(\x08\x12\x12\n\nsize_bytes\x18\x04 \x01(\x03\x12\x15\n\rmodified_time\x18\x05 \x01(\x03\"\x86\x01\n\x10\x46ileListResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12+\n\x07\x65ntries\x18\x02 \x03(\x0b\x32\x1a.shannon.sandbox.FileEntry\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x12\n\nfile_count\x18\x04 \x01(\x05\x12\x11\n\tdir_count\x18\x05 \x01(\x05\"\x90\x01\n\x11\x46ileSearchRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05query\x18\x02 \x01(\t\x12\x0c\n\x04path\x18\x03 \x01(\t\x12\x13\n\x0bmax_results\x18\x04 \x01(\x05\x12\r\n\x05regex\x18\x05 \x01(\x08\x12\x0f\n\x07include\x18\x06 \x01(\t\x12\x15\n\rcontext_lines\x18\x07 \x01(\x05\"i\n\x0bSearchMatch\x12\x0c\n\x04\x66ile\x18\x01 \x01(\t\x12\x0c\n\x04line\x18\x02 \x01(\x05\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12-\n\x07\x63ontext\x18\x04 \x03(\x0b\x32\x1c.shannon.sandbox.ContextLine\",\n\x0b\x43ontextLine\x12\x0c\n\x04line\x18\x01 \x01(\x05\x12\x0f\n\x07\x63ontent\x18\x02 \x01(\t\"\xa4\x01\n\x12\x46ileSearchResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12-\n\x07matches\x18\x02 \x03(\x0b\x32\x1c.shannon.sandbox.SearchMatch\x12\r\n\x05\x65rror\x18\x03 \x01(\t\x12\x15\n\rfiles_scanned\x18\x04 \x01(\x05\x12\x15\n\rmatches_found\x18\x05 \x01(\x05\x12\x11\n\ttruncated\x18\x06 \x01(\x08\"l\n\x0f\x46ileEditRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x10\n\x08old_text\x18\x03 \x01(\t\x12\x10\n\x08new_text\x18\x04 \x01(\t\x12\x13\n\x0breplace_all\x18\x05 \x01(\x08\"r\n\x10\x46ileEditResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x14\n\x0creplacements\x18\x03 \x01(\x05\x12\x0f\n\x07snippet\x18\x04 \x01(\t\x12\x17\n\x0f\x66ile_size_after\x18\x05 \x01(\x03\"_\n\x0e\x43ommandRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0f\n\x07\x63ommand\x18\x02 \x01(\t\x12\x17\n\x0ftimeout_seconds\x18\x03 \x01(\x05\x12\x0f\n\x07user_id\x18\x04 \x01(\t\"\x7f\n\x0f\x43ommandResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0e\n\x06stdout\x18\x02 \x01(\t\x12\x0e\n\x06stderr\x18\x03 \x01(\t\x12\x11\n\texit_code\x18\x04 \x01(\x05\x12\r\n\x05\x65rror\x18\x05 \x01(\t\x12\x19\n\x11\x65xecution_time_ms\x18\x06 \x01(\x03\x32\x83\x04\n\x0eSandboxService\x12O\n\x08\x46ileRead\x12 .shannon.sandbox.FileReadRequest\x1a!.shannon.sandbox.FileReadResponse\x12R\n\tFileWrite\x12!.shannon.sandbox.FileWriteRequest\x1a\".shannon.sandbox.FileWriteResponse\x12O\n\x08\x46ileList\x12 .shannon.sandbox.FileListRequest\x1a!.shannon.sandbox.FileListResponse\x12S\n\x0e\x45xecuteCommand\x12\x1f.shannon.sandbox.CommandRequest\x1a .shannon.sandbox.CommandResponse\x12U\n\nFileSearch\x12\".shannon.sandbox.FileSearchRequest\x1a#.shannon.sandbox.FileSearchResponse\x12O\n\x08\x46ileEdit\x12 .shannon.sandbox.FileEditRequest\x1a!.shannon.sandbox.FileEditResponseBCZAgithub.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/sandboxb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,23 +33,35 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._loaded_options = None
   _globals['DESCRIPTOR']._serialized_options = b'ZAgithub.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/sandbox'
   _globals['_FILEREADREQUEST']._serialized_start=42
-  _globals['_FILEREADREQUEST']._serialized_end=130
-  _globals['_FILEREADRESPONSE']._serialized_start=132
-  _globals['_FILEREADRESPONSE']._serialized_end=238
-  _globals['_FILEWRITEREQUEST']._serialized_start=240
-  _globals['_FILEWRITEREQUEST']._serialized_end=364
-  _globals['_FILEWRITERESPONSE']._serialized_start=366
-  _globals['_FILEWRITERESPONSE']._serialized_end=463
-  _globals['_FILELISTREQUEST']._serialized_start=465
-  _globals['_FILELISTREQUEST']._serialized_end=576
-  _globals['_FILEENTRY']._serialized_start=578
-  _globals['_FILEENTRY']._serialized_end=677
-  _globals['_FILELISTRESPONSE']._serialized_start=680
-  _globals['_FILELISTRESPONSE']._serialized_end=814
-  _globals['_COMMANDREQUEST']._serialized_start=816
-  _globals['_COMMANDREQUEST']._serialized_end=894
-  _globals['_COMMANDRESPONSE']._serialized_start=896
-  _globals['_COMMANDRESPONSE']._serialized_end=1023
-  _globals['_SANDBOXSERVICE']._serialized_start=1026
-  _globals['_SANDBOXSERVICE']._serialized_end=1373
+  _globals['_FILEREADREQUEST']._serialized_end=147
+  _globals['_FILEREADRESPONSE']._serialized_start=149
+  _globals['_FILEREADRESPONSE']._serialized_end=255
+  _globals['_FILEWRITEREQUEST']._serialized_start=258
+  _globals['_FILEWRITEREQUEST']._serialized_end=399
+  _globals['_FILEWRITERESPONSE']._serialized_start=401
+  _globals['_FILEWRITERESPONSE']._serialized_end=498
+  _globals['_FILELISTREQUEST']._serialized_start=501
+  _globals['_FILELISTREQUEST']._serialized_end=629
+  _globals['_FILEENTRY']._serialized_start=631
+  _globals['_FILEENTRY']._serialized_end=730
+  _globals['_FILELISTRESPONSE']._serialized_start=733
+  _globals['_FILELISTRESPONSE']._serialized_end=867
+  _globals['_FILESEARCHREQUEST']._serialized_start=870
+  _globals['_FILESEARCHREQUEST']._serialized_end=1014
+  _globals['_SEARCHMATCH']._serialized_start=1016
+  _globals['_SEARCHMATCH']._serialized_end=1121
+  _globals['_CONTEXTLINE']._serialized_start=1123
+  _globals['_CONTEXTLINE']._serialized_end=1167
+  _globals['_FILESEARCHRESPONSE']._serialized_start=1170
+  _globals['_FILESEARCHRESPONSE']._serialized_end=1334
+  _globals['_FILEEDITREQUEST']._serialized_start=1336
+  _globals['_FILEEDITREQUEST']._serialized_end=1444
+  _globals['_FILEEDITRESPONSE']._serialized_start=1446
+  _globals['_FILEEDITRESPONSE']._serialized_end=1560
+  _globals['_COMMANDREQUEST']._serialized_start=1562
+  _globals['_COMMANDREQUEST']._serialized_end=1657
+  _globals['_COMMANDRESPONSE']._serialized_start=1659
+  _globals['_COMMANDRESPONSE']._serialized_end=1786
+  _globals['_SANDBOXSERVICE']._serialized_start=1789
+  _globals['_SANDBOXSERVICE']._serialized_end=2304
 # @@protoc_insertion_point(module_scope)

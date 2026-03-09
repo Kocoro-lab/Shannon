@@ -72,6 +72,9 @@ type WorkflowConfig struct {
 	SwarmMaxMessagesPerAgent   int  `json:"swarm_max_messages_per_agent"`
 	SwarmWorkspaceSnippetChars int  `json:"swarm_workspace_snippet_chars"`
 	SwarmWorkspaceMaxEntries   int  `json:"swarm_workspace_max_entries"`
+	SwarmMaxTotalLLMCalls      int  `json:"swarm_max_total_llm_calls"`
+	SwarmMaxTotalTokens        int  `json:"swarm_max_total_tokens"`
+	SwarmMaxWallClockMinutes   int  `json:"swarm_max_wall_clock_minutes"`
 
 	// Templates
 	TemplateFallbackEnabled bool `json:"template_fallback_enabled"`
@@ -295,7 +298,7 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 	}
 	config.SwarmAgentTimeoutSeconds = v.GetInt("workflows.swarm.agent_timeout_seconds")
 	if config.SwarmAgentTimeoutSeconds == 0 {
-		config.SwarmAgentTimeoutSeconds = 600
+		config.SwarmAgentTimeoutSeconds = 1800
 	}
 	config.SwarmMaxMessagesPerAgent = v.GetInt("workflows.swarm.max_messages_per_agent")
 	if config.SwarmMaxMessagesPerAgent == 0 {
@@ -308,6 +311,18 @@ func GetWorkflowConfig(ctx context.Context) (*WorkflowConfig, error) {
 	config.SwarmWorkspaceMaxEntries = v.GetInt("workflows.swarm.workspace_max_entries")
 	if config.SwarmWorkspaceMaxEntries == 0 {
 		config.SwarmWorkspaceMaxEntries = 5
+	}
+	config.SwarmMaxTotalLLMCalls = v.GetInt("workflows.swarm.max_total_llm_calls")
+	if config.SwarmMaxTotalLLMCalls == 0 {
+		config.SwarmMaxTotalLLMCalls = 200
+	}
+	config.SwarmMaxTotalTokens = v.GetInt("workflows.swarm.max_total_tokens")
+	if config.SwarmMaxTotalTokens == 0 {
+		config.SwarmMaxTotalTokens = 1000000
+	}
+	config.SwarmMaxWallClockMinutes = v.GetInt("workflows.swarm.max_wall_clock_minutes")
+	if config.SwarmMaxWallClockMinutes == 0 {
+		config.SwarmMaxWallClockMinutes = 30
 	}
 
 	// Template fallback (prefer env override; default false)
@@ -393,6 +408,9 @@ func LoadWorkflowConfig(ctx context.Context) (map[string]interface{}, error) {
 			"max_messages_per_agent":   config.SwarmMaxMessagesPerAgent,
 			"workspace_snippet_chars":  config.SwarmWorkspaceSnippetChars,
 			"workspace_max_entries":    config.SwarmWorkspaceMaxEntries,
+			"max_total_llm_calls":      config.SwarmMaxTotalLLMCalls,
+			"max_total_tokens":         config.SwarmMaxTotalTokens,
+			"max_wall_clock_minutes":   config.SwarmMaxWallClockMinutes,
 		},
 	}, nil
 }

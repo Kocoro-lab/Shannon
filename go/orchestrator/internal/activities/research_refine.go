@@ -257,7 +257,6 @@ Output as "prefetch_subpage_limit" (integer, range 10-20).
   "prefetch_subpage_limit": 15
 }
 
-## Step 5: Temporal Search Guidance
 For time-sensitive topics (leadership, funding, market data, recent news), include the current year in search queries:
 - Good: "OpenAI leadership [current year]", "ByteDance funding round [current year]"
 - Avoid: Generic queries like "OpenAI leadership" which may return outdated results

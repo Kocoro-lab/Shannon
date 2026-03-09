@@ -206,6 +206,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 		fallbackToBasicMemory(ctx, &input, logger)
 	}
 
+	// User persistent memory: prompt injection and extraction are swarm-only.
+
 	// Dynamic team v1: handle recruit/retire signals
 	type RecruitRequest struct {
 		Description string
@@ -838,6 +840,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 						Context:          childCtx,
 						Mode:             input.Mode,
 						SessionID:        input.SessionID,
+						UserID:           input.UserID,
 						History:          historyForAgent,
 						SuggestedTools:   st.SuggestedTools,
 						ToolParameters:   st.ToolParameters,
@@ -855,6 +858,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 					Context:          childCtx,
 					Mode:             input.Mode,
 					SessionID:        input.SessionID,
+					UserID:           input.UserID,
 					History:          historyForAgent,
 					SuggestedTools:   st.SuggestedTools,
 					ToolParameters:   st.ToolParameters,
@@ -1335,7 +1339,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to service error",
+				Message:    activities.MsgCitationSkipped(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 		} else if citationResult.ValidationPassed {
@@ -1367,7 +1371,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 				WorkflowID: workflowID,
 				EventType:  activities.StreamEventProgress,
 				AgentID:    "citation_agent",
-				Message:    "Citation injection skipped due to validation failure",
+				Message:    activities.MsgCitationSkipped(),
 				Timestamp:  workflow.Now(ctx),
 			}).Get(ctx, nil)
 			// Keep original synth.FinalResult (which already has Sources)
@@ -1483,6 +1487,8 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			"subtasks", len(decomp.Subtasks),
 			"duration_ms", workflowDuration)
 	}
+
+	// Memory extraction is swarm-only — removed from SupervisorWorkflow.
 
 	// Check pause/cancel before completion
 	if err := controlHandler.CheckPausePoint(ctx, "pre_completion"); err != nil {

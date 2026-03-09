@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 from ..openapi_parser import _is_private_ip
-from .web_fetch import detect_blocked_reason, clean_markdown_noise  # P0-A: Reuse blocked detection and noise cleaning logic
+from .web_fetch import detect_blocked_reason, clean_markdown_noise, apply_extraction, EXTRACTION_INTERNAL_MAX  # P0-A: Reuse blocked detection and noise cleaning logic
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,16 @@ class WebCrawlTool(Tool):
                 min_value=1000,
                 max_value=30000,
             ),
+            ToolParameter(
+                name="extract_prompt",
+                type=ToolParameterType.STRING,
+                description=(
+                    "When set, uses a small model to extract relevant information "
+                    "instead of blind truncation. Provide what you need from the page. "
+                    "Example: 'Extract all blog post titles, dates, and summaries'"
+                ),
+                required=False,
+            ),
         ]
 
     async def _execute_impl(
@@ -132,6 +142,21 @@ class WebCrawlTool(Tool):
         url = kwargs.get("url")
         limit = kwargs.get("limit", DEFAULT_LIMIT)
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
+        extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
+
+        # Skip auto-extraction in research mode (issue #43): OODA loop does many
+        # fast fetches; LLM extraction adds ~40-60s latency per call, causing timeout.
+        # Explicit extract_prompt always triggers extraction regardless of mode.
+        _research_mode = (
+            isinstance(session_context, dict)
+            and session_context.get("research_mode")
+            and not extract_prompt
+        )
+
+        if _research_mode:
+            internal_max_length = max_length
+        else:
+            internal_max_length = EXTRACTION_INTERNAL_MAX
 
         if not url:
             return ToolResult(success=False, output=None, error="URL parameter required")
@@ -171,8 +196,8 @@ class WebCrawlTool(Tool):
             )
 
         try:
-            result = await self._crawl(url, limit, max_length)
-            return ToolResult(
+            result = await self._crawl(url, limit, internal_max_length)
+            tool_result = ToolResult(
                 success=True,
                 output=result,
                 metadata={
@@ -185,6 +210,15 @@ class WebCrawlTool(Tool):
                     "failure_summary": {"failed_count": 0, "total_count": 1},
                 },
             )
+            if _research_mode:
+                if tool_result.output:
+                    content = tool_result.output.get("content", "")
+                    if len(content) > max_length:
+                        tool_result.output["content"] = content[:max_length]
+                        tool_result.output["truncated"] = True
+                        tool_result.output["char_count"] = len(tool_result.output["content"])
+                return tool_result
+            return await apply_extraction(tool_result, extract_prompt, max_length)
         except Exception as e:
             logger.error(f"Crawl failed: {e}")
             return ToolResult(

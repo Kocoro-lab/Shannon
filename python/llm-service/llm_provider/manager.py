@@ -9,6 +9,7 @@ import asyncio
 import time
 import json
 import yaml
+from dataclasses import replace
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 import logging
@@ -720,7 +721,8 @@ class LLMManager:
 
         # Stream from provider
         try:
-            async for chunk in provider.stream_complete(request):
+            req = self._normalize_function_call_for_provider(provider_name, request)
+            async for chunk in provider.stream_complete(req):
                 # Pass through strings and dicts (for usage metadata)
                 if isinstance(chunk, (str, dict)) and chunk:
                     yield chunk
@@ -733,7 +735,8 @@ class LLMManager:
                 original_model = request.model
                 request.model = None
                 try:
-                    async for chunk in fallback[1].stream_complete(request):
+                    req = self._normalize_function_call_for_provider(fallback[0], request)
+                    async for chunk in fallback[1].stream_complete(req):
                         # Pass through strings and dicts (for usage metadata)
                         if isinstance(chunk, (str, dict)) and chunk:
                             yield chunk
@@ -836,6 +839,41 @@ class LLMManager:
             return False
         return (time.time() - cb.opened_at) < cb.recovery_timeout
 
+    def _normalize_function_call_for_provider(
+        self, provider_name: str, request: CompletionRequest
+    ) -> CompletionRequest:
+        """Normalize internal tool forcing semantics to provider-compatible values."""
+        if not (isinstance(request.function_call, str) and request.function_call == "any"):
+            return request
+
+        # Anthropic supports tool_choice={"type":"any"} directly.
+        if provider_name == "anthropic":
+            return request
+
+        tool_name = None
+        for raw_fn in request.functions or []:
+            fn = None
+            if (
+                isinstance(raw_fn, dict)
+                and raw_fn.get("type") == "function"
+                and isinstance(raw_fn.get("function"), dict)
+            ):
+                fn = raw_fn.get("function")
+            elif isinstance(raw_fn, dict):
+                fn = raw_fn
+            if isinstance(fn, dict):
+                name = fn.get("name")
+                if isinstance(name, str) and name.strip():
+                    tool_name = name.strip()
+                    break
+
+        if not tool_name:
+            return replace(request, function_call=None)
+
+        # OpenAI-compatible APIs don't support a direct "any" string; forcing one tool is
+        # the closest equivalent that prevents "tool-optional" behavior.
+        return replace(request, function_call={"name": tool_name})
+
     async def _call_provider_with_cb(
         self, provider_name: str, provider: LLMProvider, request: CompletionRequest
     ) -> CompletionResponse:
@@ -862,7 +900,8 @@ class LLMManager:
 
         # Call provider
         try:
-            resp = await provider.complete(request)
+            req = self._normalize_function_call_for_provider(provider_name, request)
+            resp = await provider.complete(req)
             if cb:
                 cb.on_success()
             return resp
@@ -1167,7 +1206,7 @@ class _RedisCacheManager:
 
 
 def _serialize_response(resp: CompletionResponse) -> Dict[str, Any]:
-    return {
+    data = {
         "content": resp.content,
         "model": resp.model,
         "provider": resp.provider,
@@ -1186,6 +1225,9 @@ def _serialize_response(resp: CompletionResponse) -> Dict[str, Any]:
         if getattr(resp, "created_at", None)
         else None,
     }
+    if getattr(resp, "tool_calls", None):
+        data["tool_calls"] = resp.tool_calls
+    return data
 
 
 def _deserialize_response(data: Dict[str, Any]) -> CompletionResponse:
@@ -1202,6 +1244,7 @@ def _deserialize_response(data: Dict[str, Any]) -> CompletionResponse:
         usage=usage,
         finish_reason=str(data.get("finish_reason", "stop")),
         function_call=data.get("function_call"),
+        tool_calls=data.get("tool_calls"),
         request_id=data.get("request_id"),
         latency_ms=int(data.get("latency_ms"))
         if data.get("latency_ms") is not None

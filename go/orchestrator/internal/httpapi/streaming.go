@@ -34,7 +34,51 @@ func (h *StreamingHandler) SetTemporalClient(c client.Client) {
 // RegisterRoutes registers SSE routes on the provided mux.
 func (h *StreamingHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/stream/sse", h.handleSSE)
+	mux.HandleFunc("/blob/", h.handleBlobFetch)
 	h.RegisterWebSocket(mux)
+}
+
+// handleBlobFetch retrieves a blob from Redis by its key.
+// GET /blob/{key} - returns the raw base64 data
+func (h *StreamingHandler) handleBlobFetch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract key from path: /blob/shannon:blob:workflow-id:field
+	key := strings.TrimPrefix(r.URL.Path, "/blob/")
+	if key == "" {
+		http.Error(w, `{"error":"blob key required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate key format for security (must start with shannon:blob:)
+	if !strings.HasPrefix(key, "shannon:blob:") {
+		http.Error(w, `{"error":"invalid blob key format"}`, http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	data, err := h.mgr.GetBlob(ctx, key)
+	if err != nil {
+		h.logger.Error("Failed to fetch blob", zap.String("key", key), zap.Error(err))
+		http.Error(w, `{"error":"failed to fetch blob"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if data == "" {
+		http.Error(w, `{"error":"blob not found or expired"}`, http.StatusNotFound)
+		return
+	}
+
+	// Refresh TTL since the blob is being accessed
+	_ = h.mgr.RefreshBlobTTL(ctx, key)
+
+	// Return the raw base64 data
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "private, max-age=604800") // 7 day cache
+	w.Write([]byte(data))
 }
 
 // handleSSE streams events for a workflow via Server-Sent Events.

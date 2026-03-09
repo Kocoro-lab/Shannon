@@ -42,8 +42,8 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/workflows"
 )
 
-// validateCronSchedule validates a cron expression.
-// Supports standard 5-field format and Temporal-compatible descriptors (@every, @hourly, etc).
+// validateCronSchedule validates a cron expression using standard 5-field format
+// or Temporal-compatible descriptors (e.g., @every 1h, @hourly, @daily).
 // Returns an error if the expression is invalid.
 func validateCronSchedule(cronExpr string) error {
 	cronExpr = strings.TrimSpace(cronExpr)
@@ -65,36 +65,6 @@ func validateCronSchedule(cronExpr string) error {
 	return err
 }
 
-// jsonEncodedPrefix marks values that were JSON-encoded during transport.
-// This prefix prevents backwards-incompatible coercion of string values like "true" or "123".
-const jsonEncodedPrefix = "\x00json:"
-
-// decodeTaskContext converts proto map[string]string to map[string]interface{},
-// decoding only values with the JSON prefix marker back to their original types.
-// Plain string values (including "true", "123") are preserved as strings.
-func decodeTaskContext(ctx map[string]string) map[string]interface{} {
-	if ctx == nil {
-		return nil
-	}
-	result := make(map[string]interface{}, len(ctx))
-	for k, v := range ctx {
-		if strings.HasPrefix(v, jsonEncodedPrefix) {
-			// JSON-encoded value: decode it
-			jsonStr := strings.TrimPrefix(v, jsonEncodedPrefix)
-			var decoded interface{}
-			if err := json.Unmarshal([]byte(jsonStr), &decoded); err == nil {
-				result[k] = decoded
-			} else {
-				result[k] = v // fallback to original if decode fails
-			}
-		} else {
-			// Plain string: preserve as-is
-			result[k] = v
-		}
-	}
-	return result
-}
-
 // OrchestratorService implements the Orchestrator gRPC service
 type OrchestratorService struct {
 	pb.UnimplementedOrchestratorServiceServer
@@ -112,6 +82,10 @@ type OrchestratorService struct {
 
 	// Provider for per-request default workflow flags
 	getWorkflowDefaults func() (bypassSingle bool)
+
+	// Enterprise: Quota management (nil in OSS)
+	quotaChecker  interface{}
+	quotaRecorder interface{}
 }
 
 // SessionManager returns the session manager for use by other services
@@ -144,6 +118,19 @@ func (s *OrchestratorService) SetTemporalClient(c client.Client) {
 // SetScheduleManager sets the schedule manager after service construction.
 func (s *OrchestratorService) SetScheduleManager(m *schedules.Manager) {
 	s.scheduleManager = m
+}
+
+// SetQuotaManagement sets the quota checker and recorder for enterprise rate limiting.
+// In the OSS build both arguments are always nil.
+func (s *OrchestratorService) SetQuotaManagement(checker, recorder interface{}) {
+	s.quotaChecker = checker
+	s.quotaRecorder = recorder
+}
+
+// RecordUsage records token usage for a completed task (called from workflow completion).
+// Enterprise: quota.Recorder integration. OSS: no-op.
+func (s *OrchestratorService) RecordUsage(_ context.Context, _ uuid.UUID, _ string, _ int64) {
+	// Enterprise quota recording handled by quota.Recorder when available
 }
 
 // SetWorkflowDefaultsProvider sets a provider for BypassSingleResult default
@@ -277,7 +264,11 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	} else {
 		// Fallback to request metadata for backward compatibility
 		userID = req.Metadata.GetUserId()
+		tenantID = req.Metadata.GetTenantId()
 	}
+
+	// Enterprise: Quota check before task submission (no-op in OSS)
+
 	sessionID := req.Metadata.GetSessionId()
 	dbSessionID := sessionID      // Use the requested ID for DB persistence/metrics
 	runtimeSessionID := sessionID // Session ID used for Redis/session manager/history
@@ -736,22 +727,20 @@ func (s *OrchestratorService) SubmitTask(ctx context.Context, req *pb.SubmitTask
 	// Check for cron schedule in metadata labels (e.g., labels["cron_schedule"] = "0 9 * * 1-5")
 	if req.Metadata != nil {
 		if labels := req.Metadata.GetLabels(); labels != nil {
-			if cronSchedule, ok := labels["cron_schedule"]; ok {
+			if cronSchedule, ok := labels["cron_schedule"]; ok && cronSchedule != "" {
+				// Normalize and validate cron expression
 				cronSchedule = strings.TrimSpace(cronSchedule)
-				if cronSchedule != "" {
-					// Validate cron expression before setting
-					if err := validateCronSchedule(cronSchedule); err != nil {
-						s.logger.Error("Invalid cron schedule",
-							zap.String("workflow_id", workflowID),
-							zap.String("cron_schedule", cronSchedule),
-							zap.Error(err))
-						return nil, status.Errorf(codes.InvalidArgument, "invalid cron_schedule: %v", err)
-					}
-					workflowOptions.CronSchedule = cronSchedule
-					s.logger.Info("Workflow configured with cron schedule",
+				if err := validateCronSchedule(cronSchedule); err != nil {
+					s.logger.Error("Invalid cron schedule",
 						zap.String("workflow_id", workflowID),
-						zap.String("cron_schedule", cronSchedule))
+						zap.String("cron_schedule", cronSchedule),
+						zap.Error(err))
+					return nil, status.Errorf(codes.InvalidArgument, "invalid cron_schedule: %v", err)
 				}
+				workflowOptions.CronSchedule = cronSchedule
+				s.logger.Info("Workflow configured with cron schedule",
+					zap.String("workflow_id", workflowID),
+					zap.String("cron_schedule", cronSchedule))
 			}
 		}
 	}
@@ -1244,6 +1233,13 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 				taskExecution.TotalCostUSD = calculateTokenCost(result.TokensUsed, result.Metadata)
 			}
 
+			// Extract tools_invoked count
+			if toolsInvoked, ok := result.Metadata["tools_invoked"].(int); ok {
+				taskExecution.ToolsInvoked = toolsInvoked
+			} else if toolsInvoked, ok := result.Metadata["tools_invoked"].(float64); ok {
+				taskExecution.ToolsInvoked = int(toolsInvoked)
+			}
+
 			// Preserve original request-level task_context fields (e.g., force_research)
 			// The initial task creation stores these at task submission, but they get lost
 			// when result.Metadata overwrites them. Fetch and merge them back.
@@ -1251,25 +1247,28 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 				var origMetadataJSON sql.NullString
 				row := s.dbClient.Wrapper().QueryRowContext(ctx, `
 					SELECT metadata::text FROM task_executions WHERE workflow_id = $1`, workflowID)
-				if err := row.Scan(&origMetadataJSON); err == nil && origMetadataJSON.Valid && origMetadataJSON.String != "" {
-					var origMetadata map[string]interface{}
-					if jsonErr := json.Unmarshal([]byte(origMetadataJSON.String), &origMetadata); jsonErr == nil {
-						if origTaskCtx, ok := origMetadata["task_context"].(map[string]interface{}); ok {
-							// Ensure task_context exists in result metadata
-							resultTaskCtx, hasResultCtx := result.Metadata["task_context"].(map[string]interface{})
-							if !hasResultCtx {
-								resultTaskCtx = make(map[string]interface{})
-							}
-							// Preserve request-level fields that shouldn't be overwritten by runtime fields
-							requestFields := []string{"force_research", "synthesis_template", "synthesis_template_override"}
-							for _, field := range requestFields {
-								if val, exists := origTaskCtx[field]; exists {
-									if _, alreadySet := resultTaskCtx[field]; !alreadySet {
-										resultTaskCtx[field] = val
+				// Guard against nil row from circuit breaker
+				if row != nil {
+					if err := row.Scan(&origMetadataJSON); err == nil && origMetadataJSON.Valid && origMetadataJSON.String != "" {
+						var origMetadata map[string]interface{}
+						if jsonErr := json.Unmarshal([]byte(origMetadataJSON.String), &origMetadata); jsonErr == nil {
+							if origTaskCtx, ok := origMetadata["task_context"].(map[string]interface{}); ok {
+								// Ensure task_context exists in result metadata
+								resultTaskCtx, hasResultCtx := result.Metadata["task_context"].(map[string]interface{})
+								if !hasResultCtx {
+									resultTaskCtx = make(map[string]interface{})
+								}
+								// Preserve request-level fields that shouldn't be overwritten by runtime fields
+								requestFields := []string{"force_research", "synthesis_template", "synthesis_template_override"}
+								for _, field := range requestFields {
+									if val, exists := origTaskCtx[field]; exists {
+										if _, alreadySet := resultTaskCtx[field]; !alreadySet {
+											resultTaskCtx[field] = val
+										}
 									}
 								}
+								result.Metadata["task_context"] = resultTaskCtx
 							}
-							result.Metadata["task_context"] = resultTaskCtx
 						}
 					}
 				}
@@ -1294,16 +1293,19 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
                             ORDER BY tt DESC
                             LIMIT 1
                         ) t`, workflowID)
-				if err := row.Scan(&topModel, &topProvider); err == nil {
-					if taskExecution.ModelUsed == "" && topModel.Valid && topModel.String != "" {
-						taskExecution.ModelUsed = topModel.String
-					}
-					if (taskExecution.Provider == "" || strings.EqualFold(taskExecution.Provider, "unknown")) && topProvider.Valid && topProvider.String != "" {
-						taskExecution.Provider = topProvider.String
-					}
-					// Fallback: detect provider from model when still empty
-					if taskExecution.Provider == "" && taskExecution.ModelUsed != "" {
-						taskExecution.Provider = detectProviderFromModel(taskExecution.ModelUsed)
+				// Guard against nil row from circuit breaker
+				if row != nil {
+					if err := row.Scan(&topModel, &topProvider); err == nil {
+						if taskExecution.ModelUsed == "" && topModel.Valid && topModel.String != "" {
+							taskExecution.ModelUsed = topModel.String
+						}
+						if (taskExecution.Provider == "" || strings.EqualFold(taskExecution.Provider, "unknown")) && topProvider.Valid && topProvider.String != "" {
+							taskExecution.Provider = topProvider.String
+						}
+						// Fallback: detect provider from model when still empty
+						if taskExecution.Provider == "" && taskExecution.ModelUsed != "" {
+							taskExecution.Provider = detectProviderFromModel(taskExecution.ModelUsed)
+						}
 					}
 				}
 			}
@@ -1408,47 +1410,63 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			var aggTotalTokens sql.NullInt64
 			var aggPromptTokens sql.NullInt64
 			var aggCompletionTokens sql.NullInt64
+			var aggCacheRead sql.NullInt64
+			var aggCacheCreation sql.NullInt64
 			row := s.dbClient.Wrapper().QueryRowContext(ctx, `
                 SELECT
                     COALESCE(SUM(tu.cost_usd), 0),
                     COALESCE(SUM(tu.total_tokens), 0),
                     COALESCE(SUM(tu.prompt_tokens), 0),
-                    COALESCE(SUM(tu.completion_tokens), 0)
+                    COALESCE(SUM(tu.completion_tokens), 0),
+                    COALESCE(SUM(tu.cache_read_tokens), 0),
+                    COALESCE(SUM(tu.cache_creation_tokens), 0)
                 FROM token_usage tu
                 JOIN task_executions te ON tu.task_id = te.id
                 WHERE te.workflow_id = $1`, workflowID)
-			if err := row.Scan(&aggCost, &aggTotalTokens, &aggPromptTokens, &aggCompletionTokens); err == nil {
-				// Only overwrite with DB aggregates when non-zero (preserves workflow metadata when token_usage rows don't exist yet)
-				s.logger.Info("Token usage aggregation succeeded",
-					zap.String("workflow_id", workflowID),
-					zap.Float64("cost", aggCost.Float64),
-					zap.Int64("total_tokens", aggTotalTokens.Int64),
-					zap.Int64("prompt_tokens", aggPromptTokens.Int64),
-					zap.Int64("completion_tokens", aggCompletionTokens.Int64))
-				if aggCost.Valid && aggCost.Float64 > 0 {
-					taskExecution.TotalCostUSD = aggCost.Float64
-					dbTotalCost = aggCost.Float64
+			// Guard against nil row from circuit breaker
+			if row != nil {
+				if err := row.Scan(&aggCost, &aggTotalTokens, &aggPromptTokens, &aggCompletionTokens,
+					&aggCacheRead, &aggCacheCreation); err == nil {
+					// Only overwrite with DB aggregates when non-zero (preserves workflow metadata when token_usage rows don't exist yet)
+					s.logger.Info("Token usage aggregation succeeded",
+						zap.String("workflow_id", workflowID),
+						zap.Float64("cost", aggCost.Float64),
+						zap.Int64("total_tokens", aggTotalTokens.Int64),
+						zap.Int64("prompt_tokens", aggPromptTokens.Int64),
+						zap.Int64("completion_tokens", aggCompletionTokens.Int64),
+						zap.Int64("cache_read_tokens", aggCacheRead.Int64),
+						zap.Int64("cache_creation_tokens", aggCacheCreation.Int64))
+					if aggCost.Valid && aggCost.Float64 > 0 {
+						taskExecution.TotalCostUSD = aggCost.Float64
+						dbTotalCost = aggCost.Float64
+					}
+					if aggTotalTokens.Valid && aggTotalTokens.Int64 > 0 {
+						taskExecution.TotalTokens = int(aggTotalTokens.Int64)
+						dbTotalTokens = int(aggTotalTokens.Int64)
+					}
+					if aggPromptTokens.Valid && aggPromptTokens.Int64 > 0 {
+						taskExecution.PromptTokens = int(aggPromptTokens.Int64)
+						dbPromptTokens = int(aggPromptTokens.Int64)
+					}
+					if aggCompletionTokens.Valid && aggCompletionTokens.Int64 > 0 {
+						taskExecution.CompletionTokens = int(aggCompletionTokens.Int64)
+						dbCompletionTokens = int(aggCompletionTokens.Int64)
+					}
+					if aggCacheRead.Valid && aggCacheRead.Int64 > 0 {
+						taskExecution.CacheReadTokens = int(aggCacheRead.Int64)
+					}
+					if aggCacheCreation.Valid && aggCacheCreation.Int64 > 0 {
+						taskExecution.CacheCreationTokens = int(aggCacheCreation.Int64)
+					}
+					// Mark that we have DB metrics available
+					if dbTotalTokens > 0 {
+						hasDBMetrics = true
+					}
+				} else {
+					s.logger.Warn("Token usage aggregation failed",
+						zap.String("workflow_id", workflowID),
+						zap.Error(err))
 				}
-				if aggTotalTokens.Valid && aggTotalTokens.Int64 > 0 {
-					taskExecution.TotalTokens = int(aggTotalTokens.Int64)
-					dbTotalTokens = int(aggTotalTokens.Int64)
-				}
-				if aggPromptTokens.Valid && aggPromptTokens.Int64 > 0 {
-					taskExecution.PromptTokens = int(aggPromptTokens.Int64)
-					dbPromptTokens = int(aggPromptTokens.Int64)
-				}
-				if aggCompletionTokens.Valid && aggCompletionTokens.Int64 > 0 {
-					taskExecution.CompletionTokens = int(aggCompletionTokens.Int64)
-					dbCompletionTokens = int(aggCompletionTokens.Int64)
-				}
-				// Mark that we have DB metrics available
-				if dbTotalTokens > 0 {
-					hasDBMetrics = true
-				}
-			} else {
-				s.logger.Warn("Token usage aggregation failed",
-					zap.String("workflow_id", workflowID),
-					zap.Error(err))
 			}
 
 			// Secondary fallback: derive from agent_executions only if token_usage aggregation returned zero
@@ -1458,18 +1476,105 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
                     SELECT COALESCE(SUM(ae.tokens_used), 0)
                     FROM agent_executions ae
                     WHERE ae.workflow_id = $1`, workflowID)
-				if err2 := row2.Scan(&aeTokens); err2 == nil {
-					if aeTokens.Valid && aeTokens.Int64 > 0 {
-						taskExecution.TotalTokens = int(aeTokens.Int64)
-						// Compute cost using model from metadata when available
-						taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
+				// Guard against nil row from circuit breaker
+				if row2 != nil {
+					if err2 := row2.Scan(&aeTokens); err2 == nil {
+						if aeTokens.Valid && aeTokens.Int64 > 0 {
+							taskExecution.TotalTokens = int(aeTokens.Int64)
+							// Compute cost using model from metadata when available
+							taskExecution.TotalCostUSD = calculateTokenCost(taskExecution.TotalTokens, result.Metadata)
+						}
+					} else {
+						s.logger.Warn("Agent execution aggregation failed",
+							zap.String("workflow_id", workflowID),
+							zap.Error(err2))
 					}
-				} else {
-					s.logger.Warn("Agent execution aggregation failed",
-						zap.String("workflow_id", workflowID),
-						zap.Error(err2))
 				}
 			}
+		}
+
+		// Build unified response and store in response JSONB column
+		if result.Result != "" {
+			// Compute execution time from task duration
+			var execTimeMs int64
+			if taskExecution.DurationMs != nil {
+				execTimeMs = int64(*taskExecution.DurationMs)
+			}
+
+			// Ensure task_id is set in metadata so unified response includes it
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]interface{})
+			}
+			if _, ok := result.Metadata["task_id"]; !ok {
+				result.Metadata["task_id"] = workflowID
+			}
+
+			// Update result.Metadata with DB aggregates before building unified response
+			if hasDBMetrics {
+				if result.Metadata == nil {
+					result.Metadata = make(map[string]interface{})
+				}
+				if dbTotalTokens > 0 {
+					result.Metadata["total_tokens"] = dbTotalTokens
+				}
+				if dbPromptTokens > 0 {
+					result.Metadata["input_tokens"] = dbPromptTokens
+				}
+				if dbCompletionTokens > 0 {
+					result.Metadata["output_tokens"] = dbCompletionTokens
+				}
+				if dbTotalCost > 0 {
+					result.Metadata["cost_usd"] = dbTotalCost
+				}
+				result.TokensUsed = dbTotalTokens
+			}
+
+			// Ensure cache tokens from DB aggregation are reflected in metadata
+			// (DB aggregation is source of truth when available)
+			if taskExecution.CacheReadTokens > 0 {
+				result.Metadata["cache_read_tokens"] = taskExecution.CacheReadTokens
+			}
+			if taskExecution.CacheCreationTokens > 0 {
+				result.Metadata["cache_creation_tokens"] = taskExecution.CacheCreationTokens
+			}
+
+			// Compute cache savings using per-model pricing (accurate calculation)
+			if taskExecution.CacheReadTokens > 0 || taskExecution.CacheCreationTokens > 0 {
+				if s.dbClient != nil {
+					rows, qErr := s.dbClient.Wrapper().QueryContext(ctx, `
+						SELECT model, provider,
+						       SUM(prompt_tokens), SUM(completion_tokens),
+						       SUM(cache_read_tokens), SUM(cache_creation_tokens), SUM(cost_usd)
+						FROM token_usage
+						WHERE task_id = (SELECT id FROM task_executions WHERE workflow_id = $1)
+						  AND (cache_read_tokens > 0 OR cache_creation_tokens > 0)
+						GROUP BY model, provider`, workflowID)
+					if qErr == nil && rows != nil {
+						var totalSavings float64
+						for rows.Next() {
+							var model, provider string
+							var input, output, cr, cc int
+							var cost float64
+							if err := rows.Scan(&model, &provider, &input, &output, &cr, &cc, &cost); err == nil {
+								costWithout := pricing.CostForSplit(model, input+cr+cc, output)
+								if costWithout > cost {
+									totalSavings += costWithout - cost
+								}
+							}
+						}
+						if err := rows.Err(); err != nil {
+							s.logger.Error("cache savings query: row iteration error", zap.Error(err))
+						}
+						rows.Close()
+						if totalSavings > 0 {
+							result.Metadata["cache_savings_usd"] = totalSavings
+						}
+					}
+				}
+			}
+
+			unifiedResp := TransformToUnifiedResponse(result, sessionID, execTimeMs)
+			taskExecution.Response = unifiedRespToJSONB(unifiedResp)
 		}
 
 		// Queue async write to database
@@ -1489,6 +1594,11 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			s.logger.Warn("Failed to queue task execution write",
 				zap.String("workflow_id", workflowID),
 				zap.Error(err))
+		}
+
+		// Record token usage for enterprise quota tracking (fire-and-forget)
+		if tenantUUID != nil && taskExecution.TotalTokens > 0 && statusStr == "COMPLETED" {
+			s.RecordUsage(ctx, *tenantUUID, workflowID, int64(taskExecution.TotalTokens))
 		}
 	}
 
@@ -1599,43 +1709,6 @@ func (s *OrchestratorService) GetTaskStatus(ctx context.Context, req *pb.GetTask
 			cost = metrics.TokenUsage.CostUsd
 		}
 		ometrics.RecordWorkflowMetrics("AgentDAGWorkflow", modeStr, statusStr, durationSeconds, result.TokensUsed, cost)
-	}
-
-	// Add unified response to metadata if we have a result
-	if isTerminal && result.Result != "" {
-		// Calculate execution time in ms
-		executionTimeMs := int64(durationSeconds * 1000)
-
-		// Update result.Metadata with aggregated DB values before creating unified_response
-		// This ensures unified_response contains accurate cost/token data from token_usage aggregation
-		if hasDBMetrics {
-			if result.Metadata == nil {
-				result.Metadata = make(map[string]interface{})
-			}
-			if dbTotalTokens > 0 {
-				result.Metadata["total_tokens"] = dbTotalTokens
-			}
-			if dbPromptTokens > 0 {
-				result.Metadata["input_tokens"] = dbPromptTokens
-			}
-			if dbCompletionTokens > 0 {
-				result.Metadata["output_tokens"] = dbCompletionTokens
-			}
-			if dbTotalCost > 0 {
-				result.Metadata["cost_usd"] = dbTotalCost
-			}
-			// Also update result.TokensUsed for consistency
-			result.TokensUsed = dbTotalTokens
-		}
-
-		// Transform to unified response format (now with accurate aggregated values)
-		unifiedResp := TransformToUnifiedResponse(result, sessionID, executionTimeMs)
-
-		// Store unified response in result metadata for clients that want it
-		if result.Metadata == nil {
-			result.Metadata = make(map[string]interface{})
-		}
-		result.Metadata["unified_response"] = unifiedResp
 	}
 
 	response := &pb.GetTaskStatusResponse{
@@ -2449,16 +2522,14 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 		waitCtx, waitCancel := context.WithTimeout(context.Background(), pollInterval)
 
 		// Try to wait for workflow completion
-		// Pass empty runID to track the latest run (handles CONTINUED_AS_NEW correctly)
-		we := s.temporalClient.GetWorkflow(waitCtx, workflowID, "")
+		we := s.temporalClient.GetWorkflow(waitCtx, workflowID, runID)
 		var tmp interface{}
 		waitErr := we.Get(waitCtx, &tmp)
 		waitCancel()
 
 		// Check workflow status
-		// Pass empty runID to get the latest run - handles CONTINUED_AS_NEW correctly
 		descCtx, descCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		desc, err := s.temporalClient.DescribeWorkflowExecution(descCtx, workflowID, "")
+		desc, err := s.temporalClient.DescribeWorkflowExecution(descCtx, workflowID, runID)
 		descCancel()
 
 		if err != nil || desc == nil || desc.WorkflowExecutionInfo == nil {
@@ -2470,26 +2541,6 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 			if consecutiveErrors >= maxConsecutiveErrors {
 				s.logger.Error("watchAndPersist: giving up after too many consecutive errors",
 					zap.String("workflow_id", workflowID))
-				// Mark task as FAILED in DB to avoid leaving it stuck in RUNNING state
-				failCtx, failCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if _, err2 := s.dbClient.Wrapper().ExecContext(
-					failCtx,
-					`UPDATE task_executions
-					 SET status = 'FAILED',
-					     error_message = COALESCE(error_message, 'Workflow status unknown: persistence monitoring failed after consecutive errors'),
-					     completed_at = NOW()
-					 WHERE workflow_id = $1
-					   AND status NOT IN ('COMPLETED', 'FAILED', 'CANCELLED')`,
-					workflowID,
-				); err2 != nil {
-					s.logger.Error("watchAndPersist: failed to mark task as FAILED",
-						zap.String("workflow_id", workflowID),
-						zap.Error(err2))
-				} else {
-					s.logger.Info("watchAndPersist: marked task as FAILED due to monitoring failure",
-						zap.String("workflow_id", workflowID))
-				}
-				failCancel()
 				return
 			}
 			time.Sleep(30 * time.Second) // Back off before retry
@@ -2505,9 +2556,7 @@ func (s *OrchestratorService) watchAndPersist(workflowID, runID string) {
 			st == enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED
 
 		if !isTerminal {
-			// Workflow still running (or CONTINUED_AS_NEW) - continue waiting
-			// Since we pass empty runID, CONTINUED_AS_NEW is handled correctly
-			// by tracking the new run automatically
+			// Workflow still running - log and continue waiting
 			if waitErr != nil {
 				s.logger.Debug("watchAndPersist: workflow still running, will retry",
 					zap.String("workflow_id", workflowID),
@@ -2851,6 +2900,9 @@ func (s *OrchestratorService) SubmitReviewDecision(
 	if req.WorkflowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "workflow_id is required")
 	}
+	if req.Approved && strings.TrimSpace(req.FinalPlan) == "" {
+		return nil, status.Error(codes.InvalidArgument, "final_plan is required when approved")
+	}
 
 	// Authenticate
 	uc, err := auth.GetUserContext(ctx)
@@ -2867,15 +2919,23 @@ func (s *OrchestratorService) SubmitReviewDecision(
 		return nil, status.Error(codes.NotFound, "workflow not found")
 	}
 
-	// Check tenant ownership from memo
-	if wfDesc.WorkflowExecutionInfo.Memo != nil {
-		dataConverter := converter.GetDefaultDataConverter()
-		if tenantField, ok := wfDesc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
-			var memoTenant string
-			_ = dataConverter.FromPayload(tenantField, &memoTenant)
-			if memoTenant != "" && uc.TenantID.String() != memoTenant {
-				return nil, status.Error(codes.PermissionDenied, "not authorized for this workflow")
-			}
+	if wfDesc == nil || wfDesc.WorkflowExecutionInfo == nil || wfDesc.WorkflowExecutionInfo.Memo == nil {
+		return nil, status.Error(codes.NotFound, "workflow not found")
+	}
+
+	dc := converter.GetDefaultDataConverter()
+	if tenantField, ok := wfDesc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
+		var memoTenant string
+		_ = dc.FromPayload(tenantField, &memoTenant)
+		if memoTenant != "" && uc.TenantID.String() != memoTenant {
+			return nil, status.Error(codes.NotFound, "workflow not found")
+		}
+	}
+	if userField, ok := wfDesc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && userField != nil {
+		var memoUser string
+		_ = dc.FromPayload(userField, &memoUser)
+		if memoUser != "" && uc.UserID.String() != memoUser {
+			return nil, status.Error(codes.NotFound, "workflow not found")
 		}
 	}
 
@@ -2908,7 +2968,7 @@ func (s *OrchestratorService) SubmitReviewDecision(
 	s.logger.Info("HITL review decision submitted",
 		zap.String("workflow_id", req.WorkflowId),
 		zap.Bool("approved", req.Approved),
-		zap.String("approved_by", req.ApprovedBy),
+		zap.String("approved_by", uc.UserID.String()),
 	)
 
 	return &pb.SubmitReviewDecisionResponse{
@@ -2925,8 +2985,20 @@ func (s *OrchestratorService) RecordTokenUsage(
 	if req.WorkflowId == "" {
 		return nil, status.Error(codes.InvalidArgument, "workflow_id is required")
 	}
+	if req.InputTokens < 0 || req.OutputTokens < 0 {
+		return nil, status.Error(codes.InvalidArgument, "input_tokens and output_tokens must be >= 0")
+	}
+	if s.temporalClient == nil {
+		return nil, status.Error(codes.Unavailable, "Temporal not ready")
+	}
 
-	// Best-effort recording — don't fail if budget manager is unavailable
+	// Authenticate (enforced by interceptor; still validate here for clarity)
+	uc, err := auth.GetUserContext(ctx)
+	if err != nil || uc == nil {
+		return nil, status.Error(codes.Unauthenticated, "authentication required")
+	}
+
+	// Best-effort recording — don't fail the workflow if quota recorder is unavailable
 	s.logger.Info("Recording token usage from gateway",
 		zap.String("workflow_id", req.WorkflowId),
 		zap.String("agent_id", req.AgentId),
@@ -2934,6 +3006,54 @@ func (s *OrchestratorService) RecordTokenUsage(
 		zap.Int32("input_tokens", req.InputTokens),
 		zap.Int32("output_tokens", req.OutputTokens),
 	)
+
+	// Derive tenant_id from the workflow memo (source of truth for tenancy).
+	wfDesc, err := s.temporalClient.DescribeWorkflowExecution(ctx, req.WorkflowId, "")
+	if err != nil || wfDesc == nil || wfDesc.WorkflowExecutionInfo == nil {
+		// Best-effort: don't fail client calls on transient Temporal errors.
+		s.logger.Warn("Failed to describe workflow for token usage recording",
+			zap.String("workflow_id", req.WorkflowId),
+			zap.Error(err),
+		)
+		return &pb.RecordTokenUsageResponse{Success: true}, nil
+	}
+
+	var memoTenant string
+	var memoUser string
+	if wfDesc.WorkflowExecutionInfo.Memo != nil {
+		dc := converter.GetDefaultDataConverter()
+		if tenantField, ok := wfDesc.WorkflowExecutionInfo.Memo.Fields["tenant_id"]; ok && tenantField != nil {
+			_ = dc.FromPayload(tenantField, &memoTenant)
+		}
+		if userField, ok := wfDesc.WorkflowExecutionInfo.Memo.Fields["user_id"]; ok && userField != nil {
+			_ = dc.FromPayload(userField, &memoUser)
+		}
+	}
+	if memoTenant == "" {
+		s.logger.Warn("Workflow memo missing tenant_id; skipping quota recording",
+			zap.String("workflow_id", req.WorkflowId),
+		)
+		return &pb.RecordTokenUsageResponse{Success: true}, nil
+	}
+	if uc.TenantID.String() != memoTenant {
+		return nil, status.Error(codes.NotFound, "workflow not found")
+	}
+	if memoUser != "" && uc.UserID.String() != memoUser {
+		return nil, status.Error(codes.NotFound, "workflow not found")
+	}
+
+	tenantUUID, err := uuid.Parse(memoTenant)
+	if err != nil {
+		s.logger.Warn("Invalid tenant_id in workflow memo; skipping quota recording",
+			zap.String("workflow_id", req.WorkflowId),
+			zap.String("tenant_id", memoTenant),
+			zap.Error(err),
+		)
+		return &pb.RecordTokenUsageResponse{Success: true}, nil
+	}
+
+	totalTokens := int64(req.InputTokens) + int64(req.OutputTokens)
+	s.RecordUsage(ctx, tenantUUID, req.WorkflowId, totalTokens)
 
 	return &pb.RecordTokenUsageResponse{Success: true}, nil
 }
@@ -2972,7 +3092,7 @@ func (s *OrchestratorService) CreateSchedule(ctx context.Context, req *pb.Create
 		timeoutSecs = 3600 // 1 hour default
 	}
 
-	// 5. Convert proto map to Go map (decoding JSON-encoded complex values)
+	// 5. Convert proto map to Go map, decoding JSON-encoded values
 	taskContext := decodeTaskContext(req.TaskContext)
 
 	// 6. Create via schedule manager
@@ -3134,7 +3254,7 @@ func (s *OrchestratorService) UpdateSchedule(ctx context.Context, req *pb.Update
 		// Explicit clear: set to empty map (not nil) to overwrite existing
 		updateInput.TaskContext = make(map[string]interface{})
 	} else if len(req.TaskContext) > 0 {
-		// New values provided: decode JSON-encoded complex values and set
+		// New values provided: decode JSON-encoded values and set
 		updateInput.TaskContext = decodeTaskContext(req.TaskContext)
 	}
 	// If neither condition: TaskContext stays nil, preserving existing value
@@ -3345,4 +3465,62 @@ func convertScheduleToProto(s *schedules.Schedule) *pb.ScheduleInfo {
 		SuccessfulRuns:     int32(s.SuccessfulRuns),
 		FailedRuns:         int32(s.FailedRuns),
 	}
+}
+
+// jsonEncodedPrefix marks values that were JSON-encoded during transport.
+// This prefix prevents backwards-incompatible coercion of string values like "true" or "123".
+const jsonEncodedPrefix = "\x00json:"
+
+// decodeTaskContext converts proto map[string]string to map[string]interface{},
+// decoding only values with the JSON prefix marker back to their original types.
+// Plain string values (including "true", "123") are preserved as strings.
+func decodeTaskContext(ctx map[string]string) map[string]interface{} {
+	if ctx == nil {
+		return nil
+	}
+	result := make(map[string]interface{}, len(ctx))
+	for k, v := range ctx {
+		if strings.HasPrefix(v, jsonEncodedPrefix) {
+			// JSON-encoded value: decode it
+			jsonStr := strings.TrimPrefix(v, jsonEncodedPrefix)
+			var decoded interface{}
+			if err := json.Unmarshal([]byte(jsonStr), &decoded); err == nil {
+				result[k] = decoded
+			} else {
+				result[k] = v // fallback to original if decode fails
+			}
+		} else {
+			// Plain string: preserve as-is
+			result[k] = v
+		}
+	}
+	return result
+}
+
+// SendSwarmMessage forwards a human message to a running SwarmWorkflow via Temporal Signal.
+func (s *OrchestratorService) SendSwarmMessage(ctx context.Context, req *pb.SendSwarmMessageRequest) (*pb.SendSwarmMessageResponse, error) {
+	if req.WorkflowId == "" {
+		return nil, status.Error(codes.InvalidArgument, "workflow_id is required")
+	}
+	if req.Message == "" {
+		return nil, status.Error(codes.InvalidArgument, "message is required")
+	}
+
+	payload := map[string]string{"message": req.Message}
+	err := s.temporalClient.SignalWorkflow(ctx, req.WorkflowId, "", "human-input", payload)
+	if err != nil {
+		s.logger.Error("Failed to signal swarm workflow with human input",
+			zap.String("workflow_id", req.WorkflowId),
+			zap.Error(err))
+		return nil, status.Errorf(codes.Internal, "failed to signal workflow: %v", err)
+	}
+
+	s.logger.Info("Human input sent to swarm workflow",
+		zap.String("workflow_id", req.WorkflowId),
+	)
+
+	return &pb.SendSwarmMessageResponse{
+		Success: true,
+		Status:  "sent",
+	}, nil
 }

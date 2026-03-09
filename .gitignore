@@ -345,3 +345,7 @@ chrome-extension/
 # antigravity
 .agent/
 .gomodcache/
+.gitnexus/
+
+# Documentation plans
+docs/plans/

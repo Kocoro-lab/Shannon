@@ -202,6 +202,7 @@ func ExecuteSequential(
 						Context:          taskContext,
 						Mode:             "standard",
 						SessionID:        sessionID,
+						UserID:           userID,
 						History:          history,
 						SuggestedTools:   task.SuggestedTools,
 						ToolParameters:   task.ToolParameters,
@@ -229,6 +230,7 @@ func ExecuteSequential(
 					Context:          taskContext,
 					Mode:             "standard",
 					SessionID:        sessionID,
+					UserID:           userID,
 					History:          history,
 					SuggestedTools:   task.SuggestedTools,
 					ToolParameters:   task.ToolParameters,
@@ -343,6 +345,7 @@ func ExecuteSequential(
 					Metadata:     meta,
 				}).Get(recCtx, nil)
 			}
+			opts.RecordToolCostEntries(ctx, result, userID, sessionID, wid)
 		}
 
 		// Emit completion event (parent workflow when available)
