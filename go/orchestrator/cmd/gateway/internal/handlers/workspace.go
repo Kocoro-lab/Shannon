@@ -180,6 +180,15 @@ func (h *WorkspaceHandler) DownloadFile(w http.ResponseWriter, r *http.Request) 
 	}
 	defer resp.Body.Close()
 
+	// Sanitize server errors to prevent leaking infrastructure details
+	if resp.StatusCode >= 500 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		h.logger.Error("Firecracker download error", zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
+		errMsg := "workspace backend error"
+		writeJSON(w, http.StatusBadGateway, DownloadResponse{Success: false, Error: &errMsg})
+		return
+	}
+
 	// Forward response
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
@@ -269,6 +278,14 @@ func (h *WorkspaceHandler) ListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// Sanitize server errors to prevent leaking infrastructure details
+	if resp.StatusCode >= 500 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		h.logger.Error("Firecracker list error", zap.Int("status", resp.StatusCode), zap.String("body", string(body)))
+		writeJSON(w, http.StatusBadGateway, map[string]interface{}{"success": false, "error": "workspace backend error"})
+		return
+	}
 
 	// Forward response
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -374,6 +391,14 @@ func (h *WorkspaceHandler) downloadFileLocal(w http.ResponseWriter, workspacePat
 
 	if info.IsDir() {
 		errMsg := "path is a directory"
+		writeJSON(w, http.StatusBadRequest, DownloadResponse{Success: false, Error: &errMsg})
+		return
+	}
+
+	// Reject files larger than 100MB to prevent memory exhaustion
+	const maxDownloadSize = 100 * 1024 * 1024 // 100MB
+	if info.Size() > maxDownloadSize {
+		errMsg := fmt.Sprintf("file too large: %d bytes (max %d)", info.Size(), maxDownloadSize)
 		writeJSON(w, http.StatusBadRequest, DownloadResponse{Success: false, Error: &errMsg})
 		return
 	}
