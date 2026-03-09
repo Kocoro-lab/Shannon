@@ -88,20 +88,23 @@ echo "✅ Downloaded Python WASM interpreter"
 # Download database migrations
 echo "⬇️  Downloading database migrations..."
 mkdir -p migrations/postgres migrations/qdrant
-for i in 001 002 003 004 005 006 007 008 009 010 011; do
-    case $i in
-        001) file="001_initial_schema.sql" ;;
-        002) file="002_persistence_tables.sql" ;;
-        003) file="003_authentication.sql" ;;
-        004) file="004_event_logs.sql" ;;
-        005) file="005_alter_memory_system.sql" ;;
-        006) file="006_supervisor_memory_tables.sql" ;;
-        007) file="007_session_soft_delete.sql" ;;
-        008) file="008_add_model_provider_to_tasks.sql" ;;
-        009) file="009_scheduled_tasks.sql" ;;
-        010) file="010_auth_user_link.sql" ;;
-        011) file="011_add_agent_id_to_token_usage.sql" ;;
-    esac
+MIGRATION_FILES=(
+    "001_initial_schema.sql"
+    "002_persistence_tables.sql"
+    "003_authentication.sql"
+    "004_event_logs.sql"
+    "005_alter_memory_system.sql"
+    "006_supervisor_memory_tables.sql"
+    "007_session_soft_delete.sql"
+    "008_add_model_provider_to_tasks.sql"
+    "009_scheduled_tasks.sql"
+    "010_auth_user_link.sql"
+    "010_session_context_indexes.sql"
+    "011_add_agent_id_to_token_usage.sql"
+    "112_add_cache_token_columns.sql"
+    "113_channels.sql"
+)
+for file in "${MIGRATION_FILES[@]}"; do
     curl -fsSL "${GITHUB_RAW}/migrations/postgres/${file}" -o "migrations/postgres/${file}"
 done
 curl -fsSL "${GITHUB_RAW}/migrations/qdrant/create_collections.py" -o migrations/qdrant/create_collections.py
