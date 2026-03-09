@@ -47,7 +47,7 @@ func (h *ChannelHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validChannelTypes[req.Type] {
-		h.sendError(w, "Invalid channel type. Must be one of: slack, line, teams, wechat", http.StatusBadRequest)
+		h.sendError(w, "Invalid channel type. Must be one of: slack, line", http.StatusBadRequest)
 		return
 	}
 	if len(req.Credentials) == 0 {
