@@ -284,16 +284,16 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 
 ### Swarm Multi-Agent Workflows
 ```bash
-# Peer-to-peer multi-agent collaboration with message passing
+# Multi-agent collaboration with P2P message passing
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
   -d '{
     "query": "Analyze this dataset from multiple perspectives",
     "context": {
-      "execution_mode": "swarm"
+      "force_swarm": true
     }
   }'
-# Agents coordinate via P2P messaging without a central supervisor
+# Lead Agent plans and coordinates; worker agents execute via shared workspace
 ```
 
 ### Human-in-the-Loop Approval
