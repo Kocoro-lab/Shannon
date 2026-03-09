@@ -60,7 +60,7 @@ export default function RadarCanvas() {
       ctx.clearRect(0, 0, w, h);
 
       const dark = isDarkMode();
-      
+
       // Colors based on theme
       const BG_COLOR = dark ? "#0a0f0a" : "#f8faf8";
       const GRID_COLOR = dark ? "rgba(100, 140, 120, 0.2)" : "rgba(60, 100, 80, 0.15)";
@@ -141,14 +141,54 @@ export default function RadarCanvas() {
       ctx.lineTo(cx, cy + r);
       ctx.stroke();
 
-      // Center dot
-      const box = Math.max(6, r * 0.04);
-      ctx.fillStyle = CENTER_COLOR;
-      ctx.globalAlpha = 0.6;
-      ctx.beginPath();
-      ctx.arc(cx, cy, box / 2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
+      // Center: Lead gold pulse ring (swarm) or default green dot
+      const state = radarStore.getState();
+      if (state.leadActive) {
+        const LEAD_HUE = 38; // gold, matches agent-colors.ts LEAD_COLOR
+        const baseRadius = Math.max(8, r * 0.05);
+
+        // Static outer ring
+        ctx.beginPath();
+        ctx.arc(cx, cy, baseRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = `hsl(${LEAD_HUE} 92% 55% / 0.6)`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Center filled dot
+        ctx.beginPath();
+        ctx.arc(cx, cy, baseRadius * 0.4, 0, Math.PI * 2);
+        ctx.fillStyle = `hsl(${LEAD_HUE} 92% 55% / 0.8)`;
+        ctx.fill();
+
+        // Expanding pulse animation (800ms after LEAD_DECISION)
+        const elapsed = Date.now() - state.leadLastPulse;
+        if (elapsed < 800) {
+          const progress = elapsed / 800;
+          const pulseRadius = baseRadius + baseRadius * 2 * progress;
+          const alpha = 0.6 * (1 - progress);
+          ctx.beginPath();
+          ctx.arc(cx, cy, pulseRadius, 0, Math.PI * 2);
+          ctx.strokeStyle = `hsl(${LEAD_HUE} 92% 55% / ${alpha})`;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // "LEAD" label below the ring
+        ctx.fillStyle = `hsl(${LEAD_HUE} 92% 65%)`;
+        ctx.font = `${Math.max(9, r * 0.035)}px monospace`;
+        ctx.textAlign = "center";
+        ctx.fillText("LEAD", cx, cy + baseRadius + 14);
+        ctx.textAlign = "start";
+      } else {
+        // Non-swarm mode: default green center dot
+        const box = Math.max(6, r * 0.04);
+        ctx.fillStyle = CENTER_COLOR;
+        ctx.globalAlpha = 0.6;
+        ctx.beginPath();
+        ctx.arc(cx, cy, box / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
     }
 
     resize();
@@ -483,4 +523,3 @@ export default function RadarCanvas() {
     />
   );
 }
-
