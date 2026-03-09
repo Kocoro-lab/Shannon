@@ -73,7 +73,10 @@ func (a *Activities) SendAgentMessage(ctx context.Context, in SendAgentMessageIn
 		"payload": in.Payload,
 		"ts":      ts.UnixNano(),
 	}
-	b, _ := json.Marshal(msg)
+	b, err := json.Marshal(msg)
+	if err != nil {
+		return SendAgentMessageResult{}, fmt.Errorf("marshal message: %w", err)
+	}
 	if err := rc.RPush(ctx, listKey, b).Err(); err != nil {
 		return SendAgentMessageResult{}, err
 	}
@@ -176,7 +179,10 @@ func (a *Activities) WorkspaceAppend(ctx context.Context, in WorkspaceAppendInpu
 		ts = time.Now() // Fallback for backward compatibility
 	}
 	entry := map[string]interface{}{"seq": seq, "topic": in.Topic, "entry": in.Entry, "ts": ts.UnixNano()}
-	b, _ := json.Marshal(entry)
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return WorkspaceAppendResult{}, fmt.Errorf("marshal entry: %w", err)
+	}
 	if err := rc.RPush(ctx, listKey, b).Err(); err != nil {
 		return WorkspaceAppendResult{}, err
 	}

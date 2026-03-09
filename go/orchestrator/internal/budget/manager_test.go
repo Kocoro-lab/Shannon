@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"regexp"
+	"sync"
 	"testing"
 	"time"
 
@@ -168,5 +169,105 @@ func TestRecordUsage_NoCostOverrideFallsToPricing(t *testing.T) {
 	// CostUSD should be calculated via pricing, not zero
 	if usage.CostUSD <= 0 {
 		t.Fatalf("expected CostUSD > 0 from pricing calculation, got %f", usage.CostUSD)
+	}
+}
+
+func TestCircuitBreaker_ConcurrentRecordAndRead(t *testing.T) {
+	bm := NewBudgetManager(nil, zap.NewNop())
+
+	userID := "race-test-user"
+	threshold := 10
+	bm.ConfigureCircuitBreaker(userID, CircuitBreakerConfig{
+		FailureThreshold: threshold,
+		ResetTimeout:     5 * time.Second,
+		HalfOpenRequests: 3,
+	})
+
+	var wg sync.WaitGroup
+
+	// Spawn goroutines that record failures concurrently
+	for i := 0; i < threshold+5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bm.RecordFailure(userID)
+		}()
+	}
+
+	// Spawn goroutines that read circuit state concurrently
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = bm.GetCircuitState(userID)
+		}()
+	}
+
+	wg.Wait()
+
+	// After threshold+5 failures, circuit must be open
+	state := bm.GetCircuitState(userID)
+	if state != "open" {
+		t.Fatalf("expected circuit state 'open' after %d failures, got %q", threshold+5, state)
+	}
+}
+
+func TestCircuitBreaker_ConcurrentHalfOpenTransition(t *testing.T) {
+	bm := NewBudgetManager(nil, zap.NewNop())
+
+	// Set up session budget so CheckBudgetWithCircuitBreaker works
+	bm.SetSessionBudget("s1", &TokenBudget{
+		TaskBudget:    100000,
+		SessionBudget: 100000,
+	})
+
+	userID := "halfopen-race-user"
+	bm.ConfigureCircuitBreaker(userID, CircuitBreakerConfig{
+		FailureThreshold: 2,
+		ResetTimeout:     1 * time.Millisecond, // very short so it transitions to half-open quickly
+		HalfOpenRequests: 3,
+	})
+
+	// Trip the circuit breaker
+	bm.RecordFailure(userID)
+	bm.RecordFailure(userID)
+
+	// Wait for reset timeout so GetCircuitState will transition to half-open
+	time.Sleep(5 * time.Millisecond)
+
+	// Trigger the transition to half-open
+	state := bm.GetCircuitState(userID)
+	if state != "half-open" {
+		t.Fatalf("expected circuit state 'half-open' after reset timeout, got %q", state)
+	}
+
+	var wg sync.WaitGroup
+
+	// Concurrently record successes and check budget with circuit breaker.
+	// This exercises CheckBudgetWithCircuitBreaker reading successCount
+	// while RecordSuccess writes it — the exact race being fixed.
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bm.RecordSuccess(userID)
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = bm.CheckBudgetWithCircuitBreaker(
+				context.Background(), userID, "s1", "t1", 100,
+			)
+		}()
+	}
+
+	wg.Wait()
+
+	// After enough successes in half-open (20 > HalfOpenRequests=3), circuit should be closed
+	state = bm.GetCircuitState(userID)
+	if state != "closed" {
+		t.Fatalf("expected circuit state 'closed' after successes in half-open, got %q", state)
 	}
 }

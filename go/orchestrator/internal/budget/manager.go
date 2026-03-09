@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/metrics"
@@ -885,7 +884,7 @@ func (bm *BudgetManager) RecordFailure(userID string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	atomic.AddInt32(&cb.failureCount, 1)
+	cb.failureCount++
 	cb.lastFailureTime = time.Now()
 
 	if int(cb.failureCount) >= cb.config.FailureThreshold {
@@ -907,11 +906,11 @@ func (bm *BudgetManager) RecordSuccess(userID string) {
 	defer cb.mu.Unlock()
 
 	if cb.state == "half-open" {
-		atomic.AddInt32(&cb.successCount, 1)
+		cb.successCount++
 		if int(cb.successCount) >= cb.config.HalfOpenRequests {
 			cb.state = "closed"
-			atomic.StoreInt32(&cb.failureCount, 0)
-			atomic.StoreInt32(&cb.successCount, 0)
+			cb.failureCount = 0
+			cb.successCount = 0
 		}
 	}
 }
@@ -929,7 +928,7 @@ func (bm *BudgetManager) GetCircuitState(userID string) string {
 	cb.mu.Lock()
 	if cb.state == "open" && time.Since(cb.lastFailureTime) > cb.config.ResetTimeout {
 		cb.state = "half-open"
-		atomic.StoreInt32(&cb.successCount, 0)
+		cb.successCount = 0
 	}
 	state := cb.state
 	cb.mu.Unlock()
@@ -959,14 +958,19 @@ func (bm *BudgetManager) CheckBudgetWithCircuitBreaker(
 		cb := bm.circuitBreakers[userID]
 		bm.cbMu.RUnlock()
 
-		if cb != nil && int(atomic.LoadInt32(&cb.successCount)) >= cb.config.HalfOpenRequests {
-			return &BackpressureResult{
-				BudgetCheckResult: &BudgetCheckResult{
-					CanProceed: false,
-					Reason:     "Circuit breaker in half-open state, test quota exceeded",
-				},
-				CircuitBreakerOpen: true,
-			}, nil
+		if cb != nil {
+			cb.mu.RLock()
+			exceeded := int(cb.successCount) >= cb.config.HalfOpenRequests
+			cb.mu.RUnlock()
+			if exceeded {
+				return &BackpressureResult{
+					BudgetCheckResult: &BudgetCheckResult{
+						CanProceed: false,
+						Reason:     "Circuit breaker in half-open state, test quota exceeded",
+					},
+					CircuitBreakerOpen: true,
+				}, nil
+			}
 		}
 	}
 
