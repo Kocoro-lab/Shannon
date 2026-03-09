@@ -71,6 +71,17 @@ export FIRECRAWL_API_KEY=your_api_key_here
 - Free tier: Limited alpha access
 - Pricing: Variable based on scraping depth
 
+### 7. **SearchAPI.io** (Multi-Engine SERP API)
+Multi-engine SERP API supporting Google, Bing, Yahoo, Baidu, and more.
+```bash
+export WEB_SEARCH_PROVIDER=searchapi
+export SEARCHAPI_API_KEY=your_api_key_here
+```
+- Get API key at: https://searchapi.io
+- Features: Multiple search engines (Google, Bing, Yahoo, Baidu, and more)
+- Free tier: 100 searches/month
+- Pricing: Starting at $50 for 5k searches
+
 ## Docker Compose Configuration
 
 Add to your `deploy/compose/.env` file:
@@ -101,6 +112,10 @@ GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
 # Or Firecrawl (with content extraction)
 # WEB_SEARCH_PROVIDER=firecrawl
 # FIRECRAWL_API_KEY=your_firecrawl_api_key_here
+
+# Or SearchAPI.io (multi-engine SERP)
+# WEB_SEARCH_PROVIDER=searchapi
+# SEARCHAPI_API_KEY=your_searchapi_api_key_here
 ```
 
 The environment variables are already configured in `deploy/compose/docker-compose.yml`:
@@ -115,6 +130,7 @@ llm-service:
     - SERPAPI_API_KEY=${SERPAPI_API_KEY}
     - EXA_API_KEY=${EXA_API_KEY}
     - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+    - SEARCHAPI_API_KEY=${SEARCHAPI_API_KEY}
 ```
 
 ## Fallback Behavior
@@ -126,6 +142,7 @@ If the configured provider is not available (missing API key or configuration), 
 4. Bing
 5. Exa
 6. Firecrawl
+7. SearchAPI.io
 
 If no provider is configured, web search will be disabled but the system continues to function.
 
@@ -164,6 +181,7 @@ curl -X POST http://localhost:8000/tools/execute \
 | **Bing** | Enterprise, Azure integration | $3 | Varies by tier | Snippets |
 | **Exa** | AI agents, semantic search | $1 | Standard | Full text + highlights |
 | **Firecrawl** | Content extraction | Variable | Limited | Full markdown content |
+| **SearchAPI.io** | Multi-engine search | $10 | Standard | Snippets + rich result data |
 
 ## Setting Up Google Custom Search
 

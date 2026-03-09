@@ -70,10 +70,14 @@ Response: `{"success": bool, "output": ..., "usage": {"tokens": N, "cost_usd": N
 
 Dangerous tools (`bash_executor`, `file_write`) are blocked at gateway — they only run inside orchestrated workflows. The browser `evaluate` action is disabled by default — not advertised in the tool schema and blocked by session context sanitizers in both API paths. To enable, add `allow_browser_evaluate` to safe_keys in both `tools.py` and `agent.py`.
 
+> **Note:** These routes are implemented in `tools.go` but not yet registered in gateway `main.go`.
+
 ## Subsystem References
 
 - **Skills System**: Markdown-based workflows. API: `GET /api/v1/skills[/{name}]`. See `docs/skills-system.md`.
 - **Session Workspaces**: File ops isolated per session via WASI sandbox. See `docs/session-workspaces.md`.
+- **Channels**: Slack/LINE webhook integration. CRUD: `POST/GET/PUT/DELETE /api/v1/channels`. Inbound: `POST /api/v1/channels/{channel_id}/webhook`. See `go/orchestrator/internal/channels/`.
+- **Daemon**: Redis-backed WebSocket hub for CLI connectivity. WS: `/v1/ws/messages`. Status: `GET /api/v1/daemon/status`. See `go/orchestrator/internal/daemon/`.
 
 ---
 
@@ -421,6 +425,7 @@ provider_settings:
 - Tasks table: `task_executions` (primary table for task persistence)
 - Status values: UPPERCASE for API/DB (`"COMPLETED"` not `"completed"`). Some internal workflow state may use lowercase for struct fields.
 - Empty UUID strings must convert to NULL
+- Migration numbering: 001-011 are OSS; 012-111 are reserved for Shannon Cloud; 112+ are OSS again. Current: `112_add_cache_token_columns.sql`, `113_channels.sql`.
 
 ### Session ID Handling (Gateway APIs)
 - **CRITICAL**: Session IDs support dual-format mapping (UUID + external string IDs)

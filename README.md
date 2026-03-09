@@ -183,8 +183,10 @@ Add these to your `.env` file based on which tools you need:
 
 ```bash
 # Web Search (choose one provider)
-WEB_SEARCH_PROVIDER=serpapi             # serpapi | google | bing | exa
+WEB_SEARCH_PROVIDER=serpapi             # serpapi | searchapi | google | bing | exa
 SERPAPI_API_KEY=your-serpapi-key        # serpapi.com
+# OR
+SEARCHAPI_API_KEY=your-searchapi-key   # searchapi.io
 # OR
 GOOGLE_SEARCH_API_KEY=your-google-key   # Google Custom Search
 GOOGLE_SEARCH_ENGINE_ID=your-engine-id
@@ -205,6 +207,20 @@ FIRECRAWL_API_KEY=your-firecrawl-key    # firecrawl.dev (recommended for product
 | **Orchestrator** | 50052 | `localhost:50052` | gRPC (internal) |
 | **Temporal UI** | 8088 | `http://localhost:8088` | Workflow debugging |
 | **Grafana** | 3030 | `http://localhost:3030` | Metrics dashboard |
+
+### Additional API Endpoints
+
+**Daemon & Real-time Messaging:**
+- `GET /api/v1/daemon/status` — Daemon connection status
+- `WebSocket /v1/ws/messages` — Real-time message delivery to connected CLI daemons
+
+**Channels (Messaging Integrations):**
+- `POST/GET/PUT/DELETE /api/v1/channels` — CRUD for messaging channel integrations (Slack, LINE)
+- `POST /api/v1/channels/{channel_id}/webhook` — Inbound webhook endpoint
+
+**Workspace Files:**
+- `GET /api/v1/sessions/{sessionId}/files` — List session workspace files
+- `GET /api/v1/sessions/{sessionId}/files/{path}` — Download a workspace file
 
 ## Architecture
 
@@ -339,7 +355,7 @@ curl -X POST http://localhost:8080/api/v1/schedules \
 
 ### 10+ LLM Providers
 - **OpenAI**: GPT-5.1, GPT-5 mini, GPT-5 nano
-- **Anthropic**: Claude Opus 4.5, Opus 4.1, Sonnet 4.5, Haiku 4.5
+- **Anthropic**: Claude Opus 4.6, Opus 4.5, Opus 4.1, Sonnet 4.6, Sonnet 4.5, Haiku 4.5
 - **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 3 Pro Preview
 - **xAI**: Grok 4 (reasoning & non-reasoning)
 - **DeepSeek**: DeepSeek V3.2, DeepSeek R1

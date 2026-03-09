@@ -271,6 +271,7 @@ When `force_swarm: true` triggers SwarmWorkflow, additional event types are emit
 | `AGENT_COMPLETED` | `{agent-name}` | — | Agent finished |
 | `TASKLIST_UPDATED` | `tasklist` | `{tasks: SwarmTask[]}` | Task list changed |
 | `LEAD_DECISION` | `swarm-lead` | `{event_type, actions_count}` | Lead coordination |
+| `INTERIM_REPLY` | `swarm-lead` | `{message: string}` | Progress update from Lead agent during swarm execution |
 
 ### TASKLIST_UPDATED Payload
 

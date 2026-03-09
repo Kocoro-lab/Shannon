@@ -25,6 +25,7 @@ Verify release-related files are committed:
 - `CHANGELOG.md`
 - `deploy/compose/docker-compose.release.yml`
 - `scripts/install.sh`
+- Verify `scripts/install.sh` migration list includes all migration files from `migrations/postgres/`
 
 ### 2. Update Version References
 
