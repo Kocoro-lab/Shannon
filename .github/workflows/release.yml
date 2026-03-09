@@ -24,11 +24,11 @@ jobs:
             context: .
             dockerfile: rust/agent-core/Dockerfile
           - name: orchestrator
-            context: go/orchestrator
-            dockerfile: Dockerfile
+            context: .
+            dockerfile: go/orchestrator/Dockerfile
           - name: llm-service
-            context: python/llm-service
-            dockerfile: Dockerfile
+            context: .
+            dockerfile: python/llm-service/Dockerfile
           - name: gateway
             context: .
             dockerfile: go/orchestrator/cmd/gateway/Dockerfile

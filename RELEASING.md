@@ -26,6 +26,9 @@ Verify release-related files are committed:
 - `deploy/compose/docker-compose.release.yml`
 - `scripts/install.sh`
 - Verify `scripts/install.sh` migration list includes all migration files from `migrations/postgres/`
+- Verify `scripts/install.sh` synthesis templates list matches `config/templates/synthesis/`
+- Verify `scripts/install.sh` workflow templates list matches `config/workflows/examples/`
+- Verify proto files are regenerated (`make proto`) and generated Go/Python code is committed
 
 ### 2. Update Version References
 
@@ -37,7 +40,6 @@ Update version strings in these files:
 | `README.md` | Version badge + install command tag |
 | `scripts/install.sh` | Default `SHANNON_VERSION` |
 | `rust/agent-core/Cargo.toml` | `version = "X.Y.Z"` |
-| `rust/firecracker-executor/Cargo.toml` | `version = "X.Y.Z"` |
 | `python/llm-service/main.py` | FastAPI `version=` + health endpoint version |
 | `python/llm-service/llm_service/__init__.py` | `__version__ = "X.Y.Z"` |
 | `python/llm-service/llm_service/metrics.py` | Default `version` param |
@@ -70,7 +72,7 @@ make ci-replay
 
 # Docker builds (verify Dockerfiles work)
 docker build -f rust/agent-core/Dockerfile -t test-agent-core .
-docker build -f go/orchestrator/Dockerfile -t test-orchestrator go/orchestrator
+docker build -f go/orchestrator/Dockerfile -t test-orchestrator .
 docker build -f go/orchestrator/cmd/gateway/Dockerfile -t test-gateway .
 docker build -f python/llm-service/Dockerfile -t test-llm-service python/llm-service
 ```
