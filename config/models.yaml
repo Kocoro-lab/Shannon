@@ -51,10 +51,10 @@ model_tiers:
     # Standard models with good capability/cost balance, not heavy reasoning
     providers:
       - provider: anthropic
-        model: claude-sonnet-4-6
+        model: claude-sonnet-4-5-20250929
         priority: 1
       - provider: anthropic
-        model: claude-sonnet-4-5-20250929
+        model: claude-sonnet-4-6
         priority: 2
       - provider: openai
         model: gpt-5-mini-2025-08-07
@@ -577,7 +577,7 @@ model_catalog:
       supports_streaming: true
 
 # Centralized model pricing (USD per 1K tokens)
-# Updated: November 2025 with latest pricing
+# Updated: March 2026 — verified against current Anthropic/OpenAI/Google billing
 # Used across Go/Rust/Python for consistent cost calculation.
 pricing:
   defaults:
@@ -761,20 +761,24 @@ pricing:
         output_per_1k: 0.0
 
     # Synthetic models for external tool cost attribution.
-    # Each tool call = 3000 synthetic output tokens.
-    # combined_per_1k = actual_cost_per_call / 3.0
-    # Verify: (3000 / 1000) × combined_per_1k = cost_per_call
+    # Each tool call = 7500 synthetic output tokens (≈ $2/1M token billing rate).
+    # combined_per_1k = actual_cost_per_call / 7.5
+    # Verify: (7500 / 1000) × combined_per_1k = cost_per_call
     shannon-scraper:
       shannon_web_search:
-        combined_per_1k: 0.005        # (3000/1000) × 0.005 = $0.015 (SerpAPI)
+        combined_per_1k: 0.002        # (7500/1000) × 0.002 = $0.015 (SerpAPI)
+      shannon_searchapi:
+        combined_per_1k: 0.000533     # (7500/1000) × 0.000533 ≈ $0.004 (SearchAPI.io)
       shannon_google_ads:
-        combined_per_1k: 0.005        # (3000/1000) × 0.005 = $0.015 (SerpAPI)
+        combined_per_1k: 0.002        # (7500/1000) × 0.002 = $0.015 (SerpAPI)
       shannon_yahoo:
-        combined_per_1k: 0.001333     # (3000/1000) × 0.001333 ≈ $0.004 (SearchAPI.io)
+        combined_per_1k: 0.000533     # (7500/1000) × 0.000533 ≈ $0.004 (SearchAPI.io)
       shannon_meta:
-        combined_per_1k: 0.001333     # (3000/1000) × 0.001333 ≈ $0.004 (SearchAPI.io)
+        combined_per_1k: 0.000533     # (7500/1000) × 0.000533 ≈ $0.004 (SearchAPI.io)
+      shannon_page_screenshot:
+        combined_per_1k: 0.002        # (500/1000) × 0.002 = $0.001 (Playwright + S3)
       shannon_firecrawl:
-        combined_per_1k: 0.000333     # (3000/1000) × 0.000333 ≈ $0.001 (Firecrawl)
+        combined_per_1k: 0.000133     # (7500/1000) × 0.000133 ≈ $0.001 (Firecrawl)
       shannon_web_fetch:
         combined_per_1k: 0.00035      # SMALL model weighted avg; fallback only (real cost via cost_usd override)
 
@@ -793,7 +797,6 @@ model_capabilities:
     - gpt-5.1
     - gpt-5-pro-2025-10-06
     - gpt-5-pro-2025-10-06
-    - claude-sonnet-4-6
     - claude-sonnet-4-5-20250929
     - gemini-2.5-flash
     - gemini-2.0-flash
@@ -801,7 +804,6 @@ model_capabilities:
   thinking_models:
     - gpt-5-pro-2025-10-06
     - gpt-5.1
-    - claude-opus-4-6
     - claude-opus-4-5-20251101
     - claude-opus-4-1-20250805
     - gemini-3-pro-preview
@@ -813,7 +815,6 @@ model_capabilities:
   coding_specialists:
     - codestral-22b-v0.1
     - 'deepseek-v3.2'
-    - claude-sonnet-4-6
     - claude-sonnet-4-5-20250929
     - claude-sonnet-4-20250514
     - gpt-5-pro-2025-10-06
@@ -825,7 +826,6 @@ model_capabilities:
     - gemini-3-pro-preview  # 1M tokens
     - gemini-2.5-flash  # 1M tokens
     - qwen3-omni-30b-a3b-instruct  # 262K tokens
-    - claude-opus-4-6  # 200K tokens
     - claude-opus-4-5-20251101  # 200K tokens
     - claude-sonnet-4-5-20250929  # 200K tokens
 
