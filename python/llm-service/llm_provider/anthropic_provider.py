@@ -287,8 +287,9 @@ class AnthropicProvider(LLMProvider):
             # Adaptive thinking only supported on Opus models.
             # For other models, convert adaptive → enabled with a budget.
             if thinking_config.get("type") == "adaptive" and "opus" not in model.lower():
-                thinking_config = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 10000)}
-                logger.info(f"Converted adaptive thinking to enabled (budget=10000) for model {model}")
+                budget = thinking_config.get("budget_tokens", 10000)
+                thinking_config = {"type": "enabled", "budget_tokens": budget}
+                logger.info(f"Converted adaptive thinking to enabled (budget={budget}) for model {model}")
             api_request["temperature"] = 1
             api_request.pop("top_p", None)
             extra = api_request.get("extra_body", {})

@@ -279,10 +279,6 @@ func (h *Hub) Dispatch(ctx context.Context, tenantID, userID string, payload Mes
 	return nil
 }
 
-// HandleClaim processes a daemon's claim on a message. Returns true if granted.
-// If pending metadata was stored by Dispatch, it is merged with the incoming meta
-// so that channel routing information (channel_id, channel_type, thread_id, etc.)
-// is preserved in the claim for reply routing.
 // storePendingMeta stores metadata and schedules automatic cleanup.
 // Caller must hold h.mu.
 func (h *Hub) storePendingMeta(messageID string, meta ClaimMetadata) {
@@ -308,6 +304,10 @@ func (h *Hub) consumePendingMeta(messageID string) (ClaimMetadata, bool) {
 	return meta, ok
 }
 
+// HandleClaim processes a daemon's claim on a message. Returns true if granted.
+// If pending metadata was stored by Dispatch, it is merged with the incoming meta
+// so that channel routing information (channel_id, channel_type, thread_id, etc.)
+// is preserved in the claim for reply routing.
 func (h *Hub) HandleClaim(ctx context.Context, connID, messageID string, meta ClaimMetadata) (bool, error) {
 	// Merge pending metadata from Dispatch (carries channel routing info).
 	h.mu.Lock()

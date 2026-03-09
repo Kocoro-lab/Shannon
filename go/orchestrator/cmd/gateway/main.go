@@ -794,7 +794,9 @@ func main() {
 	// Inbound webhook (no auth middleware — uses channel-specific signature verification)
 	inboundHandler := channels.NewInboundHandler(channelRegistry, daemonHub, logger)
 	mux.Handle("POST /api/v1/channels/{channel_id}/webhook",
-		http.HandlerFunc(inboundHandler.HandleWebhook),
+		tracingMiddleware(
+			http.HandlerFunc(inboundHandler.HandleWebhook),
+		),
 	)
 
 	logger.Info("Registered channel API endpoints",
