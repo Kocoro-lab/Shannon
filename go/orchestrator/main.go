@@ -685,6 +685,10 @@ func main() {
 		httpapi.NewTimelineHandler(tClient, dbClient, logger).RegisterRoutes(httpMux)
 		logger.Info("Timeline API registered on admin HTTP server", zap.Int("port", healthPort), zap.String("path", "/timeline"))
 
+		// Register daemon signal endpoint (delivers daemon replies to Temporal workflows)
+		httpapi.NewDaemonSignalHandler(tClient, logger, approvalsToken).RegisterRoutes(httpMux)
+		logger.Info("Daemon signal API registered on admin HTTP server", zap.Int("port", healthPort), zap.String("path", "/daemon/signal"))
+
 		// Create workers (single queue or priority queues)
 		priorityQueues := strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "on") || os.Getenv("PRIORITY_QUEUES") == "1" || strings.EqualFold(os.Getenv("PRIORITY_QUEUES"), "true")
 

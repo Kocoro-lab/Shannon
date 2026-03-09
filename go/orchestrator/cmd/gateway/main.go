@@ -18,6 +18,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/proxy"
 	authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/daemon"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/skills"
@@ -705,6 +706,33 @@ func main() {
 	logger.Info("Registered skills API endpoints",
 		zap.String("endpoints", "/api/v1/skills, /api/v1/skills/{name}, /api/v1/skills/{name}/versions"),
 	)
+
+	// Daemon command channel (WebSocket for CLI/desktop connections)
+	daemonHub := daemon.NewHub(redisClient, logger)
+	go daemonHub.SubscribeDispatches(ctx)
+
+	eventsAuthToken := getEnvOrDefault("EVENTS_AUTH_TOKEN", getEnvOrDefault("APPROVALS_AUTH_TOKEN", ""))
+	daemonHandler := handlers.NewDaemonHandler(daemonHub, adminURL, eventsAuthToken, logger)
+
+	// WebSocket endpoint for shan CLI daemons (no method prefix for WS upgrade)
+	mux.Handle("/v1/ws/messages",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(daemonHandler.HandleWebSocket),
+			),
+		),
+	)
+
+	// Daemon status API
+	mux.Handle("GET /api/v1/daemon/status",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(daemonHandler.HandleStatus),
+			),
+		),
+	)
+
+	logger.Info("Registered daemon WebSocket and status endpoints")
 
 	// CORS middleware for all routes (development friendly)
 	corsHandler := corsMiddleware(mux)

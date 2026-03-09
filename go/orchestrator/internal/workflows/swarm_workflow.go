@@ -1684,6 +1684,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	// Track spawns, budget, and agent states
 	spawnCount := 0
 	var budgetTotalLLMCalls, budgetTotalTokens int
+	var historyTruncated bool
 	var lastLeadMailboxSeq uint64 // Track last-read seq from Lead's mailbox
 	maxLLMCalls := cfg.SwarmMaxTotalLLMCalls
 	maxTokens := cfg.SwarmMaxTotalTokens
@@ -3041,6 +3042,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				"events", workflow.GetInfo(ctx).GetCurrentHistoryLength(),
 			)
 			// For now, break and synthesize — full ContinueAsNew with snapshot in Phase 3.4
+			historyTruncated = true
 			break
 		}
 	}
@@ -3134,11 +3136,16 @@ synthesis:
 	}
 	if successCount == 0 {
 		logger.Error("SwarmWorkflow all agents failed", "total_agents", len(agentResults))
+		meta := buildSwarmMetadata(results)
+		if historyTruncated {
+			meta["truncated"] = true
+			meta["truncation_reason"] = "temporal_history_limit"
+		}
 		return TaskResult{
 			Success:      false,
 			ErrorMessage: fmt.Sprintf("All %d agents failed — no results to synthesize", len(agentResults)),
 			TokensUsed:   totalTokensUsed,
-			Metadata:     buildSwarmMetadata(results),
+			Metadata:     meta,
 		}, nil
 	}
 
@@ -3275,11 +3282,16 @@ synthesis:
 						}).Get(ctx, nil)
 					}
 
+					replyMeta := buildSwarmMetadata(results)
+					if historyTruncated {
+						replyMeta["truncated"] = true
+						replyMeta["truncation_reason"] = "temporal_history_limit"
+					}
 					return TaskResult{
 						Result:     replyContent,
 						Success:    true,
 						TokensUsed: totalTokensUsed,
-						Metadata:   buildSwarmMetadata(results),
+						Metadata:   replyMeta,
 					}, nil
 				}
 				logger.Warn("Lead reply failed validation, falling back to synthesis",
@@ -3316,11 +3328,16 @@ synthesis:
 		ParentWorkflowID: workflowID,
 		SessionID:        input.SessionID,
 	}).Get(ctx, &synth); err != nil {
+		meta := buildSwarmMetadata(results)
+		if historyTruncated {
+			meta["truncated"] = true
+			meta["truncation_reason"] = "temporal_history_limit"
+		}
 		return TaskResult{
 			Success:      false,
 			ErrorMessage: fmt.Sprintf("Synthesis failed: %v", err),
 			TokensUsed:   totalTokensUsed,
-			Metadata:     buildSwarmMetadata(results),
+			Metadata:     meta,
 		}, err
 	}
 
@@ -3370,11 +3387,16 @@ synthesis:
 		}).Get(ctx, nil)
 	}
 
+	meta := buildSwarmMetadata(results)
+	if historyTruncated {
+		meta["truncated"] = true
+		meta["truncation_reason"] = "temporal_history_limit"
+	}
 	return TaskResult{
 		Result:     synth.FinalResult,
 		Success:    true,
 		TokensUsed: totalTokensUsed,
-		Metadata:   buildSwarmMetadata(results),
+		Metadata:   meta,
 	}, nil
 }
 

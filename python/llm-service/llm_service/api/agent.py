@@ -1782,6 +1782,7 @@ async def agent_query(request: Request, query: AgentQuery):
 
             fetch_tools = {"web_fetch", "web_subpage_fetch", "web_crawl"}
             loop_function_call = seed_loop_function_call or function_call
+            followup_instruction = base_followup_instruction
 
             # P0 Fix: Track unique URLs for fetch ratio enforcement (Codex approved)
             fetched_urls: set = set()  # Successfully fetched URLs
@@ -2062,10 +2063,6 @@ async def agent_query(request: Request, query: AgentQuery):
             all_data_only_tools = tool_execution_records and all(
                 r.get("tool") in DATA_ONLY_TOOLS for r in tool_execution_records
             )
-            # Research roles always need interpretation to produce structured reports
-            # (Key Findings / Analysis format) even when all tools are data-only.
-            if all_data_only_tools and should_use_source_format(role):
-                all_data_only_tools = False
             skip_interpretation = role in skip_interpretation_roles or all_data_only_tools
 
             has_successful_tool = any(r.get("success") for r in tool_execution_records)

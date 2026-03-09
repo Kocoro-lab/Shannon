@@ -283,10 +283,16 @@ class AnthropicProvider(LLMProvider):
         # Extended thinking: force temperature=1 and pass config via extra_body
         # (SDK 0.40.0 doesn't accept 'thinking' as a named kwarg in stream())
         if request.thinking:
+            thinking_config = dict(request.thinking)
+            # Adaptive thinking only supported on Opus models.
+            # For other models, convert adaptive → enabled with a budget.
+            if thinking_config.get("type") == "adaptive" and "opus" not in model.lower():
+                thinking_config = {"type": "enabled", "budget_tokens": thinking_config.get("budget_tokens", 10000)}
+                logger.info(f"Converted adaptive thinking to enabled (budget=10000) for model {model}")
             api_request["temperature"] = 1
             api_request.pop("top_p", None)
             extra = api_request.get("extra_body", {})
-            extra["thinking"] = request.thinking
+            extra["thinking"] = thinking_config
             api_request["extra_body"] = extra
 
         return api_request
