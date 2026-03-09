@@ -124,13 +124,13 @@ function RunDetailContent() {
             dispatch(resetRun());
             userHasScrolledRef.current = false; // Reset scroll tracking on session change
         }
-        
+
         // Reset fetch flags when session changes
         // For new-to-real transitions, preserve message state (we already have streaming data)
         if (sessionChanged || !hasInitializedRef.current) {
             prevSessionIdRef.current = sessionId;
             hasInitializedRef.current = true;
-            
+
             // Only reset message/history flags if NOT transitioning from "new" to real session
             // During new-to-real transition, handleTaskCreated already added the user message
             if (!isNewToReal) {
@@ -138,8 +138,13 @@ function RunDetailContent() {
                 hasFetchedHistoryRef.current = false;
                 hasInitializedTaskRef.current = null;
                 setCurrentTaskId(null);
+                // Reset workspace state so it re-fetches with new session ID
+                setShowWorkspace(false);
+                setWorkspaceUpdateSeq(0);
             }
             hasFetchedAgentTypeRef.current = null;
+            // Immediately update actualSessionId to prevent stale workspace queries
+            setActualSessionId(sessionId !== "new" ? sessionId : null);
         }
     }, [dispatch, sessionId]);
 
@@ -945,7 +950,7 @@ function RunDetailContent() {
                 const existingMsg = runMessagesRef.current?.find(m =>
                     m.role === "assistant" && m.taskId === currentTaskId && !m.isStreaming && !m.isGenerating
                 );
-                if (task.metadata?.citations && (!existingMsg?.metadata?.citations || existingMsg.metadata.citations.length === 0)) {
+                if (task.metadata?.citations && (!existingMsg?.metadata?.citations || (Array.isArray(existingMsg.metadata.citations) && existingMsg.metadata.citations.length === 0))) {
                     console.log("[RunDetail] Updating existing message with citations from task");
                     dispatch(updateMessageMetadata({ taskId: currentTaskId, metadata: { citations: task.metadata.citations } }));
                 }
