@@ -63,6 +63,15 @@ This downloads config, prompts for API keys, pulls Docker images, and starts ser
 - Web Search: `SERPAPI_API_KEY=...` (get key at [serpapi.com](https://serpapi.com))
 - Web Fetch: `FIRECRAWL_API_KEY=...` (get key at [firecrawl.dev](https://firecrawl.dev))
 
+**Setting API keys:** The install script prompts you to edit `.env` during setup. To update keys later:
+
+```bash
+cd ~/shannon     # or your install directory
+nano .env        # edit API keys
+docker compose -f docker-compose.release.yml down
+docker compose -f docker-compose.release.yml up -d
+```
+
 > **Building from source?** See [Development](#development) below.
 >
 > **Platform-specific guides:** [Ubuntu](docs/ubuntu-quickstart.md) · [Rocky Linux](docs/rocky-linux-quickstart.md) · [Windows](docs/windows-setup-guide-en.md) · [Windows (中文)](docs/windows-setup-guide-cn.md)
@@ -120,12 +129,6 @@ with ShannonClient(base_url="http://localhost:8080") as client:
     # Wait for completion
     result = client.wait(handle.task_id)
     print(result.result)
-```
-
-CLI is also available:
-
-```bash
-shannon submit "What is the capital of France?"
 ```
 
 **Perfect for:**
