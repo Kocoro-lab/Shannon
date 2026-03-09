@@ -1,5 +1,8 @@
 version: v1
 
+# Go protos only — Python protos are generated separately via `make proto-local`
+# to ensure protobuf 5.x compatibility (BSR plugins use latest protobuf which
+# is 7.x and incompatible with requirements.txt pinning protobuf==5.29.2).
 plugins:
   - plugin: buf.build/protocolbuffers/go
     out: ../go/orchestrator/internal/pb
@@ -9,7 +12,3 @@ plugins:
     out: ../go/orchestrator/internal/pb
     opt:
       - paths=source_relative
-  - plugin: buf.build/protocolbuffers/python
-    out: ../python/llm-service/llm_service/grpc_gen
-  - plugin: buf.build/grpc/python
-    out: ../python/llm-service/llm_service/grpc_gen

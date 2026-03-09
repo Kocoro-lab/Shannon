@@ -70,10 +70,12 @@ ps:
 proto:
 	@echo "Installing buf if needed..."
 	@command -v buf >/dev/null 2>&1 || ./scripts/install_buf.sh
-	@echo "Generating proto files..."
+	@echo "Generating Go proto files (via buf)..."
 	@cd protos && PATH="$$HOME/.local/bin:$$PATH" buf generate || \
 		(echo "BSR rate limit hit or buf generation failed, using local generation..." && \
 		 cd .. && ./scripts/generate_protos_local.sh)
+	@echo "Generating Python proto files (pinned protobuf 5.x)..."
+	@$(MAKE) proto-local-python
 
 # Local proto generation (fallback when BSR is rate-limited)
 proto-local:
@@ -83,6 +85,18 @@ proto-local:
 		(echo "Warning: Python protobuf not 5.x - installing correct version..." && \
 		 pip3 install --upgrade protobuf==5.29.2 grpcio-tools==1.68.1)
 	@./scripts/generate_protos_local.sh
+
+# Python-only proto generation with version guard (pre-commit, not CI-generated)
+proto-local-python:
+	@python3 -c "import google.protobuf; v=google.protobuf.__version__; print(f'Python protobuf version: {v}'); exit(0 if v.startswith('5.') else 1)" || \
+		(echo "Error: Python protobuf must be 5.x for grpc_gen compatibility." && \
+		 echo "Run: pip3 install protobuf==5.29.2 grpcio-tools==1.68.1" && exit 1)
+	@python3 -m grpc_tools.protoc -Iprotos \
+		--python_out=python/llm-service/llm_service/grpc_gen \
+		--grpc_python_out=python/llm-service/llm_service/grpc_gen \
+		protos/agent/*.proto protos/common/*.proto protos/llm/*.proto \
+		protos/orchestrator/*.proto protos/session/*.proto protos/sandbox/*.proto
+	@echo "Python proto files regenerated (protobuf 5.x)"
 
 # Formatting & linting (best-effort; tools must be installed locally)
 fmt:
