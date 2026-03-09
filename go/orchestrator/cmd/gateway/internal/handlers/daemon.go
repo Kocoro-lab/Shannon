@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/channels"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/daemon"
 	"go.uber.org/zap"
 )
@@ -23,13 +24,14 @@ var wsUpgrader = websocket.Upgrader{
 
 type DaemonHandler struct {
 	hub         *daemon.Hub
+	outbound    *channels.OutboundRouter
 	adminURL    string // orchestrator admin server URL for Temporal signals
 	eventsToken string // auth token for admin server
 	logger      *zap.Logger
 }
 
-func NewDaemonHandler(hub *daemon.Hub, adminURL, eventsToken string, logger *zap.Logger) *DaemonHandler {
-	return &DaemonHandler{hub: hub, adminURL: adminURL, eventsToken: eventsToken, logger: logger}
+func NewDaemonHandler(hub *daemon.Hub, outbound *channels.OutboundRouter, adminURL, eventsToken string, logger *zap.Logger) *DaemonHandler {
+	return &DaemonHandler{hub: hub, outbound: outbound, adminURL: adminURL, eventsToken: eventsToken, logger: logger}
 }
 
 func (dh *DaemonHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +52,21 @@ func (dh *DaemonHandler) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		// Signal Temporal workflow if this reply is for a scheduled task
 		if meta.WorkflowID != "" {
 			dh.signalWorkflow(ctx, meta, reply)
+		}
+
+		// Route reply to originating channel (skip for schedule channel — handled by workflow signal)
+		if meta.ChannelType == daemon.ChannelSchedule {
+			return
+		}
+		if dh.outbound == nil {
+			return
+		}
+		if err := dh.outbound.RouteReply(ctx, meta, reply); err != nil {
+			dh.logger.Error("outbound reply failed",
+				zap.String("channel_type", meta.ChannelType),
+				zap.String("channel_id", meta.ChannelID),
+				zap.Error(err),
+			)
 		}
 	}
 

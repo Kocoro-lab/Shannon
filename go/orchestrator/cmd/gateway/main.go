@@ -17,6 +17,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/openai"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/cmd/gateway/internal/proxy"
 	authpkg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/channels"
 	cfg "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/config"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/daemon"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
@@ -707,12 +708,17 @@ func main() {
 		zap.String("endpoints", "/api/v1/skills, /api/v1/skills/{name}, /api/v1/skills/{name}/versions"),
 	)
 
+	// Channel registry (used by both daemon outbound and channel CRUD handlers)
+	channelRegistry := channels.NewRegistry(pgDB)
+
 	// Daemon command channel (WebSocket for CLI/desktop connections)
 	daemonHub := daemon.NewHub(redisClient, logger)
 	go daemonHub.SubscribeDispatches(ctx)
 
+	outboundRouter := channels.NewOutboundRouter(channelRegistry, logger)
+
 	eventsAuthToken := getEnvOrDefault("EVENTS_AUTH_TOKEN", getEnvOrDefault("APPROVALS_AUTH_TOKEN", ""))
-	daemonHandler := handlers.NewDaemonHandler(daemonHub, adminURL, eventsAuthToken, logger)
+	daemonHandler := handlers.NewDaemonHandler(daemonHub, outboundRouter, adminURL, eventsAuthToken, logger)
 
 	// WebSocket endpoint for shan CLI daemons (no method prefix for WS upgrade)
 	mux.Handle("/v1/ws/messages",
@@ -733,6 +739,67 @@ func main() {
 	)
 
 	logger.Info("Registered daemon WebSocket and status endpoints")
+
+	// Channel CRUD handlers
+	channelHandler := handlers.NewChannelHandler(channelRegistry, logger)
+
+	mux.Handle("POST /api/v1/channels",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					rateLimiter(
+						idempotencyMiddleware(
+							http.HandlerFunc(channelHandler.Create),
+						),
+					),
+				),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/channels",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(channelHandler.List),
+			),
+		),
+	)
+
+	mux.Handle("GET /api/v1/channels/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(channelHandler.Get),
+			),
+		),
+	)
+
+	mux.Handle("PUT /api/v1/channels/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				validationMiddleware(
+					http.HandlerFunc(channelHandler.Update),
+				),
+			),
+		),
+	)
+
+	mux.Handle("DELETE /api/v1/channels/{id}",
+		tracingMiddleware(
+			authMiddleware(
+				http.HandlerFunc(channelHandler.Delete),
+			),
+		),
+	)
+
+	// Inbound webhook (no auth middleware — uses channel-specific signature verification)
+	inboundHandler := channels.NewInboundHandler(channelRegistry, daemonHub, logger)
+	mux.Handle("POST /api/v1/channels/{channel_id}/webhook",
+		http.HandlerFunc(inboundHandler.HandleWebhook),
+	)
+
+	logger.Info("Registered channel API endpoints",
+		zap.String("endpoints", "/api/v1/channels, /api/v1/channels/{id}, /api/v1/channels/{channel_id}/webhook"),
+	)
 
 	// CORS middleware for all routes (development friendly)
 	corsHandler := corsMiddleware(mux)
