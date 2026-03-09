@@ -35,6 +35,16 @@ func (r *Registry) Get(ctx context.Context, id uuid.UUID) (*Channel, error) {
 	return &ch, nil
 }
 
+// GetByUser returns a channel only if owned by the given user.
+func (r *Registry) GetByUser(ctx context.Context, id, userID uuid.UUID) (*Channel, error) {
+	var ch Channel
+	err := r.db.GetContext(ctx, &ch, `SELECT * FROM channels WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &ch, nil
+}
+
 func (r *Registry) GetByUserAndType(ctx context.Context, userID uuid.UUID, channelType string) (*Channel, error) {
 	var ch Channel
 	err := r.db.GetContext(ctx, &ch, `SELECT * FROM channels WHERE user_id = $1 AND type = $2`, userID, channelType)
@@ -66,7 +76,8 @@ func (r *Registry) List(ctx context.Context) ([]Channel, error) {
 	return channels, nil
 }
 
-func (r *Registry) Update(ctx context.Context, id uuid.UUID, req UpdateChannelRequest) error {
+// UpdateByUser updates a channel only if owned by the given user.
+func (r *Registry) UpdateByUser(ctx context.Context, id, userID uuid.UUID, req UpdateChannelRequest) error {
 	setClauses := []string{"updated_at = NOW()"}
 	args := []interface{}{}
 	argIdx := 1
@@ -96,9 +107,9 @@ func (r *Registry) Update(ctx context.Context, id uuid.UUID, req UpdateChannelRe
 		return nil
 	}
 
-	query := fmt.Sprintf("UPDATE channels SET %s WHERE id = $%d",
-		strings.Join(setClauses, ", "), argIdx)
-	args = append(args, id)
+	query := fmt.Sprintf("UPDATE channels SET %s WHERE id = $%d AND user_id = $%d",
+		strings.Join(setClauses, ", "), argIdx, argIdx+1)
+	args = append(args, id, userID)
 
 	result, err := r.db.ExecContext(ctx, query, args...)
 	if err != nil {
@@ -114,8 +125,9 @@ func (r *Registry) Update(ctx context.Context, id uuid.UUID, req UpdateChannelRe
 	return nil
 }
 
-func (r *Registry) Delete(ctx context.Context, id uuid.UUID) error {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM channels WHERE id = $1`, id)
+// DeleteByUser deletes a channel only if owned by the given user.
+func (r *Registry) DeleteByUser(ctx context.Context, id, userID uuid.UUID) error {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM channels WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
 		return err
 	}

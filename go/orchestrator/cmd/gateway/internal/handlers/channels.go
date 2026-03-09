@@ -11,10 +11,9 @@ import (
 )
 
 var validChannelTypes = map[string]bool{
-	"slack":  true,
-	"line":   true,
-	"teams":  true,
-	"wechat": true,
+	"slack": true,
+	"line":  true,
+	// "teams" and "wechat" are not yet implemented — block creation until ready.
 }
 
 type ChannelHandler struct {
@@ -113,7 +112,7 @@ func (h *ChannelHandler) List(w http.ResponseWriter, r *http.Request) {
 
 // Get handles GET /api/v1/channels/{id}
 func (h *ChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
-	_, ok := r.Context().Value(auth.UserContextKey).(*auth.UserContext)
+	userCtx, ok := r.Context().Value(auth.UserContextKey).(*auth.UserContext)
 	if !ok {
 		h.sendError(w, "Unauthorized", http.StatusUnauthorized)
 		return
@@ -130,7 +129,7 @@ func (h *ChannelHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ch, err := h.registry.Get(r.Context(), id)
+	ch, err := h.registry.GetByUser(r.Context(), id, userCtx.UserID)
 	if err != nil {
 		h.sendError(w, "Channel not found", http.StatusNotFound)
 		return
@@ -166,7 +165,7 @@ func (h *ChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.registry.Update(r.Context(), id, req); err != nil {
+	if err := h.registry.UpdateByUser(r.Context(), id, userCtx.UserID, req); err != nil {
 		h.logger.Error("Failed to update channel", zap.Error(err))
 		h.sendError(w, "Failed to update channel", http.StatusInternalServerError)
 		return
@@ -177,7 +176,7 @@ func (h *ChannelHandler) Update(w http.ResponseWriter, r *http.Request) {
 		zap.String("user_id", userCtx.UserID.String()),
 	)
 
-	updated, err := h.registry.Get(r.Context(), id)
+	updated, err := h.registry.GetByUser(r.Context(), id, userCtx.UserID)
 	if err != nil {
 		h.sendError(w, "Failed to retrieve updated channel", http.StatusInternalServerError)
 		return
@@ -206,7 +205,7 @@ func (h *ChannelHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.registry.Delete(r.Context(), id); err != nil {
+	if err := h.registry.DeleteByUser(r.Context(), id, userCtx.UserID); err != nil {
 		h.logger.Error("Failed to delete channel", zap.Error(err))
 		h.sendError(w, "Failed to delete channel", http.StatusInternalServerError)
 		return

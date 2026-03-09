@@ -89,8 +89,12 @@ func (ih *InboundHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 		ThreadID:    msg.ThreadID,
 	}
 
-	// OSS is single-tenant; pass empty string for tenantID.
-	if err := ih.hub.Dispatch(r.Context(), "", userID, *msg, claimMeta); err != nil {
+	// Dispatch uses "tenant:user" as index key. OSS has no tenant concept,
+	// but daemon registration uses userCtx.TenantID.String() (which may be
+	// uuid.Nil "00000000-..."). Use the same empty-UUID string here so the
+	// index keys match.
+	tenantKey := "00000000-0000-0000-0000-000000000000"
+	if err := ih.hub.Dispatch(r.Context(), tenantKey, userID, *msg, claimMeta); err != nil {
 		if err == daemon.ErrNoDaemonConnected {
 			ih.logger.Warn("no daemon connected for webhook",
 				zap.String("channel_id", channelID.String()),
