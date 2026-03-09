@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Shannon LLM Service",
     description="LLM integration service for Shannon platform",
-    version="0.1.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 

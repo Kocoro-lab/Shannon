@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-09
+
+### Added
+- Swarm V2 — Lead-orchestrated multi-agent system with parallel agent loops
+- Channels system — Slack and LINE webhook integration (CRUD + inbound webhooks)
+- Daemon WebSocket system — Redis-backed WS hub for CLI connectivity
+- SearchAPI.io as web search provider
+- Tool execution API (direct tool invocation without full orchestration)
+- Scheduled tasks with Temporal Schedule API (cron-based recurring execution)
+- Session workspaces with WASI-sandboxed file operations
+- User memory extraction and persistence across sessions
+- Synthesis templates for swarm, domain analysis, and research output customization
+- Workflow templates (8 example YAML workflows)
+- Desktop: radar canvas with Lead pulse and swarm agent colors
+- Research workflow tiered model architecture (50-70% cost reduction)
+
+### Fixed
+- Swarm AgentLoop tool tokens not accumulated into metadata totals
+- Streaming manager send-to-closed-channel panic during shutdown
+- Budget idempotency RLock/Lock TOCTOU race allowing duplicate token recording
+- Lead HTTP timeout exceeding Temporal activity timeout
+- Missing metadata on synthesis failure return path
+- Leaked timer futures inflating Temporal workflow history
+- Ignored workflow.Sleep error delaying cancellation
+- CircuitBreaker data race and json.Marshal error handling
+- Research model tier and agent output format
+- Desktop workspace panel not resetting on session switch
+
+### Changed
+- Release compose: aligned timeout defaults with dev environment
+- Release compose: added shannon-users volume and user memory env vars
+- Install script: added all synthesis and workflow templates
+- Regenerated proto files (SessionContext.user_id, ExecuteTaskResponse.metadata)
+
 ## [0.2.0] - 2026-02-13
 
 ### Added
@@ -129,5 +163,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Desktop**: Next.js, Tauri 2, React
 - **Protocols**: gRPC, HTTP/2, Server-Sent Events
 
+[0.3.0]: https://github.com/Kocoro-lab/Shannon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Kocoro-lab/Shannon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Kocoro-lab/Shannon/releases/tag/v0.1.0
