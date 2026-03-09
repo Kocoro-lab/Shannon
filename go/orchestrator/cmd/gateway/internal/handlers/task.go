@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
@@ -57,37 +58,62 @@ type ResearchStrategiesConfig struct {
 	} `yaml:"strategies"`
 }
 
-// Cached research strategies configuration
-var (
-	researchStrategiesOnce   sync.Once
-	researchStrategiesCached *ResearchStrategiesConfig
-	researchStrategiesErr    error
-)
+// researchStrategiesPtr holds the latest parsed config, atomically swapped by
+// a background goroutine every 30 seconds. Readers call loadResearchStrategies()
+// which is a simple atomic load — no lock, no I/O on the hot path.
+var researchStrategiesPtr atomic.Pointer[ResearchStrategiesConfig]
 
-// loadResearchStrategies loads presets from standard locations
-func loadResearchStrategies() (*ResearchStrategiesConfig, error) {
-	researchStrategiesOnce.Do(func() {
-		candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
-		for _, p := range candidates {
-			if _, statErr := os.Stat(p); statErr == nil {
-				data, rerr := os.ReadFile(p)
-				if rerr != nil {
-					researchStrategiesErr = rerr
-					return
-				}
-				var tmp ResearchStrategiesConfig
-				if yerr := yaml.Unmarshal(data, &tmp); yerr != nil {
-					researchStrategiesErr = yerr
-					return
-				}
-				researchStrategiesCached = &tmp
-				researchStrategiesErr = nil
-				return
+func init() {
+	// Eagerly load once at startup so the first request is never empty.
+	if cfg := readResearchStrategiesFromDisk(); cfg != nil {
+		researchStrategiesPtr.Store(cfg)
+	} else {
+		log.Printf("[warn] research_strategies.yaml not found at startup; strategy presets disabled")
+	}
+
+	// Background reloader — picks up YAML changes without Gateway restart.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if cfg := readResearchStrategiesFromDisk(); cfg != nil {
+				researchStrategiesPtr.Store(cfg)
 			}
 		}
-		researchStrategiesErr = fmt.Errorf("research_strategies.yaml not found")
-	})
-	return researchStrategiesCached, researchStrategiesErr
+	}()
+}
+
+// readResearchStrategiesFromDisk tries the standard candidate paths and returns
+// the parsed config, or nil on any error.
+// NOTE: Uses stdlib log (not zap) because this runs from init() before zap is configured.
+func readResearchStrategiesFromDisk() *ResearchStrategiesConfig {
+	candidates := []string{"config/research_strategies.yaml", "/app/config/research_strategies.yaml"}
+	for _, p := range candidates {
+		if _, statErr := os.Stat(p); statErr != nil {
+			continue
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[warn] failed to read %s: %v", p, err)
+			continue
+		}
+		var cfg ResearchStrategiesConfig
+		if err := yaml.Unmarshal(data, &cfg); err != nil {
+			log.Printf("[warn] failed to parse %s: %v", p, err)
+			continue
+		}
+		return &cfg
+	}
+	return nil
+}
+
+// loadResearchStrategies returns the latest cached config (lock-free).
+func loadResearchStrategies() (*ResearchStrategiesConfig, error) {
+	cfg := researchStrategiesPtr.Load()
+	if cfg == nil {
+		return nil, fmt.Errorf("research_strategies.yaml not loaded")
+	}
+	return cfg, nil
 }
 
 // applyStrategyPreset seeds ctxMap with preset defaults when absent
