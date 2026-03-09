@@ -115,9 +115,10 @@ func LeadDecision(ctx context.Context, in LeadDecisionInput) (LeadDecisionResult
 		return LeadDecisionResult{}, fmt.Errorf("failed to marshal lead decision input: %w", err)
 	}
 
-	// Default 120s to accommodate Anthropic structured output grammar compilation
-	// on first request (~30-90s). Subsequent requests use cached grammar (<3s).
-	timeoutSec := 120
+	// Default 85s, safely under the 90s Temporal StartToCloseTimeout for lead activities.
+	// Accommodates Anthropic structured output grammar compilation on first request (~30-90s).
+	// Subsequent requests use cached grammar (<3s).
+	timeoutSec := 85
 	if v := os.Getenv("LEAD_DECISION_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			timeoutSec = n

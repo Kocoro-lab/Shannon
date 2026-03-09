@@ -45,18 +45,20 @@ type subscription struct {
 //
 // Thread-safety: All methods are goroutine-safe.
 type Manager struct {
-	mu          sync.RWMutex
-	redis       *redis.Client
-	dbClient    *db.Client
-	persistCh   chan db.EventLog
-	batchSize   int
-	flushEvery  time.Duration
-	subscribers map[string]map[chan Event]*subscription
-	capacity    int
-	logger      *zap.Logger
-	shutdownCh  chan struct{}
-	wg          sync.WaitGroup
-	persistWg   sync.WaitGroup
+	mu            sync.RWMutex
+	redis         *redis.Client
+	dbClient      *db.Client
+	persistCh     chan db.EventLog
+	persistClosed bool
+	persistMu     sync.Mutex
+	batchSize     int
+	flushEvery    time.Duration
+	subscribers   map[string]map[chan Event]*subscription
+	capacity      int
+	logger        *zap.Logger
+	shutdownCh    chan struct{}
+	wg            sync.WaitGroup
+	persistWg     sync.WaitGroup
 }
 
 var (
@@ -295,25 +297,19 @@ func (m *Manager) streamReaderFrom(ctx context.Context, workflowID string, ch ch
 
 				// Best-effort DB persistence for events from external publishers (e.g., gateway).
 				// Events published via Publish() are already enqueued; the DB dedup index prevents duplicates.
-				if m.dbClient != nil && m.persistCh != nil && shouldPersistEvent(event.Type) {
-					el := db.EventLog{
-						WorkflowID: event.WorkflowID,
-						Type:       event.Type,
-						AgentID:    event.AgentID,
-						Message:    sanitizeEventMessage(event.Message),
-						Timestamp:  event.Timestamp,
-						Seq:        event.Seq,
-						StreamID:   event.StreamID,
-					}
-					if event.Payload != nil {
-						el.Payload = db.JSONB(sanitizeEventPayload(event.Payload))
-					}
-					select {
-					case m.persistCh <- el:
-					default:
-						// Channel full; event may be missing from DB but still delivered via SSE
-					}
+				el := db.EventLog{
+					WorkflowID: event.WorkflowID,
+					Type:       event.Type,
+					AgentID:    event.AgentID,
+					Message:    sanitizeEventMessage(event.Message),
+					Timestamp:  event.Timestamp,
+					Seq:        event.Seq,
+					StreamID:   event.StreamID,
 				}
+				if event.Payload != nil {
+					el.Payload = db.JSONB(sanitizeEventPayload(event.Payload))
+				}
+				m.enqueuePersistEvent(el)
 
 				// Send to channel (non-blocking to avoid deadlock)
 				select {
@@ -467,36 +463,20 @@ func (m *Manager) Publish(workflowID string, evt Event) {
 
 	// Persist to DB if configured (best-effort, non-blocking)
 	// Only persist important events, not streaming deltas
-	if m.dbClient != nil && m.persistCh != nil && shouldPersistEvent(evt.Type) {
-		// Non-blocking enqueue; drop if full (we never block streaming)
-		el := db.EventLog{
-			WorkflowID: evt.WorkflowID,
-			Type:       evt.Type,
-			AgentID:    evt.AgentID,
-			Message:    sanitizeUTF8(evt.Message),
-			Timestamp:  evt.Timestamp,
-			Seq:        evt.Seq,
-			StreamID:   evt.StreamID,
-		}
-		if evt.Payload != nil {
-			// Sanitize payload for persistence (remove large base64 data)
-			el.Payload = db.JSONB(sanitizePayloadForPersistence(evt.Type, evt.Payload))
-		}
-		select {
-		case m.persistCh <- el:
-		default:
-			// Escalate log severity for critical events
-			if isCriticalEvent(evt.Type) {
-				m.logger.Error("CRITICAL: eventlog batcher full; dropping important event",
-					zap.String("workflow_id", evt.WorkflowID),
-					zap.String("type", evt.Type))
-			} else {
-				m.logger.Warn("eventlog batcher full; dropping event",
-					zap.String("workflow_id", evt.WorkflowID),
-					zap.String("type", evt.Type))
-			}
-		}
+	el := db.EventLog{
+		WorkflowID: evt.WorkflowID,
+		Type:       evt.Type,
+		AgentID:    evt.AgentID,
+		Message:    sanitizeUTF8(evt.Message),
+		Timestamp:  evt.Timestamp,
+		Seq:        evt.Seq,
+		StreamID:   evt.StreamID,
 	}
+	if evt.Payload != nil {
+		// Sanitize payload for persistence (remove large base64 data)
+		el.Payload = db.JSONB(sanitizePayloadForPersistence(evt.Type, evt.Payload))
+	}
+	m.enqueuePersistEvent(el)
 
 	// Only publish to local subscribers if Redis is nil (in-memory mode)
 	// When Redis is available, the streamReader will deliver events
@@ -733,6 +713,35 @@ func sanitizeUTF8(s string) string {
 		s = s[size:]
 	}
 	return b.String()
+}
+
+// enqueuePersistEvent enqueues an event for DB persistence without blocking and without panicking on shutdown.
+func (m *Manager) enqueuePersistEvent(event db.EventLog) {
+	if !shouldPersistEvent(event.Type) {
+		return
+	}
+
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+
+	if m.dbClient == nil || m.persistCh == nil || m.persistClosed {
+		return
+	}
+
+	select {
+	case m.persistCh <- event:
+	default:
+		// Channel full; event may be missing from DB but still delivered via SSE.
+		if isCriticalEvent(event.Type) {
+			m.logger.Error("CRITICAL: eventlog batcher full; dropping important event",
+				zap.String("workflow_id", event.WorkflowID),
+				zap.String("type", event.Type))
+		} else {
+			m.logger.Warn("eventlog batcher full; dropping event",
+				zap.String("workflow_id", event.WorkflowID),
+				zap.String("type", event.Type))
+		}
+	}
 }
 
 // persistWorker batches event logs and writes them asynchronously.
@@ -986,7 +995,12 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 	// Close persistence channel and wait for flush
 	if m.persistCh != nil {
-		close(m.persistCh)
+		m.persistMu.Lock()
+		if !m.persistClosed {
+			m.persistClosed = true
+			close(m.persistCh)
+		}
+		m.persistMu.Unlock()
 
 		// Wait for persist worker to exit
 		persistDone := make(chan struct{})

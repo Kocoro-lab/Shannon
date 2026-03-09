@@ -975,6 +975,13 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 						logger.Info("L1 fetch cache write", "agent_id", input.AgentID, "url", u, "chars", len(fmt.Sprintf("%v", toolRes.Response)))
 					}
 				}
+
+				// Accumulate tool execution tokens into local totals (Bug #1 fix)
+				totalTokens += toolRes.TokensUsed
+				totalInput += toolRes.InputTokens
+				totalOutput += toolRes.OutputTokens
+				totalCacheRead += toolRes.CacheReadTokens
+				totalCacheCreation += toolRes.CacheCreationTokens
 			} else {
 				if isTransientError(toolErr) {
 					consecutiveTransientErrors++
@@ -989,7 +996,23 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 						"attempt", consecutiveTransientErrors,
 						"error", toolErr,
 					)
-					_ = workflow.Sleep(ctx, backoff)
+					if err := workflow.Sleep(ctx, backoff); err != nil {
+						return AgentLoopResult{
+							AgentID:             input.AgentID,
+							Role:                input.Role,
+							Response:            savedDoneResponse,
+							Success:             false,
+							Error:               fmt.Sprintf("cancelled during backoff: %v", err),
+							TokensUsed:          totalTokens,
+							InputTokens:         totalInput,
+							OutputTokens:        totalOutput,
+							CacheReadTokens:     totalCacheRead,
+							CacheCreationTokens: totalCacheCreation,
+							ModelUsed:           lastModel,
+							Provider:            lastProvider,
+							TeamKnowledge:       ft.Knowledge(),
+						}, nil
+					}
 					turnResult = fmt.Sprintf("transient error (will retry): %v", toolErr)
 				} else {
 					turnResult = fmt.Sprintf("tool error: %v", toolErr)
@@ -1410,6 +1433,13 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 							logger.Info("L1 fetch cache write", "agent_id", input.AgentID, "url", u, "chars", len(fmt.Sprintf("%v", toolRes.Response)))
 						}
 					}
+
+					// Accumulate tool execution tokens into local totals (Bug #1 fix)
+					totalTokens += toolRes.TokensUsed
+					totalInput += toolRes.InputTokens
+					totalOutput += toolRes.OutputTokens
+					totalCacheRead += toolRes.CacheReadTokens
+					totalCacheCreation += toolRes.CacheCreationTokens
 				} else {
 					if isTransientError(toolErr) {
 						consecutiveTransientErrors++
@@ -1424,7 +1454,23 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 							"attempt", consecutiveTransientErrors,
 							"error", toolErr,
 						)
-						_ = workflow.Sleep(ctx, backoff)
+						if err := workflow.Sleep(ctx, backoff); err != nil {
+							return AgentLoopResult{
+								AgentID:             input.AgentID,
+								Role:                input.Role,
+								Response:            savedDoneResponse,
+								Success:             false,
+								Error:               fmt.Sprintf("cancelled during backoff: %v", err),
+								TokensUsed:          totalTokens,
+								InputTokens:         totalInput,
+								OutputTokens:        totalOutput,
+								CacheReadTokens:     totalCacheRead,
+								CacheCreationTokens: totalCacheCreation,
+								ModelUsed:           lastModel,
+								Provider:            lastProvider,
+								TeamKnowledge:       ft.Knowledge(),
+							}, nil
+						}
 						turnResult = fmt.Sprintf("transient error (will retry): %v", toolErr)
 					} else {
 						turnResult = fmt.Sprintf("tool error: %v", toolErr)
@@ -1974,8 +2020,12 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 		sel := workflow.NewSelector(ctx)
 
+		// Create cancellable timer context before handlers so closures can capture timerCancel
+		timerCtx, timerCancel := workflow.WithCancel(ctx)
+
 		// Agent idle notification — agent finished task and is waiting for reassignment
 		sel.AddReceive(agentIdleCh, func(ch workflow.ReceiveChannel, more bool) {
+			timerCancel() // cancel the checkpoint timer
 			var idleInfo map[string]interface{}
 			ch.Receive(ctx, &idleInfo)
 			agentID, _ := idleInfo["agent_id"].(string)
@@ -2088,6 +2138,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 		// Agent completion events
 		sel.AddReceive(completionCh, func(ch workflow.ReceiveChannel, more bool) {
+			timerCancel() // cancel the checkpoint timer
 			var result AgentLoopResult
 			ch.Receive(ctx, &result)
 			results[result.AgentID] = result
@@ -2161,8 +2212,10 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		})
 
 		// Checkpoint timer (wake Lead periodically even if no events)
-		sel.AddFuture(workflow.NewTimer(ctx, checkpointInterval), func(f workflow.Future) {
-			_ = f.Get(ctx, nil)
+		// Uses cancellable timerCtx declared above to prevent leaked timer futures
+		timerFuture := workflow.NewTimer(timerCtx, checkpointInterval)
+		sel.AddFuture(timerFuture, func(f workflow.Future) {
+			_ = f.Get(timerCtx, nil)
 			if !gotCompletion {
 				event = activities.LeadEvent{Type: "checkpoint"}
 			}
@@ -2170,6 +2223,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 		// HITL: human user sends a message to Lead mid-execution
 		sel.AddReceive(humanInputCh, func(ch workflow.ReceiveChannel, more bool) {
+			timerCancel() // cancel the checkpoint timer
 			var humanMsg map[string]string
 			ch.Receive(ctx, &humanMsg)
 			message := humanMsg["message"]
@@ -3266,6 +3320,7 @@ synthesis:
 			Success:      false,
 			ErrorMessage: fmt.Sprintf("Synthesis failed: %v", err),
 			TokensUsed:   totalTokensUsed,
+			Metadata:     buildSwarmMetadata(results),
 		}, err
 	}
 

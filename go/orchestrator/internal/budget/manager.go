@@ -304,11 +304,11 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 
 	// Check idempotency if key is provided
 	if usage.IdempotencyKey != "" {
-		bm.idempotencyMu.RLock()
+		bm.idempotencyMu.Lock()
 		if processedAt, exists := bm.processedUsage[usage.IdempotencyKey]; exists {
 			// Check if the key is still within TTL
 			if time.Since(processedAt) < bm.idempotencyTTL {
-				bm.idempotencyMu.RUnlock()
+				bm.idempotencyMu.Unlock()
 				bm.logger.Debug("Skipping duplicate usage record",
 					zap.String("idempotency_key", usage.IdempotencyKey),
 					zap.String("usage_id", usage.ID))
@@ -316,7 +316,8 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 			}
 			// Key has expired, will be re-processed
 		}
-		bm.idempotencyMu.RUnlock()
+		bm.processedUsage[usage.IdempotencyKey] = time.Now()
+		bm.idempotencyMu.Unlock()
 	}
 
 	usage.Timestamp = time.Now()
@@ -371,13 +372,8 @@ func (bm *BudgetManager) RecordUsage(ctx context.Context, usage *BudgetTokenUsag
 			usage.CacheReadTokens, usage.CacheCreationTokens, savingsUSD)
 	}
 
-	// Mark as processed for idempotency (only after successful storage)
+	// Start cleanup goroutine if needed (idempotency key was already marked above)
 	if usage.IdempotencyKey != "" {
-		bm.idempotencyMu.Lock()
-		bm.processedUsage[usage.IdempotencyKey] = time.Now()
-		bm.idempotencyMu.Unlock()
-
-		// Start cleanup goroutine if not already running
 		bm.startIdempotencyCleanup()
 	}
 
