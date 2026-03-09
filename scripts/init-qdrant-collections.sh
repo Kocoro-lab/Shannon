@@ -5,8 +5,7 @@
 # Usage:
 #   ./scripts/init-qdrant-collections.sh [qdrant-host] [port]
 #
-# Default: localhost:6333 (use with port-forward)
-# EKS example: kubectl -n shannon port-forward svc/qdrant 6333:6333
+# Default: localhost:6333
 
 set -e
 

@@ -11,6 +11,7 @@ volumes:
   postgres_data: {}
   qdrant_data: {}
   shannon-sessions: {}
+  shannon-users: {}
 
 services:
   temporal:
@@ -110,19 +111,20 @@ services:
       - METRICS_PORT=${AGENT_CORE_METRICS_PORT:-2113}
       - TOOL_PARALLELISM=${TOOL_PARALLELISM:-1}
       - ENFORCE_RATE_REDIS_URL=${ENFORCE_RATE_REDIS_URL:-}
-      - ENFORCE_TIMEOUT_SECONDS=${ENFORCE_TIMEOUT_SECONDS:-90}
+      - ENFORCE_TIMEOUT_SECONDS=${ENFORCE_TIMEOUT_SECONDS:-300}
       - ENFORCE_MAX_TOKENS=${ENFORCE_MAX_TOKENS:-32768}
       - ENFORCE_RATE_RPS=${ENFORCE_RATE_RPS:-20}
       - ENFORCE_CB_ERROR_THRESHOLD=${ENFORCE_CB_ERROR_THRESHOLD:-0.5}
       - ENFORCE_CB_WINDOW_SECONDS=${ENFORCE_CB_WINDOW_SECONDS:-30}
       - ENFORCE_CB_MIN_REQUESTS=${ENFORCE_CB_MIN_REQUESTS:-20}
       - LLM_SERVICE_URL=${LLM_SERVICE_URL:-http://llm-service:8000}
-      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-120}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-360}
       - PYTHON_WASI_WASM_PATH=/opt/wasm-interpreters/python-3.11.4.wasm
       - WASI_MEMORY_LIMIT_MB=${WASI_MEMORY_LIMIT_MB:-512}
       - WASI_TIMEOUT_SECONDS=${WASI_TIMEOUT_SECONDS:-60}
       - SHANNON_USE_WASI_SANDBOX=${SHANNON_USE_WASI_SANDBOX:-1}
       - SHANNON_SESSION_WORKSPACES_DIR=${SHANNON_SESSION_WORKSPACES_DIR:-/tmp/shannon-sessions}
+      - SHANNON_USER_MEMORY_DIR=${SHANNON_USER_MEMORY_DIR:-/tmp/shannon-users}
     depends_on:
       temporal:
         condition: service_started
@@ -140,6 +142,7 @@ services:
       - ./config:/app/config:ro
       - ./wasm-interpreters:/opt/wasm-interpreters:ro
       - shannon-sessions:/tmp/shannon-sessions
+      - shannon-users:/tmp/shannon-users
     networks: [shannon-net]
 
   orchestrator:
@@ -157,7 +160,7 @@ services:
       - MODELS_CONFIG_PATH=${MODELS_CONFIG_PATH:-/app/config/models.yaml}
       - METRICS_PORT=${ORCHESTRATOR_METRICS_PORT:-2112}
       - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-600}
-      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-30}
+      - DECOMPOSE_TIMEOUT_SECONDS=${DECOMPOSE_TIMEOUT_SECONDS:-90}
       - MCP_COST_TO_TOKENS=${MCP_COST_TO_TOKENS:-0}
       - PRIORITY_QUEUES=${PRIORITY_QUEUES:-}
       - ENABLE_TOOL_SELECTION=${ENABLE_TOOL_SELECTION:-1}
@@ -195,6 +198,8 @@ services:
       - TEMPLATES_PATH=${TEMPLATES_PATH:-/app/config/workflows/examples:/app/config/workflows/user}
       - SYNTHESIS_TEMPLATES_DIR=${SYNTHESIS_TEMPLATES_DIR:-/app/config/templates/synthesis}
       - JWT_SECRET=${JWT_SECRET:-development-only-secret-change-in-production}
+      - SHANNON_USER_MEMORY_DIR=${SHANNON_USER_MEMORY_DIR:-/tmp/shannon-users}
+      - USER_MEMORY_ENABLED=${USER_MEMORY_ENABLED:-1}
     depends_on:
       temporal:
         condition: service_started
@@ -213,6 +218,7 @@ services:
       retries: 5
     volumes:
       - ./config:/app/config:ro
+      - shannon-users:/tmp/shannon-users
     networks: [shannon-net]
 
   llm-service:
@@ -260,6 +266,8 @@ services:
       - GOOGLE_SEARCH_API_KEY=${GOOGLE_SEARCH_API_KEY}
       - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID:-}
       - SERPAPI_API_KEY=${SERPAPI_API_KEY:-}
+      - SERPER_API_KEY=${SERPER_API_KEY:-}
+      - SEARCHAPI_API_KEY=${SEARCHAPI_API_KEY:-}
       - BING_API_KEY=${BING_API_KEY:-}
       - EXA_API_KEY=${EXA_API_KEY}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}

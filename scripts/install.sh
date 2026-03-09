@@ -63,11 +63,38 @@ mkdir -p config/templates/synthesis
 curl -fsSL "${GITHUB_RAW}/config/features.yaml" -o config/features.yaml
 curl -fsSL "${GITHUB_RAW}/config/models.yaml" -o config/models.yaml
 curl -fsSL "${GITHUB_RAW}/config/research_strategies.yaml" -o config/research_strategies.yaml
-curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/_base.tmpl" -o config/templates/synthesis/_base.tmpl
-curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/normal_default.tmpl" -o config/templates/synthesis/normal_default.tmpl
-curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/research_comprehensive.tmpl" -o config/templates/synthesis/research_comprehensive.tmpl
-curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/research_concise.tmpl" -o config/templates/synthesis/research_concise.tmpl
+SYNTHESIS_TEMPLATES=(
+    "_base.tmpl"
+    "normal_default.tmpl"
+    "research_comprehensive.tmpl"
+    "research_concise.tmpl"
+    "research_with_facts.tmpl"
+    "domain_analysis_digest.tmpl"
+    "swarm_default.tmpl"
+    "test_bullet_summary.tmpl"
+)
+for tmpl in "${SYNTHESIS_TEMPLATES[@]}"; do
+    curl -fsSL "${GITHUB_RAW}/config/templates/synthesis/${tmpl}" -o "config/templates/synthesis/${tmpl}"
+done
 echo "✅ Downloaded config files"
+
+# Download workflow templates
+echo "⬇️  Downloading workflow templates..."
+mkdir -p config/workflows/examples config/workflows/user
+WORKFLOW_TEMPLATES=(
+    "complex_dag.yaml"
+    "market_analysis_playbook.yaml"
+    "market_analysis.yaml"
+    "parallel_dag_example.yaml"
+    "parallel_items_example.yaml"
+    "research_summary_enterprise.yaml"
+    "research_summary.yaml"
+    "simple_analysis.yaml"
+)
+for wf in "${WORKFLOW_TEMPLATES[@]}"; do
+    curl -fsSL "${GITHUB_RAW}/config/workflows/examples/${wf}" -o "config/workflows/examples/${wf}"
+done
+echo "✅ Downloaded workflow templates"
 
 # Download skills config
 echo "⬇️  Downloading skills configuration..."
