@@ -77,7 +77,6 @@ export function RadarBridge() {
       tickRef.current = 0;
       initializedRef.current = status === "running";
     }
-    prevStatusRef.current = status;
   }, [status]);
 
   // Sync swarm agent colors to radar store
@@ -97,7 +96,7 @@ export function RadarBridge() {
   useEffect(() => {
     const wasRunning = prevStatusRef.current === "running";
     const isNowComplete = status === "completed" || status === "idle";
-    
+
     if (wasRunning && isNowComplete) {
       // Accelerate all in-progress flights to center
       const state = radarStore.getState();
@@ -108,7 +107,7 @@ export function RadarBridge() {
             tick_id: tick,
             items: [{ id: itemId, eta_ms: 300, estimate_ms: 300 }],
           });
-          
+
           // Remove after animation completes
           const handle = window.setTimeout(() => {
             const tick2 = ++tickRef.current;
@@ -119,13 +118,14 @@ export function RadarBridge() {
             });
             flightStartTimes.current.delete(itemId);
           }, 500);
-          
+
           const prev = timeoutRefs.current.get(itemId);
           if (prev) window.clearTimeout(prev);
           timeoutRefs.current.set(itemId, handle);
         }
       }
     }
+    prevStatusRef.current = status;
   }, [status]);
 
   // Process events
@@ -149,15 +149,52 @@ export function RadarBridge() {
     // Events that complete a flight (agent finished this task)
     const doneLike = new Set(["AGENT_COMPLETED", "TOOL_COMPLETED"]);
 
-    for (const ev of events) {
+    for (const ev of (events || [])) {
+      // LEAD_DECISION: trigger gold pulse at radar center (no flight spawned)
+      if (ev.type === "LEAD_DECISION") {
+        const key = ev.stream_id || `${ev.workflow_id}::${ev.seq}::LEAD_DECISION`;
+        if (processedRef.current.has(key)) continue;
+        processedRef.current.add(key);
+        const tick = ++tickRef.current;
+        radarStore.getState().applyTick({
+          tick_id: tick,
+          lead_pulse: true,
+        });
+        continue;
+      }
+
+      // TEAM_RECRUITED activates Lead in radar (gold center ring)
+      if (ev.type === "TEAM_RECRUITED") {
+        const key = ev.stream_id || `${ev.workflow_id}::${ev.seq}::TEAM_RECRUITED`;
+        if (!processedRef.current.has(key)) {
+          processedRef.current.add(key);
+          const tick = ++tickRef.current;
+          radarStore.getState().applyTick({
+            tick_id: tick,
+            lead_pulse: true,
+          });
+        }
+        continue;
+      }
+
+      // Skip non-agent metadata events entirely — they are not agent activity
+      if (RADAR_IGNORE_EVENTS.has(ev.type)) continue;
+
       const workflowId = ev.workflow_id || "unknown";
-      const agentId = ev.agent_id || `agent-${ev.seq}`;
-      
+      // Better fallback for agent ID - use tool name for tool events, skip generic fallback
+      let agentId = ev.agent_id;
+      if (!agentId) {
+        // For tool events, use the tool name if available
+        if ((ev.type === "TOOL_INVOKED" || ev.type === "TOOL_OBSERVATION") && ev.payload?.tool) {
+          agentId = `tool-${ev.payload.tool}`;
+        } else {
+          // Skip events without agent_id to avoid generic "agent-XXXX" names
+          continue;
+        }
+      }
+
       // Skip internal system agents - only show user-facing agent activity
       if (isInternalAgent(agentId)) continue;
-
-      // Skip metadata/management events that don't represent agent activity
-      if (RADAR_IGNORE_EVENTS.has(ev.type)) continue;
 
       // One flight per agent - reuse same ID for all events from the same agent
       const id = `${workflowId}::${agentId}`;
@@ -173,12 +210,12 @@ export function RadarBridge() {
       // Active events: spawn new flight OR keep existing one flying
       if (activeLike.has(ev.type)) {
         const existing = radarStore.getState().items[id];
-        
+
         if (!existing) {
           // NEW flight - spawn at edge with CURRENT time (not historical event time)
           const tick = ++tickRef.current;
           flightStartTimes.current.set(id, now);
-          
+
           radarStore.getState().applyTick({
             tick_id: tick,
             items: [
@@ -200,25 +237,37 @@ export function RadarBridge() {
             ],
             agents: [{ id, work_item_id: id, x: 0, y: 0, v: 0.002, curve_phase: 0 }],
           });
+        } else {
+          // Agent still active — extend estimate so airplane doesn't arrive at center prematurely.
+          // Keep progress capped at ~70%; only AGENT_COMPLETED triggers the final approach.
+          const startTime = flightStartTimes.current.get(id) || existing.started_at || now;
+          const elapsed = now - startTime;
+          const currentEstimate = existing.estimate_ms || DEFAULT_ESTIMATE_MS;
+          const minEstimate = elapsed / 0.7; // keeps progress <= 70%
+          if (minEstimate > currentEstimate) {
+            const tick = ++tickRef.current;
+            radarStore.getState().applyTick({
+              tick_id: tick,
+              items: [{ id, estimate_ms: minEstimate }],
+            });
+          }
         }
-        // If existing, do nothing - let it keep flying based on original started_at
         continue;
       }
 
       // Completion events: let flight reach center naturally, then pulse and remove
       if (doneLike.has(ev.type)) {
         const existing = radarStore.getState().items[id];
-        
+
         if (existing && existing.status === "in_progress") {
           // Calculate how far the agent has flown
           const startTime = flightStartTimes.current.get(id) || existing.started_at || now;
           const elapsed = now - startTime;
           const progress = Math.min(1, elapsed / DEFAULT_ESTIMATE_MS);
-          
-          // If agent hasn't reached center yet, give it time to arrive
-          // Set eta_ms based on remaining distance, minimum 500ms for visual
-          const remainingMs = Math.max(500, (1 - progress) * DEFAULT_ESTIMATE_MS * 0.3);
-          
+
+          // Accelerate to center: cap at 2s so completed agents don't linger
+          const remainingMs = Math.min(2000, Math.max(500, (1 - progress) * DEFAULT_ESTIMATE_MS * 0.3));
+
           const tick1 = ++tickRef.current;
           radarStore.getState().applyTick({
             tick_id: tick1,
@@ -262,7 +311,7 @@ export function RadarBridge() {
               tick_id: tick,
               items: [{ id: itemId, eta_ms: 300, estimate_ms: 300 }],
             });
-            
+
             // Remove after animation
             const handle = window.setTimeout(() => {
               const tick2 = ++tickRef.current;
@@ -296,7 +345,7 @@ export function RadarBridge() {
       if (!existing) {
         const tick = ++tickRef.current;
         flightStartTimes.current.set(id, now);
-        
+
         radarStore.getState().applyTick({
           tick_id: tick,
           items: [
@@ -324,9 +373,10 @@ export function RadarBridge() {
 
   // Cleanup on unmount
   useEffect(() => {
+    const currentTimeouts = timeoutRefs.current;
     return () => {
-      for (const t of timeoutRefs.current.values()) window.clearTimeout(t);
-      timeoutRefs.current.clear();
+      for (const t of currentTimeouts.values()) window.clearTimeout(t);
+      currentTimeouts.clear();
     };
   }, []);
 
