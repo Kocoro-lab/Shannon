@@ -516,7 +516,7 @@ function BlobImage({ inline, blobRef, alt, className, onClick, mediaType = "imag
         }
 
         // If we have a blob reference, fetch it
-        if (blobRef?.redis_key) {
+        if (blobRef?.blob_id) {
             setLoading(true);
             setError(null);
 
@@ -584,7 +584,7 @@ function useBlobImage(inline?: string | null, blobRef?: BlobReference): {
         }
 
         // If we have a blob reference, fetch it
-        if (blobRef?.redis_key) {
+        if (blobRef?.blob_id) {
             setLoading(true);
             setError(null);
 

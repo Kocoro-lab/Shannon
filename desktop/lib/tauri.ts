@@ -4,10 +4,11 @@ export function isTauri(): boolean {
     return false;
 }
 
-export async function saveFileDialog(_options?: {
-    defaultPath?: string;
-    filters?: { name: string; extensions: string[] }[];
-}): Promise<string | null> {
+export async function saveFileDialog(
+    _contentOrOptions?: any,
+    _fileName?: string,
+    _filters?: { name: string; extensions: string[] }[]
+): Promise<string | null> {
     return null;
 }
 
