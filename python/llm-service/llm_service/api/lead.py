@@ -1,5 +1,6 @@
 """Lead Agent decision endpoint for Swarm V2."""
 
+import asyncio
 import json as json_module
 import logging
 from typing import Any, Dict, List, Optional
@@ -392,14 +393,19 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
             {"role": "user", "content": user_prompt},
         ]
 
-        # Try structured output first; fall back to prompt-based on grammar compilation timeout
+        # Try structured output first; fall back to prompt-based on failure or timeout.
+        # Anthropic structured output can hang indefinitely (API accepts connection
+        # but never responds), so we enforce a 60s timeout to ensure fallback fires.
         try:
-            result = await providers.generate_completion(
-                messages=lead_messages,
-                tier=ModelTier.MEDIUM,
-                temperature=0.3,
-                max_tokens=lead_max_tokens,
-                output_config=LEAD_DECISION_SCHEMA,
+            result = await asyncio.wait_for(
+                providers.generate_completion(
+                    messages=lead_messages,
+                    tier=ModelTier.MEDIUM,
+                    temperature=0.3,
+                    max_tokens=lead_max_tokens,
+                    output_config=LEAD_DECISION_SCHEMA,
+                ),
+                timeout=60,
             )
             logger.info("Lead decide: structured output succeeded")
         except Exception as e:
