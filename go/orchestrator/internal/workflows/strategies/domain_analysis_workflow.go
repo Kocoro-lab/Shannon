@@ -754,7 +754,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				Query:            digestQuery,
 				AgentResults:     digestAgentResults,
 				Context:          digestContext,
-				ParentWorkflowID: input.ParentWorkflowID,
+				ParentWorkflowID: "", // Empty: suppress SSE events (domain analysis is a child workflow, not the final answer)
 			}).Get(ctx, &digest)
 		if err != nil {
 			logger.Warn("Domain analysis synthesis failed", "error", err)
