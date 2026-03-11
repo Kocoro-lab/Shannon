@@ -1513,7 +1513,32 @@ class WebFetchTool(Tool):
         max_length = kwargs.get("max_length", 10000)
         extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
 
-        internal_max_length = EXTRACTION_INTERNAL_MAX
+        # Skip ALL LLM extraction in research mode (issue #43): OODA loop does many
+        # fast fetches; extraction adds ~40-60s latency per call and 40%+ of total cost.
+        # OODA's Observe/Orient steps handle raw content analysis — small-model
+        # pre-filtering undermines the agent's own judgment loop.
+        # extract_prompt from LLM is also ignored in research mode.
+        _research_mode = (
+            isinstance(session_context, dict)
+            and bool(session_context.get("research_mode"))
+        )
+
+        if _research_mode:
+            internal_max_length = max_length
+        else:
+            internal_max_length = EXTRACTION_INTERNAL_MAX
+
+        async def _maybe_extract(result: ToolResult) -> ToolResult:
+            """Research mode: hard-truncate. Otherwise: LLM extraction."""
+            if _research_mode:
+                if result.success and result.output:
+                    content = result.output.get("content", "")
+                    if len(content) > max_length:
+                        result.output["content"] = content[:max_length]
+                        result.output["truncated"] = True
+                        result.output["char_count"] = len(result.output["content"])
+                return result
+            return await apply_extraction(result, extract_prompt, max_length)
 
         # DEPRECATED: These parameters are ignored in v3.0.0
         # Log warning if caller uses deprecated params
@@ -1657,9 +1682,8 @@ class WebFetchTool(Tool):
                         else:
                             attempts[-1]["status"] = "success"
                             firecrawl_result = ToolResult(success=True, output=result_data, metadata={"fetch_method": "firecrawl"})
-                            return await apply_extraction(
+                            return await _maybe_extract(
                                 _attach_metadata(firecrawl_result, "firecrawl"),
-                                extract_prompt, max_length,
                             )
                     except Exception as e:
                         attempts[-1]["status"] = "failed"
@@ -1674,9 +1698,8 @@ class WebFetchTool(Tool):
                     attempts[-1]["status"] = "success" if result.success else "failed"
                     if not result.success:
                         attempts[-1]["error"] = result.error
-                    return await apply_extraction(
+                    return await _maybe_extract(
                         _attach_metadata(result, "exa"),
-                        extract_prompt, max_length,
                     )
                 else:
                     logger.warning("Exa requested but not configured, falling back to Python")
@@ -1689,9 +1712,8 @@ class WebFetchTool(Tool):
             attempts[-1]["status"] = "success" if result.success else "failed"
             if not result.success:
                 attempts[-1]["error"] = result.error
-            return await apply_extraction(
+            return await _maybe_extract(
                 _attach_metadata(result, "python"),
-                extract_prompt, max_length,
             )
 
         except Exception as e:
@@ -1751,6 +1773,12 @@ class WebFetchTool(Tool):
         total_chars_cap = kwargs.get("total_chars_cap", 40000)
         extract_prompt = kwargs.get("extract_prompt")
 
+        # Skip ALL LLM extraction in research mode — same rationale as single-URL path.
+        _research_mode = (
+            isinstance(session_context, dict)
+            and bool(session_context.get("research_mode"))
+        )
+
         # Validate URLs list
         if not urls or not isinstance(urls, list):
             return ToolResult(
@@ -1786,7 +1814,10 @@ class WebFetchTool(Tool):
 
         # Inflate per-URL budget so providers return full content for extraction
         original_per_url_budget = max(max_length // len(valid_urls), 2000)
-        per_url_budget = EXTRACTION_INTERNAL_MAX
+        if _research_mode:
+            per_url_budget = original_per_url_budget
+        else:
+            per_url_budget = EXTRACTION_INTERNAL_MAX
 
         # Concurrency control
         semaphore = asyncio.Semaphore(concurrency)
@@ -1926,10 +1957,21 @@ class WebFetchTool(Tool):
         batch_extraction_cost = 0.0
         batch_extraction_model = None
 
+        # Research mode: hard-truncate instead of LLM extraction (same as single-URL path)
+        if _research_mode:
+            for page in pages:
+                if page.get("success"):
+                    content = page.get("content", "")
+                    if len(content) > original_per_url_budget:
+                        page["content"] = content[:original_per_url_budget]
+                        page["truncated"] = True
+                        page["char_count"] = len(page["content"])
+
         pages_needing_extraction = []
-        for idx, page in enumerate(pages):
-            if page.get("success") and len(page.get("content", "")) > original_per_url_budget:
-                pages_needing_extraction.append((idx, page))
+        if not _research_mode:
+            for idx, page in enumerate(pages):
+                if page.get("success") and len(page.get("content", "")) > original_per_url_budget:
+                    pages_needing_extraction.append((idx, page))
 
         if len(pages_needing_extraction) >= 2:
             # Batch extraction: single LLM call for all over-budget pages

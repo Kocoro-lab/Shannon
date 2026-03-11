@@ -383,9 +383,9 @@ class TestExtractionLengthClamping:
 
 # --- Tests for research_mode no longer skipping extraction ---
 
-class TestResearchModeNoLongerSkipsExtraction:
-    """research_mode no longer bypasses extraction (reverted in favor of batch extraction).
-    Extraction always runs via apply_extraction (single URL) or consolidated batch extraction."""
+class TestResearchModeSkipsExtraction:
+    """research_mode bypasses LLM extraction — OODA loop handles raw content analysis.
+    Explicit extract_prompt still triggers extraction regardless of mode."""
 
     @pytest.fixture
     def tool(self):
@@ -417,8 +417,8 @@ class TestResearchModeNoLongerSkipsExtraction:
         return mock_fetch
 
     @pytest.mark.asyncio
-    async def test_single_url_extracts_even_with_research_mode(self, tool):
-        """research_mode=True => extraction still runs (no longer skipped)."""
+    async def test_single_url_skips_extraction_in_research_mode(self, tool):
+        """research_mode=True => extraction skipped, hard-truncated instead."""
         long_content = "x" * 20000
 
         manager = _mock_llm_manager()
@@ -430,10 +430,10 @@ class TestResearchModeNoLongerSkipsExtraction:
                 max_length=10000,
             )
 
-        # Extraction should run even with research_mode
+        # Extraction should NOT run — research mode hard-truncates
         assert result.success
-        assert result.output.get("extracted") is True
-        manager.complete.assert_called_once()
+        assert result.output.get("extracted") is not True
+        manager.complete.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_single_url_extracts_without_research_mode(self, tool):
@@ -454,8 +454,8 @@ class TestResearchModeNoLongerSkipsExtraction:
         manager.complete.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_batch_extracts_even_with_research_mode(self):
-        """Batch mode: research_mode=True => batch extraction still runs."""
+    async def test_batch_skips_extraction_in_research_mode(self):
+        """Batch mode: research_mode=True => batch extraction skipped, hard-truncated."""
         tool = WebFetchTool()
         long_content = "x" * 20000
 
@@ -477,11 +477,6 @@ class TestResearchModeNoLongerSkipsExtraction:
                 "llm_service.tools.builtin.web_fetch.extract_batch_with_llm",
                 new_callable=AsyncMock,
             ) as mock_batch_extract:
-                mock_batch_extract.return_value = (
-                    {0: "Extracted 1", 1: "Extracted 2"},
-                    1000, 0.002, "claude-haiku-4-5-20251001",
-                )
-
                 result = await tool._fetch_batch(
                     ["https://example.com/1", "https://example.com/2"],
                     session_context={"research_mode": True},
@@ -489,13 +484,13 @@ class TestResearchModeNoLongerSkipsExtraction:
                     total_chars_cap=200000,
                 )
 
-                # Batch extraction SHOULD be called (not skipped)
-                mock_batch_extract.assert_called_once()
+                # Batch extraction should NOT be called — research mode hard-truncates
+                mock_batch_extract.assert_not_called()
                 assert result.success
 
     @pytest.mark.asyncio
-    async def test_extract_prompt_works_with_research_mode(self, tool):
-        """extract_prompt + research_mode=True => extraction runs (no longer ignored)."""
+    async def test_extract_prompt_ignored_in_research_mode(self, tool):
+        """extract_prompt + research_mode=True => extraction still skipped (research mode wins)."""
         long_content = "x" * 20000
 
         manager = _mock_llm_manager()
@@ -508,10 +503,10 @@ class TestResearchModeNoLongerSkipsExtraction:
                 extract_prompt="extract pricing info",
             )
 
-        # Extraction runs even with research_mode + extract_prompt
+        # Research mode wins — extraction skipped even with extract_prompt
         assert result.success
-        assert result.output.get("extracted") is True
-        manager.complete.assert_called_once()
+        assert result.output.get("extracted") is not True
+        manager.complete.assert_not_called()
 
 
 # --- Tests for extract_batch_with_llm ---

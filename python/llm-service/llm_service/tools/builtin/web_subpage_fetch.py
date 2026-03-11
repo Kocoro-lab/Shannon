@@ -218,13 +218,14 @@ class WebSubpageFetchTool(Tool):
         max_length = kwargs.get("max_length", DEFAULT_MAX_LENGTH)
         extract_prompt = kwargs.get("extract_prompt")  # Optional: targeted extraction query
 
-        # Skip auto-extraction in research mode (issue #43): OODA loop does many
-        # fast fetches; LLM extraction adds ~40-60s latency per call, causing timeout.
-        # Explicit extract_prompt always triggers extraction regardless of mode.
+        # Skip ALL LLM extraction in research mode (issue #43): OODA loop does many
+        # fast fetches; extraction adds ~40-60s latency per call and 40%+ of total cost.
+        # OODA's Observe/Orient steps handle raw content analysis — small-model
+        # pre-filtering undermines the agent's own judgment loop.
+        # extract_prompt from LLM is also ignored in research mode.
         _research_mode = (
             isinstance(session_context, dict)
-            and session_context.get("research_mode")
-            and not extract_prompt
+            and bool(session_context.get("research_mode"))
         )
 
         if _research_mode:
