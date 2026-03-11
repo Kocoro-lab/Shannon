@@ -266,7 +266,8 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 			"user_id":    input.UserID,
 			"session_id": input.SessionID,
 			"model_tier": "small",
-			"role":       "domain_discovery",
+			"role":            "domain_discovery",
+			"force_research": true,
 			"response_format": map[string]interface{}{
 				"type": "json_object",
 			},
@@ -394,10 +395,19 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 			llmDomains := domainsFromDiscoveryResponseV2(discoveryResult.Response)
 
 			if len(llmDomains) == 0 && prefetchDiscoverOnlyVersion >= 3 {
-				logger.Warn("Domain discovery returned no parseable JSON domains",
+				logger.Warn("Domain discovery returned no parseable JSON domains; falling back to search result domains",
 					"canonical_name", input.CanonicalName,
 					"queries", allQueries,
+					"search_domains_count", len(searchDomainsAll),
 				)
+				// Fallback: use domains extracted directly from web_search tool executions
+				seen := make(map[string]bool)
+				for _, d := range searchDomainsAll {
+					if !seen[d] {
+						seen[d] = true
+						allDiscovered = append(allDiscovered, d)
+					}
+				}
 			} else {
 				searchSet := make(map[string]bool)
 				for _, d := range searchDomainsAll {
@@ -584,7 +594,10 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 				prefetchQuery := fmt.Sprintf("Use web_subpage_fetch on %s to extract company information.", url)
 				prefetchQuery += fmt.Sprintf("\n\nResearch focus: %s", input.Query)
 				if len(input.PlanHints) > 0 {
-					prefetchQuery += "\n\nFocus hints:\n- " + strings.Join(input.PlanHints, "\n- ")
+					cleanedHints := stripHintDirectives(input.PlanHints)
+					if len(cleanedHints) > 0 {
+						prefetchQuery += "\n\nFocus hints:\n- " + strings.Join(cleanedHints, "\n- ")
+					}
 				}
 
 				var prefetchResult activities.AgentExecutionResult
@@ -1125,4 +1138,33 @@ func persistAgentExecutionSyncWithMeta(ctx workflow.Context, workflowID, agentID
 	if err != nil {
 		logger.Warn("Failed to persist agent execution", "agent_id", agentID, "error", err)
 	}
+}
+
+// stripHintDirectives removes "Start:" directives from PlanHints while keeping
+// other directives (Search, Answer, Include, Exclude, Tools). The "Start:" URLs
+// from decompose are often misleading for domain prefetch agents since prefetch
+// targets specific company URLs, not external aggregator URLs.
+func stripHintDirectives(hints []string) []string {
+	out := make([]string, 0, len(hints))
+	for _, h := range hints {
+		cleaned := h
+		if idx := strings.Index(cleaned, " Start:"); idx >= 0 {
+			rest := cleaned[idx+7:]
+			nextDir := -1
+			for _, d := range []string{" Search:", " Answer:", " Include:", " Exclude:", " Tools:"} {
+				if pos := strings.Index(rest, d); pos >= 0 && (nextDir < 0 || pos < nextDir) {
+					nextDir = pos
+				}
+			}
+			if nextDir >= 0 {
+				cleaned = strings.TrimSpace(cleaned[:idx]) + rest[nextDir:]
+			} else {
+				cleaned = strings.TrimSpace(cleaned[:idx])
+			}
+		}
+		if cleaned != "" {
+			out = append(out, cleaned)
+		}
+	}
+	return out
 }

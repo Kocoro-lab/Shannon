@@ -2063,6 +2063,14 @@ async def agent_query(request: Request, query: AgentQuery):
             all_data_only_tools = tool_execution_records and all(
                 r.get("tool") in DATA_ONLY_TOOLS for r in tool_execution_records
             )
+            # Research and domain_discovery roles need interpretation even with data-only tools:
+            # - Research roles: produce structured Key Findings / Analysis reports
+            # - domain_discovery: produce JSON {"domains":[...]} from search results
+            # (Originally added in 89442cd, accidentally removed in df8ad2e)
+            if all_data_only_tools and (
+                should_use_source_format(role) or role == "domain_discovery"
+            ):
+                all_data_only_tools = False
             skip_interpretation = role in skip_interpretation_roles or all_data_only_tools
 
             has_successful_tool = any(r.get("success") for r in tool_execution_records)
@@ -4307,10 +4315,19 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             f"Decompose: Prepared {len(messages)} messages (history_rehydrated={history_rehydrated})"
         )
 
+        # Resolve decompose model tier from context (Go passes model_tier for research)
+        decompose_tier = ModelTier.SMALL
+        if isinstance(query.context, dict):
+            _tier_map = {"small": ModelTier.SMALL, "medium": ModelTier.MEDIUM, "large": ModelTier.LARGE}
+            _ctx_tier = query.context.get("model_tier")
+            if isinstance(_ctx_tier, str):
+                decompose_tier = _tier_map.get(_ctx_tier.lower().strip(), ModelTier.SMALL)
+        logger.debug(f"Decompose: using tier={decompose_tier} (context model_tier={query.context.get('model_tier') if isinstance(query.context, dict) else 'N/A'})")
+
         try:
             result = await providers.generate_completion(
                 messages=messages,
-                tier=ModelTier.SMALL,
+                tier=decompose_tier,
                 max_tokens=8192,  # Increased from 4096 to prevent truncation on complex decompositions
                 temperature=0.1,
                 response_format={"type": "json_object"},
@@ -4350,7 +4367,6 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
             mode = data.get("mode", "standard")
             score = float(data.get("complexity_score", 0.5))
             subtasks_raw = data.get("subtasks", [])
-
             # Parse subtasks
             subtasks = []
             total_tokens = 0

@@ -2601,6 +2601,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		return TaskResult{Success: false, ErrorMessage: err.Error()}, err
 	}
 
+	// Ensure model_tier is in baseContext before decompose so Python reads it
+	if _, hasTier := baseContext["model_tier"]; !hasTier {
+		baseContext["model_tier"] = determineModelTier(baseContext, "medium")
+	}
+
 	// Step 1: Decompose the (now refined) research query
 	var decomp activities.DecompositionResult
 	err = workflow.ExecuteActivity(ctx,
