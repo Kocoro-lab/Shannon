@@ -2603,7 +2603,7 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 
 	// Decompose needs a medium-tier model (Sonnet) for reliable domain_analysis detection.
 	// Strategy's agent_model_tier (e.g. "small") applies to research agents, not decompose.
-	origTier := baseContext["model_tier"]
+	origTier, hadTier := baseContext["model_tier"]
 	baseContext["model_tier"] = "medium"
 
 	// Step 1: Decompose the (now refined) research query
@@ -2617,7 +2617,11 @@ func ResearchWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error)
 		}).Get(ctx, &decomp)
 
 	// Restore original tier for research agents
-	baseContext["model_tier"] = origTier
+	if hadTier {
+		baseContext["model_tier"] = origTier
+	} else {
+		delete(baseContext, "model_tier")
+	}
 
 	if err != nil {
 		logger.Error("Task decomposition failed", "error", err)

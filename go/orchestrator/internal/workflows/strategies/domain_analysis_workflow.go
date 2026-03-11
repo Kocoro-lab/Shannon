@@ -745,6 +745,7 @@ func DomainAnalysisWorkflow(ctx workflow.Context, input DomainAnalysisInput) (Do
 	digestQuery := buildDomainAnalysisDigestQuery(input.Query, input.CanonicalName, input.PlanHints)
 	digestContext := buildDomainAnalysisSynthesisContext(baseContext)
 	digestContext["synthesis_template"] = "domain_analysis_digest"
+	delete(digestContext, "parent_workflow_id") // Suppress SSE: synthesis.go fallback reads this from context
 
 	var digest activities.SynthesisResult
 	if len(digestAgentResults) > 0 {
