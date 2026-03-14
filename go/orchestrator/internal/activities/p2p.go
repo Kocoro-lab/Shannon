@@ -686,6 +686,48 @@ func (a *Activities) UpdateTaskStatus(ctx context.Context, in UpdateTaskStatusIn
 	return nil
 }
 
+// UpdateTaskDescriptionInput is the input for modifying a task's description.
+type UpdateTaskDescriptionInput struct {
+	WorkflowID  string `json:"workflow_id"`
+	TaskID      string `json:"task_id"`
+	Description string `json:"description"`
+}
+
+// UpdateTaskDescription modifies an existing task's description in Redis and emits TASKLIST_UPDATED.
+func (a *Activities) UpdateTaskDescription(ctx context.Context, in UpdateTaskDescriptionInput) error {
+	if in.WorkflowID == "" || in.TaskID == "" || in.Description == "" {
+		return fmt.Errorf("invalid args: workflow_id, task_id, and description are required")
+	}
+
+	rc := a.sessionManager.RedisWrapper().GetClient()
+	key := taskListKey(in.WorkflowID)
+
+	raw, err := rc.HGet(ctx, key, in.TaskID).Result()
+	if err != nil {
+		return fmt.Errorf("HGET task %s: %w", in.TaskID, err)
+	}
+
+	var task SwarmTask
+	if err := json.Unmarshal([]byte(raw), &task); err != nil {
+		return fmt.Errorf("unmarshal task %s: %w", in.TaskID, err)
+	}
+
+	task.Description = in.Description
+
+	b, err := json.Marshal(task)
+	if err != nil {
+		return fmt.Errorf("marshal task %s: %w", in.TaskID, err)
+	}
+	if err := rc.HSet(ctx, key, in.TaskID, b).Err(); err != nil {
+		return fmt.Errorf("HSET task %s: %w", in.TaskID, err)
+	}
+
+	allTasks := fetchAllTasks(ctx, rc, in.WorkflowID)
+	publishTaskListUpdate(in.WorkflowID, "lead", fmt.Sprintf("Updated task %s", in.TaskID), allTasks)
+
+	return nil
+}
+
 // ClaimTaskInput is the input for atomically claiming a pending task.
 type ClaimTaskInput struct {
 	WorkflowID string `json:"workflow_id"`

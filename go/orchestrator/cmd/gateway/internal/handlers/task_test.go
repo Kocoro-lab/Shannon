@@ -106,7 +106,7 @@ func newHandlerWithFake(t *testing.T, fc *fakeOrchClient) *TaskHandler {
 	logger := zap.NewNop()
 	var db *sqlx.DB
 	var rdb *redis.Client
-	return NewTaskHandler(fc, db, rdb, nil, logger)
+	return NewTaskHandler(fc, db, rdb, nil, logger, nil)
 }
 
 func addUserContext(req *http.Request) *http.Request {
@@ -422,7 +422,7 @@ func newHandlerWithSkills(t *testing.T, fc *fakeOrchClient, reg *skills.SkillReg
 	logger := zap.NewNop()
 	var db *sqlx.DB
 	var rdb *redis.Client
-	return NewTaskHandler(fc, db, rdb, reg, logger)
+	return NewTaskHandler(fc, db, rdb, reg, logger, nil)
 }
 
 func addUserContextWithRoleAndScopes(req *http.Request, role string, scopes []string) *http.Request {

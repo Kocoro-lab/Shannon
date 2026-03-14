@@ -119,6 +119,35 @@ func TestReadWorkspaceFileSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestReadWorkspaceFileWorkspacePrefix(t *testing.T) {
+	dir := t.TempDir()
+	sessionDir := filepath.Join(dir, "test-session")
+	os.MkdirAll(filepath.Join(sessionDir, "findings"), 0o755)
+	os.WriteFile(filepath.Join(sessionDir, "findings", "react.md"), []byte("# React Research"), 0o644)
+
+	// Lead often hallucinate "workspace/findings/react.md" instead of "findings/react.md"
+	// because agent protocol teaches /workspace/ prefix for python_executor.
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"bare relative", "findings/react.md"},
+		{"workspace/ prefix", "workspace/findings/react.md"},
+		{"workspace prefix no slash", "workspace/findings/react.md"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := readFileContent("test-session", tc.path, dir, 4000)
+			if result.Error != "" {
+				t.Errorf("path %q: unexpected error: %s", tc.path, result.Error)
+			}
+			if !strings.Contains(result.Content, "React Research") {
+				t.Errorf("path %q: expected content, got: %q", tc.path, result.Content)
+			}
+		})
+	}
+}
+
 func TestReadWorkspaceFileEmptyInputs(t *testing.T) {
 	// Test with empty sessionID — readFileContent doesn't validate this
 	// (the activity function does), so just test path handling

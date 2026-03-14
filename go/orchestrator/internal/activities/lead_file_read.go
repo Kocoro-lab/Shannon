@@ -45,6 +45,15 @@ func ReadWorkspaceFile(ctx context.Context, in ReadWorkspaceFileInput) (ReadWork
 
 	// Sanitize path — prevent directory traversal and symlink escape
 	cleanPath := filepath.Clean(in.Path)
+	// Strip common LLM-hallucinated prefixes — Lead sometimes outputs
+	// "workspace/file.md" or "/workspace/file.md" because agent protocol
+	// teaches /workspace/ prefix for python_executor. ReadWorkspaceFile
+	// already roots at the session dir, so the prefix is redundant.
+	cleanPath = strings.TrimPrefix(cleanPath, "workspace/")
+	cleanPath = strings.TrimPrefix(cleanPath, "workspace")
+	if cleanPath == "" || cleanPath == "." {
+		cleanPath = "."
+	}
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
 		return ReadWorkspaceFileResult{Path: in.Path, Error: "invalid path"}, nil
 	}
@@ -117,6 +126,12 @@ func readFileContent(sessionID, path, baseDir string, maxChars int) ReadWorkspac
 		return ReadWorkspaceFileResult{Path: path, Error: "invalid session_id"}
 	}
 	cleanPath := filepath.Clean(path)
+	// Strip LLM-hallucinated workspace/ prefix (mirrors ReadWorkspaceFile above)
+	cleanPath = strings.TrimPrefix(cleanPath, "workspace/")
+	cleanPath = strings.TrimPrefix(cleanPath, "workspace")
+	if cleanPath == "" || cleanPath == "." {
+		cleanPath = "."
+	}
 	if strings.HasPrefix(cleanPath, "..") || filepath.IsAbs(cleanPath) {
 		return ReadWorkspaceFileResult{Path: path, Error: "invalid path"}
 	}

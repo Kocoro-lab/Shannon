@@ -17,6 +17,7 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/auth"
 	commonpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/common"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/skills"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -38,6 +39,7 @@ type TaskHandler struct {
 	redis      *redis.Client
 	skills     *skills.SkillRegistry
 	logger     *zap.Logger
+	sessionMgr *session.Manager // For persisting HITL messages to session history
 }
 
 // ResearchStrategiesConfig represents research strategy presets loaded from YAML
@@ -415,6 +417,7 @@ func NewTaskHandler(
 	redis *redis.Client,
 	skillRegistry *skills.SkillRegistry,
 	logger *zap.Logger,
+	sessionMgr *session.Manager,
 ) *TaskHandler {
 	return &TaskHandler{
 		orchClient: orchClient,
@@ -422,6 +425,7 @@ func NewTaskHandler(
 		redis:      redis,
 		skills:     skillRegistry,
 		logger:     logger,
+		sessionMgr: sessionMgr,
 	}
 }
 
@@ -1484,12 +1488,13 @@ func (h *TaskHandler) SendSwarmMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the workflow belongs to the caller's tenant
+	// Verify the workflow belongs to the caller's tenant and get session_id
+	var sessionID string
 	if h.db != nil {
 		var tenantID string
 		err := h.db.QueryRowContext(r.Context(),
-			`SELECT tenant_id FROM task_executions WHERE workflow_id = $1 LIMIT 1`,
-			workflowID).Scan(&tenantID)
+			`SELECT tenant_id, session_id FROM task_executions WHERE workflow_id = $1 LIMIT 1`,
+			workflowID).Scan(&tenantID, &sessionID)
 		if err != nil {
 			h.sendError(w, "Workflow not found", http.StatusNotFound)
 			return
@@ -1529,6 +1534,20 @@ func (h *TaskHandler) SendSwarmMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		h.sendError(w, "Failed to send message", http.StatusInternalServerError)
 		return
+	}
+
+	// Persist HITL message to session history for multi-turn context
+	if h.sessionMgr != nil && sessionID != "" {
+		if addErr := h.sessionMgr.AddMessage(r.Context(), sessionID, session.Message{
+			ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
+			Role:      "user",
+			Content:   req.Message,
+			Timestamp: time.Now(),
+		}); addErr != nil {
+			h.logger.Warn("Failed to persist HITL message to session history",
+				zap.String("session_id", sessionID),
+				zap.Error(addErr))
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")

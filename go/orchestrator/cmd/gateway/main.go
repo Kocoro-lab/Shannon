@@ -22,6 +22,8 @@ import (
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/daemon"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/db"
 	orchpb "github.com/Kocoro-lab/Shannon/go/orchestrator/internal/pb/orchestrator"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/quota"
+	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/session"
 	"github.com/Kocoro-lab/Shannon/go/orchestrator/internal/skills"
 	"github.com/jmoiron/sqlx"
 	"github.com/redis/go-redis/v9"
@@ -125,8 +127,14 @@ func main() {
 		zap.Strings("categories", skillRegistry.Categories()),
 	)
 
+	// Create session manager for persisting HITL messages to session history
+	sessionMgr, err := session.NewManager(redisOpts.Addr, logger)
+	if err != nil {
+		logger.Warn("Failed to create session manager for HITL persistence", zap.Error(err))
+	}
+
 	// Create handlers
-	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, skillRegistry, logger)
+	taskHandler := handlers.NewTaskHandler(orchClient, pgDB, redisClient, skillRegistry, logger, sessionMgr)
 	sessionHandler := handlers.NewSessionHandler(pgDB, redisClient, logger)
 	workspaceHandler := handlers.NewWorkspaceHandler(pgDB, logger)
 	approvalHandler := handlers.NewApprovalHandler(orchClient, logger)
