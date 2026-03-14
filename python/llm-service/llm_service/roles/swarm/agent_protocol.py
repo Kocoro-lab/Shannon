@@ -52,7 +52,7 @@ PHASE 3 — SAVE & COMPLETE:
   Do NOT enter until you have the data you need. Then:
   1. QUALITY SELF-CHECK: Did I address all task aspects? Are findings backed by data?
      Plan file structure BEFORE writing. key_findings: 3-5 concrete data points.
-  2. file_write ONE deliverable to {role-directory}/{your-agent-id}-{topic}.md
+  2. file_write ONE deliverable to {role-directory}/{topic}.md
   3. publish_data("findings", "key findings summary")
   4. Go idle with key_findings and brief summary.
 
@@ -63,6 +63,9 @@ PHASE 3 — SAVE & COMPLETE:
 
 ERROR RECOVERY:
   - file_read fails → file_list(".") first, then retry with correct path.
+  - python_executor FileNotFoundError → use os.makedirs('/workspace/data', exist_ok=True) with /workspace/ prefix, or switch to file_write tool.
+  - python_executor ModuleNotFoundError → NEVER import custom modules. Rewrite ALL logic inline using stdlib only.
+  - python_executor WASI execution error / stack overflow → WASI sandbox has low recursion limit. Rewrite recursive code as iterative (use explicit stack/queue). Reduce input size.
   - Tool fails once → try alternative (different query, tool, URL).
   - Same approach fails twice → PIVOT: different language, source, or method.
   - Same goal fails 3 times → go idle with partial results + explanation.
@@ -73,11 +76,13 @@ AVAILABLE ACTIONS (exactly one per turn):
 1. tool_call — Execute a tool
    {"decision_summary": "...", "action": "tool_call", "tool": "web_search", "tool_params": {"query": "..."}}
    {"decision_summary": "...", "action": "tool_call", "tool": "web_fetch", "tool_params": {"urls": ["url1", "url2"]}}
-   {"decision_summary": "...", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/agent-id-topic.md", "content": "..."}}
+   {"decision_summary": "...", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/topic.md", "content": "..."}}
    {"decision_summary": "...", "action": "tool_call", "tool": "file_read", "tool_params": {"path": "teammate-report.md"}}
    {"decision_summary": "...", "action": "tool_call", "tool": "file_list", "tool_params": {"path": ".", "pattern": "*.md", "recursive": true}}
    {"decision_summary": "...", "action": "tool_call", "tool": "file_edit", "tool_params": {"path": "src/main.py", "old_text": "old", "new_text": "new"}}
    {"decision_summary": "...", "action": "tool_call", "tool": "file_search", "tool_params": {"query": "TODO", "path": "."}}
+   {"decision_summary": "...", "action": "tool_call", "tool": "file_delete", "tool_params": {"path": "scratch/temp-data.csv"}}
+   {"decision_summary": "...", "action": "tool_call", "tool": "file_delete", "tool_params": {"path": ".", "pattern": "*.tmp", "recursive": true}}
    {"decision_summary": "...", "action": "tool_call", "tool": "python_executor", "tool_params": {"code": "..."}}
    {"decision_summary": "...", "action": "tool_call", "tool": "calculator", "tool_params": {"expression": "1500 * 12"}}
    {"decision_summary": "...", "action": "tool_call", "tool": "web_crawl", "tool_params": {"url": "https://docs.example.com", "max_pages": 5}}
@@ -91,15 +96,21 @@ AVAILABLE ACTIONS (exactly one per turn):
    {"decision_summary": "...", "action": "publish_data", "topic": "findings", "data": "Key insight: ..."}
 
 4. idle — Task complete, AFTER file_write + self-check
-   {"decision_summary": "Saved report, self-check passed", "action": "idle", "key_findings": ["finding1", "finding2"], "response": "Completed analysis. Report: findings/agent-id-topic.md"}
+   {"decision_summary": "Saved report, self-check passed", "action": "idle", "key_findings": ["finding1", "finding2"], "response": "Completed analysis. Report: findings/topic.md"}
 
 SCOPE: Your deliverable covers ONLY your assigned task (## Task).
 When done, go idle — Lead will assign pending tasks to the right agent.
 
 FILE RULES:
 - Response text is TEMPORARY — only file_write persists. MUST file_write before idle.
-- Directories auto-created. Paths are RELATIVE (no /workspace/ prefix).
+- file_write auto-creates directories. Paths are RELATIVE (no /workspace/ prefix).
+- python_executor: stdlib only (NO pandas/numpy/scipy). Use csv, json, math, statistics. print() results.
+  EXECUTION MODEL: Each call runs in an ISOLATED sandbox — no shared state between calls.
+  NEVER import custom modules — write ALL logic inline in a single code block.
+  File I/O: use os.makedirs('/workspace/data', exist_ok=True) then open('/workspace/data/file.csv', 'w').
+  To read teammate files: open('/workspace/path/to/file.csv'). Always use /workspace/ prefix in python_executor.
 - ONE file only per deliverable. Fix with file_edit, don't create second file.
+- file_delete removes files or empty dirs in workspace. Use pattern for batch (e.g. "*.tmp").
 
 COLLABORATION: publish_data for findings. file_list+file_read for teammate data. send_message to "lead" only when blocked.
 
@@ -211,7 +222,7 @@ _ANALYST_WORK_PROTOCOL = """
 PHASE 2 — EXECUTE:
   Follow this pipeline:
   1. Collect data — gather numbers, metrics, comparisons
-  2. Compute — use python_executor for calculations, statistics, charts
+  2. Compute — use python_executor for calculations, statistics, charts (stdlib ONLY — no numpy/pandas/matplotlib)
   3. Compare — cross-reference multiple data points for accuracy
 
   DATA COLLECTION — check in this order:
@@ -222,6 +233,12 @@ PHASE 2 — EXECUTE:
   5. web_search — ONLY as last resort for new data sources
 
   Use python_executor for any non-trivial calculation. Do NOT compute in your head.
+  python_executor runs in WASI sandbox — ONLY stdlib modules (math, json, csv, statistics, re, etc.). NO pip packages.
+
+  OUTPUT STANDARD for analysis tasks:
+  - Computation results → python_executor: os.makedirs('/workspace/data', exist_ok=True) then open('/workspace/data/{topic}.csv', 'w')
+  - Analysis summary → file_write to data/{topic}.md (references the CSV data)
+  - Both files are REQUIRED for analysis deliverables — CSV for data, MD for explanation.
 
   WORKSPACE DISCOVERY:
   - file_list + file_read resolves 90% of data needs at zero cost.
@@ -256,7 +273,7 @@ PHASE 2 — EXECUTE:
   Adaptive approach — detect your task type and pick the matching workflow:
   - Research task → search (find URLs) → fetch (get content) → write findings
   - Coding task → file_list → file_read → implement → test
-  - Analysis task → collect data → compute with python_executor → compare
+  - Analysis task → collect data → compute with python_executor (stdlib only, no pip packages) → compare
   - Review task → file_read teammates' work → cross-check → write feedback
 
   BEFORE each tool_call, check this order:
@@ -278,13 +295,14 @@ PHASE 2 — EXECUTE:
 _ROLE_PROTOCOL_MAP = {
     "researcher": _RESEARCH_WORK_PROTOCOL,
     "company_researcher": _RESEARCH_WORK_PROTOCOL,
-    "financial_analyst": _RESEARCH_WORK_PROTOCOL,
+    "financial_analyst": _ANALYST_WORK_PROTOCOL,
     "coder": _CODER_WORK_PROTOCOL,
     "synthesis_writer": _SYNTHESIS_WORK_PROTOCOL,
     "analyst": _ANALYST_WORK_PROTOCOL,
     "critic": _REVIEW_WORK_PROTOCOL,
     "planner": _REVIEW_WORK_PROTOCOL,
     "generalist": _GENERAL_WORK_PROTOCOL,
+    "writer": _GENERAL_WORK_PROTOCOL,  # Technical writing — uses general workflow with writing-oriented role_prompt
 }
 
 
