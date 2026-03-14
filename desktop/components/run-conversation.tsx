@@ -1106,7 +1106,7 @@ function isIntermediateMessage(msg: Message): boolean {
     return true;
 }
 
-export function RunConversation({ messages, agentType = "normal", sessionTitle }: RunConversationProps) {
+export const RunConversation = memo(function RunConversation({ messages, agentType = "normal", sessionTitle }: RunConversationProps) {
     const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
     const isIOS = useIsIOS();
 
@@ -1217,4 +1217,6 @@ export function RunConversation({ messages, agentType = "normal", sessionTitle }
             })}
         </div>
     );
-}
+});
+
+RunConversation.displayName = "RunConversation";

@@ -24,6 +24,32 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { getSessionEvents, getSessionHistory, getTask, getSession, listSessions, Turn, Event, pauseTask, resumeTask, cancelTask, getTaskControlState, approveReviewPlan } from "@/lib/shannon/api";
 import { resetRun, addMessage, removeMessage, addEvent, updateMessageMetadata, setStreamError, setSelectedAgent, setResearchStrategy, setMainWorkflowId, setStatus, setPaused, setCancelling, setCancelled, setAutoApprove, setReviewStatus, setReviewVersion, setReviewIntent, setSwarmMode, setSelectedSkill } from "@/lib/features/runSlice";
 
+// Right panel resize constants
+const RIGHT_PANEL_DEFAULT = 420;
+const RIGHT_PANEL_MIN = 250;
+const RIGHT_PANEL_MAX_FALLBACK = 900;
+const RIGHT_PANEL_COLLAPSE_THRESHOLD = 180;
+const RIGHT_PANEL_COOKIE = "right_panel_width";
+const getRightPanelMax = () => typeof window !== "undefined" ? Math.floor(window.innerWidth * 0.7) : RIGHT_PANEL_MAX_FALLBACK;
+
+function PanelResizeHandle({ onMouseDown }: { onMouseDown: (e: React.MouseEvent) => void }) {
+    return (
+        <div
+            onMouseDown={onMouseDown}
+            className="relative w-0 hidden md:block z-20 cursor-col-resize group shrink-0"
+        >
+            <div className="absolute inset-y-0 left-1/2 w-12 -translate-x-1/2 cursor-col-resize">
+                <div className="absolute inset-y-0 left-1/2 w-[3px] -translate-x-1/2 bg-border/40 group-hover:bg-primary/60 group-active:bg-primary transition-colors duration-150" />
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col gap-[3px] opacity-30 group-hover:opacity-100 transition-opacity duration-150">
+                    <div className="w-1 h-1 rounded-full bg-muted-foreground/60" />
+                    <div className="w-1 h-1 rounded-full bg-muted-foreground/60" />
+                    <div className="w-1 h-1 rounded-full bg-muted-foreground/60" />
+                </div>
+            </div>
+        </div>
+    );
+}
+
 function RunDetailContent() {
     const searchParams = useSearchParams();
     const sessionId = searchParams.get("session_id");
@@ -43,6 +69,69 @@ function RunDetailContent() {
     const [isResumeLoading, setIsResumeLoading] = useState(false);
     const [showWorkspace, setShowWorkspace] = useState(false);
     const [workspaceUpdateSeq, setWorkspaceUpdateSeq] = useState(0);
+
+    // Right panel resize state
+    const [rightPanelWidth, _setRightPanelWidth] = useState(() => {
+        if (typeof document === "undefined") return RIGHT_PANEL_DEFAULT;
+        const match = document.cookie.match(/(?:^|;\s*)right_panel_width=([^;]*)/);
+        const parsed = match ? parseInt(match[1], 10) : NaN;
+        return !isNaN(parsed) && parsed >= RIGHT_PANEL_MIN && parsed <= getRightPanelMax()
+            ? parsed : RIGHT_PANEL_DEFAULT;
+    });
+    const [isRightPanelResizing, setIsRightPanelResizing] = useState(false);
+    const setRightPanelWidth = useCallback((width: number) => {
+        const clamped = Math.max(RIGHT_PANEL_MIN, Math.min(getRightPanelMax(), width));
+        _setRightPanelWidth(clamped);
+        document.cookie = `${RIGHT_PANEL_COOKIE}=${clamped}; path=/; max-age=${60 * 60 * 24 * 7}`;
+    }, []);
+
+    const rightPanelDragStartX = useRef(0);
+    const rightPanelDragStartWidth = useRef(0);
+    const rightPanelHasDragged = useRef(false);
+    const rafRef = useRef<number>(0);
+    const handleRightPanelMouseDown = useCallback((e: React.MouseEvent) => {
+        e.preventDefault();
+        rightPanelDragStartX.current = e.clientX;
+        rightPanelDragStartWidth.current = rightPanelWidth;
+        rightPanelHasDragged.current = false;
+        setIsRightPanelResizing(true);
+
+        const handleMouseMove = (ev: MouseEvent) => {
+            const deltaX = rightPanelDragStartX.current - ev.clientX;
+            if (Math.abs(deltaX) > 3) rightPanelHasDragged.current = true;
+            if (!rightPanelHasDragged.current) return;
+
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = requestAnimationFrame(() => {
+                const newWidth = rightPanelDragStartWidth.current + deltaX;
+                if (newWidth >= RIGHT_PANEL_COLLAPSE_THRESHOLD) {
+                    _setRightPanelWidth(Math.max(RIGHT_PANEL_MIN, Math.min(getRightPanelMax(), newWidth)));
+                }
+            });
+        };
+
+        const handleMouseUp = (ev: MouseEvent) => {
+            document.removeEventListener("mousemove", handleMouseMove);
+            document.removeEventListener("mouseup", handleMouseUp);
+            setIsRightPanelResizing(false);
+
+            if (!rightPanelHasDragged.current) return;
+
+            const finalDelta = rightPanelDragStartX.current - ev.clientX;
+            const finalWidth = rightPanelDragStartWidth.current + finalDelta;
+
+            if (finalWidth < RIGHT_PANEL_COLLAPSE_THRESHOLD) {
+                setShowTimeline(false);
+                setShowWorkspace(false);
+            } else {
+                setRightPanelWidth(Math.max(RIGHT_PANEL_MIN, Math.min(getRightPanelMax(), finalWidth)));
+            }
+        };
+
+        document.addEventListener("mousemove", handleMouseMove);
+        document.addEventListener("mouseup", handleMouseUp);
+    }, [rightPanelWidth, setRightPanelWidth]);
+
     const dispatch = useDispatch();
     const router = useRouter();
 
@@ -1761,9 +1850,9 @@ function RunDetailContent() {
             )}
 
             {/* Main Content - Split View */}
-            <div className="flex flex-1 overflow-hidden">
+            <div className={`flex flex-1 overflow-hidden${isRightPanelResizing ? " select-none cursor-col-resize" : ""}`}>
                 {/* Left Column: Conversation Tabs */}
-                <div className="flex-1 bg-background flex flex-col">
+                <div className="flex-1 min-w-0 bg-background flex flex-col">
                     <Tabs defaultValue="conversation" value={activeTab} onValueChange={setActiveTab} className="h-full flex flex-col">
                         <div className="px-4 pt-4 shrink-0 flex items-center justify-between gap-4">
                             <TabsList>
@@ -2205,7 +2294,9 @@ function RunDetailContent() {
 
                 {/* Right Column: Timeline - only show when there are events or a task is running, and toggle is on */}
                 {showTimeline && (timelineEvents.length > 0 || runStatus === "running") && (
-                    <div className="w-1/3 border-l bg-muted/10 flex flex-col hidden md:flex">
+                    <>
+                    <PanelResizeHandle onMouseDown={handleRightPanelMouseDown} />
+                    <div className="border-l bg-muted/10 flex-col hidden md:flex" style={{ width: `${rightPanelWidth}px`, flexShrink: 0 }}>
                         {/* Bridge keeps radar store in sync with Redux events */}
                         <RadarBridge />
                         
@@ -2244,16 +2335,20 @@ function RunDetailContent() {
                             </ScrollArea>
                         </div>
                     </div>
+                    </>
                 )}
 
                 {/* Right Column: Workspace Files panel */}
                 {showWorkspace && actualSessionId && (
-                    <div className="w-80 border-l bg-muted/10 flex-col hidden md:flex">
+                    <>
+                    <PanelResizeHandle onMouseDown={handleRightPanelMouseDown} />
+                    <div className="border-l bg-muted/10 flex-col hidden md:flex" style={{ width: `${rightPanelWidth}px`, flexShrink: 0 }}>
                         <WorkspacePanel
                             sessionId={actualSessionId}
                             workspaceUpdateSeq={workspaceUpdateSeq}
                         />
                     </div>
+                    </>
                 )}
             </div>
         </div>
