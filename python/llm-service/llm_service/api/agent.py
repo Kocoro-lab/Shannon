@@ -302,7 +302,10 @@ DATA_ONLY_TOOLS = frozenset({
     "file_list", "file_read", "file_search", "file_write",
     "publish_data",
     "web_search",  # Search snippets are short structured data
-    "web_fetch", "web_subpage_fetch",  # Content already compressed by extract_with_llm inside web_fetch.py
+    # web_fetch/web_subpage_fetch REMOVED: swarm_fast_path skips the LLM call,
+    # so the agent never sees full fetch content — only a 2K history fragment.
+    # Letting the agent process fetch results inline produces better decisions
+    # and eliminates wasteful re-fetch cycles caused by truncated context.
     "calculator",
 })
 
@@ -1437,6 +1440,12 @@ async def agent_query(request: Request, query: AgentQuery):
             # Inject research_mode into context so tools can check it (issue #43)
             # research_mode is already in safe_keys whitelist (~line 2532)
             if research_mode and isinstance(query.context, dict):
+                query.context["research_mode"] = True
+
+            # Swarm tool execution: inject research_mode into context so web_fetch
+            # uses fast hard truncation (<1ms) instead of LLM extraction (15-20s).
+            # We do NOT set the research_mode variable — OODA/iteration behavior stays off.
+            if not research_mode and isinstance(query.context, dict) and query.context.get("force_swarm"):
                 query.context["research_mode"] = True
 
             # Generate completion with tools if specified
@@ -3241,7 +3250,7 @@ def build_agent_messages(body: AgentLoopStepRequest) -> list:
     # --- Single user message (original structure) ---
     user_parts: list[str] = []
     if body.original_query:
-        user_parts.append(f"## User's Original Question\n{body.original_query}")
+        user_parts.append(f"## User's Original Question\n{body.original_query}\nWrite your deliverable in the same language as the user's question above.")
     user_parts.append(f"## Task\n{body.task}")
 
     if body.team_roster:
@@ -3264,19 +3273,25 @@ def build_agent_messages(body: AgentLoopStepRequest) -> list:
         )
         logger.debug("L2 team knowledge injected: agent=%s entries=%d", body.agent_id, len(body.team_knowledge))
 
-    # History BEFORE TaskBoard — old history entries are stable across iterations,
-    # extending the cacheable prefix (explicit system message breakpoint). TaskBoard changes
-    # frequently in parallel swarms (agents completing tasks), breaking the prefix.
-    # Order: Task → Team → Knowledge → History (stable prefix) → Board/Notes/Findings/Inbox (volatile)
+    # Cache break: split user message into stable (Task/Team/Knowledge) and volatile
+    # (History/Board/Notes/Budget) blocks. anthropic_provider splits on this marker into
+    # two content blocks, the first with cache_control. Combined with the system message,
+    # the cacheable prefix (system ~2700t + stable user) can cross Haiku's 4096t threshold,
+    # enabling prompt cache hits on iterations 2-15 (~93% hit rate per agent).
+    user_parts.append("<!-- cache_break -->")
     history_lines = []  # Initialized here so trimming loop below can reference it
     if body.history:
-        # Uniform 2000 char truncation for prefix stability: tiered truncation
-        # (4000 recent / 2000 old) causes ONE entry to change every iteration
-        # when it transitions from "recent" to "old", breaking the cache prefix.
-        # 2000 chars is 4x the original 500 and sufficient for context.
-        HISTORY_RESULT_MAX = 2000
+        # Tool-type-aware truncation: file_read/file_edit results are the agent's
+        # working memory — truncating them forces wasteful re-reads. Web results
+        # are bulky but rarely need full content across iterations.
+        HISTORY_FILE_MAX = 15000   # file_read, file_edit, file_list — working memory
+        HISTORY_DEFAULT_MAX = 3000  # web_search, web_fetch, calculator, etc.
+        _FILE_OPS = ("file_read", "file_edit", "file_list")
         for turn in body.history:
-            result_str = str(turn.result)[:HISTORY_RESULT_MAX] if turn.result else "no result"
+            action_str = turn.action or ""
+            is_file_op = any(op in action_str for op in _FILE_OPS)
+            limit = HISTORY_FILE_MAX if is_file_op else HISTORY_DEFAULT_MAX
+            result_str = str(turn.result)[:limit] if turn.result else "no result"
             history_lines.append(f"- Iteration {turn.iteration}: {turn.action} → {result_str}")
         user_parts.append("## Previous Actions\n" + "\n".join(history_lines))
 

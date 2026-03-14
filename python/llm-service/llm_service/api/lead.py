@@ -26,6 +26,7 @@ class LeadEvent(BaseModel):
     human_message: str = Field(default="", description="Message from human user (for human_input events)")
     completion_report: Dict[str, Any] = Field(default_factory=dict, description="Structured agent output: summary, files_written, key_findings")
     file_contents: List[Dict[str, Any]] = Field(default_factory=list, description="Lead file_read results")
+    tool_results: List[Dict[str, Any]] = Field(default_factory=list, description="Lead tool_call results")
 
 
 class AgentState(BaseModel):
@@ -55,6 +56,9 @@ class LeadDecisionRequest(BaseModel):
     history: List[Dict[str, Any]] = Field(default_factory=list)  # Recent 5 Lead decisions
     messages: List[Dict[str, Any]] = Field(default_factory=list)  # Agent→Lead mailbox messages
     original_query: str = Field(default="", description="User's original query for language context")
+    conversation_history: List[Dict[str, Any]] = Field(default_factory=list)  # Session history for multi-turn context
+    workspace_files: List[str] = Field(default_factory=list, description="File paths in workspace")
+    hitl_messages: List[str] = Field(default_factory=list, description="All HITL messages received during execution")
 
 
 class LeadAction(BaseModel):
@@ -68,7 +72,10 @@ class LeadAction(BaseModel):
     model_tier: str = ""  # small, medium, large — Lead can specify per agent
     create: List[Dict[str, Any]] = Field(default_factory=list)
     cancel: List[str] = Field(default_factory=list)
+    update: List[Dict[str, Any]] = Field(default_factory=list)  # revise_plan: update existing task descriptions
     path: str = ""  # file_read target path
+    tool: str = ""  # tool_call: web_search, web_fetch, calculator
+    tool_params: Dict[str, Any] = Field(default_factory=dict)  # tool_call: tool arguments
 
 
 # JSON Schema for Anthropic structured output (output_config.format).
@@ -90,8 +97,8 @@ LEAD_DECISION_SCHEMA = {
                                 "enum": [
                                     "interim_reply", "spawn_agent", "assign_task",
                                     "send_message", "broadcast", "revise_plan",
-                                    "file_read", "shutdown_agent", "noop",
-                                    "done", "reply", "synthesize",
+                                    "file_read", "file_list", "shutdown_agent", "noop",
+                                    "done", "reply", "synthesize", "tool_call",
                                 ],
                             },
                             "task_id": {"type": "string"},
@@ -113,7 +120,7 @@ LEAD_DECISION_SCHEMA = {
                                             "items": {"type": "string"},
                                         },
                                     },
-                                    "required": ["id", "description"],
+                                    "required": ["id", "description", "depends_on"],
                                     "additionalProperties": False,
                                 },
                             },
@@ -121,14 +128,28 @@ LEAD_DECISION_SCHEMA = {
                                 "type": "array",
                                 "items": {"type": "string"},
                             },
+                            "update": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "id": {"type": "string"},
+                                        "description": {"type": "string"},
+                                    },
+                                    "required": ["id", "description"],
+                                    "additionalProperties": False,
+                                },
+                            },
                             "path": {"type": "string"},
+                            "tool": {"type": "string"},
+                            "tool_params": {"type": "string"},
                         },
-                        "required": ["type"],
+                        "required": ["type", "task_id", "agent_id", "role", "task_description", "to", "content", "model_tier", "create", "cancel", "update", "path", "tool", "tool_params"],
                         "additionalProperties": False,
                     },
                 },
             },
-            "required": ["decision_summary", "actions"],
+            "required": ["decision_summary", "user_summary", "actions"],
             "additionalProperties": False,
         },
     }
@@ -158,6 +179,20 @@ from llm_service.roles.swarm.lead_protocol import LEAD_SYSTEM_PROMPT
 # constrained decoding favors keys with trivial values (cancel:[], path:"")
 # over keys needing cross-action reasoning (task_id requires referencing
 # revise_plan's create array). This function matches by description instead.
+
+
+def _parse_tool_params(raw) -> Dict[str, Any]:
+    """Parse tool_params from string (schema) or dict (fallback)."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json_module.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except json_module.JSONDecodeError:
+            pass
+    return {}
 
 
 def _auto_link_task_ids(
@@ -245,6 +280,185 @@ def _best_match(
     return best_tid if best_score >= 0.5 else ""
 
 
+# ── Prompt Builder (extracted for testability) ─────────────────────────
+
+
+def _build_lead_user_prompt(body: LeadDecisionRequest) -> str:
+    """Build the user prompt for Lead decision. Extracted for testability."""
+    from datetime import datetime, timezone
+
+    user_parts: List[str] = []
+
+    # Inject current date for temporal awareness (search quality + freshness judgment)
+    current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    user_parts.append(f"The current date is {current_date} (UTC).")
+
+    # Inject original query so Lead always knows the user's language
+    if body.original_query and body.event.type != "initial_plan":
+        user_parts.append(f"## Original User Query\n{body.original_query}\n\n⚠ IMPORTANT: Reply in the SAME LANGUAGE as the query above.")
+
+    # Inject session conversation history for multi-turn context
+    if body.conversation_history:
+        conv_lines = []
+        for msg in body.conversation_history:
+            role = msg.get("role", "unknown")
+            content = str(msg.get("content", ""))
+            label = "User" if role == "user" else "Assistant"
+            conv_lines.append(f"**{label}**: {content}")
+        user_parts.append(
+            "## Conversation History (previous turns in this session)\n"
+            + "\n\n".join(conv_lines)
+            + "\n\n⚠ The current query is a FOLLOW-UP to this conversation. "
+            "Workspace may contain files from previous research — use file_read to check before re-researching."
+        )
+
+    # Inject accumulated HITL messages so Lead never forgets user requests
+    if body.hitl_messages and body.event.type != "human_input":
+        hitl_section = "## User Requests During Execution\n"
+        for i, msg in enumerate(body.hitl_messages, 1):
+            hitl_section += f"{i}. \"{msg}\"\n"
+        hitl_section += "\n⚠ These are MANDATORY user requests. Any pending tasks created for these requests MUST be completed before calling done."
+        user_parts.append(hitl_section)
+
+    if body.event.type == "human_input":
+        user_parts.append(
+            f"## Event\n[HUMAN INPUT] The user has sent a message during execution:\n\"{body.event.human_message}\"\n\nTreat this with HIGH PRIORITY. Consider adjusting the plan, spawning new agents, or reassigning idle agents based on their feedback."
+        )
+    else:
+        event_lines = [f"**{body.event.type}**: {body.event.agent_id}"]
+        report = body.event.completion_report or {}
+        summary = report.get("summary") or body.event.result_summary
+        if summary:
+            # closing_checkpoint includes workspace file contents — needs higher limit
+            summary_limit = 30000 if body.event.type == "closing_checkpoint" else 10000
+            event_lines.append(f"  Summary: {str(summary)[:summary_limit]}")
+        files = report.get("files_written", [])
+        if files:
+            event_lines.append(f"  Files written: {', '.join(str(f) for f in files[:10])}")
+        findings = report.get("key_findings", [])
+        if findings:
+            for f in findings[:10]:
+                event_lines.append(f"  - {str(f)[:1000]}")
+        tools = report.get("tools_used", "")
+        if tools:
+            event_lines.append(f"  Tools used: {tools}")
+        user_parts.append("## Event\n" + "\n".join(event_lines))
+
+    # File contents from Lead's file_read actions (independent verification)
+    if body.event.file_contents:
+        fc_lines = []
+        for fc in body.event.file_contents[:5]:
+            path = fc.get("path", "")
+            content = str(fc.get("content", ""))[:4000]
+            trunc = " [truncated]" if fc.get("truncated") else ""
+            error = fc.get("error", "")
+            if error:
+                fc_lines.append(f"  File [{path}]: ERROR — {error}")
+            else:
+                fc_lines.append(f"  File [{path}]{trunc}:")
+                for line in content.split("\n")[:50]:
+                    fc_lines.append(f"    {line}")
+        user_parts.append("## File Preview (from your file_read)\n" + "\n".join(fc_lines))
+
+    # Tool results from Lead's direct tool_call actions
+    if body.event.tool_results:
+        tr_lines = []
+        for tr in body.event.tool_results[:5]:
+            tool_name = tr.get("tool", "unknown")
+            error = tr.get("error", "")
+            output = str(tr.get("output", ""))[:4000]
+            if error:
+                tr_lines.append(f"  **{tool_name}**: ERROR — {error}")
+            else:
+                tr_lines.append(f"  **{tool_name}**:\n{output}")
+        user_parts.append("## Tool Results (from your direct execution)\n" + "\n\n".join(tr_lines))
+
+    # Task Board
+    if body.task_list:
+        tl_lines = []
+        for t in body.task_list:
+            status = t.get("status", "pending").upper()
+            owner = t.get("owner", "unassigned")
+            desc = t.get("description", "")
+            tid = t.get("id", "")
+            tl_lines.append(f"- {tid} [{status}] {owner}: {desc}")
+        user_parts.append("## Task Board\n" + "\n".join(tl_lines))
+
+    # Agent States — with explicit running count to prevent premature done
+    if body.agent_states:
+        running_agents = [a for a in body.agent_states if a.status == "running"]
+        idle_agents = [a for a in body.agent_states if a.status == "idle"]
+        completed_agents = [a for a in body.agent_states if a.status == "completed"]
+        as_lines = []
+        for a in body.agent_states:
+            line = f"- {a.agent_id} [{a.status}] role={a.role} task=\"{a.current_task}\" iterations={a.iterations_used}"
+            if a.files_written:
+                line += f" files=[{', '.join(a.files_written)}]"
+            as_lines.append(line)
+        summary_line = f"Total: {len(body.agent_states)} agents — {len(running_agents)} running, {len(idle_agents)} idle, {len(completed_agents)} completed"
+        if running_agents:
+            summary_line += f"\n⚠ RUNNING AGENTS: {', '.join(a.agent_id for a in running_agents)} — do NOT call done while agents are running, use noop instead"
+        user_parts.append("## Agent States\n" + summary_line + "\n" + "\n".join(as_lines))
+
+    # Workspace file inventory (helps Lead plan file-level operations)
+    if body.workspace_files:
+        ws_lines = [f"## Workspace Files ({len(body.workspace_files)} files)"]
+        for fp in body.workspace_files[:30]:  # Cap display at 30 files
+            ws_lines.append(f"- {fp}")
+        if len(body.workspace_files) > 30:
+            ws_lines.append(f"... and {len(body.workspace_files) - 30} more")
+        user_parts.append("\n".join(ws_lines))
+
+    # Budget with time phase awareness
+    budget = body.budget
+    total_calls = budget.total_llm_calls + budget.remaining_llm_calls
+    budget_pct = (budget.total_llm_calls / max(total_calls, 1)) * 100
+    time_pct = (budget.elapsed_seconds / max(budget.max_wall_clock_seconds, 1)) * 100
+    remaining_seconds = max(budget.max_wall_clock_seconds - budget.elapsed_seconds, 0)
+    elapsed_min = budget.elapsed_seconds // 60
+    elapsed_sec = budget.elapsed_seconds % 60
+    remaining_min = remaining_seconds // 60
+    remaining_sec = remaining_seconds % 60
+
+    budget_lines = [
+        f"## Budget ({budget_pct:.0f}% calls used, {time_pct:.0f}% time used)",
+        f"- LLM calls: {budget.total_llm_calls} used, {budget.remaining_llm_calls} remaining",
+        f"- Tokens: {budget.total_tokens} used, {budget.remaining_tokens} remaining",
+        f"- Time: {elapsed_min}m{elapsed_sec:02d}s elapsed, {remaining_min}m{remaining_sec:02d}s remaining (max {budget.max_wall_clock_seconds // 60}m)",
+    ]
+
+    # Time phase alert — matches TIME MANAGEMENT thresholds in system prompt
+    if time_pct >= 80:
+        budget_lines.append("EMERGENCY: >80% time used — call done ASAP once no agents running")
+    elif time_pct >= 60:
+        budget_lines.append("WRAP-UP PHASE: >60% time — broadcast wrap-up to running agents, no new tasks")
+    elif time_pct >= 33:
+        budget_lines.append("FOCUS PHASE: >33% time — no new task creation, let agents finish")
+
+    user_parts.append("\n".join(budget_lines))
+
+    # Agent->Lead messages (escalations, requests from agents)
+    if body.messages:
+        msg_lines = []
+        for msg in body.messages[:10]:  # Cap at 10 messages
+            from_agent = msg.get("from", "unknown")
+            msg_type = msg.get("type", "info")
+            payload = msg.get("payload", {})
+            text = payload.get("message", str(payload))[:500] if isinstance(payload, dict) else str(payload)[:500]
+            msg_lines.append(f"- From {from_agent} ({msg_type}): {text}")
+        user_parts.append("## Agent Messages (agents sent these to you)\n" + "\n".join(msg_lines))
+
+    # Decision History
+    if body.history:
+        hist_lines = []
+        for h in body.history[-5:]:
+            hist_lines.append(f"- {h.get('decision_summary', 'no summary')}")
+        user_parts.append("## Your Recent Decisions\n" + "\n".join(hist_lines))
+
+    user_parts.append("Decide your next action(s). Return ONLY valid JSON.")
+    return "\n\n".join(user_parts)
+
+
 # ── Endpoint ────────────────────────────────────────────────────────────
 
 
@@ -258,131 +472,7 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
         raise HTTPException(status_code=503, detail="LLM providers not configured")
 
     try:
-        # Build user prompt with current state
-        user_parts: List[str] = []
-
-        # Inject current date for temporal awareness (search quality + freshness judgment)
-        from datetime import datetime, timezone
-        current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        user_parts.append(f"The current date is {current_date} (UTC).")
-
-        # Inject original query so Lead always knows the user's language
-        if body.original_query and body.event.type != "initial_plan":
-            user_parts.append(f"## Original User Query\n{body.original_query}\n\n⚠ IMPORTANT: Reply in the SAME LANGUAGE as the query above.")
-
-        if body.event.type == "human_input":
-            user_parts.append(
-                f"## Event\n[HUMAN INPUT] The user has sent a message during execution:\n\"{body.event.human_message}\"\n\nTreat this with HIGH PRIORITY. Consider adjusting the plan, spawning new agents, or reassigning idle agents based on their feedback."
-            )
-        else:
-            event_lines = [f"**{body.event.type}**: {body.event.agent_id}"]
-            report = body.event.completion_report or {}
-            summary = report.get("summary") or body.event.result_summary
-            if summary:
-                event_lines.append(f"  Summary: {str(summary)[:10000]}")
-            files = report.get("files_written", [])
-            if files:
-                event_lines.append(f"  Files written: {', '.join(str(f) for f in files[:10])}")
-            findings = report.get("key_findings", [])
-            if findings:
-                for f in findings[:10]:
-                    event_lines.append(f"  - {str(f)[:1000]}")
-            tools = report.get("tools_used", "")
-            if tools:
-                event_lines.append(f"  Tools used: {tools}")
-            user_parts.append("## Event\n" + "\n".join(event_lines))
-
-        # File contents from Lead's file_read actions (independent verification)
-        if body.event.file_contents:
-            fc_lines = []
-            for fc in body.event.file_contents[:5]:
-                path = fc.get("path", "")
-                content = str(fc.get("content", ""))[:4000]
-                trunc = " [truncated]" if fc.get("truncated") else ""
-                error = fc.get("error", "")
-                if error:
-                    fc_lines.append(f"  File [{path}]: ERROR — {error}")
-                else:
-                    fc_lines.append(f"  File [{path}]{trunc}:")
-                    for line in content.split("\n")[:50]:
-                        fc_lines.append(f"    {line}")
-            user_parts.append("## File Preview (from your file_read)\n" + "\n".join(fc_lines))
-
-        # Task Board
-        if body.task_list:
-            tl_lines = []
-            for t in body.task_list:
-                status = t.get("status", "pending").upper()
-                owner = t.get("owner", "unassigned")
-                desc = t.get("description", "")
-                tid = t.get("id", "")
-                tl_lines.append(f"- {tid} [{status}] {owner}: {desc}")
-            user_parts.append("## Task Board\n" + "\n".join(tl_lines))
-
-        # Agent States — with explicit running count to prevent premature done
-        if body.agent_states:
-            running_agents = [a for a in body.agent_states if a.status == "running"]
-            idle_agents = [a for a in body.agent_states if a.status == "idle"]
-            completed_agents = [a for a in body.agent_states if a.status == "completed"]
-            as_lines = []
-            for a in body.agent_states:
-                line = f"- {a.agent_id} [{a.status}] role={a.role} task=\"{a.current_task}\" iterations={a.iterations_used}"
-                if a.files_written:
-                    line += f" files=[{', '.join(a.files_written)}]"
-                as_lines.append(line)
-            summary_line = f"Total: {len(body.agent_states)} agents — {len(running_agents)} running, {len(idle_agents)} idle, {len(completed_agents)} completed"
-            if running_agents:
-                summary_line += f"\n⚠ RUNNING AGENTS: {', '.join(a.agent_id for a in running_agents)} — do NOT call done while agents are running, use noop instead"
-            user_parts.append("## Agent States\n" + summary_line + "\n" + "\n".join(as_lines))
-
-        # Budget with time phase awareness
-        budget = body.budget
-        total_calls = budget.total_llm_calls + budget.remaining_llm_calls
-        budget_pct = (budget.total_llm_calls / max(total_calls, 1)) * 100
-        time_pct = (budget.elapsed_seconds / max(budget.max_wall_clock_seconds, 1)) * 100
-        remaining_seconds = max(budget.max_wall_clock_seconds - budget.elapsed_seconds, 0)
-        elapsed_min = budget.elapsed_seconds // 60
-        elapsed_sec = budget.elapsed_seconds % 60
-        remaining_min = remaining_seconds // 60
-        remaining_sec = remaining_seconds % 60
-
-        budget_lines = [
-            f"## Budget ({budget_pct:.0f}% calls used, {time_pct:.0f}% time used)",
-            f"- LLM calls: {budget.total_llm_calls} used, {budget.remaining_llm_calls} remaining",
-            f"- Tokens: {budget.total_tokens} used, {budget.remaining_tokens} remaining",
-            f"- Time: {elapsed_min}m{elapsed_sec:02d}s elapsed, {remaining_min}m{remaining_sec:02d}s remaining (max {budget.max_wall_clock_seconds // 60}m)",
-        ]
-
-        # Time phase alert — matches TIME MANAGEMENT thresholds in system prompt
-        if time_pct >= 80:
-            budget_lines.append("EMERGENCY: >80% time used — call done ASAP once no agents running")
-        elif time_pct >= 60:
-            budget_lines.append("WRAP-UP PHASE: >60% time — broadcast wrap-up to running agents, no new tasks")
-        elif time_pct >= 33:
-            budget_lines.append("FOCUS PHASE: >33% time — no new task creation, let agents finish")
-
-        user_parts.append("\n".join(budget_lines))
-
-        # Agent→Lead messages (escalations, requests from agents)
-        if body.messages:
-            msg_lines = []
-            for msg in body.messages[:10]:  # Cap at 10 messages
-                from_agent = msg.get("from", "unknown")
-                msg_type = msg.get("type", "info")
-                payload = msg.get("payload", {})
-                text = payload.get("message", str(payload))[:500] if isinstance(payload, dict) else str(payload)[:500]
-                msg_lines.append(f"- From {from_agent} ({msg_type}): {text}")
-            user_parts.append("## Agent Messages (agents sent these to you)\n" + "\n".join(msg_lines))
-
-        # Decision History
-        if body.history:
-            hist_lines = []
-            for h in body.history[-5:]:
-                hist_lines.append(f"- {h.get('decision_summary', 'no summary')}")
-            user_parts.append("## Your Recent Decisions\n" + "\n".join(hist_lines))
-
-        user_parts.append("Decide your next action(s). Return ONLY valid JSON.")
-        user_prompt = "\n\n".join(user_parts)
+        user_prompt = _build_lead_user_prompt(body)
 
         # Call LLM using the same pattern as agent_loop_step
         # closing_checkpoint may produce a long reply (full synthesis report),
@@ -405,16 +495,24 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
                     max_tokens=lead_max_tokens,
                     output_config=LEAD_DECISION_SCHEMA,
                 ),
-                timeout=60,
+                timeout=30,
             )
-            logger.info("Lead decide: structured output succeeded")
+            logger.info(
+                f"Lead decide: structured output succeeded, "
+                f"finish_reason={result.get('finish_reason')}, "
+                f"output_tokens={(result.get('usage') or {}).get('output_tokens')}, "
+                f"input_tokens={(result.get('usage') or {}).get('input_tokens')}"
+            )
         except Exception as e:
             logger.warning(f"Structured output failed, falling back to prompt-based: {e}")
-            result = await providers.generate_completion(
-                messages=lead_messages,
-                tier=ModelTier.MEDIUM,
-                temperature=0.3,
-                max_tokens=lead_max_tokens,
+            result = await asyncio.wait_for(
+                providers.generate_completion(
+                    messages=lead_messages,
+                    tier=ModelTier.MEDIUM,
+                    temperature=0.3,
+                    max_tokens=lead_max_tokens,
+                ),
+                timeout=60,
             )
 
         raw_text = result.get("output_text", "") or ""
@@ -449,6 +547,10 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
                 provider=provider_name,
             )
 
+        # Guard: some providers may return a list instead of dict
+        if isinstance(data, list):
+            data = {"decision_summary": "", "user_summary": "", "actions": data}
+
         decision_summary = str(data.get("decision_summary", ""))[:500]
         raw_actions = data.get("actions", [])
         actions: List[LeadAction] = []
@@ -466,7 +568,10 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
                         model_tier=ra.get("model_tier", ""),
                         create=ra.get("create", []),
                         cancel=ra.get("cancel", []),
+                        update=ra.get("update", []),
                         path=ra.get("path", ""),
+                        tool=ra.get("tool", ""),
+                        tool_params=_parse_tool_params(ra.get("tool_params", "")),
                     )
                 )
 

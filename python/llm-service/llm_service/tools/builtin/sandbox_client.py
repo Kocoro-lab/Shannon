@@ -292,6 +292,44 @@ class SandboxClient:
             logger.info("Sandbox gRPC file_edit completed", extra={"session_id": session_id, "operation": "file_edit", "success": False})
             return (False, "", f"gRPC error: {e.details()}", {})
 
+    async def file_delete(
+        self,
+        session_id: str,
+        path: str,
+        pattern: str = "",
+        recursive: bool = False,
+    ) -> Tuple[bool, int, List[str], str]:
+        """
+        Delete file(s) or empty directory from session workspace.
+
+        Returns:
+            (success, deleted_count, deleted_paths, error)
+        """
+        logger.debug("Sandbox gRPC file_delete request", extra={"session_id": session_id, "path": path, "pattern": pattern})
+        await self._ensure_connected()
+
+        if not _PROTO_AVAILABLE or self._stub is None:
+            return (False, 0, [], "Sandbox proto not available")
+
+        try:
+            request = sandbox_pb2.FileDeleteRequest(
+                session_id=session_id,
+                path=path,
+                pattern=pattern,
+                recursive=recursive,
+            )
+            response = await self._stub.FileDelete(request, timeout=self.timeout)
+            logger.info("Sandbox gRPC file_delete completed", extra={"session_id": session_id, "operation": "file_delete", "success": response.success})
+            return (
+                response.success,
+                response.deleted_count,
+                list(response.deleted_paths),
+                response.error,
+            )
+        except grpc.RpcError as e:
+            logger.info("Sandbox gRPC file_delete completed", extra={"session_id": session_id, "operation": "file_delete", "success": False})
+            return (False, 0, [], f"gRPC error: {e.details()}")
+
     async def execute_command(
         self,
         session_id: str,

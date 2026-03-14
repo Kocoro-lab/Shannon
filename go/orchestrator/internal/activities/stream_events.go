@@ -40,6 +40,7 @@ const (
 	StreamEventWarning        StreamEventType = "WARNING"         // Non-fatal warnings that user should be aware of
 	StreamEventHITLResponse   StreamEventType = "HITL_RESPONSE"   // Lead's response to human input during swarm execution
 	StreamEventLeadDecision   StreamEventType = "LEAD_DECISION"   // Lead agent made a planning/coordination decision
+	StreamEventLeadToolCall   StreamEventType = "LEAD_TOOL_CALL"  // Lead executing a tool directly
 
 	// LLM events (uniform across workflows)
 	StreamEventLLMPrompt  StreamEventType = "LLM_PROMPT"  // Sanitized prompt

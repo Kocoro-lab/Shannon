@@ -338,8 +338,17 @@ impl WasiSandbox {
                         DirPerms::all(),     // Read + write + create directories
                         FilePerms::all(),    // Read + write files
                     )?;
+                    // Also mount as "." so relative paths in python_executor resolve
+                    // to the workspace directory (WASI has no chdir syscall; CWD is
+                    // determined by the preopened "." mapping).
+                    wasi_builder.preopened_dir(
+                        canonical_workspace.clone(),
+                        ".",
+                        DirPerms::all(),
+                        FilePerms::all(),
+                    )?;
                     info!(
-                        "WASI: Mounted session workspace {:?} at /workspace with read-write access",
+                        "WASI: Mounted session workspace {:?} at /workspace and . with read-write access",
                         canonical_workspace
                     );
                 } else {

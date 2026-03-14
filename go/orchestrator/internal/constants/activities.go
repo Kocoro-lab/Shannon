@@ -59,13 +59,15 @@ const (
 	InitTaskListActivity     = "InitTaskList"
 	GetTaskListActivity      = "GetTaskList"
 	UpdateTaskStatusActivity = "UpdateTaskStatus"
-	CreateTaskActivity       = "CreateTask"
-	ClaimTaskActivity        = "ClaimTask"
+	CreateTaskActivity            = "CreateTask"
+	UpdateTaskDescriptionActivity = "UpdateTaskDescription"
+	ClaimTaskActivity             = "ClaimTask"
 
 	// Lead Agent Activities
 	LeadDecisionActivity       = "LeadDecision"
 	ListWorkspaceFilesActivity = "ListWorkspaceFiles"
 	ReadWorkspaceFileActivity  = "ReadWorkspaceFile"
+	LeadExecuteToolActivity    = "LeadExecuteTool" // direct tool execution for Lead
 
 	// Quota Enforcement Activities (scheduled task quota bypass fix)
 	CheckTenantQuotaActivity       = "CheckTenantQuota"

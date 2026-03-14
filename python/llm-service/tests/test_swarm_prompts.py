@@ -296,6 +296,33 @@ class TestLeadFileReadAction:
         assert "file_read" in LEAD_SYSTEM_PROMPT and ("verify" in LEAD_SYSTEM_PROMPT.lower() or "File preview" in LEAD_SYSTEM_PROMPT)
 
 
+class TestLeadAnalysisQualityGate:
+    """Lead must verify analysis task deliverables: data file + summary."""
+
+    def test_analysis_quality_gate_checks_dual_deliverables(self):
+        """Lead quality gate for analysis tasks must check both data and MD files."""
+        from llm_service.roles.swarm.lead_protocol import LEAD_SYSTEM_PROMPT
+        quality_section = LEAD_SYSTEM_PROMPT.split("TASK-TYPE-SPECIFIC VERIFICATION")[1].split("ADAPTIVE PLANNING")[0]
+        assert "data file" in quality_section.lower() or "CSV" in quality_section, \
+            "Analysis quality gate must check for data file (CSV/JSON)"
+        assert "MD" in quality_section or "summary" in quality_section.lower(), \
+            "Analysis quality gate must check for summary file"
+
+    def test_analysis_quality_gate_cross_agent_consistency(self):
+        """Lead must compare deliverable types when 2+ parallel analysts complete."""
+        from llm_service.roles.swarm.lead_protocol import LEAD_SYSTEM_PROMPT
+        quality_section = LEAD_SYSTEM_PROMPT.split("TASK-TYPE-SPECIFIC VERIFICATION")[1].split("ADAPTIVE PLANNING")[0]
+        assert "parallel" in quality_section.lower() or "2+" in quality_section, \
+            "Analysis quality gate must address cross-agent deliverable consistency"
+
+    def test_task_description_requires_deliverables_for_analysis(self):
+        """Lead task description spec must require explicit deliverables for analysis tasks."""
+        from llm_service.roles.swarm.lead_protocol import LEAD_SYSTEM_PROMPT
+        task_desc_section = LEAD_SYSTEM_PROMPT.split("TASK DESCRIPTIONS")[1].split("GOOD example")[0]
+        assert "ANALYSIS" in task_desc_section or "deliverable" in task_desc_section.lower(), \
+            "Task description spec must require explicit deliverables for analysis tasks"
+
+
 class TestAgentQualitySelfCheck:
     """Agent protocol must have quality self-check before going idle."""
 
@@ -352,12 +379,12 @@ class TestDateInjection:
     def test_lead_prompt_has_date(self):
         """Lead user prompt must include current date for temporal awareness."""
         import inspect
-        from llm_service.api.lead import lead_decide
-        source = inspect.getsource(lead_decide)
+        from llm_service.api.lead import _build_lead_user_prompt
+        source = inspect.getsource(_build_lead_user_prompt)
         assert "current_date" in source, \
-            "lead_decide must inject current_date into user prompt"
+            "_build_lead_user_prompt must inject current_date into user prompt"
         assert "datetime" in source, \
-            "lead_decide must use datetime for current date"
+            "_build_lead_user_prompt must use datetime for current date"
 
     def test_agent_loop_prompt_has_date(self):
         """Agent loop system prompt must include current date prefix."""

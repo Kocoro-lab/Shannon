@@ -1210,6 +1210,219 @@ impl SandboxService for SandboxServiceImpl {
             file_size_after: new_content.len() as i64,
         }))
     }
+
+    async fn file_delete(
+        &self,
+        request: Request<FileDeleteRequest>,
+    ) -> Result<Response<FileDeleteResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            session_id = %req.session_id,
+            path = %req.path,
+            pattern = %req.pattern,
+            recursive = req.recursive,
+            operation = "file_delete",
+            "Sandbox file delete operation"
+        );
+
+        // Hard-reject /memory/ paths
+        if req.path.starts_with("/memory/") || req.path.starts_with("/memory")
+            || req.path.starts_with("memory/") || req.path == "memory"
+        {
+            return Ok(Response::new(FileDeleteResponse {
+                success: false,
+                error: "Deleting from /memory/ is not allowed. file_delete only works in workspace.".to_string(),
+                deleted_count: 0,
+                deleted_paths: Vec::new(),
+            }));
+        }
+
+        // Reject path traversal attempts
+        if req.path.contains("..") {
+            warn!(
+                session_id = %req.session_id,
+                path = %req.path,
+                violation = "path_traversal",
+                operation = "file_delete",
+                "Security violation: path traversal attempt detected"
+            );
+            return Err(Status::permission_denied("Path traversal not allowed"));
+        }
+
+        let target = self.resolve_path(&req.session_id, "", &req.path)?;
+        let workspace = self
+            .workspace_mgr
+            .get_workspace(&req.session_id)
+            .map_err(|e| Status::invalid_argument(format!("Invalid session: {}", e)))?;
+
+        let pattern = req.pattern.as_str();
+
+        // --- Mode 1: Single target (no pattern) ---
+        if pattern.is_empty() {
+            if !target.exists() {
+                return Ok(Response::new(FileDeleteResponse {
+                    success: true,
+                    error: String::new(),
+                    deleted_count: 0,
+                    deleted_paths: Vec::new(),
+                }));
+            }
+
+            let relative = target
+                .strip_prefix(&workspace)
+                .unwrap_or(&target)
+                .to_string_lossy()
+                .to_string();
+
+            if target.is_file() || target.is_symlink() {
+                std::fs::remove_file(&target)
+                    .map_err(|e| Status::internal(format!("Delete error: {}", e)))?;
+                return Ok(Response::new(FileDeleteResponse {
+                    success: true,
+                    error: String::new(),
+                    deleted_count: 1,
+                    deleted_paths: vec![relative],
+                }));
+            }
+
+            if target.is_dir() {
+                match std::fs::remove_dir(&target) {
+                    Ok(()) => {
+                        return Ok(Response::new(FileDeleteResponse {
+                            success: true,
+                            error: String::new(),
+                            deleted_count: 1,
+                            deleted_paths: vec![relative],
+                        }));
+                    }
+                    Err(e) => {
+                        return Ok(Response::new(FileDeleteResponse {
+                            success: false,
+                            error: format!("Directory not empty or cannot delete: {}", e),
+                            deleted_count: 0,
+                            deleted_paths: Vec::new(),
+                        }));
+                    }
+                }
+            }
+
+            return Ok(Response::new(FileDeleteResponse {
+                success: false,
+                error: format!("Unknown file type at path: {}", req.path),
+                deleted_count: 0,
+                deleted_paths: Vec::new(),
+            }));
+        }
+
+        // --- Mode 2: Glob pattern ---
+        if !target.is_dir() {
+            return Ok(Response::new(FileDeleteResponse {
+                success: false,
+                error: format!("Path must be a directory when using pattern, got: {}", req.path),
+                deleted_count: 0,
+                deleted_paths: Vec::new(),
+            }));
+        }
+
+        let mut deleted_paths = Vec::new();
+        let mut errors = Vec::new();
+
+        fn collect_and_delete(
+            dir: &std::path::Path,
+            canonical_workspace: &std::path::Path,
+            pattern: &str,
+            recursive: bool,
+            deleted_paths: &mut Vec<String>,
+            errors: &mut Vec<String>,
+        ) -> Result<(), std::io::Error> {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                let path = entry.path();
+                let metadata = match path.symlink_metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                if metadata.is_dir() && recursive {
+                    // Symlink escape prevention: canonicalize before recursing
+                    // and verify the resolved path is still within the workspace.
+                    if metadata.is_symlink() {
+                        match path.canonicalize() {
+                            Ok(canonical) if canonical.starts_with(canonical_workspace) => {
+                                collect_and_delete(&canonical, canonical_workspace, pattern, recursive, deleted_paths, errors)?;
+                            }
+                            Ok(canonical) => {
+                                errors.push(format!("{}: symlink escapes workspace (-> {})", path.display(), canonical.display()));
+                                continue;
+                            }
+                            Err(e) => {
+                                errors.push(format!("{}: cannot resolve symlink: {}", path.display(), e));
+                                continue;
+                            }
+                        }
+                    } else {
+                        collect_and_delete(&path, canonical_workspace, pattern, recursive, deleted_paths, errors)?;
+                    }
+                    if glob_match(pattern, &name) {
+                        if let Ok(()) = std::fs::remove_dir(&path) {
+                            let relative = path
+                                .strip_prefix(canonical_workspace)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+                            deleted_paths.push(relative);
+                        }
+                    }
+                    continue;
+                }
+
+                if !glob_match(pattern, &name) {
+                    continue;
+                }
+
+                let relative = path
+                    .strip_prefix(canonical_workspace)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .to_string();
+
+                if metadata.is_file() || metadata.is_symlink() {
+                    match std::fs::remove_file(&path) {
+                        Ok(()) => deleted_paths.push(relative),
+                        Err(e) => errors.push(format!("{}: {}", relative, e)),
+                    }
+                } else if metadata.is_dir() {
+                    match std::fs::remove_dir(&path) {
+                        Ok(()) => deleted_paths.push(relative),
+                        Err(e) => errors.push(format!("{}: {}", relative, e)),
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        // Canonicalize workspace for symlink containment checks
+        let canonical_workspace = workspace.canonicalize()
+            .map_err(|e| Status::internal(format!("Workspace canonicalize error: {}", e)))?;
+
+        collect_and_delete(&target, &canonical_workspace, pattern, req.recursive, &mut deleted_paths, &mut errors)
+            .map_err(|e| Status::internal(format!("Delete walk error: {}", e)))?;
+
+        let deleted_count = deleted_paths.len() as i32;
+        let error_msg = if errors.is_empty() {
+            String::new()
+        } else {
+            format!("Some deletions failed: {}", errors.join("; "))
+        };
+
+        Ok(Response::new(FileDeleteResponse {
+            success: errors.is_empty(),
+            error: error_msg,
+            deleted_count,
+            deleted_paths,
+        }))
+    }
 }
 
 /// Simple glob pattern matching (no regex to avoid DoS).
@@ -1422,5 +1635,171 @@ mod tests {
 
         assert!(!inner.success);
         assert!(inner.error.contains("not allowed"));
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_single_file() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("to_delete.txt"), "delete me").unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: "to_delete.txt".to_string(),
+            pattern: String::new(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.deleted_count, 1);
+        assert_eq!(inner.deleted_paths, vec!["to_delete.txt"]);
+        assert!(!workspace.join("to_delete.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_empty_dir() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(workspace.join("empty_dir")).unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: "empty_dir".to_string(),
+            pattern: String::new(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.deleted_count, 1);
+        assert!(!workspace.join("empty_dir").exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_non_empty_dir_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(workspace.join("non_empty")).unwrap();
+        std::fs::write(workspace.join("non_empty/file.txt"), "content").unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: "non_empty".to_string(),
+            pattern: String::new(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(!inner.success);
+        assert!(inner.error.contains("not empty") || inner.error.contains("Directory"));
+        assert!(workspace.join("non_empty").exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_not_found_idempotent() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: "nonexistent.txt".to_string(),
+            pattern: String::new(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.deleted_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_memory_path_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: "/memory/notes.md".to_string(),
+            pattern: String::new(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(!inner.success);
+        assert!(inner.error.to_lowercase().contains("memory"));
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_glob_pattern() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("a.tmp"), "temp1").unwrap();
+        std::fs::write(workspace.join("b.tmp"), "temp2").unwrap();
+        std::fs::write(workspace.join("keep.txt"), "keep").unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: ".".to_string(),
+            pattern: "*.tmp".to_string(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.deleted_count, 2);
+        assert!(!workspace.join("a.tmp").exists());
+        assert!(!workspace.join("b.tmp").exists());
+        assert!(workspace.join("keep.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_glob_recursive() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(workspace.join("sub")).unwrap();
+        std::fs::write(workspace.join("a.tmp"), "temp1").unwrap();
+        std::fs::write(workspace.join("sub/b.tmp"), "temp2").unwrap();
+        std::fs::write(workspace.join("sub/keep.txt"), "keep").unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: ".".to_string(),
+            pattern: "*.tmp".to_string(),
+            recursive: true,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.deleted_count, 2);
+        assert!(!workspace.join("a.tmp").exists());
+        assert!(!workspace.join("sub/b.tmp").exists());
+        assert!(workspace.join("sub/keep.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_path_traversal_rejected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: "../../../etc/passwd".to_string(),
+            pattern: String::new(),
+            recursive: false,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await;
+        assert!(resp.is_err());
     }
 }

@@ -166,11 +166,13 @@ func (r *OrchestratorRegistry) RegisterActivities(w worker.Worker) error {
 	w.RegisterActivityWithOptions(acts.GetTaskList, activity.RegisterOptions{Name: constants.GetTaskListActivity})
 	w.RegisterActivityWithOptions(acts.UpdateTaskStatus, activity.RegisterOptions{Name: constants.UpdateTaskStatusActivity})
 	w.RegisterActivityWithOptions(acts.CreateTask, activity.RegisterOptions{Name: constants.CreateTaskActivity})
+	w.RegisterActivityWithOptions(acts.UpdateTaskDescription, activity.RegisterOptions{Name: constants.UpdateTaskDescriptionActivity})
 	w.RegisterActivityWithOptions(acts.ClaimTask, activity.RegisterOptions{Name: constants.ClaimTaskActivity})
 	// Lead Agent decision activity
 	w.RegisterActivityWithOptions(activities.LeadDecision, activity.RegisterOptions{Name: constants.LeadDecisionActivity})
 	w.RegisterActivityWithOptions(activities.ListWorkspaceFiles, activity.RegisterOptions{Name: constants.ListWorkspaceFilesActivity})
 	w.RegisterActivityWithOptions(activities.ReadWorkspaceFile, activity.RegisterOptions{Name: constants.ReadWorkspaceFileActivity})
+	w.RegisterActivityWithOptions(activities.LeadExecuteTool, activity.RegisterOptions{Name: constants.LeadExecuteToolActivity})
 
 	// Session activities - register with consistent naming
 	w.RegisterActivityWithOptions(acts.DecomposeTask, activity.RegisterOptions{Name: constants.DecomposeTaskActivity})

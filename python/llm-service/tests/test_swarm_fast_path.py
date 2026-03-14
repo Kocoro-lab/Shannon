@@ -8,8 +8,11 @@ class TestDataOnlyTools:
 
     def test_contains_search_tools(self):
         assert "web_search" in DATA_ONLY_TOOLS
-        assert "web_fetch" in DATA_ONLY_TOOLS
-        assert "web_subpage_fetch" in DATA_ONLY_TOOLS
+
+    def test_excludes_fetch_tools(self):
+        """web_fetch/web_subpage_fetch removed: agent needs full content inline."""
+        assert "web_fetch" not in DATA_ONLY_TOOLS
+        assert "web_subpage_fetch" not in DATA_ONLY_TOOLS
 
     def test_contains_file_tools(self):
         assert "file_read" in DATA_ONLY_TOOLS

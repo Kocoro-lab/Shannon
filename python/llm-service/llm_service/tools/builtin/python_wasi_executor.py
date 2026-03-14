@@ -83,10 +83,23 @@ class PythonWasiExecutorTool(Tool):
         self._load_interpreter_cache()
 
     def _get_metadata(self) -> ToolMetadata:
+        if self.executor_mode == "firecracker":
+            desc = (
+                "Execute Python code in secure Firecracker microVM. "
+                "Full Python environment with common packages (numpy, pandas, matplotlib, scipy, etc.). "
+                "Save files to /workspace/ for persistence. Files in /tmp are ephemeral."
+            )
+        else:
+            desc = (
+                "Execute Python code in secure WASI sandbox. "
+                "ONLY Python standard library is available (math, json, csv, re, datetime, statistics, hashlib, etc.). "
+                "NO third-party packages (numpy, pandas, matplotlib, scipy, requests are NOT installed). "
+                "Save files to /workspace/ for persistence. Files in /tmp are ephemeral."
+            )
         return ToolMetadata(
             name="python_executor",
             version="2.0.0",
-            description="Execute Python code in secure sandbox. Save files to /workspace/ for persistence (e.g., /workspace/output.csv). Files in /tmp are ephemeral.",
+            description=desc,
             category="code",
             author="Shannon",
             requires_auth=False,
@@ -104,7 +117,11 @@ class PythonWasiExecutorTool(Tool):
             ToolParameter(
                 name="code",
                 type=ToolParameterType.STRING,
-                description="Python code to execute (full stdlib available)",
+                description=(
+                    "Python code to execute (full environment with pip packages)"
+                    if self.executor_mode == "firecracker"
+                    else "Python code to execute (stdlib only — no pip packages like numpy/pandas/matplotlib)"
+                ),
                 required=True,
             ),
             ToolParameter(

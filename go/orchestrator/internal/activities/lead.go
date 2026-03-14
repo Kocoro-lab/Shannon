@@ -28,6 +28,7 @@ type LeadEvent struct {
 	Error            string                 `json:"error,omitempty"`
 	Success          bool                   `json:"success,omitempty"`
 	FileContents     []FileReadResult       `json:"file_contents,omitempty"` // Lead file_read results
+	ToolResults      []ToolResultEntry      `json:"tool_results,omitempty"`  // Lead tool_call results
 }
 
 // FileReadResult holds the content of a file read by Lead.
@@ -36,6 +37,13 @@ type FileReadResult struct {
 	Content   string `json:"content"`
 	Truncated bool   `json:"truncated"`
 	Error     string `json:"error,omitempty"`
+}
+
+// ToolResultEntry holds the result of a tool executed by Lead.
+type ToolResultEntry struct {
+	Tool   string `json:"tool"`
+	Output string `json:"output"`
+	Error  string `json:"error,omitempty"`
 }
 
 // LeadAgentState tracks an agent's current state for Lead decisions.
@@ -67,8 +75,11 @@ type LeadDecisionInput struct {
 	AgentStates   []LeadAgentState         `json:"agent_states"`
 	Budget        LeadBudget               `json:"budget"`
 	History       []map[string]interface{} `json:"history"`                    // Recent Lead decisions
-	Messages      []map[string]interface{} `json:"messages,omitempty"`         // Agent→Lead mailbox messages
-	OriginalQuery string                   `json:"original_query,omitempty"`   // User's original query (for language context)
+	Messages            []map[string]interface{} `json:"messages,omitempty"`              // Agent→Lead mailbox messages
+	OriginalQuery       string                   `json:"original_query,omitempty"`        // User's original query (for language context)
+	ConversationHistory []map[string]interface{} `json:"conversation_history,omitempty"`   // Session history for multi-turn context
+	WorkspaceFiles      []string                 `json:"workspace_files,omitempty"`        // File paths in workspace (for planning context)
+	HitlMessages        []string                 `json:"hitl_messages,omitempty"`           // All HITL messages received during this execution
 }
 
 // LeadAction is a single action the Lead wants to take.
@@ -83,7 +94,10 @@ type LeadAction struct {
 	ModelTier       string                   `json:"model_tier,omitempty"` // small, medium, large
 	Create          []map[string]interface{} `json:"create,omitempty"`
 	Cancel          []string                 `json:"cancel,omitempty"`
-	Path            string                   `json:"path,omitempty"` // file_read target path
+	Update          []map[string]interface{} `json:"update,omitempty"` // revise_plan: update existing task descriptions
+	Path            string                   `json:"path,omitempty"`            // file_read target path
+	Tool            string                   `json:"tool,omitempty"`            // tool_call: web_search, web_fetch, calculator
+	ToolParams      map[string]interface{}   `json:"tool_params,omitempty"`     // tool_call: tool arguments
 }
 
 // LeadDecisionResult is the output from the LeadDecision activity.
@@ -115,10 +129,9 @@ func LeadDecision(ctx context.Context, in LeadDecisionInput) (LeadDecisionResult
 		return LeadDecisionResult{}, fmt.Errorf("failed to marshal lead decision input: %w", err)
 	}
 
-	// Default 85s, safely under the 90s Temporal StartToCloseTimeout for lead activities.
-	// Accommodates Anthropic structured output grammar compilation on first request (~30-90s).
-	// Subsequent requests use cached grammar (<3s).
-	timeoutSec := 85
+	// Must be under the 150s Temporal StartToCloseTimeout to let Temporal
+	// detect the timeout and retry, rather than the HTTP client swallowing it.
+	timeoutSec := 120
 	if v := os.Getenv("LEAD_DECISION_TIMEOUT_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			timeoutSec = n
@@ -187,4 +200,95 @@ func ListWorkspaceFiles(ctx context.Context, in ListWorkspaceFilesInput) (ListWo
 	sessionDir := filepath.Join(baseDir, in.SessionID)
 	files := readWorkspaceFiles(sessionDir, 10000, 2000)
 	return ListWorkspaceFilesResult{Files: files}, nil
+}
+
+// ── Lead Tool Execution ───────────────────────────────────────────────────
+
+// LeadToolInput is the input for direct tool execution by Lead.
+type LeadToolInput struct {
+	Tool       string                 `json:"tool"`
+	ToolParams map[string]interface{} `json:"tool_params"`
+	SessionID  string                 `json:"session_id,omitempty"`
+}
+
+// LeadToolResult is the output of direct tool execution.
+type LeadToolResult struct {
+	Success bool   `json:"success"`
+	Output  string `json:"output"` // formatted text
+	Error   string `json:"error,omitempty"`
+}
+
+// LeadExecuteTool calls Python LLM-service POST /tools/execute directly.
+// Zero LLM cost — the tool registry executes without involving an LLM.
+func LeadExecuteTool(ctx context.Context, in LeadToolInput) (LeadToolResult, error) {
+	logger := activity.GetLogger(ctx)
+	logger.Info("LeadExecuteTool called", "tool", in.Tool)
+
+	base := os.Getenv("LLM_SERVICE_URL")
+	if base == "" {
+		base = "http://llm-service:8000"
+	}
+	url := fmt.Sprintf("%s/tools/execute", base)
+
+	// Build request body matching Python ToolExecuteRequest field names
+	reqBody := map[string]interface{}{
+		"tool_name":  in.Tool,
+		"parameters": in.ToolParams,
+	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return LeadToolResult{}, fmt.Errorf("failed to marshal tool input: %w", err)
+	}
+
+	client := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: interceptors.NewWorkflowHTTPRoundTripper(nil),
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return LeadToolResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return LeadToolResult{Error: err.Error()}, nil // Return error in result, don't fail activity
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return LeadToolResult{Error: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(bodyBytes))}, nil
+	}
+
+	var pyResp struct {
+		Success bool        `json:"success"`
+		Output  interface{} `json:"output"`
+		Text    string      `json:"text"`
+		Error   string      `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&pyResp); err != nil {
+		return LeadToolResult{Error: fmt.Sprintf("decode error: %v", err)}, nil
+	}
+
+	// Prefer formatted text; fall back to raw output
+	output := pyResp.Text
+	if output == "" {
+		if pyResp.Output != nil {
+			if s, ok := pyResp.Output.(string); ok {
+				output = s
+			} else {
+				b, _ := json.Marshal(pyResp.Output)
+				output = string(b)
+			}
+		}
+	}
+
+	logger.Info("LeadExecuteTool completed", "tool", in.Tool, "success", pyResp.Success, "output_len", len(output))
+	return LeadToolResult{
+		Success: pyResp.Success,
+		Output:  output,
+		Error:   pyResp.Error,
+	}, nil
 }

@@ -1017,3 +1017,82 @@ func TestIsSearchSaturated(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertHistoryForLead verifies session history truncation and formatting
+// for Lead multi-turn context injection.
+func TestConvertHistoryForLead(t *testing.T) {
+	tests := []struct {
+		name            string
+		messages        []Message
+		expectedCount   int
+		expectTruncated bool // any assistant message truncated
+	}{
+		{
+			name:          "empty history",
+			messages:      nil,
+			expectedCount: 0,
+		},
+		{
+			name: "within limit",
+			messages: []Message{
+				{Role: "user", Content: "hello"},
+				{Role: "assistant", Content: "hi there"},
+			},
+			expectedCount: 2,
+		},
+		{
+			name: "exceeds maxMessages — keeps last 6",
+			messages: []Message{
+				{Role: "user", Content: "msg1"},
+				{Role: "assistant", Content: "resp1"},
+				{Role: "user", Content: "msg2"},
+				{Role: "assistant", Content: "resp2"},
+				{Role: "user", Content: "msg3"},
+				{Role: "assistant", Content: "resp3"},
+				{Role: "user", Content: "msg4"},
+				{Role: "assistant", Content: "resp4"},
+			},
+			expectedCount: 6, // last 6 of 8
+		},
+		{
+			name: "long assistant response truncated",
+			messages: []Message{
+				{Role: "user", Content: "query"},
+				{Role: "assistant", Content: strings.Repeat("x", 1000)},
+			},
+			expectedCount:   2,
+			expectTruncated: true,
+		},
+		{
+			name: "user message not truncated even if long",
+			messages: []Message{
+				{Role: "user", Content: strings.Repeat("y", 1000)},
+			},
+			expectedCount:   1,
+			expectTruncated: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := convertHistoryForLead(tt.messages)
+			assert.Len(t, result, tt.expectedCount)
+
+			if tt.expectTruncated {
+				found := false
+				for _, m := range result {
+					if m["role"] == "assistant" {
+						content := m["content"].(string)
+						if strings.Contains(content, "[truncated") {
+							found = true
+						}
+						assert.LessOrEqual(t, len(content), 900,
+							"truncated content should be around 800 + suffix")
+					}
+				}
+				assert.True(t, found, "expected at least one truncated assistant message")
+			}
+		})
+	}
+}
+

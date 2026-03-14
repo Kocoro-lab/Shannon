@@ -216,3 +216,27 @@ class CommandResponse(_message.Message):
     error: str
     execution_time_ms: int
     def __init__(self, success: bool = ..., stdout: _Optional[str] = ..., stderr: _Optional[str] = ..., exit_code: _Optional[int] = ..., error: _Optional[str] = ..., execution_time_ms: _Optional[int] = ...) -> None: ...
+
+class FileDeleteRequest(_message.Message):
+    __slots__ = ("session_id", "path", "pattern", "recursive")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    PATTERN_FIELD_NUMBER: _ClassVar[int]
+    RECURSIVE_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    path: str
+    pattern: str
+    recursive: bool
+    def __init__(self, session_id: _Optional[str] = ..., path: _Optional[str] = ..., pattern: _Optional[str] = ..., recursive: bool = ...) -> None: ...
+
+class FileDeleteResponse(_message.Message):
+    __slots__ = ("success", "error", "deleted_count", "deleted_paths")
+    SUCCESS_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    DELETED_COUNT_FIELD_NUMBER: _ClassVar[int]
+    DELETED_PATHS_FIELD_NUMBER: _ClassVar[int]
+    success: bool
+    error: str
+    deleted_count: int
+    deleted_paths: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, success: bool = ..., error: _Optional[str] = ..., deleted_count: _Optional[int] = ..., deleted_paths: _Optional[_Iterable[str]] = ...) -> None: ...

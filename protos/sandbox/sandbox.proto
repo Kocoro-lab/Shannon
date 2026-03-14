@@ -23,6 +23,9 @@ service SandboxService {
 
   // Find-and-replace in a file
   rpc FileEdit(FileEditRequest) returns (FileEditResponse);
+
+  // Delete file(s) or empty directory from session workspace
+  rpc FileDelete(FileDeleteRequest) returns (FileDeleteResponse);
 }
 
 message FileReadRequest {
@@ -146,4 +149,19 @@ message CommandResponse {
   int32 exit_code = 4;
   string error = 5;
   int64 execution_time_ms = 6;
+}
+
+// FileDelete - delete file(s) or empty directory
+message FileDeleteRequest {
+  string session_id = 1;
+  string path = 2;         // Target path relative to /workspace (file, empty dir, or base dir for glob)
+  string pattern = 3;      // Optional glob pattern (e.g. "*.tmp"), applied within path directory
+  bool recursive = 4;      // Whether glob matches subdirectories
+}
+
+message FileDeleteResponse {
+  bool success = 1;
+  string error = 2;
+  int32 deleted_count = 3;           // Number of items actually deleted
+  repeated string deleted_paths = 4; // Relative paths of deleted items
 }

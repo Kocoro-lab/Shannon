@@ -240,7 +240,7 @@ func TestCancelTask_OwnershipEnforcement(t *testing.T) {
 			mockClient := new(MockOrchestratorClient)
 			tt.setupMock(mockClient)
 
-			handler := handlers.NewTaskHandler(mockClient, nil, nil, nil, zap.NewNop())
+			handler := handlers.NewTaskHandler(mockClient, nil, nil, nil, zap.NewNop(), nil)
 
 			req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+tt.taskID+"/cancel",
 				strings.NewReader(`{"reason":"test"}`))
@@ -352,7 +352,7 @@ func TestAPIKeyPropagation_Metadata(t *testing.T) {
 				Message: "success",
 			}, nil)
 
-		handler := handlers.NewTaskHandler(mockClient, nil, nil, nil, zap.NewNop())
+		handler := handlers.NewTaskHandler(mockClient, nil, nil, nil, zap.NewNop(), nil)
 
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/tasks",
 			strings.NewReader(`{"query":"test"}`))

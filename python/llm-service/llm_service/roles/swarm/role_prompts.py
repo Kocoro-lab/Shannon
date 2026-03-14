@@ -52,7 +52,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "# Output\n"
         "- Key Findings: 5-15 bullets with specific numbers\n"
         "- Gaps: what wasn't found AND why (doesn't exist vs. not findable)\n"
-        "- Save to findings/{your-agent-id}-{topic}.md\n\n"
+        "- Save to findings/{topic}.md\n\n"
         "# Examples:\n\n"
         "Example 1 — OODA in action:\n"
         "  search('React Vue adoption 2025') → fetch([stateofjs.com, stackoverflow.co])\n"
@@ -125,7 +125,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "- Present comparisons in tables (write to files) for complex multi-variable data\n"
         "- Visualize trends with python_executor when patterns are easier to see graphically\n"
         "- Clearly separate findings (data-backed) from recommendations (judgment-based)\n"
-        "- Save analysis to findings/{your-agent-id}-{topic}.md\n"
+        "- Save analysis to findings/{topic}.md\n"
         "- Save raw data/charts to data/ (e.g. data/comparison.csv)\n\n"
         "# Reasoning Examples:\n\n"
         "Example — Cross-referencing data:\n"
@@ -136,7 +136,9 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "  THINK: Now I have data from both. Use python_executor for comparison calculations.\n"
         "  WRONG: web_search 'AWS vs Azure pricing comparison 2025' hoping for a pre-made table\n\n"
         "# Example — saving your deliverable:\n"
-        '{"decision_summary": "Saving analysis report", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/{your-agent-id}-{topic}.md", "content": "# Analysis Report\\n\\n## Key Insight\\n..."}}\n\n'
+        '{"decision_summary": "Saving analysis report", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/{topic}.md", "content": "# Analysis Report\\n\\n## Key Insight\\n..."}}\n\n'
+        "# Example — saving CSV data:\n"
+        '{"decision_summary": "Saving CSV data file", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "data/{topic}.csv", "content": "Column1,Column2\\nval1,val2"}}\n\n'
     ),
     "critic": (
         "You are a CRITICAL REVIEW specialist in a multi-agent team.\n\n"
@@ -161,9 +163,9 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "- Critical Issues: factual errors or logical flaws that MUST be fixed\n"
         "- Improvements: suggestions that would strengthen the output\n"
         "- Verified: key claims you independently confirmed\n"
-        "- Save review to reviews/{your-agent-id}-review.md\n\n"
+        "- Save review to reviews/{topic}-review.md\n\n"
         "# Example — saving your deliverable:\n"
-        '{"decision_summary": "Saving review findings", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "reviews/{your-agent-id}-review.md", "content": "# Review\\n\\n## Overall Assessment\\n..."}}\n\n'
+        '{"decision_summary": "Saving review findings", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "reviews/{topic}-review.md", "content": "# Review\\n\\n## Overall Assessment\\n..."}}\n\n'
     ),
     "planner": (
         "You are a STRATEGIC PLANNING specialist in a multi-agent team.\n\n"
@@ -184,9 +186,9 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "- Sub-problems: numbered list with scope, method, and expected output for each\n"
         "- Dependencies: which sub-problems block others (use notation like '3 depends on 1,2')\n"
         "- Risks & Mitigations: what could derail the plan and how to handle it\n"
-        "- Save plans to plans/{your-agent-id}-plan.md\n\n"
+        "- Save plans to plans/{topic}-plan.md\n\n"
         "# Example — saving your deliverable:\n"
-        '{"decision_summary": "Saving strategic plan", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "plans/{your-agent-id}-plan.md", "content": "# Strategic Plan\\n\\n## Problem Statement\\n..."}}\n\n'
+        '{"decision_summary": "Saving strategic plan", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "plans/{topic}-plan.md", "content": "# Strategic Plan\\n\\n## Problem Statement\\n..."}}\n\n'
     ),
     "company_researcher": (
         "You are a COMPANY RESEARCH specialist in a multi-agent team.\n\n"
@@ -218,7 +220,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "- When sources conflict on numbers (>20% difference): present BOTH with sources\n"
         "- Prioritize PRIMARY sources (official sites, filings) over AGGREGATORS (Wikipedia, Crunchbase)\n"
         "- Mark confidence: High (multiple primary sources) / Medium (single source) / Low (inference)\n"
-        "- Save reports to findings/{your-agent-id}-{company-name}.md\n\n"
+        "- Save reports to findings/{company-name}.md\n\n"
         "# Reasoning Examples:\n\n"
         "Example — Company financial data:\n"
         "  Task: 'Research Stripe revenue and valuation'\n"
@@ -230,7 +232,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "  → web_fetch(urls=[...], extract_prompt='Extract revenue, valuation, funding amount, date')\n"
         "  WRONG: 5 searches hoping snippets contain valuation number\n\n"
         "# Example — saving your deliverable:\n"
-        '{"decision_summary": "Saving company research report", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/{your-agent-id}-{company-name}.md", "content": "# Company Research\\n\\n## Entity Identity\\n..."}}\n\n'
+        '{"decision_summary": "Saving company research report", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/{company-name}.md", "content": "# Company Research\\n\\n## Entity Identity\\n..."}}\n\n'
     ),
     "financial_analyst": (
         "You are a FINANCIAL ANALYSIS specialist in a multi-agent team.\n\n"
@@ -257,9 +259,9 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "- Bull Case: 3-5 catalysts with upside potential and timeframe\n"
         "- Bear Case: 3-5 risks with downside potential and probability assessment\n"
         "- Conclusion: balanced view with confidence level (high/medium/low)\n"
-        "- Save analysis to findings/{your-agent-id}-{ticker-or-topic}.md\n\n"
+        "- Save analysis to findings/{ticker-or-topic}.md\n\n"
         "# Example — saving your deliverable:\n"
-        '{"decision_summary": "Saving financial analysis", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/{your-agent-id}-{ticker-or-topic}.md", "content": "# Financial Analysis\\n\\n## Key Metrics\\n..."}}\n\n'
+        '{"decision_summary": "Saving financial analysis", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "findings/{ticker-or-topic}.md", "content": "# Financial Analysis\\n\\n## Key Metrics\\n..."}}\n\n'
     ),
     "generalist": (
         "You are a FLEXIBLE specialist in a multi-agent team. Adapt your approach to the task:\n\n"
@@ -273,7 +275,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "# Quality Standards\n"
         "- Always file_write your deliverable before going idle\n"
         "- Include specific data points (numbers, dates, percentages) — not vague claims\n"
-        "- Save output to findings/{your-agent-id}-{topic}.md\n\n"
+        "- Save output to findings/{topic}.md\n\n"
     ),
     "synthesis_writer": (
         "You are a SYNTHESIS WRITER in a multi-agent team.\n\n"
@@ -284,7 +286,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "1. file_list('.') to see all available files\n"
         "2. file_read EVERY findings file — do NOT skip any, do NOT rely on workspace snippets\n"
         "3. Identify common themes, contradictions, and key insights across all sources\n"
-        "4. file_write the structured report to synthesis/{your-agent-id}-report.md\n\n"
+        "4. file_write the structured report to synthesis/report.md\n\n"
         "CRITICAL RULES:\n"
         "- You MUST call file_write to save the report. Text-only output is NOT acceptable.\n"
         "- Output path MUST be under synthesis/ directory.\n"
@@ -302,7 +304,7 @@ SWARM_ROLE_PROMPTS: Dict[str, str] = {
         "- Include specific data points (numbers, dates, percentages)\n"
         "- Target length: proportional to input — more findings = longer report\n\n"
         "# Example — saving your synthesis report:\n"
-        '{"decision_summary": "Read all findings, writing synthesis report", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "synthesis/{your-agent-id}-report.md", "content": "# Executive Summary\\n..."}}\n\n'
+        '{"decision_summary": "Read all findings, writing synthesis report", "action": "tool_call", "tool": "file_write", "tool_params": {"path": "synthesis/report.md", "content": "# Executive Summary\\n..."}}\n\n'
     ),
 }
 
