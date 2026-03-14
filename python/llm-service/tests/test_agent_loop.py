@@ -406,11 +406,10 @@ class TestInterpretationSkip(unittest.TestCase):
         self.assertIn("file_search", DATA_ONLY_TOOLS)
         self.assertIn("file_write", DATA_ONLY_TOOLS)
         self.assertIn("publish_data", DATA_ONLY_TOOLS)
-        # web_search and web_fetch ARE data-only: their output is structured
-        # data (search snippets, extracted content) that doesn't need
-        # intermediate LLM interpretation in swarm mode.
+        # web_search is data-only (short structured snippets).
+        # web_fetch removed: agent needs full fetch content inline.
         self.assertIn("web_search", DATA_ONLY_TOOLS)
-        self.assertIn("web_fetch", DATA_ONLY_TOOLS)
+        self.assertNotIn("web_fetch", DATA_ONLY_TOOLS)
 
     def test_data_only_tools_skip_interpretation(self):
         """When all executed tools are data-only, interpretation should be skipped."""
@@ -553,13 +552,56 @@ class TestBuildAgentMessages:
         assert "Iteration 1" in content
         assert "Iteration 5" in content
 
-    def test_no_cache_break_marker_in_messages(self):
-        """Multi-turn structure replaces cache_break marker."""
+    def test_cache_break_marker_between_stable_and_volatile(self):
+        """User message has cache_break marker separating stable context from volatile context.
+
+        Stable: Task, Team Roster, Team Knowledge (don't change across iterations)
+        Volatile: History, TaskBoard, Notes, Findings, Budget (change every iteration)
+
+        This allows anthropic_provider to split into content blocks with cache_control,
+        enabling prompt cache for Haiku agents (system 2700t + stable user ≥ 1400t → crosses 4096 threshold).
+        """
+        from llm_service.api.agent import TeamMemberInfo
+
         body = self._build_body(history_turns=3)
+        body.team_roster = [
+            TeamMemberInfo(agent_id="TestAgent", role="researcher", task="Research React"),
+            TeamMemberInfo(agent_id="Agent-B", role="analyst", task="Analyze data"),
+        ]
         messages = build_agent_messages(body)
-        for msg in messages:
-            content = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
-            assert "<!-- cache_break -->" not in content
+        user_content = messages[1]["content"]
+
+        # Marker must exist in user message
+        assert "<!-- cache_break -->" in user_content
+
+        # Stable parts (Task, Team) must be BEFORE the marker
+        parts = user_content.split("<!-- cache_break -->", 1)
+        stable = parts[0]
+        volatile = parts[1]
+        assert "## Task" in stable
+        assert "## Your Team" in stable
+
+        # Volatile parts (History, Budget) must be AFTER the marker
+        assert "## Previous Actions" in volatile
+        assert "Budget" in volatile
+
+    def test_cache_break_stable_includes_team_knowledge(self):
+        """Team Knowledge (L2) should be in the stable (cached) block."""
+        from llm_service.api.agent import TeamMemberInfo, TeamKnowledgeEntry
+
+        body = self._build_body(history_turns=1)
+        body.team_roster = [
+            TeamMemberInfo(agent_id="TestAgent", role="researcher", task="Research React"),
+        ]
+        body.team_knowledge = [
+            TeamKnowledgeEntry(url="https://example.com/react", agent="Agent-B", summary="React info"),
+        ]
+        messages = build_agent_messages(body)
+        user_content = messages[1]["content"]
+
+        parts = user_content.split("<!-- cache_break -->", 1)
+        stable = parts[0]
+        assert "## Team Knowledge" in stable
 
     def test_budget_in_last_user_message(self):
         """Budget and action prompt are in the final user message."""
@@ -717,10 +759,8 @@ class TestAgentLoopMessageStructure:
         assert captured_messages[1]["role"] == "user"
         # History should be in the user message, not as separate messages
         assert "Previous Actions" in captured_messages[1]["content"]
-        # No cache_break marker
-        for msg in captured_messages:
-            c = msg["content"] if isinstance(msg["content"], str) else str(msg["content"])
-            assert "<!-- cache_break -->" not in c
+        # Cache break marker should be present (stable/volatile split for prompt caching)
+        assert "<!-- cache_break -->" in captured_messages[1]["content"]
 
 
 class TestContextTrimming(unittest.TestCase):
