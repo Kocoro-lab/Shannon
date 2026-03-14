@@ -29,7 +29,11 @@ func TestBuildClosingSummary(t *testing.T) {
 		{Path: "tests/test_api.py", Content: "test content", Truncated: false},
 	}
 
-	summary := buildClosingSummary(results, files)
+	currentRunFiles := map[string]bool{
+		"api/server.py":     true,
+		"tests/test_api.py": true,
+	}
+	summary := buildClosingSummary(results, files, currentRunFiles)
 
 	assert.Contains(t, summary, "2 agents completed")
 	assert.Contains(t, summary, "Akiba")
@@ -38,6 +42,35 @@ func TestBuildClosingSummary(t *testing.T) {
 	assert.Contains(t, summary, "api/server.py")
 	assert.Contains(t, summary, "tests/test_api.py")
 	assert.Contains(t, summary, "Implemented the API server")
+	assert.Contains(t, summary, "2 from this run")
+}
+
+func TestBuildClosingSummaryPrioritizesCurrentRun(t *testing.T) {
+	results := map[string]AgentLoopResult{
+		"Akiba": {
+			AgentID:  "Akiba",
+			Role:     "researcher",
+			Response: "Found backend comparison data.",
+			Success:  true,
+		},
+	}
+
+	files := []activities.WorkspaceMaterial{
+		{Path: "research/old-react-comparison.md", Content: "old file content from previous run"},
+		{Path: "research/akiba-backend.md", Content: "current run backend findings"},
+	}
+
+	currentRunFiles := map[string]bool{
+		"research/akiba-backend.md": true,
+	}
+	summary := buildClosingSummary(results, files, currentRunFiles)
+
+	// Current run file should have content
+	assert.Contains(t, summary, "current run backend findings")
+	// Old file should only have path, not content
+	assert.Contains(t, summary, "research/old-react-comparison.md")
+	assert.NotContains(t, summary, "old file content from previous run")
+	assert.Contains(t, summary, "previous runs")
 }
 
 func TestBuildClosingSummaryNoFiles(t *testing.T) {
@@ -50,7 +83,7 @@ func TestBuildClosingSummaryNoFiles(t *testing.T) {
 		},
 	}
 
-	summary := buildClosingSummary(results, nil)
+	summary := buildClosingSummary(results, nil, nil)
 
 	assert.Contains(t, summary, "1 agents completed")
 	assert.Contains(t, summary, "No workspace files")
@@ -67,7 +100,7 @@ func TestBuildClosingSummaryTruncatesLongResponses(t *testing.T) {
 		},
 	}
 
-	summary := buildClosingSummary(results, nil)
+	summary := buildClosingSummary(results, nil, nil)
 	assert.True(t, len(summary) < len(longResponse))
 }
 

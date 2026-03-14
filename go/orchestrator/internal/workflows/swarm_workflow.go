@@ -191,6 +191,31 @@ func toFloat64(v interface{}) float64 {
 	}
 }
 
+// convertHistoryForLead converts session conversation history into a concise format for Lead.
+// Keeps last few exchanges, truncates long assistant responses to avoid bloating Lead's context.
+func convertHistoryForLead(messages []Message) []map[string]interface{} {
+	const maxMessages = 6   // Last 3 turns (user + assistant)
+	const maxAssistantLen = 800
+
+	start := 0
+	if len(messages) > maxMessages {
+		start = len(messages) - maxMessages
+	}
+
+	result := make([]map[string]interface{}, 0, len(messages)-start)
+	for _, msg := range messages[start:] {
+		content := msg.Content
+		if msg.Role == "assistant" && len(content) > maxAssistantLen {
+			content = content[:maxAssistantLen] + "\n... [truncated — use file_read to check workspace for full details]"
+		}
+		result = append(result, map[string]interface{}{
+			"role":    msg.Role,
+			"content": content,
+		})
+	}
+	return result
+}
+
 // ── fetchTracker ────────────────────────────────────────────────────────────
 // Consolidates L1 fetch cache, L2 team knowledge, and L3 search overlap
 // into a single structure, eliminating duplicated check/write logic.
@@ -505,7 +530,8 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 	var lastMailboxSeq uint64
 	var filesWritten []string // Paths written by file_write during current task
 	var consecutiveToolErrors int   // Track consecutive tool failures to prevent infinite loops
-	var consecutiveNonToolActions int // Track iterations without tool calls for convergence detection
+	var consecutiveNonToolActions int    // Track iterations without tool calls for convergence detection
+	var consecutiveMsgWithoutWrite int // Track send_message/publish_data without file_write
 	var consecutiveTransientErrors int // Track transient errors for escalating backoff
 	var stepResult activities.AgentLoopStepResult // Declared outside loop so shutdown check can reference previous iteration's result
 	var lastResponseID string                     // OpenAI Responses API: chain from previous response for cache reuse
@@ -645,7 +671,7 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 			SessionID:          input.SessionID,
 			TeamRoster:         teamRoster,
 			WorkspaceData:      wsSnippets,
-			SuggestedTools:     []string{"web_search", "web_fetch", "web_subpage_fetch", "web_crawl", "python_executor", "calculator", "file_read", "file_write", "file_edit", "file_list", "file_search", "diff_files", "json_query"},
+			SuggestedTools:     []string{"web_search", "web_fetch", "web_subpage_fetch", "web_crawl", "python_executor", "calculator", "file_read", "file_write", "file_edit", "file_delete", "file_list", "file_search", "diff_files", "json_query"},
 			RoleDescription:    input.Task,
 			Role:               input.Role,
 			TaskList:           currentTaskList,
@@ -874,6 +900,10 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 
 		case "tool_call":
 			consecutiveNonToolActions = 0 // Tool use = progress
+			// Reset message spam counter on file_write/file_edit (agent is producing output)
+			if stepResult.Tool == "file_write" || stepResult.Tool == "file_edit" {
+				consecutiveMsgWithoutWrite = 0
+			}
 
 			// Auto-inject extract_prompt for web_fetch/web_crawl so extraction
 			// LLM focuses on data the agent actually needs (not generic extraction).
@@ -1086,9 +1116,15 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 			}
 
 		case "send_message":
-			// Collaborative action — do NOT count toward convergence.
-			// Sending messages is active collaboration, not idle behavior.
-			consecutiveNonToolActions = 0
+			// Collaborative action — but spam detection: 3+ messages without file_write is non-progress.
+			consecutiveMsgWithoutWrite++
+			if consecutiveMsgWithoutWrite >= 3 {
+				consecutiveNonToolActions++
+				logger.Warn("Agent send_message spam detected: 3+ messages without file_write",
+					"agent_id", input.AgentID, "count", consecutiveMsgWithoutWrite)
+			} else {
+				consecutiveNonToolActions = 0
+			}
 			// Send message to another agent via P2P mailbox
 			_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
 				WorkflowID: input.WorkflowID,
@@ -1124,9 +1160,15 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 			})
 
 		case "publish_data":
-			// Collaborative action — do NOT count toward convergence.
-			// Publishing findings is sharing progress with the team.
-			consecutiveNonToolActions = 0
+			// Collaborative action — but spam detection: 3+ messages without file_write is non-progress.
+			consecutiveMsgWithoutWrite++
+			if consecutiveMsgWithoutWrite >= 3 {
+				consecutiveNonToolActions++
+				logger.Warn("Agent publish_data spam detected: 3+ without file_write",
+					"agent_id", input.AgentID, "count", consecutiveMsgWithoutWrite)
+			} else {
+				consecutiveNonToolActions = 0
+			}
 			// Publish to workspace topic
 			_ = workflow.ExecuteActivity(p2pCtx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
 				WorkflowID: input.WorkflowID,
@@ -1148,6 +1190,7 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 		case "idle":
 			// Agent goes idle — notify parent and wait for new task (Temporal Signal)
 			consecutiveNonToolActions = 0
+			consecutiveMsgWithoutWrite = 0
 			logger.Info("Agent going idle", "agent_id", input.AgentID)
 
 			// Build result summary for Lead: prefer savedDoneResponse (from done→idle),
@@ -1677,7 +1720,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	// Lead activity context — longer timeout for LLM call
 	leadCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 90 * time.Second,
+		StartToCloseTimeout: 150 * time.Second,
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 2},
 	})
 
@@ -1708,6 +1751,23 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 	agentTaskMap := make(map[string]string)            // agentID → current taskID
 	leadHistory := make([]map[string]interface{}, 0) // Must be non-nil for JSON → Pydantic List
 
+	// Version gate for Lead tool_call support (Temporal replay safety)
+	leadToolCallV := workflow.GetVersion(ctx, "lead-tool-call-v1", workflow.DefaultVersion, 1)
+
+	allowedLeadTools := map[string]bool{
+		"web_search": true, "web_fetch": true, "calculator": true,
+		"file_list": true, "file_read": true,
+	}
+
+	const maxToolCallRounds = 5
+
+	// Dedicated activity context for Lead tool execution (web_search/web_fetch need 30-60s).
+	// p2pCtx has 10s timeout which is too short — tool calls would always timeout.
+	toolCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 90 * time.Second,
+		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
+	})
+
 	// ── Phase 1: Lead Initial Planning ──────────────────────────────────────
 	// Lead Agent decomposes the query into tasks and decides which agents to spawn.
 	// This replaces the old DecomposeTask → static roster approach.
@@ -1719,67 +1779,245 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
 
+	// Convert session history for Lead multi-turn context
+	var conversationHistory []map[string]interface{}
+	if len(input.History) > 0 {
+		conversationHistory = convertHistoryForLead(input.History)
+	}
+
 	var planDecision activities.LeadDecisionResult
-	planErr := workflow.ExecuteActivity(leadCtx, constants.LeadDecisionActivity, activities.LeadDecisionInput{
-		WorkflowID: workflowID,
-		Event: activities.LeadEvent{
-			Type:          "initial_plan",
-			ResultSummary: input.Query,
-		},
-		TaskList:    make([]activities.SwarmTask, 0),
-		AgentStates: make([]activities.LeadAgentState, 0),
-		Budget: activities.LeadBudget{
-			TotalLLMCalls:       0,
-			RemainingLLMCalls:   maxLLMCalls,
-			TotalTokens:         0,
-			RemainingTokens:     maxTokens,
-			ElapsedSeconds:      0,
-			MaxWallClockSeconds: maxWallClockSeconds,
-		},
-		History:       leadHistory,
-		OriginalQuery: input.Query,
-	}).Get(ctx, &planDecision)
-
-	if planErr != nil {
-		logger.Error("Lead initial planning failed", "error", planErr)
-		return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Lead planning failed: %v", planErr)}, planErr
+	planEvent := activities.LeadEvent{
+		Type:          "initial_plan",
+		ResultSummary: input.Query,
 	}
+	// Phase 1 inner loop: handles tool_call actions (same pattern as Phase 2).
+	// Lead may return tool_call to search/fetch before deciding on plan.
+	for phase1ToolRound := 0; phase1ToolRound <= maxToolCallRounds; phase1ToolRound++ {
+		elapsed = int(workflow.Now(ctx).Sub(swarmStartTime).Seconds())
+		planErr := workflow.ExecuteActivity(leadCtx, constants.LeadDecisionActivity, activities.LeadDecisionInput{
+			WorkflowID: workflowID,
+			Event:      planEvent,
+			TaskList:   make([]activities.SwarmTask, 0),
+			AgentStates: make([]activities.LeadAgentState, 0),
+			Budget: activities.LeadBudget{
+				TotalLLMCalls:       budgetTotalLLMCalls,
+				RemainingLLMCalls:   maxLLMCalls - budgetTotalLLMCalls,
+				TotalTokens:         budgetTotalTokens,
+				RemainingTokens:     maxTokens - budgetTotalTokens,
+				ElapsedSeconds:      elapsed,
+				MaxWallClockSeconds: maxWallClockSeconds,
+			},
+			History:             leadHistory,
+			OriginalQuery:       input.Query,
+			ConversationHistory: conversationHistory,
+		}).Get(ctx, &planDecision)
 
-	budgetTotalLLMCalls++
-	budgetTotalTokens += planDecision.TokensUsed
-
-	// Record Lead initial plan token usage
-	{
-		recCtx := opts.WithTokenRecordOptions(ctx)
-		provider := planDecision.Provider
-		if provider == "" {
-			provider = detectProviderFromModel(planDecision.ModelUsed)
+		if planErr != nil {
+			logger.Error("Lead initial planning failed", "error", planErr)
+			return TaskResult{Success: false, ErrorMessage: fmt.Sprintf("Lead planning failed: %v", planErr)}, planErr
 		}
-		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-			UserID:              input.UserID,
-			SessionID:           input.SessionID,
-			TaskID:              workflowID,
-			AgentID:             "swarm-lead",
-			Model:               planDecision.ModelUsed,
-			Provider:            provider,
-			InputTokens:         planDecision.InputTokens,
-			OutputTokens:        planDecision.OutputTokens,
-			CacheReadTokens:     planDecision.CacheReadTokens,
-			CacheCreationTokens: planDecision.CacheCreationTokens,
-			Metadata:            map[string]interface{}{"workflow": "swarm", "phase": "initial_plan"},
-		}).Get(ctx, nil)
-	}
 
-	leadHistory = append(leadHistory, map[string]interface{}{
-		"decision_summary": planDecision.DecisionSummary,
-		"event":            "initial_plan",
-		"actions":          len(planDecision.Actions),
-	})
+		budgetTotalLLMCalls++
+		budgetTotalTokens += planDecision.TokensUsed
+
+		// Record Lead token usage
+		{
+			recCtx := opts.WithTokenRecordOptions(ctx)
+			provider := planDecision.Provider
+			if provider == "" {
+				provider = detectProviderFromModel(planDecision.ModelUsed)
+			}
+			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:              input.UserID,
+				SessionID:           input.SessionID,
+				TaskID:              workflowID,
+				AgentID:             "swarm-lead",
+				Model:               planDecision.ModelUsed,
+				Provider:            provider,
+				InputTokens:         planDecision.InputTokens,
+				OutputTokens:        planDecision.OutputTokens,
+				CacheReadTokens:     planDecision.CacheReadTokens,
+				CacheCreationTokens: planDecision.CacheCreationTokens,
+				Metadata:            map[string]interface{}{"workflow": "swarm", "phase": "initial_plan"},
+			}).Get(ctx, nil)
+		}
+
+		leadHistory = append(leadHistory, map[string]interface{}{
+			"decision_summary": planDecision.DecisionSummary,
+			"event":            "initial_plan",
+			"actions":          len(planDecision.Actions),
+		})
+
+		// Separate actions into file I/O, tool_call, and others
+		var fileIOActions []activities.LeadAction
+		var toolCallActions []activities.LeadAction
+		var otherActions []activities.LeadAction
+		for _, action := range planDecision.Actions {
+			if action.Type == "file_read" || action.Type == "file_list" {
+				fileIOActions = append(fileIOActions, action)
+			} else if leadToolCallV >= 1 && action.Type == "tool_call" {
+				toolCallActions = append(toolCallActions, action)
+			} else {
+				otherActions = append(otherActions, action)
+			}
+		}
+
+		// Handle interim_reply before I/O — only emit on first round to avoid repetitive messages
+		if phase1ToolRound == 0 {
+			for _, action := range otherActions {
+				if action.Type == "interim_reply" && action.Content != "" {
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventLLMOutput,
+						AgentID:    "swarm-lead",
+						Message:    action.Content,
+						Payload: map[string]interface{}{
+							"role":    "lead",
+							"interim": true,
+						},
+						Timestamp: workflow.Now(ctx),
+					}).Get(ctx, nil)
+				}
+			}
+		}
+
+		// Execute file I/O AND tool_call in the same round (no mutual exclusion)
+		ranFileIO := false
+		ranToolCalls := false
+
+		// File I/O: file_read + file_list (zero LLM cost)
+		if len(fileIOActions) > 0 && phase1ToolRound < maxToolCallRounds {
+			ranFileIO = true
+			var fileContents []activities.FileReadResult
+			for _, fr := range fileIOActions {
+				if fr.Type == "file_list" {
+					var listResult activities.ListWorkspaceFilesResult
+					listErr := workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+						activities.ListWorkspaceFilesInput{SessionID: input.SessionID}).Get(ctx, &listResult)
+					if listErr != nil {
+						fileContents = append(fileContents, activities.FileReadResult{Path: ".", Error: listErr.Error()})
+					} else {
+						var listing string
+						for _, f := range listResult.Files {
+							listing += f.Path + "\n"
+						}
+						if listing == "" {
+							listing = "(empty workspace)"
+						}
+						fileContents = append(fileContents, activities.FileReadResult{Path: ".", Content: listing})
+					}
+				} else if fr.Path != "" {
+					var readResult activities.ReadWorkspaceFileResult
+					readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
+						activities.ReadWorkspaceFileInput{
+							SessionID: input.SessionID, Path: fr.Path, MaxChars: 4000,
+						}).Get(ctx, &readResult)
+					if readErr != nil {
+						fileContents = append(fileContents, activities.FileReadResult{Path: fr.Path, Error: readErr.Error()})
+					} else {
+						fileContents = append(fileContents, activities.FileReadResult{
+							Path: readResult.Path, Content: readResult.Content,
+							Truncated: readResult.Truncated, Error: readResult.Error,
+						})
+					}
+				}
+			}
+			planEvent.FileContents = fileContents
+		}
+
+		// Tool calls
+		if len(toolCallActions) > 0 && phase1ToolRound < maxToolCallRounds {
+			ranToolCalls = true
+			var toolResults []activities.ToolResultEntry
+			for _, tc := range toolCallActions {
+				if !allowedLeadTools[tc.Tool] {
+					toolResults = append(toolResults, activities.ToolResultEntry{
+						Tool: tc.Tool, Error: fmt.Sprintf("tool %q not in allowlist", tc.Tool),
+					})
+					continue
+				}
+				_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+					WorkflowID: workflowID,
+					EventType:  activities.StreamEventLeadToolCall,
+					AgentID:    "swarm-lead",
+					Message:    fmt.Sprintf("Lead executing %s", tc.Tool),
+					Payload: map[string]interface{}{"tool": tc.Tool, "phase": "initial_plan"},
+					Timestamp: workflow.Now(ctx),
+				}).Get(ctx, nil)
+				var toolResult activities.LeadToolResult
+				toolErr := workflow.ExecuteActivity(toolCtx, constants.LeadExecuteToolActivity,
+					activities.LeadToolInput{
+						Tool: tc.Tool, ToolParams: tc.ToolParams, SessionID: input.SessionID,
+					}).Get(ctx, &toolResult)
+				if toolErr != nil {
+					toolResults = append(toolResults, activities.ToolResultEntry{Tool: tc.Tool, Error: toolErr.Error()})
+				} else {
+					output := toolResult.Output
+					maxChars := 4000
+					if tc.Tool == "calculator" {
+						maxChars = 500
+					}
+					if len(output) > maxChars {
+						output = output[:maxChars] + "\n... [truncated]"
+					}
+					toolResults = append(toolResults, activities.ToolResultEntry{
+						Tool: tc.Tool, Output: output, Error: toolResult.Error,
+					})
+				}
+				logger.Info("Lead Phase 1 tool_call executed", "tool", tc.Tool, "round", phase1ToolRound)
+			}
+			planEvent.ToolResults = toolResults
+		}
+
+		// Clear stale fields (M2)
+		if ranFileIO && !ranToolCalls {
+			planEvent.ToolResults = nil
+		}
+		if ranToolCalls && !ranFileIO {
+			planEvent.FileContents = nil
+		}
+
+		// If any I/O was executed, loop back for another LeadDecision
+		if !ranFileIO && !ranToolCalls {
+			break // No more I/O — proceed to action processing
+		}
+		logger.Info("Lead Phase 1 I/O round complete, calling LeadDecision again",
+			"round", phase1ToolRound, "ranFileIO", ranFileIO, "ranToolCalls", ranToolCalls)
+		continue
+	}
 
 	logger.Info("Lead initial plan",
 		"summary", planDecision.DecisionSummary,
 		"actions", len(planDecision.Actions),
 	)
+
+	// Check if Lead wants to reply directly (no agents needed)
+	// This happens when Lead uses tool_call to gather data and then replies.
+	// Version-gated: old workflows in replay won't have this early return path.
+	directReplyV := workflow.GetVersion(ctx, "swarm_direct_reply_v1", workflow.DefaultVersion, 1)
+	if directReplyV >= 1 {
+		var directReply string
+		for _, action := range planDecision.Actions {
+			if action.Type == "reply" || action.Type == "done" {
+				directReply = action.Content
+				break
+			}
+		}
+		if directReply != "" {
+			logger.Info("Lead answering directly without agents", "reply_len", len(directReply))
+			_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+				WorkflowID: workflowID,
+				EventType:  activities.StreamEventLLMOutput,
+				AgentID:    "swarm-lead",
+				Message:    directReply,
+				Timestamp:  workflow.Now(ctx),
+			}).Get(ctx, nil)
+			return TaskResult{
+				Success: true,
+				Result:  directReply,
+			}, nil
+		}
+	}
 
 	// Emit LEAD_DECISION so the frontend can show Lead's pulse in Radar
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
@@ -1918,6 +2156,27 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}).Get(ctx, nil)
 	}
 
+	// Phase 1b: Process task description updates from revise_plan
+	// Version-gated: this activity call didn't exist in older workflows.
+	phase1DescV := workflow.GetVersion(ctx, "swarm_phase1_task_desc_update_v1", workflow.DefaultVersion, 1)
+	if phase1DescV >= 1 {
+		for _, action := range planDecision.Actions {
+			if action.Type == "revise_plan" {
+				for _, upd := range action.Update {
+					taskID := fmt.Sprintf("%v", upd["id"])
+					desc, _ := upd["description"].(string)
+					if taskID != "" && desc != "" {
+						_ = workflow.ExecuteActivity(p2pCtx, constants.UpdateTaskDescriptionActivity, activities.UpdateTaskDescriptionInput{
+							WorkflowID:  workflowID,
+							TaskID:      taskID,
+							Description: desc,
+						}).Get(ctx, nil)
+					}
+				}
+			}
+		}
+	}
+
 	// Phase 2: Process remaining actions (interim_reply, spawn_agent, etc.)
 	for _, action := range planDecision.Actions {
 		switch action.Type {
@@ -2013,6 +2272,18 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 	// Signal channel for HITL (Human-in-the-Loop) — user can send messages to Lead mid-execution
 	humanInputCh := workflow.GetSignalChannel(ctx, "human-input")
+
+	// Throttle interim_reply emissions — suppress if <60s since last emit
+	const interimThrottleSeconds = 60
+	var lastInterimEmitTime time.Time
+
+	// Track whether a HITL message has been received but not yet acted on
+	// (i.e., Lead hasn't created tasks or revised plan in response).
+	// Prevents FORCED CLOSE from skipping deferred user requests.
+	// After 2 checkpoint rounds without action, give up to prevent infinite loop.
+	hitlPendingAction := false
+	hitlReminderCount := 0
+	var hitlMessages []string // Accumulate all HITL messages for Lead context
 
 	// Event-driven Lead loop (D1, D5: event coalescing)
 	for completedCount < totalExpected {
@@ -2229,6 +2500,8 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			ch.Receive(ctx, &humanMsg)
 			message := humanMsg["message"]
 			logger.Info("Lead received human input", "message", message)
+			hitlPendingAction = true
+			hitlMessages = append(hitlMessages, message)
 
 			event = activities.LeadEvent{
 				Type:         "human_input",
@@ -2414,35 +2687,43 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			}
 			// Terminal state: all agents idle, none running, no pending tasks.
 			// Lead already had its chance during agent_idle events — force wrap-up.
+			// EXCEPTION: if there's an unresolved HITL message, give Lead another chance (max 2 rounds).
 			if hasIdleAgent && !hasRunningAgent && !hasPendingTask {
-				logger.Info("Terminal state: all agents idle with no pending tasks — auto-completing")
-				// Shutdown all non-completed agents
-				for _, af := range agentFutures {
-					if af.WorkflowID != "" {
-						if s, ok := agentStates[af.ID]; ok && s.Status == "completed" {
-							continue
+				if hitlPendingAction && hitlReminderCount < 2 {
+					hitlReminderCount++
+					logger.Info("Terminal state but HITL pending — giving Lead another chance",
+						"reminder", hitlReminderCount)
+					// Fall through to normal LeadDecision below
+				} else {
+					logger.Info("Terminal state: all agents idle with no pending tasks — auto-completing")
+					// Shutdown all non-completed agents
+					for _, af := range agentFutures {
+						if af.WorkflowID != "" {
+							if s, ok := agentStates[af.ID]; ok && s.Status == "completed" {
+								continue
+							}
+							_ = workflow.SignalExternalWorkflow(ctx, af.WorkflowID, "",
+								fmt.Sprintf("agent:%s:shutdown", af.ID), "Auto-complete",
+							).Get(ctx, nil)
+							// Emit AGENT_COMPLETED so frontend can remove radar flight
+							_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+								WorkflowID: workflowID,
+								EventType:  activities.StreamEventAgentCompleted,
+								AgentID:    af.ID,
+								Message:    activities.MsgAgentCompleted(af.ID),
+								Timestamp:  workflow.Now(ctx),
+							}).Get(ctx, nil)
 						}
-						_ = workflow.SignalExternalWorkflow(ctx, af.WorkflowID, "",
-							fmt.Sprintf("agent:%s:shutdown", af.ID), "Auto-complete",
-						).Get(ctx, nil)
-						// Emit AGENT_COMPLETED so frontend can remove radar flight
-						_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-							WorkflowID: workflowID,
-							EventType:  activities.StreamEventAgentCompleted,
-							AgentID:    af.ID,
-							Message:    activities.MsgAgentCompleted(af.ID),
-							Timestamp:  workflow.Now(ctx),
-						}).Get(ctx, nil)
 					}
-				}
-				// Populate results from idle snapshots (agents already did the work)
-				for agentID, snap := range idleSnapshots {
-					if _, exists := results[agentID]; !exists {
-						results[agentID] = snap
-						logger.Info("Using idle snapshot for agent result", "agent_id", agentID)
+					// Populate results from idle snapshots (agents already did the work)
+					for agentID, snap := range idleSnapshots {
+						if _, exists := results[agentID]; !exists {
+							results[agentID] = snap
+							logger.Info("Using idle snapshot for agent result", "agent_id", agentID)
+						}
 					}
+					goto synthesis
 				}
-				goto synthesis
 			}
 		}
 
@@ -2487,13 +2768,42 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			}
 		}
 
-		// Lead decision with optional file_read inner loop (max 3 rounds).
-		// When Lead returns file_read actions, Go reads the files (zero LLM cost)
-		// and calls LeadDecision again with file contents injected into the event.
+		// Collect workspace file paths for Lead context — scan DISK so multi-turn
+		// conversations see files from previous swarm runs, not just current run.
+		var wsFileList []string
+		{
+			var diskFiles activities.ListWorkspaceFilesResult
+			_ = workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+				activities.ListWorkspaceFilesInput{SessionID: input.SessionID},
+			).Get(ctx, &diskFiles)
+			seen := make(map[string]bool)
+			for _, f := range diskFiles.Files {
+				if !seen[f.Path] {
+					wsFileList = append(wsFileList, f.Path)
+					seen[f.Path] = true
+				}
+			}
+			// Merge agent-reported files (in case disk scan missed in-flight writes)
+			for _, s := range agentStates {
+				for _, f := range s.FilesWritten {
+					if !seen[f] {
+						wsFileList = append(wsFileList, f)
+						seen[f] = true
+					}
+				}
+			}
+		}
+
+		// Lead decision with optional file_read / tool_call inner loop.
+		// When Lead returns file_read or tool_call actions, Go executes them (zero LLM cost
+		// for file_read; direct tool invocation for tool_call) and calls LeadDecision again
+		// with results injected into the event.
 		const maxFileReadRounds = 3
 		var decision activities.LeadDecisionResult
 		var leadDecisionOK bool
-		for fileReadRound := 0; fileReadRound <= maxFileReadRounds; fileReadRound++ {
+		fileReadRound := 0
+		toolCallRound := 0
+		for fileReadRound <= maxFileReadRounds || toolCallRound < maxToolCallRounds {
 			// Refresh elapsed time each round so Lead gets accurate budget info
 			elapsed = int(workflow.Now(ctx).Sub(swarmStartTime).Seconds())
 			// Call Lead LLM for decision (D2: Temporal Activity ensures replay determinism)
@@ -2510,9 +2820,12 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 					ElapsedSeconds:      elapsed,
 					MaxWallClockSeconds: maxWallClockSeconds,
 				},
-				History:       leadHistory,
-				Messages:      leadMsgMaps,
-				OriginalQuery: input.Query,
+				History:             leadHistory,
+				Messages:            leadMsgMaps,
+				OriginalQuery:       input.Query,
+				ConversationHistory: conversationHistory,
+				WorkspaceFiles:      wsFileList,
+				HitlMessages:        hitlMessages,
 			}).Get(ctx, &decision)
 
 			if leadErr != nil {
@@ -2558,63 +2871,131 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				leadHistory = leadHistory[len(leadHistory)-maxLeadHistory:]
 			}
 
-			// Check for file_read actions — if found, execute reads and loop back
-			var fileReadActions []activities.LeadAction
+			// Classify actions into file I/O, tool_call, and others (M1: include file_list)
+			var fileIOActions []activities.LeadAction
+			var toolCallActions []activities.LeadAction
 			var otherActions []activities.LeadAction
 			for _, action := range decision.Actions {
-				if action.Type == "file_read" {
-					fileReadActions = append(fileReadActions, action)
+				if action.Type == "file_read" || action.Type == "file_list" {
+					fileIOActions = append(fileIOActions, action)
+				} else if leadToolCallV >= 1 && action.Type == "tool_call" {
+					toolCallActions = append(toolCallActions, action)
 				} else {
 					otherActions = append(otherActions, action)
 				}
 			}
 
-			if len(fileReadActions) > 0 && fileReadRound < maxFileReadRounds {
-				// Execute file reads (zero LLM cost — pure file I/O)
-				var fileContents []activities.FileReadResult
-				for _, fr := range fileReadActions {
-					if fr.Path == "" {
-						continue
-					}
-					var readResult activities.ReadWorkspaceFileResult
-					readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
-						activities.ReadWorkspaceFileInput{
-							SessionID: input.SessionID,
-							Path:      fr.Path,
-							MaxChars:  4000,
-						}).Get(ctx, &readResult)
-					if readErr != nil {
-						fileContents = append(fileContents, activities.FileReadResult{
-							Path:  fr.Path,
-							Error: readErr.Error(),
-						})
-					} else {
-						fileContents = append(fileContents, activities.FileReadResult{
-							Path:      readResult.Path,
-							Content:   readResult.Content,
-							Truncated: readResult.Truncated,
-							Error:     readResult.Error,
-						})
-					}
-					logger.Info("Lead file_read executed",
-						"path", fr.Path,
-						"round", fileReadRound,
-						"has_content", readResult.Content != "",
-					)
-				}
+			// Execute file I/O AND tool_call in the same round (M3: no mutual exclusion)
+			ranFileIO := false
+			ranToolCalls := false
 
-				// Inject file contents into event and loop back for another Lead decision
+			// File I/O: file_read + file_list (zero LLM cost)
+			if len(fileIOActions) > 0 && fileReadRound < maxFileReadRounds {
+				fileReadRound++
+				ranFileIO = true
+				var fileContents []activities.FileReadResult
+				for _, fr := range fileIOActions {
+					if fr.Type == "file_list" {
+						var listResult activities.ListWorkspaceFilesResult
+						listErr := workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+							activities.ListWorkspaceFilesInput{SessionID: input.SessionID}).Get(ctx, &listResult)
+						if listErr != nil {
+							fileContents = append(fileContents, activities.FileReadResult{Path: ".", Error: listErr.Error()})
+						} else {
+							var listing string
+							for _, f := range listResult.Files {
+								listing += f.Path + "\n"
+							}
+							if listing == "" {
+								listing = "(empty workspace)"
+							}
+							fileContents = append(fileContents, activities.FileReadResult{Path: ".", Content: listing})
+						}
+					} else if fr.Path != "" {
+						var readResult activities.ReadWorkspaceFileResult
+						readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
+							activities.ReadWorkspaceFileInput{
+								SessionID: input.SessionID, Path: fr.Path, MaxChars: 4000,
+							}).Get(ctx, &readResult)
+						if readErr != nil {
+							fileContents = append(fileContents, activities.FileReadResult{Path: fr.Path, Error: readErr.Error()})
+						} else {
+							fileContents = append(fileContents, activities.FileReadResult{
+								Path: readResult.Path, Content: readResult.Content,
+								Truncated: readResult.Truncated, Error: readResult.Error,
+							})
+						}
+					}
+				}
 				event.FileContents = fileContents
-				logger.Info("Lead file_read round complete, calling LeadDecision again",
-					"round", fileReadRound,
-					"files_read", len(fileContents),
-				)
-				continue // Loop back to call LeadDecision with file contents
 			}
 
-			// No file_read actions (or max rounds reached) — replace decision.Actions
-			// with otherActions (file_reads already handled) if we had any
-			if len(fileReadActions) > 0 {
+			// Tool calls (zero LLM cost — direct tool invocation)
+			if len(toolCallActions) > 0 && toolCallRound < maxToolCallRounds {
+				toolCallRound++
+				ranToolCalls = true
+				var toolResults []activities.ToolResultEntry
+				for _, tc := range toolCallActions {
+					if !allowedLeadTools[tc.Tool] {
+						logger.Warn("Lead requested disallowed tool, skipping", "tool", tc.Tool)
+						toolResults = append(toolResults, activities.ToolResultEntry{
+							Tool: tc.Tool, Error: fmt.Sprintf("tool %q not in allowlist", tc.Tool),
+						})
+						continue
+					}
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventLeadToolCall,
+						AgentID:    "swarm-lead",
+						Message:    fmt.Sprintf("Lead executing %s", tc.Tool),
+						Payload: map[string]interface{}{
+							"tool": tc.Tool, "phase": "lead_tool_call",
+						},
+						Timestamp: workflow.Now(ctx),
+					}).Get(ctx, nil)
+					var toolResult activities.LeadToolResult
+					toolErr := workflow.ExecuteActivity(toolCtx, constants.LeadExecuteToolActivity,
+						activities.LeadToolInput{
+							Tool: tc.Tool, ToolParams: tc.ToolParams, SessionID: input.SessionID,
+						}).Get(ctx, &toolResult)
+					if toolErr != nil {
+						toolResults = append(toolResults, activities.ToolResultEntry{Tool: tc.Tool, Error: toolErr.Error()})
+					} else {
+						output := toolResult.Output
+						maxChars := 4000
+						if tc.Tool == "calculator" {
+							maxChars = 500
+						}
+						if len(output) > maxChars {
+							output = output[:maxChars] + "\n... [truncated]"
+						}
+						toolResults = append(toolResults, activities.ToolResultEntry{
+							Tool: tc.Tool, Output: output, Error: toolResult.Error,
+						})
+					}
+					logger.Info("Lead tool_call executed", "tool", tc.Tool, "round", toolCallRound)
+				}
+				event.ToolResults = toolResults
+			}
+
+			// M2: clear stale fields — if only one type ran, nil out the other
+			if ranFileIO && !ranToolCalls {
+				event.ToolResults = nil
+			}
+			if ranToolCalls && !ranFileIO {
+				event.FileContents = nil
+			}
+
+			// If any I/O was executed, loop back for another LeadDecision
+			if ranFileIO || ranToolCalls {
+				logger.Info("Lead I/O round complete, calling LeadDecision again",
+					"fileReadRound", fileReadRound, "toolCallRound", toolCallRound)
+				continue
+			}
+
+			// No file_read/file_list/tool_call actions (or max rounds reached) — replace decision.Actions
+			// with otherActions (file_reads/tool_calls already handled) if we had any
+			if len(fileIOActions) > 0 || len(toolCallActions) > 0 {
 				decision.Actions = otherActions
 			}
 			leadDecisionOK = true
@@ -2657,6 +3038,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		for _, action := range decision.Actions {
 			switch action.Type {
 			case "spawn_agent":
+				hitlPendingAction = false // Lead acted on user request
 				if strings.TrimSpace(action.TaskDescription) == "" {
 					logger.Warn("Lead spawn ignored: empty task description", "role", action.Role)
 					continue
@@ -2709,6 +3091,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				}
 
 			case "assign_task":
+				hitlPendingAction = false // Lead acted on user request
 				if action.AgentID != "" {
 					// Dependency guard
 					if action.TaskID != "" && taskHasUnmetDeps(action.TaskID, currentTaskList) {
@@ -2864,6 +3247,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				}
 
 			case "revise_plan":
+				hitlPendingAction = false // Lead acted on user request
 				for _, newTask := range action.Create {
 					task := activities.SwarmTask{
 						ID:          fmt.Sprintf("%v", newTask["id"]),
@@ -2888,6 +3272,29 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 						Status:     "completed",
 						AgentID:    "lead",
 					}).Get(ctx, nil)
+				}
+				// Update existing task descriptions
+				// Version-gated: this activity call didn't exist in older workflows.
+				phase2DescV := workflow.GetVersion(ctx, "swarm_phase2_task_desc_update_v1", workflow.DefaultVersion, 1)
+				for _, upd := range action.Update {
+					taskID := fmt.Sprintf("%v", upd["id"])
+					desc, _ := upd["description"].(string)
+					if taskID != "" && desc != "" {
+						if phase2DescV >= 1 {
+							_ = workflow.ExecuteActivity(p2pCtx, constants.UpdateTaskDescriptionActivity, activities.UpdateTaskDescriptionInput{
+								WorkflowID:  workflowID,
+								TaskID:      taskID,
+								Description: desc,
+							}).Get(ctx, nil)
+						}
+						// Sync in-memory currentTaskList (always, regardless of version)
+						for i := range currentTaskList {
+							if currentTaskList[i].ID == taskID {
+								currentTaskList[i].Description = desc
+								break
+							}
+						}
+					}
 				}
 
 			case "shutdown_agent":
@@ -2936,26 +3343,33 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 
 			case "interim_reply":
 				if action.Content != "" {
-					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
-						WorkflowID: workflowID,
-						EventType:  activities.StreamEventLLMOutput,
-						AgentID:    "swarm-lead",
-						Message:    action.Content,
-						Payload: map[string]interface{}{
-							"role":    "lead",
-							"interim": true,
-						},
-						Timestamp: workflow.Now(ctx),
-					}).Get(ctx, nil)
+					now := workflow.Now(ctx)
+					if lastInterimEmitTime.IsZero() || now.Sub(lastInterimEmitTime).Seconds() >= float64(interimThrottleSeconds) {
+						lastInterimEmitTime = now
+						_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+							WorkflowID: workflowID,
+							EventType:  activities.StreamEventLLMOutput,
+							AgentID:    "swarm-lead",
+							Message:    action.Content,
+							Payload: map[string]interface{}{
+								"role":    "lead",
+								"interim": true,
+							},
+							Timestamp: now,
+						}).Get(ctx, nil)
+					} else {
+						logger.Info("Throttled interim_reply (too frequent)",
+							"seconds_since_last", int(now.Sub(lastInterimEmitTime).Seconds()))
+					}
 				}
 
 			case "noop":
 				// Lead explicitly chose to wait — no action needed this round.
 				logger.Info("Lead chose noop — waiting for running agents")
 
-			case "done":
-				// Guard: reject premature "done" if any agent is still running.
-				// LLM sometimes returns done action while its decision_summary says "wait".
+			case "done", "reply":
+				// Guard: reject premature "done"/"reply" if any agent is still running.
+				// LLM sometimes returns done/reply action while its decision_summary says "wait".
 				hasRunning := false
 				for _, s := range agentStates {
 					if s.Status == "running" {
@@ -3152,72 +3566,193 @@ synthesis:
 	// Note: single-agent results also go through closing_checkpoint below.
 	// Agent idle summaries are internal status reports, not user-facing answers.
 
-	// --- Lead Closing Checkpoint ---
+	// --- Lead Closing Checkpoint (with file I/O + tool_call loop) ---
 	// Read workspace files for the closing summary
 	var wsResult activities.ListWorkspaceFilesResult
 	_ = workflow.ExecuteActivity(ctx, constants.ListWorkspaceFilesActivity, activities.ListWorkspaceFilesInput{
 		SessionID: input.SessionID,
 	}).Get(ctx, &wsResult)
 
-	closingSummary := buildClosingSummary(results, wsResult.Files)
+	// Collect files written by agents in THIS run (to prioritize in closing summary)
+	currentRunFiles := make(map[string]bool)
+	for _, s := range agentStates {
+		for _, f := range s.FilesWritten {
+			currentRunFiles[f] = true
+		}
+	}
 
-	// Calculate elapsed time for budget
-	closingElapsed := int(workflow.Now(ctx).Sub(swarmStartTime).Seconds())
+	closingSummary := buildClosingSummary(results, wsResult.Files, currentRunFiles)
 
-	// Ask Lead for closing decision
 	closingCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 90 * time.Second,
+		StartToCloseTimeout: 150 * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts: 2,
 		},
 	})
 
+	const maxClosingRounds = 5
 	var closingDecision activities.LeadDecisionResult
-	closingErr := workflow.ExecuteActivity(closingCtx, constants.LeadDecisionActivity, activities.LeadDecisionInput{
-		WorkflowID: workflowID,
-		Event: activities.LeadEvent{
-			Type:          "closing_checkpoint",
-			ResultSummary: closingSummary,
-		},
-		TaskList:    make([]activities.SwarmTask, 0),
-		AgentStates: make([]activities.LeadAgentState, 0),
-		Budget: activities.LeadBudget{
-			TotalLLMCalls:       budgetTotalLLMCalls,
-			RemainingLLMCalls:   maxLLMCalls - budgetTotalLLMCalls,
-			TotalTokens:         budgetTotalTokens,
-			RemainingTokens:     maxTokens - budgetTotalTokens,
-			ElapsedSeconds:      closingElapsed,
-			MaxWallClockSeconds: maxWallClockSeconds,
-		},
-		History:       leadHistory,
-		OriginalQuery: input.Query,
-	}).Get(ctx, &closingDecision)
-
-	// Record Lead closing decision token usage (before early-return reply path)
-	if closingErr == nil {
-		recCtx := opts.WithTokenRecordOptions(ctx)
-		provider := closingDecision.Provider
-		if provider == "" {
-			provider = detectProviderFromModel(closingDecision.ModelUsed)
-		}
-		_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
-			UserID:              input.UserID,
-			SessionID:           input.SessionID,
-			TaskID:              workflowID,
-			AgentID:             "swarm-lead",
-			Model:               closingDecision.ModelUsed,
-			Provider:            provider,
-			InputTokens:         closingDecision.InputTokens,
-			OutputTokens:        closingDecision.OutputTokens,
-			CacheReadTokens:     closingDecision.CacheReadTokens,
-			CacheCreationTokens: closingDecision.CacheCreationTokens,
-			Metadata:            map[string]interface{}{"workflow": "swarm", "phase": "closing_decision"},
-		}).Get(ctx, nil)
+	var closingErr error
+	closingEvent := activities.LeadEvent{
+		Type:          "closing_checkpoint",
+		ResultSummary: closingSummary,
 	}
 
-	// Handle Lead closing decision
-	if closingErr == nil {
+	for closingRound := 0; closingRound <= maxClosingRounds; closingRound++ {
+		closingElapsed := int(workflow.Now(ctx).Sub(swarmStartTime).Seconds())
+
+		closingErr = workflow.ExecuteActivity(closingCtx, constants.LeadDecisionActivity, activities.LeadDecisionInput{
+			WorkflowID: workflowID,
+			Event:      closingEvent,
+			TaskList:   make([]activities.SwarmTask, 0),
+			AgentStates: make([]activities.LeadAgentState, 0),
+			Budget: activities.LeadBudget{
+				TotalLLMCalls:       budgetTotalLLMCalls,
+				RemainingLLMCalls:   maxLLMCalls - budgetTotalLLMCalls,
+				TotalTokens:         budgetTotalTokens,
+				RemainingTokens:     maxTokens - budgetTotalTokens,
+				ElapsedSeconds:      closingElapsed,
+				MaxWallClockSeconds: maxWallClockSeconds,
+			},
+			History:             leadHistory,
+			OriginalQuery:       input.Query,
+			ConversationHistory: conversationHistory,
+			HitlMessages:        hitlMessages,
+		}).Get(ctx, &closingDecision)
+
+		if closingErr != nil {
+			logger.Warn("Lead closing_checkpoint failed, falling back to synthesis", "error", closingErr, "round", closingRound)
+			break
+		}
+
+		budgetTotalLLMCalls++
+		budgetTotalTokens += closingDecision.TokensUsed
+
+		// Record Lead closing decision token usage
+		{
+			recCtx := opts.WithTokenRecordOptions(ctx)
+			provider := closingDecision.Provider
+			if provider == "" {
+				provider = detectProviderFromModel(closingDecision.ModelUsed)
+			}
+			_ = workflow.ExecuteActivity(recCtx, constants.RecordTokenUsageActivity, activities.TokenUsageInput{
+				UserID:              input.UserID,
+				SessionID:           input.SessionID,
+				TaskID:              workflowID,
+				AgentID:             "swarm-lead",
+				Model:               closingDecision.ModelUsed,
+				Provider:            provider,
+				InputTokens:         closingDecision.InputTokens,
+				OutputTokens:        closingDecision.OutputTokens,
+				CacheReadTokens:     closingDecision.CacheReadTokens,
+				CacheCreationTokens: closingDecision.CacheCreationTokens,
+				Metadata:            map[string]interface{}{"workflow": "swarm", "phase": "closing_decision"},
+			}).Get(ctx, nil)
+		}
+
+		leadHistory = append(leadHistory, map[string]interface{}{
+			"decision_summary": closingDecision.DecisionSummary,
+			"event":            "closing_checkpoint",
+			"actions":          len(closingDecision.Actions),
+		})
+
+		// Separate actions into file I/O, tool_call, and terminal actions
+		var fileIOActions []activities.LeadAction
+		var toolCallActions []activities.LeadAction
+		var terminalActions []activities.LeadAction
 		for _, action := range closingDecision.Actions {
+			switch action.Type {
+			case "file_read", "file_list":
+				fileIOActions = append(fileIOActions, action)
+			case "tool_call":
+				if leadToolCallV >= 1 {
+					toolCallActions = append(toolCallActions, action)
+				}
+			case "reply", "synthesize", "done":
+				terminalActions = append(terminalActions, action)
+			}
+		}
+
+		// Execute file I/O actions — zero LLM cost
+		if len(fileIOActions) > 0 && closingRound < maxClosingRounds {
+			var fileContents []activities.FileReadResult
+			for _, fr := range fileIOActions {
+				if fr.Type == "file_list" {
+					var listResult activities.ListWorkspaceFilesResult
+					listErr := workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+						activities.ListWorkspaceFilesInput{SessionID: input.SessionID}).Get(ctx, &listResult)
+					if listErr != nil {
+						fileContents = append(fileContents, activities.FileReadResult{Path: ".", Error: listErr.Error()})
+					} else {
+						var listing string
+						for _, f := range listResult.Files {
+							listing += f.Path + "\n"
+						}
+						if listing == "" {
+							listing = "(empty workspace)"
+						}
+						fileContents = append(fileContents, activities.FileReadResult{Path: ".", Content: listing})
+					}
+				} else if fr.Path != "" {
+					var readResult activities.ReadWorkspaceFileResult
+					readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
+						activities.ReadWorkspaceFileInput{
+							SessionID: input.SessionID, Path: fr.Path, MaxChars: 8000,
+						}).Get(ctx, &readResult)
+					if readErr != nil {
+						fileContents = append(fileContents, activities.FileReadResult{Path: fr.Path, Error: readErr.Error()})
+					} else {
+						fileContents = append(fileContents, activities.FileReadResult{
+							Path: readResult.Path, Content: readResult.Content,
+							Truncated: readResult.Truncated, Error: readResult.Error,
+						})
+					}
+				}
+			}
+			closingEvent.FileContents = fileContents
+			closingEvent.ToolResults = nil
+			logger.Info("Lead closing file I/O complete, calling LeadDecision again",
+				"round", closingRound, "files", len(fileContents))
+			continue
+		}
+
+		// Execute tool_call actions
+		if len(toolCallActions) > 0 && closingRound < maxClosingRounds {
+			var toolResults []activities.ToolResultEntry
+			for _, tc := range toolCallActions {
+				if !allowedLeadTools[tc.Tool] {
+					toolResults = append(toolResults, activities.ToolResultEntry{
+						Tool: tc.Tool, Error: fmt.Sprintf("tool %q not in allowlist", tc.Tool),
+					})
+					continue
+				}
+				var toolResult activities.LeadToolResult
+				toolErr := workflow.ExecuteActivity(toolCtx, constants.LeadExecuteToolActivity,
+					activities.LeadToolInput{
+						Tool: tc.Tool, ToolParams: tc.ToolParams, SessionID: input.SessionID,
+					}).Get(ctx, &toolResult)
+				if toolErr != nil {
+					toolResults = append(toolResults, activities.ToolResultEntry{Tool: tc.Tool, Error: toolErr.Error()})
+				} else {
+					output := toolResult.Output
+					if len(output) > 4000 {
+						output = output[:4000] + "\n... [truncated]"
+					}
+					toolResults = append(toolResults, activities.ToolResultEntry{
+						Tool: tc.Tool, Output: output, Error: toolResult.Error,
+					})
+				}
+				logger.Info("Lead closing tool_call executed", "tool", tc.Tool, "round", closingRound)
+			}
+			closingEvent.ToolResults = toolResults
+			closingEvent.FileContents = nil
+			logger.Info("Lead closing tool_call round complete",
+				"round", closingRound, "tools_executed", len(toolResults))
+			continue
+		}
+
+		// Handle terminal actions (reply / synthesize / done)
+		for _, action := range terminalActions {
 			switch action.Type {
 			case "reply":
 				replyContent := action.Content
@@ -3305,10 +3840,8 @@ synthesis:
 			case "done":
 				logger.Info("Lead returned done (backward compat), using synthesis")
 			}
-			// Process all actions — don't break after first; reply returns early on success
 		}
-	} else {
-		logger.Warn("Lead closing_checkpoint failed, falling back to synthesis", "error", closingErr)
+		break // terminal action processed (or no actions left), fall through to synthesis
 	}
 
 	// LLM synthesis — use medium model tier for swarm (agents already did heavy lifting)
