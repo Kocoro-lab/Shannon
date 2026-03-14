@@ -7,7 +7,7 @@ from .web_fetch import WebFetchTool
 from .web_subpage_fetch import WebSubpageFetchTool
 from .web_crawl import WebCrawlTool
 from .calculator import CalculatorTool
-from .file_ops import FileReadTool, FileWriteTool, FileListTool, FileSearchTool, FileEditTool
+from .file_ops import FileReadTool, FileWriteTool, FileListTool, FileSearchTool, FileEditTool, FileDeleteTool
 from .data_tools import DiffFilesTool, JsonQueryTool
 from .python_wasi_executor import PythonWasiExecutorTool
 from .bash_executor import BashExecutorTool
@@ -43,6 +43,7 @@ __all__ = [
     "FileListTool",
     "FileSearchTool",
     "FileEditTool",
+    "FileDeleteTool",
     "DiffFilesTool",
     "JsonQueryTool",
     "BashExecutorTool",

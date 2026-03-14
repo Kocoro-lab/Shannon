@@ -1358,3 +1358,239 @@ class FileEditTool(Tool):
             return ToolResult(success=False, output=None, error="File is not valid UTF-8")
         except Exception as e:
             return ToolResult(success=False, output=None, error=f"Error editing file: {str(e)}")
+
+
+class FileDeleteTool(Tool):
+    """
+    Delete file(s) or empty directories from the session workspace.
+    Supports glob patterns for batch deletion. Cannot delete non-empty directories.
+    Only operates within /workspace — /memory/ paths are rejected.
+    """
+
+    def _get_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name="file_delete",
+            version="1.0.0",
+            description=(
+                "Delete a file, empty directory, or batch of files matching a glob pattern "
+                "from the session workspace. Cannot delete non-empty directories or /memory/ paths."
+            ),
+            category="file",
+            author="Shannon",
+            requires_auth=True,
+            rate_limit=50,
+            timeout_seconds=10,
+            memory_limit_mb=256,
+            sandboxed=True,
+            session_aware=True,
+            dangerous=True,
+            cost_per_use=0.001,
+        )
+
+    def _get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="path",
+                type=ToolParameterType.STRING,
+                description="Path to delete (file or empty directory). When pattern is set, this is the base directory to search in.",
+                required=True,
+            ),
+            ToolParameter(
+                name="pattern",
+                type=ToolParameterType.STRING,
+                description="Glob pattern for batch deletion (e.g. '*.tmp', '*.log'). When set, deletes all matching files under path.",
+                required=False,
+                default="",
+            ),
+            ToolParameter(
+                name="recursive",
+                type=ToolParameterType.BOOLEAN,
+                description="Search subdirectories when using pattern (default: false)",
+                required=False,
+                default=False,
+            ),
+        ]
+
+    async def _execute_impl(
+        self,
+        session_context: Optional[Dict] = None,
+        observer: Optional[Any] = None,
+        **kwargs,
+    ) -> ToolResult:
+        target_path = kwargs["path"]
+        pattern = kwargs.get("pattern", "")
+        recursive = kwargs.get("recursive", False)
+
+        # Proxy to WASI sandbox if enabled
+        if is_sandbox_enabled():
+            session_id = (session_context or {}).get("session_id", "default")
+            client = get_sandbox_client()
+            success, deleted_count, deleted_paths, error = await client.file_delete(
+                session_id=session_id,
+                path=target_path,
+                pattern=pattern,
+                recursive=recursive,
+            )
+            if success:
+                logger.info(
+                    "Sandbox file_delete success",
+                    extra={
+                        "session_id": session_id,
+                        "path": target_path,
+                        "deleted_count": deleted_count,
+                        "sandbox_enabled": True,
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output={
+                        "message": f"Deleted {deleted_count} item(s)",
+                        "deleted_paths": deleted_paths,
+                    },
+                    metadata={
+                        "path": target_path,
+                        "pattern": pattern,
+                        "deleted_count": deleted_count,
+                    },
+                )
+            else:
+                logger.warning(
+                    "Sandbox file_delete failed",
+                    extra={
+                        "session_id": session_id,
+                        "path": target_path,
+                        "sandbox_enabled": True,
+                        "error": error,
+                    },
+                )
+                return ToolResult(success=False, output=None, error=error)
+
+        # Local filesystem fallback — workspace only (not memory)
+        try:
+            workspace = _get_session_workspace(session_context)
+
+            if pattern:
+                # Glob batch mode
+                base_dir = (workspace / target_path).resolve()
+                if not _is_allowed(base_dir, workspace):
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Deleting from {target_path} is not allowed. Use session workspace.",
+                    )
+                if not base_dir.is_dir():
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Base path is not a directory: {target_path}",
+                    )
+
+                if recursive:
+                    matches = list(base_dir.rglob(pattern))
+                else:
+                    matches = list(base_dir.glob(pattern))
+
+                # Filter to workspace-allowed paths only
+                matches = [m for m in matches if _is_allowed(m.resolve(), workspace)]
+
+                # Sort by depth descending so files are deleted before parent dirs
+                matches.sort(key=lambda p: len(p.parts), reverse=True)
+
+                deleted_paths = []
+                for match in matches:
+                    try:
+                        if match.is_file() or match.is_symlink():
+                            match.unlink()
+                            deleted_paths.append(str(match.relative_to(workspace)))
+                        elif match.is_dir():
+                            # Only delete empty directories
+                            try:
+                                match.rmdir()
+                                deleted_paths.append(str(match.relative_to(workspace)))
+                            except OSError:
+                                pass  # Non-empty directory, skip
+                    except OSError:
+                        continue
+
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.info(
+                    "file_delete glob success",
+                    extra={
+                        "session_id": session_id,
+                        "path": target_path,
+                        "pattern": pattern,
+                        "deleted_count": len(deleted_paths),
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output={
+                        "message": f"Deleted {len(deleted_paths)} item(s)",
+                        "deleted_paths": deleted_paths,
+                    },
+                    metadata={
+                        "path": target_path,
+                        "pattern": pattern,
+                        "deleted_count": len(deleted_paths),
+                    },
+                )
+            else:
+                # Single target mode
+                path = (workspace / target_path).resolve()
+                if not _is_allowed(path, workspace):
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Deleting {target_path} is not allowed. Use session workspace.",
+                    )
+
+                if not path.exists():
+                    # Idempotent: not-found is success
+                    return ToolResult(
+                        success=True,
+                        output={"message": "Path does not exist (nothing to delete)", "deleted_paths": []},
+                        metadata={"path": target_path, "deleted_count": 0},
+                    )
+
+                rel_path = str(path.relative_to(workspace))
+
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+                elif path.is_dir():
+                    try:
+                        path.rmdir()  # Only empty directories
+                    except OSError:
+                        return ToolResult(
+                            success=False,
+                            output=None,
+                            error=f"Directory is not empty: {target_path}. Delete files inside first.",
+                        )
+                else:
+                    return ToolResult(
+                        success=False,
+                        output=None,
+                        error=f"Unsupported file type: {target_path}",
+                    )
+
+                session_id = (session_context or {}).get("session_id", "default")
+                logger.info(
+                    "file_delete success",
+                    extra={
+                        "session_id": session_id,
+                        "path": target_path,
+                        "deleted": rel_path,
+                    },
+                )
+                return ToolResult(
+                    success=True,
+                    output={
+                        "message": f"Deleted: {rel_path}",
+                        "deleted_paths": [rel_path],
+                    },
+                    metadata={"path": target_path, "deleted_count": 1},
+                )
+
+        except Exception as e:
+            return ToolResult(
+                success=False, output=None, error=f"Error deleting file: {str(e)}"
+            )
