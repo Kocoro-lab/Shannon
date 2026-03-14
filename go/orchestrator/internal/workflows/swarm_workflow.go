@@ -485,6 +485,10 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 
+	// Version gate for P2P activities (RegisterFile, SendAgentMessage, WorkspaceAppend).
+	// Old workflows in replay must not execute these new activity calls.
+	p2pV := workflow.GetVersion(ctx, "agent_loop_p2p_v1", workflow.DefaultVersion, 1)
+
 	// Emit agent started event
 	emitCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Second,
@@ -980,13 +984,15 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 				if stepResult.Tool == "file_write" {
 					if path, ok := stepResult.ToolParams["path"].(string); ok && path != "" {
 						filesWritten = append(filesWritten, path)
-						_ = workflow.ExecuteActivity(p2pCtx, constants.RegisterFileActivity, activities.RegisterFileInput{
-							WorkflowID: input.WorkflowID,
-							Path:       path,
-							Author:     input.AgentID,
-							Size:       len(fmt.Sprintf("%v", stepResult.ToolParams["content"])),
-							Summary:    truncateDecisionSummary(stepResult.DecisionSummary),
-						}).Get(ctx, nil)
+						if p2pV >= 1 {
+							_ = workflow.ExecuteActivity(p2pCtx, constants.RegisterFileActivity, activities.RegisterFileInput{
+								WorkflowID: input.WorkflowID,
+								Path:       path,
+								Author:     input.AgentID,
+								Size:       len(fmt.Sprintf("%v", stepResult.ToolParams["content"])),
+								Summary:    truncateDecisionSummary(stepResult.DecisionSummary),
+							}).Get(ctx, nil)
+						}
 
 						// Prevent double-write: inject system message reminding agent
 						// it already wrote its deliverable. This survives history truncation
@@ -1126,14 +1132,16 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 				consecutiveNonToolActions = 0
 			}
 			// Send message to another agent via P2P mailbox
-			_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
-				WorkflowID: input.WorkflowID,
-				From:       input.AgentID,
-				To:         stepResult.To,
-				Type:       activities.MessageType(stepResult.MessageType),
-				Payload:    stepResult.Payload,
-				Timestamp:  workflow.Now(ctx),
-			}).Get(ctx, nil)
+			if p2pV >= 1 {
+				_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
+					WorkflowID: input.WorkflowID,
+					From:       input.AgentID,
+					To:         stepResult.To,
+					Type:       activities.MessageType(stepResult.MessageType),
+					Payload:    stepResult.Payload,
+					Timestamp:  workflow.Now(ctx),
+				}).Get(ctx, nil)
+			}
 
 			// Notify parent so it can forward a wake-up signal to idle recipients.
 			// Parent holds agentFutures mapping; we don't know target's child workflow ID.
@@ -1170,15 +1178,17 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 				consecutiveNonToolActions = 0
 			}
 			// Publish to workspace topic
-			_ = workflow.ExecuteActivity(p2pCtx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
-				WorkflowID: input.WorkflowID,
-				Topic:      stepResult.Topic,
-				Entry: map[string]interface{}{
-					"author": input.AgentID,
-					"data":   stepResult.Data,
-				},
-				Timestamp: workflow.Now(ctx),
-			}).Get(ctx, nil)
+			if p2pV >= 1 {
+				_ = workflow.ExecuteActivity(p2pCtx, constants.WorkspaceAppendActivity, activities.WorkspaceAppendInput{
+					WorkflowID: input.WorkflowID,
+					Topic:      stepResult.Topic,
+					Entry: map[string]interface{}{
+						"author": input.AgentID,
+						"data":   stepResult.Data,
+					},
+					Timestamp: workflow.Now(ctx),
+				}).Get(ctx, nil)
+			}
 
 			history = append(history, activities.AgentLoopTurn{
 				Iteration:       iteration,
@@ -1454,13 +1464,15 @@ func AgentLoop(ctx workflow.Context, input AgentLoopInput) (AgentLoopResult, err
 					// Auto-register files written by agents
 					if toolName == "file_write" {
 						if path, ok := params["path"].(string); ok && path != "" {
-							_ = workflow.ExecuteActivity(p2pCtx, constants.RegisterFileActivity, activities.RegisterFileInput{
-								WorkflowID: input.WorkflowID,
-								Path:       path,
-								Author:     input.AgentID,
-								Size:       len(fmt.Sprintf("%v", params["content"])),
-								Summary:    truncateDecisionSummary(stepResult.DecisionSummary),
-							}).Get(ctx, nil)
+							if p2pV >= 1 {
+								_ = workflow.ExecuteActivity(p2pCtx, constants.RegisterFileActivity, activities.RegisterFileInput{
+									WorkflowID: input.WorkflowID,
+									Path:       path,
+									Author:     input.AgentID,
+									Size:       len(fmt.Sprintf("%v", params["content"])),
+									Summary:    truncateDecisionSummary(stepResult.DecisionSummary),
+								}).Get(ctx, nil)
+							}
 
 							// Track for completion report (same as tool_call case)
 							filesWritten = append(filesWritten, path)
@@ -1686,6 +1698,9 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		Message:    activities.MsgSwarmStarted(),
 		Timestamp:  workflow.Now(ctx),
 	}).Get(ctx, nil)
+
+	// Version gate for P2P activities in SwarmWorkflow (send_message, broadcast).
+	swarmP2pV := workflow.GetVersion(ctx, "swarm_p2p_v1", workflow.DefaultVersion, 1)
 
 	// Load swarm config
 	var cfg activities.WorkflowConfig
@@ -3193,14 +3208,16 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				}
 
 			case "send_message":
-				_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
-					WorkflowID: workflowID,
-					From:       "lead",
-					To:         action.To,
-					Type:       activities.MessageTypeInfo,
-					Payload:    map[string]interface{}{"message": action.Content},
-					Timestamp:  workflow.Now(ctx),
-				}).Get(ctx, nil)
+				if swarmP2pV >= 1 {
+					_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
+						WorkflowID: workflowID,
+						From:       "lead",
+						To:         action.To,
+						Type:       activities.MessageTypeInfo,
+						Payload:    map[string]interface{}{"message": action.Content},
+						Timestamp:  workflow.Now(ctx),
+					}).Get(ctx, nil)
+				}
 				// Wake idle recipient so it sees the Lead message immediately
 				if s, ok := agentStates[action.To]; ok && s.Status == "idle" {
 					for _, af := range agentFutures {
@@ -3223,14 +3240,16 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				for _, id := range broadcastIDs {
 					s := agentStates[id]
 					if s.Status == "running" || s.Status == "idle" {
-						_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
-							WorkflowID: workflowID,
-							From:       "lead",
-							To:         s.AgentID,
-							Type:       activities.MessageTypeInfo,
-							Payload:    map[string]interface{}{"message": action.Content},
-							Timestamp:  workflow.Now(ctx),
-						}).Get(ctx, nil)
+						if swarmP2pV >= 1 {
+							_ = workflow.ExecuteActivity(p2pCtx, constants.SendAgentMessageActivity, activities.SendAgentMessageInput{
+								WorkflowID: workflowID,
+								From:       "lead",
+								To:         s.AgentID,
+								Type:       activities.MessageTypeInfo,
+								Payload:    map[string]interface{}{"message": action.Content},
+								Timestamp:  workflow.Now(ctx),
+							}).Get(ctx, nil)
+						}
 						// Wake idle agents so they see the broadcast immediately
 						if s.Status == "idle" {
 							for _, af := range agentFutures {

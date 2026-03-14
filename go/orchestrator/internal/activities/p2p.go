@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -381,9 +382,13 @@ func (a *Activities) GetFileRegistry(ctx context.Context, in GetFileRegistryInpu
 	return out, nil
 }
 
-// lenMust returns an approximate size of a payload
+// lenMust returns an approximate JSON size of a payload.
+// Returns math.MaxInt on marshal failure so the size check never passes silently.
 func lenMust(m map[string]interface{}) int {
-	b, _ := json.Marshal(m)
+	b, err := json.Marshal(m)
+	if err != nil {
+		return math.MaxInt
+	}
 	return len(b)
 }
 

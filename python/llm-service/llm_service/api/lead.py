@@ -505,11 +505,14 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
             )
         except Exception as e:
             logger.warning(f"Structured output failed, falling back to prompt-based: {e}")
-            result = await providers.generate_completion(
-                messages=lead_messages,
-                tier=ModelTier.MEDIUM,
-                temperature=0.3,
-                max_tokens=lead_max_tokens,
+            result = await asyncio.wait_for(
+                providers.generate_completion(
+                    messages=lead_messages,
+                    tier=ModelTier.MEDIUM,
+                    temperature=0.3,
+                    max_tokens=lead_max_tokens,
+                ),
+                timeout=60,
             )
 
         raw_text = result.get("output_text", "") or ""
