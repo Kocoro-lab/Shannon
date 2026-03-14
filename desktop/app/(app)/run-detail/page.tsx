@@ -605,19 +605,28 @@ function RunDetailContent() {
 
                     // Add intermediate agent trace messages from events (for "Show Agent Trace" feature)
                     // These are LLM_OUTPUT and thread.message.completed events with agent_id
-                    const intermediateEvents = turn.events.filter((event: any) =>
-                        (event.type === 'LLM_OUTPUT' || event.type === 'thread.message.completed') &&
-                        event.agent_id &&
-                        event.agent_id !== 'title_generator' &&
-                        event.agent_id !== 'synthesis' && // synthesis is the final answer
-                        event.agent_id !== 'simple-agent' && // simple-agent is the final answer
-                        event.agent_id !== 'assistant' &&
-                        (event.message || event.response || event.content)
-                    );
+                    // Pre-compute final output to deduplicate lead events that match it
+                    const turnFinalOutput = turn.final_output || taskDetailsMap.get(workflowId)?.result || "";
+                    const intermediateEvents = turn.events.filter((event: any) => {
+                        if (!(event.type === 'LLM_OUTPUT' || event.type === 'thread.message.completed')) return false;
+                        if (!event.agent_id) return false;
+                        if (['title_generator', 'synthesis', 'final_output', 'simple-agent', 'assistant'].includes(event.agent_id)) return false;
+                        const content = event.message || event.response || event.content;
+                        if (!content) return false;
+                        // Skip events whose content matches the final output (prevents swarm-lead duplicate)
+                        if (turnFinalOutput && content.trim() === turnFinalOutput.trim()) return false;
+                        return true;
+                    });
 
+                    // Deduplicate intermediate events by agent_id + content
+                    // (backend may emit the same interim_reply via multiple SSE event paths)
+                    const seenIntermediateContent = new Set<string>();
                     intermediateEvents.forEach((event: any, eventIndex: number) => {
                         const content = event.message || event.response || event.content || '';
                         if (content) {
+                            const dedupKey = `${event.agent_id}::${content}`;
+                            if (seenIntermediateContent.has(dedupKey)) return;
+                            seenIntermediateContent.add(dedupKey);
                             const uniqueId = `${event.agent_id}-${turn.task_id}-${eventIndex}`;
                             dispatch(addMessage({
                                 id: uniqueId,
@@ -626,6 +635,7 @@ function RunDetailContent() {
                                 content: content,
                                 timestamp: new Date(event.timestamp || turn.timestamp).toLocaleTimeString(),
                                 taskId: turn.task_id,
+                                metadata: event.agent_id === "swarm-lead" ? { interim: true } : undefined,
                             }));
                         }
                     });
@@ -935,12 +945,14 @@ function RunDetailContent() {
             // Check if we already have ANY assistant message for this task (from SSE streaming)
             // This prevents duplicates when both SSE and fetchFinalOutput create messages
             // Exclude isResearchPlan messages — those are review plan rounds, not the final output
+            // Also accept streaming messages with content — they will finalize on their own
+            // Removing !m.isStreaming prevents creating a duplicate while stream is still active
             const hasExistingAssistantMessage = runMessagesRef.current?.some(m =>
                 m.role === "assistant" &&
                 m.taskId === currentTaskId &&
-                !m.isStreaming &&
                 !m.isGenerating &&
                 !m.isResearchPlan &&
+                !m.metadata?.interim &&  // Exclude interim progress messages from swarm lead
                 m.content && m.content.length > 0
             );
 

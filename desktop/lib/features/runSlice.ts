@@ -329,8 +329,11 @@ const runSlice = createSlice({
                     state.streamError = null;
                 }
 
-                // Check if we have any assistant messages
-                const hasAssistantMessage = state.messages.some(m => m.role === "assistant" && !m.isStreaming);
+                // Check if we have any assistant messages for THIS task
+                // (must scope by workflow_id — prior turns always have assistant messages in multi-turn)
+                const hasAssistantMessage = state.messages.some(m =>
+                    m.role === "assistant" && !m.isStreaming && m.taskId === event.workflow_id
+                );
 
                 if (hasAssistantMessage) {
                     // We already have the final output from streaming, remove placeholders immediately
@@ -770,22 +773,14 @@ const runSlice = createSlice({
                 const streamId = deltaEvent.stream_id || `msg-${Date.now()}`;
                 const uniqueId = `stream-${event.workflow_id}-${streamId}`;
 
-                // Delta dedup key: must use seq (unique per event) NOT stream_id
-                // Using stream_id here would skip all deltas after the first!
-                const alreadyProcessedSeqs = new Set<number>();
-                for (const part of filteredParts) {
-                    if (part.seq !== undefined) {
-                        const alreadyProcessed = state.messages.some((m: any) =>
-                            m._processedDeltas?.includes(part.seq)
-                        );
-                        if (alreadyProcessed) {
-                            alreadyProcessedSeqs.add(part.seq);
-                        }
-                    }
-                }
+                // Delta dedup: only check the target streaming message's processed list (O(m) not O(n*m))
+                // _processedDeltas only exists on the streaming message, not all messages
+                const processedSet = streamingMsgIndex !== -1
+                    ? new Set(state.messages[streamingMsgIndex]._processedDeltas || [])
+                    : new Set<number>();
 
                 const newParts = filteredParts.filter((part: any) =>
-                    part.seq === undefined || !alreadyProcessedSeqs.has(part.seq)
+                    part.seq === undefined || !processedSet.has(part.seq)
                 );
                 if (newParts.length === 0) return;
 
@@ -977,6 +972,17 @@ const runSlice = createSlice({
                         const exists = state.messages.some((m: any) => m.id === uniqueId);
                         if (exists) return;
 
+                        // Cross-path dedup: LLM_OUTPUT uses different ID format ({agentId}-...)
+                        // Check if same content already exists for this task
+                        const hasEquivalentFromLLM = state.messages.some((m: any) =>
+                            m.taskId === event.workflow_id &&
+                            m.role === "assistant" &&
+                            !m.isStreaming &&
+                            !m.isGenerating &&
+                            m.content === content
+                        );
+                        if (hasEquivalentFromLLM) return;
+
                         // For simple-agent, remove generating placeholder
                         if (event.agent_id === "simple-agent") {
                             state.messages = state.messages.filter((m: any) =>
@@ -1115,6 +1121,17 @@ const runSlice = createSlice({
                     const isDuplicate = state.messages.some((m: any) => m.id === uniqueId);
                     if (isDuplicate) return;
 
+                    // Cross-path dedup: thread.message.completed uses different ID format (stream-...)
+                    // Check if same content already exists for this task to prevent duplicates across paths
+                    const hasEquivalentMessage = state.messages.some((m: any) =>
+                        m.taskId === event.workflow_id &&
+                        m.role === "assistant" &&
+                        !m.isStreaming &&
+                        !m.isGenerating &&
+                        m.content === content
+                    );
+                    if (hasEquivalentMessage) return;
+
                     // For simple-agent, remove generating placeholder
                     if (event.agent_id === "simple-agent") {
                         state.messages = state.messages.filter((m: any) =>
@@ -1140,7 +1157,9 @@ const runSlice = createSlice({
 
                 // Workflow completed - check if there's a final result to show
                 const workflowEvent = event as any;
-                const hasAssistantMessage = state.messages.some(m => m.role === "assistant");
+                const hasAssistantMessage = state.messages.some(m =>
+                    m.role === "assistant" && m.taskId === event.workflow_id
+                );
 
                 // If no assistant message and the event has a message/result, add it
                 // Note: WORKFLOW_COMPLETED usually just has "All done", not the actual result
