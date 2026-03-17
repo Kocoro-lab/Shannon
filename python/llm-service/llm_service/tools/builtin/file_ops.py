@@ -37,15 +37,16 @@ def _validate_session_id(session_id: str) -> str:
     if len(session_id) > 128:
         raise ValueError("Invalid session_id: too long (max 128 chars)")
 
-    # SECURITY: Match Rust validation - ASCII alphanumeric + hyphen + underscore only
-    # This prevents path traversal, hidden files, shell metacharacters, and Unicode tricks
-    if not all(c.isascii() and (c.isalnum() or c in "-_.") for c in session_id):
+    # SECURITY: Match Go/Rust validation - ASCII alphanumeric + hyphen + underscore only.
+    # No period allowed — prevents hidden files and aligns with isValidSessionID in lead_file_read.go.
+    if not all(c.isascii() and (c.isalnum() or c in "-_") for c in session_id):
         raise ValueError(
             "Invalid session_id: must contain only ASCII alphanumeric, hyphen, or underscore"
         )
 
-    # Block path traversal patterns (defense in depth)
-    if ".." in session_id or session_id.startswith("."):
+    # Block path traversal patterns (defense in depth — period not in allowlist,
+    # but guard against future regressions)
+    if ".." in session_id:
         raise ValueError("Invalid session_id: path traversal not allowed")
 
     return session_id

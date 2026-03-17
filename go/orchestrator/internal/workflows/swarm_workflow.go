@@ -3480,6 +3480,74 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		}
 	}
 
+	// C1 fix: drain running agents when exiting the outer loop via break
+	// (budget exhaustion or ContinueAsNew). Without this, child workflows are
+	// orphaned and their results are lost from synthesis.
+	// Wrapped in {} to scope drainV — goto synthesis must not jump over declarations.
+	{
+		drainV := workflow.GetVersion(ctx, "budget-drain-v1", workflow.DefaultVersion, 1)
+		if drainV >= 1 {
+			// Shutdown all non-completed agents
+			for _, af := range agentFutures {
+				if af.WorkflowID != "" {
+					if s, ok := agentStates[af.ID]; ok && s.Status == "completed" {
+						continue
+					}
+					_ = workflow.SignalExternalWorkflow(ctx, af.WorkflowID, "",
+						fmt.Sprintf("agent:%s:shutdown", af.ID), "Budget/history drain",
+					).Get(ctx, nil)
+					_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
+						WorkflowID: workflowID,
+						EventType:  activities.StreamEventAgentCompleted,
+						AgentID:    af.ID,
+						Message:    activities.MsgAgentCompleted(af.ID),
+						Timestamp:  workflow.Now(ctx),
+					}).Get(ctx, nil)
+				}
+			}
+			// Drain results with timeout
+			drainTimer := workflow.NewTimer(ctx, 30*time.Second)
+			for completedCount < totalExpected {
+				drainSel := workflow.NewSelector(ctx)
+				drained := false
+				drainSel.AddReceive(completionCh, func(ch workflow.ReceiveChannel, more bool) {
+					var r AgentLoopResult
+					ch.Receive(ctx, &r)
+					results[r.AgentID] = r
+					completedCount++
+					if taskID, ok := agentTaskMap[r.AgentID]; ok && taskID != "" {
+						_ = workflow.ExecuteActivity(p2pCtx, constants.UpdateTaskStatusActivity, activities.UpdateTaskStatusInput{
+							WorkflowID: workflowID,
+							TaskID:     taskID,
+							Status:     "completed",
+							AgentID:    r.AgentID,
+						}).Get(ctx, nil)
+						delete(agentTaskMap, r.AgentID)
+					}
+				})
+				drainSel.AddReceive(agentIdleCh, func(ch workflow.ReceiveChannel, more bool) {
+					var m map[string]interface{}
+					ch.Receive(ctx, &m) // discard
+				})
+				drainSel.AddFuture(drainTimer, func(f workflow.Future) {
+					_ = f.Get(ctx, nil)
+					drained = true
+				})
+				drainSel.Select(ctx)
+				if drained {
+					break
+				}
+			}
+			// Fill gaps from idle snapshots
+			for agentID, snap := range idleSnapshots {
+				if _, exists := results[agentID]; !exists {
+					results[agentID] = snap
+					logger.Info("Using idle snapshot for drain result", "agent_id", agentID)
+				}
+			}
+		}
+	}
+
 synthesis:
 
 	// Cleanup: mark any remaining pending/in_progress tasks as completed

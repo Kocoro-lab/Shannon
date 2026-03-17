@@ -142,7 +142,7 @@ LEAD_DECISION_SCHEMA = {
                             },
                             "path": {"type": "string"},
                             "tool": {"type": "string"},
-                            "tool_params": {"type": "string"},
+                            "tool_params": {"type": "object"},
                         },
                         "required": ["type", "task_id", "agent_id", "role", "task_description", "to", "content", "model_tier", "create", "cancel", "update", "path", "tool", "tool_params"],
                         "additionalProperties": False,
@@ -191,7 +191,9 @@ def _parse_tool_params(raw) -> Dict[str, Any]:
             if isinstance(parsed, dict):
                 return parsed
         except json_module.JSONDecodeError:
-            pass
+            logger.warning("Failed to parse tool_params JSON string, falling back to {}: %s", raw[:200])
+    if raw:
+        logger.warning("tool_params not a dict or parseable string, falling back to {}: type=%s", type(raw).__name__)
     return {}
 
 
