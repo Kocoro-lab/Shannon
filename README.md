@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Documentation](https://img.shields.io/badge/docs-shannon.run-blue.svg)](https://docs.shannon.run)
 [![Docker Hub](https://img.shields.io/badge/Docker%20Hub-waylandzhang%2Fshannon-blue.svg)](https://hub.docker.com/u/waylandzhang)
-[![Version](https://img.shields.io/badge/version-v0.3.0-green.svg)](https://github.com/Kocoro-lab/Shannon/releases)
+[![Version](https://img.shields.io/badge/version-v0.3.1-green.svg)](https://github.com/Kocoro-lab/Shannon/releases)
 [![Go Version](https://img.shields.io/badge/Go-1.24%2B-blue.svg)](https://golang.org/)
 [![Rust](https://img.shields.io/badge/Rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
@@ -49,7 +49,7 @@ Ship reliable AI agents to production. Multi-strategy orchestration, swarm colla
 **Quick Install:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/v0.3.0/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/v0.3.1/scripts/install.sh | bash
 ```
 
 This downloads config, prompts for API keys, pulls Docker images, and starts services.

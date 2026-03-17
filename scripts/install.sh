@@ -4,7 +4,7 @@ set -e
 # Shannon Quick Install Script
 # Downloads production config and helps setup environment
 
-SHANNON_VERSION="${SHANNON_VERSION:-v0.3.0}"
+SHANNON_VERSION="${SHANNON_VERSION:-v0.3.1}"
 GITHUB_RAW="https://raw.githubusercontent.com/Kocoro-lab/Shannon/${SHANNON_VERSION}"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -119,7 +119,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Shannon LLM Service",
     description="LLM integration service for Shannon platform",
-    version="0.3.0",
+    version="0.3.1",
     lifespan=lifespan,
 )
 
@@ -159,7 +159,7 @@ app.mount("/metrics", metrics_app)
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {"service": "Shannon LLM Service", "version": "0.1.0", "status": "running"}
+    return {"service": "Shannon LLM Service", "version": "0.3.1", "status": "running"}
 
 
 if __name__ == "__main__":

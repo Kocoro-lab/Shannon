@@ -66,7 +66,7 @@ class MetricsCollector:
     """Collects and manages metrics for the LLM service"""
 
     def __init__(
-        self, service_name: str = "shannon-llm-service", version: str = "0.3.0"
+        self, service_name: str = "shannon-llm-service", version: str = "0.3.1"
     ):
         self.service_name = service_name
         self.version = version

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-03-17
+
+### Added
+- Swarm: `file_delete` tool with WASI sandbox security hardening (path traversal, symlink escape, `/memory/` protection)
+- Swarm: Lead `tool_call` protocol — Lead can invoke web_search, web_fetch, calculator directly
+- Swarm: Lead `file_read` / `file_list` actions — zero LLM cost workspace file access
+- Swarm: Conversation history injection for multi-turn context
+- Swarm: HITL (human-in-the-loop) gateway infrastructure for Lead tool calls
+- Desktop: Panel resize drag and React.memo optimization on RunConversation
+- Desktop: Swarm message dedup and fetchFinalOutput fix
+
+### Fixed
+- Swarm: Drain running agents on budget exhaustion — prevents orphaned child workflows and incomplete synthesis results
+- Swarm: Unify session ID validation across Go (p2p, lead_file_read) and Python (file_ops) — strict alphanumeric + hyphen + underscore only
+- Swarm: Fix `tool_params` JSON schema from "string" to "object" to match Pydantic model, add warning logs on parse fallback
+- Swarm: P2P version gates, `lenMust` safety guards, and fallback timeout
+- Swarm: Closing checkpoint hardening and dependency-aware task filtering
+- LLM service health endpoint reporting stale version "0.1.0"
+
+### Changed
+- Docker Compose: Add `:-` defaults to bare env var references (GOOGLE_SEARCH_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY) to suppress warnings
+
 ## [0.3.0] - 2026-03-09
 
 ### Added
@@ -163,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Desktop**: Next.js, Tauri 2, React
 - **Protocols**: gRPC, HTTP/2, Server-Sent Events
 
+[0.3.1]: https://github.com/Kocoro-lab/Shannon/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Kocoro-lab/Shannon/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Kocoro-lab/Shannon/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Kocoro-lab/Shannon/releases/tag/v0.1.0
