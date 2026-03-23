@@ -24,6 +24,8 @@ pub struct SandboxConfig {
     pub max_read_bytes: usize,
     /// Maximum workspace size per session (default 100MB)
     pub max_workspace_bytes: u64,
+    /// Maximum memory store size per user (default 10MB)
+    pub max_memory_bytes: u64,
     /// Command timeout in seconds (default 30)
     pub command_timeout_seconds: u32,
 }
@@ -33,6 +35,7 @@ impl Default for SandboxConfig {
         Self {
             max_read_bytes: 10 * 1024 * 1024,       // 10MB
             max_workspace_bytes: 100 * 1024 * 1024, // 100MB
+            max_memory_bytes: 10 * 1024 * 1024,     // 10MB
             command_timeout_seconds: 30,
         }
     }
@@ -262,10 +265,10 @@ impl SandboxServiceImpl {
             .get_memory_size(user_id)
             .map_err(|e| Status::invalid_argument(format!("Cannot check memory quota: {}", e)))?;
 
-        if current_size + additional_bytes > self.config.max_workspace_bytes {
+        if current_size + additional_bytes > self.config.max_memory_bytes {
             return Err(Status::resource_exhausted(format!(
                 "Memory quota exceeded: {} + {} > {} bytes",
-                current_size, additional_bytes, self.config.max_workspace_bytes
+                current_size, additional_bytes, self.config.max_memory_bytes
             )));
         }
         Ok(())
@@ -1339,15 +1342,23 @@ impl SandboxService for SandboxServiceImpl {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 let path = entry.path();
-                let metadata = match path.symlink_metadata() {
+                let sym_metadata = match path.symlink_metadata() {
                     Ok(m) => m,
                     Err(_) => continue,
                 };
 
-                if metadata.is_dir() && recursive {
+                // Use path.metadata() (follows symlinks) to detect symlink-to-directory.
+                // symlink_metadata().is_dir() is always false for symlinks themselves.
+                let is_dir = if sym_metadata.is_symlink() {
+                    path.metadata().map(|m| m.is_dir()).unwrap_or(false)
+                } else {
+                    sym_metadata.is_dir()
+                };
+
+                if is_dir && recursive {
                     // Symlink escape prevention: canonicalize before recursing
                     // and verify the resolved path is still within the workspace.
-                    if metadata.is_symlink() {
+                    if sym_metadata.is_symlink() {
                         match path.canonicalize() {
                             Ok(canonical) if canonical.starts_with(canonical_workspace) => {
                                 collect_and_delete(&canonical, canonical_workspace, pattern, recursive, deleted_paths, errors)?;
@@ -1387,12 +1398,12 @@ impl SandboxService for SandboxServiceImpl {
                     .to_string_lossy()
                     .to_string();
 
-                if metadata.is_file() || metadata.is_symlink() {
+                if sym_metadata.is_file() || sym_metadata.is_symlink() {
                     match std::fs::remove_file(&path) {
                         Ok(()) => deleted_paths.push(relative),
                         Err(e) => errors.push(format!("{}: {}", relative, e)),
                     }
-                } else if metadata.is_dir() {
+                } else if is_dir {
                     match std::fs::remove_dir(&path) {
                         Ok(()) => deleted_paths.push(relative),
                         Err(e) => errors.push(format!("{}: {}", relative, e)),
@@ -1617,6 +1628,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_memory_quota_enforcement() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let config = SandboxConfig {
+            max_memory_bytes: 100, // Very small memory quota for testing
+            ..Default::default()
+        };
+        let service = SandboxServiceImpl::with_config(temp.path().to_path_buf(), config);
+
+        // Write to /memory/ path that exceeds memory quota
+        let write_req = FileWriteRequest {
+            session_id: "test-session".to_string(),
+            path: "/memory/notes.txt".to_string(),
+            content: "x".repeat(200), // 200 bytes, exceeds 100 byte memory quota
+            append: false,
+            create_dirs: false,
+            encoding: "utf-8".to_string(),
+            user_id: "test-memory-quota-user".to_string(),
+        };
+        let resp = service.file_write(tonic::Request::new(write_req)).await;
+
+        // Should fail due to memory quota (not workspace quota)
+        assert!(resp.is_err());
+        let err = resp.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+        assert!(
+            err.message().contains("Memory quota"),
+            "Expected memory quota error, got: {}",
+            err.message()
+        );
+    }
+
+    #[tokio::test]
     async fn test_dangerous_command_rejected() {
         let temp = tempfile::TempDir::new().unwrap();
         let service = SandboxServiceImpl::new(temp.path().to_path_buf());
@@ -1801,5 +1844,61 @@ mod tests {
         };
         let resp = service.file_delete(tonic::Request::new(req)).await;
         assert!(resp.is_err());
+    }
+
+    /// Verify that collect_and_delete detects symlinks pointing to directories
+    /// outside the workspace (symlink escape via symlink-to-directory).
+    ///
+    /// Before the fix, symlink_metadata().is_dir() was always false for symlinks,
+    /// so the escape-check branch was dead code and the symlink was silently skipped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_file_delete_symlink_to_external_dir_detected() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let service = SandboxServiceImpl::new(temp.path().to_path_buf());
+        let workspace = temp.path().join("test-session");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // Create an external directory with a sensitive file (outside workspace).
+        let external_dir = temp.path().join("external");
+        std::fs::create_dir_all(&external_dir).unwrap();
+        std::fs::write(external_dir.join("secret.txt"), "secret").unwrap();
+
+        // Create a symlink inside the workspace pointing to the external directory.
+        let symlink_path = workspace.join("escape_link");
+        std::os::unix::fs::symlink(&external_dir, &symlink_path).unwrap();
+
+        // Attempt a recursive glob delete starting from the workspace root.
+        // With the bug, the symlink-to-dir escape check was dead code and the
+        // symlink would be silently skipped (no error, no deletion).
+        // With the fix, collect_and_delete must detect the escape and report an error.
+        let req = FileDeleteRequest {
+            session_id: "test-session".to_string(),
+            path: ".".to_string(),
+            pattern: "*".to_string(),
+            recursive: true,
+        };
+        let resp = service.file_delete(tonic::Request::new(req)).await.unwrap();
+        let inner = resp.into_inner();
+
+        // The response should report the symlink escape in its error field.
+        assert!(
+            !inner.error.is_empty(),
+            "Expected symlink escape error, but error field was empty. \
+             success={}, deleted_paths={:?}",
+            inner.success,
+            inner.deleted_paths,
+        );
+        assert!(
+            inner.error.contains("symlink escapes workspace"),
+            "Error message should mention symlink escape, got: {}",
+            inner.error,
+        );
+
+        // The external directory must not have been modified.
+        assert!(
+            external_dir.join("secret.txt").exists(),
+            "External file should not have been deleted",
+        );
     }
 }
