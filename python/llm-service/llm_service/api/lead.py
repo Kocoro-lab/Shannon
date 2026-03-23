@@ -3,6 +3,7 @@
 import asyncio
 import json as json_module
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -142,7 +143,10 @@ LEAD_DECISION_SCHEMA = {
                             },
                             "path": {"type": "string"},
                             "tool": {"type": "string"},
-                            "tool_params": {"type": "object"},
+                            # Intentionally "string" — forces LLM to output JSON-encoded string
+                            # which _parse_tool_params() converts to Dict. Nested "object" type
+                            # degrades constrained decoding quality for complex tool arguments.
+                            "tool_params": {"type": "string"},
                         },
                         "required": ["type", "task_id", "agent_id", "role", "task_description", "to", "content", "model_tier", "create", "cancel", "update", "path", "tool", "tool_params"],
                         "additionalProperties": False,
@@ -253,7 +257,7 @@ def _best_match(
 ) -> str:
     """Find the best matching task_id for a spawn_agent description."""
     spawn_lower = spawn_desc.lower()
-    spawn_words = set(spawn_lower.split())
+    spawn_words = set(re.findall(r'\w+', spawn_lower))
 
     best_tid = ""
     best_score = 0.0
@@ -267,8 +271,8 @@ def _best_match(
         if task_lower in spawn_lower or spawn_lower.startswith(task_lower):
             return tid
 
-        # Word overlap ratio
-        task_words = set(task_lower.split())
+        # Word overlap ratio (strip punctuation via \w+ regex)
+        task_words = set(re.findall(r'\w+', task_lower))
         if not task_words:
             continue
         overlap = len(spawn_words & task_words)
@@ -278,8 +282,8 @@ def _best_match(
             best_score = score
             best_tid = tid
 
-    # Require at least 50% word overlap
-    return best_tid if best_score >= 0.5 else ""
+    # Require at least 60% word overlap (raised from 50% to reduce false positives on short descriptions)
+    return best_tid if best_score >= 0.6 else ""
 
 
 # ── Prompt Builder (extracted for testability) ─────────────────────────
@@ -554,6 +558,7 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
             data = {"decision_summary": "", "user_summary": "", "actions": data}
 
         decision_summary = str(data.get("decision_summary", ""))[:500]
+        user_summary = str(data.get("user_summary", ""))[:500]
         raw_actions = data.get("actions", [])
         actions: List[LeadAction] = []
         for ra in raw_actions:
