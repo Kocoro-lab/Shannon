@@ -780,15 +780,17 @@ func TestLooksLikeToolJSON(t *testing.T) {
 	}
 }
 
-func TestSpawnAgentUpdatesTaskListStatus(t *testing.T) {
+func TestSpawnAgentLeadActionFieldDefaults(t *testing.T) {
+	// Verify LeadAction zero-value defaults for spawn_agent.
+	// Regression guard: if fields are renamed or removed, this fails at compile time.
 	action := activities.LeadAction{
-		Type:            "spawn_agent",
-		TaskID:          "T1",
-		TaskDescription: "Research market",
-		Role:            "researcher",
+		Type: "spawn_agent",
 	}
-	assert.Equal(t, "T1", action.TaskID)
 	assert.Equal(t, "spawn_agent", action.Type)
+	assert.Empty(t, action.TaskID, "TaskID should default to empty")
+	assert.Empty(t, action.Role, "Role should default to empty")
+	assert.Empty(t, action.TaskDescription, "TaskDescription should default to empty")
+	assert.Empty(t, action.ModelTier, "ModelTier should default to empty")
 }
 
 func TestAgentLoopReturnsFallbackResponseOnFailure(t *testing.T) {

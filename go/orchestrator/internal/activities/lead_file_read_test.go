@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestReadWorkspaceFile(t *testing.T) {
@@ -150,10 +152,11 @@ func TestReadWorkspaceFileWorkspacePrefix(t *testing.T) {
 
 func TestReadWorkspaceFileEmptyInputs(t *testing.T) {
 	// Test with empty sessionID — readFileContent doesn't validate this
-	// (the activity function does), so just test path handling
+	// (the activity function does), so test that it handles gracefully.
 	result := readFileContent("", "test.txt", "/tmp", 4000)
-	// Should get file not found since /tmp//test.txt likely doesn't exist
-	if result.Error == "" && result.Content == "" {
-		// Either error or no content is acceptable
-	}
+	// With empty sessionID, path resolves to /tmp//test.txt which shouldn't exist.
+	// Must return an error or empty content — never panic.
+	assert.True(t, result.Error != "" || result.Content == "",
+		"Empty sessionID should produce an error or empty content, got: error=%q content=%q",
+		result.Error, result.Content)
 }

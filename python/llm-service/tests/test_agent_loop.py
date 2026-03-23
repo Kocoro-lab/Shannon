@@ -769,9 +769,9 @@ class TestContextTrimming(unittest.TestCase):
     def test_trimming_activates_on_large_user_message(self):
         """When user message exceeds max_prompt_chars, history should be trimmed.
 
-        Each history entry is truncated to HISTORY_RESULT_MAX (2000 chars) inside
-        build_agent_messages, so we need enough entries to exceed 400K chars after
-        per-entry truncation: 250 entries * ~2050 chars each ≈ 512K > 400K.
+        History uses tiered truncation: last 3 turns get up to 4000 chars,
+        older turns get up to 500 chars. With 250 entries of 5000-char results,
+        total before trimming exceeds 400K threshold → trimming activates.
         """
         large_history = [
             AgentLoopTurn(iteration=i, action=f"tool_call:web_search", result="x" * 5000)
