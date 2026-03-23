@@ -1505,12 +1505,21 @@ func (h *TaskHandler) SendSwarmMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Limit request body to 64KB to prevent oversized Temporal signal payloads
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+
 	type swarmMessageRequest struct {
 		Message string `json:"message"`
 	}
 	var req swarmMessageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Message == "" {
 		h.sendError(w, "message is required", http.StatusBadRequest)
+		return
+	}
+
+	const maxMessageLen = 32 * 1024 // 32KB per message
+	if len(req.Message) > maxMessageLen {
+		h.sendError(w, fmt.Sprintf("message too long (%d bytes, max %d)", len(req.Message), maxMessageLen), http.StatusBadRequest)
 		return
 	}
 

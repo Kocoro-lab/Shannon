@@ -1690,6 +1690,16 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 1},
 	})
 
+	// Dedicated context for workspace file I/O (read + list) — p2pCtx (10s) is too tight for EFS.
+	fileReadCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts:    3,
+			InitialInterval:    2 * time.Second,
+			BackoffCoefficient: 2.0,
+		},
+	})
+
 	// Emit workflow started
 	_ = workflow.ExecuteActivity(emitCtx, "EmitTaskUpdate", activities.EmitTaskUpdateInput{
 		WorkflowID: workflowID,
@@ -1907,7 +1917,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 			for _, fr := range fileIOActions {
 				if fr.Type == "file_list" {
 					var listResult activities.ListWorkspaceFilesResult
-					listErr := workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+					listErr := workflow.ExecuteActivity(fileReadCtx, constants.ListWorkspaceFilesActivity,
 						activities.ListWorkspaceFilesInput{SessionID: input.SessionID}).Get(ctx, &listResult)
 					if listErr != nil {
 						fileContents = append(fileContents, activities.FileReadResult{Path: ".", Error: listErr.Error()})
@@ -1923,7 +1933,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 					}
 				} else if fr.Path != "" {
 					var readResult activities.ReadWorkspaceFileResult
-					readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
+					readErr := workflow.ExecuteActivity(fileReadCtx, constants.ReadWorkspaceFileActivity,
 						activities.ReadWorkspaceFileInput{
 							SessionID: input.SessionID, Path: fr.Path, MaxChars: 4000,
 						}).Get(ctx, &readResult)
@@ -2788,7 +2798,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 		var wsFileList []string
 		{
 			var diskFiles activities.ListWorkspaceFilesResult
-			_ = workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+			_ = workflow.ExecuteActivity(fileReadCtx, constants.ListWorkspaceFilesActivity,
 				activities.ListWorkspaceFilesInput{SessionID: input.SessionID},
 			).Get(ctx, &diskFiles)
 			seen := make(map[string]bool)
@@ -2912,7 +2922,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 				for _, fr := range fileIOActions {
 					if fr.Type == "file_list" {
 						var listResult activities.ListWorkspaceFilesResult
-						listErr := workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+						listErr := workflow.ExecuteActivity(fileReadCtx, constants.ListWorkspaceFilesActivity,
 							activities.ListWorkspaceFilesInput{SessionID: input.SessionID}).Get(ctx, &listResult)
 						if listErr != nil {
 							fileContents = append(fileContents, activities.FileReadResult{Path: ".", Error: listErr.Error()})
@@ -2928,7 +2938,7 @@ func SwarmWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, error) {
 						}
 					} else if fr.Path != "" {
 						var readResult activities.ReadWorkspaceFileResult
-						readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
+						readErr := workflow.ExecuteActivity(fileReadCtx, constants.ReadWorkspaceFileActivity,
 							activities.ReadWorkspaceFileInput{
 								SessionID: input.SessionID, Path: fr.Path, MaxChars: 4000,
 							}).Get(ctx, &readResult)
@@ -3766,7 +3776,7 @@ synthesis:
 			for _, fr := range fileIOActions {
 				if fr.Type == "file_list" {
 					var listResult activities.ListWorkspaceFilesResult
-					listErr := workflow.ExecuteActivity(p2pCtx, constants.ListWorkspaceFilesActivity,
+					listErr := workflow.ExecuteActivity(fileReadCtx, constants.ListWorkspaceFilesActivity,
 						activities.ListWorkspaceFilesInput{SessionID: input.SessionID}).Get(ctx, &listResult)
 					if listErr != nil {
 						fileContents = append(fileContents, activities.FileReadResult{Path: ".", Error: listErr.Error()})
@@ -3782,7 +3792,7 @@ synthesis:
 					}
 				} else if fr.Path != "" {
 					var readResult activities.ReadWorkspaceFileResult
-					readErr := workflow.ExecuteActivity(p2pCtx, constants.ReadWorkspaceFileActivity,
+					readErr := workflow.ExecuteActivity(fileReadCtx, constants.ReadWorkspaceFileActivity,
 						activities.ReadWorkspaceFileInput{
 							SessionID: input.SessionID, Path: fr.Path, MaxChars: 8000,
 						}).Get(ctx, &readResult)
