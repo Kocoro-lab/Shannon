@@ -1467,6 +1467,14 @@ class FileDeleteTool(Tool):
                 return ToolResult(success=False, output=None, error=error)
 
         # Local filesystem fallback — workspace only (not memory)
+        # Explicit /memory/ guard — matches Rust hard-reject pattern (sandbox_service.rs:1223)
+        if target_path.startswith("/memory/") or target_path.startswith("/memory") \
+                or target_path.startswith("memory/") or target_path == "memory":
+            return ToolResult(
+                success=False,
+                output=None,
+                error="Deleting from /memory/ is not allowed. file_delete only works in workspace.",
+            )
         try:
             workspace = _get_session_workspace(session_context)
 
