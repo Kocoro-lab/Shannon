@@ -69,7 +69,7 @@ model_tiers:
         model: llama-4-scout
         priority: 6
       - provider: deepseek
-        model: 'deepseek-v3.2'
+        model: deepseek-chat
         priority: 7
       - provider: qwen
         model: qwen3-8b
@@ -110,7 +110,7 @@ model_tiers:
         model: gemini-3-pro-preview
         priority: 7
       - provider: deepseek
-        model: deepseek-r1
+        model: deepseek-reasoner
         priority: 8
       - provider: qwen
         model: qwen3-omni-30b-a3b-instruct
@@ -431,33 +431,28 @@ model_catalog:
       supports_functions: true
       supports_streaming: true
     deepseek-v3:
-      model_id: deepseek-v3
+      model_id: deepseek-chat
       tier: medium
       context_window: 65536
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
-    'deepseek-v3.2':
-      model_id: 'deepseek-v3.2'
-      tier: medium
-      context_window: 65536
-      max_tokens: 8192
-      supports_functions: true
-      supports_streaming: true
-    deepseek-r1:
-      model_id: deepseek-r1
+    deepseek-reasoner:
+      model_id: deepseek-reasoner
       tier: large
       context_window: 131072
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
+      supports_reasoning: true
     deepseek-r1-lite:
-      model_id: deepseek-r1-lite
+      model_id: deepseek-reasoner
       tier: medium
       context_window: 131072
       max_tokens: 8192
       supports_functions: true
       supports_streaming: true
+      supports_reasoning: true
 
   qwen:
     qwen3-4b-instruct-2507:
@@ -689,10 +684,7 @@ pricing:
       deepseek-v3:
         input_per_1k: 0.00027
         output_per_1k: 0.0011
-      'deepseek-v3.2':
-        input_per_1k: 0.00030
-        output_per_1k: 0.0012
-      deepseek-r1:
+      deepseek-reasoner:
         input_per_1k: 0.00055
         output_per_1k: 0.00219
       deepseek-r1-lite:
@@ -808,13 +800,13 @@ model_capabilities:
     - claude-opus-4-1-20250805
     - gemini-3-pro-preview
     - gemini-2.5-pro
-    - deepseek-r1
+    - deepseek-reasoner
     - qwen3-omni-30b-a3b-instruct
     - grok-4-fast-reasoning
 
   coding_specialists:
     - codestral-22b-v0.1
-    - 'deepseek-v3.2'
+    - deepseek-chat
     - claude-sonnet-4-5-20250929
     - claude-sonnet-4-20250514
     - gpt-5-pro-2025-10-06
