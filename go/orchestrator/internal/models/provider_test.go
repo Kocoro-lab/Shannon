@@ -29,8 +29,8 @@ func TestDetectProvider(t *testing.T) {
 
 		// DeepSeek models
 		{"DeepSeek Chat", "deepseek-chat", "deepseek"},
-		{"DeepSeek R1", "deepseek-r1", "deepseek"},
-		{"DeepSeek V3", "deepseek-v3.2", "deepseek"},
+		{"DeepSeek Reasoner", "deepseek-reasoner", "deepseek"},
+		{"DeepSeek V3", "deepseek-v3", "deepseek"},
 
 		// Qwen models
 		{"Qwen 3", "qwen3-8b", "qwen"},
