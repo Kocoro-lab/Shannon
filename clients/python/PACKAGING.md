@@ -7,7 +7,7 @@
 ## Package Information
 
 - **Name:** `shannon-sdk`
-- **Version:** `0.6.0`
+- **Version:** `0.7.0`
 - **Size:** ~38KB wheel, ~32KB source
 - **Python:** >=3.9
 - **License:** MIT
@@ -26,7 +26,7 @@ make build
 make publish-test
 
 # 3. Test install
-pip install -i https://test.pypi.org/simple/ shannon-sdk==0.6.0
+pip install -i https://test.pypi.org/simple/ shannon-sdk==0.7.0
 ```
 
 ### Production PyPI
@@ -63,9 +63,6 @@ Live validation is opt-in:
 make test-live
 ```
 
-The package still ships checked-in generated stubs from `src/shannon/generated/`,
-but this SDK package does not currently define a local regeneration target.
-
 ### 2. Build Distribution
 
 ```bash
@@ -73,8 +70,8 @@ make build
 ```
 
 **Output:**
-- `dist/shannon_sdk-0.6.0.tar.gz` (source distribution)
-- `dist/shannon_sdk-0.6.0-py3-none-any.whl` (wheel)
+- `dist/shannon_sdk-0.7.0.tar.gz` (source distribution)
+- `dist/shannon_sdk-0.7.0-py3-none-any.whl` (wheel)
 
 ### 3. Verify Package
 
@@ -83,7 +80,7 @@ make build
 python3 -m twine check dist/*
 
 # Inspect contents
-tar -tzf dist/shannon_sdk-0.6.0.tar.gz | head -20
+tar -tzf dist/shannon_sdk-0.7.0.tar.gz | head -20
 ```
 
 **Expected:**
@@ -102,7 +99,7 @@ python3 -m twine upload -r testpypi dist/*
 # Test install in clean environment
 python3 -m venv test-env
 source test-env/bin/activate
-pip install -i https://test.pypi.org/simple/ shannon-sdk==0.6.0
+pip install -i https://test.pypi.org/simple/ shannon-sdk==0.7.0
 
 # Verify
 python3 -c "from shannon import ShannonClient; print('✓ Import works')"
@@ -130,7 +127,7 @@ python3 -m twine upload dist/*
 ### Included
 
 ```
-shannon_sdk-0.6.0/
+shannon_sdk-0.7.0/
 ├── README.md                    # User documentation
 ├── pyproject.toml               # Package metadata
 ├── src/shannon/
@@ -198,7 +195,7 @@ pip install shannon-sdk
 ### From TestPyPI
 
 ```bash
-pip install -i https://test.pypi.org/simple/ shannon-sdk==0.6.0
+pip install -i https://test.pypi.org/simple/ shannon-sdk==0.7.0
 ```
 
 ### From Source
@@ -317,14 +314,11 @@ make clean         # Remove build artifacts
 
 ## Current Status
 
-⚠️ **0.6.0 development baseline only**
+**v0.7.0** — Published to PyPI.
 
 **Package validated:**
 - [x] Builds successfully
 - [x] Twine check passes
-- [x] Only README.md included
-- [x] All proto stubs included
-- [x] No test files included
-- [x] Current version aligned to 0.6.0
-
-**Next step:** Finish parity work, then decide on the next release version before publishing.
+- [x] 62 unit tests pass, 48 E2E tests pass
+- [x] Security reviewed (no cloud leaks, no secrets)
+- [x] Version aligned to 0.7.0 across all metadata
