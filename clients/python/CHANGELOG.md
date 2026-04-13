@@ -5,6 +5,28 @@ All notable changes to the Shannon Python SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-04-13
+
+### Added
+- Add direct Tool API methods and CLI coverage for listing, inspecting, and executing tools
+- Add workspace and memory file access methods and CLI coverage for listing and downloading files
+- Add deterministic Agents API methods plus swarm follow-up messaging support
+- Add OpenAI-compatible wrappers for `/v1/models`, `/v1/chat/completions`, and `/v1/completions`
+- Add usage examples for tools, files, deterministic agents, OpenAI-compatible helpers, and skills
+- Add E2E verification script for live-stack validation
+
+### Fixed
+- Fix session ID resolution: prefer external session IDs when gateway returns internal UUIDs
+- Fix session title parsing: read title from context when top-level field is absent
+- Fix SSE streaming: yield `done` event instead of silently dropping non-JSON `[DONE]` payload
+
+### Changed
+- Align version metadata across `__init__.py`, `pyproject.toml`, README, and Makefile
+- Move live validation tests behind `SHANNON_LIVE_TESTS=1` opt-in gate
+
+### Removed
+- Remove the unused `ReviewPlan` model
+
 ## [0.6.0] - 2026-02-13
 
 ### Added
@@ -14,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add CLI commands: `review-get`, `review-feedback`, `review-approve`
 - Add CLI commands: `skills-list`, `skill-get`, `skill-versions`
 - Add `--swarm` flag to `submit` CLI command
-- Add models: `ReviewState`, `ReviewRound`, `ReviewPlan`, `Skill`, `SkillDetail`, `SkillVersion`
+- Add models: `ReviewState`, `ReviewRound`, `Skill`, `SkillDetail`, `SkillVersion`
 
 ---
 

@@ -166,6 +166,62 @@ class AgentTaskStatus:
 
 
 @dataclass
+class AgentInfo:
+    """Agent metadata exposed by the deterministic Agents API."""
+
+    id: str
+    name: str
+    description: str
+    category: str
+    tool: str
+    input_schema: Dict[str, Any] = field(default_factory=dict)
+    cost_per_call: float = 0.0
+
+
+@dataclass
+class AgentExecution:
+    """Handle returned when invoking a deterministic agent."""
+
+    task_id: str
+    workflow_id: str
+    agent_id: str
+    status: str
+    created_at: Optional[datetime] = None
+    session_id: Optional[str] = None
+
+    def __post_init__(self):
+        """Store reference to client for convenience methods."""
+        self._client: Optional[Any] = None
+
+    def _set_client(self, client: Any) -> None:
+        """Internal: set client reference for convenience methods."""
+        self._client = client
+
+    def wait(self, timeout: Optional[float] = None) -> TaskStatus:
+        """Wait for task completion (blocking)."""
+        if not self._client:
+            raise RuntimeError("AgentExecution not associated with a client")
+        return self._client.wait(self.task_id, timeout=timeout)
+
+    def result(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Get task result (blocking)."""
+        status = self.wait(timeout=timeout)
+        return status.result
+
+    def stream(self, types: Optional[List[str]] = None):
+        """Stream workflow events for the agent execution."""
+        if not self._client:
+            raise RuntimeError("AgentExecution not associated with a client")
+        return self._client.stream(self.workflow_id, types=types)
+
+    def cancel(self, reason: Optional[str] = None) -> bool:
+        """Cancel the underlying task."""
+        if not self._client:
+            raise RuntimeError("AgentExecution not associated with a client")
+        return self._client.cancel(self.task_id, reason=reason)
+
+
+@dataclass
 class TaskStatus:
     """Current status of a task."""
 
@@ -329,6 +385,134 @@ class SessionEventTurn:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class FileEntry:
+    """File entry returned by workspace or memory file listing APIs."""
+
+    name: str
+    path: str
+    is_dir: bool = False
+    size_bytes: int = 0
+
+
+@dataclass
+class DownloadedFile:
+    """Downloaded workspace or memory file content."""
+
+    content: str
+    content_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+
+
+@dataclass
+class SwarmMessageResult:
+    """Result from sending a message to a running swarm workflow."""
+
+    success: bool
+    status: Optional[str] = None
+
+
+@dataclass
+class OpenAIChatMessage:
+    """Message payload for the OpenAI-compatible chat completions API."""
+
+    role: str
+    content: Any
+    name: Optional[str] = None
+
+
+@dataclass
+class OpenAIChatDelta:
+    """Incremental delta payload from the OpenAI-compatible streaming API."""
+
+    role: Optional[str] = None
+    content: Optional[str] = None
+
+
+@dataclass
+class OpenAIUsage:
+    """Token usage block returned by OpenAI-compatible endpoints."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
+class OpenAIShannonEvent:
+    """Shannon-specific event extension embedded in chat completion streams."""
+
+    type: str
+    agent_id: Optional[str] = None
+    message: Optional[str] = None
+    timestamp: Optional[int] = None
+    payload: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OpenAIChatChoice:
+    """Choice entry returned by OpenAI-compatible chat completions."""
+
+    index: int
+    message: Optional[OpenAIChatMessage] = None
+    delta: Optional[OpenAIChatDelta] = None
+    finish_reason: Optional[str] = None
+
+
+@dataclass
+class OpenAIShannonOptions:
+    """Shannon-specific extensions accepted by the OpenAI-compatible API."""
+
+    context: Dict[str, Any] = field(default_factory=dict)
+    agent: Optional[str] = None
+    agent_input: Dict[str, Any] = field(default_factory=dict)
+    role: Optional[str] = None
+    research_strategy: Optional[str] = None
+    model_tier: Optional[str] = None
+
+
+@dataclass
+class OpenAIChatCompletion:
+    """Non-streaming OpenAI-compatible chat completion response."""
+
+    id: str
+    object: str
+    created: int
+    model: str
+    choices: List[OpenAIChatChoice] = field(default_factory=list)
+    usage: Optional[OpenAIUsage] = None
+    system_fingerprint: Optional[str] = None
+    session_id: Optional[str] = None
+    shannon_session_id: Optional[str] = None
+
+
+@dataclass
+class OpenAIChatCompletionChunk:
+    """Streaming chunk from the OpenAI-compatible chat completions API."""
+
+    id: str
+    object: str
+    created: int
+    model: str
+    choices: List[OpenAIChatChoice] = field(default_factory=list)
+    usage: Optional[OpenAIUsage] = None
+    system_fingerprint: Optional[str] = None
+    shannon_events: List[OpenAIShannonEvent] = field(default_factory=list)
+    session_id: Optional[str] = None
+    shannon_session_id: Optional[str] = None
+
+
+@dataclass
+class OpenAIModel:
+    """Model entry returned by the OpenAI-compatible models API."""
+
+    id: str
+    object: str = "model"
+    created: int = 0
+    owned_by: str = "shannon"
+    description: Optional[str] = None
+
+
 class ScheduleStatus(str, Enum):
     """Schedule status values."""
 
@@ -409,16 +593,6 @@ class ReviewRound:
 
 
 @dataclass
-class ReviewPlan:
-    """Plan submitted during a review cycle."""
-
-    message: str
-    round: int
-    version: int
-    intent: str  # "ready", "feedback"
-
-
-@dataclass
 class ReviewState:
     """Current state of a human-in-the-loop review."""
 
@@ -428,6 +602,49 @@ class ReviewState:
     current_plan: Optional[str] = None
     rounds: List[ReviewRound] = field(default_factory=list)
     query: Optional[str] = None
+
+
+@dataclass
+class ToolSchema:
+    """Tool schema returned by the direct tool API."""
+
+    name: str
+    description: str
+    parameters: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ToolDetail:
+    """Detailed tool metadata and parameter schema."""
+
+    name: str
+    description: str
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    category: Optional[str] = None
+    version: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+    cost_per_use: Optional[float] = None
+
+
+@dataclass
+class ToolUsage:
+    """Quota usage reported for direct tool execution."""
+
+    tokens: int = 0
+    cost_usd: float = 0.0
+
+
+@dataclass
+class ToolExecutionResult:
+    """Result from direct tool execution."""
+
+    success: bool
+    output: Any = None
+    text: Optional[str] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    execution_time_ms: Optional[int] = None
+    usage: Optional[ToolUsage] = None
 
 
 @dataclass

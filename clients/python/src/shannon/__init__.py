@@ -1,12 +1,26 @@
 """Shannon SDK - Python client for Shannon multi-agent AI platform."""
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"
 
 from shannon.client import AsyncShannonClient, ShannonClient
 from shannon.models import (
+    AgentExecution,
+    AgentInfo,
+    ConversationMessage,
     ControlState,
+    DownloadedFile,
     Event,
     EventType,
+    FileEntry,
+    OpenAIChatChoice,
+    OpenAIChatCompletion,
+    OpenAIChatCompletionChunk,
+    OpenAIChatDelta,
+    OpenAIChatMessage,
+    OpenAIModel,
+    OpenAIShannonEvent,
+    OpenAIShannonOptions,
+    OpenAIUsage,
     PendingApproval,
     ReviewRound,
     ReviewState,
@@ -25,6 +39,11 @@ from shannon.models import (
     TaskStatus,
     TaskStatusEnum,
     TaskSummary,
+    SwarmMessageResult,
+    ToolDetail,
+    ToolExecutionResult,
+    ToolSchema,
+    ToolUsage,
     TokenUsage,
 )
 from shannon.errors import (
@@ -51,9 +70,23 @@ __all__ = [
     "AsyncShannonClient",
     "ShannonClient",
     # Models
+    "AgentExecution",
+    "AgentInfo",
+    "ConversationMessage",
     "ControlState",
+    "DownloadedFile",
     "Event",
     "EventType",
+    "FileEntry",
+    "OpenAIChatChoice",
+    "OpenAIChatCompletion",
+    "OpenAIChatCompletionChunk",
+    "OpenAIChatDelta",
+    "OpenAIChatMessage",
+    "OpenAIModel",
+    "OpenAIShannonEvent",
+    "OpenAIShannonOptions",
+    "OpenAIUsage",
     "PendingApproval",
     "ReviewRound",
     "ReviewState",
@@ -72,6 +105,11 @@ __all__ = [
     "TaskStatus",
     "TaskStatusEnum",
     "TaskSummary",
+    "SwarmMessageResult",
+    "ToolDetail",
+    "ToolExecutionResult",
+    "ToolSchema",
+    "ToolUsage",
     "TokenUsage",
     # Errors
     "AuthenticationError",

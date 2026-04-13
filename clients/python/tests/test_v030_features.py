@@ -1,35 +1,23 @@
-"""Live validation tests for v0.3.0 SDK features.
+"""Live validation tests for extended SDK task and session fields.
 
 Requires a running Shannon backend at localhost:8080.
-Run with: pytest tests/test_v030_features.py -v -s
+Run with: SHANNON_LIVE_TESTS=1 pytest tests/test_v030_features.py -v -s
 """
 
 import pytest
 import sys
+
 sys.path.insert(0, "src")
 
+from tests._live import live_backend_required
 from shannon import ShannonClient, AsyncShannonClient, TaskStatusEnum
 
 
-# Skip all tests if backend is not available
-def backend_available():
-    """Check if Shannon backend is running."""
-    try:
-        import httpx
-        resp = httpx.get("http://localhost:8080/health", timeout=2)
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not backend_available(),
-    reason="Shannon backend not available at localhost:8080"
-)
+pytestmark = live_backend_required()
 
 
 class TestTaskStatusFields:
-    """Test new TaskStatus fields from v0.3.0."""
+    """Test extended TaskStatus fields."""
 
     def test_get_status_returns_new_fields(self):
         """Verify get_status() returns model_used, provider, usage, etc."""
@@ -56,8 +44,8 @@ class TestTaskStatusFields:
             print(f"  Status: {status.status.value}")
             print(f"  Result: {status.result[:100]}...")
 
-            # Verify NEW v0.3.0 fields
-            print(f"\n  === v0.3.0 New Fields ===")
+            # Verify extended fields
+            print("\n  === Extended Fields ===")
 
             # workflow_id
             print(f"  workflow_id: {status.workflow_id}")
@@ -94,14 +82,14 @@ class TestTaskStatusFields:
             # Context
             print(f"  context: {status.context}")
 
-            print("\n  ✓ All TaskStatus v0.3.0 fields validated")
+            print("\n  ✓ All TaskStatus extended fields validated")
 
         finally:
             client.close()
 
 
 class TestSessionFields:
-    """Test new Session/SessionSummary fields from v0.3.0."""
+    """Test extended Session and SessionSummary fields."""
 
     def test_list_sessions_returns_new_fields(self):
         """Verify list_sessions() returns enhanced SessionSummary with metrics."""
@@ -123,7 +111,7 @@ class TestSessionFields:
 
             if sessions:
                 s = sessions[0]
-                print(f"\n  === SessionSummary v0.3.0 Fields ===")
+                print("\n  === SessionSummary Extended Fields ===")
                 print(f"  session_id: {s.session_id}")
                 print(f"  user_id: {s.user_id}")
                 print(f"  title: {s.title}")
@@ -165,7 +153,7 @@ class TestSessionFields:
                 print(f"    is_research_session: {s.is_research_session}")
                 print(f"    first_task_mode: {s.first_task_mode}")
 
-                print("\n  ✓ All SessionSummary v0.3.0 fields validated")
+                print("\n  ✓ All SessionSummary extended fields validated")
 
         finally:
             client.close()
@@ -187,7 +175,7 @@ class TestSessionFields:
             # Get session details
             session = client.get_session(session_id)
 
-            print(f"\n  === Session v0.3.0 Fields ===")
+            print("\n  === Session Extended Fields ===")
             print(f"  session_id: {session.session_id}")
             print(f"  user_id: {session.user_id}")
             print(f"  title: {session.title}")
@@ -203,7 +191,7 @@ class TestSessionFields:
             print(f"  context: {session.context}")
 
             assert session.session_id is not None
-            print("\n  ✓ All Session v0.3.0 fields validated")
+            print("\n  ✓ All Session extended fields validated")
 
         finally:
             client.close()
@@ -224,7 +212,7 @@ class TestSessionFields:
             client.wait(handle.task_id, timeout=60)
 
             # Update title
-            new_title = "SDK v0.3.0 Test Session"
+            new_title = "SDK Current Test Session"
             result = client.update_session_title(session_id, new_title)
             assert result is True, "update_session_title should return True"
             print(f"\n  Title updated to: '{new_title}'")
@@ -241,7 +229,7 @@ class TestSessionFields:
 
 
 class TestAsyncClient:
-    """Test async client v0.3.0 features."""
+    """Test async client extended fields."""
 
     @pytest.mark.asyncio
     async def test_async_get_status_new_fields(self):
@@ -268,14 +256,4 @@ class TestAsyncClient:
             assert status.status == TaskStatusEnum.COMPLETED
             assert status.model_used is not None, "model_used should be populated"
 
-            print("\n  ✓ Async client v0.3.0 fields validated")
-
-
-class TestVersionConsistency:
-    """Test version is correctly reported."""
-
-    def test_version_is_030(self):
-        """Verify SDK version is 0.3.0."""
-        import shannon
-        assert shannon.__version__ == "0.3.0", f"Expected 0.3.0, got {shannon.__version__}"
-        print(f"\n  ✓ SDK version: {shannon.__version__}")
+            print("\n  ✓ Async client extended fields validated")

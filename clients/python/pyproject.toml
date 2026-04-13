@@ -1,6 +1,6 @@
 [project]
 name = "shannon-sdk"
-version = "0.6.0"
+version = "0.7.0"
 description = "Python SDK for Shannon multi-agent AI platform"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -75,3 +75,4 @@ check_untyped_defs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

@@ -1,33 +1,22 @@
-"""Comprehensive validation tests for v0.3.0 SDK features.
+"""Comprehensive live validation tests for current SDK workflows.
 
 Tests different workflow types, execution patterns, and SSE streaming.
 Requires a running Shannon backend at localhost:8080.
 
-Run with: pytest tests/test_v030_comprehensive.py -v -s
+Run with: SHANNON_LIVE_TESTS=1 pytest tests/test_v030_comprehensive.py -v -s
 """
 
 import pytest
 import sys
 import time
+
 sys.path.insert(0, "src")
 
+from tests._live import live_backend_required
 from shannon import ShannonClient, AsyncShannonClient, TaskStatusEnum, EventType
 
 
-def backend_available():
-    """Check if Shannon backend is running."""
-    try:
-        import httpx
-        resp = httpx.get("http://localhost:8080/health", timeout=2)
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(
-    not backend_available(),
-    reason="Shannon backend not available at localhost:8080"
-)
+pytestmark = live_backend_required()
 
 
 class TestSimpleWorkflow:

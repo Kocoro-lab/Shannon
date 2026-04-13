@@ -1,8 +1,10 @@
 """Basic import and model tests for HTTP-only SDK (no network)."""
 
 import inspect
+from datetime import datetime
 
 import pytest
+import shannon
 
 from shannon import (
     ShannonClient,
@@ -12,14 +14,32 @@ from shannon import (
     errors,
 )
 from shannon.models import (
+    AgentExecution,
+    AgentInfo,
+    ConversationMessage,
+    DownloadedFile,
     Event,
+    FileEntry,
+    OpenAIChatChoice,
+    OpenAIChatCompletion,
+    OpenAIChatCompletionChunk,
+    OpenAIChatDelta,
+    OpenAIChatMessage,
+    OpenAIModel,
+    OpenAIShannonEvent,
+    OpenAIShannonOptions,
+    OpenAIUsage,
     ReviewRound,
     ReviewState,
     Skill,
     SkillDetail,
     SkillVersion,
+    SwarmMessageResult,
+    ToolDetail,
+    ToolExecutionResult,
+    ToolSchema,
+    ToolUsage,
 )
-from datetime import datetime
 
 
 def test_imports_and_enums():
@@ -35,6 +55,10 @@ def test_error_hierarchy():
     assert issubclass(errors.TaskNotFoundError, errors.TaskError)
     assert issubclass(errors.TaskError, errors.ShannonError)
     assert issubclass(errors.AuthenticationError, errors.ShannonError)
+
+
+def test_package_version():
+    assert shannon.__version__ == "0.7.0"
 
 
 def test_sync_client_init():
@@ -56,8 +80,26 @@ def test_sync_client_init():
         "get_session_events",
         "update_session_title",
         "delete_session",
+        "submit_and_stream",
+        "list_session_files",
+        "download_session_file",
+        "list_memory_files",
+        "download_memory_file",
+        "list_agents",
+        "get_agent",
+        "execute_agent",
+        "send_swarm_message",
+        "list_openai_models",
+        "get_openai_model",
+        "create_chat_completion",
+        "stream_chat_completion",
+        "create_completion",
+        "stream_completion",
         "stream",
         "approve",
+        "list_tools",
+        "get_tool",
+        "execute_tool",
         # Schedule methods (v0.5.0)
         "create_schedule",
         "get_schedule",
@@ -90,6 +132,13 @@ def test_event_model_basic():
     )
     assert e.id == "1"
     assert e.payload is None
+
+
+def test_conversation_message_export_and_creation():
+    msg = ConversationMessage(role="user", content="hello", tokens_used=12)
+    assert hasattr(shannon, "ConversationMessage")
+    assert msg.role == "user"
+    assert msg.tokens_used == 12
 
 
 # --- Review model tests (v0.6.0) ---
@@ -184,6 +233,126 @@ def test_skill_version_creation():
     assert sv.requires_tools == ["web_search"]
 
 
+def test_tool_schema_creation():
+    tool = ToolSchema(
+        name="web_search",
+        description="Search the web",
+        parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+    )
+    assert tool.name == "web_search"
+    assert tool.parameters["type"] == "object"
+
+
+def test_tool_detail_and_execution_result_creation():
+    detail = ToolDetail(
+        name="calculator",
+        description="Evaluate expressions",
+        parameters={"type": "object"},
+        category="math",
+        version="1.2.0",
+        timeout_seconds=10,
+        cost_per_use=0.0,
+    )
+    usage = ToolUsage(tokens=123, cost_usd=0.001)
+    result = ToolExecutionResult(
+        success=True,
+        output={"value": 4},
+        text="4",
+        metadata={"source": "builtin"},
+        execution_time_ms=5,
+        usage=usage,
+    )
+
+    assert detail.category == "math"
+    assert detail.timeout_seconds == 10
+    assert result.success is True
+    assert result.output == {"value": 4}
+    assert result.usage == usage
+
+
+def test_file_entry_and_downloaded_file_creation():
+    entry = FileEntry(name="report.md", path="reports/report.md", is_dir=False, size_bytes=128)
+    downloaded = DownloadedFile(
+        content="# Report",
+        content_type="text/markdown",
+        size_bytes=8,
+    )
+
+    assert entry.path == "reports/report.md"
+    assert entry.size_bytes == 128
+    assert downloaded.content_type == "text/markdown"
+    assert downloaded.content == "# Report"
+
+
+def test_agent_models_creation():
+    agent = AgentInfo(
+        id="keyword_extract",
+        name="Keyword Extractor",
+        description="Extracts keywords from text",
+        category="text",
+        tool="keyword_extract",
+        input_schema={"type": "object"},
+        cost_per_call=0.01,
+    )
+    execution = AgentExecution(
+        task_id="task-123",
+        workflow_id="workflow-123",
+        agent_id="keyword_extract",
+        status="QUEUED",
+    )
+    message = SwarmMessageResult(success=True, status="delivered")
+
+    assert agent.tool == "keyword_extract"
+    assert agent.cost_per_call == 0.01
+    assert execution.workflow_id == "workflow-123"
+    assert message.success is True
+    assert message.status == "delivered"
+
+
+def test_openai_models_creation():
+    message = OpenAIChatMessage(role="user", content="hello")
+    delta = OpenAIChatDelta(role="assistant", content="world")
+    usage = OpenAIUsage(prompt_tokens=10, completion_tokens=20, total_tokens=30)
+    event = OpenAIShannonEvent(type="AGENT_STARTED", agent_id="alpha")
+    options = OpenAIShannonOptions(
+        context={"source": "sdk"},
+        research_strategy="deep",
+    )
+    choice = OpenAIChatChoice(
+        index=0,
+        message=OpenAIChatMessage(role="assistant", content="hello world"),
+        delta=delta,
+        finish_reason="stop",
+    )
+    completion = OpenAIChatCompletion(
+        id="chatcmpl-123",
+        object="chat.completion",
+        created=123,
+        model="shannon-chat",
+        choices=[choice],
+        usage=usage,
+        session_id="session-1",
+    )
+    chunk = OpenAIChatCompletionChunk(
+        id="chatcmpl-123",
+        object="chat.completion.chunk",
+        created=123,
+        model="shannon-chat",
+        choices=[choice],
+        shannon_events=[event],
+    )
+    model = OpenAIModel(id="shannon-chat", description="General chat")
+
+    assert message.content == "hello"
+    assert delta.content == "world"
+    assert usage.total_tokens == 30
+    assert event.agent_id == "alpha"
+    assert options.research_strategy == "deep"
+    assert completion.session_id == "session-1"
+    assert chunk.shannon_events[0].type == "AGENT_STARTED"
+    assert model.description == "General chat"
+
+
 # --- Method existence tests (v0.6.0) ---
 
 
@@ -218,6 +387,25 @@ async def test_async_client_has_skills_methods():
     assert hasattr(ac, "list_skills"), "Missing method: list_skills"
     assert hasattr(ac, "get_skill"), "Missing method: get_skill"
     assert hasattr(ac, "get_skill_versions"), "Missing method: get_skill_versions"
+    await ac.close()
+
+
+def test_sync_client_has_agents_methods():
+    c = ShannonClient(base_url="http://localhost:8080")
+    assert hasattr(c, "list_agents"), "Missing method: list_agents"
+    assert hasattr(c, "get_agent"), "Missing method: get_agent"
+    assert hasattr(c, "execute_agent"), "Missing method: execute_agent"
+    assert hasattr(c, "send_swarm_message"), "Missing method: send_swarm_message"
+    c.close()
+
+
+@pytest.mark.asyncio
+async def test_async_client_has_agents_methods():
+    ac = AsyncShannonClient(base_url="http://localhost:8080")
+    assert hasattr(ac, "list_agents"), "Missing method: list_agents"
+    assert hasattr(ac, "get_agent"), "Missing method: get_agent"
+    assert hasattr(ac, "execute_agent"), "Missing method: execute_agent"
+    assert hasattr(ac, "send_swarm_message"), "Missing method: send_swarm_message"
     await ac.close()
 
 

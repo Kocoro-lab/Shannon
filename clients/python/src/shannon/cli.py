@@ -1,6 +1,7 @@
 """Shannon CLI tool."""
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -162,6 +163,56 @@ def main():
     review_approve = subparsers.add_parser("review-approve", help="Approve review plan")
     review_approve.add_argument("workflow_id", help="Workflow ID")
     review_approve.add_argument("--version", type=int, help="Version for optimistic concurrency")
+
+    # Tool commands
+    tools_list = subparsers.add_parser("tools-list", help="List direct-execution tools")
+    tools_list.add_argument("--category", help="Filter by category")
+
+    tool_get = subparsers.add_parser("tool-get", help="Get direct-execution tool details")
+    tool_get.add_argument("name", help="Tool name")
+
+    tool_exec = subparsers.add_parser("tool-exec", help="Execute a tool directly")
+    tool_exec.add_argument("name", help="Tool name")
+    tool_exec.add_argument(
+        "--arguments",
+        default="{}",
+        help="Tool arguments as a JSON object",
+    )
+    tool_exec.add_argument("--session-id", help="Optional session ID for tool context")
+
+    # Workspace and memory file commands
+    session_files = subparsers.add_parser("session-files", help="List session workspace files")
+    session_files.add_argument("session_id", help="Session ID")
+    session_files.add_argument("--path", help="Optional workspace subdirectory")
+
+    session_file_get = subparsers.add_parser("session-file-get", help="Download a session workspace file")
+    session_file_get.add_argument("session_id", help="Session ID")
+    session_file_get.add_argument("path", help="Workspace file path")
+
+    memory_files = subparsers.add_parser("memory-files", help="List user memory files")
+
+    memory_file_get = subparsers.add_parser("memory-file-get", help="Download a user memory file")
+    memory_file_get.add_argument("path", help="Memory file path")
+
+    # Agent and swarm commands
+    agents_list = subparsers.add_parser("agents-list", help="List deterministic agents")
+
+    agent_get = subparsers.add_parser("agent-get", help="Get deterministic agent details")
+    agent_get.add_argument("agent_id", help="Agent ID")
+
+    agent_exec = subparsers.add_parser("agent-exec", help="Execute a deterministic agent")
+    agent_exec.add_argument("agent_id", help="Agent ID")
+    agent_exec.add_argument(
+        "--input",
+        default="{}",
+        help="Agent input as a JSON object",
+    )
+    agent_exec.add_argument("--session-id", help="Optional session ID")
+    agent_exec.add_argument("--stream", action="store_true", help="Request streamed agent execution")
+
+    swarm_message = subparsers.add_parser("swarm-message", help="Send a message to a running swarm workflow")
+    swarm_message.add_argument("workflow_id", help="Workflow ID")
+    swarm_message.add_argument("message", help="Message to send")
 
     # Skills commands
     skills_list = subparsers.add_parser("skills-list", help="List available skills")
@@ -422,6 +473,157 @@ def main():
             print(f"  Status: {result.get('status')}")
             if result.get("message"):
                 print(f"  Message: {result.get('message')}")
+
+        elif args.command == "tools-list":
+            tools = client.list_tools(category=args.category)
+            if not tools:
+                print("No tools found")
+            else:
+                print(f"{'Name':<25} Description")
+                print("-" * 80)
+                for tool in tools:
+                    print(f"{tool.name:<25} {tool.description}")
+
+        elif args.command == "tool-get":
+            tool = client.get_tool(args.name)
+            print(f"Tool: {tool.name}")
+            print(f"  Description: {tool.description}")
+            if tool.category:
+                print(f"  Category: {tool.category}")
+            if tool.version:
+                print(f"  Version: {tool.version}")
+            if tool.timeout_seconds is not None:
+                print(f"  Timeout seconds: {tool.timeout_seconds}")
+            if tool.cost_per_use is not None:
+                print(f"  Cost per use: {tool.cost_per_use}")
+            print("  Parameters:")
+            print(json.dumps(tool.parameters, indent=2, sort_keys=True))
+
+        elif args.command == "tool-exec":
+            try:
+                tool_arguments = json.loads(args.arguments)
+            except json.JSONDecodeError as e:
+                print(f"✗ Invalid JSON for --arguments: {e}")
+                sys.exit(1)
+
+            if not isinstance(tool_arguments, dict):
+                print("✗ --arguments must decode to a JSON object")
+                sys.exit(1)
+
+            result = client.execute_tool(
+                args.name,
+                arguments=tool_arguments,
+                session_id=args.session_id,
+            )
+            print(f"Success: {result.success}")
+            if result.text:
+                print(f"Text: {result.text}")
+            if result.output is not None:
+                print("Output:")
+                print(json.dumps(result.output, indent=2, sort_keys=True))
+            if result.metadata:
+                print("Metadata:")
+                print(json.dumps(result.metadata, indent=2, sort_keys=True))
+            if result.execution_time_ms is not None:
+                print(f"Execution time (ms): {result.execution_time_ms}")
+            if result.usage:
+                print(f"Usage tokens: {result.usage.tokens}")
+                print(f"Usage cost: {result.usage.cost_usd}")
+            if result.error:
+                print(f"Error: {result.error}")
+                sys.exit(1)
+
+        elif args.command == "session-files":
+            files = client.list_session_files(args.session_id, path=args.path)
+            if not files:
+                print("No files found")
+            else:
+                print(f"{'Type':<8} {'Size':>10} Path")
+                print("-" * 80)
+                for entry in files:
+                    kind = "dir" if entry.is_dir else "file"
+                    print(f"{kind:<8} {entry.size_bytes:>10} {entry.path}")
+
+        elif args.command == "session-file-get":
+            result = client.download_session_file(args.session_id, args.path)
+            if result.content_type:
+                print(f"Content-Type: {result.content_type}")
+            if result.size_bytes is not None:
+                print(f"Size: {result.size_bytes}")
+            print()
+            print(result.content)
+
+        elif args.command == "memory-files":
+            files = client.list_memory_files()
+            if not files:
+                print("No files found")
+            else:
+                print(f"{'Type':<8} {'Size':>10} Path")
+                print("-" * 80)
+                for entry in files:
+                    kind = "dir" if entry.is_dir else "file"
+                    print(f"{kind:<8} {entry.size_bytes:>10} {entry.path}")
+
+        elif args.command == "memory-file-get":
+            result = client.download_memory_file(args.path)
+            if result.content_type:
+                print(f"Content-Type: {result.content_type}")
+            if result.size_bytes is not None:
+                print(f"Size: {result.size_bytes}")
+            print()
+            print(result.content)
+
+        elif args.command == "agents-list":
+            agents = client.list_agents()
+            if not agents:
+                print("No agents found")
+            else:
+                print(f"{'ID':<20} {'Category':<15} {'Tool':<20} Name")
+                print("-" * 90)
+                for agent in agents:
+                    print(f"{agent.id:<20} {agent.category:<15} {agent.tool:<20} {agent.name}")
+
+        elif args.command == "agent-get":
+            agent = client.get_agent(args.agent_id)
+            print(f"Agent: {agent.id}")
+            print(f"  Name: {agent.name}")
+            print(f"  Category: {agent.category}")
+            print(f"  Tool: {agent.tool}")
+            print(f"  Description: {agent.description}")
+            if agent.cost_per_call:
+                print(f"  Cost per call: {agent.cost_per_call}")
+            print("  Input schema:")
+            print(json.dumps(agent.input_schema, indent=2, sort_keys=True))
+
+        elif args.command == "agent-exec":
+            try:
+                input_data = json.loads(args.input)
+            except json.JSONDecodeError as e:
+                print(f"✗ Invalid JSON for --input: {e}")
+                sys.exit(1)
+
+            if not isinstance(input_data, dict):
+                print("✗ --input must decode to a JSON object")
+                sys.exit(1)
+
+            execution = client.execute_agent(
+                args.agent_id,
+                input_data,
+                session_id=args.session_id,
+                stream=args.stream,
+            )
+            print(f"Task ID: {execution.task_id}")
+            print(f"Workflow ID: {execution.workflow_id}")
+            print(f"Agent ID: {execution.agent_id}")
+            print(f"Status: {execution.status}")
+            if execution.session_id:
+                print(f"Session ID: {execution.session_id}")
+
+        elif args.command == "swarm-message":
+            result = client.send_swarm_message(args.workflow_id, args.message)
+            print(f"Success: {result.success}")
+            if result.status:
+                print(f"Status: {result.status}")
 
         elif args.command == "skills-list":
             skills = client.list_skills(category=args.category)

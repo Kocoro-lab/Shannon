@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 import re
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union, Literal
+from urllib.parse import quote
 
 import httpx
 
@@ -57,10 +58,22 @@ def _parse_timestamp(ts_str: str) -> datetime:
 
 
 from shannon.models import (
+    AgentExecution,
+    AgentInfo,
     ControlState,
+    DownloadedFile,
     Event,
     EventType,
-    PendingApproval,
+    FileEntry,
+    OpenAIChatChoice,
+    OpenAIChatCompletion,
+    OpenAIChatCompletionChunk,
+    OpenAIChatDelta,
+    OpenAIChatMessage,
+    OpenAIModel,
+    OpenAIShannonEvent,
+    OpenAIShannonOptions,
+    OpenAIUsage,
     ReviewRound,
     ReviewState,
     Schedule,
@@ -77,6 +90,11 @@ from shannon.models import (
     TaskStatus,
     TaskStatusEnum,
     TaskSummary,
+    SwarmMessageResult,
+    ToolDetail,
+    ToolExecutionResult,
+    ToolSchema,
+    ToolUsage,
     TokenUsage,
 )
 
@@ -130,7 +148,11 @@ class AsyncShannonClient:
         """Handle HTTP error responses."""
         try:
             error_data = response.json()
-            error_msg = error_data.get("error", response.text)
+            error_obj = error_data.get("error", response.text)
+            if isinstance(error_obj, dict):
+                error_msg = error_obj.get("message", response.text)
+            else:
+                error_msg = error_obj
         except Exception:
             error_msg = response.text or f"HTTP {response.status_code}"
 
@@ -1138,6 +1160,7 @@ class AsyncShannonClient:
             sessions = []
 
             for session_data in data.get("sessions", []):
+                context = session_data.get("context")
                 # Parse timestamps
                 created_at = _parse_timestamp(session_data["created_at"])
                 updated_at = None
@@ -1165,16 +1188,16 @@ class AsyncShannonClient:
                         logger.warning(f"Failed to parse session last_activity_at timestamp: {e}")
 
                 sessions.append(SessionSummary(
-                    session_id=session_data["session_id"],
+                    session_id=self._resolve_session_id(session_data),
                     user_id=session_data["user_id"],
                     created_at=created_at,
                     updated_at=updated_at,
-                    title=session_data.get("title"),
+                    title=self._resolve_session_title(session_data),
                     message_count=session_data.get("task_count", 0),
                     total_tokens_used=session_data.get("tokens_used", 0),
                     token_budget=session_data.get("token_budget"),
                     expires_at=expires_at,
-                    context=session_data.get("context"),
+                    context=context,
                     last_activity_at=last_activity_at,
                     is_active=session_data.get("is_active", True),
                     successful_tasks=session_data.get("successful_tasks", 0),
@@ -1246,11 +1269,11 @@ class AsyncShannonClient:
                     logger.warning(f"Failed to parse session expires_at timestamp: {e}")
 
             return Session(
-                session_id=data["session_id"],
+                session_id=self._resolve_session_id(data),
                 user_id=data["user_id"],
                 created_at=created_at,
                 updated_at=updated_at,
-                title=data.get("title"),
+                title=self._resolve_session_title(data),
                 context=data.get("context"),
                 total_tokens_used=data.get("tokens_used", 0),
                 total_cost_usd=data.get("cost_usd", 0.0),
@@ -1466,6 +1489,1035 @@ class AsyncShannonClient:
         except httpx.HTTPError as e:
             raise errors.ConnectionError(
                 f"Failed to delete session: {str(e)}", details={"http_error": str(e)}
+            )
+
+    # ===== File Access =====
+
+    async def list_session_files(
+        self,
+        session_id: str,
+        *,
+        path: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> List[FileEntry]:
+        """
+        List files in a session workspace.
+
+        Args:
+            session_id: Session ID
+            path: Optional workspace subdirectory
+            timeout: Request timeout in seconds
+
+        Returns:
+            List of FileEntry objects
+        """
+        client = await self._ensure_client()
+
+        params: Dict[str, Any] = {}
+        if path:
+            params["path"] = path
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/sessions/{session_id}/files",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            if not data.get("success", True):
+                raise errors.ShannonError(data.get("error", "Failed to list session files"))
+
+            files = []
+            for item in data.get("files", []):
+                files.append(FileEntry(
+                    name=item.get("name", ""),
+                    path=item.get("path", ""),
+                    is_dir=item.get("is_dir", False),
+                    size_bytes=item.get("size_bytes", 0),
+                ))
+
+            return files
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list session files: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def download_session_file(
+        self,
+        session_id: str,
+        path: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> DownloadedFile:
+        """
+        Download a file from a session workspace.
+
+        Text files are returned as plain content. Binary files are base64-encoded
+        by the gateway and returned as-is in the content field.
+        """
+        client = await self._ensure_client()
+        encoded_path = quote(path, safe="/")
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/sessions/{session_id}/files/{encoded_path}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            if not data.get("success", True):
+                raise errors.ShannonError(data.get("error", "Failed to download session file"))
+
+            content = data.get("content")
+            if content is None:
+                raise errors.ShannonError("Session file response missing content")
+
+            return DownloadedFile(
+                content=content,
+                content_type=data.get("content_type"),
+                size_bytes=data.get("size_bytes"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to download session file: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def list_memory_files(
+        self, *, timeout: Optional[float] = None
+    ) -> List[FileEntry]:
+        """
+        List files in the authenticated user's memory directory.
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/memory/files",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            if not data.get("success", True):
+                raise errors.ShannonError(data.get("error", "Failed to list memory files"))
+
+            files = []
+            for item in data.get("files", []):
+                files.append(FileEntry(
+                    name=item.get("name", ""),
+                    path=item.get("path", ""),
+                    is_dir=item.get("is_dir", False),
+                    size_bytes=item.get("size_bytes", 0),
+                ))
+
+            return files
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list memory files: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def download_memory_file(
+        self, path: str, *, timeout: Optional[float] = None
+    ) -> DownloadedFile:
+        """
+        Download a file from the authenticated user's memory directory.
+
+        Text files are returned as plain content. Binary files are base64-encoded
+        by the gateway and returned as-is in the content field.
+        """
+        client = await self._ensure_client()
+        encoded_path = quote(path, safe="/")
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/memory/files/{encoded_path}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            if not data.get("success", True):
+                raise errors.ShannonError(data.get("error", "Failed to download memory file"))
+
+            content = data.get("content")
+            if content is None:
+                raise errors.ShannonError("Memory file response missing content")
+
+            return DownloadedFile(
+                content=content,
+                content_type=data.get("content_type"),
+                size_bytes=data.get("size_bytes"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to download memory file: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    # ===== Agents =====
+
+    async def list_agents(
+        self, *, timeout: Optional[float] = None
+    ) -> List[AgentInfo]:
+        """
+        List deterministic agents exposed by the gateway.
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/agents",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            agents = []
+            for item in data.get("agents", []):
+                agents.append(AgentInfo(
+                    id=item.get("id", ""),
+                    name=item.get("name", ""),
+                    description=item.get("description", ""),
+                    category=item.get("category", ""),
+                    tool=item.get("tool", ""),
+                    input_schema=item.get("input_schema", {}) or {},
+                    cost_per_call=item.get("cost_per_call", 0.0),
+                ))
+
+            return agents
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list agents: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_agent(
+        self, agent_id: str, *, timeout: Optional[float] = None
+    ) -> AgentInfo:
+        """
+        Get a deterministic agent definition.
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/agents/{agent_id}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            return AgentInfo(
+                id=data.get("id", ""),
+                name=data.get("name", ""),
+                description=data.get("description", ""),
+                category=data.get("category", ""),
+                tool=data.get("tool", ""),
+                input_schema=data.get("input_schema", {}) or {},
+                cost_per_call=data.get("cost_per_call", 0.0),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get agent: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def execute_agent(
+        self,
+        agent_id: str,
+        input_data: Dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        stream: bool = False,
+        timeout: Optional[float] = None,
+    ) -> AgentExecution:
+        """
+        Execute a deterministic agent.
+        """
+        client = await self._ensure_client()
+
+        payload: Dict[str, Any] = {"input": input_data, "stream": stream}
+        if session_id:
+            payload["session_id"] = session_id
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/agents/{agent_id}",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code not in [200, 202]:
+                self._handle_http_error(response)
+
+            data = response.json()
+            task_id = data.get("task_id", "")
+            workflow_id = response.headers.get("X-Workflow-ID") or data.get("workflow_id", "")
+            if not task_id:
+                raise errors.ShannonError("Agent execution response missing task_id")
+            if not workflow_id:
+                raise errors.ShannonError("Agent execution response missing workflow_id")
+
+            created_at = None
+            if data.get("created_at"):
+                try:
+                    created_at = _parse_timestamp(data["created_at"])
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse agent created_at timestamp: {e}")
+
+            execution = AgentExecution(
+                task_id=task_id,
+                workflow_id=workflow_id,
+                agent_id=data.get("agent_id", agent_id),
+                status=data.get("status", ""),
+                created_at=created_at,
+                session_id=response.headers.get("X-Session-ID") or session_id,
+            )
+            execution._set_client(self)
+            return execution
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to execute agent: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def send_swarm_message(
+        self,
+        workflow_id: str,
+        message: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> SwarmMessageResult:
+        """
+        Send a message to a running swarm workflow.
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/swarm/{workflow_id}/message",
+                json={"message": message},
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            success = bool(data.get("success", False))
+            if not success:
+                raise errors.ShannonError(data.get("error", "Failed to send swarm message"))
+
+            return SwarmMessageResult(success=success, status=data.get("status"))
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to send swarm message: {str(e)}", details={"http_error": str(e)}
+            )
+
+    # ===== OpenAI-Compatible API =====
+
+    def _serialize_openai_message(
+        self, message: Union[OpenAIChatMessage, Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Serialize an OpenAI-compatible message payload."""
+        if isinstance(message, OpenAIChatMessage):
+            payload = {
+                "role": message.role,
+                "content": message.content,
+            }
+            if message.name:
+                payload["name"] = message.name
+            return payload
+
+        if isinstance(message, dict):
+            return dict(message)
+
+        raise errors.ValidationError("messages must contain dicts or OpenAIChatMessage objects", code="400")
+
+    def _serialize_openai_shannon_options(
+        self,
+        shannon_options: Optional[Union[OpenAIShannonOptions, Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        """Serialize Shannon-specific OpenAI extensions."""
+        if shannon_options is None:
+            return None
+
+        if isinstance(shannon_options, OpenAIShannonOptions):
+            payload: Dict[str, Any] = {}
+            if shannon_options.context:
+                payload["context"] = shannon_options.context
+            if shannon_options.agent:
+                payload["agent"] = shannon_options.agent
+            if shannon_options.agent_input:
+                payload["agent_input"] = shannon_options.agent_input
+            if shannon_options.role:
+                payload["role"] = shannon_options.role
+            if shannon_options.research_strategy:
+                payload["research_strategy"] = shannon_options.research_strategy
+            if shannon_options.model_tier:
+                payload["model_tier"] = shannon_options.model_tier
+            return payload
+
+        if isinstance(shannon_options, dict):
+            return dict(shannon_options)
+
+        raise errors.ValidationError(
+            "shannon_options must be a dict or OpenAIShannonOptions",
+            code="400",
+        )
+
+    def _build_openai_chat_payload(
+        self,
+        messages: List[Union[OpenAIChatMessage, Dict[str, Any]]],
+        *,
+        model: Optional[str] = None,
+        stream: bool = False,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        n: Optional[int] = None,
+        stop: Optional[List[str]] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        user: Optional[str] = None,
+        include_usage: bool = False,
+        shannon_options: Optional[Union[OpenAIShannonOptions, Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Build an OpenAI-compatible chat completion payload."""
+        if not messages:
+            raise errors.ValidationError("messages array is required", code="400")
+
+        payload: Dict[str, Any] = {
+            "messages": [self._serialize_openai_message(message) for message in messages],
+        }
+        if model:
+            payload["model"] = model
+        if stream:
+            payload["stream"] = True
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if top_p is not None:
+            payload["top_p"] = top_p
+        if n is not None:
+            payload["n"] = n
+        if stop:
+            payload["stop"] = stop
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
+        if user:
+            payload["user"] = user
+        if stream and include_usage:
+            payload["stream_options"] = {"include_usage": True}
+
+        serialized_shannon_options = self._serialize_openai_shannon_options(shannon_options)
+        if serialized_shannon_options:
+            payload["shannon_options"] = serialized_shannon_options
+
+        return payload
+
+    def _parse_openai_usage(self, data: Optional[Dict[str, Any]]) -> Optional[OpenAIUsage]:
+        """Parse OpenAI-compatible usage metadata."""
+        if not data:
+            return None
+
+        return OpenAIUsage(
+            prompt_tokens=data.get("prompt_tokens", 0),
+            completion_tokens=data.get("completion_tokens", 0),
+            total_tokens=data.get("total_tokens", 0),
+        )
+
+    def _parse_openai_chat_message(
+        self, data: Optional[Dict[str, Any]]
+    ) -> Optional[OpenAIChatMessage]:
+        """Parse an OpenAI-compatible message object."""
+        if not data:
+            return None
+
+        return OpenAIChatMessage(
+            role=data.get("role", ""),
+            content=data.get("content"),
+            name=data.get("name"),
+        )
+
+    def _parse_openai_chat_delta(
+        self, data: Optional[Dict[str, Any]]
+    ) -> Optional[OpenAIChatDelta]:
+        """Parse an OpenAI-compatible delta object."""
+        if not data:
+            return None
+
+        return OpenAIChatDelta(
+            role=data.get("role"),
+            content=data.get("content"),
+        )
+
+    def _parse_openai_chat_choices(
+        self, items: Optional[List[Dict[str, Any]]]
+    ) -> List[OpenAIChatChoice]:
+        """Parse OpenAI-compatible choice entries."""
+        choices: List[OpenAIChatChoice] = []
+        for item in items or []:
+            choices.append(OpenAIChatChoice(
+                index=item.get("index", 0),
+                message=self._parse_openai_chat_message(item.get("message")),
+                delta=self._parse_openai_chat_delta(item.get("delta")),
+                finish_reason=item.get("finish_reason"),
+            ))
+        return choices
+
+    def _parse_openai_shannon_events(
+        self, items: Optional[List[Dict[str, Any]]]
+    ) -> List[OpenAIShannonEvent]:
+        """Parse Shannon streaming events embedded in OpenAI chunks."""
+        events: List[OpenAIShannonEvent] = []
+        for item in items or []:
+            events.append(OpenAIShannonEvent(
+                type=item.get("type", ""),
+                agent_id=item.get("agent_id"),
+                message=item.get("message"),
+                timestamp=item.get("timestamp"),
+                payload=item.get("payload", {}) or {},
+            ))
+        return events
+
+    def _parse_openai_chat_completion(
+        self,
+        data: Dict[str, Any],
+        response_headers: Optional[Dict[str, str]] = None,
+    ) -> OpenAIChatCompletion:
+        """Parse a non-streaming OpenAI-compatible chat completion."""
+        response_headers = response_headers or {}
+        return OpenAIChatCompletion(
+            id=data.get("id", ""),
+            object=data.get("object", "chat.completion"),
+            created=data.get("created", 0),
+            model=data.get("model", ""),
+            choices=self._parse_openai_chat_choices(data.get("choices")),
+            usage=self._parse_openai_usage(data.get("usage")),
+            system_fingerprint=data.get("system_fingerprint"),
+            session_id=response_headers.get("X-Session-ID"),
+            shannon_session_id=response_headers.get("X-Shannon-Session-ID"),
+        )
+
+    def _parse_openai_chat_completion_chunk(
+        self,
+        data: Dict[str, Any],
+        response_headers: Optional[Dict[str, str]] = None,
+    ) -> OpenAIChatCompletionChunk:
+        """Parse a streaming OpenAI-compatible chat completion chunk."""
+        response_headers = response_headers or {}
+        return OpenAIChatCompletionChunk(
+            id=data.get("id", ""),
+            object=data.get("object", "chat.completion.chunk"),
+            created=data.get("created", 0),
+            model=data.get("model", ""),
+            choices=self._parse_openai_chat_choices(data.get("choices")),
+            usage=self._parse_openai_usage(data.get("usage")),
+            system_fingerprint=data.get("system_fingerprint"),
+            shannon_events=self._parse_openai_shannon_events(data.get("shannon_events")),
+            session_id=response_headers.get("X-Session-ID"),
+            shannon_session_id=response_headers.get("X-Shannon-Session-ID"),
+        )
+
+    def _parse_openai_model(
+        self,
+        data: Dict[str, Any],
+        *,
+        description: Optional[str] = None,
+    ) -> OpenAIModel:
+        """Parse a model object from the OpenAI-compatible models API."""
+        return OpenAIModel(
+            id=data.get("id", ""),
+            object=data.get("object", "model"),
+            created=data.get("created", 0),
+            owned_by=data.get("owned_by", "shannon"),
+            description=description,
+        )
+
+    def _resolve_session_id(self, data: Dict[str, Any]) -> str:
+        """Prefer external session IDs when the gateway stores UUID-backed sessions."""
+        context = data.get("context")
+        if isinstance(context, dict):
+            external_id = context.get("external_id")
+            if isinstance(external_id, str) and external_id.strip():
+                return external_id
+        return data.get("session_id", "")
+
+    def _resolve_session_title(self, data: Dict[str, Any]) -> Optional[str]:
+        """Read session title from the top level or from session context."""
+        title = data.get("title")
+        if isinstance(title, str) and title.strip():
+            return title
+
+        context = data.get("context")
+        if isinstance(context, dict):
+            context_title = context.get("title")
+            if isinstance(context_title, str) and context_title.strip():
+                return context_title
+
+        return title
+
+    async def _stream_sse_request(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        *,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[tuple[str, Dict[str, str]]]:
+        """Send a POST request and yield SSE event payloads as strings."""
+        sse_timeout = httpx.Timeout(timeout, connect=self.default_timeout) if timeout is not None else httpx.Timeout(None, connect=self.default_timeout)
+
+        try:
+            async with httpx.AsyncClient(timeout=sse_timeout) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        await response.aread()
+                        self._handle_http_error(response)
+
+                    response_headers = dict(response.headers)
+                    event_data: List[str] = []
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            if event_data:
+                                data_str = "\n".join(event_data)
+                                if data_str == "[DONE]":
+                                    return
+                                yield data_str, response_headers
+                                event_data = []
+                            continue
+
+                        if line.startswith("data:"):
+                            event_data.append(line[5:].lstrip())
+
+                    if event_data:
+                        data_str = "\n".join(event_data)
+                        if data_str != "[DONE]":
+                            yield data_str, response_headers
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"OpenAI-compatible stream failed: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def list_openai_models(
+        self, *, timeout: Optional[float] = None
+    ) -> List[OpenAIModel]:
+        """
+        List models from the OpenAI-compatible models endpoint.
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/v1/models",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            return [self._parse_openai_model(item) for item in data.get("data", [])]
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list OpenAI models: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def get_openai_model(
+        self, model: str, *, timeout: Optional[float] = None
+    ) -> OpenAIModel:
+        """
+        Get a model from the OpenAI-compatible models endpoint.
+        """
+        client = await self._ensure_client()
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/v1/models/{model}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            return self._parse_openai_model(
+                data,
+                description=response.headers.get("X-Model-Description"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get OpenAI model: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def create_chat_completion(
+        self,
+        messages: List[Union[OpenAIChatMessage, Dict[str, Any]]],
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        n: Optional[int] = None,
+        stop: Optional[List[str]] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        user: Optional[str] = None,
+        shannon_options: Optional[Union[OpenAIShannonOptions, Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> OpenAIChatCompletion:
+        """
+        Create a non-streaming chat completion via the OpenAI-compatible API.
+        """
+        client = await self._ensure_client()
+        payload = self._build_openai_chat_payload(
+            messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            n=n,
+            stop=stop,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            user=user,
+            shannon_options=shannon_options,
+        )
+        extra_headers = {"X-Session-ID": session_id} if session_id else None
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                headers=self._get_headers(extra=extra_headers),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            return self._parse_openai_chat_completion(data, dict(response.headers))
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to create chat completion: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def stream_chat_completion(
+        self,
+        messages: List[Union[OpenAIChatMessage, Dict[str, Any]]],
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        n: Optional[int] = None,
+        stop: Optional[List[str]] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        user: Optional[str] = None,
+        include_usage: bool = False,
+        shannon_options: Optional[Union[OpenAIShannonOptions, Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[OpenAIChatCompletionChunk]:
+        """
+        Stream chat completion chunks from the OpenAI-compatible API.
+        """
+        payload = self._build_openai_chat_payload(
+            messages,
+            model=model,
+            stream=True,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            n=n,
+            stop=stop,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
+            user=user,
+            include_usage=include_usage,
+            shannon_options=shannon_options,
+        )
+        extra_headers = {"X-Session-ID": session_id} if session_id else None
+
+        async for data_str, response_headers in self._stream_sse_request(
+            f"{self.base_url}/v1/chat/completions",
+            payload,
+            self._get_headers(extra=extra_headers),
+            timeout=timeout,
+        ):
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError as e:
+                raise errors.ShannonError(
+                    f"Malformed OpenAI chat completion chunk: {e}",
+                ) from e
+
+            yield self._parse_openai_chat_completion_chunk(data, response_headers)
+
+    async def create_completion(
+        self,
+        payload: Dict[str, Any],
+        *,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call the thin OpenAI-compatible /v1/completions proxy directly.
+        """
+        if not isinstance(payload, dict):
+            raise errors.ValidationError("payload must be a JSON object", code="400")
+
+        client = await self._ensure_client()
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/v1/completions",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            return response.json()
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to create completion: {str(e)}",
+                details={"http_error": str(e)},
+            )
+
+    async def stream_completion(
+        self,
+        payload: Dict[str, Any],
+        *,
+        timeout: Optional[float] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Stream raw JSON events from the thin /v1/completions proxy.
+        """
+        if not isinstance(payload, dict):
+            raise errors.ValidationError("payload must be a JSON object", code="400")
+
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+
+        async for data_str, _ in self._stream_sse_request(
+            f"{self.base_url}/v1/completions",
+            stream_payload,
+            self._get_headers(),
+            timeout=timeout,
+        ):
+            try:
+                yield json.loads(data_str)
+            except json.JSONDecodeError:
+                yield {"data": data_str}
+
+    # ===== Tools =====
+
+    async def list_tools(
+        self,
+        *,
+        category: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> List[ToolSchema]:
+        """
+        List available tools for direct execution.
+
+        Args:
+            category: Optional tool category filter
+            timeout: Request timeout in seconds
+
+        Returns:
+            List of tool schemas
+        """
+        client = await self._ensure_client()
+
+        params: Dict[str, Any] = {}
+        if category:
+            params["category"] = category
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tools",
+                params=params,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            tool_items = data if isinstance(data, list) else data.get("tools", [])
+
+            tools = []
+            for item in tool_items:
+                tools.append(ToolSchema(
+                    name=item.get("name", ""),
+                    description=item.get("description", ""),
+                    parameters=item.get("parameters", {}),
+                ))
+
+            return tools
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to list tools: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def get_tool(
+        self, name: str, *, timeout: Optional[float] = None
+    ) -> ToolDetail:
+        """
+        Get direct-execution tool metadata and parameter schema.
+
+        Args:
+            name: Tool name
+            timeout: Request timeout in seconds
+
+        Returns:
+            ToolDetail for the requested tool
+        """
+        client = await self._ensure_client()
+        encoded_name = quote(name, safe="")
+
+        try:
+            response = await client.get(
+                f"{self.base_url}/api/v1/tools/{encoded_name}",
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            tool = data.get("tool", data)
+
+            return ToolDetail(
+                name=tool.get("name", ""),
+                description=tool.get("description", ""),
+                parameters=tool.get("parameters", {}),
+                category=tool.get("category"),
+                version=tool.get("version"),
+                timeout_seconds=tool.get("timeout_seconds"),
+                cost_per_use=tool.get("cost_per_use"),
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to get tool: {str(e)}", details={"http_error": str(e)}
+            )
+
+    async def execute_tool(
+        self,
+        name: str,
+        *,
+        arguments: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> ToolExecutionResult:
+        """
+        Execute a tool directly through the gateway.
+
+        Args:
+            name: Tool name
+            arguments: Tool arguments
+            session_id: Optional session ID for tool context
+            timeout: Request timeout in seconds
+
+        Returns:
+            ToolExecutionResult with success, output, metadata, and usage
+        """
+        client = await self._ensure_client()
+        encoded_name = quote(name, safe="")
+
+        payload: Dict[str, Any] = {"arguments": arguments or {}}
+        if session_id:
+            payload["session_id"] = session_id
+
+        try:
+            response = await client.post(
+                f"{self.base_url}/api/v1/tools/{encoded_name}/execute",
+                json=payload,
+                headers=self._get_headers(),
+                timeout=timeout or self.default_timeout,
+            )
+
+            if response.status_code != 200:
+                self._handle_http_error(response)
+
+            data = response.json()
+            usage = None
+            if isinstance(data.get("usage"), dict):
+                usage = ToolUsage(
+                    tokens=data["usage"].get("tokens", 0),
+                    cost_usd=data["usage"].get("cost_usd", 0.0),
+                )
+
+            return ToolExecutionResult(
+                success=bool(data.get("success", False)),
+                output=data.get("output"),
+                text=data.get("text"),
+                error=data.get("error"),
+                metadata=data.get("metadata", {}) or {},
+                execution_time_ms=data.get("execution_time_ms"),
+                usage=usage,
+            )
+
+        except httpx.HTTPError as e:
+            raise errors.ConnectionError(
+                f"Failed to execute tool: {str(e)}", details={"http_error": str(e)}
             )
 
     # ===== Skills =====
@@ -2310,6 +3362,16 @@ class AsyncShannonClient:
                                 # Empty line = event boundary
                                 if event_data:
                                     data_str = "\n".join(event_data)
+                                    if data_str == "[DONE]":
+                                        yield Event(
+                                            type=event_name or EventType.STREAM_END.value,
+                                            workflow_id=workflow_id,
+                                            message=data_str,
+                                            timestamp=datetime.now(),
+                                            seq=0,
+                                            stream_id=event_id,
+                                        )
+                                        return
                                     try:
                                         event_json = json.loads(data_str)
                                         # If server provided event name and no type in JSON, use it
@@ -2347,6 +3409,19 @@ class AsyncShannonClient:
                             elif line.startswith(":"):
                                 # Comment, ignore
                                 pass
+
+                        if event_data:
+                            data_str = "\n".join(event_data)
+                            if data_str == "[DONE]":
+                                yield Event(
+                                    type=event_name or EventType.STREAM_END.value,
+                                    workflow_id=workflow_id,
+                                    message=data_str,
+                                    timestamp=datetime.now(),
+                                    seq=0,
+                                    stream_id=event_id,
+                                )
+                                return
 
                 # Stream ended normally
                 break
@@ -2737,6 +3812,263 @@ class ShannonClient:
     ) -> bool:
         """Delete session (blocking)."""
         return self._run(self._async_client.delete_session(session_id, timeout))
+
+    # File operations
+    def list_session_files(
+        self,
+        session_id: str,
+        *,
+        path: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> List[FileEntry]:
+        """List session workspace files (blocking)."""
+        return self._run(
+            self._async_client.list_session_files(
+                session_id,
+                path=path,
+                timeout=timeout,
+            )
+        )
+
+    def download_session_file(
+        self, session_id: str, path: str, *, timeout: Optional[float] = None
+    ) -> DownloadedFile:
+        """Download a session workspace file (blocking)."""
+        return self._run(
+            self._async_client.download_session_file(
+                session_id,
+                path,
+                timeout=timeout,
+            )
+        )
+
+    def list_memory_files(
+        self, *, timeout: Optional[float] = None
+    ) -> List[FileEntry]:
+        """List memory files (blocking)."""
+        return self._run(self._async_client.list_memory_files(timeout=timeout))
+
+    def download_memory_file(
+        self, path: str, *, timeout: Optional[float] = None
+    ) -> DownloadedFile:
+        """Download a memory file (blocking)."""
+        return self._run(self._async_client.download_memory_file(path, timeout=timeout))
+
+    # Agent operations
+    def list_agents(
+        self, *, timeout: Optional[float] = None
+    ) -> List[AgentInfo]:
+        """List deterministic agents (blocking)."""
+        return self._run(self._async_client.list_agents(timeout=timeout))
+
+    def get_agent(
+        self, agent_id: str, *, timeout: Optional[float] = None
+    ) -> AgentInfo:
+        """Get deterministic agent details (blocking)."""
+        return self._run(self._async_client.get_agent(agent_id, timeout=timeout))
+
+    def execute_agent(
+        self,
+        agent_id: str,
+        input_data: Dict[str, Any],
+        *,
+        session_id: Optional[str] = None,
+        stream: bool = False,
+        timeout: Optional[float] = None,
+    ) -> AgentExecution:
+        """Execute a deterministic agent (blocking)."""
+        return self._run(
+            self._async_client.execute_agent(
+                agent_id,
+                input_data,
+                session_id=session_id,
+                stream=stream,
+                timeout=timeout,
+            )
+        )
+
+    def send_swarm_message(
+        self,
+        workflow_id: str,
+        message: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> SwarmMessageResult:
+        """Send a message to a running swarm workflow (blocking)."""
+        return self._run(
+            self._async_client.send_swarm_message(
+                workflow_id,
+                message,
+                timeout=timeout,
+            )
+        )
+
+    def list_openai_models(
+        self, *, timeout: Optional[float] = None
+    ) -> List[OpenAIModel]:
+        """List models from the OpenAI-compatible models endpoint."""
+        return self._run(self._async_client.list_openai_models(timeout=timeout))
+
+    def get_openai_model(
+        self, model: str, *, timeout: Optional[float] = None
+    ) -> OpenAIModel:
+        """Get a model from the OpenAI-compatible models endpoint."""
+        return self._run(self._async_client.get_openai_model(model, timeout=timeout))
+
+    def create_chat_completion(
+        self,
+        messages: List[Union[OpenAIChatMessage, Dict[str, Any]]],
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        n: Optional[int] = None,
+        stop: Optional[List[str]] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        user: Optional[str] = None,
+        shannon_options: Optional[Union[OpenAIShannonOptions, Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> OpenAIChatCompletion:
+        """Create a non-streaming chat completion via the OpenAI-compatible API."""
+        return self._run(
+            self._async_client.create_chat_completion(
+                messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                n=n,
+                stop=stop,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                user=user,
+                shannon_options=shannon_options,
+                session_id=session_id,
+                timeout=timeout,
+            )
+        )
+
+    def stream_chat_completion(
+        self,
+        messages: List[Union[OpenAIChatMessage, Dict[str, Any]]],
+        *,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        n: Optional[int] = None,
+        stop: Optional[List[str]] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        user: Optional[str] = None,
+        include_usage: bool = False,
+        shannon_options: Optional[Union[OpenAIShannonOptions, Dict[str, Any]]] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> Iterator[OpenAIChatCompletionChunk]:
+        """Stream chat completion chunks from the OpenAI-compatible API."""
+        loop = self._get_loop()
+
+        async def _async_gen():
+            async for chunk in self._async_client.stream_chat_completion(
+                messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                n=n,
+                stop=stop,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                user=user,
+                include_usage=include_usage,
+                shannon_options=shannon_options,
+                session_id=session_id,
+                timeout=timeout,
+            ):
+                yield chunk
+
+        async_gen = _async_gen()
+        try:
+            while True:
+                try:
+                    yield loop.run_until_complete(async_gen.__anext__())
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.run_until_complete(async_gen.aclose())
+
+    def create_completion(
+        self,
+        payload: Dict[str, Any],
+        *,
+        timeout: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Call the thin OpenAI-compatible /v1/completions proxy directly."""
+        return self._run(self._async_client.create_completion(payload, timeout=timeout))
+
+    def stream_completion(
+        self,
+        payload: Dict[str, Any],
+        *,
+        timeout: Optional[float] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """Stream raw JSON events from the thin /v1/completions proxy."""
+        loop = self._get_loop()
+
+        async def _async_gen():
+            async for item in self._async_client.stream_completion(
+                payload,
+                timeout=timeout,
+            ):
+                yield item
+
+        async_gen = _async_gen()
+        try:
+            while True:
+                try:
+                    yield loop.run_until_complete(async_gen.__anext__())
+                except StopAsyncIteration:
+                    break
+        finally:
+            loop.run_until_complete(async_gen.aclose())
+
+    # Tool operations
+    def list_tools(
+        self,
+        *,
+        category: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> List[ToolSchema]:
+        """List direct-execution tools (blocking)."""
+        return self._run(self._async_client.list_tools(category=category, timeout=timeout))
+
+    def get_tool(
+        self, name: str, *, timeout: Optional[float] = None
+    ) -> ToolDetail:
+        """Get direct-execution tool details (blocking)."""
+        return self._run(self._async_client.get_tool(name, timeout=timeout))
+
+    def execute_tool(
+        self,
+        name: str,
+        *,
+        arguments: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
+        timeout: Optional[float] = None,
+    ) -> ToolExecutionResult:
+        """Execute a tool directly (blocking)."""
+        return self._run(
+            self._async_client.execute_tool(
+                name,
+                arguments=arguments,
+                session_id=session_id,
+                timeout=timeout,
+            )
+        )
 
     # Skills operations
     def list_skills(

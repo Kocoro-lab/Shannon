@@ -2,7 +2,7 @@
 
 Python client for Shannon multi-agent AI platform.
 
-**Version:** 0.5.0
+**Version:** 0.7.0
 
 ## Installation
 
@@ -46,6 +46,23 @@ print(f"Progress: {status.progress:.1%}")
 # client.pause_task(handle.task_id, reason="User requested pause")
 # client.resume_task(handle.task_id, reason="User resumed")
 
+client.close()
+```
+
+### OpenAI-Compatible Helpers
+
+```python
+from shannon import ShannonClient, OpenAIChatMessage, OpenAIShannonOptions
+
+client = ShannonClient(base_url="http://localhost:8080", api_key="your-api-key")
+
+completion = client.create_chat_completion(
+    [OpenAIChatMessage(role="user", content="Research AI trends in 2026")],
+    model="shannon-deep-research",
+    shannon_options=OpenAIShannonOptions(research_strategy="deep"),
+)
+
+print(completion.choices[0].message.content)
 client.close()
 ```
 
@@ -103,8 +120,25 @@ Global flags:
 | `control-state` | `task_id` | Get pause/cancel control state | `GET /api/v1/tasks/{id}/control-state` |
 | `stream` | `workflow_id` `--types=a,b,c` `--traceparent` | Stream events via SSE (optionally filter types) | `GET /api/v1/stream/sse?workflow_id=...` |
 | `approve` | `approval_id` `workflow_id` `--approve/--reject` `--feedback` | Submit approval decision | `POST /api/v1/approvals/decision` |
+| `review-get` | `workflow_id` | Get HITL review state | `GET /api/v1/tasks/{id}/review` |
+| `review-feedback` | `workflow_id` `message` `--version` | Submit HITL review feedback | `POST /api/v1/tasks/{id}/review` |
+| `review-approve` | `workflow_id` `--version` | Approve a HITL review plan | `POST /api/v1/tasks/{id}/review` |
+| `tools-list` | `--category` | List direct-execution tools | `GET /api/v1/tools` |
+| `tool-get` | `name` | Get direct-execution tool details | `GET /api/v1/tools/{name}` |
+| `tool-exec` | `name` `--arguments` `--session-id` | Execute a tool directly | `POST /api/v1/tools/{name}/execute` |
+| `skills-list` | `--category` | List available skills | `GET /api/v1/skills` |
+| `skill-get` | `name` | Get skill details | `GET /api/v1/skills/{name}` |
+| `skill-versions` | `name` | Get all versions of a skill | `GET /api/v1/skills/{name}/versions` |
 | `session-list` | `--limit` `--offset` | List sessions | `GET /api/v1/sessions` |
 | `session-get` | `session_id` `--no-history` | Get session details (optionally fetch history) | `GET /api/v1/sessions/{id}` (+ `GET /api/v1/sessions/{id}/history`) |
+| `session-files` | `session_id` `--path` | List files in a session workspace | `GET /api/v1/sessions/{id}/files` |
+| `session-file-get` | `session_id` `path` | Download a session workspace file | `GET /api/v1/sessions/{id}/files/{path}` |
+| `memory-files` | None | List user memory files | `GET /api/v1/memory/files` |
+| `memory-file-get` | `path` | Download a user memory file | `GET /api/v1/memory/files/{path}` |
+| `agents-list` | None | List deterministic agents | `GET /api/v1/agents` |
+| `agent-get` | `agent_id` | Get deterministic agent details | `GET /api/v1/agents/{id}` |
+| `agent-exec` | `agent_id` `--input` `--session-id` `--stream` | Execute a deterministic agent | `POST /api/v1/agents/{id}` |
+| `swarm-message` | `workflow_id` `message` | Send a follow-up message to a running swarm workflow | `POST /api/v1/swarm/{workflowID}/message` |
 | `session-title` | `session_id` `title` | Update session title | `PATCH /api/v1/sessions/{id}` |
 | `session-delete` | `session_id` | Delete a session | `DELETE /api/v1/sessions/{id}` |
 | `schedule-create` | `name` `cron` `query` `--force-research` `--research-strategy` `--budget` `--timeout` | Create scheduled task | `POST /api/v1/schedules` |
@@ -127,8 +161,25 @@ One‑line examples:
 - `control-state`: `python -m shannon.cli --base-url http://localhost:8080 control-state task-123`
 - `stream`: `python -m shannon.cli --base-url http://localhost:8080 stream workflow-123 --types WORKFLOW_STARTED,LLM_OUTPUT,WORKFLOW_COMPLETED`
 - `approve`: `python -m shannon.cli --base-url http://localhost:8080 approve approval-uuid workflow-uuid --approve --feedback "Looks good"`
+- `review-get`: `python -m shannon.cli --base-url http://localhost:8080 review-get workflow-uuid`
+- `review-feedback`: `python -m shannon.cli --base-url http://localhost:8080 review-feedback workflow-uuid "Please tighten the plan" --version 2`
+- `review-approve`: `python -m shannon.cli --base-url http://localhost:8080 review-approve workflow-uuid --version 2`
+- `tools-list`: `python -m shannon.cli --base-url http://localhost:8080 tools-list --category research`
+- `tool-get`: `python -m shannon.cli --base-url http://localhost:8080 tool-get web_search`
+- `tool-exec`: `python -m shannon.cli --base-url http://localhost:8080 tool-exec calculator --arguments '{"expression":"6 * 7"}'`
+- `skills-list`: `python -m shannon.cli --base-url http://localhost:8080 skills-list --category research`
+- `skill-get`: `python -m shannon.cli --base-url http://localhost:8080 skill-get code-review`
+- `skill-versions`: `python -m shannon.cli --base-url http://localhost:8080 skill-versions code-review`
 - `session-list`: `python -m shannon.cli --base-url http://localhost:8080 session-list --limit 10 --offset 0`
 - `session-get`: `python -m shannon.cli --base-url http://localhost:8080 session-get my-session`
+- `session-files`: `python -m shannon.cli --base-url http://localhost:8080 session-files my-session --path reports`
+- `session-file-get`: `python -m shannon.cli --base-url http://localhost:8080 session-file-get my-session reports/summary.md`
+- `memory-files`: `python -m shannon.cli --base-url http://localhost:8080 memory-files`
+- `memory-file-get`: `python -m shannon.cli --base-url http://localhost:8080 memory-file-get profile.md`
+- `agents-list`: `python -m shannon.cli --base-url http://localhost:8080 agents-list`
+- `agent-get`: `python -m shannon.cli --base-url http://localhost:8080 agent-get keyword_extract`
+- `agent-exec`: `python -m shannon.cli --base-url http://localhost:8080 agent-exec keyword_extract --input '{"text":"hello world"}' --session-id my-session`
+- `swarm-message`: `python -m shannon.cli --base-url http://localhost:8080 swarm-message workflow-uuid "Continue with the next step"`
 - `session-title`: `python -m shannon.cli --base-url http://localhost:8080 session-title my-session "My Session Title"`
 - `session-delete`: `python -m shannon.cli --base-url http://localhost:8080 session-delete my-session`
 - `schedule-create`: `python -m shannon.cli --base-url http://localhost:8080 schedule-create "Daily Report" "0 9 * * 1-5" "Summarize daily metrics" --force-research`
@@ -181,12 +232,18 @@ asyncio.run(main())
 - ✅ HTTP-only client using httpx
 - ✅ Task submission, status, wait, cancel
 - ✅ Task control: pause, resume, control-state
+- ✅ HITL review workflows: get state, submit feedback, approve plans
+- ✅ Direct tool API: list tools, inspect schemas, execute tools
+- ✅ Workspace and memory file access: list and download generated artifacts
+- ✅ Deterministic agents and swarm follow-up messaging
+- ✅ OpenAI-compatible wrappers: models, chat completions, thin completions proxy
 - ✅ Schedule management: create, list, update, pause, resume, delete, view runs
 - ✅ Event streaming via HTTP SSE (resume + filtering)
 - ✅ Optional WebSocket streaming helper (`client.stream_ws`) — requires `pip install websockets`
 - ✅ Approval decision endpoint
+- ✅ Skills endpoints: list, inspect, version history
 - ✅ Session endpoints: list/get/history/events/update title/delete
-- ✅ CLI tool (submit, status, stream, approve, sessions, schedules)
+- ✅ CLI tool (submit, status, stream, approve, review, tools, skills, sessions, files, schedules)
 - ✅ Async-first design with sync wrapper
 - ✅ Type-safe enums (EventType, TaskStatusEnum, ScheduleStatus)
 - ✅ Error mapping for common HTTP codes
@@ -399,7 +456,12 @@ The SDK includes comprehensive examples demonstrating key features:
 - **`streaming_with_approvals.py`** - Approval workflow handling
 - **`workflow_routing.py`** - Using labels for workflow routing and task categorization
 - **`session_continuity.py`** - Multi-turn conversations with session management
-- **`template_usage.py`** - Template-based task execution with versioning
+- **`template_usage.py`** - Context-rich task submission plus streaming
+- **`tools_direct.py`** - Direct tool discovery and execution
+- **`files_and_memory.py`** - Workspace and memory file listing/download
+- **`deterministic_agents.py`** - Deterministic agent inspection and execution
+- **`openai_compat.py`** - OpenAI-compatible model listing and chat completions
+- **`skills_catalog.py`** - Skills catalog browsing and version lookup
 
 Run any example:
 ```bash
@@ -432,6 +494,9 @@ client.close()
 # Run tests
 make test
 
+# Run live validation against a local Shannon stack
+make test-live
+
 # Lint
 make lint
 
@@ -454,6 +519,16 @@ clients/python/
 ```
 
 ## Changelog
+
+### Version 0.6.0 (2026-02-13)
+
+**New Features:**
+- **HITL Review** - Review state retrieval, feedback submission, and plan approval
+  - `get_review_state()`, `submit_review_feedback()`, `approve_review()`
+- **Skills API** - List skills, inspect details, and view version history
+  - `list_skills()`, `get_skill()`, `get_skill_versions()`
+- **CLI Commands** - `review-get`, `review-feedback`, `review-approve`, `skills-list`, `skill-get`, `skill-versions`
+- **Swarm Flag** - `submit_task(force_swarm=True)` and CLI `submit --swarm`
 
 ### Version 0.5.0 (2025-12-15)
 

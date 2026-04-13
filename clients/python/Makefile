@@ -1,4 +1,6 @@
-.PHONY: help proto clean install dev test test-cov test-fast lint format build publish-test publish
+VERSION = 0.7.0
+
+.PHONY: help proto clean install dev test test-cov test-fast test-live lint format build publish-test publish
 
 help:
 	@echo "Shannon Python SDK - Development Commands"
@@ -8,6 +10,7 @@ help:
 	@echo "  make test          - Run all tests with coverage"
 	@echo "  make test-fast     - Run tests without coverage"
 	@echo "  make test-cov      - Run tests with coverage report"
+	@echo "  make test-live     - Run live validation tests against a local stack"
 	@echo "  make lint          - Run linting"
 	@echo "  make format        - Format code"
 	@echo "  make build         - Build distribution packages"
@@ -32,6 +35,10 @@ test-cov:
 	python3 -m pytest tests/ --cov=src/shannon --cov-report=term-missing --cov-report=html --cov-fail-under=30
 	@echo "✓ Coverage report: htmlcov/index.html"
 
+test-live:
+	@echo "Running live validation tests..."
+	SHANNON_LIVE_TESTS=1 python3 -m pytest tests/test_v030_features.py tests/test_v030_comprehensive.py -v -s
+
 lint:
 	@echo "Running linters..."
 	ruff check src tests
@@ -49,11 +56,11 @@ publish-test:
 	@echo "Uploading to TestPyPI..."
 	python3 -m twine upload -r testpypi dist/*
 	@echo "✓ Published to TestPyPI"
-	@echo "  Install: pip install -i https://test.pypi.org/simple/ shannon-sdk==0.1.0a1"
+	@echo "  Install: pip install -i https://test.pypi.org/simple/ shannon-sdk==$(VERSION)"
 
 publish:
 	@echo "⚠️  WARNING: Publishing to production PyPI!"
-	@echo "  Version: 0.1.0a1"
+	@echo "  Version: $(VERSION)"
 	@read -p "  Are you sure? (yes/no): " confirm && [ "$$confirm" = "yes" ]
 	python3 -m twine upload dist/*
 	@echo "✓ Published to PyPI"
