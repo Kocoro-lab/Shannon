@@ -520,6 +520,26 @@ clients/python/
 
 ## Changelog
 
+### Version 0.7.0 (2026-04-13)
+
+**New Features:**
+- **Tool API** - List, inspect, and execute tools directly
+  - `list_tools()`, `get_tool()`, `execute_tool()`
+- **Agents API** - List, inspect, and execute deterministic agents
+  - `list_agents()`, `get_agent()`, `execute_agent()`
+- **Swarm Messaging** - Send follow-up messages to running swarm workflows
+  - `send_swarm_message()`
+- **OpenAI-Compatible** - Use Shannon through OpenAI-style endpoints
+  - `list_openai_models()`, `get_openai_model()`, `create_chat_completion()`, `stream_chat_completion()`, `create_completion()`
+- **File Access** - List and download workspace and memory files
+  - `list_session_files()`, `download_session_file()`, `list_memory_files()`, `download_memory_file()`
+- **New Examples** - `tools_direct.py`, `deterministic_agents.py`, `openai_compat.py`, `files_and_memory.py`, `skills_catalog.py`
+
+**Bug Fixes:**
+- Fix session ID resolution when gateway returns internal UUIDs instead of external IDs
+- Fix session title parsing to read from context when top-level field is absent
+- Fix SSE streaming to yield `done` event instead of dropping non-JSON `[DONE]` payload
+
 ### Version 0.6.0 (2026-02-13)
 
 **New Features:**

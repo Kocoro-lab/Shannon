@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rate limits configuration — externalized to `config/rate_limits.yaml` (was inline)
 - MiniMax as first-class LLM provider (dedicated provider, not OpenAI-compatible shim)
 - Kimi (Moonshot AI) provider support
-- Python SDK (`pip install shannon-ai`) with streaming, sessions, and workflow routing
+- Python SDK (`pip install shannon-sdk`) with streaming, sessions, and workflow routing
 - Desktop app (Tauri v2) with real-time execution timeline and research visualization
 - Release tooling — one-command installer, Docker Hub multi-arch images, CI/CD workflows
 - Prompt cache optimization for Anthropic models (1h TTL, multi-turn support)

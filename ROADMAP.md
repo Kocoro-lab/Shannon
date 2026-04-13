@@ -25,7 +25,7 @@ This document outlines the development roadmap for Shannon. For the latest updat
 - ✅ **Provider abstraction layer** - Unified interface for adding new LLM providers with automatic fallback
 - ✅ **Advanced Task Decomposition** - Recursive decomposition with ADaPT patterns, chain-of-thought planning, task template library
 - ✅ **Composable workflows** - YAML-based workflow templates with declarative orchestration patterns
-- ✅ **Unified Gateway & SDK** - REST API gateway, Python SDK (v0.2.0a1 on PyPI), CLI tool for easy adoption
+- ✅ **Unified Gateway & SDK** - REST API gateway, Python SDK (v0.7.0 on PyPI), CLI tool for easy adoption
 - 🚧 **Ship Docker Images** - Pre-built docker release images, make setup straightforward
 
 ## v0.2 — Enhanced Capabilities
