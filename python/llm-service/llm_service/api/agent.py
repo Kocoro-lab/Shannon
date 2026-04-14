@@ -2259,6 +2259,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     workflow_id=request.headers.get("X-Workflow-ID")
                     or request.headers.get("x-workflow-id"),
                     agent_id=query.agent_id,
+                    cache_source="interpretation",
                 )
                 raw_interpretation = interpretation_result.get("output_text", "")
 
@@ -2373,6 +2374,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         workflow_id=request.headers.get("X-Workflow-ID")
                         or request.headers.get("x-workflow-id"),
                         agent_id=query.agent_id,
+                        cache_source="stub_cleanup",
                     )
                     cleaned_text = stub_cleanup_result.get("output_text", "")
                     if cleaned_text and not any(_re.search(p, cleaned_text, _re.IGNORECASE) for p in stub_patterns):

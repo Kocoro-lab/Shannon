@@ -701,18 +701,33 @@ class AnthropicProvider(LLMProvider):
                             })
 
                 if final_message and hasattr(final_message, "usage"):
-                    cache_read = getattr(final_message.usage, "cache_read_input_tokens", 0) or 0
-                    cache_creation = getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0
-                    # Per-TTL cache creation breakdown (1h vs 5min). Parity with
-                    # the non-stream complete() path — without this the 1h TTL
-                    # slice silently drops from cost accounting.
-                    cache_creation_1h = 0
-                    cc = getattr(final_message.usage, "cache_creation", None)
-                    if cc is not None:
-                        cache_creation_1h = getattr(cc, "ephemeral_1h_input_tokens", 0) or 0
+                    # Handle both SDK objects and dicts (MiniMax / Anthropic-compat
+                    # provider parity with the non-stream complete() path above).
+                    usage = final_message.usage
+                    if isinstance(usage, dict):
+                        input_tokens = usage.get("input_tokens", 0) or 0
+                        output_tokens = usage.get("output_tokens", 0) or 0
+                        cache_read = usage.get("cache_read_input_tokens", 0) or 0
+                        cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+                        cc = usage.get("cache_creation")
+                        cache_creation_1h = (
+                            cc.get("ephemeral_1h_input_tokens", 0) or 0
+                            if isinstance(cc, dict) else 0
+                        )
+                    else:
+                        input_tokens = usage.input_tokens
+                        output_tokens = usage.output_tokens
+                        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+                        cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+                        # Per-TTL cache creation breakdown (1h vs 5min). Without
+                        # this the 1h TTL slice silently drops from cost accounting.
+                        cache_creation_1h = 0
+                        cc = getattr(usage, "cache_creation", None)
+                        if cc is not None:
+                            cache_creation_1h = getattr(cc, "ephemeral_1h_input_tokens", 0) or 0
                     cost = self.estimate_cost(
-                        final_message.usage.input_tokens,
-                        final_message.usage.output_tokens,
+                        input_tokens,
+                        output_tokens,
                         model,
                         cache_read_tokens=cache_read,
                         cache_creation_tokens=cache_creation,
@@ -728,9 +743,9 @@ class AnthropicProvider(LLMProvider):
                     )
                     result = {
                         "usage": {
-                            "total_tokens": final_message.usage.input_tokens + final_message.usage.output_tokens,
-                            "input_tokens": final_message.usage.input_tokens,
-                            "output_tokens": final_message.usage.output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
                             "cache_read_tokens": cache_read,
                             "cache_creation_tokens": cache_creation,
                             "cache_creation_1h_tokens": cache_creation_1h,
