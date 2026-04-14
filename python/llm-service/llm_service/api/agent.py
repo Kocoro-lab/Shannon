@@ -1742,6 +1742,7 @@ async def agent_query(request: Request, query: AgentQuery):
                         workflow_id=request.headers.get("X-Workflow-ID")
                         or request.headers.get("x-workflow-id"),
                         agent_id=query.agent_id,
+                        cache_source="agent_execute_stream",
                     ):
                         if not chunk:
                             continue

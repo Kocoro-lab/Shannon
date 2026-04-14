@@ -689,16 +689,32 @@ class AnthropicProvider(LLMProvider):
                 # After streaming completes, get the final message with usage and tool calls
                 final_message = await stream.get_final_message()
 
-                # Check for tool use in the final message
+                # Check for tool use in the final message. Parity with the
+                # non-stream complete() path: handle both SDK objects and dicts
+                # so Anthropic-compatible providers (e.g. MiniMax) don't drop
+                # tool calls that arrive as dict-shaped content blocks.
                 function_calls = []
                 if final_message and hasattr(final_message, "content"):
                     for content_block in final_message.content:
-                        if hasattr(content_block, "type") and content_block.type == "tool_use":
-                            function_calls.append({
-                                "id": content_block.id,
-                                "name": content_block.name,
-                                "arguments": content_block.input,
-                            })
+                        block_type = getattr(content_block, "type", None) or (
+                            content_block.get("type") if isinstance(content_block, dict) else None
+                        )
+                        if block_type != "tool_use":
+                            continue
+                        block_id = getattr(content_block, "id", None) or (
+                            content_block.get("id") if isinstance(content_block, dict) else None
+                        )
+                        block_name = getattr(content_block, "name", None) or (
+                            content_block.get("name") if isinstance(content_block, dict) else None
+                        )
+                        block_input = getattr(content_block, "input", None) or (
+                            content_block.get("input") if isinstance(content_block, dict) else None
+                        )
+                        function_calls.append({
+                            "id": block_id,
+                            "name": block_name,
+                            "arguments": block_input,
+                        })
 
                 if final_message and hasattr(final_message, "usage"):
                     # Handle both SDK objects and dicts (MiniMax / Anthropic-compat

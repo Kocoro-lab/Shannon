@@ -123,6 +123,7 @@ async def generate_completion(request: Request, body: CompletionRequest):
                 agent_id=ag_id,
                 thinking=body.thinking,
                 reasoning_effort=body.reasoning_effort,
+                cache_source="completions_proxy",
             )
         except Exception as e:
             metrics.record_error("CompletionError", "llm")
@@ -169,6 +170,7 @@ async def _stream_completion(request, body, providers, tier):
             tools=body.tools,
             thinking=body.thinking,
             reasoning_effort=body.reasoning_effort,
+            cache_source="completions_proxy_stream",
         ):
             if isinstance(chunk, str):
                 full_text += chunk
