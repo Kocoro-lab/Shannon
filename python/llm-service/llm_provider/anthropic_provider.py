@@ -23,6 +23,57 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
+# Optional prompt-cache metrics (per-source observability).
+# Labels: provider, model, source. `source` comes from CompletionRequest.cache_source
+# so we can see which call sites (agent_loop/decompose/tool_select/synthesis) are
+# paying the 2.0x 1h write premium without enough reads to break even.
+try:
+    from prometheus_client import Counter as _PromCounter
+
+    _CACHE_METRICS_ENABLED = True
+    ANTHROPIC_CACHE_READ_TOKENS = _PromCounter(
+        "anthropic_cache_read_tokens_total",
+        "Anthropic prompt cache read tokens (billed at 0.1x input)",
+        labelnames=("provider", "model", "source"),
+    )
+    ANTHROPIC_CACHE_WRITE_5M_TOKENS = _PromCounter(
+        "anthropic_cache_write_5m_tokens_total",
+        "Anthropic prompt cache write tokens at 5min TTL (billed at 1.25x input)",
+        labelnames=("provider", "model", "source"),
+    )
+    ANTHROPIC_CACHE_WRITE_1H_TOKENS = _PromCounter(
+        "anthropic_cache_write_1h_tokens_total",
+        "Anthropic prompt cache write tokens at 1h TTL (billed at 2.0x input)",
+        labelnames=("provider", "model", "source"),
+    )
+except Exception:
+    _CACHE_METRICS_ENABLED = False
+
+
+def _record_cache_metrics(
+    provider: str,
+    model: str,
+    source: Optional[str],
+    cache_read: int,
+    cache_creation: int,
+    cache_creation_1h: int,
+) -> None:
+    """Emit per-source cache metrics. Cheap no-op if prometheus is unavailable."""
+    if not _CACHE_METRICS_ENABLED:
+        return
+    src = source or "unknown"
+    try:
+        if cache_read:
+            ANTHROPIC_CACHE_READ_TOKENS.labels(provider, model, src).inc(cache_read)
+        cache_5m = max(0, cache_creation - cache_creation_1h)
+        if cache_5m:
+            ANTHROPIC_CACHE_WRITE_5M_TOKENS.labels(provider, model, src).inc(cache_5m)
+        if cache_creation_1h:
+            ANTHROPIC_CACHE_WRITE_1H_TOKENS.labels(provider, model, src).inc(cache_creation_1h)
+    except Exception:
+        # Metrics must never break the request path
+        pass
+
 
 CACHE_BREAK_MARKER = "<!-- cache_break -->"
 VOLATILE_MARKER = "<!-- volatile -->"
@@ -587,6 +638,15 @@ class AnthropicProvider(LLMProvider):
             cache_creation_1h_tokens=cache_creation_1h,
         )
 
+        _record_cache_metrics(
+            self.config.get("name", "anthropic"),
+            model,
+            request.cache_source,
+            cache_read,
+            cache_creation,
+            cache_creation_1h,
+        )
+
         # Build response
         return CompletionResponse(
             content=content,
@@ -643,12 +703,28 @@ class AnthropicProvider(LLMProvider):
                 if final_message and hasattr(final_message, "usage"):
                     cache_read = getattr(final_message.usage, "cache_read_input_tokens", 0) or 0
                     cache_creation = getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0
+                    # Per-TTL cache creation breakdown (1h vs 5min). Parity with
+                    # the non-stream complete() path — without this the 1h TTL
+                    # slice silently drops from cost accounting.
+                    cache_creation_1h = 0
+                    cc = getattr(final_message.usage, "cache_creation", None)
+                    if cc is not None:
+                        cache_creation_1h = getattr(cc, "ephemeral_1h_input_tokens", 0) or 0
                     cost = self.estimate_cost(
                         final_message.usage.input_tokens,
                         final_message.usage.output_tokens,
                         model,
                         cache_read_tokens=cache_read,
                         cache_creation_tokens=cache_creation,
+                        cache_creation_1h_tokens=cache_creation_1h,
+                    )
+                    _record_cache_metrics(
+                        self.config.get("name", "anthropic"),
+                        model,
+                        request.cache_source,
+                        cache_read,
+                        cache_creation,
+                        cache_creation_1h,
                     )
                     result = {
                         "usage": {
@@ -657,6 +733,7 @@ class AnthropicProvider(LLMProvider):
                             "output_tokens": final_message.usage.output_tokens,
                             "cache_read_tokens": cache_read,
                             "cache_creation_tokens": cache_creation,
+                            "cache_creation_1h_tokens": cache_creation_1h,
                             "cost_usd": cost,
                             "call_sequence": self._cache_break_detector.call_count,
                         },

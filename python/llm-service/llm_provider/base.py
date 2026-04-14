@@ -156,6 +156,9 @@ class CompletionRequest:
     thinking: Optional[Dict] = None
     # OpenAI reasoning effort for o-models (minimal/low/medium/high)
     reasoning_effort: Optional[str] = None
+    # Prompt-cache observability label — distinguishes call sites (e.g.
+    # "agent_loop", "decompose", "tool_select", "synthesis"). Unset → "unknown".
+    cache_source: Optional[str] = None
 
     def generate_cache_key(self) -> str:
         """Generate a cache key for this request"""

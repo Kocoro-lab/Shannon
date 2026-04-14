@@ -1898,6 +1898,7 @@ async def agent_query(request: Request, query: AgentQuery):
                     workflow_id=request.headers.get("X-Workflow-ID")
                     or request.headers.get("x-workflow-id"),
                     agent_id=query.agent_id,
+                    cache_source="agent_execute",
                 )
                 last_result_data = result_data
 
@@ -3831,6 +3832,7 @@ async def agent_loop_step(request: Request, body: AgentLoopStepRequest) -> Agent
                 gen_kwargs["response_format"] = {"type": "json_object"}
         if body.previous_response_id:
             gen_kwargs["previous_response_id"] = body.previous_response_id
+        gen_kwargs.setdefault("cache_source", "agent_loop")
 
         result = await providers.generate_completion(
             messages=messages,
@@ -4796,6 +4798,7 @@ async def decompose_task(request: Request, query: AgentQuery) -> DecompositionRe
                     if settings and settings.decomposition_model_id
                     else None
                 ),
+                cache_source="decompose",
             )
 
             import json as _json

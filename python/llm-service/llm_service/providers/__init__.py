@@ -225,6 +225,7 @@ class ProviderManager:
             "output_config",
             "thinking",
             "reasoning_effort",
+            "cache_source",
         }
 
         for field in list(params.keys()):
@@ -332,6 +333,7 @@ class ProviderManager:
             "output_config",
             "thinking",
             "reasoning_effort",
+            "cache_source",
         }
 
         for field in list(params.keys()):

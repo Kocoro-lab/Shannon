@@ -498,6 +498,7 @@ async def lead_decide(request: Request, body: LeadDecisionRequest) -> LeadDecisi
             "messages": lead_messages,
             "temperature": 0.3,
             "max_tokens": lead_max_tokens,
+            "cache_source": "lead_decide",
         }
         if lead_specific_model:
             lead_kwargs["specific_model"] = lead_specific_model

@@ -900,6 +900,7 @@ async def select_tools(req: Request, body: ToolSelectRequest) -> ToolSelectRespo
                 response_format={"type": "json_object"},
                 workflow_id=wf_id,
                 agent_id=ag_id,
+                cache_source="tool_select",
             )
 
             import json as _json
