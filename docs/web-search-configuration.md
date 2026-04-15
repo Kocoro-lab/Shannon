@@ -49,7 +49,7 @@ export BING_API_KEY=your_api_key_here
 - Pricing: $3 per 1000 queries for S1 tier
 - Note: Bing Search APIs retiring August 11, 2025 - consider migration plans
 
-### 5. **Exa** (AI-Optimized Semantic Search)
+### 5. **Exa** (Fastest and Most Accurate Web Search API for AI)
 Neural search with semantic understanding, optimized for AI applications.
 ```bash
 export WEB_SEARCH_PROVIDER=exa
