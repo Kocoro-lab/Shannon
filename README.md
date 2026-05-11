@@ -380,6 +380,81 @@ curl http://localhost:8081/health
 - Reduce `WASI_MEMORY_LIMIT_MB` (default: 512)
 - Lower `HISTORY_WINDOW_MESSAGES` (default: 50)
 
+
+## FAQ
+
+### What is Shannon?
+
+Shannon is a **production-oriented multi-agent orchestration framework** built with Go, Rust, and Python. It focuses on reliability: Temporal workflows for fault tolerance, time-travel debugging, token budget control, human approval workflows, and WASI sandboxing for secure code execution.
+
+### How is Shannon different from LangChain or CrewAI?
+
+| Framework | Focus | Key Differentiator |
+|-----------|-------|-------------------|
+| **Shannon** | Production reliability | Temporal workflows, time-travel debugging, hard token budgets |
+| **LangChain** | LLM chains & RAG | Chain-of-thought composition, retrieval augmentation |
+| **CrewAI** | Role-playing agents | Multi-agent roles, task delegation |
+
+Shannon is designed for **production deployment** with built-in observability, budget management, and workflow replay — not just prototyping.
+
+### What execution strategies are available?
+
+Shannon automatically routes tasks based on complexity:
+
+- **Simple**: Single-agent direct response (complexity < 0.3)
+- **DAG**: Fan-out/fan-in with dependency tracking (default for multi-step)
+- **ReAct**: Reasoning + tool use loops
+- **Research**: Tiered models for 50-70% cost reduction
+- **Swarm**: Lead-orchestrated multi-agent teams
+- **Browser Use**: Playwright-backed web interaction
+
+### Which LLM providers are supported?
+
+Shannon supports 10+ providers with automatic failover:
+
+- **Anthropic**: Claude Opus 4.6, Sonnet 4.6, Haiku 4.5
+- **OpenAI**: GPT-5.1, GPT-5 mini, GPT-5 nano
+- **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash
+- **xAI**: Grok 4, Grok 3 Mini
+- **DeepSeek**, **MiniMax**, **Groq**, **Qwen**, **Llama**, **Zhipu**, **Kimi**
+- **Local**: Ollama, LM Studio, vLLM — any OpenAI-compatible endpoint
+
+### How do I install Shannon?
+
+**One-command install:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/main/scripts/install.sh | bash
+```
+
+**Prerequisites:**
+- Docker and Docker Compose
+- An API key for at least one LLM provider
+
+### What is time-travel debugging?
+
+Time-travel debugging lets you replay any workflow execution step-by-step to understand failures or unexpected behavior:
+```bash
+./scripts/replay_workflow.sh task-prod-failure-123
+```
+
+### How does token budget control work?
+
+Set `budget_max` in context parameter per task. Shannon enforces hard token limits and automatically falls back to cheaper models if budgets approach exhaustion.
+
+### Can I use Shannon with existing OpenAI SDKs?
+
+Yes! Shannon provides an OpenAI-compatible API endpoint:
+```bash
+export OPENAI_API_BASE=http://localhost:8080/v1
+# Your existing OpenAI code works unchanged
+```
+
+### Where can I get help?
+
+- **Documentation**: [docs.shannon.run](https://docs.shannon.run)
+- **GitHub Issues**: [github.com/Kocoro-lab/Shannon/issues](https://github.com/Kocoro-lab/Shannon/issues)
+- **Live Demo**: [shannon.run](https://shannon.run)
+
 ## Documentation
 
 | Resource | Description |
