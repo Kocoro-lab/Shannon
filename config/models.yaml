@@ -310,7 +310,7 @@ model_catalog:
     claude-sonnet-4-6:
       model_id: claude-sonnet-4-6
       tier: medium
-      context_window: 200000
+      context_window: 1000000
       max_tokens: 64000
       supports_functions: true
       supports_streaming: true
@@ -318,7 +318,7 @@ model_catalog:
     claude-opus-4-6:
       model_id: claude-opus-4-6
       tier: large
-      context_window: 200000
+      context_window: 1000000
       max_tokens: 64000
       supports_functions: true
       supports_streaming: true
@@ -920,6 +920,8 @@ model_capabilities:
     - llama-4-scout-17b-16e-instruct  # 10M tokens
     - gemini-3-pro-preview  # 1M tokens
     - gemini-2.5-flash  # 1M tokens
+    - claude-sonnet-4-6  # 1M tokens (native, no beta header)
+    - claude-opus-4-6  # 1M tokens (native, no beta header)
     - qwen3-omni-30b-a3b-instruct  # 262K tokens
     - claude-opus-4-5-20251101  # 200K tokens
     - claude-sonnet-4-5-20250929  # 200K tokens
