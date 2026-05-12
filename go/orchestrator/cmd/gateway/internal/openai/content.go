@@ -115,8 +115,12 @@ func parseImageURL(url string) (*RawAttachment, int, error) {
 		return parseDataURI(url)
 	}
 	mt := guessMediaType(url)
-	if !attachments.IsSupportedMediaType(mt) {
-		return nil, 0, fmt.Errorf("unsupported attachment type from URL: %s", mt)
+	// URL-based path: only reject dangerous types (executables / installers).
+	// Unknown extensions fall through to a URL-only ref — the daemon fetches
+	// the URL and uses local tools (bash, archive_extract) to make sense of
+	// it. See attachment-format-parity §2 P0.
+	if attachments.IsDangerous(mt) {
+		return nil, 0, fmt.Errorf("rejected attachment type from URL: %s", mt)
 	}
 	return &RawAttachment{
 		URL:        url,
@@ -141,12 +145,18 @@ func parseDataURI(uri string) (*RawAttachment, int, error) {
 		mediaType = strings.TrimSuffix(mediaType, ";base64")
 	}
 
-	// Reject empty or unsupported MIME types early (e.g. "data:;base64,...", application/zip, audio/*)
+	// Reject empty MIME types early (e.g. "data:;base64,..."). Base64 inline
+	// uploads must be IsExtractable — passthrough types (archives / a/v /
+	// octet-stream) should arrive as URL-only refs, not inlined. Dangerous
+	// types are always rejected.
 	if mediaType == "" {
 		return nil, 0, fmt.Errorf("missing media type in data URI (expected data:<type>;base64,...)")
 	}
-	if !attachments.IsSupportedMediaType(mediaType) {
-		return nil, 0, fmt.Errorf("unsupported attachment type: %s (supported: images, PDF, text files)", mediaType)
+	if attachments.IsDangerous(mediaType) {
+		return nil, 0, fmt.Errorf("rejected attachment type: %s (executables / installers are not accepted)", mediaType)
+	}
+	if !attachments.IsExtractable(mediaType) {
+		return nil, 0, fmt.Errorf("unsupported attachment type for inline upload: %s (use URL-based attachment instead)", mediaType)
 	}
 
 	// Try standard base64 first, then raw (no padding) variant

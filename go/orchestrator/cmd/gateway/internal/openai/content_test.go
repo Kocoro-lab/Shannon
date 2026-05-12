@@ -66,8 +66,10 @@ func TestParseContent_ArrayWithFile(t *testing.T) {
 }
 
 func TestParseContent_RequestSizeLimit(t *testing.T) {
-	// Create valid base64 data that decodes to > 20MB
-	bigData := make([]byte, 21*1024*1024)
+	// Create valid base64 data that decodes to > MaxDecodedAttachmentBytes
+	// (25 MB after attachment-format-parity §2 P0). Constant kept in sync via
+	// the attachments package — if the cap changes, this test follows.
+	bigData := make([]byte, 26*1024*1024)
 	for i := range bigData {
 		bigData[i] = 'A'
 	}

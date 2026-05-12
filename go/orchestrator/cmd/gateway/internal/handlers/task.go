@@ -293,7 +293,7 @@ func (h *TaskHandler) applyTaskContextAndLabels(req *TaskRequest, grpcReq *orchp
 	// Inject top-level provider_override when provided
 	if po := strings.TrimSpace(strings.ToLower(req.ProviderOverride)); po != "" {
 		// Validate provider exists
-		validProviders := []string{"openai", "anthropic", "google", "groq", "xai", "deepseek", "qwen", "zai", "kimi", "minimax", "ollama"}
+		validProviders := []string{"openai", "anthropic", "google", "groq", "xai", "deepseek", "qwen", "zai", "kimi", "minimax", "ollama", "mistral", "cohere"}
 		isValid := false
 		for _, valid := range validProviders {
 			if po == valid {
@@ -1496,13 +1496,17 @@ func (h *TaskHandler) extractAndStoreContextAttachments(ctx context.Context, ses
 		// that should be offloaded to Redis.
 		dataStr, hasData := am["data"].(string)
 		if !hasData {
-			// URL-based or pre-existing ref — require and validate MIME type.
+			// URL-based or pre-existing ref — require MIME and reject dangerous
+			// types only. Per attachment-format-parity §2 P0, unknown / archive /
+			// audio-video / octet-stream MIMEs are NOT rejected here: the daemon
+			// fetches via URL and uses bash / archive_extract on the other end.
+			// Cloud-side extraction (Phase 3) is opportunistic, not a gate.
 			mt, _ := am["media_type"].(string)
 			if mt == "" {
 				return fmt.Errorf("attachment media_type is required for URL-based attachments")
 			}
-			if !attachments.IsSupportedMediaType(mt) {
-				return fmt.Errorf("unsupported attachment type: %s (supported: images, PDF, text files)", mt)
+			if attachments.IsDangerous(mt) {
+				return fmt.Errorf("rejected attachment type: %s (executables / installers are not accepted)", mt)
 			}
 			ref := make(map[string]interface{}, len(am))
 			for k, v := range am {
@@ -1542,8 +1546,16 @@ func (h *TaskHandler) extractAndStoreContextAttachments(ctx context.Context, ses
 		if mediaType == "" {
 			return fmt.Errorf("attachment media_type is required for base64 attachments")
 		}
-		if !attachments.IsSupportedMediaType(mediaType) {
-			return fmt.Errorf("unsupported attachment type: %s (supported: images, PDF, text files)", mediaType)
+		// Base64 inline path = cloud actually holds the bytes for an inline LLM
+		// content block. Only IsExtractable types make sense here (cloud will
+		// forward to Anthropic or run extraction). Passthrough types belong to
+		// URL-only refs (see the !hasData branch above). Dangerous types are
+		// always rejected.
+		if attachments.IsDangerous(mediaType) {
+			return fmt.Errorf("rejected attachment type: %s (executables / installers are not accepted)", mediaType)
+		}
+		if !attachments.IsExtractable(mediaType) {
+			return fmt.Errorf("unsupported attachment type for inline upload: %s (use URL-based file_ref instead)", mediaType)
 		}
 
 		id, err := attStore.Put(ctx, sessionID, decoded, mediaType, filename)
