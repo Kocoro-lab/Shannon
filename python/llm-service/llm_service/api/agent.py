@@ -3407,8 +3407,13 @@ def _build_attachment_blocks(raw_attachments: list) -> list:
     - "url": external URL → shannon_attachment with url field (provider converts)
     - "base64": binary file (image/PDF) → shannon_attachment with data field (provider converts)
     """
-    MAX_TEXT_PER_FILE = 100_000   # ~25K tokens per file
-    MAX_TEXT_TOTAL = 200_000      # ~50K tokens total across all text attachments
+    # Text-attachment caps. Old values (100K/200K) were sized for 200K-context
+    # models — with 1M-context families now the default, a single long PDF
+    # transcript easily exceeds 100K chars and gets silently truncated.
+    # Raising 4× to align with 1M-context budget. Per-file 400K ≈ 100K tokens,
+    # total 800K ≈ 200K tokens — still well under 1M context.
+    MAX_TEXT_PER_FILE = 400_000   # ~100K tokens per file
+    MAX_TEXT_TOTAL = 800_000      # ~200K tokens total across all text attachments
 
     blocks = []
     total_text_chars = 0

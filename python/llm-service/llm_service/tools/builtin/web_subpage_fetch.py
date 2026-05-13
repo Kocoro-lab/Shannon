@@ -29,7 +29,9 @@ from .web_fetch import detect_blocked_reason, clean_markdown_noise, apply_extrac
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_LIMIT = 20  # Maximum pages to fetch
+# MAX_LIMIT cap on pages per web_subpage_fetch call. Parallel sibling to
+# web_crawl's MAX_LIMIT — keep them aligned. See web_crawl.py for rationale.
+MAX_LIMIT = 100
 MAP_URL_LIMIT = 200  # Max URLs from map API
 DEFAULT_LIMIT = 5
 DEFAULT_MAX_LENGTH = 10000
