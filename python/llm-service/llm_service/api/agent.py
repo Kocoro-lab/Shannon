@@ -14,6 +14,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# MAX_PROMPT_CHARS is the soft cap on the assembled prompt body (user query +
+# attachment text) sent to the LLM. Raised in lockstep with MAX_TEXT_TOTAL
+# (200K → 800K chars) so a request that fills the text-attachment budget still
+# leaves headroom for the user's actual question. 1M chars ≈ 250K tokens —
+# fits the 1M-token context window with room for system prompt, tools, and
+# assistant turns.
+#
+# Symptom when this binds: user's query gets silently truncated to ~1K chars,
+# or the conversation-history trim loop strips turns until empty trying to fit
+# under cap. Used at three call sites (query trim, history trim, deep-research
+# step trim) — must stay aligned with MAX_TEXT_TOTAL in _build_attachment_blocks.
+MAX_PROMPT_CHARS = 1_000_000
+
 
 async def _resolve_attachments(context: Optional[Dict], redis_client, session_id: str = "") -> list:
     """Resolve attachment references from Redis.
@@ -1230,7 +1243,7 @@ async def agent_query(request: Request, query: AgentQuery):
             if raw_attachments:
                 att_blocks = _build_attachment_blocks(raw_attachments)
                 attachment_text_chars = _count_text_block_chars(att_blocks)
-                max_query_chars = max(1_000, 400_000 - attachment_text_chars)
+                max_query_chars = max(1_000, MAX_PROMPT_CHARS - attachment_text_chars)
                 query_text = query.query or ""
                 if len(query_text) > max_query_chars:
                     query_text = _truncate_middle(query_text, max_query_chars)
@@ -3605,7 +3618,7 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
             messages[-1]["content"] += "\n\n" + "\n\n".join(volatile_parts)
 
     # Context trimming: remove oldest turn pairs if too large
-    max_prompt_chars = 400_000
+    max_prompt_chars = MAX_PROMPT_CHARS
     total_chars = sum(len(m["content"]) if isinstance(m["content"], str) else 0 for m in messages)
     while total_chars > max_prompt_chars and len(messages) > 5:
         for idx in range(3, len(messages) - 2):
@@ -3779,7 +3792,7 @@ def build_agent_messages(body: AgentLoopStepRequest, raw_attachments=None) -> li
 
     # Token-aware context trimming: bound the final text payload, not just the
     # pre-attachment user content. Binary attachments do not consume this budget.
-    max_prompt_chars = max(1_000, 400_000 - attachment_text_chars)
+    max_prompt_chars = max(1_000, MAX_PROMPT_CHARS - attachment_text_chars)
     user_content = "\n\n".join(user_parts)
 
     def _sync_history_section() -> None:
