@@ -14,6 +14,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# MAX_TEXT_PER_FILE / MAX_TEXT_TOTAL cap text-attachment payload sent to the
+# LLM. Old values (100K/200K) were sized for 200K-context models — with
+# 1M-context families now the default, a single long PDF transcript easily
+# exceeds 100K chars and gets silently truncated. Promoted to module-level
+# next to MAX_PROMPT_CHARS so the alignment invariant (MAX_TEXT_TOTAL <
+# MAX_PROMPT_CHARS) is enforced once at module load instead of left as a
+# human-maintained comment.
+#
+# Symptom when raising further: query_text gets trimmed to 1_000 chars
+# minimum when (MAX_PROMPT_CHARS - attachment_text_chars) goes negative.
+MAX_TEXT_PER_FILE = 400_000  # ~100K tokens per file
+MAX_TEXT_TOTAL = 800_000     # ~200K tokens total across all text attachments
+
 # MAX_PROMPT_CHARS is the soft cap on the assembled prompt body (user query +
 # attachment text) sent to the LLM. Raised in lockstep with MAX_TEXT_TOTAL
 # (200K → 800K chars) so a request that fills the text-attachment budget still
@@ -24,8 +37,18 @@ router = APIRouter()
 # Symptom when this binds: user's query gets silently truncated to ~1K chars,
 # or the conversation-history trim loop strips turns until empty trying to fit
 # under cap. Used at three call sites (query trim, history trim, deep-research
-# step trim) — must stay aligned with MAX_TEXT_TOTAL in _build_attachment_blocks.
+# step trim).
 MAX_PROMPT_CHARS = 1_000_000
+
+# Load-time invariant: the text-attachment budget must leave headroom for the
+# user's actual query. If MAX_TEXT_TOTAL ever crept past MAX_PROMPT_CHARS, the
+# (MAX_PROMPT_CHARS - attachment_text_chars) computation in query/history trim
+# paths would go negative and clamp to the 1_000-char floor — silently
+# truncating every prompt to 1 KB.
+assert MAX_TEXT_TOTAL < MAX_PROMPT_CHARS, (
+    f"MAX_TEXT_TOTAL ({MAX_TEXT_TOTAL}) must stay strictly under "
+    f"MAX_PROMPT_CHARS ({MAX_PROMPT_CHARS}); otherwise query trim clamps to 1_000 chars."
+)
 
 
 async def _resolve_attachments(context: Optional[Dict], redis_client, session_id: str = "") -> list:
@@ -3420,13 +3443,9 @@ def _build_attachment_blocks(raw_attachments: list) -> list:
     - "url": external URL → shannon_attachment with url field (provider converts)
     - "base64": binary file (image/PDF) → shannon_attachment with data field (provider converts)
     """
-    # Text-attachment caps. Old values (100K/200K) were sized for 200K-context
-    # models — with 1M-context families now the default, a single long PDF
-    # transcript easily exceeds 100K chars and gets silently truncated.
-    # Raising 4× to align with 1M-context budget. Per-file 400K ≈ 100K tokens,
-    # total 800K ≈ 200K tokens — still well under 1M context.
-    MAX_TEXT_PER_FILE = 400_000   # ~100K tokens per file
-    MAX_TEXT_TOTAL = 800_000      # ~200K tokens total across all text attachments
+    # MAX_TEXT_PER_FILE / MAX_TEXT_TOTAL are module-level (see top of file)
+    # so the alignment invariant with MAX_PROMPT_CHARS is enforced at load
+    # time, not left as a human-maintained comment across two functions.
 
     blocks = []
     total_text_chars = 0
@@ -3617,9 +3636,25 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
         if volatile_parts:
             messages[-1]["content"] += "\n\n" + "\n\n".join(volatile_parts)
 
-    # Context trimming: remove oldest turn pairs if too large
+    # Context trimming: remove oldest turn pairs if too large.
+    # _measure_chars handles both plain-string content AND the list-of-blocks
+    # form produced at line ~3639 for frozen historical observations. The
+    # previous sum only counted strings — making list-form observations
+    # invisible to the trim, so a history of large tool results could push
+    # the prompt well past MAX_PROMPT_CHARS without ever triggering eviction.
+    def _measure_chars(content) -> int:
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            return sum(
+                len(b.get("text", ""))
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return 0
+
     max_prompt_chars = MAX_PROMPT_CHARS
-    total_chars = sum(len(m["content"]) if isinstance(m["content"], str) else 0 for m in messages)
+    total_chars = sum(_measure_chars(m["content"]) for m in messages)
     while total_chars > max_prompt_chars and len(messages) > 5:
         for idx in range(3, len(messages) - 2):
             if messages[idx]["role"] == "assistant":
@@ -3627,7 +3662,7 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
                 if idx < len(messages) and messages[idx]["role"] == "user":
                     messages.pop(idx)  # user observation
                 break
-        new_total = sum(len(m["content"]) if isinstance(m["content"], str) else 0 for m in messages)
+        new_total = sum(_measure_chars(m["content"]) for m in messages)
         if new_total >= total_chars:
             break  # No progress, stop trimming
         total_chars = new_total
