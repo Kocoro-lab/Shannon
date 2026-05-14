@@ -283,7 +283,13 @@ async def extract_batch_with_llm(
 
 
 # Constants
-MAX_SUBPAGES = 15  # Balanced limit for comprehensive research
+# MAX_SUBPAGES is the cap on how many subpages a single web_fetch call expands
+# to. 15 was the old default sized for 200K-context models; with 1M-context
+# defaults across Kocoro/Claude families, "summarize this 30-page docs site"
+# is a routine task that benefits from a higher cap. 50 fits comfortably within
+# context budget (each subpage ≈ 4-8 K tokens after truncation = ~250-400 K
+# tokens worst-case, well under 1M).
+MAX_SUBPAGES = 50
 
 # P0-A: Blocked content detection patterns for Citation V2
 BLOCKED_PATTERNS = [

@@ -14,6 +14,42 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# MAX_TEXT_PER_FILE / MAX_TEXT_TOTAL cap text-attachment payload sent to the
+# LLM. Old values (100K/200K) were sized for 200K-context models — with
+# 1M-context families now the default, a single long PDF transcript easily
+# exceeds 100K chars and gets silently truncated. Promoted to module-level
+# next to MAX_PROMPT_CHARS so the alignment invariant (MAX_TEXT_TOTAL <
+# MAX_PROMPT_CHARS) is enforced once at module load instead of left as a
+# human-maintained comment.
+#
+# Symptom when raising further: query_text gets trimmed to 1_000 chars
+# minimum when (MAX_PROMPT_CHARS - attachment_text_chars) goes negative.
+MAX_TEXT_PER_FILE = 400_000  # ~100K tokens per file
+MAX_TEXT_TOTAL = 800_000     # ~200K tokens total across all text attachments
+
+# MAX_PROMPT_CHARS is the soft cap on the assembled prompt body (user query +
+# attachment text) sent to the LLM. Raised in lockstep with MAX_TEXT_TOTAL
+# (200K → 800K chars) so a request that fills the text-attachment budget still
+# leaves headroom for the user's actual question. 1M chars ≈ 250K tokens —
+# fits the 1M-token context window with room for system prompt, tools, and
+# assistant turns.
+#
+# Symptom when this binds: user's query gets silently truncated to ~1K chars,
+# or the conversation-history trim loop strips turns until empty trying to fit
+# under cap. Used at three call sites (query trim, history trim, deep-research
+# step trim).
+MAX_PROMPT_CHARS = 1_000_000
+
+# Load-time invariant: the text-attachment budget must leave headroom for the
+# user's actual query. If MAX_TEXT_TOTAL ever crept past MAX_PROMPT_CHARS, the
+# (MAX_PROMPT_CHARS - attachment_text_chars) computation in query/history trim
+# paths would go negative and clamp to the 1_000-char floor — silently
+# truncating every prompt to 1 KB.
+assert MAX_TEXT_TOTAL < MAX_PROMPT_CHARS, (
+    f"MAX_TEXT_TOTAL ({MAX_TEXT_TOTAL}) must stay strictly under "
+    f"MAX_PROMPT_CHARS ({MAX_PROMPT_CHARS}); otherwise query trim clamps to 1_000 chars."
+)
+
 
 async def _resolve_attachments(context: Optional[Dict], redis_client, session_id: str = "") -> list:
     """Resolve attachment references from Redis.
@@ -1230,7 +1266,7 @@ async def agent_query(request: Request, query: AgentQuery):
             if raw_attachments:
                 att_blocks = _build_attachment_blocks(raw_attachments)
                 attachment_text_chars = _count_text_block_chars(att_blocks)
-                max_query_chars = max(1_000, 400_000 - attachment_text_chars)
+                max_query_chars = max(1_000, MAX_PROMPT_CHARS - attachment_text_chars)
                 query_text = query.query or ""
                 if len(query_text) > max_query_chars:
                     query_text = _truncate_middle(query_text, max_query_chars)
@@ -3407,8 +3443,9 @@ def _build_attachment_blocks(raw_attachments: list) -> list:
     - "url": external URL → shannon_attachment with url field (provider converts)
     - "base64": binary file (image/PDF) → shannon_attachment with data field (provider converts)
     """
-    MAX_TEXT_PER_FILE = 100_000   # ~25K tokens per file
-    MAX_TEXT_TOTAL = 200_000      # ~50K tokens total across all text attachments
+    # MAX_TEXT_PER_FILE / MAX_TEXT_TOTAL are module-level (see top of file)
+    # so the alignment invariant with MAX_PROMPT_CHARS is enforced at load
+    # time, not left as a human-maintained comment across two functions.
 
     blocks = []
     total_text_chars = 0
@@ -3523,12 +3560,17 @@ def _resolve_loop_cache_source(body: "AgentLoopStepRequest") -> str:
     return "agent_loop"
 
 
-def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, cache_source: str = "agent_loop") -> list:
+def _build_multi_turn_messages(
+    body: AgentLoopStepRequest,
+    system_prompt: str,
+    cache_source: str = "agent_loop",
+    raw_attachments: Optional[list] = None,
+) -> list:
     """Build append-only multi-turn messages for Anthropic prompt cache.
 
     Structure:
       system: role_prompt + protocol
-      user: bootstrap_static (Task + Team + OriginalQuery — immutable)
+      user: bootstrap_static (Task + Team + OriginalQuery + ATTACHMENTS — immutable)
       user: "Begin your task." (observation_0)
       assistant: replay_1 (frozen compact JSON from previous LLM response)
       user: observation_1 (frozen tool result)
@@ -3538,6 +3580,11 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
     Each assistant/user pair from history is FROZEN — identical bytes across
     iterations. Only the last user message changes. Anthropic's backward prefix
     matching finds the longest cached prefix → cache hit rate 60-80%.
+
+    Attachments (when present) ride in the bootstrap message as a list-of-blocks
+    payload, identical across iterations so they cache cleanly. Without this,
+    user attachments were silently dropped on every Sonnet+/multi-turn loop
+    step — they only made it through the legacy single-message path.
     """
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -3558,7 +3605,19 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
             else:
                 roster_lines.append(f"- {tm.agent_id}{role_tag}: \"{tm.task}\"")
         bootstrap_parts.append("## Your Team (shared session workspace)\n" + "\n".join(roster_lines))
-    messages.append({"role": "user", "content": "\n\n".join(bootstrap_parts)})
+    bootstrap_text = "\n\n".join(bootstrap_parts)
+    # Attachments live in bootstrap because they're immutable for a given
+    # session — putting them in the cached prefix avoids re-sending the same
+    # PDF every iteration. List-form is byte-stable across iterations: same
+    # set of attachments + same bootstrap text → identical bytes → cache hit.
+    att_blocks = _build_attachment_blocks(raw_attachments) if raw_attachments else []
+    if att_blocks:
+        messages.append({
+            "role": "user",
+            "content": att_blocks + [{"type": "text", "text": bootstrap_text}],
+        })
+    else:
+        messages.append({"role": "user", "content": bootstrap_text})
 
     # --- Observation 0 ---
     messages.append({"role": "user", "content": "Begin your task. Return ONLY valid JSON for each action."})
@@ -3599,9 +3658,25 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
         if volatile_parts:
             messages[-1]["content"] += "\n\n" + "\n\n".join(volatile_parts)
 
-    # Context trimming: remove oldest turn pairs if too large
-    max_prompt_chars = 400_000
-    total_chars = sum(len(m["content"]) if isinstance(m["content"], str) else 0 for m in messages)
+    # Context trimming: remove oldest turn pairs if too large.
+    # _measure_chars handles both plain-string content AND the list-of-blocks
+    # form produced at line ~3639 for frozen historical observations. The
+    # previous sum only counted strings — making list-form observations
+    # invisible to the trim, so a history of large tool results could push
+    # the prompt well past MAX_PROMPT_CHARS without ever triggering eviction.
+    def _measure_chars(content) -> int:
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            return sum(
+                len(b.get("text", ""))
+                for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return 0
+
+    max_prompt_chars = MAX_PROMPT_CHARS
+    total_chars = sum(_measure_chars(m["content"]) for m in messages)
     while total_chars > max_prompt_chars and len(messages) > 5:
         for idx in range(3, len(messages) - 2):
             if messages[idx]["role"] == "assistant":
@@ -3609,7 +3684,7 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
                 if idx < len(messages) and messages[idx]["role"] == "user":
                     messages.pop(idx)  # user observation
                 break
-        new_total = sum(len(m["content"]) if isinstance(m["content"], str) else 0 for m in messages)
+        new_total = sum(_measure_chars(m["content"]) for m in messages)
         if new_total >= total_chars:
             break  # No progress, stop trimming
         total_chars = new_total
@@ -3658,7 +3733,12 @@ def build_agent_messages(body: AgentLoopStepRequest, raw_attachments=None) -> li
     use_multi_turn = has_replay and (body.model_tier in ("medium", "large") or is_non_haiku_override)
     if use_multi_turn:
         logger.info(f"AgentLoop: multi-turn mode (agent={body.agent_id}, tier={body.model_tier}, turns={len([t for t in body.history if t.assistant_replay])})")
-        return _build_multi_turn_messages(body, system_prompt, _resolve_loop_cache_source(body))
+        return _build_multi_turn_messages(
+            body,
+            system_prompt,
+            _resolve_loop_cache_source(body),
+            raw_attachments=raw_attachments,
+        )
 
     # --- Legacy: single user message (original structure) ---
     user_parts: list[str] = []
@@ -3774,7 +3854,7 @@ def build_agent_messages(body: AgentLoopStepRequest, raw_attachments=None) -> li
 
     # Token-aware context trimming: bound the final text payload, not just the
     # pre-attachment user content. Binary attachments do not consume this budget.
-    max_prompt_chars = max(1_000, 400_000 - attachment_text_chars)
+    max_prompt_chars = max(1_000, MAX_PROMPT_CHARS - attachment_text_chars)
     user_content = "\n\n".join(user_parts)
 
     def _sync_history_section() -> None:

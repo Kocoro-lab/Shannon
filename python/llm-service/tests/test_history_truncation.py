@@ -104,3 +104,143 @@ class TestHistoryTruncation:
         assert "F" * 5000 in user_msg, "file_read result truncated in mixed history"
         # web_search: 6000 chars should be truncated
         assert "W" * 5000 not in user_msg, "web_search result not truncated in mixed history"
+
+
+class TestPromptCharBudget:
+    """Module-level invariants and trim correctness on list-form content."""
+
+    def test_max_text_total_under_max_prompt_chars(self):
+        """Alignment invariant: the text-attachment budget must leave room
+        for the user's actual query. If MAX_TEXT_TOTAL ever creeps past
+        MAX_PROMPT_CHARS, the (MAX_PROMPT_CHARS - attachment_text_chars)
+        computation in query/history trim paths goes negative and clamps to
+        the 1_000-char floor — silently truncating every prompt to 1 KB.
+        """
+        from llm_service.api.agent import (
+            MAX_PROMPT_CHARS,
+            MAX_TEXT_PER_FILE,
+            MAX_TEXT_TOTAL,
+        )
+
+        assert MAX_TEXT_TOTAL < MAX_PROMPT_CHARS, (
+            f"MAX_TEXT_TOTAL ({MAX_TEXT_TOTAL}) must stay under "
+            f"MAX_PROMPT_CHARS ({MAX_PROMPT_CHARS})"
+        )
+        # Per-file cap should never exceed the total budget — otherwise a
+        # single file can monopolize the entire text-attachment quota.
+        assert MAX_TEXT_PER_FILE <= MAX_TEXT_TOTAL, (
+            f"MAX_TEXT_PER_FILE ({MAX_TEXT_PER_FILE}) cannot exceed "
+            f"MAX_TEXT_TOTAL ({MAX_TEXT_TOTAL})"
+        )
+
+    def test_multi_turn_trim_sees_list_form_observations(self):
+        """`_build_multi_turn_messages` puts historical observations into
+        list-form content blocks (`{"role":"user", "content":[{type:"text", text:...}]}`).
+        Before the fix, the trim loop's `total_chars` sum only counted string
+        content, so 10 turns × 150K chars of list-form observations stayed
+        invisible — the prompt could balloon past MAX_PROMPT_CHARS with
+        zero trim. After the fix, list-form text blocks are counted and
+        oldest turn pairs evict until total falls under cap.
+        """
+        from llm_service.api.agent import (
+            MAX_PROMPT_CHARS,
+            _build_multi_turn_messages,
+        )
+
+        big_obs = "x" * 150_000  # ~150K chars per frozen observation
+        history = [
+            AgentLoopTurn(
+                iteration=i,
+                action=f"tool_call:web_search_{i}",
+                result="",
+                assistant_replay='{"action":"step"}',
+                observation_text=big_obs,
+            )
+            for i in range(10)
+        ]
+        body = _make_request(history=history, iteration=11)
+        msgs = _build_multi_turn_messages(body, system_prompt="sys", cache_source="agent_loop")
+
+        # Count chars the same way the new measurement helper does so the
+        # assertion exercises both the trim AND its accounting.
+        def measure(content):
+            if isinstance(content, str):
+                return len(content)
+            if isinstance(content, list):
+                return sum(
+                    len(b.get("text", ""))
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            return 0
+
+        total = sum(measure(m["content"]) for m in msgs)
+        # With trim working, 10 × 150K = 1.5M raw drops near MAX_PROMPT_CHARS
+        # after eviction. The loop also keeps a floor (len(messages) > 5), so
+        # not every turn is guaranteed to evict — but total must come in
+        # well under the pre-fix 1.5M figure.
+        assert total <= MAX_PROMPT_CHARS + 200_000, (
+            f"After trim, total_chars={total:,} should be near "
+            f"MAX_PROMPT_CHARS={MAX_PROMPT_CHARS:,} (pre-fix would stay near 1.5M)"
+        )
+
+    def test_multi_turn_delivers_raw_attachments(self):
+        """`build_agent_messages` previously returned from the multi-turn
+        branch via `return _build_multi_turn_messages(...)` without passing
+        raw_attachments — so on every Sonnet+ agent loop step, user
+        attachments (text PDFs, images) were silently dropped. They only made
+        it through the legacy single-message path. The fix threads
+        raw_attachments through and parks them in the immutable bootstrap
+        message (list-of-blocks form) so they cache cleanly across iterations.
+        """
+        from llm_service.api.agent import build_agent_messages
+
+        raw_attachments = [
+            {
+                "source": "text",
+                "filename": "report.pdf",
+                "text_content": "Q3 revenue: $12M\n" + ("body text " * 50),
+            },
+            {
+                "source": "base64",
+                "filename": "chart.png",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo=",
+            },
+        ]
+        history = [
+            AgentLoopTurn(
+                iteration=1,
+                action="tool_call:web_search",
+                result="result text",
+                assistant_replay='{"action":"step"}',
+                observation_text="search result digest",
+            ),
+        ]
+        body = _make_request(history=history, iteration=2, model_tier="medium")
+        msgs = build_agent_messages(body, raw_attachments=raw_attachments)
+
+        # Bootstrap user message (index 1) should be list-form with our
+        # attachment blocks. Pre-fix: bootstrap was a plain string with no
+        # attachments anywhere in msgs.
+        bootstrap = msgs[1]["content"]
+        assert isinstance(bootstrap, list), (
+            f"bootstrap should be list-of-blocks when attachments present, got {type(bootstrap).__name__}"
+        )
+
+        # Look for the PDF text and the shannon_attachment marker
+        # (provider-neutral binary handle).
+        all_text = "".join(
+            b.get("text", "") for b in bootstrap if isinstance(b, dict) and b.get("type") == "text"
+        )
+        has_pdf_text = "Q3 revenue" in all_text
+        has_image_block = any(
+            isinstance(b, dict) and b.get("type") == "shannon_attachment" and b.get("filename") == "chart.png"
+            for b in bootstrap
+        )
+        assert has_pdf_text, "text attachment content missing from bootstrap"
+        assert has_image_block, "binary attachment block missing from bootstrap"
+
+        # And the original bootstrap text (Task / OriginalQuery) should still
+        # be there alongside the attachments.
+        assert "## Task" in all_text, "bootstrap text payload should follow attachment blocks"

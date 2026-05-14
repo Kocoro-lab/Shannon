@@ -26,7 +26,12 @@ from .web_fetch import detect_blocked_reason, clean_markdown_noise, apply_extrac
 logger = logging.getLogger(__name__)
 
 # Constants
-MAX_LIMIT = 20  # Maximum pages to crawl
+# MAX_LIMIT is the hard cap on crawled pages per call. 20 was sized for 200K-
+# context defaults; raising to 100 to support "crawl this small docs site"
+# workloads on 1M-context models. DEFAULT_LIMIT stays 10 (still a sane default
+# for typical use) — callers must opt in to higher values via the explicit
+# `limit` parameter.
+MAX_LIMIT = 100
 DEFAULT_LIMIT = 10
 DEFAULT_MAX_LENGTH = 8000
 CRAWL_TIMEOUT = int(os.getenv("WEB_FETCH_CRAWL_TIMEOUT", "120"))
