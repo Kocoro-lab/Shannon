@@ -3560,12 +3560,17 @@ def _resolve_loop_cache_source(body: "AgentLoopStepRequest") -> str:
     return "agent_loop"
 
 
-def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, cache_source: str = "agent_loop") -> list:
+def _build_multi_turn_messages(
+    body: AgentLoopStepRequest,
+    system_prompt: str,
+    cache_source: str = "agent_loop",
+    raw_attachments: Optional[list] = None,
+) -> list:
     """Build append-only multi-turn messages for Anthropic prompt cache.
 
     Structure:
       system: role_prompt + protocol
-      user: bootstrap_static (Task + Team + OriginalQuery — immutable)
+      user: bootstrap_static (Task + Team + OriginalQuery + ATTACHMENTS — immutable)
       user: "Begin your task." (observation_0)
       assistant: replay_1 (frozen compact JSON from previous LLM response)
       user: observation_1 (frozen tool result)
@@ -3575,6 +3580,11 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
     Each assistant/user pair from history is FROZEN — identical bytes across
     iterations. Only the last user message changes. Anthropic's backward prefix
     matching finds the longest cached prefix → cache hit rate 60-80%.
+
+    Attachments (when present) ride in the bootstrap message as a list-of-blocks
+    payload, identical across iterations so they cache cleanly. Without this,
+    user attachments were silently dropped on every Sonnet+/multi-turn loop
+    step — they only made it through the legacy single-message path.
     """
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -3595,7 +3605,19 @@ def _build_multi_turn_messages(body: AgentLoopStepRequest, system_prompt: str, c
             else:
                 roster_lines.append(f"- {tm.agent_id}{role_tag}: \"{tm.task}\"")
         bootstrap_parts.append("## Your Team (shared session workspace)\n" + "\n".join(roster_lines))
-    messages.append({"role": "user", "content": "\n\n".join(bootstrap_parts)})
+    bootstrap_text = "\n\n".join(bootstrap_parts)
+    # Attachments live in bootstrap because they're immutable for a given
+    # session — putting them in the cached prefix avoids re-sending the same
+    # PDF every iteration. List-form is byte-stable across iterations: same
+    # set of attachments + same bootstrap text → identical bytes → cache hit.
+    att_blocks = _build_attachment_blocks(raw_attachments) if raw_attachments else []
+    if att_blocks:
+        messages.append({
+            "role": "user",
+            "content": att_blocks + [{"type": "text", "text": bootstrap_text}],
+        })
+    else:
+        messages.append({"role": "user", "content": bootstrap_text})
 
     # --- Observation 0 ---
     messages.append({"role": "user", "content": "Begin your task. Return ONLY valid JSON for each action."})
@@ -3711,7 +3733,12 @@ def build_agent_messages(body: AgentLoopStepRequest, raw_attachments=None) -> li
     use_multi_turn = has_replay and (body.model_tier in ("medium", "large") or is_non_haiku_override)
     if use_multi_turn:
         logger.info(f"AgentLoop: multi-turn mode (agent={body.agent_id}, tier={body.model_tier}, turns={len([t for t in body.history if t.assistant_replay])})")
-        return _build_multi_turn_messages(body, system_prompt, _resolve_loop_cache_source(body))
+        return _build_multi_turn_messages(
+            body,
+            system_prompt,
+            _resolve_loop_cache_source(body),
+            raw_attachments=raw_attachments,
+        )
 
     # --- Legacy: single user message (original structure) ---
     user_parts: list[str] = []

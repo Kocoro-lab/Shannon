@@ -183,3 +183,64 @@ class TestPromptCharBudget:
             f"After trim, total_chars={total:,} should be near "
             f"MAX_PROMPT_CHARS={MAX_PROMPT_CHARS:,} (pre-fix would stay near 1.5M)"
         )
+
+    def test_multi_turn_delivers_raw_attachments(self):
+        """`build_agent_messages` previously returned from the multi-turn
+        branch via `return _build_multi_turn_messages(...)` without passing
+        raw_attachments — so on every Sonnet+ agent loop step, user
+        attachments (text PDFs, images) were silently dropped. They only made
+        it through the legacy single-message path. The fix threads
+        raw_attachments through and parks them in the immutable bootstrap
+        message (list-of-blocks form) so they cache cleanly across iterations.
+        """
+        from llm_service.api.agent import build_agent_messages
+
+        raw_attachments = [
+            {
+                "source": "text",
+                "filename": "report.pdf",
+                "text_content": "Q3 revenue: $12M\n" + ("body text " * 50),
+            },
+            {
+                "source": "base64",
+                "filename": "chart.png",
+                "media_type": "image/png",
+                "data": "iVBORw0KGgo=",
+            },
+        ]
+        history = [
+            AgentLoopTurn(
+                iteration=1,
+                action="tool_call:web_search",
+                result="result text",
+                assistant_replay='{"action":"step"}',
+                observation_text="search result digest",
+            ),
+        ]
+        body = _make_request(history=history, iteration=2, model_tier="medium")
+        msgs = build_agent_messages(body, raw_attachments=raw_attachments)
+
+        # Bootstrap user message (index 1) should be list-form with our
+        # attachment blocks. Pre-fix: bootstrap was a plain string with no
+        # attachments anywhere in msgs.
+        bootstrap = msgs[1]["content"]
+        assert isinstance(bootstrap, list), (
+            f"bootstrap should be list-of-blocks when attachments present, got {type(bootstrap).__name__}"
+        )
+
+        # Look for the PDF text and the shannon_attachment marker
+        # (provider-neutral binary handle).
+        all_text = "".join(
+            b.get("text", "") for b in bootstrap if isinstance(b, dict) and b.get("type") == "text"
+        )
+        has_pdf_text = "Q3 revenue" in all_text
+        has_image_block = any(
+            isinstance(b, dict) and b.get("type") == "shannon_attachment" and b.get("filename") == "chart.png"
+            for b in bootstrap
+        )
+        assert has_pdf_text, "text attachment content missing from bootstrap"
+        assert has_image_block, "binary attachment block missing from bootstrap"
+
+        # And the original bootstrap text (Task / OriginalQuery) should still
+        # be there alongside the attachments.
+        assert "## Task" in all_text, "bootstrap text payload should follow attachment blocks"
