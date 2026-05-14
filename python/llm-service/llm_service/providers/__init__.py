@@ -397,7 +397,7 @@ class ProviderManager:
         if response.tool_calls:
             result["tool_calls"] = response.tool_calls
 
-        # New (2026-05+): ordered list of the assistant's content blocks,
+        # Ordered list of the assistant's content blocks,
         # preserving Anthropic's original block order including thinking /
         # redacted_thinking. Clients that understand this field MUST prefer
         # it over `output_text` + `tool_calls` when constructing the next
