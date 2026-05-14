@@ -154,3 +154,59 @@ def test_serialize_completion_omits_content_blocks_when_none():
     mgr = ProviderManager.__new__(ProviderManager)
     out = mgr._serialize_completion(resp)
     assert "content_blocks" not in out
+
+
+# ---------- Redis cache serialize/deserialize roundtrip ----------
+
+def test_redis_cache_roundtrip_preserves_content_blocks():
+    """A Redis cache hit must return content_blocks intact. Without this fix,
+    every cached response silently reverted to {output_text, tool_calls} only
+    and the thinking trajectory broke for any cached upstream call."""
+    from llm_provider.manager import _serialize_response, _deserialize_response
+
+    resp = CompletionResponse(
+        content="visible",
+        model="claude-sonnet-4-6",
+        provider="anthropic",
+        usage=TokenUsage(input_tokens=10, output_tokens=5, total_tokens=15, estimated_cost=0.0),
+        finish_reason="tool_use",
+        tool_calls=[{"id": "t1", "name": "f", "arguments": {}}],
+        content_blocks=[
+            {"type": "thinking", "thinking": "private reasoning", "signature": "sigA"},
+            {"type": "text", "text": "visible"},
+            {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+            {"type": "thinking", "thinking": "interleaved reasoning", "signature": "sigB"},
+        ],
+    )
+
+    serialized = _serialize_response(resp)
+    assert "content_blocks" in serialized, "serializer dropped content_blocks"
+    assert len(serialized["content_blocks"]) == 4
+    assert [b["type"] for b in serialized["content_blocks"]] == ["thinking", "text", "tool_use", "thinking"]
+    assert serialized["content_blocks"][0]["signature"] == "sigA"
+    assert serialized["content_blocks"][3]["signature"] == "sigB"
+
+    deserialized = _deserialize_response(serialized)
+    assert deserialized.content_blocks is not None
+    assert len(deserialized.content_blocks) == 4
+    assert deserialized.content_blocks[0]["thinking"] == "private reasoning"
+    assert deserialized.content_blocks[0]["signature"] == "sigA"
+    assert deserialized.cached is True  # cache marker still flips
+
+
+def test_redis_cache_legacy_response_no_content_blocks():
+    """Cache entries written before the new field exists must still deserialize
+    cleanly with content_blocks=None — no exception, no fabricated empty list."""
+    from llm_provider.manager import _deserialize_response
+
+    legacy_payload = {
+        "content": "hi",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "estimated_cost": 0.0},
+        "finish_reason": "stop",
+        # No content_blocks key — pre-2026-05 cache entry.
+    }
+    resp = _deserialize_response(legacy_payload)
+    assert resp.content_blocks is None
+    assert resp.content == "hi"

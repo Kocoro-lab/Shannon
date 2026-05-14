@@ -1175,16 +1175,25 @@ class AnthropicProvider(LLMProvider):
                 # After streaming completes, get the final message with usage and tool calls
                 final_message = await stream.get_final_message()
 
-                # Check for tool use in the final message. Parity with the
-                # non-stream complete() path: handle both SDK objects and dicts
-                # so Anthropic-compatible providers (e.g. MiniMax) don't drop
-                # tool calls that arrive as dict-shaped content blocks.
+                # Extract tool_use AND content_blocks (parity with non-stream
+                # complete(): both are required for the round-trip — function
+                # calls drive tool execution, content_blocks drive the verbatim
+                # assistant trajectory including thinking blocks the client
+                # echoes back on the next turn).
                 function_calls = []
+                content_blocks_out: List[Dict[str, Any]] = []
                 if final_message and hasattr(final_message, "content"):
                     for content_block in final_message.content:
                         block_type = getattr(content_block, "type", None) or (
                             content_block.get("type") if isinstance(content_block, dict) else None
                         )
+                        # Verbatim block copy — preserves order including
+                        # interleaved thinking. Unknown types return None and
+                        # are skipped (don't emit a malformed shape).
+                        bdict = _block_to_dict(content_block, block_type)
+                        if bdict is not None:
+                            content_blocks_out.append(bdict)
+                        # Legacy tool_calls list for backward-compat clients.
                         if block_type != "tool_use":
                             continue
                         block_id = getattr(content_block, "id", None) or (
@@ -1268,6 +1277,8 @@ class AnthropicProvider(LLMProvider):
                     if function_calls:
                         result["function_call"] = function_calls[0]
                         result["function_calls"] = function_calls
+                    if content_blocks_out:
+                        result["content_blocks"] = content_blocks_out
                     yield result
 
         except anthropic.APIError as e:
