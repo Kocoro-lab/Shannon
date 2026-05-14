@@ -1269,7 +1269,7 @@ def _serialize_response(resp: CompletionResponse) -> Dict[str, Any]:
     }
     if getattr(resp, "tool_calls", None):
         data["tool_calls"] = resp.tool_calls
-    # 2026-05+: persist the ordered content_blocks list so a Redis cache hit
+    # Persist the ordered content_blocks list so a Redis cache hit
     # round-trips thinking blocks back to the client. Without this, every
     # cached response silently reverts to the legacy {output_text, tool_calls}
     # shape and Anthropic's "preserve thinking across trajectory" contract

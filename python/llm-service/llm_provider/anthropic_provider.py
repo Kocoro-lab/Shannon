@@ -27,19 +27,21 @@ def _block_to_dict(content_block: Any, block_type: Optional[str]) -> Optional[Di
     """Serialize a single Anthropic content block into a verbatim dict.
 
     Strategy (most → least preferred):
-      1. SDK Pydantic shape: `model_dump(exclude_none=True)` — preserves any
-         forward-compat fields like new `redacted_thinking` subtypes without
+      1. SDK Pydantic shape: ``model_dump(exclude_none=True)`` — preserves any
+         forward-compat fields like new ``redacted_thinking`` subtypes without
          this serializer needing to know about them.
-      2. Generic `.to_dict()` — older Anthropic SDK / some compat providers.
+      2. Generic ``.to_dict()`` — older Anthropic SDK / some compat providers.
       3. Plain dict input (e.g., MiniMax compat path) — copy.
       4. Per-type fallback — manual field extraction for the four block types
-         we know exist (`text` / `thinking` / `redacted_thinking` / `tool_use`).
-         Unknown types are skipped with a warning rather than emitting a
-         shape that Anthropic won't accept on the round-trip.
+         we know exist (``text`` / ``thinking`` / ``redacted_thinking`` /
+         ``tool_use``). Unknown types return ``None`` (silently — see below)
+         rather than emitting a partial shape Anthropic would reject on the
+         round-trip.
 
-    Returns None if all strategies fail (caller should not append a None into
-    `content_blocks` — the legacy `content` / `tool_calls` fields still carry
-    enough info for older clients).
+    Returns ``None`` if all strategies fail. The caller skips ``None`` entries
+    (legacy ``content`` / ``tool_calls`` still carry enough info for older
+    clients); a ``logger.debug`` line is emitted so operators can grep for new
+    Anthropic block types we haven't taught the per-type fallback yet.
     """
     # 1. Pydantic SDK shape.
     model_dump = getattr(content_block, "model_dump", None)
@@ -48,8 +50,8 @@ def _block_to_dict(content_block: Any, block_type: Optional[str]) -> Optional[Di
             d = model_dump(exclude_none=True)
             if isinstance(d, dict):
                 return d
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("model_dump failed on Anthropic block (type=%s): %s", block_type, e)
 
     # 2. Generic .to_dict() on older SDK shapes.
     to_dict = getattr(content_block, "to_dict", None)
@@ -58,8 +60,8 @@ def _block_to_dict(content_block: Any, block_type: Optional[str]) -> Optional[Di
             d = to_dict()
             if isinstance(d, dict):
                 return d
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as e:  # noqa: BLE001
+            logger.debug("to_dict failed on Anthropic block (type=%s): %s", block_type, e)
 
     # 3. Plain dict input (MiniMax, etc.). Make a shallow copy so callers
     # can't mutate the upstream object via our returned dict.
@@ -85,7 +87,10 @@ def _block_to_dict(content_block: Any, block_type: Optional[str]) -> Optional[Di
             "input": getattr(content_block, "input", {}) or {},
         }
 
-    # Unknown / unhandled type: don't emit a partial / malformed shape.
+    # Unknown / unhandled type: don't emit a partial / malformed shape. Log so
+    # the day Anthropic ships a new block type we have a breadcrumb pointing at
+    # this branch (vs. silent drop forever).
+    logger.debug("Unhandled Anthropic content block type: %s", block_type)
     return None
 
 logger = logging.getLogger(__name__)

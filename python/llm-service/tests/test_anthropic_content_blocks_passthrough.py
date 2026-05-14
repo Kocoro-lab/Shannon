@@ -12,6 +12,8 @@ See plan 2026-05-14-thinking-blocks-cc-alignment.md Phase A.
 import os
 from types import SimpleNamespace
 
+import pytest
+
 # Set dummy key before import.
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-for-unit-tests")
 
@@ -210,3 +212,100 @@ def test_redis_cache_legacy_response_no_content_blocks():
     resp = _deserialize_response(legacy_payload)
     assert resp.content_blocks is None
     assert resp.content == "hi"
+
+
+# ---------- Streaming path parity ----------
+
+@pytest.mark.asyncio
+async def test_stream_complete_yields_content_blocks():
+    """stream_complete's final result dict must carry the ordered content_blocks
+    list (mirror of non-stream complete()). Without this, streaming clients
+    (TUI, future SSE consumers) lose thinking blocks while non-stream clients
+    keep them — same asymmetric bug the Cloud-side reviewer flagged. The
+    streaming SSE done event in completions.py then forwards this key to the
+    wire."""
+    from unittest.mock import MagicMock
+    from llm_provider.anthropic_provider import AnthropicProvider
+
+    config = {
+        "name": "anthropic",
+        "api_key": "test-key",
+        "models": {
+            "claude-sonnet-4-6": {
+                "model_id": "claude-sonnet-4-6",
+                "tier": "medium",
+                "context_window": 200000,
+                "max_tokens": 8192,
+                "input_price_per_1k": 0.003,
+                "output_price_per_1k": 0.015,
+            },
+        },
+    }
+
+    # Build a final message with interleaved thinking + tool_use blocks.
+    final_msg = SimpleNamespace(
+        content=[
+            SimpleNamespace(type="thinking", thinking="reasoning step 1", signature="sigA"),
+            SimpleNamespace(type="text", text="visible reply"),
+            SimpleNamespace(type="tool_use", id="t1", name="f", input={"x": 1}),
+            SimpleNamespace(type="thinking", thinking="reasoning step 2 (interleaved)", signature="sigB"),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_input_tokens=0,
+            cache_creation_input_tokens=0,
+            cache_creation=None,
+        ),
+        model="claude-sonnet-4-6",
+        stop_reason="tool_use",
+        id="msg_test",
+    )
+
+    class FakeStream:
+        text_stream = None
+
+        def __init__(self):
+            self.text_stream = self._text_iter()
+
+        async def _text_iter(self):
+            yield "visible reply"
+
+        async def get_final_message(self):
+            return final_msg
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+    provider = AnthropicProvider(config)
+    provider.client = MagicMock()
+    provider.client.messages.stream = MagicMock(return_value=FakeStream())
+
+    from llm_provider.base import CompletionRequest
+
+    request = CompletionRequest(
+        messages=[{"role": "user", "content": "hi"}],
+        model="claude-sonnet-4-6",
+    )
+
+    chunks = []
+    async for chunk in provider.stream_complete(request):
+        chunks.append(chunk)
+
+    # The final dict carries content_blocks in original order.
+    final = next(c for c in reversed(chunks) if isinstance(c, dict))
+    assert "content_blocks" in final, f"streaming final dict missing content_blocks; keys={list(final)}"
+    blocks = final["content_blocks"]
+    assert len(blocks) == 4, f"expected 4 blocks, got {len(blocks)}: {blocks}"
+    types_in_order = [b["type"] for b in blocks]
+    assert types_in_order == ["thinking", "text", "tool_use", "thinking"], (
+        f"order broken: {types_in_order} (Anthropic requires verbatim order)"
+    )
+    # Each thinking block keeps its own signature.
+    assert blocks[0]["signature"] == "sigA"
+    assert blocks[3]["signature"] == "sigB"
+    # Legacy fields still populated for backward compat.
+    assert final.get("function_call") == {"id": "t1", "name": "f", "arguments": {"x": 1}}

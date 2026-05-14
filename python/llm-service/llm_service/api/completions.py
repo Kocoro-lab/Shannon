@@ -200,7 +200,7 @@ async def _stream_completion(request, body, providers, tier):
                 done_event["function_call"] = final_meta["function_call"]
             if final_meta.get("function_calls"):
                 done_event["tool_calls"] = final_meta["function_calls"]
-            # 2026-05+: forward the verbatim ordered content_blocks list so
+            # Forward the verbatim ordered content_blocks list so
             # streaming clients (TUI, future SSE consumers) round-trip thinking
             # blocks the same way non-stream complete() callers do. ShanClaw's
             # CompleteStream decodes the done event into CompletionResponse via
