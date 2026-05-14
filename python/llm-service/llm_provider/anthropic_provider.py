@@ -22,6 +22,72 @@ from .base import (
     _ensure_tool_id,
 )
 
+
+def _block_to_dict(content_block: Any, block_type: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Serialize a single Anthropic content block into a verbatim dict.
+
+    Strategy (most → least preferred):
+      1. SDK Pydantic shape: `model_dump(exclude_none=True)` — preserves any
+         forward-compat fields like new `redacted_thinking` subtypes without
+         this serializer needing to know about them.
+      2. Generic `.to_dict()` — older Anthropic SDK / some compat providers.
+      3. Plain dict input (e.g., MiniMax compat path) — copy.
+      4. Per-type fallback — manual field extraction for the four block types
+         we know exist (`text` / `thinking` / `redacted_thinking` / `tool_use`).
+         Unknown types are skipped with a warning rather than emitting a
+         shape that Anthropic won't accept on the round-trip.
+
+    Returns None if all strategies fail (caller should not append a None into
+    `content_blocks` — the legacy `content` / `tool_calls` fields still carry
+    enough info for older clients).
+    """
+    # 1. Pydantic SDK shape.
+    model_dump = getattr(content_block, "model_dump", None)
+    if callable(model_dump):
+        try:
+            d = model_dump(exclude_none=True)
+            if isinstance(d, dict):
+                return d
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 2. Generic .to_dict() on older SDK shapes.
+    to_dict = getattr(content_block, "to_dict", None)
+    if callable(to_dict):
+        try:
+            d = to_dict()
+            if isinstance(d, dict):
+                return d
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 3. Plain dict input (MiniMax, etc.). Make a shallow copy so callers
+    # can't mutate the upstream object via our returned dict.
+    if isinstance(content_block, dict):
+        return dict(content_block)
+
+    # 4. Per-type fallback for the four known shapes.
+    if block_type == "text":
+        return {"type": "text", "text": getattr(content_block, "text", "") or ""}
+    if block_type == "thinking":
+        return {
+            "type": "thinking",
+            "thinking": getattr(content_block, "thinking", "") or "",
+            "signature": getattr(content_block, "signature", "") or "",
+        }
+    if block_type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": getattr(content_block, "data", "") or ""}
+    if block_type == "tool_use":
+        return {
+            "type": "tool_use",
+            "id": getattr(content_block, "id", "") or "",
+            "name": getattr(content_block, "name", "") or "",
+            "input": getattr(content_block, "input", {}) or {},
+        }
+
+    # Unknown / unhandled type: don't emit a partial / malformed shape.
+    return None
+
 logger = logging.getLogger(__name__)
 
 # Optional prompt-cache metrics (per-source observability).
@@ -979,14 +1045,28 @@ class AnthropicProvider(LLMProvider):
         # Extract response content
         content = ""
         function_calls = []
+        # Verbatim ordered copy of the assistant message's content blocks.
+        # Preserved in original index order so Anthropic's "thinking blocks
+        # must be unmodified across the assistant trajectory" requirement
+        # is satisfied — including interleaved thinking that appears between
+        # consecutive tool_use blocks.
+        content_blocks_out: List[Dict[str, Any]] = []
 
         for content_block in response.content:
             # Handle both Anthropic SDK objects (.type attr) and plain dicts (MiniMax compat)
             block_type = getattr(content_block, "type", None) or (content_block.get("type") if isinstance(content_block, dict) else None)
+
+            # Verbatim copy: try the SDK's own serializer first (preserves
+            # forward-compat fields like new "redacted_thinking" subtypes
+            # without us needing to know about them); fall back to per-type
+            # extraction only when no native serializer is available.
+            block_dict = _block_to_dict(content_block, block_type)
+            if block_dict is not None:
+                content_blocks_out.append(block_dict)
+
+            # Populate legacy flat fields alongside for older clients.
             if block_type == "text":
                 content = getattr(content_block, "text", None) or (content_block.get("text", "") if isinstance(content_block, dict) else "")
-            elif block_type == "thinking":
-                pass  # Consumed but not relayed to client in v1
             elif block_type == "tool_use":
                 block_id = getattr(content_block, "id", None) or (content_block.get("id") if isinstance(content_block, dict) else None)
                 block_name = getattr(content_block, "name", None) or (content_block.get("name") if isinstance(content_block, dict) else None)
@@ -1065,6 +1145,7 @@ class AnthropicProvider(LLMProvider):
             finish_reason=response.stop_reason or "stop",
             function_call=function_call,
             tool_calls=function_calls if function_calls else None,
+            content_blocks=content_blocks_out or None,
             request_id=response.id,
             latency_ms=latency_ms,
         )

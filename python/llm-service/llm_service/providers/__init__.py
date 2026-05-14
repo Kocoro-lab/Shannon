@@ -397,6 +397,17 @@ class ProviderManager:
         if response.tool_calls:
             result["tool_calls"] = response.tool_calls
 
+        # New (2026-05+): ordered list of the assistant's content blocks,
+        # preserving Anthropic's original block order including thinking /
+        # redacted_thinking. Clients that understand this field MUST prefer
+        # it over `output_text` + `tool_calls` when constructing the next
+        # assistant turn — only `content_blocks` carries the thinking blocks
+        # required for the trajectory roundtrip. Omitted for providers /
+        # paths that don't emit it (e.g. when the SDK shape isn't supported)
+        # so older clients keep working untouched.
+        if response.content_blocks:
+            result["content_blocks"] = response.content_blocks
+
         # Add effective_max_completion if available (for continuation trigger logic)
         if response.effective_max_completion is not None:
             result["effective_max_completion"] = response.effective_max_completion
