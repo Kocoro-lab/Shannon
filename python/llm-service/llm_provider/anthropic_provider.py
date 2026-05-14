@@ -22,6 +22,77 @@ from .base import (
     _ensure_tool_id,
 )
 
+
+def _block_to_dict(content_block: Any, block_type: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Serialize a single Anthropic content block into a verbatim dict.
+
+    Strategy (most → least preferred):
+      1. SDK Pydantic shape: ``model_dump(exclude_none=True)`` — preserves any
+         forward-compat fields like new ``redacted_thinking`` subtypes without
+         this serializer needing to know about them.
+      2. Generic ``.to_dict()`` — older Anthropic SDK / some compat providers.
+      3. Plain dict input (e.g., MiniMax compat path) — copy.
+      4. Per-type fallback — manual field extraction for the four block types
+         we know exist (``text`` / ``thinking`` / ``redacted_thinking`` /
+         ``tool_use``). Unknown types return ``None`` (silently — see below)
+         rather than emitting a partial shape Anthropic would reject on the
+         round-trip.
+
+    Returns ``None`` if all strategies fail. The caller skips ``None`` entries
+    (legacy ``content`` / ``tool_calls`` still carry enough info for older
+    clients); a ``logger.debug`` line is emitted so operators can grep for new
+    Anthropic block types we haven't taught the per-type fallback yet.
+    """
+    # 1. Pydantic SDK shape.
+    model_dump = getattr(content_block, "model_dump", None)
+    if callable(model_dump):
+        try:
+            d = model_dump(exclude_none=True)
+            if isinstance(d, dict):
+                return d
+        except Exception as e:  # noqa: BLE001
+            logger.debug("model_dump failed on Anthropic block (type=%s): %s", block_type, e)
+
+    # 2. Generic .to_dict() on older SDK shapes.
+    to_dict = getattr(content_block, "to_dict", None)
+    if callable(to_dict):
+        try:
+            d = to_dict()
+            if isinstance(d, dict):
+                return d
+        except Exception as e:  # noqa: BLE001
+            logger.debug("to_dict failed on Anthropic block (type=%s): %s", block_type, e)
+
+    # 3. Plain dict input (MiniMax, etc.). Make a shallow copy so callers
+    # can't mutate the upstream object via our returned dict.
+    if isinstance(content_block, dict):
+        return dict(content_block)
+
+    # 4. Per-type fallback for the four known shapes.
+    if block_type == "text":
+        return {"type": "text", "text": getattr(content_block, "text", "") or ""}
+    if block_type == "thinking":
+        return {
+            "type": "thinking",
+            "thinking": getattr(content_block, "thinking", "") or "",
+            "signature": getattr(content_block, "signature", "") or "",
+        }
+    if block_type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": getattr(content_block, "data", "") or ""}
+    if block_type == "tool_use":
+        return {
+            "type": "tool_use",
+            "id": getattr(content_block, "id", "") or "",
+            "name": getattr(content_block, "name", "") or "",
+            "input": getattr(content_block, "input", {}) or {},
+        }
+
+    # Unknown / unhandled type: don't emit a partial / malformed shape. Log so
+    # the day Anthropic ships a new block type we have a breadcrumb pointing at
+    # this branch (vs. silent drop forever).
+    logger.debug("Unhandled Anthropic content block type: %s", block_type)
+    return None
+
 logger = logging.getLogger(__name__)
 
 # Optional prompt-cache metrics (per-source observability).
@@ -979,14 +1050,28 @@ class AnthropicProvider(LLMProvider):
         # Extract response content
         content = ""
         function_calls = []
+        # Verbatim ordered copy of the assistant message's content blocks.
+        # Preserved in original index order so Anthropic's "thinking blocks
+        # must be unmodified across the assistant trajectory" requirement
+        # is satisfied — including interleaved thinking that appears between
+        # consecutive tool_use blocks.
+        content_blocks_out: List[Dict[str, Any]] = []
 
         for content_block in response.content:
             # Handle both Anthropic SDK objects (.type attr) and plain dicts (MiniMax compat)
             block_type = getattr(content_block, "type", None) or (content_block.get("type") if isinstance(content_block, dict) else None)
+
+            # Verbatim copy: try the SDK's own serializer first (preserves
+            # forward-compat fields like new "redacted_thinking" subtypes
+            # without us needing to know about them); fall back to per-type
+            # extraction only when no native serializer is available.
+            block_dict = _block_to_dict(content_block, block_type)
+            if block_dict is not None:
+                content_blocks_out.append(block_dict)
+
+            # Populate legacy flat fields alongside for older clients.
             if block_type == "text":
                 content = getattr(content_block, "text", None) or (content_block.get("text", "") if isinstance(content_block, dict) else "")
-            elif block_type == "thinking":
-                pass  # Consumed but not relayed to client in v1
             elif block_type == "tool_use":
                 block_id = getattr(content_block, "id", None) or (content_block.get("id") if isinstance(content_block, dict) else None)
                 block_name = getattr(content_block, "name", None) or (content_block.get("name") if isinstance(content_block, dict) else None)
@@ -1065,6 +1150,7 @@ class AnthropicProvider(LLMProvider):
             finish_reason=response.stop_reason or "stop",
             function_call=function_call,
             tool_calls=function_calls if function_calls else None,
+            content_blocks=content_blocks_out or None,
             request_id=response.id,
             latency_ms=latency_ms,
         )
@@ -1094,16 +1180,25 @@ class AnthropicProvider(LLMProvider):
                 # After streaming completes, get the final message with usage and tool calls
                 final_message = await stream.get_final_message()
 
-                # Check for tool use in the final message. Parity with the
-                # non-stream complete() path: handle both SDK objects and dicts
-                # so Anthropic-compatible providers (e.g. MiniMax) don't drop
-                # tool calls that arrive as dict-shaped content blocks.
+                # Extract tool_use AND content_blocks (parity with non-stream
+                # complete(): both are required for the round-trip — function
+                # calls drive tool execution, content_blocks drive the verbatim
+                # assistant trajectory including thinking blocks the client
+                # echoes back on the next turn).
                 function_calls = []
+                content_blocks_out: List[Dict[str, Any]] = []
                 if final_message and hasattr(final_message, "content"):
                     for content_block in final_message.content:
                         block_type = getattr(content_block, "type", None) or (
                             content_block.get("type") if isinstance(content_block, dict) else None
                         )
+                        # Verbatim block copy — preserves order including
+                        # interleaved thinking. Unknown types return None and
+                        # are skipped (don't emit a malformed shape).
+                        bdict = _block_to_dict(content_block, block_type)
+                        if bdict is not None:
+                            content_blocks_out.append(bdict)
+                        # Legacy tool_calls list for backward-compat clients.
                         if block_type != "tool_use":
                             continue
                         block_id = getattr(content_block, "id", None) or (
@@ -1187,6 +1282,8 @@ class AnthropicProvider(LLMProvider):
                     if function_calls:
                         result["function_call"] = function_calls[0]
                         result["function_calls"] = function_calls
+                    if content_blocks_out:
+                        result["content_blocks"] = content_blocks_out
                     yield result
 
         except anthropic.APIError as e:

@@ -200,6 +200,22 @@ class CompletionResponse:
     function_call: Optional[Dict] = None
     tool_calls: Optional[List[Dict]] = None
 
+    # Verbatim ordered copy of the assistant message's content blocks. Each
+    # entry is the raw dict shape Anthropic returned (or an Anthropic-shape
+    # equivalent), preserving the original block order:
+    #   {"type": "thinking", "thinking": "<text>", "signature": "<base64>"}
+    #   {"type": "redacted_thinking", "data": "<opaque>"}
+    #   {"type": "text", "text": "<text>"}
+    #   {"type": "tool_use", "id": "<id>", "name": "<name>", "input": {...}}
+    #
+    # Required for Anthropic's contract: thinking blocks must be preserved
+    # unmodified across the assistant trajectory (assistant → tool_result →
+    # next assistant). Interleaved thinking can emit thinking blocks between
+    # consecutive tool_use blocks, so callers must not reorder / partition.
+    # `content`, `function_call`, `tool_calls` remain populated for backward
+    # compatibility with clients that pre-date this wire field.
+    content_blocks: Optional[List[Dict[str, Any]]] = None
+
     # Metadata
     request_id: Optional[str] = None  # Also used as response_id for OpenAI Responses API chaining
     created_at: datetime = None

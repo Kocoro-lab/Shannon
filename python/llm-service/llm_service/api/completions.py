@@ -200,6 +200,13 @@ async def _stream_completion(request, body, providers, tier):
                 done_event["function_call"] = final_meta["function_call"]
             if final_meta.get("function_calls"):
                 done_event["tool_calls"] = final_meta["function_calls"]
+            # Forward the verbatim ordered content_blocks list so
+            # streaming clients (TUI, future SSE consumers) round-trip thinking
+            # blocks the same way non-stream complete() callers do. ShanClaw's
+            # CompleteStream decodes the done event into CompletionResponse via
+            # the existing json.Unmarshal — the new field auto-populates.
+            if final_meta.get("content_blocks"):
+                done_event["content_blocks"] = final_meta["content_blocks"]
 
         yield f"data: {json.dumps(done_event)}\n\n"
         yield "data: [DONE]\n\n"
