@@ -410,3 +410,123 @@ MIT License — Use it anywhere, modify anything. See [LICENSE](LICENSE).
   <a href="https://github.com/Kocoro-lab/Shannon">GitHub</a> ·
   <a href="https://docs.shannon.run">Docs</a>
 </p>
+---
+
+## ❓ FAQ
+
+### What is Shannon?
+
+Shannon is a **production-ready AI agent framework** built for reliability. It provides multi-strategy orchestration, swarm collaboration, token budget control, human approval workflows, and time-travel debugging — all designed for real-world deployment.
+
+### Why use Shannon instead of LangChain or CrewAI?
+
+| Feature | Shannon | LangChain | CrewAI |
+|---------|---------|-----------|--------|
+| **Time-travel debugging** | ✅ Step-by-step replay | ❌ | ❌ |
+| **Token budgets** | ✅ Hard limits + fallback | ⚠️ Manual | ⚠️ Manual |
+| **Observability** | ✅ Prometheus + OpenTelemetry | ⚠️ Add-ons | ⚠️ Limited |
+| **Security sandbox** | ✅ WASI + OPA policies | ❌ | ❌ |
+| **Multi-tenant isolation** | ✅ Built-in | ❌ | ❌ |
+
+Shannon focuses on **production reliability** — preventing silent failures, controlling costs, and providing full visibility.
+
+### What LLM providers are supported?
+
+- **Native**: OpenAI (GPT-5, GPT-4o), Anthropic (Claude)
+- **Via OpenAI-compatible**: Google (Gemini), DeepSeek, xAI (Grok)
+- **Local**: Ollama, LM Studio
+- **Gateway**: OpenRouter, LiteLLM
+
+### How does time-travel debugging work?
+
+Shannon uses **Temporal workflows** to record every execution step. When an agent fails:
+1. Replay execution from any point
+2. Inspect intermediate states
+3. Debug step-by-step without re-running
+4. Identify exact failure point
+
+This eliminates the "agents fail silently" problem.
+
+### How does token budget control work?
+
+Shannon enforces **hard token limits** per task and agent:
+- Set maximum tokens per request
+- Automatic model fallback when limits approached
+- Cost tracking per workflow
+- Budget alerts and throttling
+
+This prevents runaway costs from infinite loops or verbose outputs.
+
+### What execution strategies are available?
+
+Shannon supports multiple orchestration patterns:
+- **Sequential**: Step-by-step task execution
+- **Parallel**: Concurrent agent operations
+- **Swarm**: Collaborative multi-agent problem-solving
+- **Hierarchical**: Top-down agent delegation
+
+### How does WASI sandboxing work?
+
+Code execution runs in **WebAssembly System Interface (WASI)** sandbox:
+- Isolated execution environment
+- OPA (Open Policy Agent) policy enforcement
+- No direct filesystem access
+- Multi-tenant isolation
+
+This ensures security even when agents execute arbitrary code.
+
+### What observability features are included?
+
+- **Metrics**: Prometheus for performance tracking
+- **Tracing**: OpenTelemetry for distributed debugging
+- **Events**: Real-time event streaming via SSE
+- **Logs**: Structured logging with context
+
+All built-in, no external tools required.
+
+### How do I install Shannon?
+
+**One-command install**:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/main/scripts/install.sh | bash
+```
+
+Or use Docker:
+```bash
+docker pull waylandzhang/shannon
+docker-compose up -d
+```
+
+### What API keys are required?
+
+**Required** (choose one):
+- `OPENAI_API_KEY` for OpenAI models
+- `ANTHROPIC_API_KEY` for Claude models
+- Any OpenAI-compatible endpoint
+
+**Optional**:
+- `SERPAPI_API_KEY` for web search
+- `FIRECRAWL_API_KEY` for web fetching
+
+### What platforms are supported?
+
+- **OS**: macOS, Linux, Windows, Rocky Linux, Ubuntu
+- **Architecture**: x86_64, ARM64
+- **Deployment**: Docker, Kubernetes, standalone binary
+
+Platform-specific guides available in `docs/`.
+
+### Is Shannon open-source?
+
+Yes. Shannon is **MIT licensed** — free to use, modify, and distribute. See [LICENSE](LICENSE).
+
+### How can I get help?
+
+- **Docs**: [docs.shannon.run](https://docs.shannon.run)
+- **Live Demo**: [shannon.run](https://shannon.run)
+- **GitHub Issues**: Report bugs or request features
+- **Roadmap**: See [ROADMAP.md](ROADMAP.md)
+
+---
+
+**Stop debugging AI failures. Start shipping reliable agents.** 🚀
