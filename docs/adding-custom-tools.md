@@ -70,11 +70,11 @@ mcp_tools:
 ### Step 2: Configure Domain Access
 **Development (permissive):**
 Add to `.env`:
-```
+```bash
 MCP_ALLOWED_DOMAINS=*  # Wildcard - allows all domains
 ```
 **Production (recommended):**
-```
+```bash
 MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,api.weather.com,api.example.com
 ```
 Or set in `deploy/compose/docker-compose.yml`:
@@ -87,7 +87,7 @@ services:
 
 ### Step 3: Add API Keys
 Add your API key to `.env`:
-```
+```bash
 # MCP Tool API Keys
 WEATHER_API_KEY=your_api_key_here
 STOCK_API_KEY=your_stock_key_here
@@ -298,7 +298,7 @@ custom_api:
 
 ### Step 2: Configure Environment
 Add to `.env`:
-```
+```bash
 # OpenAPI Security
 OPENAPI_ALLOWED_DOMAINS=*                # Comma-separated or * for dev
 OPENAPI_MAX_SPEC_SIZE=5242880            # 5MB default
@@ -404,95 +404,97 @@ from typing import Any, Dict, List, Optional
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
 
 class MyCustomTool(Tool):
-  """
-  Brief description of what this tool does.
-  """
-  def _get_metadata(self) -> ToolMetadata:
-    """Define tool metadata."""
-    return ToolMetadata(
-      name="my_custom_tool",
-      version="1.0.0",
-      description="Clear description for LLM to understand when/how to use this tool",
-      category="custom",  # search, data, analytics, code, file, custom
-      author="Your Name",
-      requires_auth=False,
-      timeout_seconds=30,
-      memory_limit_mb=128,
-      sandboxed=False,
-      session_aware=False,  # Set True if tool needs session state
-      dangerous=False,      # Set True for file writes, code execution
-      cost_per_use=0.001,   # USD per invocation
-      rate_limit=60,        # Requests per minute (enforced by base class)
-    )
-
-  def _get_parameters(self) -> List[ToolParameter]:
-    """Define tool parameters with validation."""
-    return [
-      ToolParameter(
-        name="required_param",
-        type=ToolParameterType.STRING,
-        description="Description shown to LLM",
-        required=True,
-      ),
-      ToolParameter(
-        name="optional_number",
-        type=ToolParameterType.INTEGER,
-        description="An optional number parameter",
-        required=False,
-        default=10,
-        min_value=1,
-        max_value=100,
-      ),
-      ToolParameter(
-        name="choice_param",
-        type=ToolParameterType.STRING,
-        description="Parameter with predefined choices",
-        required=False,
-        enum=["option1", "option2", "option3"],
-      ),
-    ]
-
-  async def _execute_impl(
-    self,
-    session_context: Optional[Dict] = None,
-    **kwargs
-  ) -> ToolResult:
     """
-    Execute the tool logic.
-
-    Args:
-    session_context: Session data if session_aware=True
-    **kwargs: Tool parameters (validated automatically)
-
-    Returns:
-    ToolResult with success/error status
+    Brief description of what this tool does.
     """
-    try:
-      # Extract parameters (already validated by base class)
-      required_param = kwargs.get("required_param")
-      optional_number = kwargs.get("optional_number", 10)
-      choice_param = kwargs.get("choice_param")
 
-      # Your tool logic here
-      result = self._do_work(required_param, optional_number, choice_param)
+    def _get_metadata(self) -> ToolMetadata:
+        """Define tool metadata."""
+        return ToolMetadata(
+            name="my_custom_tool",
+            version="1.0.0",
+            description="Clear description for LLM to understand when/how to use this tool",
+            category="custom",  # search, data, analytics, code, file, custom
+            author="Your Name",
+            requires_auth=False,
+            timeout_seconds=30,
+            memory_limit_mb=128,
+            sandboxed=False,
+            session_aware=False,  # Set True if tool needs session state
+            dangerous=False,      # Set True for file writes, code execution
+            cost_per_use=0.001,   # USD per invocation
+            rate_limit=60,        # Requests per minute (enforced by base class)
+        )
 
-      return ToolResult(
-        success=True,
-        output=result,
-        metadata={"processed": True},
-        execution_time_ms=50,
-      )
-    except Exception as e:
-      return ToolResult(
-        success=False,
-        output=None,
-        error=f"Tool execution failed: {str(e)}"
-      )
+    def _get_parameters(self) -> List[ToolParameter]:
+        """Define tool parameters with validation."""
+        return [
+            ToolParameter(
+                name="required_param",
+                type=ToolParameterType.STRING,
+                description="Description shown to LLM",
+                required=True,
+            ),
+            ToolParameter(
+                name="optional_number",
+                type=ToolParameterType.INTEGER,
+                description="An optional number parameter",
+                required=False,
+                default=10,
+                min_value=1,
+                max_value=100,
+            ),
+            ToolParameter(
+                name="choice_param",
+                type=ToolParameterType.STRING,
+                description="Parameter with predefined choices",
+                required=False,
+                enum=["option1", "option2", "option3"],
+            ),
+        ]
 
-  def _do_work(self, param1, param2, param3):
-    """Your actual implementation."""
-    # Example: Database query, API call, computation
-    return {"result": "success", "data": [1, 2, 3]}
+    async def _execute_impl(
+        self,
+        session_context: Optional[Dict] = None,
+        **kwargs
+    ) -> ToolResult:
+        """
+        Execute the tool logic.
+
+        Args:
+            session_context: Session data if session_aware=True
+            **kwargs: Tool parameters (validated automatically)
+
+        Returns:
+            ToolResult with success/error status
+        """
+        try:
+            # Extract parameters (already validated by base class)
+            required_param = kwargs.get("required_param")
+            optional_number = kwargs.get("optional_number", 10)
+            choice_param = kwargs.get("choice_param")
+
+            # Your tool logic here
+            result = self._do_work(required_param, optional_number, choice_param)
+
+            return ToolResult(
+                success=True,
+                output=result,
+                metadata={"processed": True},
+                execution_time_ms=50,
+            )
+
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output=None,
+                error=f"Tool execution failed: {str(e)}"
+            )
+
+    def _do_work(self, param1, param2, param3):
+        """Your actual implementation."""
+        # Example: Database query, API call, computation
+        return {"result": "success", "data": [1, 2, 3]}
 ```
 
 ### Step 2: Register Tool
@@ -504,23 +506,23 @@ from ..tools.builtin.my_custom_tool import MyCustomTool
 # Add to registration list in startup_event()
 @router.on_event("startup")
 async def startup_event():
-  registry = get_registry()
+    registry = get_registry()
 
-  tools_to_register = [
-    WebSearchTool,
-    CalculatorTool,
-    FileReadTool,
-    FileWriteTool,
-    PythonWasiExecutorTool,
-    MyCustomTool,  # Add your tool here
-  ]
+    tools_to_register = [
+        WebSearchTool,
+        CalculatorTool,
+        FileReadTool,
+        FileWriteTool,
+        PythonWasiExecutorTool,
+        MyCustomTool,  # Add your tool here
+    ]
 
-  for tool_class in tools_to_register:
-    try:
-      registry.register(tool_class)
-      logger.info(f"Registered tool: {tool_class.__name__}")
-    except Exception as e:
-      logger.error(f"Failed to register {tool_class.__name__}: {e}")
+    for tool_class in tools_to_register:
+        try:
+            registry.register(tool_class)
+            logger.info(f"Registered tool: {tool_class.__name__}")
+        except Exception as e:
+            logger.error(f"Failed to register {tool_class.__name__}: {e}")
 ```
 
 ### Step 3: Restart Service
@@ -553,26 +555,26 @@ curl -X POST http://localhost:8000/tools/execute \
 For tools that maintain state across executions:
 ```python
 class SessionAwareTool(Tool):
-  def _get_metadata(self) -> ToolMetadata:
-    return ToolMetadata(
-      name="session_tool",
-      session_aware=True,  # Enable session context
-      ...
-    )
+    def _get_metadata(self) -> ToolMetadata:
+        return ToolMetadata(
+            name="session_tool",
+            session_aware=True,  # Enable session context
+            ...
+        )
 
-  async def _execute_impl(
-    self,
-    session_context: Optional[Dict] = None,
-    **kwargs
-  ) -> ToolResult:
-    # Access session data
-    session_id = session_context.get("session_id") if session_context else None
-    user_id = session_context.get("user_id") if session_context else None
+    async def _execute_impl(
+        self,
+        session_context: Optional[Dict] = None,
+        **kwargs
+    ) -> ToolResult:
+        # Access session data
+        session_id = session_context.get("session_id") if session_context else None
+        user_id = session_context.get("user_id") if session_context else None
 
-    # Store/retrieve session-specific data
-    # Example: Redis, database, in-memory cache
+        # Store/retrieve session-specific data
+        # Example: Redis, database, in-memory cache
 
-    return ToolResult(success=True, output={"session": session_id})
+        return ToolResult(success=True, output={"session": session_id})
 ```
 
 ## Configuration Reference
@@ -630,7 +632,7 @@ openapi_tools:
 
 ### Environment Variables
 **MCP Configuration:**
-```
+```bash
 # Domain Security
 MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,api.example.com  # Or * for dev
 
@@ -647,7 +649,7 @@ MCP_TIMEOUT_SECONDS=10               # Request timeout
 MCP_REGISTER_TOKEN=your_secret       # API registration protection
 ```
 **OpenAPI Configuration:**
-```
+```bash
 # Domain Security
 OPENAPI_ALLOWED_DOMAINS=*            # Comma-separated or * for dev
 OPENAPI_MAX_SPEC_SIZE=5242880        # 5MB spec size limit
@@ -657,7 +659,7 @@ OPENAPI_FETCH_TIMEOUT=30             # Spec fetch timeout
 OPENAPI_RETRIES=2                    # Retry attempts (default: 2). Set higher if needed
 ```
 **Tool-Specific API Keys:**
-```
+```bash
 # Add your tool API keys here
 WEATHER_API_KEY=your_key
 STOCK_API_KEY=your_key
@@ -880,18 +882,18 @@ ToolMetadata(
 ## Security Best Practices
 ### Domain Allowlisting
 **Development:**
-```
+```bash
 # Permissive for testing
 MCP_ALLOWED_DOMAINS=*
 OPENAPI_ALLOWED_DOMAINS=*
 ```
 **Staging:**
-```
+```bash
 # Specific domains + localhost
 MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,staging-api.example.com
 ```
 **Production:**
-```
+```bash
 # Explicit allowlist only
 MCP_ALLOWED_DOMAINS=api.example.com,api.partner.com
 OPENAPI_ALLOWED_DOMAINS=api.github.com,api.openweathermap.org
@@ -914,7 +916,7 @@ headers:
   X-API-Key: "${WEATHER_API_KEY}"
 ```
 **Store in `.env` (not tracked by git):**
-```
+```bash
 # .env
 WEATHER_API_KEY=sk-real-key-here
 STOCK_API_KEY=your-stock-key
@@ -935,14 +937,14 @@ openapi_tools:
     rate_limit: 60  # GitHub's actual limit
 ```
 **Global limits:**
-```
+```bash
 # .env
 MCP_RATE_LIMIT_DEFAULT=60    # Default for all MCP tools
 ```
 
 ### Circuit Breakers
 **Configuration:**
-```
+```bash
 # MCP circuit breaker
 MCP_CB_FAILURES=5                 # Open after 5 failures
 MCP_CB_RECOVERY_SECONDS=60        # Stay open for 60s
@@ -955,7 +957,7 @@ MCP_CB_RECOVERY_SECONDS=60        # Stay open for 60s
 
 ### Authentication
 **MCP Registration API:**
-```
+```bash
 # Require token for dynamic registration
 MCP_REGISTER_TOKEN=your-secure-random-token
 
@@ -973,14 +975,14 @@ openssl rand -hex 32
 Mark tools that modify state or access sensitive resources:
 ```python
 ToolMetadata(
-  name="file_write",
-  dangerous=True,        # Triggers OPA policy checks
-  requires_auth=True,    # Requires user authentication
-  ...
+    name="file_write",
+    dangerous=True,        # Triggers OPA policy checks
+    requires_auth=True,    # Requires user authentication
+    ...
 )
 ```
 **OPA policies can then gate access:**
-```
+```rego
 # config/opa/policies/tools.rego
 package tools
 
@@ -1079,25 +1081,25 @@ Use vendor adapters when your API integration requires:
 `python/llm-service/llm_service/tools/vendor_adapters/myvendor.py`:
 ```python
 class MyVendorAdapter:
-  def transform_body(self, body, operation_id, prompt_params):
-    # Transform field names
-    if isinstance(body.get("metrics"), list):
-      body["metrics"] = [m.replace("users", "my:users") for m in body["metrics"]]
+    def transform_body(self, body, operation_id, prompt_params):
+        # Transform field names
+        if isinstance(body.get("metrics"), list):
+            body["metrics"] = [m.replace("users", "my:users") for m in body["metrics"]]
 
-    # Inject session params
-    if prompt_params and "account_id" in prompt_params:
-      body["account_id"] = prompt_params["account_id"]
+        # Inject session params
+        if prompt_params and "account_id" in prompt_params:
+            body["account_id"] = prompt_params["account_id"]
 
-    return body
+        return body
 ```
 **2. Register adapter:**
 `python/llm-service/llm_service/tools/vendor_adapters/__init__.py`:
 ```python
 def get_vendor_adapter(name: str):
-  if name.lower() == "myvendor":
-    from .myvendor import MyVendorAdapter
-    return MyVendorAdapter()
-  return None
+    if name.lower() == "myvendor":
+        from .myvendor import MyVendorAdapter
+        return MyVendorAdapter()
+    return None
 ```
 **3. Configure with vendor flag:**
 `config/overlays/shannon.myvendor.yaml`:
@@ -1113,7 +1115,7 @@ openapi_tools:
     category: custom
 ```
 **4. Use environment:**
-```
+```bash
 SHANNON_CONFIG_PATH=config/overlays/shannon.myvendor.yaml
 MYVENDOR_API_TOKEN=your_token_here
 ```
