@@ -1,49 +1,37 @@
 # Adding Custom Tools to Shannon
-
-**Complete guide for open‑source adopters to extend Shannon with custom tools**
-
----
+**Extend Shannon with custom tools**
 
 ## Table of Contents
-
-1. [Overview](#overview)
-2. [Quick Start: Adding MCP Tools](#quick-start-adding-mcp-tools)
-3. [Adding OpenAPI Tools](#adding-openapi-tools)
-4. [Adding Built-in Python Tools](#adding-built-in-python-tools)
-5. [Configuration Reference](#configuration-reference)
-6. [Testing & Verification](#testing--verification)
-7. [Troubleshooting](#troubleshooting)
-8. [Security Best Practices](#security-best-practices)
-
----
+- [Overview](#overview)
+- [Quick Start: Adding MCP Tools](#quick-start-adding-mcp-tools)
+- [Adding OpenAPI Tools](#adding-openapi-tools)
+- [Adding Built-in Python Tools](#adding-built-in-python-tools)
+- [Configuration Reference](#configuration-reference)
+- [Testing & Verification](#testing--verification)
+- [Troubleshooting](#troubleshooting)
+- [Security Best Practices](#security-best-practices)
 
 ## Overview
-
 Shannon supports three ways to add custom tools:
 
-| Method | Best For | Code Changes | Restart Required |
-|--------|----------|--------------|------------------|
-| **MCP Tools** | External HTTP APIs, rapid prototyping | None | ✅ Service only |
-| **OpenAPI Tools** | REST APIs with OpenAPI specs | None | ✅ Service only |
-| **Built-in Tools** | Complex logic, database access, performance | Python code | ✅ Service only |
+| Method         | Best For                                     | Code Changes | Restart Required |
+|----------------|----------------------------------------------|--------------|------------------|
+| **MCP Tools**  | External HTTP APIs, rapid prototyping        | None         | ✅ Service only  |
+| **OpenAPI Tools** | REST APIs with OpenAPI specs                 | None         | ✅ Service only  |
+| **Built-in Tools**| Complex logic, database access, performance | Python code  | ✅ Service only  |
 
 **Key Features:**
-- ✅ No Proto/Rust/Go changes required (all tools use generic containers)
+- ✅ No Proto/Rust/Go changes needed (generic containers)
 - ✅ Dynamic registration via API or YAML config
 - ✅ Built-in rate limiting and circuit breakers
 - ✅ Domain allowlisting for security
 - ✅ Cost tracking and budget enforcement
 
----
-
 ## Quick Start: Adding MCP Tools
-
-MCP (Model Context Protocol) tools let you integrate any HTTP endpoint as a Shannon tool with zero code changes.
+MCP (Model Context Protocol) tools integrate any HTTP endpoint as a Shannon tool with zero code changes.
 
 ### Step 1: Add Tool Definition
-
-Edit `config/shannon.yaml` under the `mcp_tools` section:
-
+Edit `config/shannon.yaml` under `mcp_tools`:
 ```yaml
 mcp_tools:
   weather_forecast:
@@ -67,34 +55,28 @@ mcp_tools:
       X-API-Key: "your_api_key_here"  # For MCP, header values are literal (no env expansion)
       # Tip: Prefer the runtime registration API below and inject secrets from your env at call time
 ```
-
 **Required Fields:**
-- `enabled`: Set to `true` to activate
+- `enabled`: `true` to activate
 - `url`: HTTP endpoint (must be POST, accepts JSON)
 - `func_name`: Internal function name
-- `description`: Clear description shown to LLM
+- `description`: LLM visible description
 - `category`: Tool category (e.g., `search`, `data`, `analytics`, `code`)
 - `cost_per_use`: Estimated cost in USD
 - `parameters`: Array of parameter definitions
 
 **Optional Fields:**
-- `headers`: HTTP headers for authentication (use `${ENV_VAR}` for secrets)
+- `headers`: HTTP headers for authentication
 
 ### Step 2: Configure Domain Access
-
-**For Development (permissive):**
-
+**Development (permissive):**
 Add to `.env`:
 ```bash
 MCP_ALLOWED_DOMAINS=*  # Wildcard - allows all domains
 ```
-
-**For Production (recommended):**
-
+**Production (recommended):**
 ```bash
 MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,api.weather.com,api.example.com
 ```
-
 Or set in `deploy/compose/docker-compose.yml`:
 ```yaml
 services:
@@ -104,9 +86,7 @@ services:
 ```
 
 ### Step 3: Add API Keys
-
 Add your API key to `.env`:
-
 ```bash
 # MCP Tool API Keys
 WEATHER_API_KEY=your_api_key_here
@@ -114,81 +94,69 @@ STOCK_API_KEY=your_stock_key_here
 ```
 
 ### Step 4: Restart Service
-
-**Important:** You must **recreate** the service (not just restart):
-
+**Important:** You must **recreate** the service:
 ```bash
 docker compose -f deploy/compose/docker-compose.yml up -d --force-recreate llm-service
 ```
-
 Wait for health check:
 ```bash
 docker inspect shannon-llm-service-1 --format='{{.State.Health.Status}}'
 ```
 
 ### Step 5: Verify Registration
-
 Check logs:
 ```bash
 docker compose logs llm-service | grep "Loaded MCP tool"
 ```
-
 List tools via API:
 ```bash
 curl http://localhost:8000/tools/list | jq .
 ```
-
 Get tool schema:
 ```bash
 curl http://localhost:8000/tools/weather_forecast/schema | jq .
 ```
 
 ### Step 6: Test Your Tool
-
 **Direct execution:**
 ```bash
 curl -X POST http://localhost:8000/tools/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "weather_forecast",
-    "parameters": {"location": "Tokyo", "units": "celsius"}
-  }'
+-H "Content-Type: application/json" \
+-d '{
+  "tool_name": "weather_forecast",
+  "parameters": {"location": "Tokyo", "units": "celsius"}
+}'
 ```
-
 **Via workflow:**
 ```bash
 SESSION_ID="test-$(date +%s)" ./scripts/submit_task.sh "What's the weather forecast for Tokyo?"
 ```
 
 ### Alternative: Runtime API Registration
-
 For development/testing only (tools lost on restart):
-
 ```bash
 # Set admin token in .env
 MCP_REGISTER_TOKEN=your_secret_token
 
 # Register tool
 curl -X POST http://localhost:8000/tools/mcp/register \
-  -H "Authorization: Bearer your_secret_token" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "weather_forecast",
-    "url": "https://api.weather.com/v1/forecast",
-    "func_name": "get_weather",
-    "description": "Get weather forecast",
-    "category": "data",
-    "parameters": [
-      {"name": "location", "type": "string", "required": true},
-      {"name": "units", "type": "string", "enum": ["celsius", "fahrenheit"]}
-    ]
-  }'
+-H "Authorization: Bearer your_secret_token" \
+-H "Content-Type: application/json" \
+-d '{
+  "name": "weather_forecast",
+  "url": "https://api.weather.com/v1/forecast",
+  "func_name": "get_weather",
+  "description": "Get weather forecast",
+  "category": "data",
+  "parameters": [
+    {"name": "location", "type": "string", "required": true},
+    {"name": "units", "type": "string", "enum": ["celsius", "fahrenheit"]}
+  ]
+}'
 ```
 
 ### MCP Request Convention
-
-Shannon sends POST requests in this format:
-
+Shannon sends POST requests:
 ```json
 {
   "function": "get_weather",
@@ -198,7 +166,6 @@ Shannon sends POST requests in this format:
   }
 }
 ```
-
 Your endpoint should return JSON:
 ```json
 {
@@ -208,23 +175,19 @@ Your endpoint should return JSON:
 }
 ```
 
----
-
 ## Adding OpenAPI Tools
+For REST APIs with OpenAPI 3.x specifications, Shannon automatically generates tools.
 
-For REST APIs with OpenAPI 3.x specifications, Shannon can automatically generate tools.
-
-> **💡 New in v0.8:** For domain-specific APIs requiring custom transformations, see the [Vendor Adapter Pattern](#vendor-adapter-pattern) section below or the comprehensive [Vendor Adapters Guide](vendor-adapters.md).
+> 💡 New in v0.8: For domain-specific APIs requiring custom transformations, see the [Vendor Adapter Pattern](#vendor-adapter-pattern) or the comprehensive [Vendor Adapters Guide](vendor-adapters.md).
 
 ### Features
-
 **Supported:**
 - ✅ OpenAPI 3.0 and 3.1 specs
 - ✅ URL-based or inline spec loading
 - ✅ JSON request/response bodies
 - ✅ Path and query parameters
 - ✅ Bearer, API Key (header/query), Basic auth
-- ✅ Operation filtering by operationId or tags
+- ✅ Operation filtering by `operationId` or tags
 - ✅ Circuit breaker (5 failures → 60s cooldown)
 - ✅ Retry logic with exponential backoff (default 2 retries; override via `OPENAPI_RETRIES`)
 - ✅ Configurable rate limits and timeouts
@@ -232,38 +195,31 @@ For REST APIs with OpenAPI 3.x specifications, Shannon can automatically generat
 - ✅ Basic `$ref` resolution (local references to `#/components/schemas/*`)
 
 **Limitations (MVP):**
-
 Shannon OpenAPI integration is production-ready for ~70% of REST APIs (JSON-based with simple auth). The following features are **not yet supported:**
-
-1. **❌ File Upload APIs (multipart/form-data)**
-   - Cannot upload files or binary data
-   - Workaround: Use base64-encoded files in JSON body
-   - Affected APIs: Image generation, file processing, document upload APIs
-
-2. **❌ OAuth-Protected APIs**
-   - No OAuth 2.0 flows (Authorization Code, Client Credentials)
-   - Can only use Bearer tokens (manually obtained)
-   - Affected APIs: Google APIs, GitHub, Slack, Twitter, etc.
-   - Workaround: Manually obtain OAuth token and use `bearer` auth_type
-
-3. **❌ Complex Parameter Encoding**
-   - No `style`, `explode`, or `deepObject` serialization
-   - Only basic path/query parameter substitution
-   - Affected APIs: APIs with complex array/object query parameters
-
-4. **❌ Multi-File OpenAPI Specs**
-   - No remote `$ref` resolution (e.g., `https://example.com/schemas/Pet.json`)
-   - Only local refs (`#/components/...`) supported
-   - Workaround: Merge external schemas into single spec file
-
-5. **❌ Advanced Schema Combinators**
-   - No `allOf`, `oneOf`, `anyOf` support
-   - Only basic type mapping
-   - Affected APIs: APIs with polymorphic types or complex validation
-
-6. **❌ Form-Encoded Requests**
-   - No `application/x-www-form-urlencoded` content type
-   - Only JSON request bodies supported
+- **❌ File Upload APIs (multipart/form-data)**
+  - Cannot upload files or binary data
+  - Workaround: Use base64-encoded files in JSON body
+  - Affected APIs: Image generation, file processing, document upload APIs
+- **❌ OAuth-Protected APIs**
+  - No OAuth 2.0 flows (Authorization Code, Client Credentials)
+  - Can only use Bearer tokens (manually obtained)
+  - Affected APIs: Google APIs, GitHub, Slack, Twitter, etc.
+  - Workaround: Manually obtain OAuth token and use `bearer` `auth_type`
+- **❌ Complex Parameter Encoding**
+  - No `style`, `explode`, or `deepObject` serialization
+  - Only basic path/query parameter substitution
+  - Affected APIs: APIs with complex array/object query parameters
+- **❌ Multi-File OpenAPI Specs**
+  - No remote `$ref` resolution (e.g., `https://example.com/schemas/Pet.json`)
+  - Only local refs (`#/components/...`) supported
+  - Workaround: Merge external schemas into single spec file
+- **❌ Advanced Schema Combinators**
+  - No `allOf`, `oneOf`, `anyOf` support
+  - Only basic type mapping
+  - Affected APIs: APIs with polymorphic types or complex validation
+- **❌ Form-Encoded Requests**
+  - No `application/x-www-form-urlencoded` content type
+  - Only JSON request bodies supported
 
 **What Works Well:**
 - ✅ Simple REST APIs with JSON request/response
@@ -275,9 +231,7 @@ Shannon OpenAPI integration is production-ready for ~70% of REST APIs (JSON-base
 **Important:** For specs with relative server URLs (e.g., `/api/v3`), you must provide the spec via `spec_url` (not `spec_inline`) so Shannon can resolve the full base URL. Example: PetStore spec has `servers: [{url: "/api/v3"}]`, which resolves to `https://petstore3.swagger.io/api/v3` when loaded from `https://petstore3.swagger.io/api/v3/openapi.json`.
 
 ### Step 1: Add Tool Definition
-
 Edit `config/shannon.yaml` under `openapi_tools`:
-
 ```yaml
 openapi_tools:
   petstore:
@@ -286,34 +240,28 @@ openapi_tools:
     # OR use inline spec:
     # spec_inline: |
     #   <paste OpenAPI JSON/YAML here>
-
     auth_type: "api_key"  # none|api_key|bearer|basic
     auth_config:
       api_key_name: "X-API-Key"           # Header name or query param name
       api_key_location: "header"          # header|query
       api_key_value: "$PETSTORE_API_KEY"  # Use $ prefix for env vars
-
     category: "data"
     base_cost_per_use: 0.001
     rate_limit: 30                        # Requests per minute
     timeout_seconds: 30                   # Request timeout
     max_response_bytes: 10485760          # Max response size (10MB)
-
     # Optional: Filter to specific operations
     operations:
       - "getPetById"
       - "findPetsByStatus"
-
     # Optional: Filter by tags
     # tags:
     #   - "pet"
-
     # Optional: Override base URL from spec
     # base_url: "https://custom-petstore.example.com"
 ```
 
 ### Authentication Examples
-
 **Bearer Token (GitHub API):**
 ```yaml
 github:
@@ -326,7 +274,6 @@ github:
     - "repos/get"
     - "repos/list-for-user"
 ```
-
 **API Key in Query (OpenWeather):**
 ```yaml
 weather:
@@ -338,7 +285,6 @@ weather:
     api_key_location: "query"
     api_key_value: "$OPENWEATHER_API_KEY"
 ```
-
 **Basic Auth:**
 ```yaml
 custom_api:
@@ -351,12 +297,10 @@ custom_api:
 ```
 
 ### Step 2: Configure Environment
-
 Add to `.env`:
-
 ```bash
 # OpenAPI Security
-OPENAPI_ALLOWED_DOMAINS=*                # Use * for dev, specific domains for prod
+OPENAPI_ALLOWED_DOMAINS=*                # Comma-separated or * for dev
 OPENAPI_MAX_SPEC_SIZE=5242880            # 5MB default
 OPENAPI_FETCH_TIMEOUT=30                 # Seconds
 
@@ -372,20 +316,17 @@ MCP_REGISTER_TOKEN=your_admin_token
 ```
 
 ### Step 3: Restart Service
-
 ```bash
 docker compose -f deploy/compose/docker-compose.yml up -d --force-recreate llm-service
 ```
 
 ### Step 4: Verify & Test
-
 **Validate spec first:**
 ```bash
 curl -X POST http://localhost:8000/tools/openapi/validate \
-  -H "Content-Type: application/json" \
-  -d '{"spec_url": "https://petstore3.swagger.io/api/v3/openapi.json"}' | jq .
+-H "Content-Type: application/json" \
+-d '{"spec_url": "https://petstore3.swagger.io/api/v3/openapi.json"}' | jq .
 ```
-
 **Response:**
 ```json
 {
@@ -398,39 +339,35 @@ curl -X POST http://localhost:8000/tools/openapi/validate \
   "base_url": "https://petstore3.swagger.io/api/v3"
 }
 ```
-
 **List registered tools:**
 ```bash
 curl http://localhost:8000/tools/list | grep Pet
 ```
-
 **Execute tool:**
 ```bash
 curl -X POST http://localhost:8000/tools/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "getPetById",
-    "parameters": {"petId": 1}
-  }' | jq .
+-H "Content-Type: application/json" \
+-d '{
+  "tool_name": "getPetById",
+  "parameters": {"petId": 1}
+}' | jq .
 ```
 
 ### Alternative: Runtime Registration
-
 ```bash
 curl -X POST http://localhost:8000/tools/openapi/register \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer your_admin_token" \
-  -d '{
-    "name": "petstore",
-    "spec_url": "https://petstore3.swagger.io/api/v3/openapi.json",
-    "auth_type": "none",
-    "category": "data",
-    "operations": ["getPetById", "findPetsByStatus"],
-    "rate_limit": 15,
-    "timeout_seconds": 10
-  }' | jq .
+-H "Content-Type: application/json" \
+-H "Authorization: Bearer your_admin_token" \
+-d '{
+  "name": "petstore",
+  "spec_url": "https://petstore3.swagger.io/api/v3/openapi.json",
+  "auth_type": "none",
+  "category": "data",
+  "operations": ["getPetById", "findPetsByStatus"],
+  "rate_limit": 15,
+  "timeout_seconds": 10
+}' | jq .
 ```
-
 **Response includes verification:**
 ```json
 {
@@ -443,31 +380,25 @@ curl -X POST http://localhost:8000/tools/openapi/register \
 }
 ```
 
----
-
 ## Adding Built-in Python Tools
-
 For complex logic, database access, or performance-critical operations.
 
 ### When to Use Built-in Tools
-
 **Use built-in tools when:**
-- Need direct database/Redis access
-- Require complex Python libraries (pandas, numpy)
-- Performance-critical (avoid HTTP roundtrip)
-- Need session state management
-- Implement security-sensitive operations
+- Direct database/Redis access is needed
+- Complex Python libraries (pandas, numpy) are required
+- Performance-critical operations (avoid HTTP roundtrip)
+- Session state management is necessary
+- Security-sensitive operations are implemented
 
 **Use MCP/OpenAPI instead when:**
 - Integrating external APIs
-- Want no-code deployment
-- Prototyping quickly
+- No-code deployment is preferred
+- Quick prototyping
 - Third-party service integration
 
 ### Step 1: Create Tool Class
-
 Create file in `python/llm-service/llm_service/tools/builtin/my_custom_tool.py`:
-
 ```python
 from typing import Any, Dict, List, Optional
 from ..base import Tool, ToolMetadata, ToolParameter, ToolParameterType, ToolResult
@@ -567,9 +498,7 @@ class MyCustomTool(Tool):
 ```
 
 ### Step 2: Register Tool
-
 Edit `python/llm-service/llm_service/api/tools.py` and update the `startup_event()` registration list:
-
 ```python
 # Add import at top
 from ..tools.builtin.my_custom_tool import MyCustomTool
@@ -597,13 +526,11 @@ async def startup_event():
 ```
 
 ### Step 3: Restart Service
-
 ```bash
 docker compose -f deploy/compose/docker-compose.yml up -d --force-recreate llm-service
 ```
 
 ### Step 4: Test Tool
-
 ```bash
 # Verify registration
 curl http://localhost:8000/tools/list | grep my_custom_tool
@@ -613,21 +540,19 @@ curl http://localhost:8000/tools/my_custom_tool/schema | jq .
 
 # Execute
 curl -X POST http://localhost:8000/tools/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "my_custom_tool",
-    "parameters": {
-      "required_param": "test",
-      "optional_number": 42,
-      "choice_param": "option1"
-    }
-  }' | jq .
+-H "Content-Type: application/json" \
+-d '{
+  "tool_name": "my_custom_tool",
+  "parameters": {
+    "required_param": "test",
+    "optional_number": 42,
+    "choice_param": "option1"
+  }
+}' | jq .
 ```
 
 ### Advanced: Session-Aware Tools
-
 For tools that maintain state across executions:
-
 ```python
 class SessionAwareTool(Tool):
     def _get_metadata(self) -> ToolMetadata:
@@ -652,12 +577,8 @@ class SessionAwareTool(Tool):
         return ToolResult(success=True, output={"session": session_id})
 ```
 
----
-
 ## Configuration Reference
-
 ### MCP Tool Configuration
-
 ```yaml
 mcp_tools:
   tool_name:
@@ -666,7 +587,7 @@ mcp_tools:
     func_name: "function_name"       # Required: Remote function name
     description: "Tool description"  # Required: LLM-visible description
     category: "data"                 # Required: Tool category
-    cost_per_use: 0.001             # Required: Cost in USD
+    cost_per_use: 0.001              # Required: Cost in USD
     parameters:                      # Required: Parameter definitions
       - name: "param1"
         type: "string"               # string|integer|float|boolean|array|object
@@ -675,12 +596,11 @@ mcp_tools:
         enum: ["val1", "val2"]       # Optional: Allowed values
         default: "val1"              # Optional: Default value
     headers:                         # Optional: HTTP headers
-      X-API-Key: "your_api_key"     # Note: MCP does not expand env vars in headers
-                                    # Prefer dynamic registration and pass secrets at runtime
+      X-API-Key: "your_api_key"      # Note: MCP does not expand env vars in headers
+      # Prefer dynamic registration and pass secrets at runtime
 ```
 
 ### OpenAPI Tool Configuration
-
 ```yaml
 openapi_tools:
   collection_name:
@@ -711,7 +631,6 @@ openapi_tools:
 ```
 
 ### Environment Variables
-
 **MCP Configuration:**
 ```bash
 # Domain Security
@@ -729,7 +648,6 @@ MCP_TIMEOUT_SECONDS=10               # Request timeout
 # Registration Security
 MCP_REGISTER_TOKEN=your_secret       # API registration protection
 ```
-
 **OpenAPI Configuration:**
 ```bash
 # Domain Security
@@ -740,7 +658,6 @@ OPENAPI_FETCH_TIMEOUT=30             # Spec fetch timeout
 # Request Behavior
 OPENAPI_RETRIES=2                    # Retry attempts (default: 2). Set higher if needed
 ```
-
 **Tool-Specific API Keys:**
 ```bash
 # Add your tool API keys here
@@ -748,15 +665,12 @@ WEATHER_API_KEY=your_key
 STOCK_API_KEY=your_key
 GITHUB_TOKEN=ghp_xxxxx
 PETSTORE_API_KEY=your_key
+
 # ... add more as needed
 ```
 
----
-
 ## Testing & Verification
-
 ### Health Checks
-
 ```bash
 # Check service health
 curl http://localhost:8081/health | jq .
@@ -764,9 +678,7 @@ curl http://localhost:8081/health | jq .
 # Check LLM service status
 docker inspect shannon-llm-service-1 --format='{{.State.Health.Status}}'
 ```
-
 ### List Tools
-
 ```bash
 # All tools
 curl http://localhost:8000/tools/list | jq .
@@ -780,9 +692,7 @@ curl "http://localhost:8000/tools/list?exclude_dangerous=true" | jq .
 # List categories
 curl http://localhost:8000/tools/categories | jq .
 ```
-
 ### Get Tool Schema
-
 ```bash
 # Single tool schema
 curl http://localhost:8000/tools/my_tool/schema | jq .
@@ -793,36 +703,30 @@ curl http://localhost:8000/tools/schemas | jq .
 # Tool metadata
 curl http://localhost:8000/tools/my_tool/metadata | jq .
 ```
-
 ### Execute Tools
-
 **Direct execution:**
 ```bash
 curl -X POST http://localhost:8000/tools/execute \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "calculator",
-    "parameters": {"expression": "sqrt(144) + 2^3"}
-  }' | jq .
+-H "Content-Type: application/json" \
+-d '{
+  "tool_name": "calculator",
+  "parameters": {"expression": "sqrt(144) + 2^3"}
+}' | jq .
 ```
-
 **Batch execution:**
 ```bash
 curl -X POST http://localhost:8000/tools/batch-execute \
-  -H "Content-Type: application/json" \
-  -d '[
-    {"tool_name": "calculator", "parameters": {"expression": "2+2"}},
-    {"tool_name": "calculator", "parameters": {"expression": "10*5"}}
-  ]' | jq .
+-H "Content-Type: application/json" \
+-d '[
+  {"tool_name": "calculator", "parameters": {"expression": "2+2"}},
+  {"tool_name": "calculator", "parameters": {"expression": "10*5"}}
+]' | jq .
 ```
-
 **Via workflow:**
 ```bash
 SESSION_ID="test-$(date +%s)" ./scripts/submit_task.sh "Calculate 2+2 and then multiply by 5"
 ```
-
 ### Monitor Logs
-
 ```bash
 # Registration logs
 docker compose logs llm-service | grep -i "registered tool"
@@ -834,9 +738,7 @@ docker compose logs -f llm-service orchestrator agent-core
 # Tool-specific logs
 docker compose logs llm-service | grep "my_tool"
 ```
-
 ### E2E Tests
-
 ```bash
 # Run all tests
 make smoke
@@ -849,14 +751,9 @@ make smoke
 ./tests/e2e/run.sh
 ```
 
----
-
 ## Troubleshooting
-
 ### Tool Not Registered
-
 **Symptom:** Tool doesn't appear in `/tools/list`
-
 **Debug steps:**
 ```bash
 # 1. Check YAML syntax
@@ -875,45 +772,36 @@ docker compose -f deploy/compose/docker-compose.yml up -d --force-recreate llm-s
 sleep 10
 docker inspect shannon-llm-service-1 --format='{{.State.Health.Status}}'
 ```
-
 ### Domain Validation Error
-
 **Symptom:** `URL host 'example.com' not in allowed domains`
-
 **Solutions:**
-
-1. **Development:** Use wildcard
-   ```bash
-   # .env
-   MCP_ALLOWED_DOMAINS=*
-   OPENAPI_ALLOWED_DOMAINS=*
-   ```
-
-2. **Production:** Add specific domain
-   ```bash
-   # .env
-   MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,api.example.com
-   OPENAPI_ALLOWED_DOMAINS=api.example.com,api.github.com
-   ```
-
-3. **Docker Compose:** Set in environment
-   ```yaml
-   services:
-     llm-service:
-       environment:
-         - MCP_ALLOWED_DOMAINS=api.example.com
-   ```
-
+- **Development:** Use wildcard
+  ```
+  # .env
+  MCP_ALLOWED_DOMAINS=*
+  OPENAPI_ALLOWED_DOMAINS=*
+  ```
+- **Production:** Add specific domain
+  ```
+  # .env
+  MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,api.example.com
+  OPENAPI_ALLOWED_DOMAINS=api.example.com,api.github.com
+  ```
+- **Docker Compose:** Set in environment
+  ```yaml
+  services:
+    llm-service:
+      environment:
+        - MCP_ALLOWED_DOMAINS=api.example.com
+  ```
 ### Tool Execution Fails
-
 **Symptom:** `ToolResult { success: false, error: "..." }`
-
 **Debug:**
 ```bash
 # 1. Test tool directly
 curl -X POST http://localhost:8000/tools/execute \
-  -H "Content-Type: application/json" \
-  -d '{"tool_name":"my_tool","parameters":{...}}' | jq .
+-H "Content-Type: application/json" \
+-d '{"tool_name":"my_tool","parameters":{...}}' | jq .
 
 # 2. Check parameter types
 curl http://localhost:8000/tools/my_tool/schema | jq '.parameters'
@@ -929,51 +817,38 @@ docker logs shannon-agent-core-1 | grep "Tool execution error"
 # 5. Check LLM service logs
 docker logs shannon-llm-service-1 | grep my_tool
 ```
-
 ### Tool Not Selected by LLM
-
 **Symptom:** LLM doesn't use your tool for relevant queries
-
 **Solutions:**
+- **Improve description:** Make it specific and use LLM-friendly keywords
+  ```
+  # Bad
+  description: "Weather tool"
 
-1. **Improve description:** Make it specific and use LLM-friendly keywords
-   ```yaml
-   # Bad
-   description: "Weather tool"
-
-   # Good
-   description: "Get real-time weather forecast data for any city including temperature, humidity, and conditions. Use for queries about current or future weather."
-   ```
-
-2. **Add to decomposition context:**
-
-   Current limitation: Orchestrator passes empty tools list to decomposition. Tools won't appear in system prompt by default.
-
-   **Quick fix:** Agent service has auto-load fallback (lines 598-609 in `agent.py`)
-
-   **Proper fix:** Update orchestrator workflows to call `fetchAvailableTools()` and pass in `AvailableTools` field:
-   - `go/orchestrator/internal/workflows/orchestrator_router.go:80`
-   - `go/orchestrator/internal/workflows/supervisor_workflow.go:273`
-
-3. **Test tool selection:**
-   ```bash
-   curl -X POST http://localhost:8000/tools/select \
-     -H "Content-Type: application/json" \
-     -d '{
-       "task": "Get weather forecast for Tokyo",
-       "max_tools": 3
-     }' | jq .
-   ```
-
-4. **Use explicit mention:**
-   ```bash
-   ./scripts/submit_task.sh "Use the weather_forecast tool to get weather for Tokyo"
-   ```
-
+  # Good
+  description: "Get real-time weather forecast data for any city including temperature, humidity, and conditions. Use for queries about current or future weather."
+  ```
+- **Add to decomposition context:**
+  Current limitation: Orchestrator passes empty tools list to decomposition. Tools won't appear in system prompt by default.
+  **Quick fix:** Agent service has auto-load fallback (lines 598-609 in `agent.py`)
+  **Proper fix:** Update orchestrator workflows to call `fetchAvailableTools()` and pass in `AvailableTools` field:
+  - `go/orchestrator/internal/workflows/orchestrator_router.go:80`
+  - `go/orchestrator/internal/workflows/supervisor_workflow.go:273`
+- **Test tool selection:**
+  ```bash
+  curl -X POST http://localhost:8000/tools/select \
+  -H "Content-Type: application/json" \
+  -d '{
+    "task": "Get weather forecast for Tokyo",
+    "max_tools": 3
+  }' | jq .
+  ```
+- **Use explicit mention:**
+  ```bash
+  ./scripts/submit_task.sh "Use the weather_forecast tool to get weather for Tokyo"
+  ```
 ### Circuit Breaker Triggered
-
 **Symptom:** `Circuit breaker open for <url> (too many failures)`
-
 **Debug:**
 ```bash
 # Check recent errors
@@ -985,90 +860,70 @@ sleep 60
 # Or restart to reset
 docker compose restart llm-service
 ```
-
 **Prevent:**
 - Increase failure threshold: `MCP_CB_FAILURES=10`
 - Increase recovery time: `MCP_CB_RECOVERY_SECONDS=120`
 - Fix underlying API issues
-
 ### Rate Limit Exceeded
-
 **Symptom:** `Rate limit exceeded for tool <name>`
-
 **Solutions:**
-```bash
+```yaml
 # Increase rate limit in config
 # config/shannon.yaml
 rate_limit: 120  # Increase from default 60
 
 # Or in tool metadata (built-in tools)
 ToolMetadata(
-    rate_limit=120,  # Requests per minute
-    ...
+  rate_limit=120,  # Requests per minute
+  ...
 )
 ```
 
----
-
 ## Security Best Practices
-
 ### Domain Allowlisting
-
 **Development:**
 ```bash
 # Permissive for testing
 MCP_ALLOWED_DOMAINS=*
 OPENAPI_ALLOWED_DOMAINS=*
 ```
-
 **Staging:**
 ```bash
 # Specific domains + localhost
 MCP_ALLOWED_DOMAINS=localhost,127.0.0.1,staging-api.example.com
 ```
-
 **Production:**
 ```bash
 # Explicit allowlist only
 MCP_ALLOWED_DOMAINS=api.example.com,api.partner.com
 OPENAPI_ALLOWED_DOMAINS=api.github.com,api.openweathermap.org
 ```
-
 **Subdomain Matching:**
 - `api.example.com` allows `api.example.com` and `v1.api.example.com`
 - Wildcard `*` bypasses all validation (use cautiously!)
 
 ### API Key Management
-
 **❌ Never hardcode:**
 ```yaml
 # BAD - Don't do this!
 headers:
   X-API-Key: "sk-1234567890abcdef"
 ```
-
 **✅ Use environment variables:**
 ```yaml
 # GOOD - Reference env vars
 headers:
   X-API-Key: "${WEATHER_API_KEY}"
 ```
-
 **Store in `.env` (not tracked by git):**
 ```bash
 # .env
 WEATHER_API_KEY=sk-real-key-here
 STOCK_API_KEY=your-stock-key
 ```
-
-**For production:** Use secrets management
-- Docker secrets
-- Kubernetes secrets
-- HashiCorp Vault
-- AWS Secrets Manager
+**For production:** Use secrets management (Docker, Kubernetes, HashiCorp Vault, AWS Secrets Manager)
 
 ### Rate Limiting
-
 **Per-tool limits:**
 ```yaml
 # MCP tools
@@ -1081,7 +936,6 @@ openapi_tools:
   github:
     rate_limit: 60  # GitHub's actual limit
 ```
-
 **Global limits:**
 ```bash
 # .env
@@ -1089,7 +943,6 @@ MCP_RATE_LIMIT_DEFAULT=60    # Default for all MCP tools
 ```
 
 ### Circuit Breakers
-
 **Configuration:**
 ```bash
 # MCP circuit breaker
@@ -1103,7 +956,6 @@ MCP_CB_RECOVERY_SECONDS=60        # Stay open for 60s
 ```
 
 ### Authentication
-
 **MCP Registration API:**
 ```bash
 # Require token for dynamic registration
@@ -1114,16 +966,13 @@ curl -H "Authorization: Bearer your-secure-random-token" ...
 # OR
 curl -H "X-Admin-Token: your-secure-random-token" ...
 ```
-
 **Generate secure tokens:**
 ```bash
 openssl rand -hex 32
 ```
 
 ### Dangerous Tools
-
 Mark tools that modify state or access sensitive resources:
-
 ```python
 ToolMetadata(
     name="file_write",
@@ -1132,21 +981,18 @@ ToolMetadata(
     ...
 )
 ```
-
 **OPA policies can then gate access:**
 ```rego
 # config/opa/policies/tools.rego
 package tools
 
 deny[msg] {
-    input.tool == "file_write"
-    not is_admin(input.user)
-    msg := "file_write requires admin role"
+  input.tool == "file_write"
+  not is_admin(input.user)
+  msg := "file_write requires admin role"
 }
 ```
-
 ### Response Size Limits
-
 **Prevent DoS via large responses:**
 ```yaml
 # OpenAPI tools
@@ -1155,9 +1001,7 @@ max_response_bytes: 10485760  # 10MB default
 # MCP tools (env var)
 MCP_MAX_RESPONSE_BYTES=10485760
 ```
-
 ### Timeout Configuration
-
 **Prevent hanging requests:**
 ```yaml
 # OpenAPI tools
@@ -1166,18 +1010,13 @@ timeout_seconds: 30  # Per-request timeout
 # MCP tools (env var)
 MCP_TIMEOUT_SECONDS=10
 ```
-
 ### HTTPS Enforcement
-
 **For non-localhost URLs, Shannon enforces HTTPS:**
 - ✅ `https://api.example.com` - Allowed
 - ✅ `http://localhost:8080` - Allowed
 - ❌ `http://api.example.com` - Rejected in production
 
----
-
 ## Next Steps
-
 **Explore Advanced Topics:**
 - [Tools Implementation Guide](tools-implementation-guide.md) - Architecture deep-dive
 - [MCP Integration](mcp-integration.md) - Full MCP specification
@@ -1192,17 +1031,14 @@ MCP_TIMEOUT_SECONDS=10
 - Report issues: https://github.com/anthropics/shannon/issues
 - Contribute tools: https://github.com/anthropics/shannon/pulls
 
----
-
 ## Summary
-
 **Three ways to add tools:**
 
-| Method | Command | Config File | Code Changes |
-|--------|---------|-------------|--------------|
-| **MCP** | `docker compose up -d --force-recreate llm-service` | `config/shannon.yaml` | None |
-| **OpenAPI** | `docker compose up -d --force-recreate llm-service` | `config/shannon.yaml` | None |
-| **Built-in** | `docker compose up -d --force-recreate llm-service` | `api/tools.py` + new file | Python only |
+| Method     | Command                                | Config File        | Code Changes |
+|------------|----------------------------------------|--------------------|--------------|
+| **MCP**    | `docker compose up -d --force-recreate llm-service` | `config/shannon.yaml` | None         |
+| **OpenAPI**| `docker compose up -d --force-recreate llm-service` | `config/shannon.yaml` | None         |
+| **Built-in**| `docker compose up -d --force-recreate llm-service` | `api/tools.py` + new file | Python only  |
 
 **Key takeaways:**
 - ✅ Zero proto/Rust/Go changes (generic `google.protobuf.Struct` containers)
@@ -1220,24 +1056,19 @@ curl http://localhost:8000/tools/{name}/schema
 
 # Execute
 curl -X POST http://localhost:8000/tools/execute \
-  -d '{"tool_name":"my_tool","parameters":{...}}'
+-d '{"tool_name":"my_tool","parameters":{...}}'
 
 # Via workflow
 ./scripts/submit_task.sh "Your query here"
 ```
-
 Happy tool building! 🛠️
 
----
-
 ## Vendor Adapter Pattern
-
 **For domain-specific APIs and custom agents**
 
-When integrating proprietary or internal APIs that require domain-specific transformations, use the **vendor adapter pattern** to keep vendor logic separate from Shannon's core infrastructure.
+Use vendor adapters to separate vendor logic from Shannon's core for proprietary or internal APIs requiring domain-specific transformations.
 
 ### When to Use
-
 Use vendor adapters when your API integration requires:
 - Custom field name aliasing (e.g., `users` → `my:unique_users`)
 - Request/response transformations
@@ -1246,9 +1077,7 @@ Use vendor adapters when your API integration requires:
 - Specialized agent roles with custom system prompts
 
 ### Quick Example
-
 **1. Create vendor adapter:**
-
 `python/llm-service/llm_service/tools/vendor_adapters/myvendor.py`:
 ```python
 class MyVendorAdapter:
@@ -1263,9 +1092,7 @@ class MyVendorAdapter:
 
         return body
 ```
-
 **2. Register adapter:**
-
 `python/llm-service/llm_service/tools/vendor_adapters/__init__.py`:
 ```python
 def get_vendor_adapter(name: str):
@@ -1274,9 +1101,7 @@ def get_vendor_adapter(name: str):
         return MyVendorAdapter()
     return None
 ```
-
 **3. Configure with vendor flag:**
-
 `config/overlays/shannon.myvendor.yaml`:
 ```yaml
 openapi_tools:
@@ -1289,7 +1114,6 @@ openapi_tools:
       token: "${MYVENDOR_API_TOKEN}"
     category: custom
 ```
-
 **4. Use environment:**
 ```bash
 SHANNON_CONFIG_PATH=config/overlays/shannon.myvendor.yaml
@@ -1297,7 +1121,6 @@ MYVENDOR_API_TOKEN=your_token_here
 ```
 
 ### Benefits
-
 - ✅ **Clean separation:** Vendor code isolated from Shannon core
 - ✅ **No core changes:** Shannon infrastructure remains generic
 - ✅ **Conditional loading:** Graceful fallback if vendor module unavailable
@@ -1305,7 +1128,6 @@ MYVENDOR_API_TOKEN=your_token_here
 - ✅ **Secrets management:** All tokens via environment variables
 
 ### Complete Guide
-
 For a comprehensive guide including:
 - Custom agent roles for specialized domains
 - Session context injection patterns
@@ -1313,5 +1135,3 @@ For a comprehensive guide including:
 - Best practices and troubleshooting
 
 See: **[Vendor Adapters Guide](vendor-adapters.md)**
-
----
