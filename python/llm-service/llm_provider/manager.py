@@ -110,6 +110,10 @@ try:
     from .minimax_provider import MiniMaxProvider
 except Exception:  # pragma: no cover
     MiniMaxProvider = None  # type: ignore
+try:
+    from .litellm_provider import LiteLLMProvider
+except Exception:  # pragma: no cover
+    LiteLLMProvider = None  # type: ignore
 
 
 class LLMManager:
@@ -323,6 +327,14 @@ class LLMManager:
                         self.logger.warning("MiniMax provider unavailable (missing dependency)")
                         continue
                     provider = MiniMaxProvider(config)
+                elif provider_type == "litellm":
+                    if LiteLLMProvider is None:
+                        self.logger.warning(
+                            "LiteLLM provider unavailable — install via "
+                            '`pip install "litellm>=1.60,<1.85"`'
+                        )
+                        continue
+                    provider = LiteLLMProvider(config)
                 else:
                     self.logger.warning(f"Unknown provider type: {provider_type}")
                     continue

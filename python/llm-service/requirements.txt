@@ -15,6 +15,7 @@ anthropic==0.64.0
 google-generativeai==0.8.3
 boto3==1.35.77  # For Bedrock
 tiktoken==0.8.0  # For OpenAI token counting
+litellm==1.80.0  # AI gateway: one provider, 100+ backends. Ceiling: >=1.80.5 needs openai 2.x; repo uses openai 1.x
 
 # Redis caching
 redis==5.2.1
