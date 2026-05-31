@@ -380,7 +380,6 @@ curl http://localhost:8081/health
 - Reduce `WASI_MEMORY_LIMIT_MB` (default: 512)
 - Lower `HISTORY_WINDOW_MESSAGES` (default: 50)
 
-
 ## FAQ
 
 ### What is Shannon?
@@ -415,8 +414,8 @@ Shannon supports 10+ providers with automatic failover:
 - **Anthropic**: Claude Opus 4.6, Sonnet 4.6, Haiku 4.5
 - **OpenAI**: GPT-5.1, GPT-5 mini, GPT-5 nano
 - **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash
-- **xAI**: Grok 4, Grok 3 Mini
-- **DeepSeek**, **MiniMax**, **Groq**, **Qwen**, **Llama**, **Zhipu**, **Kimi**
+- **xAI**: Grok 4.1 (reasoning & non-reasoning)
+- **DeepSeek**, **MiniMax**, **Qwen**, **Kimi**
 - **Local**: Ollama, LM Studio, vLLM — any OpenAI-compatible endpoint
 
 ### How do I install Shannon?
