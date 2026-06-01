@@ -81,8 +81,11 @@ model_tiers:
         model: kimi-k2.5
         priority: 9
       - provider: minimax
-        model: MiniMax-M2.7
+        model: MiniMax-M3
         priority: 10
+      - provider: minimax
+        model: MiniMax-M2.7
+        priority: 11
 
   large:
     # Target allocation: 10% (not enforced - actual usage depends on complexity)
@@ -125,8 +128,11 @@ model_tiers:
         model: kimi-k2-thinking
         priority: 12
       - provider: minimax
-        model: MiniMax-M2.7
+        model: MiniMax-M3
         priority: 13
+      - provider: minimax
+        model: MiniMax-M2.7
+        priority: 14
 
 # Model selection strategy
 selection_strategy:
@@ -455,6 +461,14 @@ model_catalog:
       supports_reasoning: true
 
   minimax:
+    MiniMax-M3:
+      model_id: MiniMax-M3
+      tier: medium
+      context_window: 524288
+      max_tokens: 131072
+      supports_functions: true
+      supports_streaming: true
+      supports_vision: true
     MiniMax-M2.7:
       model_id: MiniMax-M2.7
       tier: medium
@@ -788,6 +802,9 @@ pricing:
         output_per_1k: 0.00250
 
     minimax:
+      MiniMax-M3:
+        input_per_1k: 0.00060
+        output_per_1k: 0.00240
       MiniMax-M2.7:
         input_per_1k: 0.00033
         output_per_1k: 0.00133
@@ -892,6 +909,7 @@ model_capabilities:
     - gemini-2.5-flash
     - gemini-2.0-flash
     - kimi-k2.5
+    - MiniMax-M3
 
   thinking_models:
     - gpt-5-pro-2025-10-06
@@ -905,6 +923,7 @@ model_capabilities:
     - grok-4-1-fast-reasoning
     - grok-4.20-0309-reasoning
     - kimi-k2-thinking
+    - MiniMax-M3
     - MiniMax-M2.7
     - glm-5
 
@@ -922,6 +941,7 @@ model_capabilities:
     - gemini-2.5-flash  # 1M tokens
     - claude-sonnet-4-6  # 1M tokens (native, no beta header)
     - claude-opus-4-6  # 1M tokens (native, no beta header)
+    - MiniMax-M3  # 512K tokens
     - qwen3-omni-30b-a3b-instruct  # 262K tokens
     - claude-opus-4-5-20251101  # 200K tokens
     - claude-sonnet-4-5-20250929  # 200K tokens

@@ -121,16 +121,19 @@ class TestStripThinkTags(unittest.TestCase):
 class TestMiniMaxProviderModels(unittest.TestCase):
     def test_default_models_registered(self):
         provider = _make_provider()
+        self.assertIn("MiniMax-M3", provider.models)
         self.assertIn("MiniMax-M2.7", provider.models)
         self.assertIn("MiniMax-M2.7-highspeed", provider.models)
 
     def test_model_tiers(self):
         provider = _make_provider()
+        self.assertEqual(provider.models["MiniMax-M3"].tier, ModelTier.MEDIUM)
         self.assertEqual(provider.models["MiniMax-M2.7"].tier, ModelTier.MEDIUM)
         self.assertEqual(provider.models["MiniMax-M2.7-highspeed"].tier, ModelTier.SMALL)
 
     def test_context_window(self):
         provider = _make_provider()
+        self.assertEqual(provider.models["MiniMax-M3"].context_window, 524288)
         for alias in ("MiniMax-M2.7", "MiniMax-M2.7-highspeed"):
             self.assertEqual(provider.models[alias].context_window, 204800)
 
@@ -159,6 +162,7 @@ class TestMiniMaxProviderModels(unittest.TestCase):
         }
         provider = MiniMaxProvider(config)
         self.assertIn("custom-model", provider.models)
+        self.assertNotIn("MiniMax-M3", provider.models)
         self.assertNotIn("MiniMax-M2.7", provider.models)
 
 

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- MiniMax M3 model support (512K context, 128K max output, vision-capable) — set as the new default minimax model in `medium` and `large` tier priority lists; M2.7 and M2.7-highspeed remain available
+
 ## [0.4.1] - 2026-04-04
 
 ### Fixed

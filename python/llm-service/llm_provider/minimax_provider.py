@@ -81,6 +81,15 @@ class MiniMaxProvider(LLMProvider):
     def _add_default_models(self) -> None:
         """Fallback catalog when models.yaml is not loaded."""
         defaults: Dict[str, Dict[str, Any]] = {
+            "MiniMax-M3": {
+                "model_id": "MiniMax-M3",
+                "tier": "medium",
+                "context_window": 524288,
+                "max_tokens": 131072,
+                "supports_functions": True,
+                "supports_streaming": True,
+                "supports_vision": True,
+            },
             "MiniMax-M2.7": {
                 "model_id": "MiniMax-M2.7",
                 "tier": "medium",

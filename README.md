@@ -233,7 +233,7 @@ curl -X POST http://localhost:8080/api/v1/tasks \
 - **Google**: Gemini 2.5 Pro, Gemini 2.5 Flash, Gemini 3 Pro Preview
 - **xAI**: Grok 4 (reasoning & non-reasoning), Grok 3 Mini
 - **DeepSeek**: DeepSeek Chat, DeepSeek Reasoner
-- **MiniMax**: M2.7, M2.7-highspeed
+- **MiniMax**: M3, M2.7, M2.7-highspeed
 - **Groq**: Llama, Mixtral (ultra-fast inference)
 - **Others**: Qwen, Meta (Llama 4), Zhipu (GLM), Kimi
 - **Local**: Ollama, LM Studio, vLLM — any OpenAI-compatible endpoint
