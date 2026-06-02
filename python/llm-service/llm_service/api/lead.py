@@ -60,7 +60,7 @@ class LeadDecisionRequest(BaseModel):
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)  # Session history for multi-turn context
     workspace_files: List[str] = Field(default_factory=list, description="File paths in workspace")
     hitl_messages: List[str] = Field(default_factory=list, description="All HITL messages received during execution")
-    lead_model_override: str = Field(default="", description="Explicit model for Lead (e.g. MiniMax-M2.7)")
+    lead_model_override: str = Field(default="", description="Explicit model for Lead (e.g. MiniMax-M3)")
     lead_provider_override: str = Field(default="", description="Explicit provider for Lead (e.g. minimax)")
 
 

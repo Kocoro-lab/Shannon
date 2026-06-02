@@ -22,7 +22,7 @@ Response headers include `X-Workflow-ID` and `X-Session-ID`.
   - Default: Auto-detect based on query complexity
 - `model_tier` (string, optional) — `small` | `medium` | `large`
   - Injected into `context.model_tier` and honored by services
-- `model_override` (string, optional) — specific model name (e.g., `gpt-5-2025-08-07`, `MiniMax-M2.7`, `claude-sonnet-4-5-20250929`)
+- `model_override` (string, optional) — specific model name (e.g., `gpt-5-2025-08-07`, `MiniMax-M3`, `claude-sonnet-4-5-20250929`)
   - Top-level alternative to `context.model_override`
 - `provider_override` (string, optional) — force specific provider (e.g., `openai`, `anthropic`, `minimax`, `kimi`)
   - Top-level alternative to `context.provider_override`
@@ -33,19 +33,19 @@ For swarm workflows, separate overrides exist for Lead and Worker agents:
 
 - `context.lead_model_override` (string) — explicit model for Lead agent (e.g., `kimi-k2.5`)
 - `context.lead_provider_override` (string) — explicit provider for Lead (e.g., `kimi`)
-- `context.agent_model_override` (string) — explicit model for all Worker agents (e.g., `MiniMax-M2.7`)
+- `context.agent_model_override` (string) — explicit model for all Worker agents (e.g., `MiniMax-M3`)
 - `context.agent_provider_override` (string) — explicit provider for Workers (e.g., `minimax`)
 
 ```bash
 # Swarm with MiniMax workers
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
-  -d '{"query": "Compare React vs Vue", "context": {"force_swarm": true, "agent_model_override": "MiniMax-M2.7", "agent_provider_override": "minimax"}}'
+  -d '{"query": "Compare React vs Vue", "context": {"force_swarm": true, "agent_model_override": "MiniMax-M3", "agent_provider_override": "minimax"}}'
 
 # Swarm with Kimi Lead + MiniMax workers
 curl -X POST http://localhost:8080/api/v1/tasks \
   -H "Content-Type: application/json" \
-  -d '{"query": "Compare React vs Vue", "context": {"force_swarm": true, "lead_model_override": "kimi-k2.5", "lead_provider_override": "kimi", "agent_model_override": "MiniMax-M2.7", "agent_provider_override": "minimax"}}'
+  -d '{"query": "Compare React vs Vue", "context": {"force_swarm": true, "lead_model_override": "kimi-k2.5", "lead_provider_override": "kimi", "agent_model_override": "MiniMax-M3", "agent_provider_override": "minimax"}}'
 ```
 
 ### File Attachments (via context)

@@ -54,6 +54,7 @@ func TestDetectProvider(t *testing.T) {
 		{"Moonshot V1", "moonshot-v1-128k", "kimi"},
 
 		// MiniMax models
+		{"MiniMax M3", "MiniMax-M3", "minimax"},
 		{"MiniMax M2.7", "MiniMax-M2.7", "minimax"},
 		{"MiniMax M2.7-HS", "MiniMax-M2.7-highspeed", "minimax"},
 
