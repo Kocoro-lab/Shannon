@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-02
+
+### Fixed
+- One-command install failing on Apple Silicon / arm64 hosts — `agent-core` is published amd64-only, so `docker compose pull` errored with `no matching manifest for linux/arm64`. The release compose now pins `agent-core` to `platform: linux/amd64`, so arm64 hosts pull the amd64 image and run it under emulation. (Pre-existing since v0.4.0.)
+
 ## [0.5.0] - 2026-06-02
 
 ### Added
