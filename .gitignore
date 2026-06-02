@@ -202,7 +202,11 @@ protos/gen/
 **/generated/
 
 # Python gRPC generated files
-# python/llm-service/llm_service/grpc_gen/  # Committed for Docker build consistency
+# Committed for Docker build consistency (see #173): the llm-service Dockerfile
+# copies python/llm-service/ wholesale, so these protobuf-5.x runtime files must
+# be present in the source tag or images crash on import.
+!python/llm-service/llm_service/grpc_gen/**/*_pb2.py
+!python/llm-service/llm_service/grpc_gen/**/*_pb2_grpc.py
 python/llm-service/llm_service/generated/
 python/llm-service/llm_service/**/__pycache__/
 go/orchestrator/.pytest_cache/
