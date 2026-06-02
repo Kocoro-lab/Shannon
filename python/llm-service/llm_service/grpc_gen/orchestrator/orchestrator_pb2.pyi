@@ -623,20 +623,26 @@ class SubmitReviewDecisionResponse(_message.Message):
     def __init__(self, success: bool = ..., message: _Optional[str] = ...) -> None: ...
 
 class RecordTokenUsageRequest(_message.Message):
-    __slots__ = ("workflow_id", "agent_id", "model", "provider", "input_tokens", "output_tokens")
+    __slots__ = ("workflow_id", "agent_id", "model", "provider", "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "cache_creation_1h_tokens")
     WORKFLOW_ID_FIELD_NUMBER: _ClassVar[int]
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     MODEL_FIELD_NUMBER: _ClassVar[int]
     PROVIDER_FIELD_NUMBER: _ClassVar[int]
     INPUT_TOKENS_FIELD_NUMBER: _ClassVar[int]
     OUTPUT_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    CACHE_READ_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    CACHE_CREATION_TOKENS_FIELD_NUMBER: _ClassVar[int]
+    CACHE_CREATION_1H_TOKENS_FIELD_NUMBER: _ClassVar[int]
     workflow_id: str
     agent_id: str
     model: str
     provider: str
     input_tokens: int
     output_tokens: int
-    def __init__(self, workflow_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., model: _Optional[str] = ..., provider: _Optional[str] = ..., input_tokens: _Optional[int] = ..., output_tokens: _Optional[int] = ...) -> None: ...
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    cache_creation_1h_tokens: int
+    def __init__(self, workflow_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., model: _Optional[str] = ..., provider: _Optional[str] = ..., input_tokens: _Optional[int] = ..., output_tokens: _Optional[int] = ..., cache_read_tokens: _Optional[int] = ..., cache_creation_tokens: _Optional[int] = ..., cache_creation_1h_tokens: _Optional[int] = ...) -> None: ...
 
 class RecordTokenUsageResponse(_message.Message):
     __slots__ = ("success",)
