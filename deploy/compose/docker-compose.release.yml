@@ -5,7 +5,7 @@
 #
 # From repo clone (bind mounts expect config/ etc. as siblings):
 #   cd deploy/compose && ln -s ../../config ../../migrations ../../wasm-interpreters .
-#   SHANNON_VERSION=v0.5.0 docker compose -f docker-compose.release.yml up -d
+#   SHANNON_VERSION=v0.5.1 docker compose -f docker-compose.release.yml up -d
 
 name: shannon
 
@@ -79,6 +79,10 @@ services:
 
   agent-core:
     image: waylandzhang/agent-core:${SHANNON_VERSION:-latest}
+    # agent-core is published amd64-only (Rust + QEMU arm64 build is too slow in
+    # CI). Pin the platform so arm64 hosts (e.g. Apple Silicon) pull the amd64
+    # image and run it under emulation instead of failing on a missing manifest.
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       - RUST_LOG=info,shannon_agent_core::wasi_sandbox=debug,wasmtime=debug
