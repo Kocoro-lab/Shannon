@@ -7,8 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-02
+
 ### Added
-- MiniMax M3 model support (512K context, 128K max output, vision-capable) — set as the new default minimax model in `medium` and `large` tier priority lists; M2.7 and M2.7-highspeed remain available
+- LiteLLM embedded provider — use LiteLLM as an in-process AI gateway, broadening provider coverage (tool deltas, cache TTL split, timeout, reasoning, alias support)
+- xAI `x_search` tool — native X/Twitter search with cache-aware billing
+- MiniMax M3 model support (512K context, 128K max output, vision-capable) — new default minimax model in the `medium` and `large` tier priority lists; M2.7 and M2.7-highspeed remain available
+- Anthropic 1M context — `claude-sonnet-4-6` and `claude-opus-4-6` context windows raised to 1M (native, no beta header)
+- Content-blocks passthrough — ordered `content_blocks` relayed end-to-end through cache and streaming paths to clients
+- Attachment MIME classification — three-way MIME classification, raised caps, and a dangerous-filename gate
+- Python SDK v0.7.0 — API parity and session fixes, E2E verified
+
+### Changed
+- Cache-aware quota and billing — 1h vs 5m cache-creation TTL routing, cache-aware token aggregation and quota enforcement across budget, gateway, research, swarm, and session pricing (adds `cache_aware_total_tokens` column)
+- Promoted `gpt-5.1` to priority 1 in the `large` tier
+- Raised conservative limits for 1M-context power users (`web_fetch`/`web_crawl`/`web_subpage_fetch` and agent text caps; `MAX_PROMPT_CHARS = 1M`)
+- `playwright-service` is now optional via the `browser` compose profile
+
+### Fixed
+- Missing gRPC runtime files (`*_pb2.py`/`*_pb2_grpc.py`) absent from source tags, causing llm-service image import failures — runtime files (protobuf 5.x) are now committed (#173)
+- Gateway returning spurious 429s due to a redundant per-model rate limiter; per-provider rate limiter disabled by default
+- Uniform cache-TTL enforcement to prevent Anthropic 1h/5m mixing returning 400
+- Desktop module-not-found errors — track `desktop/lib/` TypeScript libraries
 
 ## [0.4.1] - 2026-04-04
 

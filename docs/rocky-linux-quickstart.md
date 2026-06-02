@@ -389,6 +389,15 @@ The following are the most frequently encountered problems during Rocky Linux de
 
 3. **LLM Service Protobuf Module Missing** ⚠️ Critical
 
+   > **As of v0.5.0 this should no longer happen.** The Python gRPC runtime
+   > files (`*_pb2.py`/`*_pb2_grpc.py`) are now committed to the repo, so a
+   > clean checkout already has them. If you edit a `.proto` and need to
+   > regenerate, run `make proto-local` (it uses the pinned protobuf 5.x
+   > toolchain) — do **not** hand-run `grpc_tools.protoc` with an arbitrary
+   > version, as a protobuf 6.x/7.x build crashes against the 5.x runtime
+   > pinned in `requirements.txt`. The manual steps below are a last-resort
+   > fallback only.
+
    **Error Symptoms**:
 
    ```bash
