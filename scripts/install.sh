@@ -6,9 +6,9 @@ set -euo pipefail
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/Kocoro-lab/Shannon/main/scripts/install.sh | bash
-#   curl -fsSL ... | SHANNON_VERSION=v0.3.0 bash
+#   curl -fsSL ... | SHANNON_VERSION=v0.5.0 bash
 
-SHANNON_VERSION="${SHANNON_VERSION:-v0.4.0}"
+SHANNON_VERSION="${SHANNON_VERSION:-v0.5.0}"
 REPO_RAW="https://raw.githubusercontent.com/Kocoro-lab/Shannon/${SHANNON_VERSION}"
 INSTALL_DIR="${INSTALL_DIR:-shannon}"
 
