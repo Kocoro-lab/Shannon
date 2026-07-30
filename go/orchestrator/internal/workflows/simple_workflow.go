@@ -161,7 +161,7 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	// Simple tasks generate too many low-value extractions that bloat /memory/.
 
 	// Context compression (version-gated for determinism)
-	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
+	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 2)
 	if compressionVersion >= 1 && input.SessionID != "" && len(input.History) > 20 {
 		// Check if compression is needed with rate limiting
 		estimatedTokens := activities.EstimateTokens(convertHistoryForAgent(input.History))
@@ -190,12 +190,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			// Compress context via activity
 			var compressResult activities.CompressContextResult
 			err = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
-				activities.CompressContextInput{
-					SessionID:        input.SessionID,
-					History:          convertHistoryMapForCompression(input.History),
-					TargetTokens:     int(float64(activities.GetModelWindowSize(modelTier)) * 0.375), // Compress to half of 75%
-					ParentWorkflowID: workflowID,
-				}).Get(ctx, &compressResult)
+				newCompressContextInput(
+					input.SessionID,
+					input.TenantID,
+					input.History,
+					int(float64(activities.GetModelWindowSize(modelTier))*0.375),
+					workflowID,
+					input.Context,
+					compressionVersion >= 2,
+				)).Get(ctx, &compressResult)
 
 			if err == nil && compressResult.Summary != "" && compressResult.Stored {
 				logger.Info("Context compressed and stored",
@@ -255,12 +258,15 @@ func SimpleTaskWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			// Compress and store context to get a summary
 			var compressResult activities.CompressContextResult
 			_ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
-				activities.CompressContextInput{
-					SessionID:        input.SessionID,
-					History:          convertHistoryMapForCompression(input.History),
-					TargetTokens:     int(float64(window) * tgt),
-					ParentWorkflowID: workflowID,
-				},
+				newCompressContextInput(
+					input.SessionID,
+					input.TenantID,
+					input.History,
+					int(float64(window)*tgt),
+					workflowID,
+					input.Context,
+					compressionVersion >= 2,
+				),
 			).Get(ctx, &compressResult)
 			if compressResult.Summary != "" {
 				if input.Context == nil {

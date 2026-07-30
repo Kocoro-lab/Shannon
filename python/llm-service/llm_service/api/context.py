@@ -1,8 +1,10 @@
+import logging
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class Message(BaseModel):
@@ -13,6 +15,7 @@ class Message(BaseModel):
 class CompressRequest(BaseModel):
     messages: List[Message]
     target_tokens: Optional[int] = Field(default=400, ge=64, le=2000)
+    compress_all_messages: bool = False
 
 
 class CompressResponse(BaseModel):
@@ -22,15 +25,24 @@ class CompressResponse(BaseModel):
     usage: Dict[str, Any] = Field(default_factory=dict)
 
 
+def _messages_to_compress(body: CompressRequest) -> List[Message]:
+    """Keep legacy callers on the prior 20-message request scope."""
+    if body.compress_all_messages:
+        return body.messages
+    return body.messages[-20:]
+
+
 @router.post("/context/compress", response_model=CompressResponse)
 async def compress_context(request: Request, body: CompressRequest) -> CompressResponse:
     providers = getattr(request.app.state, "providers", None)
     if not body.messages:
         raise HTTPException(status_code=400, detail="messages required")
 
+    messages = _messages_to_compress(body)
+
     # If no providers, fallback to heuristic: join and truncate
     if not providers or not providers.is_configured():
-        joined = "\n".join([m.content for m in body.messages[-10:]])
+        joined = "\n".join([m.content for m in messages])
         # Very simple heuristic compression
         summary = joined[: min(len(joined), 1000)]
         if len(joined) > 1000:
@@ -44,9 +56,7 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
         "You compress long conversations into a concise, factual summary. "
         "Capture key decisions, entities, intents, and unresolved items."
     )
-    # Use only the last N messages for cost, but summarize older context implicitly
-    recent = body.messages[-20:]
-    user = "\n".join([f"{m.role}: {m.content}" for m in recent])
+    user = "\n".join([f"{m.role}: {m.content}" for m in messages])
 
     try:
         from ..providers.base import ModelTier
@@ -81,5 +91,9 @@ async def compress_context(request: Request, body: CompressRequest) -> CompressR
             model_used=result.get("model", "unknown"),
             usage=usage,
         )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("Context compression failed: %s", type(exc).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="context compression failed",
+        ) from None

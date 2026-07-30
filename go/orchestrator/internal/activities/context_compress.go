@@ -18,6 +18,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	minCompressionTargetTokens = 64
+	maxCompressionTargetTokens = 2000
+)
+
 // CompressContextInput requests summary for long conversation history
 type CompressContextInput struct {
 	SessionID string `json:"session_id"`
@@ -25,6 +30,10 @@ type CompressContextInput struct {
 	// History messages as pairs: {role, content}
 	History      []map[string]string `json:"history"`
 	TargetTokens int                 `json:"target_tokens"`
+	PrimersCount int                 `json:"primers_count,omitempty"`
+	RecentsCount int                 `json:"recents_count,omitempty"`
+	// UseConfiguredBoundaries selects only the middle history before compression.
+	UseConfiguredBoundaries bool `json:"use_configured_boundaries,omitempty"`
 	// Parent workflow ID for unified event streaming
 	ParentWorkflowID string `json:"parent_workflow_id,omitempty"`
 }
@@ -47,26 +56,40 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 		return CompressContextResult{Summary: "", Stored: false}, nil
 	}
 
+	history := in.History
+	if in.UseConfiguredBoundaries {
+		history = selectMiddleHistory(
+			in.History,
+			in.PrimersCount,
+			in.RecentsCount,
+		)
+	}
+	if len(history) == 0 {
+		metrics.CompressionEvents.WithLabelValues("skipped").Inc()
+		return CompressContextResult{Summary: "", Stored: false}, nil
+	}
+
 	// Mark compression triggered
 	metrics.CompressionEvents.WithLabelValues("triggered").Inc()
 
 	// Estimate original tokens from history
 	originalTokens := 0
-	for _, msg := range in.History {
+	for _, msg := range history {
 		if content, ok := msg["content"]; ok {
 			// Conservative estimate: ~4 chars per token
 			originalTokens += len(content) / 4
 		}
 	}
 	// Add overhead for formatting
-	originalTokens += len(in.History) * 5
+	originalTokens += len(history) * 5
 
 	// Call llm-service /context/compress
 	base := getenv("LLM_SERVICE_URL", "http://llm-service:8000")
 	url := base + "/context/compress"
 	reqBody := map[string]interface{}{
-		"messages":      in.History,
-		"target_tokens": in.TargetTokens,
+		"messages":              history,
+		"target_tokens":         clampCompressionTargetTokens(in.TargetTokens),
+		"compress_all_messages": in.UseConfiguredBoundaries,
 	}
 	buf, _ := json.Marshal(reqBody)
 	client := &http.Client{Timeout: 8 * time.Second, Transport: interceptors.NewWorkflowHTTPRoundTripper(nil)}
@@ -174,6 +197,26 @@ func CompressAndStoreContext(ctx context.Context, in CompressContextInput) (Comp
 		OriginalTokens:   originalTokens,
 		CompressedTokens: compressedTokens,
 	}, nil
+}
+
+func clampCompressionTargetTokens(targetTokens int) int {
+	if targetTokens < minCompressionTargetTokens {
+		return minCompressionTargetTokens
+	}
+	if targetTokens > maxCompressionTargetTokens {
+		return maxCompressionTargetTokens
+	}
+	return targetTokens
+}
+
+func selectMiddleHistory(
+	history []map[string]string,
+	primersCount int,
+	recentsCount int,
+) []map[string]string {
+	start := min(max(primersCount, 0), len(history))
+	end := max(start, len(history)-max(recentsCount, 0))
+	return history[start:end]
 }
 
 // redactPII performs comprehensive PII redaction on summaries

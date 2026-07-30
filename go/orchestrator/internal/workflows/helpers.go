@@ -84,6 +84,29 @@ func getPrimersRecents(ctx map[string]interface{}, defPrimers, defRecents int) (
 	return p, r
 }
 
+func newCompressContextInput(
+	sessionID string,
+	tenantID string,
+	history []Message,
+	targetTokens int,
+	parentWorkflowID string,
+	ctx map[string]interface{},
+	useConfiguredBoundaries bool,
+) activities.CompressContextInput {
+	input := activities.CompressContextInput{
+		SessionID:        sessionID,
+		History:          convertHistoryMapForCompression(history),
+		TargetTokens:     targetTokens,
+		ParentWorkflowID: parentWorkflowID,
+	}
+	if useConfiguredBoundaries {
+		input.PrimersCount, input.RecentsCount = getPrimersRecents(ctx, 3, 20)
+		input.TenantID = tenantID
+		input.UseConfiguredBoundaries = true
+	}
+	return input
+}
+
 // getCompressionRatios reads compression trigger/target ratios from context
 // falling back to provided defaults. Values are clamped to sane bounds.
 func getCompressionRatios(ctx map[string]interface{}, defTrigger, defTarget float64) (float64, float64) {

@@ -291,7 +291,7 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 	}
 
 	// Context compression before Tree-of-Thoughts (version-gated for determinism)
-	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
+	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 2)
 	if compressionVersion >= 1 && input.SessionID != "" && len(input.History) > 20 {
 		// Check if compression is needed with rate limiting
 		estimatedTokens := activities.EstimateTokens(convertHistoryForAgent(input.History))
@@ -315,12 +315,11 @@ Therefore: List exactly %d hypotheses, each starting with "Hypothesis N:"`,
 			// Compress context via activity
 			var compressResult activities.CompressContextResult
 			err = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
-				activities.CompressContextInput{
-					SessionID:        input.SessionID,
-					History:          convertHistoryMapForCompression(input.History),
-					TargetTokens:     int(float64(activities.GetModelWindowSize(opts.ModelTier)) * 0.375),
-					ParentWorkflowID: input.ParentWorkflowID,
-				}).Get(ctx, &compressResult)
+				newCompressContextInput(
+					input,
+					int(float64(activities.GetModelWindowSize(opts.ModelTier))*0.375),
+					compressionVersion >= 2,
+				)).Get(ctx, &compressResult)
 
 			if err == nil && compressResult.Summary != "" && compressResult.Stored {
 				logger.Info("Context compressed and stored",
@@ -618,16 +617,4 @@ func buildScientificReport(
 	report.WriteString(fmt.Sprintf("**Total Thoughts Explored:** %d\n", totResult.TotalThoughts))
 
 	return report.String()
-}
-
-// convertHistoryMapForCompression converts Message history to map format for compression
-func convertHistoryMapForCompression(messages []Message) []map[string]string {
-	result := make([]map[string]string, len(messages))
-	for i, msg := range messages {
-		result[i] = map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
-		}
-	}
-	return result
 }

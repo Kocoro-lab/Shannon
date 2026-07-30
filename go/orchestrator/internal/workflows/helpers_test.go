@@ -1,9 +1,83 @@
 package workflows
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestNewCompressContextInputPreservesConfiguredHistoryBoundaries(t *testing.T) {
+	history := []Message{
+		{Role: "system", Content: "primer"},
+		{Role: "user", Content: "middle"},
+		{Role: "assistant", Content: "recent"},
+	}
+	input := newCompressContextInput(
+		"session-1",
+		"tenant-1",
+		history,
+		400,
+		"workflow-1",
+		map[string]interface{}{
+			"primers_count": 1,
+			"recents_count": float64(1),
+		},
+		true,
+	)
+
+	if input.PrimersCount != 1 || input.RecentsCount != 1 {
+		t.Fatalf(
+			"unexpected boundaries: primers=%d recents=%d",
+			input.PrimersCount,
+			input.RecentsCount,
+		)
+	}
+	if input.TenantID != "tenant-1" {
+		t.Fatalf("unexpected tenant ID: %q", input.TenantID)
+	}
+	if !input.UseConfiguredBoundaries {
+		t.Fatal("expected configured history boundaries")
+	}
+	if len(input.History) != 3 || input.History[1]["content"] != "middle" {
+		t.Fatalf("unexpected history: %#v", input.History)
+	}
+}
+
+func TestNewCompressContextInputPreservesLegacyWorkflowInput(t *testing.T) {
+	input := newCompressContextInput(
+		"session-1",
+		"tenant-1",
+		[]Message{{Role: "user", Content: "history"}},
+		400,
+		"workflow-1",
+		map[string]interface{}{
+			"primers_count": 1,
+			"recents_count": 1,
+		},
+		false,
+	)
+
+	if input.UseConfiguredBoundaries || input.PrimersCount != 0 || input.RecentsCount != 0 {
+		t.Fatalf("unexpected boundary fields: %#v", input)
+	}
+	if input.TenantID != "" {
+		t.Fatalf("unexpected tenant ID for legacy workflow: %q", input.TenantID)
+	}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		t.Fatalf("marshal input: %v", err)
+	}
+	for _, field := range []string{
+		"tenant_id",
+		"primers_count",
+		"recents_count",
+		"use_configured_boundaries",
+	} {
+		if strings.Contains(string(encoded), field) {
+			t.Fatalf("legacy input unexpectedly contains %q: %s", field, encoded)
+		}
+	}
+}
 
 func TestConvertHistoryForAgent_NewlineEscaping(t *testing.T) {
 	tests := []struct {

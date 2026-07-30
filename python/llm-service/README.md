@@ -206,6 +206,30 @@ LOG_LEVEL=INFO
 METRICS_ENABLED=true
 ```
 
+### Optional Xquik Search
+
+`xquik_search` reads public X posts through Xquik. Each call is a paid read.
+Review current Xquik pricing before enabling it. Set a small `limit` for each
+search. The API can return fewer results than requested.
+
+The tool is disabled by default. Enable it only for operators who accept paid
+reads:
+
+```bash
+XQUIK_SEARCH_ENABLED=true
+XQUIK_API_KEY=xq_...
+XQUIK_SEARCH_RATE_LIMIT=30
+XQUIK_SEARCH_TIMEOUT=30
+```
+
+Restart the LLM service after changing these values. The tool is marked
+dangerous. Default lists, schemas, and automatic selection exclude it. Add
+`xquik_search` to an agent's explicit `allowed_tools` list or call it directly.
+It never creates a checkout or top-up after a `402` response.
+
+Xquik is an independent third-party service. Not affiliated with X Corp.
+"Twitter" and "X" are trademarks of X Corp.
+
 ### Provider Models
 
 Each provider supports different models. See [providers-models.md](../../docs/providers-models.md) for the complete list.
