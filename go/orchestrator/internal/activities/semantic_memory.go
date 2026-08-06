@@ -163,7 +163,7 @@ func FetchHierarchicalMemory(ctx context.Context, in FetchHierarchicalMemoryInpu
 
 	// Fetch summaries if we have a query and vector db is configured
 	// Summaries provide compressed historical context
-	if in.Query != "" && in.SemanticTopK > 0 {
+	if in.Query != "" && in.SummaryTopK > 0 {   
 		vdb := vectordb.Get()
 		embSvc := embeddings.Get()
 		if vdb != nil && embSvc != nil && vdb.GetConfig().Summaries != "" {
