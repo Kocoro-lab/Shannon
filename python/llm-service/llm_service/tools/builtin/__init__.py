@@ -12,6 +12,7 @@ from .data_tools import DiffFilesTool, JsonQueryTool
 from .python_wasi_executor import PythonWasiExecutorTool
 from .bash_executor import BashExecutorTool
 from .x_search import XSearchTool
+from .xquik_search import XquikSearchTool, xquik_search_enabled
 
 # Browser automation tool
 try:
@@ -37,6 +38,8 @@ __all__ = [
     "BashExecutorTool",
     "PythonWasiExecutorTool",
     "XSearchTool",
+    "XquikSearchTool",
+    "xquik_search_enabled",
 ]
 
 # Add browser tool to exports if available

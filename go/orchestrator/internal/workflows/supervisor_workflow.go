@@ -488,7 +488,7 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 	}
 
 	// Version gate for context compression determinism
-	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 1)
+	compressionVersion := workflow.GetVersion(ctx, "context_compress_v1", workflow.DefaultVersion, 2)
 
 	// Lightweight sanitizer to keep tool_execution payloads small and serializable
 	truncate := func(s string, max int) string {
@@ -611,12 +611,16 @@ func SupervisorWorkflow(ctx workflow.Context, input TaskInput) (TaskResult, erro
 			trig, tgt := getCompressionRatios(childCtx, 0.75, 0.375)
 			if est >= int(float64(agentMax)*trig) {
 				var compressResult activities.CompressContextResult
-				_ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext, activities.CompressContextInput{
-					SessionID:        input.SessionID,
-					History:          convertHistoryMapForCompression(input.History),
-					TargetTokens:     int(float64(agentMax) * tgt),
-					ParentWorkflowID: workflowID,
-				}).Get(ctx, &compressResult)
+				_ = workflow.ExecuteActivity(ctx, activities.CompressAndStoreContext,
+					newCompressContextInput(
+						input.SessionID,
+						input.TenantID,
+						input.History,
+						int(float64(agentMax)*tgt),
+						workflowID,
+						childCtx,
+						compressionVersion >= 2,
+					)).Get(ctx, &compressResult)
 				if compressResult.Summary != "" {
 					childCtx["context_summary"] = fmt.Sprintf("Previous context summary: %s", compressResult.Summary)
 					prim, rec := getPrimersRecents(childCtx, 3, 20)

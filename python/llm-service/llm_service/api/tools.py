@@ -6,10 +6,11 @@ from fastapi import APIRouter, HTTPException, Request
 import os
 import yaml
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Type
 import logging
 
 from ..tools import get_registry
+from ..tools.base import Tool
 from ..tools.mcp import create_mcp_tool_class
 from ..tools.text_formatter import format_tool_text
 from ..tools.openapi_tool import load_openapi_tools_from_config
@@ -30,6 +31,8 @@ from ..tools.builtin import (
     DiffFilesTool,
     JsonQueryTool,
     XSearchTool,
+    XquikSearchTool,
+    xquik_search_enabled,
 )
 
 # Browser automation tool (requires playwright service)
@@ -319,13 +322,9 @@ def _load_openapi_tools_from_config():
         logger.error(traceback.format_exc())
 
 
-@router.on_event("startup")
-async def startup_event():
-    """Initialize and register built-in tools on startup"""
-    registry = get_registry()
-
-    # Register built-in tools
-    tools_to_register = [
+def _builtin_tool_classes() -> List[Type[Tool]]:
+    """Return built-in tools enabled for this process."""
+    tool_classes = [
         WebSearchTool,
         WebFetchTool,
         WebSubpageFetchTool,
@@ -343,8 +342,18 @@ async def startup_event():
         JsonQueryTool,
         XSearchTool,
     ]
+    if xquik_search_enabled():
+        tool_classes.append(XquikSearchTool)
+    return tool_classes
 
-    for tool_class in tools_to_register:
+
+@router.on_event("startup")
+async def startup_event():
+    """Initialize and register built-in tools on startup"""
+    registry = get_registry()
+
+    # Register built-in tools
+    for tool_class in _builtin_tool_classes():
         try:
             registry.register(tool_class)
             logger.info(f"Registered tool: {tool_class.__name__}")
