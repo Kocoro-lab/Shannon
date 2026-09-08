@@ -1,0 +1,137 @@
+name: Skill Security Scan
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'config/skills/**'
+  pull_request:
+    branches: [ "**" ]
+    paths:
+      - 'config/skills/**'
+  workflow_dispatch:
+
+concurrency:
+  group: skill-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  skill-security:
+    name: SkillSpector Scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install SkillSpector
+        run: |
+          pip install --upgrade pip
+          pip install skillspector
+
+      - name: Run SkillSpector scan (core skills)
+        id: scan_core
+        run: |
+          echo "Scanning config/skills/core/ ..."
+          skillspector scan config/skills/core/ \
+            --format sarif \
+            --output skillspector-core.sarif \
+            --fail-on HIGH
+
+      - name: Run SkillSpector scan (user skills, if exist)
+        id: scan_user
+        if: ${{ always() }}
+        run: |
+          if [ -d "config/skills/user" ] && [ "$(ls -A config/skills/user)" ]; then
+            echo "Scanning config/skills/user/ ..."
+            skillspector scan config/skills/user/ \
+              --format sarif \
+              --output skillspector-user.sarif \
+              --fail-on HIGH
+          else
+            echo "No user skills directory or empty, skipping"
+            echo "SKIPPED=true" >> $GITHUB_OUTPUT
+          fi
+
+      - 名字: 运行SkillSpector扫描（供应商技能，如果存在）
+身份证: scan_vendor
+如果: ${{ always() }}
+跑: |
+如果
+扫描配置/技能/供应商/……
+skills spector扫描配置/skills/vendor/\\\
+-格式 sarif\
+-输出 skillspector-vendor.sarif\
+-失败
+其他的
+echo[没有供应商技能目录或空，*
+回声"SKIPPED=true">> $GITHUB_OUTPUT
+请将下面的文本准确无误地翻译成
+
+      - 名字: 上传 SARIF you（周）
+如果: always()
+用途: github/codeql-action/upload-sarif@v3
+与:
+          sarif_file: skillspector-core.sarif
+如果: "$（ls-配置/技能/供应商）"
+
+如果上传 SARIF you（周）-名字: ；那么
+-格式 sarif\: skills spector扫描配置/skills/vendor/\\\\\'true'
+"$（ls-配置///you）": github/codeql-action/upload-sarif@v3
+-失败:
+          sarif_file: skillspector-user.sarif
+没有供应商技能目录或空，*: 种类[killspector-用户
+
+回声: >> $GITHUB_OUTPUT
+请将下面的文本准确无误地翻译成: 名字'true'
+上传 SARIF: github/codeql-action/upload-sarif@v3
+S:
+          sarif_file: skillspector-vendor.sarif
+名字: 上传 SARIF
+
+S: 名字
+上传 SARIF: S'pull_request'
+名字: actions/github-script@v7
+公关综述:
+const fs = require(: |
+译文:const fs=require
+
+)； （此句为原样保留'fs'让摘要=
+安全扫描结果\n\n
+            
+['core', 'user', 'vendor']if（fs.Existsync（文件））
+.forEach(cat =>{const file = `skillspector-$}.sarif`;
+const data=JSON. parse fs. readFileSync文件{
+const data=JSON. parse fs. readFileSync文件, 'utf8'));
+const data=JSON. parse fs. readFileSync文件；0]const results = data.runs[];
+results.forEach(r =>{const计数=}临界：0，高：0，中：0，低：0
+const level = r.level ||{
+如果 level==========================================================='note';
+) counts.high++;让摘要='error'否则如果 level==================================================================================================================================================================================================
+) counts.high++;else counts.low++;) counts.critical++;
+总结+=###$'note') counts.medium++;
+总结+=###$
+                });
+总结+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++else counts.low++;cat.toUpperCase()summary += `| Level | Count |\n|-------|-------|\n`; Skills\n`;
+) counts.medium++;
+总结+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++{counts.critical} |\n`;
+概要+========={counts.high} |\n`;
+summary += `| Level | Count |\n|-------|-------|\n`;{counts.medium} |\n`;
+总结+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++{概要+=========
+              }
+            });
+            
+            github.rest.issues.createComment({
+issue_number: context.issue.number,
+正文：摘要
+总结+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+summary += `| Level | Count |\n|-------|-------|\n`;
+);
