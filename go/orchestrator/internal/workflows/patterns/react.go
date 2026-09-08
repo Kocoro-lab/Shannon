@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time" // Used for activity timeout durations
+	"unicode"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
@@ -88,6 +89,13 @@ func ReactLoop(
 			isResearch = true
 		}
 	}
+
+	// Version gate: CJK-aware completion/convergence heuristics.
+	// The reasoner answers in the user's language, so the English-only phrase
+	// list and whitespace tokenization never match CJK responses; without this,
+	// CJK tasks can only exit via MaxIterations. In-flight workflows must
+	// replay with the original English-only behavior.
+	cjkHeuristics := workflow.GetVersion(ctx, "react_cjk_heuristics_v1", workflow.DefaultVersion, 1) >= 1
 
 	// Main Reason-Act-Observe loop
 	var agentResults []activities.AgentExecutionResult
@@ -257,6 +265,9 @@ func ReactLoop(
 
 		// Check if reasoning indicates completion
 		canComplete := isTaskComplete(reasonResult.Response)
+		if !canComplete && cjkHeuristics {
+			canComplete = isTaskCompleteCJK(reasonResult.Response)
+		}
 		if canComplete {
 			// Enforce minimum iterations
 			if iteration+1 < config.MinIterations {
@@ -581,7 +592,7 @@ func ReactLoop(
 		iteration++
 
 		// Check for early termination based on multiple criteria
-		if shouldStopReactLoop(observations, thoughts, agentResults, iteration) {
+		if shouldStopReactLoop(observations, thoughts, agentResults, iteration, cjkHeuristics) {
 			logger.Info("Early termination criteria met",
 				"iteration", iteration,
 				"total_agent_results", len(agentResults),
@@ -802,8 +813,9 @@ func isTaskComplete(reasoning string) bool {
 // Removed extractToolsFromReasoning - all tool selection is now LLM-driven
 // to maintain consistency with the LLM-native architecture
 
-// shouldStopReactLoop checks multiple criteria for early termination
-func shouldStopReactLoop(observations []string, thoughts []string, agentResults []activities.AgentExecutionResult, iteration int) bool {
+// shouldStopReactLoop checks multiple criteria for early termination.
+// cjkAware selects the CJK-capable similarity check (version-gated by caller).
+func shouldStopReactLoop(observations []string, thoughts []string, agentResults []activities.AgentExecutionResult, iteration int, cjkAware bool) bool {
 	// Need at least 2 iterations to compare
 	if iteration < 2 {
 		return false
@@ -819,7 +831,13 @@ func shouldStopReactLoop(observations []string, thoughts []string, agentResults 
 	if len(observations) >= 2 {
 		lastObs = observations[len(observations)-1]
 		prevObs = observations[len(observations)-2]
-		if areSimilar(lastObs, prevObs) {
+		similar := false
+		if cjkAware {
+			similar = areSimilarCJK(lastObs, prevObs)
+		} else {
+			similar = areSimilar(lastObs, prevObs)
+		}
+		if similar {
 			return true
 		}
 	}
@@ -909,6 +927,116 @@ func areSimilar(s1, s2 string) bool {
 	// If >70% of significant words overlap, consider similar
 	overlapRatio := float64(overlap) / float64(len(words2))
 	return overlapRatio > 0.7
+}
+
+// isTaskCompleteCJK extends the isTaskComplete heuristic to CJK responses.
+// The reasoner is instructed to respond in the user's language, so for CJK
+// queries the English-only phrase list never matches and the completion exit
+// is unreachable. Kept additive so English behavior is unchanged.
+func isTaskCompleteCJK(reasoning string) bool {
+	// Conservative multi-character phrases only; deliberately excludes bare
+	// terms like "完成" that appear in forward-looking statements
+	// (e.g. "完成搜索后…"), mirroring the false-positive risk of "done".
+	cjkCompletionPhrases := []string{
+		// Chinese
+		"任务完成", "任务已完成", "已完成任务", "问题已解决",
+		"找到了答案", "已找到答案", "目标达成", "已达成目标",
+		// Japanese
+		"タスク完了", "完了しました", "解決しました", "答えが見つかりました",
+		// Korean
+		"작업 완료", "완료했습니다", "해결되었습니다",
+	}
+	for _, phrase := range cjkCompletionPhrases {
+		if strings.Contains(reasoning, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// areSimilarCJK is a CJK-capable variant of areSimilar. areSimilar tokenizes
+// with strings.Fields, so CJK text (no spaces) collapses into one giant token
+// and similar observations never register as similar. This variant tokenizes
+// whitespace-delimited words as before and consecutive CJK runes as character
+// bigrams, then compares token sets with the Dice coefficient. Pure and
+// deterministic (workflow-safe).
+func areSimilarCJK(s1, s2 string) bool {
+	if s1 == s2 {
+		return true
+	}
+
+	// Cheap length prefilter, mirroring areSimilar
+	len1, len2 := len(s1), len(s2)
+	if len1 == 0 || len2 == 0 {
+		return false
+	}
+	lengthRatio := float64(len1) / float64(len2)
+	if lengthRatio < 0.5 || lengthRatio > 2.0 {
+		return false
+	}
+
+	tokens1 := significantTokens(s1)
+	tokens2 := significantTokens(s2)
+	if len(tokens1) == 0 || len(tokens2) == 0 {
+		return false
+	}
+
+	intersection := 0
+	for tok := range tokens2 {
+		if tokens1[tok] {
+			intersection++
+		}
+	}
+
+	// Dice coefficient; same 0.7 threshold as areSimilar but symmetric
+	dice := 2 * float64(intersection) / float64(len(tokens1)+len(tokens2))
+	return dice > 0.7
+}
+
+// significantTokens lowercases s and returns the token set used for similarity:
+// whitespace-delimited words longer than 3 runes for alphabetic scripts, plus
+// character bigrams for consecutive CJK runes (whitespace segmentation does not
+// apply to CJK text; bigrams approximate words, which are mostly two characters).
+func significantTokens(s string) map[string]bool {
+	set := make(map[string]bool)
+	var word []rune
+	var prevCJK rune
+
+	flushWord := func() {
+		if len(word) > 3 { // skip short words like "the", "is"
+			set[string(word)] = true
+		}
+		word = word[:0]
+	}
+
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case isCJK(r):
+			flushWord()
+			if prevCJK != 0 {
+				set[string([]rune{prevCJK, r})] = true
+			}
+			prevCJK = r
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			prevCJK = 0
+			word = append(word, r)
+		default:
+			prevCJK = 0
+			flushWord()
+		}
+	}
+	flushWord()
+	return set
+}
+
+// isCJK reports whether r belongs to a script written without word spaces
+// (Han, Hiragana, Katakana) or Hangul, all of which strings.Fields cannot
+// meaningfully tokenize.
+func isCJK(r rune) bool {
+	return unicode.Is(unicode.Han, r) ||
+		unicode.Is(unicode.Hiragana, r) ||
+		unicode.Is(unicode.Katakana, r) ||
+		unicode.Is(unicode.Hangul, r)
 }
 
 // countCitations counts how many citations are in an agent result
