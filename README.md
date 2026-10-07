@@ -494,3 +494,6 @@ MIT License — Use it anywhere, modify anything. See [LICENSE](LICENSE).
   <a href="https://github.com/Kocoro-lab/Shannon">GitHub</a> ·
   <a href="https://docs.shannon.run">Docs</a>
 </p>
+
+
+To support any Serper.dev-compatible endpoint (like litescrape.com, serpbase.dev, serpensapi.org, and others), set `SERPER_BASE_URL` to the provider base URL (without `/search`) and `SERPER_API_KEY` to a key issued by that provider. The default base URL is `https://google.serper.dev`.
