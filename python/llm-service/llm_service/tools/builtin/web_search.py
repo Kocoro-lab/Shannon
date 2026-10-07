@@ -424,7 +424,9 @@ class SerperSearchProvider(WebSearchProvider):
         if not self.validate_api_key(api_key):
             raise ValueError("Invalid or missing API key")
         self.api_key = api_key
-        self.base_url = "https://google.serper.dev/search"
+        self.base_url = (
+            os.getenv("SERPER_BASE_URL") or "https://google.serper.dev"
+        ).rstrip("/") + "/search"
 
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
