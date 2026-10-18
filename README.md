@@ -466,6 +466,16 @@ export OPENAI_API_BASE=http://localhost:8080/v1
 | [Extending Shannon](docs/extending-shannon.md) | Custom tools and templates |
 | [Swarm Agents](docs/swarm-agents.md) | Multi-agent collaboration |
 
+### Further Reading
+
+The following implementation-focused chapters explain the design choices behind
+Shannon's MCP, skills, routing, and prompt-cache behavior:
+
+- [MCP Protocol Deep Dive](https://waylandz.com/ai-agent-book-en/chapter-04-mcp-protocol-deep-dive/) — client/server roles, tool discovery, and security boundaries.
+- [Skills System](https://waylandz.com/ai-agent-book-en/chapter-05-skills-system/) — reusable skills, discovery, and scoped tool exposure.
+- [Tiered Model Strategy](https://waylandz.com/ai-agent-book-en/chapter-31-tiered-model-strategy/) — capability and cost-aware model routing.
+- [Prompt Cache Stability](https://waylandz.com/ai-agent-book-en/chapter-39-prompt-cache-stability/) — stable request prefixes and cache-efficient agent execution.
+
 ## Contributing
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
