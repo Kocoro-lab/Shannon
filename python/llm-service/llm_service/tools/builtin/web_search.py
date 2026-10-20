@@ -1,5 +1,5 @@
 """
-Web Search Tool supporting multiple providers: Exa, Firecrawl, Google, Serper, and Bing
+Web Search Tool supporting Parallel MCP and credentialed search providers.
 """
 
 import aiohttp
@@ -55,6 +55,7 @@ def _ensure_snippet(result: Dict[str, Any], min_length: int = 30) -> str:
 
 
 class SearchProvider(Enum):
+    PARALLEL = "parallel"
     EXA = "exa"
     FIRECRAWL = "firecrawl"
     GOOGLE = "google"
@@ -67,6 +68,7 @@ class SearchProvider(Enum):
 # External API cost per search call (USD).
 # Recorded as 7500 synthetic tokens in token_usage ($2/1M billing rate).
 SEARCH_PROVIDER_COSTS: Dict[str, float] = {
+    SearchProvider.PARALLEL.value: 0.0,
     SearchProvider.SERPAPI.value: 0.015,
     SearchProvider.SEARCHAPI.value: 0.004,
     SearchProvider.SERPER.value: 0.002,
@@ -149,6 +151,23 @@ class WebSearchProvider:
 
     async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
         raise NotImplementedError
+
+
+class ParallelSearchProvider(WebSearchProvider):
+    """Free anonymous search through Parallel's standard MCP endpoint."""
+
+    def __init__(self):
+        from ..parallel_search import ParallelSearchClient
+
+        self.client = ParallelSearchClient(self.DEFAULT_TIMEOUT)
+
+    async def search(
+        self,
+        query: str,
+        max_results: int = 5,
+        session_context: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.client.search(query, max_results, session_context)
 
 
 class ExaSearchProvider(WebSearchProvider):
@@ -864,7 +883,8 @@ class BingSearchProvider(WebSearchProvider):
 class WebSearchTool(Tool):
     """
     Web search tool supporting multiple providers:
-    - Google Custom Search (default)
+    - Parallel Search MCP (unconfigured default)
+    - Google Custom Search
     - Serper API
     - Bing Search API
     - Exa AI (semantic search)
@@ -964,11 +984,16 @@ class WebSearchTool(Tool):
     def _initialize_provider(self) -> Optional[WebSearchProvider]:
         """Initialize the search provider based on environment configuration"""
 
-        # Default to Google, then Serper, then others
+        # Auto keeps configured credentials in the established priority order.
+        # Only an installation with no provider choice or credentials uses MCP.
         default_provider = SearchProvider.GOOGLE.value
-
-        # Check which provider is configured via environment
-        provider_name = os.getenv("WEB_SEARCH_PROVIDER", default_provider).lower()
+        choice = os.getenv("WEB_SEARCH_PROVIDER", "auto").strip().lower()
+        if choice == SearchProvider.PARALLEL.value:
+            self._provider_enum_value = choice
+            return ParallelSearchProvider()
+        if choice in ("none", "off", "disabled"):
+            return None
+        provider_name = default_provider if choice in ("", "auto") else choice
 
         # Provider configuration
         providers_config = {
@@ -1002,6 +1027,16 @@ class WebSearchTool(Tool):
                 "api_key_env": "FIRECRAWL_API_KEY",
             },
         }
+
+        if (
+            choice in ("", "auto")
+            and not any(
+                os.getenv(config["api_key_env"]) for config in providers_config.values()
+            )
+            and not os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+        ):
+            self._provider_enum_value = SearchProvider.PARALLEL.value
+            return ParallelSearchProvider()
 
         # Try configured provider first
         if provider_name in providers_config:
@@ -1160,13 +1195,13 @@ class WebSearchTool(Tool):
             description=desc,
             category="search",
             author="Shannon",
-            requires_auth=True,
+            requires_auth=not isinstance(self.provider, ParallelSearchProvider),
             rate_limit=self.settings.web_search_rate_limit,  # Configurable via WEB_SEARCH_RATE_LIMIT env var
             timeout_seconds=20,
             memory_limit_mb=256,
             sandboxed=True,
             dangerous=False,
-            cost_per_use=0.001,  # Approximate cost per search
+            cost_per_use=0.0 if isinstance(self.provider, ParallelSearchProvider) else 0.001,
             session_aware=True,  # Enable session context for official_domains auto-fetch
         )
 
@@ -1286,11 +1321,21 @@ class WebSearchTool(Tool):
 
         return params
 
-    async def _execute_impl(self, session_context: Optional[Dict] = None, **kwargs) -> ToolResult:
+    async def _execute_impl(
+        self, session_context: Optional[Dict] = None, **kwargs
+    ) -> ToolResult:
         """
         Execute web search using configured provider
         """
         query = kwargs["query"]
+        if os.getenv("WEB_SEARCH_PROVIDER", "").strip().lower() in (
+            "none",
+            "off",
+            "disabled",
+        ):
+            return ToolResult(
+                success=False, output=None, error="Web search is disabled."
+            )
         max_results = kwargs.get("max_results", 10)
         search_type = kwargs.get("search_type", "auto")
         if not self.provider:
@@ -1487,7 +1532,11 @@ class WebSearchTool(Tool):
                     pass
 
             # Pass provider-specific parameters
-            if isinstance(self.provider, ExaSearchProvider):
+            if isinstance(self.provider, ParallelSearchProvider):
+                results = await self.provider.search(
+                    query, max_results, session_context=session_context
+                )
+            elif isinstance(self.provider, ExaSearchProvider):
                 results = await self.provider.search(
                     query, max_results, search_type=search_type, category=category
                 )

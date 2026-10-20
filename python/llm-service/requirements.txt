@@ -26,6 +26,9 @@ asyncpg==0.30.0
 sqlalchemy==2.0.36
 alembic==1.14.0
 
+# Standard MCP Streamable HTTP client (compatible with pydantic 2.10)
+mcp==1.12.4
+
 # Utilities
 httpx==0.28.1
 tenacity==9.0.0

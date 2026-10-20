@@ -444,6 +444,11 @@ class TestWebSearchToolValidation:
 class TestWebSearchToolMetadata:
     """Tests for WebSearchTool metadata and schema"""
 
+    @pytest.fixture(autouse=True)
+    def configured_serpapi(self, monkeypatch):
+        monkeypatch.setenv("WEB_SEARCH_PROVIDER", "serpapi")
+        monkeypatch.setenv("SERPAPI_API_KEY", VALID_TEST_API_KEY)
+
     def test_tool_has_engine_parameter(self):
         """Test that tool schema includes engine parameter"""
         # Import tool metadata

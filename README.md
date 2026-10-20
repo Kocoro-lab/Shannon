@@ -56,7 +56,7 @@ This downloads config, prompts for API keys, pulls Docker images, and starts ser
 - Or any OpenAI-compatible endpoint
 
 **Optional but recommended:**
-- Web Search: `SERPAPI_API_KEY=...` ([serpapi.com](https://serpapi.com))
+- Web Search: free anonymous Parallel MCP works without a search key; see [provider configuration](docs/web-search-configuration.md) for alternatives.
 - Web Fetch: `FIRECRAWL_API_KEY=...` ([firecrawl.dev](https://firecrawl.dev))
 
 > **Building from source?** See [Development](#development) below.

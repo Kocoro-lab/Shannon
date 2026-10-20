@@ -2,6 +2,40 @@
 
 The Shannon platform supports multiple web search providers to deliver real-time information for AI agents. Configure your preferred provider through environment variables.
 
+## Default: automatic selection
+
+`WEB_SEARCH_PROVIDER=auto` (or leaving it unset) keeps configured search credentials
+in their existing priority order. When no search credentials are configured,
+Shannon uses [Parallel Search MCP](https://docs.parallel.ai/integrations/mcp/search-mcp)
+for free web search with excerpts, powered by Fast mode. No account or API key is
+needed. Queries are sent to `https://search.parallel.ai/mcp` using Streamable HTTP.
+
+To select it explicitly, set `WEB_SEARCH_PROVIDER=parallel`. The adapter always
+connects anonymously, including when `PARALLEL_API_KEY` exists in the environment.
+Free access has service rate limits; failures return a tool error without changing
+providers. `max_results` limits the returned list; the server can return fewer results.
+Use the existing `web_fetch` tool to read pages in depth.
+If you restrict `MCP_ALLOWED_DOMAINS`, include `search.parallel.ai` to permit this
+provider. Explicit `MCP_TIMEOUT_SECONDS` settings also apply.
+
+Saved provider choices and configured credentials are preserved. An explicit
+provider with missing credentials retains the existing initialization fallback
+among credentialed providers; it never enables Parallel implicitly. Keep SerpAPI
+or SearchAPI selected for their engine, localization and finance features, or Exa
+for its semantic modes and categories. Set `WEB_SEARCH_PROVIDER=none` to disable
+web search, including the site-scrape fallback. Tool allowlists still apply.
+
+Pass the same `session_context.session_id` for related searches and a new value
+for a new conversation. The adapter maps this conversation identifier to an
+opaque MCP UUID without sending user IDs or query text as identity. Calls without
+session context are treated as independent searches.
+
+For Compose deployments, change `.env` and recreate the LLM service:
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up -d --force-recreate llm-service
+```
+
 ## Supported Providers
 
 ### 1. **Google Custom Search** (Most Widely Used)
@@ -75,8 +109,8 @@ export FIRECRAWL_API_KEY=your_api_key_here
 
 Add to your `deploy/compose/.env` file:
 ```env
-# Web Search Configuration (choose one provider)
-WEB_SEARCH_PROVIDER=google
+# Web Search Configuration (auto preserves configured credentials)
+WEB_SEARCH_PROVIDER=auto
 
 # Google Custom Search (recommended)
 GOOGLE_SEARCH_API_KEY=your_google_api_key_here
@@ -107,7 +141,7 @@ The environment variables are already configured in `deploy/compose/docker-compo
 ```yaml
 llm-service:
   environment:
-    - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-google}
+    - WEB_SEARCH_PROVIDER=${WEB_SEARCH_PROVIDER:-auto}
     - GOOGLE_SEARCH_API_KEY=${GOOGLE_SEARCH_API_KEY}
     - GOOGLE_SEARCH_ENGINE_ID=${GOOGLE_SEARCH_ENGINE_ID}
     - SERPER_API_KEY=${SERPER_API_KEY}
@@ -123,11 +157,13 @@ If the configured provider is not available (missing API key or configuration), 
 1. Google Custom Search
 2. Serper
 3. SerpAPI
-4. Bing
-5. Exa
-6. Firecrawl
+4. SearchAPI
+5. Bing
+6. Exa
+7. Firecrawl
 
-If no provider is configured, web search will be disabled but the system continues to function.
+With `auto`, Parallel is used only when no provider credentials are configured.
+Runtime failures do not trigger a provider switch. With `none`, search remains disabled.
 
 ## Response Format
 
