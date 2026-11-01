@@ -121,6 +121,8 @@ func TestCostForSplit_SyntheticScraperModels(t *testing.T) {
 		{"shannon_web_search", 7500, 0.015, 0.001},
 		// shannon_firecrawl: (7500/1000) × 0.000133 ≈ $0.001
 		{"shannon_firecrawl", 7500, 0.001, 0.001},
+		// shannon_outcrawl: (7500/1000) × 0.00333 ≈ $0.025
+		{"shannon_outcrawl", 7500, 0.025, 0.001},
 	}
 
 	for _, tt := range tests {

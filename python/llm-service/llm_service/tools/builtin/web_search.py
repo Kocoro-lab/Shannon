@@ -57,6 +57,7 @@ def _ensure_snippet(result: Dict[str, Any], min_length: int = 30) -> str:
 class SearchProvider(Enum):
     EXA = "exa"
     FIRECRAWL = "firecrawl"
+    OUTCRAWL = "outcrawl"
     GOOGLE = "google"
     SERPER = "serper"
     SERPAPI = "serpapi"
@@ -71,6 +72,7 @@ SEARCH_PROVIDER_COSTS: Dict[str, float] = {
     SearchProvider.SEARCHAPI.value: 0.004,
     SearchProvider.SERPER.value: 0.002,
     SearchProvider.FIRECRAWL.value: 0.001,
+    SearchProvider.OUTCRAWL.value: 0.025,
     SearchProvider.EXA.value: 0.003,
     SearchProvider.GOOGLE.value: 0.005,
     SearchProvider.BING.value: 0.005,
@@ -81,6 +83,7 @@ SEARCH_PROVIDER_MODELS: Dict[str, str] = {
     SearchProvider.SEARCHAPI.value: "shannon_web_search",
     SearchProvider.SERPER.value: "shannon_web_search",
     SearchProvider.FIRECRAWL.value: "shannon_firecrawl",
+    SearchProvider.OUTCRAWL.value: "shannon_outcrawl",
     SearchProvider.EXA.value: "shannon_web_search",
     SearchProvider.GOOGLE.value: "shannon_web_search",
     SearchProvider.BING.value: "shannon_web_search",
@@ -334,6 +337,69 @@ class FirecrawlSearchProvider(WebSearchProvider):
                             "markdown": result.get(
                                 "markdown", ""
                             ),  # Full markdown available
+                        }
+                    )
+
+                return results
+
+
+class OutcrawlSearchProvider(WebSearchProvider):
+    """Outcrawl search provider - web search API for AI agents (https://outcrawl.ai)"""
+
+    def __init__(self, api_key: str):
+        if not self.validate_api_key(api_key):
+            raise ValueError("Invalid or missing API key")
+        self.api_key = api_key
+        self.base_url = "https://api.outcrawl.ai/v1/search"
+
+    async def search(self, query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "query": query,
+            "limit": self.validate_max_results(max_results),
+        }
+
+        async with aiohttp.ClientSession() as session:
+            timeout = aiohttp.ClientTimeout(total=self.DEFAULT_TIMEOUT)
+            async with session.post(
+                self.base_url, json=payload, headers=headers, timeout=timeout
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    sanitized_error = self.sanitize_error_message(error_text)
+                    logger.error(
+                        f"Outcrawl API error: status={response.status}, details logged"
+                    )
+                    logger.debug(f"Outcrawl API raw error: {sanitized_error}")
+                    if response.status == 401:
+                        raise Exception(
+                            "Search service authentication failed. Please check your API credentials."
+                        )
+                    elif response.status == 429:
+                        raise Exception(
+                            "Search rate limit exceeded. Please try again later."
+                        )
+                    else:
+                        raise Exception(
+                            f"Search service temporarily unavailable (Error {response.status})"
+                        )
+
+                data = await response.json()
+                results = []
+
+                # Outcrawl returns ranked hits: {title, url, snippet, rank}
+                for hit in data.get("hits", []):
+                    results.append(
+                        {
+                            "title": hit.get("title", ""),
+                            "snippet": hit.get("snippet", ""),
+                            "url": hit.get("url", ""),
+                            "source": "outcrawl",
+                            "position": hit.get("rank", 0),
                         }
                     )
 
@@ -1001,6 +1067,10 @@ class WebSearchTool(Tool):
                 "class": FirecrawlSearchProvider,
                 "api_key_env": "FIRECRAWL_API_KEY",
             },
+            SearchProvider.OUTCRAWL.value: {
+                "class": OutcrawlSearchProvider,
+                "api_key_env": "OUTCRAWL_API_KEY",
+            },
         }
 
         # Try configured provider first
@@ -1037,6 +1107,7 @@ class WebSearchTool(Tool):
             SearchProvider.BING.value,
             SearchProvider.EXA.value,
             SearchProvider.FIRECRAWL.value,
+            SearchProvider.OUTCRAWL.value,
         ]
 
         for name in priority_order:
@@ -1067,7 +1138,8 @@ class WebSearchTool(Tool):
             "- BING_API_KEY for Bing search\n"
             "- EXA_API_KEY for Exa search\n"
             "- FIRECRAWL_API_KEY for Firecrawl search\n"
-            "And optionally set WEB_SEARCH_PROVIDER=searchapi|google|serper|serpapi|bing|exa|firecrawl"
+            "- OUTCRAWL_API_KEY for Outcrawl search\n"
+            "And optionally set WEB_SEARCH_PROVIDER=searchapi|google|serper|serpapi|bing|exa|firecrawl|outcrawl"
         )
         return None
 
@@ -1309,7 +1381,8 @@ class WebSearchTool(Tool):
                     "- SERPAPI_API_KEY for SerpAPI search\n"
                     "- BING_API_KEY for Bing search\n"
                     "- EXA_API_KEY for Exa search\n"
-                    "- FIRECRAWL_API_KEY for Firecrawl search"
+                    "- FIRECRAWL_API_KEY for Firecrawl search\n"
+                    "- OUTCRAWL_API_KEY for Outcrawl search"
                 ),
             )
         # Sanitize/normalize search_type to avoid hard failures from invalid values
