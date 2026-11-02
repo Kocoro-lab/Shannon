@@ -887,6 +887,8 @@ pricing:
         combined_per_1k: 0.002        # (7500/1000) × 0.002 = $0.015 (SerpAPI)
       shannon_firecrawl:
         combined_per_1k: 0.000133     # (7500/1000) × 0.000133 ≈ $0.001 (Firecrawl)
+      shannon_outcrawl:
+        combined_per_1k: 0.00333      # (7500/1000) × 0.00333 ≈ $0.025 (Outcrawl search, 5 credits)
       shannon_web_fetch:
         combined_per_1k: 0.00035      # SMALL model weighted avg; fallback only (real cost via cost_usd override)
 

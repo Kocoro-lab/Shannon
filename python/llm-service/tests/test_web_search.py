@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from llm_service.tools.builtin.web_search import (
+    OutcrawlSearchProvider,
     SearchAPISearchProvider,
     SerpAPISearchProvider,
     WebSearchTool,
@@ -482,3 +483,105 @@ class TestWebSearchToolMetadata:
 
         assert "window" in param_names
         assert "trend" in param_names
+
+
+def _mock_post_session(mock_client, status, body):
+    """Wire a patched aiohttp.ClientSession whose post() returns status/body."""
+    mock_response = AsyncMock()
+    mock_response.status = status
+    mock_response.json = AsyncMock(return_value=body)
+    mock_response.text = AsyncMock(return_value=str(body))
+    mock_session = MagicMock()
+    mock_session.post = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_response),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    mock_client.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_client.return_value.__aexit__ = AsyncMock(return_value=False)
+    return mock_session
+
+
+class TestOutcrawlSearchProvider:
+    """Tests for OutcrawlSearchProvider"""
+
+    def test_rejects_missing_api_key(self):
+        with pytest.raises(ValueError):
+            OutcrawlSearchProvider(api_key="")
+
+    @pytest.mark.asyncio
+    async def test_search_posts_query_and_maps_hits(self):
+        provider = OutcrawlSearchProvider(api_key=VALID_TEST_API_KEY)
+        body = {
+            "hits": [
+                {
+                    "title": "Shannon",
+                    "url": "https://github.com/Kocoro-lab/Shannon",
+                    "snippet": "Agent platform",
+                    "rank": 1,
+                },
+                {
+                    "title": "Docs",
+                    "url": "https://docs.example.com",
+                    "snippet": "Guide",
+                    "rank": 2,
+                },
+            ],
+            "usage": {"credits": "5"},
+        }
+
+        with patch("aiohttp.ClientSession") as mock_client:
+            mock_session = _mock_post_session(mock_client, 200, body)
+            results = await provider.search("shannon agents", max_results=2)
+
+        call = mock_session.post.call_args
+        assert call.args[0] == "https://api.outcrawl.ai/v1/search"
+        assert call.kwargs["json"] == {"query": "shannon agents", "limit": 2}
+        assert call.kwargs["headers"]["Authorization"] == f"Bearer {VALID_TEST_API_KEY}"
+        assert results == [
+            {
+                "title": "Shannon",
+                "snippet": "Agent platform",
+                "url": "https://github.com/Kocoro-lab/Shannon",
+                "source": "outcrawl",
+                "position": 1,
+            },
+            {
+                "title": "Docs",
+                "snippet": "Guide",
+                "url": "https://docs.example.com",
+                "source": "outcrawl",
+                "position": 2,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_search_raises_on_auth_error(self):
+        provider = OutcrawlSearchProvider(api_key=VALID_TEST_API_KEY)
+
+        with patch("aiohttp.ClientSession") as mock_client:
+            _mock_post_session(
+                mock_client, 401, {"code": "unauthorized", "message": "bad key"}
+            )
+            with pytest.raises(Exception, match="authentication failed"):
+                await provider.search("shannon agents")
+
+    def test_tool_selects_outcrawl_from_env(self, monkeypatch):
+        for var in (
+            "GOOGLE_SEARCH_API_KEY",
+            "SERPER_API_KEY",
+            "SERPAPI_API_KEY",
+            "SEARCHAPI_API_KEY",
+            "BING_API_KEY",
+            "EXA_API_KEY",
+            "FIRECRAWL_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("WEB_SEARCH_PROVIDER", "outcrawl")
+        monkeypatch.setenv("OUTCRAWL_API_KEY", VALID_TEST_API_KEY)
+
+        tool = WebSearchTool()
+
+        assert isinstance(tool.provider, OutcrawlSearchProvider)
+        assert tool._provider_enum_value == "outcrawl"

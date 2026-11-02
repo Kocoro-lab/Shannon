@@ -71,6 +71,16 @@ export FIRECRAWL_API_KEY=your_api_key_here
 - Free tier: Limited alpha access
 - Pricing: Variable based on scraping depth
 
+### 7. **Outcrawl** (Search API for AI agents)
+Web search returning ranked results with titles, URLs and snippets.
+```bash
+export WEB_SEARCH_PROVIDER=outcrawl
+export OUTCRAWL_API_KEY=your_api_key_here
+```
+- Get API key at: https://outcrawl.ai
+- Features: Ranked results with snippets; the same key works for scrape and crawl
+- Pricing: 5 credits per search
+
 ## Docker Compose Configuration
 
 Add to your `deploy/compose/.env` file:
@@ -101,6 +111,10 @@ GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id_here
 # Or Firecrawl (with content extraction)
 # WEB_SEARCH_PROVIDER=firecrawl
 # FIRECRAWL_API_KEY=your_firecrawl_api_key_here
+
+# Or Outcrawl (search API for AI agents)
+# WEB_SEARCH_PROVIDER=outcrawl
+# OUTCRAWL_API_KEY=your_outcrawl_api_key_here
 ```
 
 The environment variables are already configured in `deploy/compose/docker-compose.yml`:
@@ -115,6 +129,7 @@ llm-service:
     - SERPAPI_API_KEY=${SERPAPI_API_KEY}
     - EXA_API_KEY=${EXA_API_KEY}
     - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY}
+    - OUTCRAWL_API_KEY=${OUTCRAWL_API_KEY:-}
 ```
 
 ## Fallback Behavior
@@ -126,6 +141,7 @@ If the configured provider is not available (missing API key or configuration), 
 4. Bing
 5. Exa
 6. Firecrawl
+7. Outcrawl
 
 If no provider is configured, web search will be disabled but the system continues to function.
 
@@ -164,6 +180,7 @@ curl -X POST http://localhost:8000/tools/execute \
 | **Bing** | Enterprise, Azure integration | $3 | Varies by tier | Snippets |
 | **Exa** | AI agents, semantic search | $1 | Standard | Full text + highlights |
 | **Firecrawl** | Content extraction | Variable | Limited | Full markdown content |
+| **Outcrawl** | AI agents, search plus scrape on one key | 5,000 credits | Varies | Snippets |
 
 ## Setting Up Google Custom Search
 
